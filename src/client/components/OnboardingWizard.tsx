@@ -3,7 +3,7 @@ import { GithubLogoIcon } from "@phosphor-icons/react";
 import type { AgentOption } from "./AgentPicker.js";
 import { Button } from "./ui/button.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
-import { CodexAuthCard } from "./CodexAuthCard.js";
+import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 
 export interface OnboardingWizardProps {
@@ -18,6 +18,12 @@ export interface OnboardingWizardProps {
   authUrl: string | null;
   onPasteAuthCode: (code: string) => void;
   onRefreshAgents: () => Promise<void>;
+  // Codex device-auth (feature 119) — optional so legacy callers / tests
+  // that only ever cared about the API-key path keep compiling.
+  codexDeviceAuth?: CodexDeviceAuthState | null;
+  codexDeviceAuthError?: string | null;
+  onStartCodexDeviceAuth?: () => void;
+  onCancelCodexDeviceAuth?: () => void;
   // Completion
   onComplete: () => void;
   // Skip step 1 if identity is already set
@@ -49,6 +55,10 @@ export function OnboardingWizard({
   authUrl,
   onPasteAuthCode,
   onRefreshAgents,
+  codexDeviceAuth = null,
+  codexDeviceAuthError = null,
+  onStartCodexDeviceAuth,
+  onCancelCodexDeviceAuth,
   onComplete,
   initialStep = 1,
 }: OnboardingWizardProps) {
@@ -226,6 +236,10 @@ export function OnboardingWizard({
 
               <CodexAuthCard
                 agent={codexAgent}
+                deviceAuth={codexDeviceAuth}
+                deviceAuthError={codexDeviceAuthError}
+                onStartDeviceAuth={onStartCodexDeviceAuth}
+                onCancelDeviceAuth={onCancelCodexDeviceAuth}
                 onApiKeySubmit={onCodexApiKeySubmit}
               />
 

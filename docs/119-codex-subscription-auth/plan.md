@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: high
 ---
 
@@ -515,3 +515,68 @@ across CLI versions and `rm`-ing the auth file is sufficient and idempotent.
   with a ChatGPT login present).
 - Auto-refreshing tokens before they expire (the CLI handles this; we'd
   only need to react if the CLI ever stops doing so).
+
+## Implementation status
+
+All four phases described above have landed. The current state:
+
+### Phase 1 — credential persistence (shipped)
+
+- `~/.codex → /credentials/.codex` symlink added to all four Dockerfiles
+  (`docker/Dockerfile.{dev,prod}` and `docker/Dockerfile.session-worker.{dev,prod}`).
+- `CodexAdapter` (`src/server/session/agents/codex-adapter.ts`) now
+  resolves auth as `hasFileAuth || hasEnvAuth`. When `~/.codex/auth.json`
+  is present and non-empty, it strips `OPENAI_API_KEY` from the spawned
+  child env so codex routes through the subscription path.
+- `AgentRegistry` (`src/server/shared/agent-registry.ts`) accepts a
+  `checkCodexAuth` injection (defaulting to "no file auth"). The registry's
+  `isAuthConfigured("codex")` now returns true for either path.
+
+### Phase 2 — server-side auth manager (shipped)
+
+- New `CodexAuthManager` (`src/server/orchestrator/codex-auth.ts`) wraps
+  `codex login --device-auth`. Emits `codex_auth_pending` /
+  `codex_auth_complete` / `codex_auth_failed`; supports `cancel()` and
+  `signOut()`. Spawn function and credential-file probe are injectable
+  for unit tests (`codex-auth.test.ts`).
+- Wired into DI as `mgrs.codexAuthManager`; `AgentRegistry.checkCodexAuth`
+  is bound to its `checkCredentials()`.
+- `wireEventHandlers` (`app-lifecycle.ts`) re-broadcasts the manager's
+  events over SSE and refreshes the agent registry on completion.
+- Three HTTP endpoints added in `api-routes-bootstrap.ts`:
+  - `POST /api/codex-auth/start` → start a device flow
+  - `POST /api/codex-auth/cancel` → cancel an in-flight flow
+  - `DELETE /api/codex-auth` → sign out (rm `auth.json` + refresh registry)
+- Three new WS-server message types: `codex_auth_pending`,
+  `codex_auth_complete`, `codex_auth_failed`.
+
+### Phase 3 — UI (shipped)
+
+- `CodexAuthCard` rebuilt with the two-section layout from the design.
+  Subscription is primary; API key is collapsed behind a disclosure.
+  The card surfaces a banner when both auth modes are configured (the
+  user-facing twin of the env-strip behavior). New tests in
+  `CodexAuthCard.test.tsx` cover idle / pending / error states, the
+  disclosure toggle, the sign-out affordance, and the banner.
+- `useServerEvents` listens for `codex_auth_*` SSE events and routes
+  them into a new `codexDeviceAuth` slice on `settings-store`.
+- `Settings.tsx` and `OnboardingWizard.tsx` both pass the new
+  device-auth props through to `CodexAuthCard`.
+- `App.tsx` wires the HTTP endpoints to the card callbacks
+  (`POST /api/codex-auth/start` / `cancel`, `DELETE /api/codex-auth`).
+
+### Phase 4 — docs (shipped)
+
+- `src/server/shipit-docs/environment.md` documents the `~/.codex` mount
+  and how the agent's billing path is selected.
+
+### Open follow-ups (not blocking)
+
+- "API key ignored" banner currently relies on the caller setting
+  `apiKeyIgnored` explicitly. Today nothing wires this — surfacing it
+  needs an extra bit of info in `agent_list` (whether `OPENAI_API_KEY`
+  is in `process.env`). Tracked separately.
+- Smoke test against a real OpenAI account in a dev container.
+- Pin a known-good `@openai/codex` version in the Dockerfiles. Currently
+  the latest tag floats; a future CLI version that changes the
+  `--device-auth` stdout shape would break the regex.

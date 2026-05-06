@@ -105,7 +105,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     defaultAgentId, workspaceDir, stateDir, credentialsDir, shouldServeStatic,
     autoPushDebounceMs, sessionsRoot, agentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
-    repoStore, chatHistoryManager, usageManager, authManager,
+    repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
     credentialStore, agentRegistry, githubAuthManager,
     secretStore, reviewStore, generateText,
     isTestMode, runtimeMode,
@@ -239,7 +239,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Event wiring (deployment + auth) ----
   wireEventHandlers({
-    authManager, agentRegistry,
+    authManager, codexAuthManager, agentRegistry,
     defaultAgentId, sseBroadcast,
   });
 
@@ -405,6 +405,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     runnerRegistry,
     chatHistoryManager,
     authManager,
+    codexAuthManager,
     broadcastLog,
     sseBroadcast,
     getSharedRepoDir: getBareCacheDir,
@@ -928,7 +929,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
   });
   registerShutdownHook(app, {
-    startupTimer, authManager, runnerRegistry,
+    startupTimer, authManager, codexAuthManager, runnerRegistry,
     dockerProxyServer, containerManager, databaseManager,
   });
 

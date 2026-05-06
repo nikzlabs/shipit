@@ -2,44 +2,59 @@
 
 ## Phase 1 — credential persistence
 
-- [ ] Add `ln -s /credentials/.codex /root/.codex` to `docker/Dockerfile.dev`.
-- [ ] Same for `docker/Dockerfile.prod`.
-- [ ] Same for `docker/Dockerfile.session-worker.dev`.
-- [ ] Same for `docker/Dockerfile.session-worker.prod`.
-- [ ] `CodexAdapter.run()` accepts file-based auth and strips
+- [x] Add `ln -s /credentials/.codex /root/.codex` to `docker/Dockerfile.dev`.
+- [x] Same for `docker/Dockerfile.prod`.
+- [x] Same for `docker/Dockerfile.session-worker.dev`.
+- [x] Same for `docker/Dockerfile.session-worker.prod`.
+- [x] `CodexAdapter.run()` accepts file-based auth and strips
       `OPENAI_API_KEY` from the spawned child env when fileAuth is present.
-- [ ] `AgentRegistry.isAuthConfigured("codex")` returns true when either
+- [x] `AgentRegistry.isAuthConfigured("codex")` returns true when either
       `~/.codex/auth.json` or `OPENAI_API_KEY` is configured.
-- [ ] Unit tests for both above.
+- [x] Unit tests for both above (`agent-registry.test.ts`, dual-mode env
+      tests in `codex-adapter.test.ts`).
 
 ## Phase 2 — server-side auth manager
 
-- [ ] `src/server/orchestrator/codex-auth.ts` — `CodexAuthManager` class.
-- [ ] `codex-auth.test.ts` covering URL/code parsing and exit handling.
-- [ ] `app-di.ts` constructs and exposes `CodexAuthManager`.
-- [ ] `app-lifecycle.ts:wireEventHandlers` relays
+- [x] `src/server/orchestrator/codex-auth.ts` — `CodexAuthManager` class.
+- [x] `codex-auth.test.ts` covering URL/code parsing, exit handling,
+      cancel, sign-out, and timeout.
+- [x] `app-di.ts` constructs and exposes `CodexAuthManager`.
+- [x] `app-lifecycle.ts:wireEventHandlers` relays
       `codex_auth_pending|complete|failed` to SSE and refreshes the
       agent registry.
-- [ ] HTTP routes in `api-routes-bootstrap.ts`:
+- [x] HTTP routes in `api-routes-bootstrap.ts`:
       `POST /api/codex-auth/start`, `POST /api/codex-auth/cancel`,
       `DELETE /api/codex-auth`.
-- [ ] WS server message types added in
+- [x] WS server message types added in
       `src/server/shared/types/ws-server-messages.ts`.
-- [ ] Integration test driving the full device-flow happy path.
+- [ ] Integration test driving the full device-flow happy path
+      (shim `codex` on `$PATH`, assert SSE event ordering and
+      `agent_list.authConfigured` flip).
 
 ## Phase 3 — UI
 
-- [ ] Rewrite `CodexAuthCard.tsx` with subscription-primary layout +
+- [x] Rewrite `CodexAuthCard.tsx` with subscription-primary layout +
       API-key disclosure.
-- [ ] `useCodexAuth` hook (or store extension) tracking pending state,
-      verification URL, user code, and last error.
-- [ ] Component tests covering idle / pending / complete / error /
+- [x] Store extension tracking pending state, verification URL, user
+      code, and last error (`settings-store.codexDeviceAuth*`).
+- [x] Component tests covering idle / pending / complete / error /
       "API key ignored" states.
-- [ ] Wire OnboardingWizard to surface the Codex sign-in step.
+- [x] Wire OnboardingWizard to surface the Codex sign-in step (carries
+      the same device-auth props as Settings).
+- [ ] Wire `apiKeyIgnored` banner against a real signal — today the
+      bootstrap response doesn't tell the client whether
+      `OPENAI_API_KEY` is set in `process.env` independently of the
+      file-auth flag, so the banner is plumbed but never lights up.
 
 ## Phase 4 — docs + cleanup
 
-- [ ] Update `src/server/shipit-docs/environment.md` (mention `~/.codex`
+- [x] Update `src/server/shipit-docs/environment.md` (mention `~/.codex`
       and billing-path selection).
 - [ ] Add a "How is Codex billed?" info popover in Settings.
-- [ ] Mark `plan.md` as `status: done`.
+- [ ] Pin a known-good `@openai/codex` version in the four Dockerfiles
+      so the device-auth output regex doesn't break across CLI bumps.
+- [ ] Smoke test against a real OpenAI account in a dev container,
+      verify `OPENAI_API_KEY` doesn't leak to the spawned process env
+      via `/proc/<pid>/environ`.
+- [ ] Mark `plan.md` as `status: done` once the open follow-ups above
+      are resolved.

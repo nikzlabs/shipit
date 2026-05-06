@@ -171,6 +171,69 @@ export async function registerBootstrapRoutes(
     },
   );
 
+  // ---- Codex (ChatGPT subscription) auth routes ----
+  // See docs/119-codex-subscription-auth/plan.md.
+
+  /**
+   * POST /api/codex-auth/start — kick off `codex login --device-auth`.
+   * Idempotent: returning 202 even when a flow is already in flight is the
+   * documented behavior (the manager itself no-ops repeat calls). The actual
+   * URL + user code stream over SSE as a `codex_auth_pending` event.
+   */
+  app.post(
+    "/api/codex-auth/start",
+    async (_request, reply) => {
+      try {
+        deps.codexAuthManager.startDeviceFlow();
+        reply.code(202).send({ success: true, pending: deps.codexAuthManager.pending });
+      } catch (err) {
+        console.error("[codex-auth] startDeviceFlow() threw:", err);
+        reply.code(500).send({ error: `Failed to start Codex auth: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  /**
+   * POST /api/codex-auth/cancel — abort an in-flight device flow. SIGTERMs
+   * the underlying `codex login` so it stops polling. Idempotent.
+   */
+  app.post(
+    "/api/codex-auth/cancel",
+    async (_request, reply) => {
+      try {
+        deps.codexAuthManager.cancel();
+        return { success: true };
+      } catch (err) {
+        reply.code(500).send({ error: `Failed to cancel Codex auth: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  /**
+   * DELETE /api/codex-auth — sign out of the ChatGPT subscription. Removes
+   * `~/.codex/auth.json` and refreshes the agent registry so a downstream
+   * turn falls back to `OPENAI_API_KEY` (or to `auth_required` if no key
+   * is set either).
+   */
+  app.delete(
+    "/api/codex-auth",
+    async (_request, reply) => {
+      try {
+        deps.codexAuthManager.cancel();
+        deps.codexAuthManager.signOut();
+        deps.agentRegistry.refreshAuth("codex");
+        const agents = deps.agentRegistry.list().map((a) => ({
+          id: a.id, name: a.name, installed: a.installed,
+          authConfigured: a.authConfigured, models: a.capabilities.models,
+        }));
+        deps.sseBroadcast("agent_list", { agents, defaultAgentId: deps.defaultAgentId });
+        return { success: true, agents };
+      } catch (err) {
+        reply.code(500).send({ error: `Failed to sign out of Codex: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
   // ---- Misc mutations ----
 
   // POST /api/reset — full reset

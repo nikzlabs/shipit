@@ -29,6 +29,7 @@ import type { RepoGit } from "./repo-git.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./auth.js";
+import type { CodexAuthManager, CodexAuthFailedEvent, CodexAuthPendingEvent } from "./codex-auth.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
@@ -1012,6 +1013,7 @@ export function createLogBuffer(): {
 /** Dependencies for event handler wiring. */
 export interface EventWiringDeps {
   authManager: AuthManager;
+  codexAuthManager: CodexAuthManager;
   agentRegistry: AgentRegistry;
   defaultAgentId: AgentId;
   sseBroadcast: (event: string, data: unknown) => void;
@@ -1019,25 +1021,49 @@ export interface EventWiringDeps {
 
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { authManager, agentRegistry, defaultAgentId, sseBroadcast } = eventDeps;
+  const { authManager, codexAuthManager, agentRegistry, defaultAgentId, sseBroadcast } = eventDeps;
 
-  // ---- Auth event handlers ----
+  /** Snapshot the current agent list in the SSE-friendly shape. */
+  const agentListPayload = () => ({
+    agents: agentRegistry.list().map((a) => ({
+      id: a.id, name: a.name, installed: a.installed,
+      authConfigured: a.authConfigured, models: a.capabilities.models,
+    })),
+    defaultAgentId,
+  });
+
+  // ---- Claude auth event handlers ----
   authManager.on("auth_url", (url: string) => {
     sseBroadcast("auth_required", { url });
   });
 
   authManager.on("auth_complete", () => {
     agentRegistry.refreshAuth("claude");
-    const agents = agentRegistry.list().map((a) => ({
-      id: a.id, name: a.name, installed: a.installed,
-      authConfigured: a.authConfigured, models: a.capabilities.models,
-    }));
     sseBroadcast("auth_complete", {});
-    sseBroadcast("agent_list", { agents, defaultAgentId });
+    sseBroadcast("agent_list", agentListPayload());
   });
 
   authManager.on("auth_failed", () => {
     console.log("[auth] OAuth flow failed — client should provide API key");
+  });
+
+  // ---- Codex (ChatGPT subscription) auth event handlers ----
+  // Mirrors the Claude flow but uses the device-authorization grant. Each
+  // event is broadcast over SSE because it describes orchestrator-wide
+  // agent auth state, not a per-session turn. See feature 119.
+  codexAuthManager.on("codex_auth_pending", (ev: CodexAuthPendingEvent) => {
+    sseBroadcast("codex_auth_pending", ev);
+  });
+
+  codexAuthManager.on("codex_auth_complete", () => {
+    agentRegistry.refreshAuth("codex");
+    sseBroadcast("codex_auth_complete", {});
+    sseBroadcast("agent_list", agentListPayload());
+  });
+
+  codexAuthManager.on("codex_auth_failed", (ev: CodexAuthFailedEvent) => {
+    console.log("[codex-auth] Device flow failed:", ev.reason, ev.message ?? "");
+    sseBroadcast("codex_auth_failed", ev);
   });
 }
 
@@ -1456,6 +1482,7 @@ export function setupContainerHealthMonitoring(
 export interface ShutdownDeps {
   startupTimer: ReturnType<typeof setTimeout>;
   authManager: AuthManager;
+  codexAuthManager: CodexAuthManager;
   runnerRegistry: SessionRunnerRegistry;
   dockerProxyServer: HttpServer | null;
   containerManager: SessionContainerManager | null;
@@ -1472,6 +1499,7 @@ export function registerShutdownHook(
   app.addHook("onClose", async () => {
     clearTimeout(shutdownDeps.startupTimer);
     shutdownDeps.authManager.kill();
+    shutdownDeps.codexAuthManager.kill();
     shutdownDeps.runnerRegistry.disposeAll();
     if (shutdownDeps.dockerProxyServer) {
       await new Promise<void>((resolve) => shutdownDeps.dockerProxyServer!.close(() => resolve()));

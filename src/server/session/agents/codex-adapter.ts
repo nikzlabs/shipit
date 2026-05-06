@@ -14,6 +14,7 @@
 
 import { EventEmitter } from "node:events";
 import { spawn, execFileSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import type {
   AgentId,
@@ -54,6 +55,27 @@ interface JsonRpcServerNotification {
 }
 
 type JsonRpcInbound = JsonRpcResponse | JsonRpcServerNotification;
+
+/**
+ * Path where the Codex CLI persists ChatGPT subscription credentials after
+ * `codex login --device-auth`. In ShipIt this resolves through a symlink to
+ * the shared `/credentials` volume (see Dockerfile.* — feature 119).
+ */
+const CODEX_AUTH_FILE = "/root/.codex/auth.json";
+
+/**
+ * True iff /root/.codex/auth.json exists and is a non-empty regular file.
+ * Exported for unit tests and for reuse by AgentRegistry.checkCodexAuth.
+ */
+export function hasCodexFileAuth(): boolean {
+  try {
+    if (!existsSync(CODEX_AUTH_FILE)) return false;
+    const st = statSync(CODEX_AUTH_FILE);
+    return st.isFile() && st.size > 0;
+  } catch {
+    return false;
+  }
+}
 
 // ---- Codex item types ----
 
@@ -122,10 +144,33 @@ export class CodexAdapter
       ...process.env as Record<string, string>,
     };
 
-    // Verify OPENAI_API_KEY is set
-    if (!env.OPENAI_API_KEY) {
+    // Auth resolution — see docs/119-codex-subscription-auth/plan.md.
+    //
+    // Two modes:
+    //   1. ChatGPT subscription login — the `codex login --device-auth` flow
+    //      writes credentials to /root/.codex/auth.json (a symlink into the
+    //      shared credentials volume). When present, the CLI uses the user's
+    //      ChatGPT plan / Codex credits.
+    //   2. OPENAI_API_KEY env var — bills against the user's OpenAI Platform
+    //      account (separate from any ChatGPT subscription).
+    //
+    // If both are configured, we prefer the subscription path: strip the env
+    // key from the spawned child so `codex` doesn't silently route through
+    // Platform API billing — that's exactly the bug this feature exists to
+    // fix.
+    const hasFileAuth = hasCodexFileAuth();
+    const hasEnvAuth = !!env.OPENAI_API_KEY;
+
+    if (!hasFileAuth && !hasEnvAuth) {
       this.emit("auth_required");
       return;
+    }
+
+    if (hasFileAuth) {
+      delete env.OPENAI_API_KEY;
+      this.emit("log", "codex", "using ChatGPT subscription (~/.codex/auth.json)");
+    } else {
+      this.emit("log", "codex", "using OPENAI_API_KEY (Platform API billing)");
     }
 
     const args = ["app-server"];

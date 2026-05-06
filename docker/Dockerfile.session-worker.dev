@@ -28,8 +28,14 @@ COPY src/server/shipit-docs/ /shipit-docs/
 RUN printf '#!/bin/sh\nexec node --import tsx /app/src/server/session/agent-shim/gh.ts "$@"\n' > /usr/local/bin/gh \
     && chmod 0755 /usr/local/bin/gh
 
-# Credential symlinks (same as dev/prod images)
-RUN mkdir -p /workspace /credentials && ln -s /credentials/.claude /root/.claude && ln -sf /credentials/.claude.json /root/.claude.json
+# Credential symlinks (same as dev/prod images).
+# .codex/ holds the ChatGPT subscription login written by `codex login`
+# (feature 119). Persisting it on the credentials volume lets the session
+# container pick up the user's subscription instead of the API key.
+RUN mkdir -p /workspace /credentials \
+ && ln -s /credentials/.claude /root/.claude \
+ && ln -sf /credentials/.claude.json /root/.claude.json \
+ && ln -s /credentials/.codex /root/.codex
 
 EXPOSE 9100
 

@@ -4,7 +4,7 @@ import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
-import { CodexAuthCard } from "./CodexAuthCard.js";
+import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
@@ -32,6 +32,12 @@ export interface SettingsProps {
   onPasteCode: (code: string) => void;
   agentList?: AgentOption[];
   onSetAgentEnv?: (agentId: string, key: string, value: string) => void;
+  // Codex (ChatGPT subscription) device-auth — feature 119.
+  codexDeviceAuth?: CodexDeviceAuthState | null;
+  codexDeviceAuthError?: string | null;
+  onStartCodexDeviceAuth?: () => void;
+  onCancelCodexDeviceAuth?: () => void;
+  onSignOutCodex?: () => void;
   onFullReset?: () => void;
   gitIdentity: { name: string; email: string };
   onGitIdentitySave: (name: string, email: string) => void;
@@ -508,6 +514,11 @@ export function Settings({
   onPasteCode,
   agentList = [],
   onSetAgentEnv,
+  codexDeviceAuth,
+  codexDeviceAuthError,
+  onStartCodexDeviceAuth,
+  onCancelCodexDeviceAuth,
+  onSignOutCodex,
   onFullReset,
   gitIdentity,
   onGitIdentitySave,
@@ -670,6 +681,11 @@ export function Settings({
                 <div className="pt-2 border-t border-(--color-border-secondary)">
                   <CodexAuthCard
                     agent={codexAgent}
+                    deviceAuth={codexDeviceAuth ?? null}
+                    deviceAuthError={codexDeviceAuthError ?? null}
+                    onStartDeviceAuth={onStartCodexDeviceAuth}
+                    onCancelDeviceAuth={onCancelCodexDeviceAuth}
+                    onSignOut={onSignOutCodex}
                     onApiKeySubmit={async (key) => { onSetAgentEnv?.("codex", "OPENAI_API_KEY", key); return undefined; }}
                   />
                 </div>

@@ -2,6 +2,18 @@ import { create } from "zustand";
 import type { PermissionMode, FileContextRef } from "../../server/shared/types.js";
 import { getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, saveSoundOnFinish } from "../utils/local-storage.js";
 
+/**
+ * In-flight `codex login --device-auth` state. Server pushes this via SSE
+ * (`codex_auth_pending`) when the CLI prints the verification URL + user
+ * code; cleared on `codex_auth_complete` / `codex_auth_failed`. See
+ * docs/119-codex-subscription-auth/plan.md.
+ */
+export interface CodexDeviceAuth {
+  verificationUri: string;
+  userCode: string;
+  expiresInSec: number;
+}
+
 interface SettingsState {
   hasSystemPrompt: boolean;
   systemPromptContent: string;
@@ -26,6 +38,10 @@ interface SettingsState {
   notifyOnFinish: boolean;
   soundOnFinish: boolean;
   autoCreatePr: boolean;
+  /** Active Codex device-auth flow state — `null` when no flow is running. */
+  codexDeviceAuth: CodexDeviceAuth | null;
+  /** Last device-auth failure message — `null` when no error. */
+  codexDeviceAuthError: string | null;
 
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
@@ -35,6 +51,8 @@ interface SettingsState {
   setNotifyOnFinish: (enabled: boolean) => void;
   setSoundOnFinish: (enabled: boolean) => void;
   setAutoCreatePr: (enabled: boolean) => void;
+  setCodexDeviceAuth: (state: CodexDeviceAuth | null) => void;
+  setCodexDeviceAuthError: (message: string | null) => void;
   /**
    * Update the permission mode. When `sessionId` is provided, the change is
    * scoped to that session only. When `sessionId` is undefined (e.g. on the
@@ -76,6 +94,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   notifyOnFinish: getSavedNotifyOnFinish(),
   soundOnFinish: getSavedSoundOnFinish(),
   autoCreatePr: false,
+  codexDeviceAuth: null,
+  codexDeviceAuthError: null,
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
@@ -98,6 +118,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),
+
+  setCodexDeviceAuth: (state) => set({ codexDeviceAuth: state }),
+
+  setCodexDeviceAuthError: (message) => set({ codexDeviceAuthError: message }),
 
   setPermissionMode: (sessionId, mode) => {
     if (sessionId) {
