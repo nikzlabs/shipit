@@ -130,12 +130,25 @@ export class AgentRegistry {
    */
   private checkClaudeAuth: () => boolean;
 
+  /**
+   * Optional function to check Codex ChatGPT-subscription auth status (i.e.
+   * presence of `~/.codex/auth.json` written by `codex login --device-auth`).
+   * Defaults to "no file auth", so a Codex agent is considered configured
+   * iff `OPENAI_API_KEY` is set in the env. Inject to wire up
+   * `CodexAuthManager.checkCredentials()` in production.
+   *
+   * See docs/119-codex-subscription-auth/plan.md.
+   */
+  private checkCodexAuth: () => boolean;
+
   constructor(opts?: {
     checkBinary?: (binary: string) => Promise<boolean>;
     checkClaudeAuth?: () => boolean;
+    checkCodexAuth?: () => boolean;
   }) {
     this.checkBinary = opts?.checkBinary ?? defaultCheckBinary;
     this.checkClaudeAuth = opts?.checkClaudeAuth ?? (() => true);
+    this.checkCodexAuth = opts?.checkCodexAuth ?? (() => false);
   }
 
   /** Probe the system for installed agent CLIs. */
@@ -180,6 +193,14 @@ export class AgentRegistry {
   private isAuthConfigured(id: AgentId): boolean {
     if (id === "claude") {
       return this.checkClaudeAuth();
+    }
+    if (id === "codex") {
+      // Codex has two auth paths — ChatGPT subscription login (file at
+      // ~/.codex/auth.json) OR an OPENAI_API_KEY env var. Either is enough
+      // to consider the agent configured. The adapter prefers the file
+      // (subscription) when both are present so we don't silently double-
+      // bill via Platform API. See docs/119-codex-subscription-auth/plan.md.
+      if (this.checkCodexAuth()) return true;
     }
     const envKey = AUTH_ENV_KEYS[id];
     if (!envKey) return false;

@@ -9,7 +9,7 @@ You are running inside a Docker container managed by ShipIt.
 | `/workspace` | Project root. This is the git repo. Your working directory. |
 | `/uploads` | User-uploaded files (outside git, never committed). |
 | `/tmp` | Scratch space — use for temporary files, unpacking archives. |
-| `/credentials` | OAuth tokens (read-only to you, managed by ShipIt). |
+| `/credentials` | OAuth tokens (read-only to you, managed by ShipIt). Includes `~/.claude` (Anthropic OAuth) and `~/.codex` (OpenAI ChatGPT login). |
 | `/dep-cache` | Shared npm/yarn/pnpm cache across sessions for the same repo. |
 
 ## Installed tools
@@ -18,6 +18,11 @@ You are running inside a Docker container managed by ShipIt.
 - **git**, **curl**
 - **python3**, **make**, **g++** (for native npm addons)
 - **Agent CLIs** — both `claude` (Claude Code) and `codex` (Codex) are installed; ShipIt invokes whichever the user selected for the session
+
+  Codex authentication has two modes — they are not interchangeable:
+
+  - **ChatGPT subscription** (preferred). The user signs in with `Sign in with ChatGPT` in the UI; the credentials are written to `~/.codex/auth.json` (a symlink onto the credentials volume). Bills against their ChatGPT plan / Codex credits.
+  - **`OPENAI_API_KEY` env var**. Bills against their OpenAI Platform account. ShipIt only injects this into the agent process when no ChatGPT login is present — when both are configured, the env var is stripped so the user isn't double-billed.
 - **Playwright** with headless Chrome (available via browser tools)
 
 ## Automatic behaviors

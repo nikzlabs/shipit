@@ -19,6 +19,7 @@ import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { AuthManager } from "./auth.js";
+import type { CodexAuthManager } from "./codex-auth.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -56,6 +57,7 @@ export interface ApiDeps {
   runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;
   authManager: AuthManager;
+  codexAuthManager: CodexAuthManager;
   broadcastLog: (sessionId: string, source: "stderr" | "stdout" | "server" | "preview" | "install", text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
   getSharedRepoDir: (repoUrl: string) => string;

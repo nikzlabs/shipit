@@ -4,6 +4,7 @@ import { GitManager } from "../shared/git.js";
 import { AgentRegistry, ALLOWED_ENV_KEYS } from "../shared/agent-registry.js";
 import { RepoGit } from "./repo-git.js";
 import { AuthManager } from "./auth.js";
+import { CodexAuthManager } from "./codex-auth.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
@@ -63,6 +64,12 @@ export interface AppDeps {
   sessionManager?: SessionManager;
   /** Auth manager instance. Defaults to `new AuthManager()`. */
   authManager?: AuthManager;
+  /**
+   * Codex (ChatGPT subscription) auth manager. Defaults to
+   * `new CodexAuthManager()`. Tests can inject a stub that doesn't spawn
+   * `codex login --device-auth`. See feature 119.
+   */
+  codexAuthManager?: CodexAuthManager;
   /** GitHub auth manager instance. Defaults to `new GitHubAuthManager()`. */
   githubAuthManager?: GitHubAuthManager;
   /** Chat history manager instance. Defaults to `new ChatHistoryManager()`. */
@@ -160,6 +167,7 @@ export interface ManagerSet {
   chatHistoryManager: ChatHistoryManager;
   usageManager: UsageManager;
   authManager: AuthManager;
+  codexAuthManager: CodexAuthManager;
   credentialStore: CredentialStore;
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
@@ -240,6 +248,13 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const hasCredentials = authManager.checkCredentials();
   console.log("[server] Claude credentials found:", hasCredentials);
 
+  // ---- Codex auth manager (ChatGPT subscription) ----
+  // Wraps `codex login --device-auth` so a user can sign in with their
+  // ChatGPT plan instead of an OPENAI_API_KEY. See feature 119.
+  const codexAuthManager = deps.codexAuthManager ?? new CodexAuthManager();
+  const hasCodexAuth = codexAuthManager.checkCredentials();
+  console.log("[server] Codex ChatGPT credentials found:", hasCodexAuth);
+
   // ---- Credential store ----
   const credentialStore = deps.credentialStore ?? new CredentialStore(credentialsDir);
 
@@ -260,6 +275,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- Agent registry ----
   const agentRegistry = deps.agentRegistry ?? new AgentRegistry({
     checkClaudeAuth: () => authManager.checkCredentials(),
+    checkCodexAuth: () => codexAuthManager.checkCredentials(),
   });
   await agentRegistry.detect();
   const detectedAgents = agentRegistry.list();
@@ -335,6 +351,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     chatHistoryManager,
     usageManager,
     authManager,
+    codexAuthManager,
     credentialStore,
     agentRegistry,
     githubAuthManager,

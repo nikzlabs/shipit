@@ -61,6 +61,45 @@ export interface WsAuthComplete {
   type: "auth_complete";
 }
 
+// ---- Codex (ChatGPT subscription) device-auth types ----
+
+/**
+ * Server → Client: the Codex CLI has printed a verification URL + user code
+ * during `codex login --device-auth`. The client opens the URL in a new tab
+ * and shows the code for the user to enter on auth.openai.com.
+ *
+ * See feature 119.
+ */
+export interface WsCodexAuthPending {
+  type: "codex_auth_pending";
+  /** Verification URL printed by the CLI (`https://auth.openai.com/codex/device`). */
+  verificationUri: string;
+  /** Short code the user types into the verification page (`XXXX-XXXXX`). */
+  userCode: string;
+  /** Device-code TTL in seconds (15 min per the OpenAI device-auth spec). */
+  expiresInSec: number;
+}
+
+/**
+ * Server → Client: device-auth flow finished and the Codex credentials are
+ * on disk. Receivers should refresh the agent list — `authConfigured` for
+ * Codex flips to `true` because the file path now resolves.
+ */
+export interface WsCodexAuthComplete {
+  type: "codex_auth_complete";
+}
+
+/**
+ * Server → Client: device-auth flow failed. `reason` distinguishes between
+ * the well-known terminal states so the UI can offer the right next step
+ * (retry, contact support, fall back to API key).
+ */
+export interface WsCodexAuthFailed {
+  type: "codex_auth_failed";
+  reason: "timeout" | "denied" | "error";
+  message?: string;
+}
+
 export interface WsSessionList {
   type: "session_list";
   sessions: SessionInfo[];
@@ -517,6 +556,9 @@ export type WsServerMessage =
   | WsGitCommitted
   | WsAuthRequired
   | WsAuthComplete
+  | WsCodexAuthPending
+  | WsCodexAuthComplete
+  | WsCodexAuthFailed
   | WsSessionList
   | WsSessionStarted
   | WsSessionRenamed
