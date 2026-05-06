@@ -422,9 +422,19 @@ export class ServiceManager extends EventEmitter {
 
     try {
       // 1. Start auto services (named explicitly so manual services aren't
-      //    started but remain part of the project for dependency resolution)
+      //    started but remain part of the project for dependency resolution).
+      //
+      // Edge case: when EVERY service is manual, `autoNames` is `[]`. Calling
+      // `docker compose up -d` with no service names tells compose "bring up
+      // every service in the project," which would silently start the manual
+      // services we explicitly asked to leave alone. Skip the call entirely
+      // in that case — the rest of `start()` (network join, status polling,
+      // log streaming) still runs so the manual services show up in the UI as
+      // `stopped` and the user can start them on demand.
       const autoNames = autoServices.map(s => s.name);
-      await this.composeUp(autoNames);
+      if (autoNames.length > 0) {
+        await this.composeUp(autoNames);
+      }
       this._started = true;
 
       // 2. Join agent container to compose network (before IP resolution)

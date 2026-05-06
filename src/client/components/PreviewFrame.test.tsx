@@ -344,6 +344,56 @@ describe("PreviewFrame", () => {
     expect(usePreviewStore.getState().composeNotConfigured).toBe(false);
   });
 
+  // ---- Manual-only inline service list (dogfooding case) ----
+
+  it("renders inline ServiceList with Start button when every service is manual", () => {
+    usePreviewStore.getState().setServices([
+      { name: "dev", status: "stopped", port: 3000, preview: "manual" },
+    ]);
+    const onStartService = vi.fn();
+    // A non-null preview with running:false is what the orchestrator emits
+    // once the compose stack is up but no service is running — same shape
+    // as the "No preview running" empty state the user sees in production.
+    const stoppedPreview: PreviewStatus = { running: false, port: 0, url: "" };
+    render(
+      <PreviewFrame
+        preview={stoppedPreview}
+        sessionId="abc"
+        {...defaultProps}
+        onStartService={onStartService}
+        onStopService={vi.fn()}
+      />,
+    );
+    // Inline list is shown instead of the "View service logs" empty state
+    expect(screen.getByText("dev")).toBeInTheDocument();
+    expect(screen.queryByText("View service logs")).not.toBeInTheDocument();
+    // Clicking the Start affordance dispatches start_service
+    fireEvent.click(screen.getByTitle("Start dev"));
+    expect(onStartService).toHaveBeenCalledWith("dev");
+  });
+
+  it("falls back to the View-service-logs overlay when at least one service is auto", () => {
+    usePreviewStore.getState().setServices([
+      { name: "web", status: "stopped", port: 5173, preview: "auto" },
+      { name: "dev", status: "stopped", port: 3000, preview: "manual" },
+    ]);
+    const stoppedPreview: PreviewStatus = { running: false, port: 0, url: "" };
+    render(
+      <PreviewFrame
+        preview={stoppedPreview}
+        sessionId="abc"
+        {...defaultProps}
+        onStartService={vi.fn()}
+        onStopService={vi.fn()}
+      />,
+    );
+    // Mixed stack: keep the existing empty state — auto preview is expected
+    // to come up on its own and the inline list would be noise.
+    expect(screen.getByText("View service logs")).toBeInTheDocument();
+    // The auto service name shouldn't appear as a list row
+    expect(screen.queryByTitle("Start web")).not.toBeInTheDocument();
+  });
+
   // ---- Managed source tests ----
 
   it("renders iframe for managed source preview", async () => {
