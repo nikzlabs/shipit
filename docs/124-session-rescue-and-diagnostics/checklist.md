@@ -40,20 +40,20 @@
 ## Phase 2 — Diagnostics endpoint + panel
 
 ### 2.1 Server: `services/diagnostics.ts`
-- [ ] Compose payload from `getContainerHealth`, ServiceManager service map + log tails, runner state, broadcastLog ring.
-- [ ] Add `getServiceDiagnostics(deps, sessionId)` walking `ServiceManager` services + log buffer tails.
-- [ ] Add `getRunnerDiagnostics(deps, sessionId)` returning `running`, viewer count, queue length, last SSE event, capturedSessionId mismatches.
-- [ ] Expose a getter on the orchestrator's broadcastLog ring for recent entries.
+- [x] Compose payload from `getContainerHealth`, ServiceManager service map + log tails (last 20 lines/service), runner state, log ring (last 50 entries).
+- [x] Walks `ServiceManager` services for status, port, IP, error, and log tail.
+- [x] Reads runner state: `running`, viewer count, queue length, last SSE event, turn buffer size, disposed.
+- [x] Reuses the existing per-session `getLogBuffer` (no new ring needed — the per-session ring already covers everything).
 
 ### 2.2 Endpoint
-- [ ] `GET /api/sessions/:id/diagnostics` in `api-routes-container.ts`.
-- [ ] Read-only; safe to call repeatedly.
+- [x] `GET /api/sessions/:id/diagnostics` in `api-routes-container.ts`.
+- [x] Read-only; safe to call repeatedly.
 
 ### 2.3 Client: `SessionDiagnosticsPanel.tsx`
-- [ ] New modal/panel reachable from `SessionHealthStrip`'s "Details" affordance.
-- [ ] Sections: Container, Worker, SSE, Compose stack (with per-service expandable stderr tail), Recent logs, Runner.
-- [ ] Polls `/diagnostics` at 2 s while open.
-- [ ] "Copy diagnostics" button copies full payload as JSON.
+- [x] New modal reachable from a "Diagnostics" button in `SessionHealthStrip`.
+- [x] Sections: Container & worker (incl. SSE freshness + create errors), Compose stack (with per-service expandable log tail), Runner, Recent logs, Meta.
+- [x] Polls `/diagnostics` at 2 s while open; cleans up on close.
+- [x] "Copy" button copies full payload as JSON (with a `clientCopiedAt` field).
 
 ## Phase 3 — Rescue session (deep restart)
 
@@ -77,9 +77,9 @@
 - [ ] On `failed:<phase>`, deep-link to the diagnostics panel.
 
 ## Phase 4 — Copy diagnostics
-- [ ] "Copy diagnostics" button in `SessionDiagnosticsPanel`.
-- [ ] Includes full diagnostics payload + session ID + client timestamp, JSON-formatted.
-- [ ] Brief "Copied" affordance.
+- [x] "Copy" button in `SessionDiagnosticsPanel`.
+- [x] Includes full diagnostics payload + session ID + `clientCopiedAt`, JSON-formatted.
+- [x] Brief "Copied" affordance (2s).
 
 ## Quality
 - [ ] `npm run lint` passes.
