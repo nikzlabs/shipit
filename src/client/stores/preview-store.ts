@@ -90,6 +90,15 @@ interface PreviewState {
   services: ManagedServiceState[];
   /** Error message when Docker Compose stack fails to start. */
   composeError: string | null;
+  /**
+   * Most recent preview-proxy error for an in-flight preview, by port. The
+   * orchestrator emits `preview_error` when the proxy can't reach the
+   * container or HMR upgrade fails — we render an inline overlay so the
+   * user sees something more actionable than a blank iframe.
+   *
+   * See docs/124-session-rescue-and-diagnostics §1.5.
+   */
+  previewProxyError: { port: number; message: string; upgrade?: boolean; at: number } | null;
   /** True when no compose file is configured in shipit.yaml. */
   composeNotConfigured: boolean;
   /**
@@ -126,6 +135,7 @@ interface PreviewState {
   updateService: (update: ManagedServiceState) => void;
   setComposeError: (error: string | null) => void;
   setComposeNotConfigured: (value: boolean) => void;
+  setPreviewProxyError: (error: PreviewState["previewProxyError"]) => void;
   /** Replace the secrets snapshot (from `secrets_status` WS message). */
   setSecrets: (secrets: SecretsState) => void;
   /** Set the active device preset (or null to return to "Responsive"). Persists to localStorage. */
@@ -201,6 +211,8 @@ const initialState = {
   isLandscape: false,
   customSize: null as { width: number; height: number } | null,
   sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
+  // Ephemeral state — never persisted into a session snapshot.
+  previewProxyError: null as PreviewState["previewProxyError"],
 };
 
 export const usePreviewStore = create<PreviewState>((set, get) => ({
@@ -251,6 +263,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   setComposeError: (composeError) => set({ composeError }),
 
   setComposeNotConfigured: (composeNotConfigured) => set({ composeNotConfigured }),
+
+  setPreviewProxyError: (previewProxyError) => set({ previewProxyError }),
 
   setDevicePreset: (devicePreset) => {
     saveDevicePresetId(devicePreset?.id ?? null);

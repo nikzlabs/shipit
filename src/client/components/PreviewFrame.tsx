@@ -442,6 +442,14 @@ export function PreviewFrame({
   const hasErrors = errors.length > 0;
   const composeError = usePreviewStore((s) => s.composeError);
   const composeNotConfigured = usePreviewStore((s) => s.composeNotConfigured);
+  const previewProxyError = usePreviewStore((s) => s.previewProxyError);
+  const setPreviewProxyError = usePreviewStore((s) => s.setPreviewProxyError);
+  // Surface a proxy error only for the active port and only while it's
+  // recent (older than 30s likely belongs to a previous attempt that the
+  // user already moved past).
+  const activeProxyError = previewProxyError?.port === activePort && Date.now() - previewProxyError.at < 30_000
+    ? previewProxyError
+    : null;
   const showComposeError = !!composeError && !isRunning;
   const showComposeHint = composeNotConfigured && !isRunning && !showComposeError;
   const showStartupSteps = startupSteps.length > 0 && !isRunning && !showComposeError && !showComposeHint;
@@ -693,6 +701,44 @@ export function PreviewFrame({
           the panel that links to the Secrets settings tab. Only shown when at
           least one declared secret is `required: true` and has no value. */}
       <SecretsMissingBanner />
+
+      {/* Preview-proxy error banner — emitted by the orchestrator when the
+          reverse proxy can't reach the container or HMR upgrade fails. Sits
+          between the top bar and the iframe so the user gets an actionable
+          message instead of a blank/502 iframe. See
+          docs/124-session-rescue-and-diagnostics §1.5. */}
+      {activeProxyError && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 px-3 py-1.5 border-b border-(--color-error)/40 bg-(--color-error-subtle) text-xs text-(--color-text-primary)"
+        >
+          <WarningIcon size={ICON_SIZE.SM} className="text-(--color-error) shrink-0" />
+          <span className="flex-1 truncate">
+            Preview unreachable on port {activeProxyError.port}
+            {activeProxyError.upgrade && " (HMR upgrade failed)"}
+            <span className="ml-1 text-(--color-text-secondary)">— {activeProxyError.message}</span>
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              setPreviewProxyError(null);
+              setRefreshKey((k) => k + 1);
+            }}
+            title="Retry the preview"
+          >
+            Retry
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setPreviewProxyError(null)}
+            title="Dismiss"
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
 
       {/* Main content area — iframe pool, one per (session, port) */}
       <div
