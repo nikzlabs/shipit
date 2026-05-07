@@ -8,11 +8,12 @@
 - [ ] (Deferred) Distinct `stack_error` WS type if non-startup `stack_error` emit sites are added later. The current `compose_error` channel covers all paths that throw.
 
 ### 1.2 Compose-child OOM detection
-- [ ] Widen Docker event label filter in `container-health.ts:84-89` to include `shipit-parent-session`.
-- [ ] On `die`/`oom` for a compose-child, look up session via `shipit-parent-session` label.
-- [ ] Emit `service_oom` runner event with service name + container id.
+- [x] Widen Docker event label filter in `container-health.ts` to dispatch by label inside the handler (Path 1: `shipit-session`, Path 2: `shipit-parent-session`).
+- [x] On `die`/`oom` for a compose-child, look up session via `shipit-parent-session` label and emit `service_exited` with `oom`.
+- [x] Emit `service_oom` runner event with service name + container id (`app-lifecycle.ts` `service_exited` handler).
+- [x] Add `service_oom` to `ws-server-messages.ts`.
+- [x] Per-session log ring + `log_entry` runner message with OOM-vs-exit guidance text.
 - [ ] Annotate `pollStatus` exit messages with "OOMKilled" reading from `docker inspect` State.OOMKilled.
-- [ ] Add `service_oom` to `ws-server-messages.ts`.
 - [ ] Client: surface OOM badge on ServicesPanel service row.
 
 ### 1.3 Default `workerPost`/`workerGet` timeout
@@ -22,19 +23,19 @@
 - [ ] Update agent control handlers (`/agent/start`, `/agent/stdin`, `/agent/interrupt`) to surface `WorkerTimeoutError` as a chat-visible error.
 
 ### 1.4 Stop swallowing `ProxyAgentProcess.kill()` errors
-- [ ] Change the `.catch(() => {})` in `proxy-agent-process.ts:75-77` to log + emit.
-- [ ] On error, emit a `log_entry` ("Interrupt failed: worker unreachable") and update `session_status.lastInterruptError`.
-- [ ] Client: when interrupt fails, surface a non-blocking toast.
+- [x] Replace `.catch(() => {})` in `proxy-agent-process.ts` with `log` event emission ("Failed to kill agent on worker: …") so failures land in the Logs panel.
+- [ ] (Deferred) `session_status.lastInterruptError` field + non-blocking toast — incremental polish; the Logs entry already covers the visibility gap.
 
 ### 1.5 Preview-proxy 502 server-side surfacing
-- [ ] In `preview-proxy.ts:134-139`, on connection error emit `runner.emitMessage({ type: "preview_error", port, error })`.
-- [ ] In `proxy-error.ts:182-184` (HMR upgrade failure), do the same.
-- [ ] Add `preview_error` to `ws-server-messages.ts`.
-- [ ] Client `PreviewFrame.tsx`: render an inline overlay on `preview_error` with a "Rescue session" CTA.
+- [x] In `preview-proxy.ts`, on connection error emit `runner.emitMessage({ type: "preview_error", port, message })` (with HMR-upgrade variant) + a `log_entry` with `source: "preview"`.
+- [x] Add `preview_error` to `ws-server-messages.ts`.
+- [x] Throttle errors per `(session, port)` to avoid log spam (5s window).
+- [ ] Client `PreviewFrame.tsx`: render an inline overlay on `preview_error` with a "Rescue session" CTA. (Today the user sees the entry in the Logs panel, not as a preview overlay.)
 
 ### 1.6 Idle-disposal user-visible notice
-- [ ] In `app-lifecycle.ts:441`, after the `console.log`, emit `session_status` with `reason: "idle-disposed"` and elapsed-idle ms.
-- [ ] Client: render a non-blocking inline notice "Session paused after N minutes idle. Send a message to resume."
+- [x] Idle enforcer broadcasts `session_status` SSE with `reason: "idle-disposed"` (or `"memory-pressure"`) and `idleMs`.
+- [x] Per-session log ring entry "Session container paused after N s. Send a message to resume." so a returning viewer sees the explanation in the Logs panel.
+- [ ] Dedicated inline notice surface (as opposed to log entry) — incremental polish.
 
 ## Phase 2 — Diagnostics endpoint + panel
 
