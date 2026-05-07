@@ -1,9 +1,12 @@
 /**
- * Container recovery API routes — health probe and recovery actions.
+ * Container recovery API routes — health probe, recovery actions, and the
+ * full diagnostics payload.
  *
- * See docs/112-container-recovery/plan.md. Three endpoints:
+ * See docs/112-container-recovery/plan.md and
+ * docs/124-session-rescue-and-diagnostics/plan.md. Four endpoints:
  *
- *   GET  /api/sessions/:id/container/health     — aggregated diagnostics
+ *   GET  /api/sessions/:id/container/health     — aggregated health strip
+ *   GET  /api/sessions/:id/diagnostics          — full debug payload (124 §3)
  *   POST /api/sessions/:id/agent/kill           — SIGKILL the agent
  *   POST /api/sessions/:id/container/restart    — destroy + recreate container
  *
@@ -14,9 +17,11 @@
 
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
+import type { ServiceManager } from "./service-manager.js";
 
 import {
   getContainerHealth,
+  getSessionDiagnostics,
   killAgent,
   restartContainer,
   ServiceError,
@@ -52,6 +57,35 @@ export async function registerContainerRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to read container health: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/diagnostics — full debug payload (Session diagnostics panel + bug reports)
+  app.get<{ Params: { id: string } }>(
+    "/api/sessions/:id/diagnostics",
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      try {
+        return await getSessionDiagnostics(
+          {
+            containerManager: deps.containerManager ?? null,
+            runnerRegistry: deps.runnerRegistry,
+            serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
+            getLogBuffer: deps.getLogBuffer ?? (() => []),
+          },
+          request.params.id,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to read diagnostics: ${getErrorMessage(err)}` });
       }
     },
   );
