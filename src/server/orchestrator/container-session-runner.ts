@@ -111,6 +111,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _viewerCount = 0;
   private _lastViewerDetachAt = 0;
 
+  /**
+   * Periodic reconciler — checks `runner.running` against `/agent/status`
+   * while a viewer is attached. After 2 consecutive divergences (running=true
+   * locally but worker reports idle), `verifyRunningState()` resets the flag
+   * and emits a `session_status` notice. Set up in `attachViewer`, cleared
+   * in `dispose`.
+   */
+  private _reconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private _reconcileDivergenceCount = 0;
+  private static readonly RECONCILE_INTERVAL_MS = 30000;
+  private static readonly RECONCILE_MAX_DIVERGENCES = 2;
+
   // Per-session detected ports
   private _detectedPorts: number[] = [];
 
@@ -439,6 +451,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         if (!this._disposed) void this.startWorkerResources();
       });
     }
+    this.startReconcileTimer();
   }
 
   detachViewer(): void {
@@ -452,10 +465,69 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     //      period can't be extended by repeated detach calls.
     if (this._viewerCount === 0 && this._lastViewerDetachAt === 0) {
       this._lastViewerDetachAt = Date.now();
+      this.stopReconcileTimer();
     }
     // Don't stop worker resources or SSE — the container keeps running and
     // the viewer may reattach quickly (session switching). Cleanup happens
     // in dispose() when the runner is actually torn down.
+  }
+
+  /**
+   * Start the periodic reconciler that catches "spinner stuck on" states
+   * where the local `running=true` flag has drifted from the worker's
+   * actual idle status. Idempotent — safe to call repeatedly.
+   */
+  private startReconcileTimer(): void {
+    if (this._reconcileTimer || this._disposed) return;
+    this._reconcileDivergenceCount = 0;
+    this._reconcileTimer = setInterval(() => {
+      void this.runReconcileCheck();
+    }, ContainerSessionRunner.RECONCILE_INTERVAL_MS);
+    // Don't keep the orchestrator alive for the timer alone.
+    this._reconcileTimer.unref?.();
+  }
+
+  private stopReconcileTimer(): void {
+    if (this._reconcileTimer) {
+      clearInterval(this._reconcileTimer);
+      this._reconcileTimer = null;
+    }
+    this._reconcileDivergenceCount = 0;
+  }
+
+  /**
+   * One tick of the reconciler. Only meaningful when `running=true` and a
+   * viewer is attached — otherwise the divergence is either expected
+   * (idle) or undetectable (no viewer means no reconnect-driven recovery
+   * to short-circuit). Two consecutive divergences are required so a
+   * single in-flight `/agent/status` race can't trigger a false reset.
+   */
+  private async runReconcileCheck(): Promise<void> {
+    if (this._disposed) {
+      this.stopReconcileTimer();
+      return;
+    }
+    if (!this._isRunning || this._viewerCount === 0) {
+      this._reconcileDivergenceCount = 0;
+      return;
+    }
+    let workerRunning: boolean | null = null;
+    try {
+      const status = await workerGet(this.workerUrl, "/agent/status") as { running?: boolean };
+      workerRunning = status.running === true;
+    } catch {
+      // Worker unreachable — don't penalize on a transient failure.
+      return;
+    }
+    if (workerRunning) {
+      this._reconcileDivergenceCount = 0;
+      return;
+    }
+    this._reconcileDivergenceCount += 1;
+    if (this._reconcileDivergenceCount >= ContainerSessionRunner.RECONCILE_MAX_DIVERGENCES) {
+      this._reconcileDivergenceCount = 0;
+      await this.verifyRunningState();
+    }
   }
 
   readonly previewStatusKnown: boolean = true;
@@ -1104,6 +1176,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // stays alive and a new runner may reconnect to it. Stopping the preview
     // would force a full restart on reconnect.
 
+    this.stopReconcileTimer();
     this.clearServiceManager();
     this.disconnectEventStream();
     this.clearPushTimer();
