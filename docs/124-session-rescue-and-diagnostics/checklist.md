@@ -5,7 +5,7 @@
 ### 1.1 `stack_error` event subscriber
 - [x] Compose stack startup failure surfaced as `compose_error` WS message (existing, app-lifecycle.ts catch on `mgr.start()`).
 - [x] Per-session log ring entry added on stack startup failure so the Logs panel and the future diagnostics endpoint see the failure.
-- [ ] (Deferred) Distinct `stack_error` WS type if non-startup `stack_error` emit sites are added later. The current `compose_error` channel covers all paths that throw.
+- [x] Distinct `stack_error` WS type added. `compose_error` (catch path) stays as the user-facing PreviewFrame banner; `stack_error` (subscriber path) is the typed channel for the manager's emit, ready for non-startup emit sites without re-wiring.
 
 ### 1.2 Compose-child OOM detection
 - [x] Widen Docker event label filter in `container-health.ts` to dispatch by label inside the handler (Path 1: `shipit-session`, Path 2: `shipit-parent-session`).
@@ -24,7 +24,7 @@
 
 ### 1.4 Stop swallowing `ProxyAgentProcess.kill()` errors
 - [x] Replace `.catch(() => {})` in `proxy-agent-process.ts` with `log` event emission ("Failed to kill agent on worker: …") so failures land in the Logs panel.
-- [ ] (Deferred) `session_status.lastInterruptError` field + non-blocking toast — incremental polish; the Logs entry already covers the visibility gap.
+- [x] `session_status.lastInterruptError` field added; emitted from the recovery flow when the best-effort `killAgentOnWorker` call fails. Client renders an auto-dismissing inline toast in `SessionHealthStrip` (8s timeout, dismissable).
 
 ### 1.5 Preview-proxy 502 server-side surfacing
 - [x] In `preview-proxy.ts`, on connection error emit `runner.emitMessage({ type: "preview_error", port, message })` (with HMR-upgrade variant) + a `log_entry` with `source: "preview"`.
@@ -35,7 +35,7 @@
 ### 1.6 Idle-disposal user-visible notice
 - [x] Idle enforcer broadcasts `session_status` SSE with `reason: "idle-disposed"` (or `"memory-pressure"`) and `idleMs`.
 - [x] Per-session log ring entry "Session container paused after N s. Send a message to resume." so a returning viewer sees the explanation in the Logs panel.
-- [ ] Dedicated inline notice surface (as opposed to log entry) — incremental polish.
+- [x] Dedicated inline notice surface — `pauseNotice` field in session-store, populated from `session_status` `idle-disposed` / `memory-pressure` reasons, rendered as a banner in `SessionHealthStrip` with auto-clear when the container is running again.
 
 ## Phase 2 — Diagnostics endpoint + panel
 
@@ -86,12 +86,12 @@
 - [x] `npm run lint` passes.
 - [x] `npm run typecheck` passes.
 - [x] `npm run test:dev` passes (server + client tests for new/touched files).
-- [ ] (Deferred) Integration test: `stack_error` propagates to broadcast log + emitMessage.
-- [ ] (Deferred) Integration test: preview-proxy 502 emits `preview_error`.
-- [ ] (Deferred) Integration test: Rescue session full path (stop stack → destroy → recreate → start stack).
-- [ ] (Deferred) Integration test: diagnostics endpoint returns expected shape with services, runner, recent logs.
+- [x] Integration test: `stack_error` propagates to broadcast log + emitMessage (`integration_tests/stack-error.test.ts`).
+- [x] Integration test: preview-proxy 502 emits `preview_error` with throttling (`integration_tests/preview-error.test.ts`).
+- [x] Integration test: Rescue session full path — phased emits, stop-stack-before-dispose, reapOrphans, getOrCreate, failed-create reason, lastInterruptError, noContainer (`services/recovery.test.ts`).
+- [x] Integration test: diagnostics endpoint returns expected shape (`integration_tests/diagnostics-endpoint.test.ts`).
 
-The deferred integration tests cover happy-path wiring whose component pieces already have unit coverage (proxy-agent-process, diagnostics service, SessionDiagnosticsPanel). They're not blocking the feature; track separately if regressions show up.
+The wiring helpers `handleStackError` and `createPreviewErrorReporter` were extracted from inline closures so the tests can hit the wiring directly without spinning up Docker.
 
 ## Docs
 - [x] `plan.md` written.
