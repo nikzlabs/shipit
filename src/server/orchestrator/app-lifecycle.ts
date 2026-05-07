@@ -859,6 +859,15 @@ function setupServiceManager(
         sessionId: runner.sessionId,
         message: errMsg,
       });
+      // Also record into the per-session log ring so the Logs panel and the
+      // future diagnostics endpoint (docs/124-session-rescue-and-diagnostics)
+      // see the failure. Without this, the user gets the PreviewFrame banner
+      // but the Logs panel is silent — a viewer who attaches after the fact
+      // (or files a bug report) has no record of why the stack didn't come
+      // up.
+      if (broadcastLog) {
+        broadcastLog(runner.sessionId, "server", `[compose] Failed to start: ${errMsg}`);
+      }
     }
   })();
 }
