@@ -36,6 +36,20 @@ interface SessionState {
   /** Live Rescue session phase, or null when no rescue is in flight. */
   rescueState: RescueState | null;
   /**
+   * Most recent best-effort kill failure (Interrupt or Rescue session).
+   * Cleared automatically after a short interval on the client. See
+   * docs/124-session-rescue-and-diagnostics §1.4.
+   */
+  interruptError: string | null;
+  /**
+   * Most recent idle-disposal / memory-pressure notice for the active
+   * session. Lets the strip render a dedicated banner ("Session paused
+   * after N minutes idle. Send a message to resume.") instead of
+   * relying solely on the Logs entry. Cleared on session change or when
+   * the user dismisses. See docs/124-session-rescue-and-diagnostics §1.6.
+   */
+  pauseNotice: { reason: "idle-disposed" | "memory-pressure"; idleMs?: number; at: number } | null;
+  /**
    * Per-turn usage history keyed by session ID. Populated from
    * `turn_usage_update` WS messages live, and seeded on session attach from
    * `GET /api/sessions/:id/history` (sourced from the `usage_turns` table).
@@ -56,6 +70,8 @@ interface SessionState {
   setActivity: (activity: StreamingActivity | undefined) => void;
   setHistoryLoaded: (loaded: boolean) => void;
   setRescueState: (state: RescueState | null) => void;
+  setInterruptError: (error: string | null) => void;
+  setPauseNotice: (notice: SessionState["pauseNotice"]) => void;
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
@@ -106,6 +122,8 @@ const initialResettableState = {
   prefillText: undefined as string | undefined,
   historyLoaded: false,
   rescueState: null as RescueState | null,
+  interruptError: null as string | null,
+  pauseNotice: null as SessionState["pauseNotice"],
 };
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
@@ -146,6 +164,10 @@ export const useSessionStore = create<SessionState>((set) => ({
   setHistoryLoaded: (historyLoaded) => set({ historyLoaded }),
 
   setRescueState: (rescueState) => set({ rescueState }),
+
+  setInterruptError: (interruptError) => set({ interruptError }),
+
+  setPauseNotice: (pauseNotice) => set({ pauseNotice }),
 
   setSessions: (sessions) =>
     set((state) => ({

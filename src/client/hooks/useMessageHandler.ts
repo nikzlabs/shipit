@@ -670,6 +670,16 @@ function processMessage(
         if (!data.running) {
           session.setActivity(undefined);
         }
+        if (data.lastInterruptError) {
+          session.setInterruptError(data.lastInterruptError);
+        }
+        if (data.reason === "idle-disposed" || data.reason === "memory-pressure") {
+          session.setPauseNotice({
+            reason: data.reason,
+            ...(data.idleMs !== undefined ? { idleMs: data.idleMs } : {}),
+            at: Date.now(),
+          });
+        }
       }
     }
 
