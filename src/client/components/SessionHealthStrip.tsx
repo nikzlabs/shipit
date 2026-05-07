@@ -146,6 +146,14 @@ function formatLatency(ms: number | null): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function formatIdleDuration(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.round(minutes / 60)}h`;
+}
+
 function formatStaleness(lastEventAt: number | null): string {
   if (lastEventAt === null) return "—";
   const seconds = Math.max(0, Math.round((Date.now() - lastEventAt) / 1000));
@@ -165,7 +173,19 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const rescueState = useSessionStore((s) => s.rescueState);
   const setRescueState = useSessionStore((s) => s.setRescueState);
+  const interruptError = useSessionStore((s) => s.interruptError);
+  const setInterruptError = useSessionStore((s) => s.setInterruptError);
+  const pauseNotice = useSessionStore((s) => s.pauseNotice);
+  const setPauseNotice = useSessionStore((s) => s.setPauseNotice);
   const phaseLabel = rescueState ? PHASE_LABEL[rescueState.phase] : null;
+
+  // Auto-dismiss the interrupt-error toast after 8s — non-blocking by design.
+  // eslint-disable-next-line no-restricted-syntax -- transient toast auto-dismiss
+  useEffect(() => {
+    if (!interruptError) return;
+    const id = setTimeout(() => setInterruptError(null), 8000);
+    return () => clearTimeout(id);
+  }, [interruptError, setInterruptError]);
   /**
    * Wall-clock timestamp when the most recent restart was issued. Used to
    * decide whether a server-side `lastCreateError` belongs to THIS restart
@@ -195,6 +215,9 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
       if (data.containerState === "running" && data.workerReachable) {
         setIsRestarting(false);
         restartStartedAtRef.current = null;
+        // The session is back — clear any "paused" banner from the previous
+        // disposal so the user doesn't see a stale notice.
+        if (useSessionStore.getState().pauseNotice) setPauseNotice(null);
       } else if (
         data.lastCreateError &&
         data.lastCreateErrorAt !== null &&
@@ -221,8 +244,10 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     setIsRestarting(false);
     setIsKilling(false);
     setRescueState(null);
+    setInterruptError(null);
+    setPauseNotice(null);
     restartStartedAtRef.current = null;
-  }, [sessionId, setRescueState]);
+  }, [sessionId, setRescueState, setInterruptError, setPauseNotice]);
 
   // Poll on mount; cadence depends on whether a restart is in flight. While
   // restarting, poll fast so the new container's transition to "running"
@@ -415,6 +440,53 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           </Button>
         </div>
       </div>
+      {/* Idle / memory-pressure pause notice — converts the silent
+          "container went away" state into an explicit "send a message to
+          resume" banner. Cleared automatically when the container is
+          running again. See docs/124-session-rescue-and-diagnostics §1.6. */}
+      {pauseNotice && (
+        <div
+          role="status"
+          className="px-3 py-1.5 border-t border-(--color-warning)/40 bg-(--color-warning)/10 flex items-center gap-2"
+        >
+          <span className="flex-1 text-(--color-text-primary)">
+            {pauseNotice.reason === "memory-pressure"
+              ? "Session paused under memory pressure."
+              : pauseNotice.idleMs && pauseNotice.idleMs > 0
+                ? `Session paused after ${formatIdleDuration(pauseNotice.idleMs)} idle.`
+                : "Session paused after idle timeout."}
+            <span className="ml-1 text-(--color-text-secondary)">Send a message to resume.</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setPauseNotice(null)}
+            className="text-(--color-text-tertiary) hover:text-(--color-text-primary) text-xs"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {/* Non-blocking interrupt-error toast — best-effort kill failures
+          (Rescue session pre-destroy kill, Interrupt on a wedged worker)
+          land here so the user gets feedback without a hard error block.
+          See docs/124-session-rescue-and-diagnostics §1.4. */}
+      {interruptError && (
+        <div
+          role="status"
+          className="px-3 py-1.5 border-t border-(--color-warning)/40 bg-(--color-warning)/10 flex items-center gap-2"
+        >
+          <span className="flex-1 text-(--color-text-primary) truncate" title={interruptError}>
+            {interruptError}
+          </span>
+          <button
+            type="button"
+            onClick={() => setInterruptError(null)}
+            className="text-(--color-text-tertiary) hover:text-(--color-text-primary) text-xs"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {/* Phased Rescue session failure — deep-links to the diagnostics panel
           so the user can see *which* phase hung. */}
       {rescueState?.phase === "failed" && (
