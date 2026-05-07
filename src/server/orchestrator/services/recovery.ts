@@ -10,10 +10,11 @@
  * report that the previous state was tidy.
  */
 
-import type { AgentId } from "../../shared/types.js";
+import type { AgentId, RescuePhase } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
+import type { ServiceManager } from "../service-manager.js";
 import { ServiceError } from "./types.js";
 
 /** Short timeout for recovery-time worker calls — never block on a wedged worker. */
@@ -27,9 +28,18 @@ const RECOVERY_WORKER_TIMEOUT_MS = 3000;
  */
 const RESTART_READY_TIMEOUT_MS = 8000;
 
+/** Per-phase max duration. On expiry we record the phase as failed and continue. */
+const PHASE_TIMEOUT_MS: Record<Exclude<RescuePhase, "ready" | "failed">, number> = {
+  stopping_stack: 10000,
+  destroying_container: 8000,
+  creating_container: 8000,
+  starting_stack: 0, // best-effort, no wait — happens lazily on next attach
+};
+
 /** Subset of ContainerSessionRunner methods that recovery uses. */
 interface RecoveryRunner extends SessionRunnerInterface {
   killAgentOnWorker?: (opts?: { timeoutMs?: number }) => Promise<void>;
+  serviceManager?: ServiceManager | null;
 }
 
 export interface RecoveryDeps {
@@ -150,16 +160,36 @@ export async function restartContainer(
   if (!deps.containerManager) {
     throw new ServiceError(503, "Container manager not available");
   }
+  if (!session.workspaceDir) {
+    throw new ServiceError(500, "Session has no workspaceDir — cannot create container");
+  }
 
   const runner = deps.runnerRegistry.get(sessionId) as RecoveryRunner | undefined;
 
-  // Notify viewers BEFORE we tear down the runner — once disposed, the
-  // emitMessage channel is gone.
-  if (runner) {
-    runner.emitMessage({
+  // Phased progress goes via emitMessage so reconnecting viewers see it
+  // through the turn-event log. Once we dispose the runner the channel is
+  // gone, so we capture a small helper that no-ops post-disposal — phases
+  // after destroy_container will not have a viewer until the new runner
+  // attaches.
+  const emit = (phase: RescuePhase, extra: { reason?: string; message?: string } = {}) => {
+    runner?.emitMessage({
       type: "container_restarting",
       sessionId,
+      phase,
+      ...extra,
     });
+  };
+
+  // ---- Phase: stopping_stack ----
+  emit("stopping_stack");
+  if (runner?.serviceManager) {
+    try {
+      await withTimeout(runner.serviceManager.stop(), PHASE_TIMEOUT_MS.stopping_stack);
+    } catch (err) {
+      // Best-effort: log and continue. The orphan reaper after destroy is
+      // the safety net.
+      console.warn(`[rescue] stop compose stack failed for ${sessionId}:`, err);
+    }
   }
 
   // Best-effort: tell the worker to kill the agent. Don't block restart on
@@ -178,12 +208,16 @@ export async function restartContainer(
   // disconnects); for an explicit user-initiated recovery we override.
   deps.runnerRegistry.dispose(sessionId, { force: true });
 
-  // Destroy the existing container if any. destroy() also clears any prior
-  // create-error so the next attempt starts clean. Safe when no container.
+  // ---- Phase: destroying_container ----
+  emit("destroying_container");
   const existing = deps.containerManager.get(sessionId);
   const noContainer = !existing;
   if (existing) {
-    await deps.containerManager.destroy(sessionId);
+    try {
+      await withTimeout(deps.containerManager.destroy(sessionId), PHASE_TIMEOUT_MS.destroying_container);
+    } catch (err) {
+      console.warn(`[rescue] destroy container failed for ${sessionId}:`, err);
+    }
   } else {
     // No container, but a stale create-error from a previous failed attempt
     // would persist otherwise — wipe it so we observe only THIS attempt's
@@ -191,19 +225,18 @@ export async function restartContainer(
     deps.containerManager.clearCreateError(sessionId);
   }
 
-  // Trigger the runner factory to create a fresh container. Previously the
-  // design relied on the client's WS reconnect to call `activateSession` →
-  // `getOrCreate` → factory. If the WS reconnect raced or the factory's
-  // fire-and-forget creation block silently failed, the user was stuck on
-  // "Restarting…" indefinitely (the symptom of bug 112-followup).
-  //
-  // By kicking off `getOrCreate` here we guarantee creation starts as part
-  // of this HTTP call. We then wait briefly for the new container to either
-  // reach "running" or surface a creation error, so the client gets an
-  // informative response without having to wait for the next 10s poll.
-  if (!session.workspaceDir) {
-    throw new ServiceError(500, "Session has no workspaceDir — cannot create container");
+  // Defense-in-depth: even when destroy succeeds, a previously running
+  // compose stack may have spawned children that aren't tracked by the new
+  // runner. Reap them by label so the new ServiceManager.start() doesn't
+  // collide with survivors.
+  try {
+    await deps.containerManager.reapOrphans(sessionId);
+  } catch (err) {
+    console.warn(`[rescue] reap orphans failed for ${sessionId}:`, err);
   }
+
+  // ---- Phase: creating_container ----
+  emit("creating_container");
   deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, deps.defaultAgentId);
 
   const deadline = Date.now() + RESTART_READY_TIMEOUT_MS;
@@ -243,5 +276,51 @@ export async function restartContainer(
     }
   }
 
+  // ---- Phase: starting_stack / ready / failed ----
+  // The new ServiceManager will start lazily on next viewer attach (driven
+  // by the runner factory). We only emit `starting_stack` if we're in a
+  // healthy enough state to expect it; otherwise jump straight to failed.
+  // Re-resolve the runner since the registry created a fresh one above —
+  // emitMessage on the new runner reaches reconnecting viewers via the
+  // turn-event buffer.
+  const newRunner = deps.runnerRegistry.get(sessionId) as RecoveryRunner | undefined;
+  const finalEmit = (phase: RescuePhase, extra: { reason?: string; message?: string } = {}) => {
+    newRunner?.emitMessage({
+      type: "container_restarting",
+      sessionId,
+      phase,
+      ...extra,
+    });
+  };
+  if (newContainerState === "running") {
+    finalEmit("starting_stack");
+    finalEmit("ready");
+  } else if (newContainerState === "starting" || newContainerState === "pending") {
+    // Still in progress — the client keeps polling and we let the next
+    // reconcile finalize. Don't emit `ready` prematurely.
+    finalEmit("starting_stack");
+  } else {
+    finalEmit("failed", {
+      reason: "create_failed",
+      ...(error !== null ? { message: error } : {}),
+    });
+  }
+
   return { ok: true, noContainer, newContainerState, error };
+}
+
+/** Race a promise against a timeout; resolves with the promise's value or throws on timeout. */
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  if (ms <= 0) return await p;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race<T | undefined>([
+      p,
+      new Promise<undefined>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

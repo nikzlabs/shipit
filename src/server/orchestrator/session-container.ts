@@ -21,6 +21,7 @@ import {
   createContainer,
   destroyContainer,
   buildContainerConfig,
+  cleanupSessionDockerResources,
   type LifecycleDeps,
 } from "./container-lifecycle.js";
 import {
@@ -401,6 +402,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   async destroyAll(): Promise<void> {
     const sessionIds = [...this.containers.keys()];
     await Promise.allSettled(sessionIds.map((id) => this.destroy(id)));
+  }
+
+  /**
+   * Forcibly reap any compose-child resources still labeled
+   * `shipit-parent-session={sid}` even when no session container record
+   * exists. Used by Rescue session as defense-in-depth after `destroy()`,
+   * so a fresh runner never inherits orphans from a prior incarnation.
+   */
+  async reapOrphans(sessionId: string): Promise<void> {
+    await cleanupSessionDockerResources(this.docker, sessionId);
   }
 
   /** Get the container info for a session. */
