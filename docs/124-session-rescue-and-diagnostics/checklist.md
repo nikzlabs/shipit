@@ -3,11 +3,9 @@
 ## Phase 1 — Surface the silent signals
 
 ### 1.1 `stack_error` event subscriber
-- [ ] Subscribe to `stack_error` in `ContainerSessionRunner.setServiceManager()` (`container-session-runner.ts:383-386`).
-- [ ] Route to `runner.emitMessage({ type: "stack_error", error })`.
-- [ ] Route to `ctx.broadcastLog({ level: "error", source: "compose", … })`.
-- [ ] Add `stack_error` to `ws-server-messages.ts`.
-- [ ] Client: render `stack_error` in Logs panel + ServicesPanel banner.
+- [x] Compose stack startup failure surfaced as `compose_error` WS message (existing, app-lifecycle.ts catch on `mgr.start()`).
+- [x] Per-session log ring entry added on stack startup failure so the Logs panel and the future diagnostics endpoint see the failure.
+- [ ] (Deferred) Distinct `stack_error` WS type if non-startup `stack_error` emit sites are added later. The current `compose_error` channel covers all paths that throw.
 
 ### 1.2 Compose-child OOM detection
 - [ ] Widen Docker event label filter in `container-health.ts:84-89` to include `shipit-parent-session`.
