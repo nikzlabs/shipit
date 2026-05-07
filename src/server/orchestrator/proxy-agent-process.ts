@@ -5,6 +5,29 @@
 
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, PermissionMode } from "../shared/types.js";
+import { WorkerTimeoutError } from "./worker-http.js";
+
+/**
+ * Translate a worker HTTP failure into a user-facing chat error message.
+ * `WorkerTimeoutError` ("Worker request timed out after 10000ms: /agent/start")
+ * carries no actionable hint — wrap it in copy that points the user at the
+ * recovery affordances (Rescue session, Kill agent) instead.
+ *
+ * See docs/124-session-rescue-and-diagnostics §1.3.
+ */
+function describeWorkerError(err: unknown, op: "start" | "stdin" | "interrupt"): Error {
+  if (err instanceof WorkerTimeoutError) {
+    const hint = op === "start"
+      ? "The agent container is not responding. Try Rescue session if this persists."
+      : op === "interrupt"
+        ? "Interrupt request timed out. Try Kill agent."
+        : "Failed to send input — the agent container is not responding.";
+    const wrapped = new Error(hint);
+    wrapped.cause = err;
+    return wrapped;
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
 
 /**
  * Interface for the subset of ContainerSessionRunner methods that
@@ -52,21 +75,21 @@ export class ProxyAgentProcess extends EventEmitter<{
   /** Fire-and-forget POST to worker /agent/start. Errors emitted as events. */
   run(params: AgentRunParams): void {
     this.runner._startAgentViaProxy(this.agentId, params).catch((err: unknown) => {
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      this.emit("error", describeWorkerError(err, "start"));
     });
   }
 
   /** Fire-and-forget POST to worker /agent/stdin. */
   writeStdin(data: string): void {
     this.runner.writeAgentStdin(data).catch((err: unknown) => {
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      this.emit("error", describeWorkerError(err, "stdin"));
     });
   }
 
   /** Fire-and-forget POST to worker /agent/interrupt. */
   interrupt(): void {
     this.runner.interruptAgentOnWorker().catch((err: unknown) => {
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      this.emit("error", describeWorkerError(err, "interrupt"));
     });
   }
 
