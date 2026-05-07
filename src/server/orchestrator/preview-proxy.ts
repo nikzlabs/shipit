@@ -212,6 +212,60 @@ function proxyWebSocket(
 // Registration
 // ---------------------------------------------------------------------------
 
+/**
+ * Throttle window for repeated preview-proxy errors per `(sessionId,port)`
+ * — a flapping dev server emits a connect-error per HTTP/HMR request and
+ * we don't want to spam the Logs panel.
+ */
+const PREVIEW_ERROR_THROTTLE_MS = 5_000;
+
+/**
+ * Build a `PreviewErrorReporter` that routes preview-proxy connection
+ * failures to (a) a `preview_error` WS message for the in-frame banner
+ * and (b) a per-session `log_entry` with `source: "preview"`. Throttles
+ * per `(sessionId,port)` to avoid log spam.
+ *
+ * Exported so the integration test in
+ * `integration_tests/preview-error.test.ts` can verify the wiring without
+ * spinning up the whole proxy.
+ *
+ * See docs/124-session-rescue-and-diagnostics §1.5.
+ */
+export function createPreviewErrorReporter(
+  runnerRegistry: SessionRunnerRegistry | undefined,
+  opts: { now?: () => number; throttleMs?: number } = {},
+): PreviewErrorReporter {
+  const lastErrorAt = new Map<string, number>();
+  const now = opts.now ?? (() => Date.now());
+  const throttleMs = opts.throttleMs ?? PREVIEW_ERROR_THROTTLE_MS;
+  return (sessionId, port, message, upgrade) => {
+    if (!runnerRegistry) return;
+    const runner = runnerRegistry.get(sessionId);
+    if (!runner) return;
+    const key = `${sessionId}:${port}`;
+    const t = now();
+    const last = lastErrorAt.get(key) ?? 0;
+    if (t - last < throttleMs) return;
+    lastErrorAt.set(key, t);
+    const human = upgrade
+      ? `Preview HMR unreachable on port ${port} (${message})`
+      : `Preview unreachable on port ${port} (${message})`;
+    runner.emitMessage({
+      type: "preview_error",
+      sessionId,
+      port,
+      message,
+      upgrade,
+    });
+    runner.emitMessage({
+      type: "log_entry",
+      source: "preview",
+      text: human,
+      timestamp: new Date(t).toISOString(),
+    });
+  };
+}
+
 export function registerPreviewProxy(
   app: FastifyInstance,
   opts: {
@@ -230,41 +284,7 @@ export function registerPreviewProxy(
 ): void {
   const { containerManager, serviceManagers, runnerRegistry } = opts;
 
-  /**
-   * Throttle per-session preview errors so a flapping dev server doesn't
-   * flood the Logs panel. We emit the first error immediately and then
-   * suppress subsequent errors for the same (sessionId,port) pair within a
-   * short window.
-   */
-  const lastErrorAt = new Map<string, number>();
-  const ERROR_THROTTLE_MS = 5_000;
-
-  const reportError: PreviewErrorReporter = (sessionId, port, message, upgrade) => {
-    if (!runnerRegistry) return;
-    const runner = runnerRegistry.get(sessionId);
-    if (!runner) return;
-    const key = `${sessionId}:${port}`;
-    const now = Date.now();
-    const last = lastErrorAt.get(key) ?? 0;
-    if (now - last < ERROR_THROTTLE_MS) return;
-    lastErrorAt.set(key, now);
-    const human = upgrade
-      ? `Preview HMR unreachable on port ${port} (${message})`
-      : `Preview unreachable on port ${port} (${message})`;
-    runner.emitMessage({
-      type: "preview_error",
-      sessionId,
-      port,
-      message,
-      upgrade,
-    });
-    runner.emitMessage({
-      type: "log_entry",
-      source: "preview",
-      text: human,
-      timestamp: new Date().toISOString(),
-    });
-  };
+  const reportError = createPreviewErrorReporter(runnerRegistry);
 
   /**
    * Resolve the container IP for a session + port combination.
