@@ -421,6 +421,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     secretStore,
     reviewStore,
     serviceManagers,
+    getLogBuffer,
     agentFactory,
   });
 

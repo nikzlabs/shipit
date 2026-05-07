@@ -23,6 +23,7 @@ import type { CodexAuthManager } from "./codex-auth.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { ServiceManager } from "./service-manager.js";
+import type { WsLogEntry } from "../shared/types.js";
 
 import { ServiceError } from "./services/index.js";
 
@@ -83,6 +84,13 @@ export interface ApiDeps {
   reviewStore?: FileReviewStore;
   /** Service managers — per-session compose lifecycle (keyed by sessionId). */
   serviceManagers?: Map<string, ServiceManager>;
+  /**
+   * Read the per-session orchestrator log ring. Used by the diagnostics
+   * endpoint to include the most recent log entries in the bug-report
+   * payload. Optional — test setups may omit it (the endpoint then
+   * returns an empty `recentLogs` array).
+   */
+  getLogBuffer?: (sessionId: string) => WsLogEntry[];
   /**
    * Optional fallback agent factory. Container runners create their own agents
    * via `runner.createAgent()`; this is only used when the runner has no
