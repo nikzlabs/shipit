@@ -894,7 +894,15 @@ export class ServiceManager extends EventEmitter {
           // user-initiated and not retried automatically.
           this.scheduleRetryWhileInstalling(name, exitCode);
         } else {
-          this.updateServiceStatus(name, "error", `Exited with code ${exitCode}`);
+          // 137 = SIGKILL, the most common cause of which inside a memory-limited
+          // container is the OOM killer. The authoritative signal comes from the
+          // Docker event subscriber in container-health.ts (which checks
+          // State.OOMKilled), but if that event was missed we still want to give
+          // the user a strong hint here rather than the bare exit code.
+          const message = exitCode === 137
+            ? "Exited with code 137 (likely OOMKilled)"
+            : `Exited with code ${exitCode}`;
+          this.updateServiceStatus(name, "error", message);
         }
       } else if (state === "restarting") {
         if (prev !== "starting") this.updateServiceStatus(name, "starting");
