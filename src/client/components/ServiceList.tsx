@@ -81,6 +81,14 @@ export function ServiceList({ services, onStart, onStop, onSelectPreview, onSele
           <span className="ml-auto text-xs">
             <StatusLabel status={svc.status} />
           </span>
+          {svc.error && /oom/i.test(svc.error) && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded bg-(--color-error) text-white font-semibold shrink-0"
+              title="Container was killed for running out of memory. Increase the service's memory limit in docker-compose.yml or reduce its memory usage."
+            >
+              OOM
+            </span>
+          )}
           {svc.error && (
             <span className="text-xs text-orange-400 truncate max-w-32" title={svc.error}>
               {svc.error}
