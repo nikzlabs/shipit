@@ -387,6 +387,27 @@ export interface WsComposeError {
   message: string;
 }
 
+/**
+ * Server → Client: a stack-level emergency from `ServiceManager`.
+ *
+ * Distinct from `compose_error` (user-facing PreviewFrame banner emitted
+ * from the startup catch path) — this carries any error the manager
+ * raises via its `stack_error` EventEmitter signal. Today it fires only
+ * on startup, so the two channels overlap; the separate type means
+ * future non-startup emit sites (e.g. a mid-session `compose down`
+ * failure) reach the client without re-wiring.
+ *
+ * The diagnostics panel reads recent `stack_error` log-ring entries so
+ * a viewer that connects after the fact still sees the failure.
+ *
+ * See docs/124-session-rescue-and-diagnostics §1.1.
+ */
+export interface WsStackError {
+  type: "stack_error";
+  sessionId: string;
+  message: string;
+}
+
 /** Server → Client: No compose file configured in shipit.yaml. */
 export interface WsComposeNotConfigured {
   type: "compose_not_configured";
@@ -447,6 +468,15 @@ export interface WsSessionStatus {
   reason?: "idle-disposed" | "memory-pressure";
   /** When `reason` is set, how long the session was idle before disposal (ms). */
   idleMs?: number;
+  /**
+   * Most recent failure from a best-effort `agent/kill` call (Interrupt or
+   * Rescue session). Non-fatal — the kill is best-effort by design — but
+   * useful when the worker is wedged and the user wonders why the button
+   * "did nothing." Renders as a non-blocking toast on the client.
+   *
+   * See docs/124-session-rescue-and-diagnostics §1.4.
+   */
+  lastInterruptError?: string;
 }
 
 /**
@@ -634,6 +664,7 @@ export type WsServerMessage =
   | WsServiceOom
   | WsPreviewError
   | WsComposeError
+  | WsStackError
   | WsComposeNotConfigured
   | WsSecretsStatus
   | WsInstallStatus
