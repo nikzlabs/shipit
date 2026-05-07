@@ -29,6 +29,8 @@ import { StatusDot } from "./ui/status-dot.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { SessionDiagnosticsPanel } from "./SessionDiagnosticsPanel.js";
+import { useSessionStore } from "../stores/session-store.js";
+import type { RescuePhase } from "../../server/shared/types.js";
 
 type ContainerState = "running" | "starting" | "stopping" | "stopped" | "missing" | "unknown";
 
@@ -87,8 +89,22 @@ const STALE_EVENT_THRESHOLD_MS = 30_000;
 
 type Severity = "ok" | "warn" | "error" | "unknown";
 
-function summarize(health: ContainerHealth | null, isRestarting: boolean): { severity: Severity; label: string } {
-  if (isRestarting) return { severity: "warn", label: "Restarting…" };
+/** Human-readable label per Rescue session phase. */
+const PHASE_LABEL: Record<RescuePhase, string> = {
+  stopping_stack: "Stopping services…",
+  destroying_container: "Destroying container…",
+  creating_container: "Recreating container…",
+  starting_stack: "Starting services…",
+  ready: "Rescue complete",
+  failed: "Rescue failed",
+};
+
+function summarize(
+  health: ContainerHealth | null,
+  isRestarting: boolean,
+  phaseLabel: string | null,
+): { severity: Severity; label: string } {
+  if (isRestarting) return { severity: "warn", label: phaseLabel ?? "Rescuing…" };
   if (!health) return { severity: "unknown", label: "Checking…" };
 
   // Container is gone or not running → error.
@@ -147,6 +163,9 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
   const [actionError, setActionError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const rescueState = useSessionStore((s) => s.rescueState);
+  const setRescueState = useSessionStore((s) => s.setRescueState);
+  const phaseLabel = rescueState ? PHASE_LABEL[rescueState.phase] : null;
   /**
    * Wall-clock timestamp when the most recent restart was issued. Used to
    * decide whether a server-side `lastCreateError` belongs to THIS restart
@@ -201,8 +220,9 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     setActionError(null);
     setIsRestarting(false);
     setIsKilling(false);
+    setRescueState(null);
     restartStartedAtRef.current = null;
-  }, [sessionId]);
+  }, [sessionId, setRescueState]);
 
   // Poll on mount; cadence depends on whether a restart is in flight. While
   // restarting, poll fast so the new container's transition to "running"
@@ -228,7 +248,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     const id = setTimeout(() => {
       setIsRestarting(false);
       restartStartedAtRef.current = null;
-      setActionError("Restart timed out — the new container did not become ready. See diagnostics below.");
+      setActionError("Rescue timed out — the new container did not become ready. See diagnostics below.");
     }, RESTART_OVERLAY_TIMEOUT_MS);
     return () => clearTimeout(id);
   }, [isRestarting]);
@@ -262,6 +282,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     if (!sessionId) return;
     setIsRestarting(true);
     setActionError(null);
+    setRescueState({ phase: "stopping_stack" });
     restartStartedAtRef.current = Date.now();
     try {
       const result = await api.post<RestartContainerResult>(
@@ -276,17 +297,19 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
         setIsRestarting(false);
         restartStartedAtRef.current = null;
       } else if (result.newContainerState === "missing" && result.error) {
-        setActionError(`Container creation failed: ${result.error}`);
+        setActionError(`Rescue failed: ${result.error}`);
         setIsRestarting(false);
         restartStartedAtRef.current = null;
+        setRescueState({ phase: "failed", reason: "create_failed", message: result.error });
       }
       void poll();
     } catch (e) {
       setActionError(e instanceof ApiError ? e.message : String(e));
       setIsRestarting(false);
       restartStartedAtRef.current = null;
+      setRescueState({ phase: "failed", reason: "request_error" });
     }
-  }, [api, sessionId, onReconnectWs, poll]);
+  }, [api, sessionId, onReconnectWs, poll, setRescueState]);
 
   if (!sessionId) {
     return (
@@ -296,7 +319,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     );
   }
 
-  const summary = summarize(health, isRestarting);
+  const summary = summarize(health, isRestarting, phaseLabel);
   const canKillAgent = !!health?.workerReachable && health.agentRunning === true;
   // Surface a creation error from the server alongside any client-side
   // action error. The server-side error is the primary signal when the
@@ -383,15 +406,37 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
             size="sm"
             onClick={() => void onRestart()}
             disabled={isRestarting}
-            title="Stop and recreate this session's container. Use when the worker is unresponsive."
+            title="Stop the compose stack, destroy the agent container, then recreate everything from scratch. Use when the session is wedged."
           >
             {isRestarting
               ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
               : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
-            Restart container
+            Rescue session
           </Button>
         </div>
       </div>
+      {/* Phased Rescue session failure — deep-links to the diagnostics panel
+          so the user can see *which* phase hung. */}
+      {rescueState?.phase === "failed" && (
+        <div className="px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary) flex items-center gap-2">
+          <span className="text-(--color-error) font-medium">
+            Rescue failed{rescueState.reason ? ` (${rescueState.reason})` : ""}
+          </span>
+          {rescueState.message && (
+            <span className="text-(--color-text-secondary) font-mono truncate">{rescueState.message}</span>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setRescueState(null);
+              setDiagnosticsOpen(true);
+            }}
+            className="ml-auto text-(--color-text-primary) underline hover:text-(--color-text-secondary)"
+          >
+            Open diagnostics
+          </button>
+        </div>
+      )}
       {/* Server-side creation error always renders inline (no toggle) — it's
           the most actionable signal when the container is missing. */}
       {createError && (

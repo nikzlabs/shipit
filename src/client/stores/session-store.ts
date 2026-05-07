@@ -1,7 +1,20 @@
 import { create } from "zustand";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo, TurnUsage } from "../../server/shared/types.js";
+import type { SessionInfo, TurnUsage, RescuePhase } from "../../server/shared/types.js";
+
+/**
+ * Live state for an in-flight Rescue session ("Restart container") operation.
+ * Populated from `container_restarting` WS messages so the SessionHealthStrip
+ * can render a phased overlay. `null` outside of a rescue.
+ *
+ * See docs/124-session-rescue-and-diagnostics §3.2.
+ */
+export interface RescueState {
+  phase: RescuePhase;
+  reason?: string;
+  message?: string;
+}
 
 interface SessionState {
   sessionId: string | undefined;
@@ -20,6 +33,8 @@ interface SessionState {
   prefillText: string | undefined;
   /** True once session history has been loaded from the server (prevents rocket flash on session switch). */
   historyLoaded: boolean;
+  /** Live Rescue session phase, or null when no rescue is in flight. */
+  rescueState: RescueState | null;
   /**
    * Per-turn usage history keyed by session ID. Populated from
    * `turn_usage_update` WS messages live, and seeded on session attach from
@@ -40,6 +55,7 @@ interface SessionState {
   setIsLoading: (loading: boolean) => void;
   setActivity: (activity: StreamingActivity | undefined) => void;
   setHistoryLoaded: (loaded: boolean) => void;
+  setRescueState: (state: RescueState | null) => void;
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
@@ -89,6 +105,7 @@ const initialResettableState = {
   pendingWsMessage: undefined as Record<string, unknown> | undefined,
   prefillText: undefined as string | undefined,
   historyLoaded: false,
+  rescueState: null as RescueState | null,
 };
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
@@ -127,6 +144,8 @@ export const useSessionStore = create<SessionState>((set) => ({
   setActivity: (activity) => set({ activity }),
 
   setHistoryLoaded: (historyLoaded) => set({ historyLoaded }),
+
+  setRescueState: (rescueState) => set({ rescueState }),
 
   setSessions: (sessions) =>
     set((state) => ({

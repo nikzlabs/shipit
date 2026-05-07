@@ -531,6 +531,35 @@ function processMessage(
       return;
     }
 
+    if (data.type === "preview_error") {
+      preview.setPreviewProxyError({
+        port: data.port,
+        message: data.message,
+        ...(data.upgrade !== undefined ? { upgrade: data.upgrade } : {}),
+        at: Date.now(),
+      });
+    }
+
+    if (data.type === "container_restarting") {
+      // Phased Rescue session progress. Newer payloads include `phase`; older
+      // ones don't — treat the legacy form as "in flight, no detail".
+      if (data.phase === "ready") {
+        // Clear after a short delay so the success state is visible briefly.
+        session.setRescueState({ phase: "ready" });
+        setTimeout(() => {
+          if (useSessionStore.getState().rescueState?.phase === "ready") {
+            useSessionStore.getState().setRescueState(null);
+          }
+        }, 1500);
+      } else {
+        session.setRescueState({
+          phase: data.phase ?? "destroying_container",
+          ...(data.reason !== undefined ? { reason: data.reason } : {}),
+          ...(data.message !== undefined ? { message: data.message } : {}),
+        });
+      }
+    }
+
     if (data.type === "agent_interrupted") {
       session.setIsLoading(false);
       session.setActivity(undefined);
