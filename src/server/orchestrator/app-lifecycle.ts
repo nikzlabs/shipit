@@ -661,6 +661,35 @@ export function createRunnerRegistry(
 }
 
 /**
+ * Route a `stack_error` from a session's ServiceManager to the per-session
+ * Logs panel (via `broadcastLog`) and to attached viewers (via the runner's
+ * emitMessage). Exported so the integration test in
+ * `integration_tests/stack-error.test.ts` can verify the wiring without
+ * needing real Docker or a real compose config.
+ *
+ * See docs/124-session-rescue-and-diagnostics §1.1.
+ */
+export function handleStackError(
+  runner: SessionRunnerInterface,
+  err: Error,
+  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
+): void {
+  const text = `[compose] Stack error: ${err.message}`;
+  if (broadcastLog) broadcastLog(runner.sessionId, "server", text);
+  runner.emitMessage({
+    type: "log_entry",
+    source: "server",
+    text,
+    timestamp: new Date().toISOString(),
+  });
+  runner.emitMessage({
+    type: "stack_error",
+    sessionId: runner.sessionId,
+    message: err.message,
+  });
+}
+
+/**
  * Create and wire a ServiceManager for a runner's session if compose config
  * is detected. Fire-and-forget — compose stack start is async.
  */
@@ -813,14 +842,7 @@ function setupServiceManager(
   // reference to it here).
   // See docs/124-session-rescue-and-diagnostics §1.1.
   mgr.on("stack_error", (err: Error) => {
-    const text = `[compose] Stack error: ${err.message}`;
-    if (broadcastLog) broadcastLog(runner.sessionId, "server", text);
-    runner.emitMessage({
-      type: "log_entry",
-      source: "server",
-      text,
-      timestamp: new Date().toISOString(),
-    });
+    handleStackError(runner, err, broadcastLog);
   });
 
   // Open the install-running gate while agent.install is in flight: a service

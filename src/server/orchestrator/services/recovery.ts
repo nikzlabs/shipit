@@ -194,12 +194,21 @@ export async function restartContainer(
 
   // Best-effort: tell the worker to kill the agent. Don't block restart on
   // worker reachability — if the worker is dead, we still want to destroy
-  // the container.
+  // the container. Surface the failure via session_status.lastInterruptError
+  // so the client can render a non-blocking toast (the kill is best-effort
+  // by design, but the user deserves *some* feedback).
   if (runner?.killAgentOnWorker) {
     try {
       await runner.killAgentOnWorker({ timeoutMs: RECOVERY_WORKER_TIMEOUT_MS });
-    } catch {
-      /* worker may be dead — that's why we're restarting */
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      runner.emitMessage({
+        type: "session_status",
+        sessionId,
+        running: runner.running,
+        queueLength: runner.queueLength,
+        lastInterruptError: `Could not kill the wedged agent before destroying the container: ${msg}`,
+      });
     }
   }
 
