@@ -22,11 +22,13 @@ import {
   CircleNotchIcon,
   CaretDownIcon,
   CaretUpIcon,
+  StethoscopeIcon,
 } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
 import { StatusDot } from "./ui/status-dot.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import { SessionDiagnosticsPanel } from "./SessionDiagnosticsPanel.js";
 
 type ContainerState = "running" | "starting" | "stopping" | "stopped" | "missing" | "unknown";
 
@@ -144,6 +146,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
   const [isKilling, setIsKilling] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   /**
    * Wall-clock timestamp when the most recent restart was issued. Used to
    * decide whether a server-side `lastCreateError` belongs to THIS restart
@@ -357,6 +360,15 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           <Button
             variant="ghost"
             size="sm"
+            onClick={() => setDiagnosticsOpen(true)}
+            title="Open the full diagnostics panel — services, runner, recent logs. Use this for bug reports."
+          >
+            <StethoscopeIcon size={ICON_SIZE.XS} />
+            Diagnostics
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => void onKill()}
             disabled={isKilling || isRestarting || !canKillAgent}
             title={canKillAgent ? "Force-kill the agent process (SIGKILL). Use when interrupt didn't take." : "No agent running"}
@@ -397,6 +409,11 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           </div>
         </div>
       )}
+      <SessionDiagnosticsPanel
+        sessionId={sessionId}
+        open={diagnosticsOpen}
+        onOpenChange={setDiagnosticsOpen}
+      />
       {showDetails && (
         <div className="px-3 py-2 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary) font-mono text-[11px] leading-relaxed">
           <DetailRow label="session" value={sessionId} />
