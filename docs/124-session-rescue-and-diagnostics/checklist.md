@@ -17,10 +17,10 @@
 - [ ] Client: surface OOM badge on ServicesPanel service row.
 
 ### 1.3 Default `workerPost`/`workerGet` timeout
-- [ ] Set default `timeoutMs: 10_000` in `worker-http.ts:21-74`.
-- [ ] Define `WorkerTimeoutError` and throw on timeout.
-- [ ] Audit call sites that need to opt out (streaming endpoints, long agent operations) and pass an explicit override.
-- [ ] Update agent control handlers (`/agent/start`, `/agent/stdin`, `/agent/interrupt`) to surface `WorkerTimeoutError` as a chat-visible error.
+- [x] `DEFAULT_WORKER_TIMEOUT_MS = 10_000` in `worker-http.ts`, with `timeoutMs: 0` opt-out.
+- [x] `WorkerTimeoutError` defined with `path` and `timeoutMs`; thrown on timeout.
+- [x] Audited all call sites: every endpoint behind `workerPost`/`workerGet`/`workerPut` returns immediately (acks; long work streams via SSE), so the 10s default is correct everywhere. No opt-outs needed.
+- [x] `ProxyAgentProcess.run/writeStdin/interrupt` translate `WorkerTimeoutError` into action-oriented chat errors (`"agent container is not responding. Try Rescue session…"` etc.) instead of the raw `Worker request timed out after 10000ms: /agent/start` message.
 
 ### 1.4 Stop swallowing `ProxyAgentProcess.kill()` errors
 - [x] Replace `.catch(() => {})` in `proxy-agent-process.ts` with `log` event emission ("Failed to kill agent on worker: …") so failures land in the Logs panel.
