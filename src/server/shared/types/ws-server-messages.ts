@@ -242,16 +242,38 @@ export interface WsAgentInterrupted {
 }
 
 /**
- * Server → Client: the session's container is being restarted.
+ * Server → Client: progress update for a Rescue session ("Restart container")
+ * operation.
  *
- * Emitted at the start of `POST /api/sessions/:id/container/restart`
- * before the runner is disposed. The client shows a "Restarting…"
- * overlay until its WebSocket reconnects, at which point the runner
- * factory creates a fresh container.
+ * Emitted as the operation moves through phases inside
+ * `POST /api/sessions/:id/container/restart`. The client renders a phased
+ * overlay so the user can see *which* step is in flight and, when something
+ * goes wrong, *where* the operation failed (rather than an opaque spinner
+ * timing out).
+ *
+ * See docs/124-session-rescue-and-diagnostics §3.2.
  */
+export type RescuePhase =
+  | "stopping_stack"
+  | "destroying_container"
+  | "creating_container"
+  | "starting_stack"
+  | "ready"
+  | "failed";
+
 export interface WsContainerRestarting {
   type: "container_restarting";
   sessionId: string;
+  /**
+   * Current phase. Older clients ignore this; newer ones render a
+   * step-by-step overlay. Absent on a final `ready`/`failed` re-broadcast
+   * is treated as the legacy single-event payload.
+   */
+  phase?: RescuePhase;
+  /** When `phase === "failed"`, the underlying reason (e.g. "destroy_timeout"). */
+  reason?: string;
+  /** Human-readable detail to render under the phase label. */
+  message?: string;
 }
 
 /** Server → Client: full reset completed successfully. */
