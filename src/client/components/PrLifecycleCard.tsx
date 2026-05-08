@@ -117,7 +117,7 @@ function OverflowMenu({ children }: { children: React.ReactNode }) {
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
-          <div className="absolute right-0 top-full mt-1 z-50 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl py-1 min-w-48"
+          <div className="absolute right-0 bottom-full mb-1 z-50 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl py-1 min-w-48"
             onClick={(e) => e.stopPropagation()}>
             {children}
           </div>
