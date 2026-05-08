@@ -47,8 +47,15 @@ export class TestClient {
     this.sessionId = sessionId;
     ws.on("message", (data: WebSocket.Data) => {
       const msg = JSON.parse((data as Buffer).toString()) as WsServerMessage;
-      // Auto-skip informational messages that tests don't care about
+      // Auto-skip informational messages that tests don't care about.
+      //
+      // `clear_logs` is sent by the server at the start of every WS connect so
+      // reconnecting viewers replace their local terminal state with the
+      // server log buffer (otherwise the buffer replay duplicates entries on
+      // top of the entries the client already has). Tests don't need to see
+      // it — auto-skip so existing receive-order assertions still hold.
       if (msg.type === "compose_not_configured") return;
+      if (msg.type === "clear_logs") return;
       const waiter = this.waiters.shift();
       if (waiter) {
         waiter(msg);
