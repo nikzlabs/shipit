@@ -389,7 +389,7 @@ export async function archiveSession(
 }
 
 /** Maximum number of merged sessions to keep per repository before archiving old ones. */
-const MAX_MERGED_SESSIONS_PER_REPO = 5;
+const MAX_MERGED_SESSIONS_PER_REPO = 3;
 
 /**
  * Mark a session as merged and archive excess merged sessions beyond the
