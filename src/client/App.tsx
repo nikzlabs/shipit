@@ -45,6 +45,7 @@ import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import type { TurnDiffData } from "./components/DiffPanel.js";
 import type { TurnUsage } from "../server/shared/types.js";
+import { deriveEffectivePreviewStatus } from "./utils/preview-status.js";
 
 /** Stable empty fallback so the zustand selector never returns a fresh array. */
 const EMPTY_TURN_USAGE: TurnUsage[] = [];
@@ -656,7 +657,17 @@ export default function App() {
   }, []);
 
   // ── Computed values ──
-  const detectedPorts = previewStatus?.detectedPorts ?? [];
+  // Derive an effective preview status from the union of `preview_status` and
+  // `service_status`. The orchestrator emits both whenever a compose service
+  // changes state, but `preview_status` can lag `service_status` in some
+  // races (most visibly when dogfooding ShipIt-in-ShipIt with a manual `dev`
+  // service) — see `utils/preview-status.ts` for the full rationale.
+  const effectivePreviewStatus = deriveEffectivePreviewStatus(
+    previewStatus,
+    composeServices,
+    sessionId,
+  );
+  const detectedPorts = effectivePreviewStatus?.detectedPorts ?? [];
   const showNewSessionView = isNewSessionRoute && !urlSessionId;
   const showHomeScreen = !showNewSessionView && (!sessionId || (showTemplates && messages.length === 0 && !isLoading));
   // Empty-state rocket: no messages yet, not mid-turn. We gate on historyLoaded
@@ -690,7 +701,7 @@ export default function App() {
       <div className="flex-1 min-h-0 relative">
         {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active */}
         <div className={`absolute inset-0 ${rightTab === "preview" ? "" : "invisible pointer-events-none"}`}>
-          <PreviewFrame preview={previewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} onStartService={(name) => send({ type: "start_service", name })} onStopService={(name) => send({ type: "stop_service", name })} />
+          <PreviewFrame preview={effectivePreviewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} onStartService={(name) => send({ type: "start_service", name })} onStopService={(name) => send({ type: "stop_service", name })} />
         </div>
         {rightTab === "docs" ? (
           <DocsViewer files={docFiles} sessionStartedAt={currentSession?.createdAt} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
