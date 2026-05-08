@@ -768,6 +768,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // Send log buffer and git identity check.
       // Replay only THIS session's buffered entries so a newly-connected
       // viewer doesn't see logs that belong to other sessions.
+      //
+      // Send `clear_logs` first so reconnecting viewers replace their local
+      // terminal store with the server buffer (the source of truth) instead
+      // of appending the replay on top of the entries they already have.
+      // Without this, every WS reconnect (network blip, tab visibility flip,
+      // session re-attach) would duplicate the buffered log lines in the UI.
+      send({ type: "clear_logs" });
       const logBuffer = getLogBuffer(sessionId);
       for (const entry of logBuffer) { send(entry); }
       if (!getGitIdentity()) { send({ type: "git_identity_required" }); }
