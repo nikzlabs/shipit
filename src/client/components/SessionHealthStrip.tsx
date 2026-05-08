@@ -212,12 +212,29 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
       // Without (2) the user was stuck on the spinner forever whenever
       // creation failed (Docker error, image missing, etc.) — the symptom
       // that prompted the bug report.
+      //
+      // Also drive the phased Rescue session overlay from the poll loop:
+      // when the new container is up, transition to ready (and auto-clear);
+      // when a fresh create error landed, transition to failed. The WS
+      // reconnect path doesn't replay the new runner's turn-event buffer
+      // (see index.ts:551), so the strip's poll is the only reliable
+      // source of truth for "did the rescue actually finish?". See
+      // docs/124-session-rescue-and-diagnostics §3.4.
       if (data.containerState === "running" && data.workerReachable) {
         setIsRestarting(false);
         restartStartedAtRef.current = null;
         // The session is back — clear any "paused" banner from the previous
         // disposal so the user doesn't see a stale notice.
         if (useSessionStore.getState().pauseNotice) setPauseNotice(null);
+        const rs = useSessionStore.getState().rescueState;
+        if (rs && rs.phase !== "ready" && rs.phase !== "failed") {
+          setRescueState({ phase: "ready" });
+          setTimeout(() => {
+            if (useSessionStore.getState().rescueState?.phase === "ready") {
+              setRescueState(null);
+            }
+          }, 1500);
+        }
       } else if (
         data.lastCreateError &&
         data.lastCreateErrorAt !== null &&
@@ -226,11 +243,15 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
       ) {
         setIsRestarting(false);
         restartStartedAtRef.current = null;
+        const rs = useSessionStore.getState().rescueState;
+        if (rs && rs.phase !== "failed") {
+          setRescueState({ phase: "failed", reason: "create_failed", message: data.lastCreateError });
+        }
       }
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
     }
-  }, [api]);
+  }, [api, setRescueState, setPauseNotice]);
 
   // Reset all per-session UI state when the active session changes. Without
   // this, an "actionError" or "isRestarting" overlay from a previous session
