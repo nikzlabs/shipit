@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findMarkdownFiles, parseStatusFromFrontmatter } from "./markdown.js";
+import {
+  findMarkdownFiles,
+  parseChecklistProgress,
+  parseStatusFromFrontmatter,
+} from "./markdown.js";
 
 describe("parseStatusFromFrontmatter", () => {
   it("returns undefined when no frontmatter present", () => {
@@ -262,5 +266,119 @@ describe("findMarkdownFiles", () => {
       const docs = await findMarkdownFiles(tmpDir);
       expect(docs[0].priority).toBeUndefined();
     });
+  });
+
+  describe("checklist progress", () => {
+    it("attaches sibling checklist progress to plan.md", async () => {
+      fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-feature", "plan.md"),
+        "---\nstatus: in-progress\n---\n# Plan",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-feature", "checklist.md"),
+        "- [x] one\n- [x] two\n- [ ] three\n- [ ] four",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      const plan = docs.find((d) => d.path === "docs/001-feature/plan.md");
+      expect(plan?.checklist).toEqual({ total: 4, done: 2 });
+    });
+
+    it("counts checkboxes at any indentation level", async () => {
+      fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-feature", "plan.md"),
+        "---\nstatus: planned\n---",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-feature", "checklist.md"),
+        "## Phase 1\n- [x] top\n  - [ ] nested\n- [X] uppercase\n* [ ] asterisk",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      const plan = docs.find((d) => d.path === "docs/001-feature/plan.md");
+      expect(plan?.checklist).toEqual({ total: 4, done: 2 });
+    });
+
+    it("leaves plan.md without checklist when there's no sibling checklist", async () => {
+      fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-feature", "plan.md"),
+        "---\nstatus: in-progress\n---\n# Plan",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].checklist).toBeUndefined();
+    });
+
+    it("an orphan checklist (no plan sibling) keeps its own checklist field", async () => {
+      fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-feature", "checklist.md"),
+        "- [x] done\n- [ ] todo",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs).toHaveLength(1);
+      expect(docs[0].checklist).toEqual({ total: 2, done: 1 });
+    });
+
+    it("does not attach across directories", async () => {
+      fs.mkdirSync(path.join(tmpDir, "docs", "001-a"), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, "docs", "002-b"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-a", "plan.md"),
+        "---\nstatus: planned\n---",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "002-b", "checklist.md"),
+        "- [x] one\n- [ ] two",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      const plan = docs.find((d) => d.path === "docs/001-a/plan.md");
+      expect(plan?.checklist).toBeUndefined();
+    });
+
+    it("omits checklist on a checklist file with zero items", async () => {
+      fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-feature", "plan.md"),
+        "---\nstatus: in-progress\n---",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-feature", "checklist.md"),
+        "# Just headings\nNo checkboxes here.",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      for (const doc of docs) {
+        expect(doc.checklist).toBeUndefined();
+      }
+    });
+  });
+});
+
+describe("parseChecklistProgress", () => {
+  it("returns 0/0 when no checkboxes are present", () => {
+    expect(parseChecklistProgress("# Just text\nNo boxes.")).toEqual({ total: 0, done: 0 });
+  });
+
+  it("counts unchecked and checked items", () => {
+    const content = "- [ ] one\n- [x] two\n- [ ] three";
+    expect(parseChecklistProgress(content)).toEqual({ total: 3, done: 1 });
+  });
+
+  it("treats uppercase X as checked", () => {
+    expect(parseChecklistProgress("- [X] yes\n- [ ] no")).toEqual({ total: 2, done: 1 });
+  });
+
+  it("counts checkboxes at any indentation level", () => {
+    const content = "- [x] top\n  - [ ] nested\n    - [x] deeper";
+    expect(parseChecklistProgress(content)).toEqual({ total: 3, done: 2 });
+  });
+
+  it("supports asterisk and plus bullets", () => {
+    expect(parseChecklistProgress("* [x] a\n+ [ ] b")).toEqual({ total: 2, done: 1 });
+  });
+
+  it("ignores non-checkbox bullets", () => {
+    const content = "- regular bullet\n- [x] real one\n- [neither]";
+    expect(parseChecklistProgress(content)).toEqual({ total: 1, done: 1 });
   });
 });

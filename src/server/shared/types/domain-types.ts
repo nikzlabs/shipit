@@ -79,6 +79,15 @@ export interface DocEntry {
    * were modified during the current session at the top of the docs tab.
    */
   modifiedAt?: string;
+  /**
+   * Checkbox progress aggregated from `- [ ]` / `- [x]` items at any
+   * indentation level. For a tracked plan, this comes from its sibling
+   * `checklist.md` so the docs panel can render an at-a-glance progress
+   * badge next to the status badge. For a standalone checklist (no plan
+   * sibling), it reflects that file's own counts. Omitted when the doc
+   * has no associated checklist.
+   */
+  checklist?: { total: number; done: number };
 }
 
 // ---- Template types ----
