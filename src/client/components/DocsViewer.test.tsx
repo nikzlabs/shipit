@@ -208,6 +208,64 @@ describe("DocsViewer", () => {
       render(<DocsViewer {...props} />);
       expect(screen.getByText("docs/001-auth/")).toBeInTheDocument();
     });
+
+    it("renders a checklist progress badge when the plan has checklist data", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001-feature/plan.md",
+          title: "Feature",
+          status: "in-progress",
+          checklist: { total: 12, done: 7 },
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("7/12")).toBeInTheDocument();
+    });
+
+    it("does not render a checklist badge when checklist is missing", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001/plan.md",
+          title: "NoChecklist",
+          status: "in-progress",
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.queryByText(/^\d+\/\d+$/)).not.toBeInTheDocument();
+    });
+
+    it("does not render a checklist badge for empty checklists (0/0)", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001/plan.md",
+          title: "Empty",
+          status: "in-progress",
+          checklist: { total: 0, done: 0 },
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.queryByText("0/0")).not.toBeInTheDocument();
+    });
+
+    it("renders the checklist badge for done docs once expanded", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001/plan.md",
+          title: "Shipped",
+          status: "done",
+          checklist: { total: 12, done: 12 },
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      // The Done group is collapsed by default — the badge should not show yet.
+      expect(screen.queryByText("12/12")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /Done \(1\)/ }));
+      expect(screen.getByText("12/12")).toBeInTheDocument();
+    });
   });
 
   describe("done docs collapse", () => {

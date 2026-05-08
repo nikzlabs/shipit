@@ -84,6 +84,28 @@ function parseFrontmatterFields(
 const GENERIC_FILENAMES = new Set(["plan", "checklist", "readme", "index"]);
 
 /**
+ * Markdown checkbox items, at any indentation level, with `-`/`*`/`+` bullet
+ * markers. Captures the inside of the brackets so we can tell a checked
+ * (`x`/`X`) item apart from an unchecked one (` `).
+ */
+const CHECKBOX_RE = /^[ \t]*[-*+]\s+\[([ xX])\]\s/gm;
+
+/**
+ * Count `- [ ]` / `- [x]` items in a markdown document. Returns
+ * `{ total: 0, done: 0 }` when the document has no checkboxes — callers
+ * can use that to decide whether to suppress a `0/0` progress badge.
+ */
+export function parseChecklistProgress(content: string): { total: number; done: number } {
+  let total = 0;
+  let done = 0;
+  for (const m of content.matchAll(CHECKBOX_RE)) {
+    total++;
+    if (m[1].toLowerCase() === "x") done++;
+  }
+  return { total, done };
+}
+
+/**
  * Convert a kebab-case string (possibly with leading numbers) to title case.
  * Strips a leading `NNN-` numeric prefix if present.
  */
@@ -113,56 +135,121 @@ function titleFromPath(relativePath: string): string {
 }
 
 /**
- * Recursively find `.md` files in a directory, skipping `node_modules` and `.git`.
- *
- * Returns `DocEntry[]` sorted alphabetically by path. Each entry includes
- * an optional `status` parsed from YAML frontmatter.
+ * Read one `.md` file and produce its `DocEntry`. For most docs we sniff
+ * only the first 512 bytes (frontmatter); for `checklist.md` we read the
+ * whole file so we can count checkboxes for the progress badge.
  */
-export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEntry[]> {
+async function readMarkdownEntry(
+  fullPath: string,
+  relativePath: string,
+  basename: string,
+): Promise<DocEntry> {
+  let status: DocStatus | undefined;
+  let priority: DocPriority | undefined;
+  let title: string | undefined;
+  let modifiedAt: string | undefined;
+  let checklist: { total: number; done: number } | undefined;
+
+  const isChecklist = basename.toLowerCase() === "checklist.md";
+
+  try {
+    if (isChecklist) {
+      // Full read — checkboxes can appear anywhere in the file, so a
+      // 512-byte sniff would undercount on real-world checklists.
+      const content = await fs.readFile(fullPath, "utf-8");
+      const fields = parseFrontmatterFields(content);
+      status = fields.status;
+      priority = fields.priority;
+      title = fields.title;
+      const progress = parseChecklistProgress(content);
+      // Suppress empty checklists — they'd render as `0/0`, which is noise.
+      if (progress.total > 0) checklist = progress;
+      const stat = await fs.stat(fullPath);
+      modifiedAt = stat.mtime.toISOString();
+    } else {
+      const handle = await fs.open(fullPath, "r");
+      try {
+        const buf = Buffer.alloc(512);
+        const { bytesRead } = await handle.read(buf, 0, 512, 0);
+        const content = buf.toString("utf-8", 0, bytesRead);
+        const fields = parseFrontmatterFields(content);
+        status = fields.status;
+        priority = fields.priority;
+        title = fields.title;
+        // Capture mtime from the same handle to avoid a second syscall.
+        // Used by the client to surface docs touched in the current session.
+        const stat = await handle.stat();
+        modifiedAt = stat.mtime.toISOString();
+      } finally {
+        await handle.close();
+      }
+    }
+  } catch {
+    // Can't read file — skip frontmatter parsing
+  }
+
+  return {
+    path: relativePath,
+    status,
+    priority,
+    title: title ?? titleFromPath(relativePath),
+    modifiedAt,
+    checklist,
+  };
+}
+
+/**
+ * Recursive scan that collects every `.md` file under `dir` without sorting
+ * or post-processing. Kept private so the public entry point can attach
+ * sibling-derived data (checklist progress) before sorting.
+ */
+async function scanMarkdownFiles(dir: string, prefix: string): Promise<DocEntry[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const results: DocEntry[] = [];
 
   for (const entry of entries) {
     if (WORKSPACE_SKIP_DIRS.has(entry.name)) continue;
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const fullPath = path.join(dir, entry.name);
 
     if (entry.isDirectory()) {
-      results.push(...await findMarkdownFiles(path.join(dir, entry.name), relativePath));
+      results.push(...await scanMarkdownFiles(fullPath, relativePath));
     } else if (entry.name.endsWith(".md")) {
-      let status: DocStatus | undefined;
-      let priority: DocPriority | undefined;
-      let title: string | undefined;
-      let modifiedAt: string | undefined;
-
-      try {
-        const handle = await fs.open(path.join(dir, entry.name), "r");
-        try {
-          const buf = Buffer.alloc(512);
-          const { bytesRead } = await handle.read(buf, 0, 512, 0);
-          const content = buf.toString("utf-8", 0, bytesRead);
-          const fields = parseFrontmatterFields(content);
-          status = fields.status;
-          priority = fields.priority;
-          title = fields.title;
-          // Capture mtime from the same handle to avoid a second syscall.
-          // Used by the client to surface docs touched in the current session.
-          const stat = await handle.stat();
-          modifiedAt = stat.mtime.toISOString();
-        } finally {
-          await handle.close();
-        }
-      } catch {
-        // Can't read file — skip frontmatter parsing
-      }
-
-      results.push({
-        path: relativePath,
-        status,
-        priority,
-        title: title ?? titleFromPath(relativePath),
-        modifiedAt,
-      });
+      results.push(await readMarkdownEntry(fullPath, relativePath, entry.name));
     }
+  }
+
+  return results;
+}
+
+/**
+ * Recursively find `.md` files in a directory, skipping `node_modules` and `.git`.
+ *
+ * Returns `DocEntry[]` sorted alphabetically by path. Each entry includes
+ * an optional `status` parsed from YAML frontmatter, plus `checklist`
+ * progress aggregated from a sibling `checklist.md` (when present).
+ */
+export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEntry[]> {
+  const results = await scanMarkdownFiles(dir, prefix);
+
+  // Propagate checklist progress from `checklist.md` onto its sibling
+  // `plan.md`. The DocsViewer renders the tracked plan as the primary row
+  // and hides the standalone checklist (see `hasTrackedSibling`), so the
+  // badge has to live on the plan entry to be seen at all.
+  const progressByDir = new Map<string, { total: number; done: number }>();
+  for (const e of results) {
+    if (!e.checklist) continue;
+    const base = e.path.slice(e.path.lastIndexOf("/") + 1).toLowerCase();
+    if (base === "checklist.md") {
+      progressByDir.set(path.dirname(e.path), e.checklist);
+    }
+  }
+  for (const e of results) {
+    if (e.checklist) continue;
+    const base = e.path.slice(e.path.lastIndexOf("/") + 1).toLowerCase();
+    if (base !== "plan.md") continue;
+    const progress = progressByDir.get(path.dirname(e.path));
+    if (progress) e.checklist = progress;
   }
 
   return results.sort((a, b) => a.path.localeCompare(b.path));
