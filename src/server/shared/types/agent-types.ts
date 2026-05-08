@@ -24,6 +24,15 @@ export interface AgentCapabilities {
   toolNames: string[];
   /** Known model identifiers for this agent. */
   models: string[];
+  /**
+   * Whether the agent backend can run the chat-native AI review flow
+   * (docs/125-chat-native-ai-review). The feature requires both a subagent
+   * primitive and custom MCP tool registration; we collapse those two
+   * requirements into a single feature-shaped flag because the AND is the
+   * only thing we ever check. Claude Code: true. Codex: false. When a
+   * future adapter can satisfy both, flip this on.
+   */
+  supportsReview: boolean;
 }
 
 // ---- Normalized event schema ----

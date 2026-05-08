@@ -62,6 +62,10 @@ export class ProxyAgentProcess extends EventEmitter<{
     supportedPermissionModes: [] as PermissionMode[],
     toolNames: [] as string[],
     models: [] as string[],
+    // Conservative default — the proxy doesn't know its target's capabilities
+    // here; the orchestrator publishes the real flag via the agent registry,
+    // which is what the client uses to gate the AI review affordance.
+    supportsReview: false,
   };
 
   private runner: ProxyAgentRunner;

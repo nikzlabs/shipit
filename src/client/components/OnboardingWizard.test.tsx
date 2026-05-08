@@ -8,8 +8,8 @@ const defaultProps = () => ({
   onGitIdentitySubmit: vi.fn(),
   onGitHubTokenSubmit: vi.fn().mockResolvedValue(true),
   agents: [
-    { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"] },
-    { id: "codex", name: "Codex", installed: true, authConfigured: false, models: ["codex-mini"] },
+    { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"], supportsReview: true },
+    { id: "codex", name: "Codex", installed: true, authConfigured: false, models: ["codex-mini"], supportsReview: false },
   ],
   onClaudeApiKeySubmit: vi.fn().mockResolvedValue(true),
   onCodexApiKeySubmit: vi.fn().mockResolvedValue(true),
@@ -145,8 +145,8 @@ describe("OnboardingWizard", () => {
     it("Get Started is disabled when no agents are ready", async () => {
       renderStep2({
         agents: [
-          { id: "claude", name: "Claude Code", installed: true, authConfigured: false, models: [] },
-          { id: "codex", name: "Codex", installed: true, authConfigured: false, models: [] },
+          { id: "claude", name: "Claude Code", installed: true, authConfigured: false, models: [], supportsReview: true },
+          { id: "codex", name: "Codex", installed: true, authConfigured: false, models: [], supportsReview: false },
         ],
       });
       await waitFor(() => {

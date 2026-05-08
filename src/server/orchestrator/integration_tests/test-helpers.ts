@@ -360,6 +360,7 @@ export class FakeClaudeProcess extends EventEmitter {
     supportedPermissionModes: ["auto" as const, "plan" as const, "normal" as const],
     toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     models: ["claude-sonnet-4-20250514"],
+    supportsReview: true,
   };
 
   public runCalled = false;

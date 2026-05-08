@@ -13,6 +13,12 @@ export interface AgentInfo {
   installed: boolean;
   authConfigured: boolean;
   models: string[];
+  /**
+   * Whether the agent backend can run the chat-native AI review flow
+   * (docs/125-chat-native-ai-review). The client uses this to gate the
+   * "Ask agent to review" affordance in the file-preview modal.
+   */
+  supportsReview: boolean;
 }
 
 export interface GlobalSettings {
