@@ -55,6 +55,28 @@ function PriorityBadge({ priority }: { priority: DocPriority }) {
   );
 }
 
+/**
+ * Renders `done/total` from a sibling `checklist.md`. Uses the `success`
+ * variant once everything is checked so a fully-complete plan stands out
+ * even before the author flips `status: done` in frontmatter.
+ */
+function ChecklistProgressBadge({
+  progress,
+}: {
+  progress: { total: number; done: number };
+}) {
+  const complete = progress.total > 0 && progress.done === progress.total;
+  return (
+    <Badge
+      variant={complete ? "success" : "default"}
+      className="text-[11px] tabular-nums"
+      title={`${progress.done} of ${progress.total} checklist items complete`}
+    >
+      {progress.done}/{progress.total}
+    </Badge>
+  );
+}
+
 /** Show parent directory as secondary context, e.g. "docs/001-feature/" */
 function pathContext(docPath: string): string | null {
   const lastSlash = docPath.lastIndexOf("/");
@@ -227,6 +249,9 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                   </button>
                   <div className="flex items-center gap-2 shrink-0">
                     <Badge variant="info" className="text-[11px]">Modified</Badge>
+                    {doc.checklist && doc.checklist.total > 0 && (
+                      <ChecklistProgressBadge progress={doc.checklist} />
+                    )}
                     {doc.status === "planned" && doc.priority && (
                       <PriorityBadge priority={doc.priority} />
                     )}
@@ -292,6 +317,9 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                     )}
                   </button>
                   <div className="flex items-center gap-2 shrink-0">
+                    {doc.checklist && doc.checklist.total > 0 && (
+                      <ChecklistProgressBadge progress={doc.checklist} />
+                    )}
                     {doc.status === "planned" && doc.priority && (
                       <PriorityBadge priority={doc.priority} />
                     )}
@@ -334,6 +362,9 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                         )}
                       </button>
                       <div className="flex items-center gap-2 shrink-0">
+                        {doc.checklist && doc.checklist.total > 0 && (
+                          <ChecklistProgressBadge progress={doc.checklist} />
+                        )}
                         {doc.status && <StatusBadge status={doc.status} />}
                       </div>
                     </div>
