@@ -36,6 +36,15 @@ const PHASE_TIMEOUT_MS: Record<Exclude<RescuePhase, "ready" | "failed">, number>
   starting_stack: 0, // best-effort, no wait — happens lazily on next attach
 };
 
+/**
+ * Hard ceiling for the orphan reaper. Without a bound a hung Docker
+ * daemon (a documented production failure mode) wedges the rescue
+ * indefinitely — which manifests as the client overlay stuck on the
+ * first phase. We log and continue so the user always gets a fresh
+ * runner attempt.
+ */
+const REAP_ORPHANS_TIMEOUT_MS = 10000;
+
 /** Subset of ContainerSessionRunner methods that recovery uses. */
 interface RecoveryRunner extends SessionRunnerInterface {
   killAgentOnWorker?: (opts?: { timeoutMs?: number }) => Promise<void>;
@@ -237,11 +246,12 @@ export async function restartContainer(
   // Defense-in-depth: even when destroy succeeds, a previously running
   // compose stack may have spawned children that aren't tracked by the new
   // runner. Reap them by label so the new ServiceManager.start() doesn't
-  // collide with survivors.
+  // collide with survivors. Hard-bounded — a hung Docker daemon (a
+  // documented production failure mode) must NOT wedge the rescue here.
   try {
-    await deps.containerManager.reapOrphans(sessionId);
+    await withTimeout(deps.containerManager.reapOrphans(sessionId), REAP_ORPHANS_TIMEOUT_MS);
   } catch (err) {
-    console.warn(`[rescue] reap orphans failed for ${sessionId}:`, err);
+    console.warn(`[rescue] reap orphans failed/timed out for ${sessionId}:`, err);
   }
 
   // ---- Phase: creating_container ----
