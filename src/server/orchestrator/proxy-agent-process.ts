@@ -9,9 +9,12 @@ import { WorkerTimeoutError } from "./worker-http.js";
 
 /**
  * Translate a worker HTTP failure into a user-facing chat error message.
- * `WorkerTimeoutError` ("Worker request timed out after 10000ms: /agent/start")
+ * `WorkerTimeoutError` ("Worker request timed out after 10000ms: /agent/stdin")
  * carries no actionable hint — wrap it in copy that points the user at the
- * recovery affordances (Rescue session, Kill agent) instead.
+ * recovery affordances (Rescue session, Kill agent) instead. Note that
+ * `/agent/start` itself is unbounded (see `_startAgentViaProxy`) — SSE owns
+ * worker-liveness signalling — so the "start" branch below is reached only
+ * for non-timeout transport errors.
  *
  * See docs/124-session-rescue-and-diagnostics §1.3.
  */
