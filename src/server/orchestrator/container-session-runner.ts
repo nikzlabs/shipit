@@ -583,10 +583,23 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /**
    * Called by ProxyAgentProcess.run(). Waits for worker readiness, POSTs
    * /agent/start, and ensures the SSE stream is connected for events.
+   *
+   * The HTTP call is deliberately unbounded (`timeoutMs: 0`). The worker
+   * accepts /agent/start synchronously, spawns the CLI, and returns
+   * `{ started: true }` — but in practice the agent has already started
+   * streaming events over SSE by the time the ack arrives. A slow ack
+   * (busy worker event loop, head-of-line blocking on the keep-alive
+   * connection, etc.) is NOT a failure mode worth surfacing as
+   * "container unreachable" to the user, because the agent is already
+   * running and the in-progress chat-history clear that the error path
+   * would trigger destroys the visible turn. Worker liveness is
+   * monitored separately via the SSE idle timer; if the worker is
+   * genuinely dead, the SSE stream fails and the Rescue-session UI
+   * surfaces it. (Refines doc 124 §1.3.)
    */
   async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
     await this._workerReady;
-    await workerPost(this.workerUrl, "/agent/start", { agentId, params });
+    await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
     if (!this.sseConnection) {
       await this.connectEventStream();
     }
@@ -601,7 +614,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const proxy = new ProxyAgentProcess(agentId, this);
     this._agent = proxy;
 
-    await workerPost(this.workerUrl, "/agent/start", { agentId, params });
+    await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
 
     // Ensure SSE is connected to receive events
     if (!this.sseConnection) {
