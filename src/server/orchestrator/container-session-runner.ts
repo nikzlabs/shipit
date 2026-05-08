@@ -288,10 +288,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Worker URL (read-only — used by the container health endpoint). */
   getWorkerUrl(): string { return this.workerUrl; }
 
-  /** Collect ports from all running auto-preview services. */
+  /**
+   * Collect ports from all running preview-eligible services.
+   *
+   * Both `auto` and `manual` modes contribute once the service is running:
+   * `auto` services are surfaced automatically when they come up, and
+   * `manual` services are surfaced once the user explicitly starts them
+   * (the click is the opt-in). Without including `manual` here, starting
+   * a manual-only service like the dogfood `dev` stack leaves the preview
+   * pane stuck on "No preview running" because no port ever enters the
+   * detected-ports list.
+   */
   private buildDetectedPortsFromServices(mgr: ServiceManager): number[] {
     return mgr.getServices()
-      .filter(s => s.preview === "auto" && s.status === "running" && s.port)
+      .filter(s => (s.preview === "auto" || s.preview === "manual") && s.status === "running" && s.port)
       .map(s => s.port!);
   }
 
@@ -319,10 +329,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         error: svc.error,
       } as WsServerMessage);
 
-      // When an auto-preview service changes status, recalculate detected
+      // When a preview-eligible service changes status, recalculate detected
       // ports and emit preview_status so the client reflects the real state
-      // (e.g. green dot → error when a container crashes).
-      if (svc.preview === "auto") {
+      // (e.g. green dot → error when a container crashes, or "No preview
+      // running" → live iframe when the user starts a manual service like
+      // the dogfood `dev` stack).
+      if (svc.preview === "auto" || svc.preview === "manual") {
         this._detectedPorts = this.buildDetectedPortsFromServices(mgr);
         this.emitMessage(this.buildPreviewStatus());
       }

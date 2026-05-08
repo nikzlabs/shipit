@@ -394,6 +394,45 @@ describe("PreviewFrame", () => {
     expect(screen.queryByTitle("Start web")).not.toBeInTheDocument();
   });
 
+  it("renders the iframe when preview.running flips true while a manual service is in services", async () => {
+    // This is the dogfooding pivot: after the user clicks Start on the
+    // manual `dev` service, App.tsx synthesizes a `running:true` preview
+    // status (via deriveEffectivePreviewStatus) and passes it here. The
+    // services list still contains the running service, but the manual-only
+    // overlay must NOT show — the iframe should take over instead.
+    usePreviewStore.getState().setServices([
+      { name: "dev", status: "running", port: 3000, preview: "manual" },
+    ]);
+    // Container-mode poll hits /api/preview-health/.../{port} and waits for
+    // `{ ready: true }`. Override the default fetch stub for this test.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ready: true }), { status: 200 })),
+    );
+    const runningPreview: PreviewStatus = {
+      running: true,
+      port: 3000,
+      url: "/preview/abc/3000/",
+      source: "detected",
+      detectedPorts: [3000],
+    };
+    render(
+      <PreviewFrame
+        preview={runningPreview}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+        onStartService={vi.fn()}
+        onStopService={vi.fn()}
+      />,
+    );
+    // The manual-only overlay must not show — the iframe takes its place.
+    expect(screen.queryByText("No preview running. Start a service to launch it.")).not.toBeInTheDocument();
+    // The iframe poll completes via the stubbed fetch; iframe then mounts.
+    const iframe = await screen.findByTitle("Live Preview");
+    expect(iframe).toBeInTheDocument();
+  });
+
   // ---- Managed source tests ----
 
   it("renders iframe for managed source preview", async () => {
