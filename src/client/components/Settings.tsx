@@ -888,38 +888,6 @@ export function Settings({
 
           <TabsContent value="advanced">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
-              <NotificationSettings />
-
-              <div className="border-t border-(--color-border-secondary)" />
-
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium text-(--color-text-primary)">Max Idle Containers</h3>
-                <p className="text-sm text-(--color-text-secondary)">
-                  Maximum Docker containers kept running when not in use. Containers beyond this limit are stopped. Set to 0 to stop all idle containers immediately.
-                </p>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="number"
-                    min={0}
-                    value={idleContainers}
-                    onChange={(e) => { setIdleContainers(Math.max(0, Math.floor(Number(e.target.value) || 0))); setIdleContainersSaved(false); }}
-                    className="w-24 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
-                    data-testid="settings-max-idle-containers"
-                  />
-                  <Button
-                    variant="primary"
-                    size="md"
-                    onClick={() => { onMaxIdleContainersSave(idleContainers); setIdleContainersSaved(true); }}
-                    className="rounded-md"
-                    data-testid="settings-max-idle-containers-save"
-                  >
-                    {idleContainersSaved ? "Saved" : "Save"}
-                  </Button>
-                </div>
-              </div>
-
-              <div className="border-t border-(--color-border-secondary)" />
-
               <div className="space-y-3">
                 <h3 className="text-sm font-medium text-(--color-text-primary)">Software Updates</h3>
                 <p className="text-sm text-(--color-text-secondary)">
@@ -1030,6 +998,38 @@ export function Settings({
                     )}
                   </div>
                 )}
+              </div>
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              <NotificationSettings />
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-(--color-text-primary)">Max Idle Containers</h3>
+                <p className="text-sm text-(--color-text-secondary)">
+                  Maximum Docker containers kept running when not in use. Containers beyond this limit are stopped. Set to 0 to stop all idle containers immediately.
+                </p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min={0}
+                    value={idleContainers}
+                    onChange={(e) => { setIdleContainers(Math.max(0, Math.floor(Number(e.target.value) || 0))); setIdleContainersSaved(false); }}
+                    className="w-24 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-2 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
+                    data-testid="settings-max-idle-containers"
+                  />
+                  <Button
+                    variant="primary"
+                    size="md"
+                    onClick={() => { onMaxIdleContainersSave(idleContainers); setIdleContainersSaved(true); }}
+                    className="rounded-md"
+                    data-testid="settings-max-idle-containers-save"
+                  >
+                    {idleContainersSaved ? "Saved" : "Save"}
+                  </Button>
+                </div>
               </div>
 
               <div className="border-t border-(--color-border-secondary)" />
