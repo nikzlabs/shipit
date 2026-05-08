@@ -2,6 +2,9 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FilePreviewModal } from "./FilePreviewModal.js";
+import { useUiStore } from "../stores/ui-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+import type { AgentOption } from "./AgentPicker.js";
 
 // Monaco editor uses dynamic import("monaco-editor") and won't work in jsdom.
 // Mock the module so the CodeEditor sub-component renders a simple div.
@@ -17,7 +20,36 @@ vi.mock("monaco-editor", () => ({
   },
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Reset stores so per-test state doesn't bleed across cases.
+  useSessionStore.getState().setSessionId(undefined);
+  useUiStore.getState().setAgentList([]);
+  useUiStore.getState().setActiveAgentId("claude");
+});
+
+const claudeOption: AgentOption = {
+  id: "claude",
+  name: "Claude Code",
+  installed: true,
+  authConfigured: true,
+  models: ["sonnet"],
+  supportsReview: true,
+};
+const codexOption: AgentOption = {
+  id: "codex",
+  name: "Codex",
+  installed: true,
+  authConfigured: true,
+  models: ["gpt-5.4"],
+  supportsReview: false,
+};
+
+function setupSessionAndAgents(activeAgentId: "claude" | "codex") {
+  useSessionStore.getState().setSessionId("session-1");
+  useUiStore.getState().setAgentList([claudeOption, codexOption]);
+  useUiStore.getState().setActiveAgentId(activeAgentId);
+}
 
 describe("FilePreviewModal", () => {
   it("renders the file path in the header", () => {
@@ -130,5 +162,54 @@ describe("FilePreviewModal", () => {
     );
     const pathEl = screen.getByTitle("very/long/path/to/some/deeply/nested/file.ts");
     expect(pathEl).toBeInTheDocument();
+  });
+
+  // 125 — Phase 1 gating. The AI Review affordance only shows when the
+  // active agent's capability flag says it can run the chat-native review
+  // flow. Today that's Claude only; Codex sessions get no button (not a
+  // disabled one) because the silent prod no-op the existing button
+  // produced is strictly worse than no button at all.
+  describe("AI Review gating on agent capability (125)", () => {
+    it("shows the AI Review button when active agent has supportsReview=true", () => {
+      setupSessionAndAgents("claude");
+      render(
+        <FilePreviewModal
+          filePath="docs/plan.md"
+          content="# Plan"
+          fileType="markdown"
+          onClose={() => {}}
+        />,
+      );
+      expect(screen.getByRole("button", { name: /ai review/i })).toBeInTheDocument();
+    });
+
+    it("hides the AI Review button when active agent has supportsReview=false", () => {
+      setupSessionAndAgents("codex");
+      render(
+        <FilePreviewModal
+          filePath="docs/plan.md"
+          content="# Plan"
+          fileType="markdown"
+          onClose={() => {}}
+        />,
+      );
+      expect(screen.queryByRole("button", { name: /ai review/i })).not.toBeInTheDocument();
+    });
+
+    it("hides the AI Review button when there is no agent list yet (boot race)", () => {
+      // Bootstrap hasn't populated the agent list yet — the modal should not
+      // render an affordance whose capability we cannot prove.
+      useSessionStore.getState().setSessionId("session-1");
+      useUiStore.getState().setAgentList([]);
+      render(
+        <FilePreviewModal
+          filePath="docs/plan.md"
+          content="# Plan"
+          fileType="markdown"
+          onClose={() => {}}
+        />,
+      );
+      expect(screen.queryByRole("button", { name: /ai review/i })).not.toBeInTheDocument();
+    });
   });
 });

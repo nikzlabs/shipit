@@ -15,7 +15,7 @@ afterEach(() => {
   });
 });
 
-const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"] };
+const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"], supportsReview: true };
 const claudeUnauthed = { ...claudeAuthed, authConfigured: false };
 
 const defaultProps: SettingsProps = {
@@ -353,6 +353,7 @@ describe("Settings - Codex agent section", () => {
     installed: true,
     authConfigured: false,
     models: ["codex-mini-latest"],
+    supportsReview: false,
   };
 
   it("shows CodexAuthCard when codex is in agentList", () => {

@@ -116,6 +116,19 @@ describe("AgentRegistry", () => {
     expect(codex.capabilities.models).toContain("gpt-5.4");
     expect(codex.capabilities.toolNames).toContain("shell");
   });
+
+  it("Claude reports supportsReview=true and Codex reports false", async () => {
+    // 125 — chat-native AI review needs both a subagent primitive (Task) and
+    // custom MCP tool registration. Claude Code provides both; Codex provides
+    // neither. The capability is what the client uses to gate the
+    // file-preview "Ask agent to review" affordance, so a regression here
+    // would silently drag the Codex session back into the broken pre-125
+    // state.
+    const registry = createRegistry({ installedBinaries: ["claude", "codex"] });
+    await registry.detect();
+    expect(registry.get("claude")!.capabilities.supportsReview).toBe(true);
+    expect(registry.get("codex")!.capabilities.supportsReview).toBe(false);
+  });
 });
 
 describe("ALLOWED_ENV_KEYS", () => {

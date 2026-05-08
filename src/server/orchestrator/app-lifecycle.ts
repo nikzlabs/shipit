@@ -1059,6 +1059,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
     agents: agentRegistry.list().map((a) => ({
       id: a.id, name: a.name, installed: a.installed,
       authConfigured: a.authConfigured, models: a.capabilities.models,
+      supportsReview: a.capabilities.supportsReview,
     })),
     defaultAgentId,
   });

@@ -36,6 +36,9 @@ export class ClaudeAdapter
       "WebFetch", "WebSearch", "AskUserQuestion",
     ],
     models: ["sonnet", "opus", "haiku"],
+    // Claude Code has both a subagent primitive (the Task tool) and custom
+    // MCP tool registration via mcpConfigPath, which 125 needs.
+    supportsReview: true,
   };
 
   private inner: ClaudeProcess;

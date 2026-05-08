@@ -108,8 +108,26 @@ export function useServerEvents(): void {
     });
 
     es.addEventListener("agent_list", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { agents: { id: string; name: string; installed: boolean; authConfigured: boolean; models?: string[] }[] };
-      useUiStore.getState().setAgentList(data.agents.map((a) => ({ ...a, models: a.models ?? [] })));
+      const data = JSON.parse(e.data as string) as {
+        agents: {
+          id: string;
+          name: string;
+          installed: boolean;
+          authConfigured: boolean;
+          models?: string[];
+          // 125 — every adapter now publishes a supportsReview flag, but old
+          // server builds may omit it; default to false so a stale wire
+          // payload hides the AI Review affordance rather than showing it.
+          supportsReview?: boolean;
+        }[];
+      };
+      useUiStore.getState().setAgentList(
+        data.agents.map((a) => ({
+          ...a,
+          models: a.models ?? [],
+          supportsReview: a.supportsReview ?? false,
+        })),
+      );
     });
 
     // ---- Codex (ChatGPT subscription) device-auth events ----

@@ -6,8 +6,8 @@ import { AgentPicker, type AgentOption } from "./AgentPicker.js";
 afterEach(cleanup);
 
 const agents: AgentOption[] = [
-  { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet-4"] },
-  { id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["o4-mini"] },
+  { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet-4"], supportsReview: true },
+  { id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["o4-mini"], supportsReview: false },
 ];
 
 describe("AgentPicker", () => {
@@ -23,8 +23,8 @@ describe("AgentPicker", () => {
 
   it("does not render when only one agent is installed", () => {
     const singleAgent: AgentOption[] = [
-      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [] },
-      { id: "codex", name: "Codex", installed: false, authConfigured: false, models: [] },
+      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [], supportsReview: true },
+      { id: "codex", name: "Codex", installed: false, authConfigured: false, models: [], supportsReview: false },
     ];
     render(<AgentPicker agents={singleAgent} activeAgentId="claude" onAgentChange={vi.fn()} />);
     expect(screen.queryByTestId("agent-picker")).not.toBeInTheDocument();
@@ -66,9 +66,9 @@ describe("AgentPicker", () => {
   it("does not call onAgentChange for uninstalled agents", async () => {
     const user = userEvent.setup();
     const agentsWithUninstalled: AgentOption[] = [
-      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [] },
-      { id: "codex", name: "Codex", installed: true, authConfigured: true, models: [] },
-      { id: "other", name: "Other", installed: false, authConfigured: false, models: [] },
+      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [], supportsReview: true },
+      { id: "codex", name: "Codex", installed: true, authConfigured: true, models: [], supportsReview: false },
+      { id: "other", name: "Other", installed: false, authConfigured: false, models: [], supportsReview: false },
     ];
     const onAgentChange = vi.fn();
     render(<AgentPicker agents={agentsWithUninstalled} activeAgentId="claude" onAgentChange={onAgentChange} />);
@@ -80,9 +80,9 @@ describe("AgentPicker", () => {
   it("shows 'not installed' label for uninstalled agents", async () => {
     const user = userEvent.setup();
     const agentsWithUninstalled: AgentOption[] = [
-      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [] },
-      { id: "codex", name: "Codex", installed: true, authConfigured: true, models: [] },
-      { id: "other", name: "Other", installed: false, authConfigured: false, models: [] },
+      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [], supportsReview: true },
+      { id: "codex", name: "Codex", installed: true, authConfigured: true, models: [], supportsReview: false },
+      { id: "other", name: "Other", installed: false, authConfigured: false, models: [], supportsReview: false },
     ];
     render(<AgentPicker agents={agentsWithUninstalled} activeAgentId="claude" onAgentChange={vi.fn()} />);
     await user.click(screen.getByTestId("agent-picker-trigger"));
@@ -92,8 +92,8 @@ describe("AgentPicker", () => {
   it("shows 'needs auth' label for installed but unconfigured agents", async () => {
     const user = userEvent.setup();
     const agentsNeedAuth: AgentOption[] = [
-      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [] },
-      { id: "codex", name: "Codex", installed: true, authConfigured: false, models: [] },
+      { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: [], supportsReview: true },
+      { id: "codex", name: "Codex", installed: true, authConfigured: false, models: [], supportsReview: false },
     ];
     render(<AgentPicker agents={agentsNeedAuth} activeAgentId="claude" onAgentChange={vi.fn()} />);
     await user.click(screen.getByTestId("agent-picker-trigger"));

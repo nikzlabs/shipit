@@ -22,6 +22,7 @@ export class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements
     supportedPermissionModes: [] as PermissionMode[],
     toolNames: [] as string[],
     models: [] as string[],
+    supportsReview: true,
   };
 
   runCalled = false;

@@ -172,6 +172,12 @@ export interface WsGlobalSettings {
     installed: boolean;
     authConfigured: boolean;
     models: string[];
+    /**
+     * Whether the agent backend can run the chat-native AI review flow
+     * (docs/125-chat-native-ai-review). Drives whether the "Ask agent to
+     * review" button shows up in the file-preview modal.
+     */
+    supportsReview: boolean;
   }[];
   defaultAgentId: AgentId;
 }
@@ -232,6 +238,12 @@ export interface WsAgentListMessage {
     installed: boolean;
     authConfigured: boolean;
     models: string[];
+    /**
+     * Whether the agent backend can run the chat-native AI review flow
+     * (docs/125-chat-native-ai-review). Drives whether the "Ask agent to
+     * review" button shows up in the file-preview modal.
+     */
+    supportsReview: boolean;
   }[];
   defaultAgentId: AgentId;
 }

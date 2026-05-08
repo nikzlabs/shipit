@@ -28,6 +28,7 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
     supportedPermissionModes: [] as PermissionMode[],
     toolNames: [] as string[],
     models: [] as string[],
+    supportsReview: true,
   };
 
   runCalled = false;
