@@ -5,7 +5,7 @@
  * simple mutations. Uses the same origin as the page (no CORS needed).
  */
 
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 
 export class ApiError extends Error {
   constructor(
@@ -106,5 +106,13 @@ export function useApi(): UseApiReturn {
     return handleResponse<T>(res);
   }, []);
 
-  return { get, post, patch, put, del };
+  // Memoize the returned object so consumers can put `api` in a useEffect
+  // dep array without the effect re-running on every render. The methods
+  // themselves are already stable via useCallback, so the memoized object
+  // is stable for the entire hook's lifetime. Without this, components
+  // like SessionHealthStrip that depend on `api` end up firing fresh
+  // network requests on every render — which compounds with stale-response
+  // races during session switches and causes the agent-state label to
+  // flicker between the previous and current session's status.
+  return useMemo(() => ({ get, post, patch, put, del }), [get, post, patch, put, del]);
 }
