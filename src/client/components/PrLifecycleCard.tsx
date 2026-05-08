@@ -275,7 +275,7 @@ function ManagedMergeInfo({ settingsUrl }: { settingsUrl?: string }) {
     <span className="relative" onMouseEnter={() => setVisible(true)} onMouseLeave={() => setVisible(false)}>
       <InfoIcon size={ICON_SIZE.XS} className="text-(--color-text-secondary) cursor-help" />
       {visible && (
-        <div className="absolute left-0 top-full z-50 pt-1">
+        <div className="absolute left-0 bottom-full z-50 pb-1">
           <div className="w-64 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-elevated) shadow-xl p-2.5 text-xs text-(--color-text-secondary)">
             GitHub auto-merge requires branch protection rules. ShipIt will merge this PR when CI passes.
             {settingsUrl && (
