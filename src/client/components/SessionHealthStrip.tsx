@@ -204,6 +204,16 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     if (!sid) return;
     try {
       const data = await api.get<ContainerHealth>(`/api/sessions/${sid}/container/health`);
+      // Guard against late-arriving responses from a previous session.
+      // When the user switches sessions, an in-flight fetch for the old
+      // session can resolve AFTER the new session's poll has already set
+      // fresh state. Without this check we'd overwrite the new state with
+      // the previous session's data, causing the strip to flicker between
+      // "Idle" / "Agent running" until the stale responses drain. The
+      // request URL embeds `sid`, so by the time we land here the response
+      // is unambiguously for `sid` — we just have to make sure `sid` is
+      // still the active session.
+      if (sid !== sessionIdRef.current) return;
       setHealth(data);
       setError(null);
       // Clear the "Restarting…" overlay when we have a definitive outcome:
@@ -249,6 +259,10 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
         }
       }
     } catch (e) {
+      // Same stale-session guard as the success branch — a failed poll
+      // for the previous session shouldn't surface as an error on the
+      // newly-active session.
+      if (sid !== sessionIdRef.current) return;
       setError(e instanceof ApiError ? e.message : String(e));
     }
   }, [api, setRescueState, setPauseNotice]);
