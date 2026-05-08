@@ -35,6 +35,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportedPermissionModes: ["auto", "plan", "normal"],
       toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       models: ["sonnet", "opus", "haiku"],
+      supportsReview: true,
     },
   },
   {
@@ -49,6 +50,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportedPermissionModes: [],
       toolNames: ["shell", "file_write", "file_read", "file_edit"],
       models: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+      supportsReview: false,
     },
   },
 ];

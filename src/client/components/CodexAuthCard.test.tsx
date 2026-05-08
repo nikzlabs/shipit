@@ -5,9 +5,9 @@ import type { AgentOption } from "./AgentPicker.js";
 
 afterEach(cleanup);
 
-const authedAgent: AgentOption = { id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"] };
-const unauthedAgent: AgentOption = { id: "codex", name: "Codex", installed: true, authConfigured: false, models: ["gpt-5"] };
-const notInstalledAgent: AgentOption = { id: "codex", name: "Codex", installed: false, authConfigured: false, models: [] };
+const authedAgent: AgentOption = { id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false };
+const unauthedAgent: AgentOption = { id: "codex", name: "Codex", installed: true, authConfigured: false, models: ["gpt-5"], supportsReview: false };
+const notInstalledAgent: AgentOption = { id: "codex", name: "Codex", installed: false, authConfigured: false, models: [], supportsReview: false };
 
 function renderCard(overrides: Partial<Parameters<typeof CodexAuthCard>[0]> = {}) {
   const defaults = {

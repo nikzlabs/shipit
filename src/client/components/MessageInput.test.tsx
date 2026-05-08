@@ -111,7 +111,7 @@ describe("MessageInput", () => {
           onSend={vi.fn()}
           disabled={false}
           onAgentChange={vi.fn()}
-          agents={[{ id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet-4"] }]}
+          agents={[{ id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet-4"], supportsReview: true }]}
           modelInfo={{ model: "Opus 4.6", contextWindowTokens: 200000 }}
         />,
       );

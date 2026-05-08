@@ -1,9 +1,18 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 ---
 
 # 125 — Chat-native AI Review
+
+> **Status note (Phase 1 landed).** The capability gate is in place:
+> `AgentCapabilities.supportsReview` ships true on Claude, false on Codex,
+> and the file-preview modal hides the "AI Review" button when the active
+> agent reports `supportsReview === false`. The existing out-of-band AI
+> Review endpoint is still present and still works on Claude — its removal
+> is Phase 3. The chat-native flow itself (MCP bridge,
+> `submit_review_comments`, `/review` slash command, button rewording) is
+> Phase 2 and not yet implemented. See `checklist.md` for tracking.
 
 ## Summary
 

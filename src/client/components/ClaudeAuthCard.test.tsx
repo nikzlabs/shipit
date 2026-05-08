@@ -5,9 +5,9 @@ import type { AgentOption } from "./AgentPicker.js";
 
 afterEach(cleanup);
 
-const authedAgent: AgentOption = { id: "claude", name: "Claude CLI", installed: true, authConfigured: true, models: ["claude-sonnet"] };
-const unauthedAgent: AgentOption = { id: "claude", name: "Claude CLI", installed: true, authConfigured: false, models: ["claude-sonnet"] };
-const notInstalledAgent: AgentOption = { id: "claude", name: "Claude CLI", installed: false, authConfigured: false, models: [] };
+const authedAgent: AgentOption = { id: "claude", name: "Claude CLI", installed: true, authConfigured: true, models: ["claude-sonnet"], supportsReview: true };
+const unauthedAgent: AgentOption = { id: "claude", name: "Claude CLI", installed: true, authConfigured: false, models: ["claude-sonnet"], supportsReview: true };
+const notInstalledAgent: AgentOption = { id: "claude", name: "Claude CLI", installed: false, authConfigured: false, models: [], supportsReview: true };
 
 function renderCard(overrides: Partial<Parameters<typeof ClaudeAuthCard>[0]> = {}) {
   const defaults = {

@@ -54,6 +54,7 @@ class FakeCodexProcess extends EventEmitter<AgentProcessEvents> implements Agent
     supportedPermissionModes: [],
     toolNames: ["shell", "file_write", "file_read", "file_edit"],
     models: ["codex-mini-latest", "o4-mini"],
+    supportsReview: false,
   };
 
   public runCalled = false;

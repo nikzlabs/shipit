@@ -325,6 +325,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     const agents = agentRegistry.list().map((a) => ({
       id: a.id, name: a.name, installed: a.installed,
       authConfigured: a.authConfigured, models: a.capabilities.models,
+      supportsReview: a.capabilities.supportsReview,
     }));
     client.write(`event: agent_list\ndata: ${JSON.stringify({ agents, defaultAgentId })}\n\n`);
 

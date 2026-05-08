@@ -29,6 +29,7 @@ class FakeRebaseAgent extends EventEmitter {
     supportedPermissionModes: [],
     toolNames: [],
     models: [],
+    supportsReview: true,
   };
 
   /**

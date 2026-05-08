@@ -15,6 +15,12 @@ export interface AgentOption {
   installed: boolean;
   authConfigured: boolean;
   models: string[];
+  /**
+   * Whether the agent backend can run the chat-native AI review flow
+   * (docs/125-chat-native-ai-review). Drives whether the "Ask agent to
+   * review" affordance shows up in the file-preview modal.
+   */
+  supportsReview: boolean;
 }
 
 interface AgentPickerProps {

@@ -8,6 +8,7 @@ import { MarkdownSectionComments } from "./MarkdownSectionComments.js";
 import type { SectionCommentData } from "./MarkdownSectionComments.js";
 import { useFileReviewStore } from "../stores/file-review-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
 import type { CommentWidgetManager, LineCommentLike } from "./MonacoCommentWidgets.js";
 import type { FilePreviewType } from "../utils/file-preview-type.js";
@@ -313,6 +314,17 @@ export function FilePreviewModal({
 }: FilePreviewModalProps) {
   const sessionId = useSessionStore((s) => s.sessionId) ?? "";
 
+  // 125 — chat-native AI review is gated on `supportsReview` from the active
+  // agent's capabilities. Today the affordance is the existing AI Review
+  // button; in Phase 2 it becomes "Ask agent to review." Either way, it only
+  // shows when the active agent backend can run the flow. Codex sessions
+  // hide the button entirely (not disabled) because the silent prod no-op
+  // it produced before is strictly worse than no affordance.
+  const activeAgentId = useUiStore((s) => s.activeAgentId);
+  const agentList = useUiStore((s) => s.agentList);
+  const activeAgentSupportsReview =
+    agentList.find((a) => a.id === activeAgentId)?.supportsReview ?? false;
+
   // Selectors return stable references across renders so Zustand doesn't
   // treat each render as a state change (infinite-loop footgun).
   const key = sessionId ? `${sessionId}::${filePath}` : null;
@@ -338,7 +350,12 @@ export function FilePreviewModal({
   }, [sessionId, filePath, reviewable, content, load]);
 
   const commentCount = draft?.comments.length ?? 0;
-  const showAiReview = reviewable && fileType === "markdown" && !!sessionId && content !== null;
+  const showAiReview =
+    reviewable
+    && fileType === "markdown"
+    && !!sessionId
+    && content !== null
+    && activeAgentSupportsReview;
   const canSend = !!onSendComments && commentCount > 0;
 
   const handleClose = useCallback(() => {

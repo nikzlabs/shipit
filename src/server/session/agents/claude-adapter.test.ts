@@ -41,6 +41,10 @@ describe("ClaudeAdapter", () => {
     expect(adapter.capabilities.supportedPermissionModes).toContain("auto");
     expect(adapter.capabilities.toolNames).toContain("Write");
     expect(adapter.capabilities.toolNames).toContain("Bash");
+    // 125 — chat-native AI review needs both subagent + MCP support, both
+    // of which Claude Code provides. The flag drives the file-preview
+    // modal's "Ask agent to review" affordance.
+    expect(adapter.capabilities.supportsReview).toBe(true);
   });
 
   it("maps system event to agent_init", () => {

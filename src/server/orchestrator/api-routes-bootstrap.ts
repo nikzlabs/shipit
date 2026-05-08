@@ -225,6 +225,7 @@ export async function registerBootstrapRoutes(
         const agents = deps.agentRegistry.list().map((a) => ({
           id: a.id, name: a.name, installed: a.installed,
           authConfigured: a.authConfigured, models: a.capabilities.models,
+          supportsReview: a.capabilities.supportsReview,
         }));
         deps.sseBroadcast("agent_list", { agents, defaultAgentId: deps.defaultAgentId });
         return { success: true, agents };
