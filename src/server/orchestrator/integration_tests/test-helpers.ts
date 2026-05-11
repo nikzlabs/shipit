@@ -422,6 +422,19 @@ export class FakeClaudeProcess extends EventEmitter {
   }
 
   /**
+   * Simulate the real Claude CLI emitting a `system/init` event as soon
+   * as the process is up — the first event of every turn, before any
+   * user-visible output. The orchestrator maps this through
+   * `mapClaudeEvent` to an `agent_init` AgentEvent, which triggers the
+   * "Agent process started" log entry in agent-listeners.ts. Tests that
+   * assert on that log (or rely on `session_started` being broadcast)
+   * should call this right after `waitForClaude(...)` returns.
+   */
+  initSession(sessionId = "test-session") {
+    this.emit("event", { type: "system", subtype: "init", session_id: sessionId });
+  }
+
+  /**
    * Simulate a normal Claude turn completion: emit a result event then done.
    * This matches the real Claude CLI behavior where a `result` event always
    * precedes process exit on success.

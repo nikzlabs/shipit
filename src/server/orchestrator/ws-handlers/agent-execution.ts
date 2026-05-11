@@ -421,5 +421,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     previewUrl,
     model: ctx.getSelectedModel(),
   });
-  ctx.broadcastLog("server", "Agent process started");
+  // "Agent process started" is now emitted from agent-listeners.ts
+  // when the agent_init event arrives, so the log reflects an actual
+  // successful start (worker accepted /agent/start) rather than every
+  // attempt — duplicates rejected by the worker no longer pollute the
+  // per-session log ring.
 }

@@ -113,6 +113,14 @@ export function wireAgentListeners(
       // Use the session ID captured at turn start — immune to session switches.
       // Guaranteed non-null by the assert at function entry.
       const turnSessionId = opts.capturedSessionId!;
+      // Record "Agent process started" only when the agent actually
+      // starts emitting events — the unconditional broadcastLog at the
+      // run() call site fired even when the worker rejected a duplicate
+      // /agent/start (HTTP 409), producing misleading multi-start log
+      // entries when the orchestrator's defensive flow couldn't catch
+      // a race. agent_init is emitted by both local adapters and the
+      // proxy, so this works uniformly across runtime modes.
+      ctx.broadcastLog("server", "Agent process started");
       ctx.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
       const session = ctx.sessionManager.get(turnSessionId);
       if (session) {

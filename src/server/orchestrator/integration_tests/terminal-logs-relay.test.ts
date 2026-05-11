@@ -71,6 +71,7 @@ describe("Integration: Terminal/logs relay", () => {
 
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
+    lastClaude.initSession();
 
     // Consume the server "Agent process started" log entry
     const startLog = await client.receiveType("log_entry");
@@ -95,6 +96,7 @@ describe("Integration: Terminal/logs relay", () => {
 
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
+    lastClaude.initSession();
 
     // Consume "Agent process started" log entry
     await client.receiveType("log_entry");
@@ -116,6 +118,7 @@ describe("Integration: Terminal/logs relay", () => {
 
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
+    lastClaude.initSession();
 
     // Should receive "Agent process started" log
     const startLog = await client.receiveType("log_entry");
@@ -161,6 +164,7 @@ describe("Integration: Terminal/logs relay", () => {
 
     client1.send({ type: "send_message", text: "generate logs" });
     await waitForClaude(() => lastClaude);
+    lastClaude.initSession();
 
     // Consume the "Agent process started" log
     await client1.receiveType("log_entry");
@@ -196,6 +200,7 @@ describe("Integration: Terminal/logs relay", () => {
 
     clientA.send({ type: "send_message", text: "session A work" });
     await waitForClaude(() => lastClaude);
+    lastClaude.initSession();
 
     await clientA.receiveType("log_entry"); // "Agent process started"
     lastClaude.emit("log", "stderr", "Session A debug output");
@@ -231,6 +236,7 @@ describe("Integration: Terminal/logs relay", () => {
 
     client1.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
+    lastClaude.initSession();
     await client1.receiveType("log_entry"); // "Agent process started" log
 
     // Clear logs
