@@ -613,6 +613,18 @@ export interface RunnerRegistryDeps {
   getDepCacheDir: (repoUrl: string) => string;
   /** Per-session ServiceManager registry (compose stacks). */
   serviceManagers: Map<string, ServiceManager>;
+  /**
+   * Per-session in-flight compose-stop promises. Populated in a runner's
+   * `disposed` handler with the promise returned by `mgr.stop()` and cleared
+   * when that promise settles. The next `setupServiceManager` for the same
+   * session awaits the pending stop before calling `mgr.start()` — without
+   * this gate, the old `docker compose down -p shipit-{sid12}` runs in
+   * parallel with the new `compose up -p shipit-{sid12}` (same project
+   * name = same session ID prefix) and tears down the new agent container
+   * as collateral, producing the SIGTERM/recreate loop observed in
+   * production. See docs/124-session-rescue-and-diagnostics follow-up.
+   */
+  composeStopPromises: Map<string, Promise<void>>;
   /** Per-session compose warnings for old-format configs without a ServiceManager. */
   composeWarnings: Map<string, string>;
   /** Sessions where compose is not configured in shipit.yaml. */
@@ -669,7 +681,7 @@ export function createRunnerRegistry(
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
+    getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
   } = registryDeps;
 
@@ -736,6 +748,7 @@ export function createRunnerRegistry(
         const setupDeps = {
           sessionManager,
           serviceManagers,
+          composeStopPromises,
           composeWarnings,
           composeNotConfigured,
           containerManager,
@@ -809,6 +822,8 @@ export function adoptExistingServiceManager(
   mgr: ServiceManager,
   deps: {
     serviceManagers: Map<string, ServiceManager>;
+    /** Same map as in setupServiceManager — see RunnerRegistryDeps doc. */
+    composeStopPromises: Map<string, Promise<void>>;
     containerManager: SessionContainerManager | null;
     broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
     installPromise: Promise<void> | null;
@@ -822,7 +837,7 @@ export function adoptExistingServiceManager(
     secretsLoader?: () => Promise<Record<string, string>>;
   },
 ): void {
-  const { serviceManagers, containerManager, broadcastLog, installPromise, secretsLoader } = deps;
+  const { serviceManagers, composeStopPromises, containerManager, broadcastLog, installPromise, secretsLoader } = deps;
 
   // 1. Attach the new runner's listeners. `setServiceManager` internally
   //    calls `clearServiceManager()` first, but on a freshly-created runner
@@ -901,10 +916,72 @@ export function adoptExistingServiceManager(
     }
     mgr.off("stack_error", stackErrorListener);
     serviceManagers.delete(runner.sessionId);
-    mgr.stop().catch((err: unknown) => {
-      console.error(`[compose:${runner.sessionId}] Failed to stop compose stack:`, err);
-    });
+    trackComposeStop(composeStopPromises, runner.sessionId, mgr);
   });
+}
+
+/**
+ * Maximum time we wait for a prior runner's `compose down` before letting
+ * the next runner's `compose up` proceed. Compose down for a small stack
+ * is usually 2-5 s; we cap at 15 s so a hung `docker compose down` can't
+ * block agent restart forever. The race window we're protecting against
+ * is bounded — once we've waited this long, the prior down has either
+ * completed or is genuinely wedged, and forcing the new up forward is
+ * preferable to never recovering.
+ */
+const COMPOSE_STOP_WAIT_TIMEOUT_MS = 15_000;
+
+/**
+ * Register an in-flight `mgr.stop()` so the next `mgr.start()` for the
+ * same session awaits it before issuing new compose commands. Without
+ * this, the prior runner's `compose down -p shipit-{sid12}` can run in
+ * parallel with the new runner's `compose up -p shipit-{sid12}` — same
+ * project name = same docker resources, so the old down tears down what
+ * the new up just built.
+ *
+ * The stop promise is cleared from the map when it settles. Exported
+ * for unit-test coverage.
+ */
+export function trackComposeStop(
+  composeStopPromises: Map<string, Promise<void>>,
+  sessionId: string,
+  mgr: { stop: () => Promise<void> },
+): void {
+  const stopPromise = mgr.stop()
+    .catch((err: unknown) => {
+      console.error(`[compose:${sessionId}] Failed to stop compose stack:`, err);
+    })
+    .finally(() => {
+      // Only clear our entry — a fresh stop may have replaced it.
+      if (composeStopPromises.get(sessionId) === stopPromise) {
+        composeStopPromises.delete(sessionId);
+      }
+    });
+  composeStopPromises.set(sessionId, stopPromise);
+}
+
+/**
+ * Wait for any in-flight `compose down` for this session, bounded by
+ * COMPOSE_STOP_WAIT_TIMEOUT_MS. Exported for tests.
+ */
+export async function awaitComposeStop(
+  composeStopPromises: Map<string, Promise<void>>,
+  sessionId: string,
+): Promise<void> {
+  const pending = composeStopPromises.get(sessionId);
+  if (!pending) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(
+        `[compose:${sessionId}] Prior stop did not complete within ${COMPOSE_STOP_WAIT_TIMEOUT_MS}ms — proceeding with new start anyway`,
+      );
+      resolve();
+    }, COMPOSE_STOP_WAIT_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  await Promise.race([pending, timeout]);
+  if (timer) clearTimeout(timer);
 }
 
 /**
@@ -916,6 +993,7 @@ function setupServiceManager(
   deps: {
     sessionManager: SessionManager;
     serviceManagers: Map<string, ServiceManager>;
+    composeStopPromises: Map<string, Promise<void>>;
     composeWarnings: Map<string, string>;
     composeNotConfigured: Set<string>;
     containerManager: SessionContainerManager | null;
@@ -928,6 +1006,7 @@ function setupServiceManager(
   const {
     sessionManager,
     serviceManagers,
+    composeStopPromises,
     composeWarnings,
     composeNotConfigured,
     containerManager,
@@ -1029,6 +1108,7 @@ function setupServiceManager(
   if (existing) {
     adoptExistingServiceManager(runner, existing, {
       serviceManagers,
+      composeStopPromises,
       containerManager,
       broadcastLog,
       installPromise,
@@ -1123,15 +1203,20 @@ function setupServiceManager(
       return;
     }
     serviceManagers.delete(runner.sessionId);
-    mgr.stop().catch((err: unknown) => {
-      console.error(`[compose:${runner.sessionId}] Failed to stop compose stack:`, err);
-    });
+    // Track the in-flight stop so the NEXT setupServiceManager for this
+    // session awaits it before calling mgr.start(). Same project name
+    // (shipit-{sid12}) means an old `compose down` running in parallel
+    // with the new `compose up` would tear down the new agent container.
+    trackComposeStop(composeStopPromises, runner.sessionId, mgr);
   });
 
   // Start the compose stack asynchronously — the full sequence (compose up →
   // network join → IP resolution → event flush) is handled inside mgr.start().
   // Install was already fired above (runs in parallel with compose).
   void (async () => {
+    // Gate on any prior runner's pending compose-stop for this session.
+    // Bounded to avoid hanging start() forever if `compose down` wedges.
+    await awaitComposeStop(composeStopPromises, runner.sessionId);
     try {
       await mgr.start();
       console.log(`[compose:${runner.sessionId}] Compose stack started`);
