@@ -8,6 +8,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { PrAutoMergeError } from "../../shared/types/github-types.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
+import type { SessionRunnerRegistry } from "../session-runner.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 import { getErrorMessage } from "../validation.js";
@@ -328,10 +329,62 @@ async function resolveSessionPr(
 }
 
 /**
+ * Flush any pending working-tree changes into a commit before a synchronous
+ * push/PR operation. The agent calls `gh pr create` mid-turn, *before* the
+ * normal end-of-turn `postTurnCommit` has run — without this flush, the new
+ * PR would be opened against the branch's previously-committed state and the
+ * agent's just-made edits would not appear on the PR.
+ *
+ * Also clears any scheduled auto-push debounce: we're about to push
+ * synchronously, and letting the debounced timer fire afterwards produces a
+ * noisy duplicate "Auto-pushed to origin/..." event after the PR is already
+ * open.
+ *
+ * Chat-history linkage of the flush commit is intentionally deferred. The
+ * in-progress message buffer (`replaceInProgress` at each tool boundary)
+ * would wipe any commitHash we set on an in-progress assistant message, and
+ * setting it on the user message would be misleading. The commit still
+ * appears in `git log`; what's missing is the per-message rollback metadata
+ * for this specific commit. Acceptable trade-off — the previous behavior was
+ * worse (changes not in the PR at all). Track as follow-up if rollback for
+ * flush-time commits becomes important.
+ *
+ * Returns the new commit hash, or null if there was nothing to commit.
+ */
+export async function flushPendingTurnCommit(
+  git: GitManager,
+  deps: {
+    sessionId?: string;
+    runnerRegistry?: SessionRunnerRegistry;
+  },
+): Promise<string | null> {
+  const runner = deps.sessionId && deps.runnerRegistry
+    ? deps.runnerRegistry.get(deps.sessionId)
+    : null;
+
+  // Always cancel any pending debounced push — agentCreatePr pushes
+  // synchronously below, so the timer would only produce a duplicate event.
+  runner?.clearPushTimer();
+
+  const summary = runner?.turnSummary?.split("\n")[0]?.slice(0, 120) || "Agent turn";
+  const commitHash = await git.autoCommit(summary);
+  if (!commitHash) return null;
+
+  runner?.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
+  return commitHash;
+}
+
+/**
  * Agent-driven PR create. Like `quickCreatePr` but takes an explicit title and
  * body from the agent and skips the LLM-derived description path. Pushes the
  * branch first (same as `quickCreatePr`) and short-circuits if a PR already
  * exists for this branch.
+ *
+ * When `sessionId` + `runnerRegistry` are supplied, pending working-tree
+ * changes are committed via `flushPendingTurnCommit` *before* the push.
+ * This is required when the agent calls `gh pr create` mid-turn (the normal
+ * end-of-turn auto-commit hasn't run yet). The deps are optional so older
+ * callers (and tests) can still invoke the service without runner context.
  *
  * Returns the new (or existing) PR's metadata.
  */
@@ -349,6 +402,10 @@ export async function agentCreatePr(
     fill?: boolean;
     sessionTitle?: string;
     remoteUrl?: string;
+    /** Session id for resolving the runner (to flush pending commits + cancel auto-push). */
+    sessionId?: string;
+    /** Runner registry — when provided alongside sessionId, enables mid-turn commit flush. */
+    runnerRegistry?: SessionRunnerRegistry;
   },
 ): Promise<{
   number: number;
@@ -365,11 +422,31 @@ export async function agentCreatePr(
   const resolved = await resolveGitHubRemote(git, options.remoteUrl);
   if ("error" in resolved) throw new ServiceError(400, resolved.error);
 
+  // Commit any pending working-tree changes *before* checking for an existing
+  // PR or pushing. This ensures the just-made edits are part of the branch
+  // state we either push to the existing PR or use to create a new one.
+  await flushPendingTurnCommit(git, {
+    sessionId: options.sessionId,
+    runnerRegistry: options.runnerRegistry,
+  });
+
   const head = await git.getCurrentBranch();
 
-  // Short-circuit if a PR already exists for this branch.
+  // Short-circuit if a PR already exists for this branch — but still push
+  // first so the existing PR picks up any new commits we just flushed.
   const existingPr = await githubAuthManager.findPullRequest(resolved.owner, resolved.repo, head);
   if (existingPr) {
+    try {
+      await git.push("origin", head);
+    } catch (err) {
+      const msg = getErrorMessage(err);
+      if (msg.includes("workflow")) {
+        throw new ServiceError(403,
+          "Your GitHub token is missing the `workflow` scope, which is required because this branch modifies GitHub Actions workflow files.\n" +
+          "Please update your token at https://github.com/settings/tokens to include the `workflow` scope, then reconnect.");
+      }
+      throw new ServiceError(500, `Push failed: ${msg}`);
+    }
     const stats = await git.diffStatVsBranch(existingPr.base);
     return {
       number: existingPr.number,

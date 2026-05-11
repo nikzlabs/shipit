@@ -325,4 +325,73 @@ describe("agent-driven PR creation (Phase 2)", () => {
       );
     },
   );
+
+  // Regression test for the ordering bug described in CLAUDE.md note about
+  // gh pr create: the agent calls `gh pr create` mid-turn, *before* the
+  // end-of-turn `postTurnCommit` has fired. Without the flush, the new PR
+  // would be opened against the branch's previously-committed state and the
+  // agent's just-made edits would not appear on the PR.
+  it(
+    "/pr/agent-create commits pending working-tree changes before opening the PR",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+
+      // Sanity: working tree is clean after the primed session.
+      const headBefore = execSync("git rev-parse HEAD", {
+        cwd: sessionDir,
+        env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      expect(
+        execSync("git status --porcelain", {
+          cwd: sessionDir,
+          env: { ...process.env, HOME: tmpDir },
+        }).toString().trim(),
+      ).toBe("");
+
+      // Simulate the agent making a file edit mid-turn. At this point the
+      // change is on disk but NOT yet committed — that's the bug class this
+      // test guards against.
+      fs.writeFileSync(path.join(sessionDir, "widget.ts"), "export const widget = 42;\n");
+
+      // The shim's POST to /pr/agent-create. The flush should commit the
+      // pending change before pushing and opening the PR.
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/agent-create`,
+        payload: {
+          title: "Add widget",
+          body: "## Summary\nAdds the widget.",
+        },
+      });
+      expect(res.statusCode).toBe(200);
+
+      // The PR was opened (createPullRequest was called).
+      expect(githubAuth.createPullRequestCalls).toHaveLength(1);
+
+      // Working tree is now clean — the edit was committed.
+      expect(
+        execSync("git status --porcelain", {
+          cwd: sessionDir,
+          env: { ...process.env, HOME: tmpDir },
+        }).toString().trim(),
+      ).toBe("");
+
+      // HEAD advanced — a new commit exists for the flushed change.
+      const headAfter = execSync("git rev-parse HEAD", {
+        cwd: sessionDir,
+        env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      expect(headAfter).not.toBe(headBefore);
+
+      // The new commit contains the widget file.
+      const filesInCommit = execSync(`git show --name-only --pretty=format: ${headAfter}`, {
+        cwd: sessionDir,
+        env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      expect(filesInCommit).toContain("widget.ts");
+    },
+  );
+
 });
