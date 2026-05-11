@@ -146,6 +146,16 @@ export interface SessionContainerManagerEvents {
     exitCode: number;
     oom: boolean;
   }];
+  /**
+   * Emitted after the Docker event stream successfully reconnects from a
+   * down period. `gapMs` is the duration the stream was unavailable —
+   * any `die`/`oom` events that fired during this window were lost, so
+   * the missing-container reconciler is the only fallback for catching
+   * containers that vanished while we weren't listening. The handler
+   * writes a breadcrumb to every active session's log ring so the
+   * diagnostic snapshot preserves the context.
+   */
+  health_monitor_resumed: [info: { gapMs: number }];
 }
 
 export interface SessionContainerManagerOpts {

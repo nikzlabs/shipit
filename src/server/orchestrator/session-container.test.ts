@@ -530,6 +530,39 @@ describe("SessionContainerManager", () => {
       }
     });
 
+    it("emits health_monitor_resumed with gap duration on successful reconnect", async () => {
+      vi.useFakeTimers();
+      try {
+        await manager.startHealthMonitor();
+        expect(mockDocker.getEvents).toHaveBeenCalledTimes(1);
+
+        const resumed = vi.fn();
+        manager.on("health_monitor_resumed", resumed);
+
+        // Stream dies — `lastLossAt` should latch.
+        mockDocker._eventEmitter.emit("error", new Error("daemon hiccup"));
+        // 5s debounce then reconnect.
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(mockDocker.getEvents).toHaveBeenCalledTimes(2);
+        expect(resumed).toHaveBeenCalledTimes(1);
+        const arg = resumed.mock.calls[0]?.[0] as { gapMs: number };
+        expect(arg.gapMs).toBeGreaterThanOrEqual(5_000);
+
+        // A second reconnect after a second loss should emit again with
+        // a fresh gap (state.lastLossAt cleared after the first resume).
+        mockDocker._eventEmitter.emit("error", new Error("another hiccup"));
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(resumed).toHaveBeenCalledTimes(2);
+
+        // No spurious emit when there was never a loss in the first place
+        // (the test setup already opened once cleanly).
+      } finally {
+        manager.stopHealthMonitor();
+        vi.useRealTimers();
+      }
+    });
+
     it("does not restart after explicit stopHealthMonitor", async () => {
       vi.useFakeTimers();
       try {

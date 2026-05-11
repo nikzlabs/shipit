@@ -161,7 +161,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const { getLogBuffer, clearLogBuffer, broadcastLog } = createLogBuffer();
 
   // ---- Runner factory ----
-  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, runtimeMode });
+  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, runtimeMode, broadcastLog });
 
   // ---- Service manager registry (per-session compose stacks) ----
   const serviceManagers = new Map<string, ServiceManager>();

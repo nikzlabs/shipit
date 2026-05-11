@@ -175,6 +175,14 @@ export interface RunnerFactoryDeps {
   credentialsDir: string;
   /** Runtime mode — selects ContainerSessionRunner vs in-process SessionRunner. */
   runtimeMode: RuntimeMode;
+  /**
+   * Optional per-session log ring writer. When provided, container
+   * creation failures (which would otherwise live only in
+   * `lastCreateError` until the next successful create wipes them)
+   * also land in `recentLogs`, so a copied diagnostic preserves the
+   * failure history.
+   */
+  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
 }
 
 /**
@@ -190,7 +198,7 @@ export interface RunnerFactoryDeps {
 export function buildRunnerFactory(
   factoryDeps: RunnerFactoryDeps,
 ): SessionRunnerFactory | undefined {
-  const { deps, containerManager, credentialsDir, runtimeMode } = factoryDeps;
+  const { deps, containerManager, credentialsDir, runtimeMode, broadcastLog } = factoryDeps;
 
   // Explicit injection always wins (tests, custom orchestrations).
   if (deps.runnerFactory) return deps.runnerFactory;
@@ -281,6 +289,12 @@ export function buildRunnerFactory(
           const errMsg = getErrorMessage(err);
           console.error(`[container] Failed to start container for ${o.sessionId}:`, errMsg);
           mgr.recordCreateError(o.sessionId, errMsg);
+          // Mirror into the per-session ring — `lastCreateError` is wiped
+          // on the next successful create, but a copied diagnostic still
+          // shows the failure in recentLogs.
+          if (broadcastLog) {
+            broadcastLog(o.sessionId, "server", `Container creation failed (from standby fallback): ${errMsg}`);
+          }
           // Forced — container start failed, the runner is unusable and must
           // be torn down. The agent isn't actually running on a worker yet.
           runner.dispose({ force: true });
@@ -326,6 +340,12 @@ export function buildRunnerFactory(
         // Without this, async creation failures from the fire-and-forget block
         // are invisible to the client — the user sees "Restarting…" forever.
         mgr.recordCreateError(o.sessionId, errMsg);
+        // Also mirror into the per-session ring — `lastCreateError` is
+        // wiped on the next successful create, but a copied diagnostic
+        // still shows the failure in recentLogs.
+        if (broadcastLog) {
+          broadcastLog(o.sessionId, "server", `Container creation failed: ${errMsg}`);
+        }
         // Forced — container start failed, the runner is unusable and must be
         // torn down. The agent isn't running on any worker yet, but if some
         // race ever flipped `_isRunning` (early enqueue, etc.), an unforced
@@ -492,7 +512,20 @@ export function createIdleEnforcer(
           broadcastLog(sid, "server", human);
         }
         containerManager.destroy(sid).catch((err: unknown) => {
-          console.error(`[idle-cleanup] Failed to destroy container ${sid}:`, getErrorMessage(err));
+          const errMsg = getErrorMessage(err);
+          console.error(`[idle-cleanup] Failed to destroy container ${sid}:`, errMsg);
+          // The runner is already disposed by the line below — its
+          // emitMessage path is gone — so the only durable way to
+          // surface this is the per-session log ring. Without it, the
+          // user sees a session that disappeared with no log entry
+          // explaining the destroy failed.
+          if (broadcastLog) {
+            broadcastLog(
+              sid,
+              "server",
+              `Failed to destroy idle container: ${errMsg}. Container may still be running on the host.`,
+            );
+          }
         });
         runnerRegistry.dispose(sid);
       }
@@ -1717,6 +1750,24 @@ export function setupContainerHealthMonitoring(
 ): void {
   containerManager.on("container_exited", (sessionId, exitCode, error) => {
     handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog);
+  });
+
+  // Docker events stream reconnected after a gap. Any die/oom events
+  // during the gap were lost — leave a breadcrumb on every active
+  // session so anyone diagnosing a "container vanished" report can see
+  // the window when events may have been missed. We log to every
+  // session because the gap isn't attributable to a specific one.
+  containerManager.on("health_monitor_resumed", ({ gapMs }) => {
+    const gapLabel = gapMs >= 1000 ? `${Math.round(gapMs / 1000)}s` : `${gapMs}ms`;
+    console.warn(`[container-health] Docker events stream resumed after ${gapLabel} gap`);
+    if (!broadcastLog) return;
+    for (const sc of containerManager.getAll()) {
+      broadcastLog(
+        sc.sessionId,
+        "server",
+        `Docker events stream resumed after ${gapLabel} gap — die/oom events during this window may have been missed.`,
+      );
+    }
   });
 
   /**

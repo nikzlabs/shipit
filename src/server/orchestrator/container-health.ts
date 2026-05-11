@@ -63,11 +63,21 @@ export interface HealthMonitorState {
    * subsequent failure to debounce restart attempts.
    */
   restartTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * Wall-clock timestamp (Date.now()) when the stream most recently
+   * went down — set on `error`/`end` and on the catch path of
+   * `startHealthMonitor()`, cleared on successful (re-)connect. When
+   * non-null, the next successful connect emits a
+   * `health_monitor_resumed` event with the gap duration so the
+   * orchestrator can warn that die/oom events during this window may
+   * have been missed.
+   */
+  lastLossAt: number | null;
 }
 
 /** Default state for a fresh monitor. */
 export function createHealthMonitorState(): HealthMonitorState {
-  return { eventStream: null, stopped: false, restartTimer: null };
+  return { eventStream: null, stopped: false, restartTimer: null, lastLossAt: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +123,17 @@ export async function startHealthMonitor(
         event: ["die", "oom"],
       },
     });
+
+    // Successful (re-)connect. If the stream had been down, emit a
+    // resumed event so the orchestrator can leave a breadcrumb saying
+    // die/oom events during the gap may have been missed. Without this,
+    // the missing-container reconciler is the only signal that a
+    // container vanished — and it can't say *why* it wasn't noticed.
+    if (state.lastLossAt !== null) {
+      const gapMs = Date.now() - state.lastLossAt;
+      state.lastLossAt = null;
+      deps.emitter.emit("health_monitor_resumed", { gapMs });
+    }
 
     state.eventStream.on("data", (chunk: Buffer) => {
       try {
@@ -168,17 +189,20 @@ export async function startHealthMonitor(
       // schedule a reconnect. Without this, container OOMs and crashes
       // become invisible after the first daemon hiccup.
       state.eventStream = null;
+      state.lastLossAt ??= Date.now();
       scheduleRestart(deps, state);
     });
 
     state.eventStream.on("end", () => {
       state.eventStream = null;
+      state.lastLossAt ??= Date.now();
       scheduleRestart(deps, state);
     });
   } catch {
     // Docker events not available — try again later in case the daemon
     // is restarting.
     state.eventStream = null;
+    state.lastLossAt ??= Date.now();
     scheduleRestart(deps, state);
   }
 }
