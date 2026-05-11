@@ -8,12 +8,23 @@ import type { SessionInfo, TurnUsage, RescuePhase } from "../../server/shared/ty
  * Populated from `container_restarting` WS messages so the SessionHealthStrip
  * can render a phased overlay. `null` outside of a rescue.
  *
+ * `startedAt` is the wall-clock timestamp when the user clicked the rescue or
+ * restart-agent button. Lives here (not in React state inside the strip) so
+ * the in-flight indicator survives the SessionHealthStrip being unmounted —
+ * the right-panel tabs (Terminal / Preview / Docs) render via ternary, so
+ * switching tabs during a restart would otherwise wipe the local React state
+ * and leave the user staring at "Container missing" with no context. With
+ * the timestamp in Zustand the poll loop can still filter stale create
+ * errors (`lastCreateErrorAt >= startedAt`) after a remount.
+ *
  * See docs/124-session-rescue-and-diagnostics §3.2.
  */
 export interface RescueState {
   phase: RescuePhase;
   reason?: string;
   message?: string;
+  /** Wall-clock timestamp (Date.now()) when this restart was initiated. */
+  startedAt?: number;
 }
 
 interface SessionState {
@@ -35,6 +46,14 @@ interface SessionState {
   historyLoaded: boolean;
   /** Live Rescue session phase, or null when no rescue is in flight. */
   rescueState: RescueState | null;
+  /**
+   * Most recent error from a recovery action (Kill agent, Restart agent,
+   * Rescue session) issued from the SessionHealthStrip. Lives here so it
+   * survives the strip being unmounted by a right-panel tab switch — keeping
+   * it as React-local `useState` meant a tab switch wiped the error message
+   * before the user could read it.
+   */
+  recoveryActionError: string | null;
   /**
    * Most recent best-effort kill failure (Interrupt or Rescue session).
    * Cleared automatically after a short interval on the client. See
@@ -70,6 +89,7 @@ interface SessionState {
   setActivity: (activity: StreamingActivity | undefined) => void;
   setHistoryLoaded: (loaded: boolean) => void;
   setRescueState: (state: RescueState | null) => void;
+  setRecoveryActionError: (error: string | null) => void;
   setInterruptError: (error: string | null) => void;
   setPauseNotice: (notice: SessionState["pauseNotice"]) => void;
   setSessions: (
@@ -122,6 +142,7 @@ const initialResettableState = {
   prefillText: undefined as string | undefined,
   historyLoaded: false,
   rescueState: null as RescueState | null,
+  recoveryActionError: null as string | null,
   interruptError: null as string | null,
   pauseNotice: null as SessionState["pauseNotice"],
 };
@@ -164,6 +185,8 @@ export const useSessionStore = create<SessionState>((set) => ({
   setHistoryLoaded: (historyLoaded) => set({ historyLoaded }),
 
   setRescueState: (rescueState) => set({ rescueState }),
+
+  setRecoveryActionError: (recoveryActionError) => set({ recoveryActionError }),
 
   setInterruptError: (interruptError) => set({ interruptError }),
 
