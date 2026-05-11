@@ -159,13 +159,17 @@ export class SessionWorker extends EventEmitter {
 
     const configPath = `/tmp/mcp-config-${Date.now()}.json`;
     const outputDir = "/tmp/.playwright-mcp";
+    // `--browser chromium` is required: our Dockerfiles install Chromium
+    // (Chrome doesn't ship for Linux ARM64). Without this flag, @playwright/mcp
+    // defaults to `chrome` and fails on the first browser tool call with
+    // "Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome".
     const config = {
       mcpServers: {
         playwright: {
           command: "sh",
           args: [
             "-c",
-            `mkdir -p ${outputDir} && cd ${outputDir} && exec playwright-mcp --headless --no-sandbox --output-dir ${outputDir}`,
+            `mkdir -p ${outputDir} && cd ${outputDir} && exec playwright-mcp --browser chromium --headless --no-sandbox --output-dir ${outputDir}`,
           ],
         },
       },
