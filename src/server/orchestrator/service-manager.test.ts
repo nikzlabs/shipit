@@ -1028,4 +1028,125 @@ services:
     await vi.advanceTimersByTimeAsync(15_000);
     expect(composeUpCalls.length).toBe(upCallsBefore);
   });
+
+  // --- OOM auto-retry (exit code 137 post-install) ---
+  //
+  // The install-window retry above covers cold-start races. These tests
+  // cover the symmetric case: a `preview: auto` service that's been up,
+  // then gets OOM-killed *after* install finished. Without this path the
+  // service latches to `error` and Rescue session can't fix it (the new
+  // compose stack hits the same memory condition).
+
+  it("auto-retries on OOM (exit 137) after install has finished", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, composeUpCalls, setPsResponse } = makeManager(dir);
+
+    setPsResponse(exitedPs(137));
+    // Install gate is closed — this exercises the post-install OOM path.
+    await mgr.start();
+
+    // Service should be in `starting` (retry pending), NOT `error`.
+    expect(mgr.getService("web")?.status).toBe("starting");
+    expect(mgr.getService("web")?.error).toBeUndefined();
+
+    const upCallsBefore = composeUpCalls.length;
+    // Advance through the first backoff slot (1s) and let the retry run.
+    setPsResponse(runningPs());
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.runAllTimersAsync();
+
+    expect(composeUpCalls.length).toBeGreaterThan(upCallsBefore);
+    expect(mgr.getService("web")?.status).toBe("running");
+  });
+
+  it("latches to error after MAX_OOM_AUTO_RETRIES consecutive OOMs", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, setPsResponse } = makeManager(dir);
+
+    setPsResponse(exitedPs(137));
+    await mgr.start();
+    expect(mgr.getService("web")?.status).toBe("starting"); // retry #1 pending
+
+    // Run through the backoff schedule (1s, 2s, 4s) — service keeps OOMing.
+    // Each retry should keep status at `starting` until the cap is hit.
+    for (const delay of [1_000, 2_000, 4_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+      await vi.runAllTimersAsync();
+    }
+
+    // After 3 OOM retries, the service should be latched to error with the
+    // bounded-retry message.
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toContain("OOMKilled");
+    expect(web?.error).toContain("gave up");
+  });
+
+  it("does not auto-retry manual services on OOM (user-initiated)", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  worker:
+    image: node:20
+    x-shipit-preview: manual
+`);
+    const { mgr, setPsResponse } = makeManager(dir);
+
+    // Manual services aren't started by mgr.start(), so the OOM exit path is
+    // reached via an explicit startService + pollStatus.
+    await mgr.start();
+    expect(mgr.getService("worker")?.status).toBe("stopped");
+
+    setPsResponse(JSON.stringify({
+      Service: "worker", ID: "abc", State: "exited", ExitCode: 137,
+    }));
+    // Simulate a poll where the manual service shows as exited 137.
+    // composeRunner just resolves, so the "up" succeeds but the next ps
+    // still says exited.
+    await mgr.startService("worker");
+
+    const worker = mgr.getService("worker");
+    // Manual service path is "error" with the bare OOM hint, no auto-retry.
+    expect(worker?.status).toBe("error");
+    expect(worker?.error).toContain("Exited with code 137 (likely OOMKilled)");
+  });
+
+  it("resets OOM counter when user explicitly calls startService", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, setPsResponse } = makeManager(dir);
+
+    // Burn through the retry budget.
+    setPsResponse(exitedPs(137));
+    await mgr.start();
+    for (const delay of [1_000, 2_000, 4_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+      await vi.runAllTimersAsync();
+    }
+    expect(mgr.getService("web")?.status).toBe("error");
+
+    // User clicks "start" — should reset the budget and try again. With ps
+    // still reporting an OOM exit, the next pollStatus inside startService
+    // should re-enter the retry path (status: "starting") instead of the
+    // "gave up" latch — proving the counter was reset.
+    await mgr.startService("web");
+    expect(mgr.getService("web")?.status).toBe("starting");
+  });
+
+  it("non-137 exits still latch to error post-install (no auto-retry)", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, setPsResponse } = makeManager(dir);
+
+    setPsResponse(exitedPs(1));
+    await mgr.start();
+    // Exit code 1 (not OOM) — no retry, goes straight to error.
+    expect(mgr.getService("web")?.status).toBe("error");
+    expect(mgr.getService("web")?.error).toContain("Exited with code 1");
+  });
 });
