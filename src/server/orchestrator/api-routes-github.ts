@@ -155,6 +155,13 @@ export async function registerGitHubRoutes(
           fill: request.body?.fill,
           sessionTitle: session.title,
           remoteUrl: session.remoteUrl,
+          // Pass session + runner context so the service can flush any
+          // pending working-tree changes (commit + cancel pending auto-push)
+          // before pushing. The agent calls `gh pr create` mid-turn, before
+          // the normal end-of-turn `postTurnCommit` has fired — without the
+          // flush, those edits wouldn't appear on the PR.
+          sessionId: request.params.id,
+          runnerRegistry: deps.runnerRegistry,
         });
         if (deps.prStatusPoller && session.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);

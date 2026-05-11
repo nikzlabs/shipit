@@ -130,6 +130,8 @@ The workspace's git config still uses the user's identity (`/credentials/.gitcon
 
 We pick (1). `gh pr create` behind the shim does push-then-create, just like `quickCreatePr` already does. The agent doesn't need a separate push affordance.
 
+**Commit flush (added later):** since the agent calls `gh pr create` *mid-turn* — before the normal end-of-turn `postTurnCommit` has fired — the working tree typically still has uncommitted edits when the shim hits `/pr/agent-create`. Without a flush, the new PR would be opened against the branch's previously-committed state and the agent's just-made edits would not appear on the PR. The route now resolves the session's runner from the registry, commits any pending changes via `flushPendingTurnCommit` (using `runner.turnSummary` as the commit message), and clears any pending auto-push debounce before pushing synchronously. The "don't commit yourself" rule in the agent's system prompt stays intact — the shim handles it. Implementation: `services/github.ts` (`flushPendingTurnCommit`, `agentCreatePr`).
+
 ### Interaction with the harness fallback
 
 `claude-execution.ts:259-301` calls `quickCreatePr` after the post-turn commit when `autoCreatePr` is on. `quickCreatePr` already short-circuits if a PR exists for the branch (`services/github.ts:242-254`). So:
