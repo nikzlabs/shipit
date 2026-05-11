@@ -433,6 +433,86 @@ describe("PreviewFrame", () => {
     expect(iframe).toBeInTheDocument();
   });
 
+  it("shows 'Connecting to dev server...' (not 'Starting dev server...') while polling a running preview", () => {
+    // Dogfooding regression: when the orchestrator has reported the preview as
+    // running but the iframe slot hasn't been polled into existence yet, the
+    // overlay used to say "Starting dev server..." — confusing in dogfooding
+    // because the user already started the service and Vite logs "ready in
+    // 437ms" while the spinner is on screen. The wording now reflects
+    // reality: the dev server is up, we're connecting to it.
+    usePreviewStore.getState().setServices([
+      { name: "dev", status: "running", port: 3000, preview: "manual" },
+    ]);
+    // Never resolve — keep the poll pending so the overlay stays visible.
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => {})));
+    const runningPreview: PreviewStatus = {
+      running: true,
+      port: 3000,
+      url: "/preview/abc/3000/",
+      source: "detected",
+      detectedPorts: [3000],
+    };
+    render(
+      <PreviewFrame
+        preview={runningPreview}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    expect(screen.getByText("Connecting to dev server...")).toBeInTheDocument();
+    // The legacy wording must NOT appear in this state — it's reserved for
+    // the path-1 spinner (no preview, no startup steps).
+    expect(screen.queryByText("Starting dev server...")).not.toBeInTheDocument();
+  });
+
+  it("creates iframe slot promptly when preview-health flips to ready after a few polls (dogfood slow boot)", async () => {
+    // Dogfooding case: the dev container is reported `running` by docker
+    // compose but Vite isn't actually serving on :3000 yet, so preview-health
+    // returns `{ ready: false }` for the first few polls. As soon as Vite
+    // comes up and preview-health flips to `{ ready: true }`, the iframe
+    // slot must be created — otherwise the user is stuck looking at the
+    // "Connecting to dev server..." overlay long after Vite logged
+    // "ready in 437 ms".
+    usePreviewStore.getState().setServices([
+      { name: "dev", status: "running", port: 3000, preview: "manual" },
+    ]);
+    let callCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() => {
+        callCount += 1;
+        // First few polls: dev container is up but Vite isn't listening yet.
+        // Then Vite comes up and the probe succeeds.
+        const ready = callCount > 3;
+        return Promise.resolve(
+          new Response(JSON.stringify({ ready }), { status: 200 }),
+        );
+      }),
+    );
+    const runningPreview: PreviewStatus = {
+      running: true,
+      port: 3000,
+      url: "/preview/abc/3000/",
+      source: "detected",
+      detectedPorts: [3000],
+    };
+    render(
+      <PreviewFrame
+        preview={runningPreview}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    // The poll loop awaits fetch() with a 250ms gap between iterations —
+    // findByTitle's default 1000ms timeout is comfortably enough for 4 polls.
+    const iframe = await screen.findByTitle("Live Preview");
+    expect(iframe).toBeInTheDocument();
+    // The fetch should have been called at least 4 times before flipping to ready.
+    expect(callCount).toBeGreaterThanOrEqual(4);
+  });
+
   // ---- Managed source tests ----
 
   it("renders iframe for managed source preview", async () => {
