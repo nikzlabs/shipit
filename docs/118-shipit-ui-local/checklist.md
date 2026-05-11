@@ -26,8 +26,8 @@
 - [ ] **Secrets-leak mitigation.** The default secrets path lands `.shipit/.env.dev` in `${workspaceDir}` — i.e. the ShipIt repo source tree. Phase 0 covers gitignore + `WORKSPACE_SKIP_DIRS`. Additionally:
   - [ ] Document the `SHIPIT_SECRETS_INTERNAL_DIR` outer-orchestrator env var and recommend setting it for any production outer that hosts ShipIt-in-ShipIt sessions. With it set, `writeIsolatedSecretFiles` routes secrets to a dir outside the workspace volume entirely.
   - [ ] If we control the outer's deployment config, set `SHIPIT_SECRETS_INTERNAL_DIR` on it.
-- [ ] Verify `AuthManager` (`auth.ts`) reads Claude OAuth from env vars (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`). If it only reads from `/credentials/` on disk, add an env-var-first init path.
-- [ ] Verify `GitHubAuthManager` (`github-auth.ts`) reads `GITHUB_TOKEN` from env. Same deal.
+- [x] Verify `AuthManager` (`auth.ts`) reads Claude OAuth from env vars (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`). Both env vars are now honored by `checkCredentials()`; previously only `ANTHROPIC_API_KEY` was checked, so the inner orch reported unauthenticated when the outer forwarded an OAuth-only token under `ANTHROPIC_AUTH_TOKEN`.
+- [x] Verify `GitHubAuthManager` (`github-auth.ts`) reads `GITHUB_TOKEN` from env. `checkCredentials()` now falls back to `process.env.GITHUB_TOKEN` when `CredentialStore` has nothing on disk. Env-sourced tokens are not persisted to disk — env stays the source of truth so outer-orch token rotation is picked up on the next check.
 
 ### Inner-UI suppressions and surfacing
 - [ ] Bootstrap response includes `runtimeMode`. Client store reads it.
