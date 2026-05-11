@@ -372,11 +372,52 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
       console.error("[git] auto-commit failed:", getErrorMessage(err));
     }
 
+    // Mirror the cleanup that runAgentWithMessage's done handler performs.
+    // `agent-listeners.ts` already flips `running` to false and emits
+    // `session_status { running: false }` on agent_result, but the SSE
+    // `session_agent_finished` broadcast is owned by the handler, not the
+    // listeners. Without this, sidebars on other tabs would keep showing
+    // the "agent running" dot until they reconnect. Defensive `running=false`
+    // covers the no-result-event crash path the same way it does in
+    // agent-execution.ts.
+    if (answerRunner) {
+      answerRunner.running = false;
+      if (capturedSessionId) {
+        ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
+      }
+      answerRunner.onAgentFinished();
+    }
   });
 
   // Look up agent session ID for --resume
   const session = capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined;
   const agentSessionId = session?.agentSessionId ?? capturedSessionId;
+
+  // Mark the runner as running BEFORE starting the agent — same pattern as
+  // handleSendMessage/runAgentWithMessage. Without this:
+  //   - the SSE `session_agent_started` event is never broadcast, so the
+  //     sidebar keeps the "Waiting for your input" attention indicator and
+  //     the active-runner dot doesn't appear;
+  //   - if the WS reconnects mid-turn, the reattach path in index.ts skips
+  //     the `session_status` replay (gated on `runner.running`), so the
+  //     reattached viewer's "Thinking..." indicator stays cleared even
+  //     though the agent is actively running.
+  if (answerRunner) answerRunner.running = true;
+  if (capturedSessionId) {
+    ctx.sseBroadcast("session_agent_started", { sessionId: capturedSessionId });
+  }
+  // Emit session_status to all attached viewers so the chat panel's
+  // "Thinking..." indicator and sidebar's active-runner dot show up even
+  // without optimistic client-side state (e.g., a second tab that didn't
+  // initiate the answer).
+  if (answerRunner && capturedSessionId) {
+    answerRunner.emitMessage({
+      type: "session_status",
+      sessionId: capturedSessionId,
+      running: true,
+      queueLength: answerRunner.queueLength,
+    });
+  }
 
   const systemPrompt = await ctx.readSystemPrompt();
   currentAgent.run({
