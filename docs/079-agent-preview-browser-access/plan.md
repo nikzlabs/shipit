@@ -93,14 +93,18 @@ The session worker generates an MCP config file at agent start time and passes i
 {
   "mcpServers": {
     "playwright": {
-      "command": "playwright-mcp",
-      "env": {
-        "PLAYWRIGHT_HEADLESS": "true"
-      }
+      "command": "sh",
+      "args": ["-c", "… exec playwright-mcp --browser chromium --headless --no-sandbox --output-dir /tmp/.playwright-mcp"]
     }
   }
 }
 ```
+
+**`--browser chromium` is required.** Our Dockerfiles install Chromium (Google
+Chrome doesn't ship for Linux ARM64). Without this flag, `@playwright/mcp`
+defaults to `chrome` and every browser tool call fails on first invocation with
+`Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome` —
+which used to look like a "session died" symptom to the user.
 
 The config file is written to `/tmp/mcp-config-<sessionId>.json` (deterministic path, overwritten per turn rather than accumulated). Cleanup happens in the `onExit` handler of `ClaudeProcess`.
 
