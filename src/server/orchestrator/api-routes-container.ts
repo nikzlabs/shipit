@@ -5,10 +5,11 @@
  * See docs/112-container-recovery/plan.md and
  * docs/124-session-rescue-and-diagnostics/plan.md. Four endpoints:
  *
- *   GET  /api/sessions/:id/container/health     — aggregated health strip
- *   GET  /api/sessions/:id/diagnostics          — full debug payload (124 §3)
- *   POST /api/sessions/:id/agent/kill           — SIGKILL the agent
- *   POST /api/sessions/:id/container/restart    — destroy + recreate container
+ *   GET  /api/sessions/:id/container/health         — aggregated health strip
+ *   GET  /api/sessions/:id/diagnostics              — full debug payload (124 §3)
+ *   POST /api/sessions/:id/agent/kill               — SIGKILL the agent
+ *   POST /api/sessions/:id/container/restart        — destroy + recreate (Rescue session)
+ *   POST /api/sessions/:id/agent/container/restart  — destroy + recreate agent only (127)
  *
  * These are HTTP rather than WebSocket because they need to work even
  * when the per-session WS or the worker itself is in a degraded state,
@@ -23,6 +24,7 @@ import {
   getContainerHealth,
   getSessionDiagnostics,
   killAgent,
+  restartAgent,
   restartContainer,
   ServiceError,
 } from "./services/index.js";
@@ -136,6 +138,33 @@ export async function registerContainerRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to restart container: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/agent/container/restart — destroy + recreate JUST the
+  // agent container; leave the compose stack running. Lighter-weight than the
+  // full Rescue session. See docs/127-restart-agent.
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/agent/container/restart",
+    async (request, reply) => {
+      try {
+        const result = await restartAgent(
+          {
+            sessionManager: deps.sessionManager,
+            containerManager: deps.containerManager ?? null,
+            runnerRegistry: deps.runnerRegistry,
+            defaultAgentId: deps.defaultAgentId,
+          },
+          request.params.id,
+        );
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to restart agent: ${getErrorMessage(err)}` });
       }
     },
   );

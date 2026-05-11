@@ -253,6 +253,44 @@ export class ServiceManager extends EventEmitter {
   /** Backoff schedule: 1s, 2s, 4s, 8s, capped at 10s. */
   private static readonly RETRY_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
 
+  // --- OOM auto-retry ---
+  /**
+   * Per-service OOM attempt counter — separate from `retryAttempts` (which
+   * tracks install-window retries). Counts consecutive OOM-killed exits
+   * (code 137) for a `preview: auto` service. Reset when:
+   *   - The service runs for `OOM_STABLE_RESET_MS` without OOMing again
+   *     (the typical "one-off pressure spike" case).
+   *   - The service is explicitly stopped or restarted by the user.
+   *   - The manager is reconciled / disposed.
+   * NOT reset on every momentary `running` poll — a service that flaps in
+   * and out of `running` while OOMing every few seconds must NOT loop
+   * forever; the cap forces the user to intervene after MAX retries.
+   */
+  private oomRetryAttempts = new Map<string, number>();
+  /**
+   * Per-service stable-uptime timers. When a service comes up `running`
+   * after at least one OOM-retry, we arm a timer to clear the OOM counter
+   * if it stays running long enough. The timer is cancelled if the
+   * service leaves `running` before it fires.
+   */
+  private oomStableTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Hard cap on consecutive OOM-retries before we latch to `error`. After
+   * this many retries in a row (without `OOM_STABLE_RESET_MS` of stable
+   * uptime between them) the service is left in `error` so the user can
+   * investigate — repeatedly restarting a service that keeps OOMing just
+   * burns CPU and masks the real problem (memory cap too low, runaway
+   * process, host pressure).
+   */
+  private static readonly MAX_OOM_AUTO_RETRIES = 3;
+  /**
+   * How long a service must run continuously before its OOM counter is
+   * cleared. A short flap (run for 2s, OOM, run for 2s, OOM…) shouldn't
+   * reset the counter; a service that comes up properly and runs for
+   * a full minute should.
+   */
+  private static readonly OOM_STABLE_RESET_MS = 60_000;
+
   constructor(opts: ServiceManagerOptions) {
     super();
     this.sessionId = opts.sessionId;
@@ -482,6 +520,11 @@ export class ServiceManager extends EventEmitter {
     const svc = this.services.get(name);
     if (!svc) throw new Error(`Unknown service: ${name}`);
 
+    // User-initiated start — clear any OOM auto-retry budget so the
+    // service gets a fresh chance. If the user explicitly hits "start"
+    // after we gave up on retries, they're saying "try again."
+    this.cancelOomStableTimer(name);
+    this.oomRetryAttempts.delete(name);
     this.updateServiceStatus(name, "starting");
     try {
       await this.composeUpService(name);
@@ -500,6 +543,9 @@ export class ServiceManager extends EventEmitter {
     const svc = this.services.get(name);
     if (!svc) throw new Error(`Unknown service: ${name}`);
 
+    // Same as startService — explicit user action resets the OOM budget.
+    this.cancelOomStableTimer(name);
+    this.oomRetryAttempts.delete(name);
     this.updateServiceStatus(name, "starting");
     try {
       await this.composeStop(name);
@@ -880,12 +926,23 @@ export class ServiceManager extends EventEmitter {
       if (!svc) continue;
       const prev = svc.status;
       if (state === "running") {
-        // Service recovered — clear any pending retry state
+        // Service recovered — clear any pending install-window retry state.
         this.clearRetryState(name);
+        // If a previous OOM kicked off auto-retries, arm a stable-uptime
+        // timer that clears the OOM counter once the service has been
+        // healthy long enough. We don't clear the counter eagerly: a
+        // service that flaps in and out of `running` while OOMing must
+        // still hit the cap, otherwise we loop forever.
+        this.armOomStableResetIfNeeded(name);
         if (prev !== "running") this.updateServiceStatus(name, "running");
       } else if (state === "exited" || state === "dead") {
+        // Whatever happens below, the service is no longer running — cancel
+        // any pending stable-uptime timer so a fresh `running` poll has to
+        // re-arm it.
+        this.cancelOomStableTimer(name);
         if (exitCode === 0) {
           this.clearRetryState(name);
+          this.oomRetryAttempts.delete(name);
           if (prev !== "stopped") this.updateServiceStatus(name, "stopped");
         } else if (this._installRunning && svc.preview === "auto") {
           // Install is still extracting deps into the bind-mounted workspace.
@@ -893,12 +950,23 @@ export class ServiceManager extends EventEmitter {
           // service can come up once install finishes. Manual services are
           // user-initiated and not retried automatically.
           this.scheduleRetryWhileInstalling(name, exitCode);
+        } else if (exitCode === 137 && svc.preview === "auto") {
+          // 137 = SIGKILL, the most common cause of which inside a
+          // memory-limited container is the OOM killer. The authoritative
+          // signal comes from the Docker event subscriber in
+          // container-health.ts (which checks State.OOMKilled), but if that
+          // event was missed we still want to handle it correctly here.
+          //
+          // We auto-retry up to MAX_OOM_AUTO_RETRIES times with the same
+          // backoff schedule the install-window path uses. Without this,
+          // the service latches to `error` and the user clicks Rescue
+          // session — which destroys+recreates the agent container, kicks
+          // off a fresh compose stack, and immediately hits the same OOM
+          // condition. The user perceives "Rescue does nothing." This path
+          // lets transient pressure spikes self-heal without the user
+          // needing to intervene at all.
+          this.scheduleOomRetry(name);
         } else {
-          // 137 = SIGKILL, the most common cause of which inside a memory-limited
-          // container is the OOM killer. The authoritative signal comes from the
-          // Docker event subscriber in container-health.ts (which checks
-          // State.OOMKilled), but if that event was missed we still want to give
-          // the user a strong hint here rather than the bare exit code.
           const message = exitCode === 137
             ? "Exited with code 137 (likely OOMKilled)"
             : `Exited with code ${exitCode}`;
@@ -1016,6 +1084,87 @@ export class ServiceManager extends EventEmitter {
     for (const timer of this.retryTimers.values()) clearTimeout(timer);
     this.retryTimers.clear();
     this.retryAttempts.clear();
+    for (const timer of this.oomStableTimers.values()) clearTimeout(timer);
+    this.oomStableTimers.clear();
+    this.oomRetryAttempts.clear();
+  }
+
+  /**
+   * Schedule an OOM-recovery retry for a `preview: auto` service that
+   * just exited with code 137. Mirrors `scheduleRetryWhileInstalling` but
+   * is bounded by `MAX_OOM_AUTO_RETRIES` — after that many consecutive
+   * OOMs without a stable-uptime window in between, we latch to `error`
+   * so the user can investigate.
+   */
+  private scheduleOomRetry(name: string): void {
+    if (this._disposed) return;
+    // If a retry is already pending, leave it in place.
+    if (this.retryTimers.has(name)) return;
+
+    const attempt = this.oomRetryAttempts.get(name) ?? 0;
+    if (attempt >= ServiceManager.MAX_OOM_AUTO_RETRIES) {
+      // Exhausted — latch to error with a message that explicitly names
+      // the retry budget so the user knows we already tried (and that
+      // Rescue session won't help here, only fixing the underlying memory
+      // pressure will).
+      //
+      // We intentionally do NOT delete the counter here: the next periodic
+      // pollStatus tick will see the service still in `exited`/`dead` state
+      // and re-enter this method. Leaving the counter at MAX_OOM_AUTO_RETRIES
+      // keeps the gate closed so we don't kick off a fresh retry loop. The
+      // counter is reset only by an explicit user action (startService /
+      // restartService) or by manager-wide cleanup (cancelAllRetries).
+      this.updateServiceStatus(
+        name,
+        "error",
+        `OOMKilled (exit 137) — gave up after ${ServiceManager.MAX_OOM_AUTO_RETRIES} auto-retries; increase the service's memory limit or close other sessions to free host memory`,
+      );
+      return;
+    }
+
+    const delayIdx = Math.min(attempt, ServiceManager.RETRY_BACKOFF_MS.length - 1);
+    const delay = ServiceManager.RETRY_BACKOFF_MS[delayIdx];
+    this.oomRetryAttempts.set(name, attempt + 1);
+
+    console.log(
+      `[compose:${this.sessionId}] ${name} OOMKilled — retry #${attempt + 1}/${ServiceManager.MAX_OOM_AUTO_RETRIES} in ${delay}ms`,
+    );
+
+    // Reflect "still coming up" to the UI rather than `error`. The
+    // PreviewFrame banner / service dot stay yellow during the retry
+    // window instead of going red.
+    this.updateServiceStatus(name, "starting");
+
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(name);
+      void this.runRetryNow(name);
+    }, delay);
+    this.retryTimers.set(name, timer);
+  }
+
+  /**
+   * Arm a stable-uptime timer for a service that has reached `running`
+   * after at least one OOM auto-retry. If the service stays running for
+   * `OOM_STABLE_RESET_MS` the OOM counter resets; if it leaves `running`
+   * first, the timer is cancelled by the next exited-state poll.
+   */
+  private armOomStableResetIfNeeded(name: string): void {
+    if (!this.oomRetryAttempts.has(name)) return;
+    if (this.oomStableTimers.has(name)) return;
+    const timer = setTimeout(() => {
+      this.oomStableTimers.delete(name);
+      this.oomRetryAttempts.delete(name);
+    }, ServiceManager.OOM_STABLE_RESET_MS);
+    this.oomStableTimers.set(name, timer);
+  }
+
+  /** Cancel the stable-uptime timer for a service (when it leaves `running`). */
+  private cancelOomStableTimer(name: string): void {
+    const timer = this.oomStableTimers.get(name);
+    if (timer) {
+      clearTimeout(timer);
+      this.oomStableTimers.delete(name);
+    }
   }
 
   /**

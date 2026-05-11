@@ -140,6 +140,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Called when config files change and no ServiceManager exists (e.g. after migration). */
   onComposeConfigChanged?: () => void;
 
+  /**
+   * When `true`, the runner's "disposed" lifecycle hook in
+   * `app-lifecycle.ts` will NOT stop the compose stack or evict the
+   * ServiceManager from the per-app `serviceManagers` map. The next
+   * `setupServiceManager(newRunner)` call adopts the orphaned manager
+   * via `runner.setServiceManager(existing)`.
+   *
+   * Set by the `restartAgent` recovery flow (see docs/127-restart-agent),
+   * which destroys+recreates the agent container while leaving the
+   * compose stack untouched. Default `false` — Rescue session, idle
+   * eviction, shutdown, and full-reset all keep the previous behavior
+   * of tearing down compose when the runner is disposed.
+   */
+  preserveComposeOnDispose = false;
+
   /** Config files that trigger a compose reconcile when changed. */
   private static readonly CONFIG_FILES = new Set([
     "shipit.yaml",
@@ -175,6 +190,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   setWorkerUrl(url: string): void {
     this.workerUrl = url;
     this._resolveWorkerReady();
+  }
+
+  /**
+   * Resolves once the underlying container has a real worker URL — i.e.
+   * the container has been created and its IP resolved. For runners
+   * constructed without the placeholder URL, resolves immediately.
+   *
+   * Exposed so external lifecycle code (e.g. `adoptExistingServiceManager`
+   * in app-lifecycle.ts) can defer container-dependent operations like
+   * `connectToNetwork` until the container actually exists, instead of
+   * firing them synchronously after `getOrCreate` returns.
+   */
+  whenWorkerReady(): Promise<void> {
+    return this._workerReady;
   }
 
   // --- Agent state (same interface as SessionRunner) ---
@@ -1207,6 +1236,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.clearPushTimer();
     // Resolve any awaiters of in-flight install so they don't leak.
     this.signalInstallComplete();
+    // Resolve `_workerReady` so any `whenWorkerReady().then(...)` chain
+    // pending against a placeholder-URL runner doesn't leak when the
+    // container creation fails before `setWorkerUrl()` ever fires. The
+    // chained `.then` will run with no meaningful worker — that's fine:
+    // its callers (e.g. `adoptExistingServiceManager`'s connectToNetwork)
+    // will hit "No container found" and the `.catch` handles it.
+    this._resolveWorkerReady();
+    // Same defense for `_sseConnected`: if dispose runs before the SSE
+    // stream actually opens, any `connectEventStream()` awaiter would
+    // otherwise hang forever. Resolving here is safe — awaiters that
+    // proceed past it check `this._disposed` and bail.
+    if (this._resolveSseConnected) {
+      this._resolveSseConnected();
+      this._resolveSseConnected = null;
+    }
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
     this._isRunning = false;
