@@ -466,6 +466,52 @@ describe("PreviewFrame", () => {
     expect(screen.queryByText("Starting dev server...")).not.toBeInTheDocument();
   });
 
+  it("passes an AbortSignal to preview-health fetch so a hung response can't strand the poll", async () => {
+    // Regression: previously, if `/api/preview-health` ever hung (e.g. the
+    // outer orchestrator is overloaded in dogfooding and responses get stuck),
+    // the poll loop was wedged on `await fetch(pollUrl)` — the `i < 60` cap
+    // never advanced, the post-loop slot creation never fired, and the
+    // "Connecting to dev server..." spinner stayed up forever. The fix is a
+    // per-fetch `AbortSignal.timeout(2000)` plus a wall-clock 15s deadline
+    // on the loop, after which the slot is created unconditionally.
+    //
+    // This test verifies the per-fetch signal is wired up; the wall-clock
+    // deadline is covered by inspection (testing 15s of real time is too
+    // slow, and fake-timers don't interleave cleanly with AbortSignal's
+    // internal timer + React's render queue).
+    usePreviewStore.getState().setServices([
+      { name: "dev", status: "running", port: 3000, preview: "manual" },
+    ]);
+    const fetchMock = vi.fn().mockReturnValue(new Promise(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+    const runningPreview: PreviewStatus = {
+      running: true,
+      port: 3000,
+      url: "/preview/abc/3000/",
+      source: "detected",
+      detectedPorts: [3000],
+    };
+    render(
+      <PreviewFrame
+        preview={runningPreview}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    // Spinner is up while we wait for the first fetch to settle.
+    expect(screen.getByText("Connecting to dev server...")).toBeInTheDocument();
+    // The poll effect fires async after mount — wait for the first fetch.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
+    expect(url).toBe("/api/preview-health/abc/3000");
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    // The signal must abort on its own (AbortSignal.timeout) so the await
+    // can't hang indefinitely. We don't need to wait the full 2s; the
+    // important contract is "there is a signal that will fire."
+    expect(init?.signal?.aborted).toBe(false);
+  });
+
   it("creates iframe slot promptly when preview-health flips to ready after a few polls (dogfood slow boot)", async () => {
     // Dogfooding case: the dev container is reported `running` by docker
     // compose but Vite isn't actually serving on :3000 yet, so preview-health

@@ -251,22 +251,34 @@ export function PreviewFrame({
     const key = activeSlotKey;
 
     const poll = async () => {
-      // Use a shorter interval so we react quickly when the dev server comes
-      // up fast (e.g. dogfood Vite "ready in 437ms"). Total budget stays the
-      // same (~15s = 60 × 250ms) so slow boots still get enough headroom
-      // before the spinner falls back to "create iframe anyway".
+      // Two bounds matter, and the loop must respect both:
+      //   - per-fetch timeout (AbortSignal.timeout). Without this, a single
+      //     hung `/api/preview-health` response strands the loop on
+      //     `await fetch(...)` — `i < 60` never advances and the post-loop
+      //     slot-creation never fires, so the "Connecting to dev server..."
+      //     spinner stays up forever. Seen in dogfooding when the outer
+      //     orchestrator is slow to respond to the health endpoint.
+      //   - wall-clock deadline. Even with a per-fetch timeout, repeated
+      //     slow fetches would compound: 60 × (2s + 250ms) ≈ 135s worst case
+      //     without a wall-clock cap. The deadline keeps total polling at
+      //     ~15s so the user never waits longer than that before the iframe
+      //     gets created anyway.
+      // The 250ms inter-iteration sleep keeps the loop reactive when the
+      // dev server comes up fast (dogfood Vite "ready in 437ms").
+      const deadline = Date.now() + 15_000;
       for (let i = 0; i < 60 && !state.cancelled; i++) {
+        if (Date.now() >= deadline) break;
         try {
           if (isContainerMode) {
-            const resp = await fetch(pollUrl);
+            const resp = await fetch(pollUrl, { signal: AbortSignal.timeout(2000) });
             const data = await resp.json() as { ready?: boolean };
             if (data.ready) break;
           } else {
-            await fetch(pollUrl, { mode: "no-cors" });
+            await fetch(pollUrl, { mode: "no-cors", signal: AbortSignal.timeout(2000) });
             break;
           }
         } catch {
-          // Network error — retry
+          // Network error or fetch timeout — retry
         }
         await new Promise((r) => setTimeout(r, 250));
       }
