@@ -140,6 +140,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Called when config files change and no ServiceManager exists (e.g. after migration). */
   onComposeConfigChanged?: () => void;
 
+  /**
+   * When `true`, the runner's "disposed" lifecycle hook in
+   * `app-lifecycle.ts` will NOT stop the compose stack or evict the
+   * ServiceManager from the per-app `serviceManagers` map. The next
+   * `setupServiceManager(newRunner)` call adopts the orphaned manager
+   * via `runner.setServiceManager(existing)`.
+   *
+   * Set by the `restartAgent` recovery flow (see docs/127-restart-agent),
+   * which destroys+recreates the agent container while leaving the
+   * compose stack untouched. Default `false` — Rescue session, idle
+   * eviction, shutdown, and full-reset all keep the previous behavior
+   * of tearing down compose when the runner is disposed.
+   */
+  preserveComposeOnDispose = false;
+
   /** Config files that trigger a compose reconcile when changed. */
   private static readonly CONFIG_FILES = new Set([
     "shipit.yaml",

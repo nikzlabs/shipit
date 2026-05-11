@@ -23,6 +23,7 @@ import {
   CaretDownIcon,
   CaretUpIcon,
   StethoscopeIcon,
+  CpuIcon,
 } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
 import { StatusDot } from "./ui/status-dot.js";
@@ -95,8 +96,9 @@ const PHASE_LABEL: Record<RescuePhase, string> = {
   destroying_container: "Destroying container…",
   creating_container: "Recreating container…",
   starting_stack: "Starting services…",
-  ready: "Rescue complete",
-  failed: "Rescue failed",
+  restarting_agent: "Restarting agent…",
+  ready: "Restart complete",
+  failed: "Restart failed",
 };
 
 function summarize(
@@ -371,6 +373,45 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     }
   }, [api, sessionId, onReconnectWs, poll, setRescueState]);
 
+  /**
+   * Restart the agent container only — leaves the compose stack running.
+   * Lighter-weight than Rescue session; intended for "the agent is wedged
+   * but the compose preview is fine." See docs/127-restart-agent.
+   *
+   * Uses the same overlay state machine as `onRestart` (the new container
+   * goes through `destroying_container` → `creating_container` → `ready`
+   * server-side) so the strip's existing poll-driven finalize logic
+   * applies unchanged.
+   */
+  const onRestartAgent = useCallback(async () => {
+    if (!sessionId) return;
+    setIsRestarting(true);
+    setActionError(null);
+    setRescueState({ phase: "restarting_agent" });
+    restartStartedAtRef.current = Date.now();
+    try {
+      const result = await api.post<RestartContainerResult>(
+        `/api/sessions/${sessionId}/agent/container/restart`,
+      );
+      onReconnectWs();
+      if (result.newContainerState === "running") {
+        setIsRestarting(false);
+        restartStartedAtRef.current = null;
+      } else if (result.newContainerState === "missing" && result.error) {
+        setActionError(`Restart agent failed: ${result.error}`);
+        setIsRestarting(false);
+        restartStartedAtRef.current = null;
+        setRescueState({ phase: "failed", reason: "create_failed", message: result.error });
+      }
+      void poll();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : String(e));
+      setIsRestarting(false);
+      restartStartedAtRef.current = null;
+      setRescueState({ phase: "failed", reason: "request_error" });
+    }
+  }, [api, sessionId, onReconnectWs, poll, setRescueState]);
+
   if (!sessionId) {
     return (
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-tertiary)">
@@ -460,6 +501,18 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
               ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
               : <SkullIcon size={ICON_SIZE.XS} />}
             Kill agent
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void onRestartAgent()}
+            disabled={isRestarting}
+            title="Destroy and recreate just the agent container. Leaves the compose stack running — use when the agent is wedged but your preview/dev-server are fine."
+          >
+            {isRestarting
+              ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+              : <CpuIcon size={ICON_SIZE.XS} />}
+            Restart agent
           </Button>
           <Button
             variant="secondary"

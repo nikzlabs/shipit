@@ -689,6 +689,92 @@ export function handleStackError(
   });
 }
 
+/** Typeguard for the ContainerSessionRunner subclass without an instanceof import here. */
+function isContainerRunner(
+  runner: SessionRunnerInterface,
+): runner is SessionRunnerInterface & ContainerSessionRunner {
+  return runner instanceof ContainerSessionRunner;
+}
+
+/**
+ * Re-wire a freshly-created runner onto an orphaned ServiceManager that
+ * survived the previous runner's `preserveComposeOnDispose` dispose. The
+ * compose stack is still running — we only need to attach listeners,
+ * reconnect the new agent container to the existing network, and re-arm
+ * the install-running gate around the new container's install.
+ *
+ * See docs/127-restart-agent for the full design.
+ */
+function adoptExistingServiceManager(
+  runner: SessionRunnerInterface,
+  mgr: ServiceManager,
+  deps: {
+    serviceManagers: Map<string, ServiceManager>;
+    containerManager: SessionContainerManager | null;
+    broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+    installPromise: Promise<void> | null;
+  },
+): void {
+  const { serviceManagers, containerManager, broadcastLog, installPromise } = deps;
+
+  // 1. Attach the new runner's listeners. `setServiceManager` internally
+  //    calls `clearServiceManager()` first, but on a freshly-created runner
+  //    that's a no-op — there's nothing to clear.
+  if (runner.setServiceManager) {
+    runner.setServiceManager(mgr);
+  }
+
+  // 2. Reconnect the new agent container to the existing compose network.
+  //    The old container was destroyed; the network outlived it (compose
+  //    only removes networks on `down`, which we deliberately skipped).
+  if (containerManager) {
+    const networkName = `shipit-session-${runner.sessionId}`;
+    void containerManager
+      .connectToNetwork(runner.sessionId, networkName)
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("already exists")) {
+          console.warn(
+            `[compose:${runner.sessionId}] reconnect to ${networkName} failed:`,
+            msg,
+          );
+        }
+      });
+  }
+
+  // 3. Re-bind stack_error to the new runner so error logs route to the
+  //    right place.
+  const stackErrorListener = (err: Error) => {
+    handleStackError(runner, err, broadcastLog);
+  };
+  mgr.on("stack_error", stackErrorListener);
+
+  // 4. Re-arm the install-running gate for the new container's install.
+  //    Same race story as initial setup: a compose service that reads
+  //    workspace `node_modules` while install is extracting can fail —
+  //    the gate retries it instead of latching to `error`.
+  if (installPromise) {
+    mgr.setInstallRunning(true);
+    void installPromise.finally(() => {
+      mgr.setInstallRunning(false);
+    });
+  }
+
+  // 5. Disposed handler — same shape as the create path, including the
+  //    preserve-compose escape hatch (chained restartAgent calls).
+  runner.on("disposed", () => {
+    if (isContainerRunner(runner) && runner.preserveComposeOnDispose) {
+      mgr.off("stack_error", stackErrorListener);
+      return;
+    }
+    mgr.off("stack_error", stackErrorListener);
+    serviceManagers.delete(runner.sessionId);
+    mgr.stop().catch((err: unknown) => {
+      console.error(`[compose:${runner.sessionId}] Failed to stop compose stack:`, err);
+    });
+  });
+}
+
 /**
  * Create and wire a ServiceManager for a runner's session if compose config
  * is detected. Fire-and-forget — compose stack start is async.
@@ -789,6 +875,37 @@ function setupServiceManager(
       }
     : undefined;
 
+  // ---- Adoption path: orphaned ServiceManager from a previous runner ----
+  //
+  // When a `restartAgent` recovery flow disposes the runner with
+  // `preserveComposeOnDispose = true`, the previous runner's `disposed`
+  // handler leaves the ServiceManager in `serviceManagers` so it can
+  // be re-wired onto the freshly-created runner. The compose stack is
+  // still running — we just need to:
+  //   1. Hook the new runner's event listeners onto the existing manager.
+  //   2. Re-connect the NEW agent container to the still-existing
+  //      `shipit-session-{sid}` network (old container was destroyed).
+  //   3. Re-arm the install-running gate around the new container's
+  //      install (the workspace volume persists, but a service that
+  //      races install on the new container still needs the retry
+  //      treatment).
+  //   4. Re-bind the `stack_error` listener to the new runner so logs
+  //      reach the right place.
+  //
+  // See docs/127-restart-agent for the full flow.
+  const existing = serviceManagers.get(runner.sessionId);
+  if (existing) {
+    adoptExistingServiceManager(runner, existing, {
+      serviceManagers,
+      containerManager,
+      broadcastLog,
+      installPromise,
+    });
+    // Clear any stale migration warning — compose is now set up (still).
+    composeWarnings.delete(runner.sessionId);
+    return;
+  }
+
   const mgr = new ServiceManager({
     sessionId: runner.sessionId,
     workspaceDir,
@@ -841,9 +958,14 @@ function setupServiceManager(
   // wrapped `sessionBroadcastLog` is per-connection and we don't have a
   // reference to it here).
   // See docs/124-session-rescue-and-diagnostics §1.1.
-  mgr.on("stack_error", (err: Error) => {
+  //
+  // Store the bound listener so the runner's dispose handler can detach
+  // it without stopping the manager (used by the `preserveComposeOnDispose`
+  // adoption path).
+  const stackErrorListener = (err: Error) => {
     handleStackError(runner, err, broadcastLog);
-  });
+  };
+  mgr.on("stack_error", stackErrorListener);
 
   // Open the install-running gate while agent.install is in flight: a service
   // that exits non-zero during this window is retried with backoff instead
@@ -859,6 +981,14 @@ function setupServiceManager(
 
   // Clean up on runner dispose
   runner.on("disposed", () => {
+    // Adoption path: the runner was disposed by a `restartAgent` recovery
+    // flow that wants the compose stack preserved for the next runner. Detach
+    // ONLY this runner's listeners (the new runner will re-attach via
+    // adoptExistingServiceManager) and leave the manager in the map.
+    if (isContainerRunner(runner) && runner.preserveComposeOnDispose) {
+      mgr.off("stack_error", stackErrorListener);
+      return;
+    }
     serviceManagers.delete(runner.sessionId);
     mgr.stop().catch((err: unknown) => {
       console.error(`[compose:${runner.sessionId}] Failed to stop compose stack:`, err);

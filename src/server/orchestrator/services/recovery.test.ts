@@ -18,7 +18,7 @@
 
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
-import { restartContainer } from "./recovery.js";
+import { restartAgent, restartContainer } from "./recovery.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
@@ -52,6 +52,15 @@ function makeStubRunner(sessionId: string, withServiceManager: boolean): StubRun
     lastSseEventAt: 0,
     disposed: false,
     wasInterrupted: false,
+    /**
+     * Mirrors the real ContainerSessionRunner field. The `restartAgent`
+     * service writes to this before disposing so the runner's `disposed`
+     * lifecycle handler in app-lifecycle.ts skips `mgr.stop()`. Must be
+     * present on the stub (rather than added at write time) so the
+     * `"preserveComposeOnDispose" in runner` typeguard in recovery.ts
+     * resolves true.
+     */
+    preserveComposeOnDispose: false,
     serviceManager: stubMgr,
     killAgentOnWorkerCalls: 0,
     killAgentOnWorker: async function killAgentOnWorker(this: { killAgentOnWorkerCalls: number }) {
@@ -289,5 +298,154 @@ describe("restartContainer (docs/124 §3.1, §3.2)", () => {
     expect(cmAny._destroyCalls()).toBe(0);
     expect(cmAny._reapCalls()).toBe(1);
   });
+});
+
+// ---------------------------------------------------------------------------
+// restartAgent (docs/127-restart-agent)
+// ---------------------------------------------------------------------------
+
+describe("restartAgent (docs/127)", () => {
+  it("destroys and recreates the agent container WITHOUT touching compose", async () => {
+    const oldRunner = makeStubRunner("rescue-1", true);
+    const freshRunner = makeStubRunner("rescue-1", false);
+    const registry = makeStubRegistry({ "rescue-1": oldRunner }, freshRunner);
+    const cm = makeStubContainerManager({ hasExisting: true, finalState: "running" });
+
+    const result = await restartAgent(
+      {
+        sessionManager,
+        containerManager: cm,
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+      },
+      "rescue-1",
+    );
+
+    expect(result).toMatchObject({ ok: true, newContainerState: "running" });
+
+    // CRITICAL: serviceManager.stop() must NOT be called. The whole point of
+    // restartAgent is to preserve the compose stack.
+    expect((oldRunner.serviceManager as unknown as { _stopCalls: number })._stopCalls).toBe(0);
+
+    // killAgentOnWorker is called (best-effort, same as restartContainer)
+    expect((oldRunner as unknown as { killAgentOnWorkerCalls: number }).killAgentOnWorkerCalls).toBe(1);
+
+    // preserveComposeOnDispose was set to true on the OLD runner before dispose
+    // so app-lifecycle's disposed handler skips mgr.stop().
+    expect((oldRunner as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(true);
+
+    // dispose was forced
+    expect(registry._disposeCalls).toEqual([{ sessionId: "rescue-1", force: true }]);
+
+    // destroy WAS called for the agent container
+    const cmAny = cm as unknown as { _destroyCalls: () => number; _reapCalls: () => number; _order: () => { name: string }[] };
+    expect(cmAny._destroyCalls()).toBe(1);
+
+    // CRITICAL: reapOrphans was NOT called — it would force-kill the running
+    // compose containers (they carry `shipit-parent-session=<sid>`).
+    expect(cmAny._reapCalls()).toBe(0);
+
+    // A fresh runner was created
+    expect(registry._getOrCreateCalls).toBe(1);
+  });
+
+  it("emits restarting_agent phase but not the compose phases", async () => {
+    const oldRunner = makeStubRunner("restart-1", true);
+    const freshRunner = makeStubRunner("restart-1", false);
+    const registry = makeStubRegistry({ "restart-1": oldRunner }, freshRunner);
+    const cm = makeStubContainerManager({ hasExisting: true, finalState: "running" });
+
+    // Use a session id known to the sessionManager stub
+    await restartAgent(
+      {
+        sessionManager: {
+          get: (sid: string) =>
+            sid === "restart-1"
+              ? { id: sid, title: "t", workspaceDir: "/tmp/ws" }
+              : undefined,
+        } as unknown as SessionManager,
+        containerManager: cm,
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+      },
+      "restart-1",
+    );
+
+    const phases = [
+      ...oldRunner.emitted,
+      ...freshRunner.emitted,
+    ]
+      .filter((m): m is WsContainerRestarting => m.type === "container_restarting")
+      .map((m) => m.phase);
+
+    expect(phases).toContain("restarting_agent");
+    expect(phases).toContain("destroying_container");
+    expect(phases).toContain("creating_container");
+    expect(phases).toContain("ready");
+    // No compose phases
+    expect(phases).not.toContain("stopping_stack");
+    expect(phases).not.toContain("starting_stack");
+  });
+
+  it("emits phase=failed when the new container can't be created", async () => {
+    const oldRunner = makeStubRunner("rescue-1", false);
+    const freshRunner = makeStubRunner("rescue-1", false);
+    const registry = makeStubRegistry({ "rescue-1": oldRunner }, freshRunner);
+    const cm = makeStubContainerManager({
+      hasExisting: true,
+      finalState: "missing",
+      createError: "image pull failed",
+    });
+
+    const result = await restartAgent(
+      {
+        sessionManager,
+        containerManager: cm,
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+      },
+      "rescue-1",
+    );
+
+    expect(result.newContainerState).toBe("missing");
+    expect(result.error).toBe("image pull failed");
+
+    const failed = freshRunner.emitted
+      .filter((m): m is WsContainerRestarting => m.type === "container_restarting")
+      .find((m) => m.phase === "failed");
+    expect(failed).toMatchObject({
+      phase: "failed",
+      reason: "create_failed",
+      message: "image pull failed",
+    });
+  });
+
+  it("surfaces lastInterruptError when kill fails but still proceeds", async () => {
+    const oldRunner = makeStubRunner("rescue-1", false);
+    oldRunner.killAgentOnWorker = async () => { throw new Error("worker EHOSTUNREACH"); };
+    const freshRunner = makeStubRunner("rescue-1", false);
+    const registry = makeStubRegistry({ "rescue-1": oldRunner }, freshRunner);
+    const cm = makeStubContainerManager({ hasExisting: true, finalState: "running" });
+
+    const result = await restartAgent(
+      {
+        sessionManager,
+        containerManager: cm,
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+      },
+      "rescue-1",
+    );
+
+    // Restart still succeeded — kill failure is non-blocking by design.
+    expect(result.newContainerState).toBe("running");
+
+    const sessionStatus = oldRunner.emitted.find(
+      (m): m is Extract<WsServerMessage, { type: "session_status" }> => m.type === "session_status",
+    );
+    expect(sessionStatus).toBeDefined();
+    expect(sessionStatus?.lastInterruptError).toMatch(/worker EHOSTUNREACH/);
+  });
+
 });
 
