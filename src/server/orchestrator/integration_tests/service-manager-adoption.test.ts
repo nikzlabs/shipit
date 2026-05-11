@@ -111,6 +111,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
     adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
       serviceManagers: new Map(),
+      composeStopPromises: new Map(),
       containerManager: cm,
       installPromise: null,
     });
@@ -128,6 +129,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
     adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
       serviceManagers: new Map(),
+      composeStopPromises: new Map(),
       containerManager: cm,
       installPromise: null,
     });
@@ -144,6 +146,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
     adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
       serviceManagers: new Map(),
+      composeStopPromises: new Map(),
       containerManager: cm,
       installPromise: null,
     });
@@ -180,6 +183,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
     adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
       serviceManagers,
+      composeStopPromises: new Map(),
       containerManager: cm,
       installPromise: null,
     });
@@ -212,6 +216,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
     adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
       serviceManagers,
+      composeStopPromises: new Map(),
       containerManager: cm,
       installPromise: null,
     });
@@ -237,6 +242,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
     adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
       serviceManagers: new Map(),
+      composeStopPromises: new Map(),
       containerManager: cm,
       installPromise: null,
       secretsLoader: freshLoader,
@@ -258,6 +264,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
     adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
       serviceManagers: new Map(),
+      composeStopPromises: new Map(),
       containerManager: cm,
       installPromise: null,
       // secretsLoader intentionally omitted
@@ -278,6 +285,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
     adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
       serviceManagers: new Map(),
+      composeStopPromises: new Map(),
       containerManager: cm,
       installPromise,
     });

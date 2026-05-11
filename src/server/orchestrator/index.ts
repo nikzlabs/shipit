@@ -165,6 +165,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Service manager registry (per-session compose stacks) ----
   const serviceManagers = new Map<string, ServiceManager>();
+  /**
+   * In-flight `mgr.stop()` promises keyed by sessionId. Used by
+   * `setupServiceManager` to serialize compose ops per session — see the
+   * `composeStopPromises` doc on RunnerRegistryDeps for the race story.
+   */
+  const composeStopPromises = new Map<string, Promise<void>>();
   /** Per-session compose warnings/errors for configs without a ServiceManager (e.g. old format). */
   const composeWarnings = new Map<string, string>();
   /** Sessions where compose is not configured in shipit.yaml. */
@@ -227,7 +233,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
-    getDepCacheDir, serviceManagers, composeWarnings, composeNotConfigured, containerManager,
+    getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     secretStore, platformCredentials, runtimeMode, broadcastLog,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
   });

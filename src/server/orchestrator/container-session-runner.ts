@@ -628,6 +628,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
     await this._workerReady;
+    await this._waitForInstallBeforeAgent();
     await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
     if (!this.sseConnection) {
       await this.connectEventStream();
@@ -640,6 +641,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   async startAgentOnWorker(agentId: AgentId, params: AgentRunParams): Promise<ProxyAgentProcess> {
     await this._workerReady;
+    await this._waitForInstallBeforeAgent();
     const proxy = new ProxyAgentProcess(agentId, this);
     this._agent = proxy;
 
@@ -651,6 +653,30 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     }
 
     return proxy;
+  }
+
+  /**
+   * Block the agent CLI start on any in-flight `agent.install`. Without
+   * this gate, `npm install` (or whatever the agent.install command set
+   * declares) and the agent CLI compete for memory inside the agent
+   * container's cgroup. In production this caused OOM kills during the
+   * first turn of a fresh session for repos with heavy install
+   * footprints (e.g. ShipIt itself dogfooding ShipIt): kernel OOM-killer
+   * recorded `npm install` ~650 MB RSS + claude ~243 MB + 3 node main
+   * threads ~330 MB combined inside a 3 GiB cgroup, with V8Worker
+   * triggering the kill. See docs/124-session-rescue-and-diagnostics
+   * follow-up.
+   *
+   * Trade-off: the first user turn is delayed by however long install
+   * takes. The user already sees `install_status: running` in the UI
+   * (emitted by `runInstall`), so the wait is explained — and the cost
+   * of this delay is bounded, while the OOM-recreate loop's cost is
+   * not. No-op when no install was scheduled.
+   */
+  private async _waitForInstallBeforeAgent(): Promise<void> {
+    if (this._installComplete) {
+      await this._installComplete;
+    }
   }
 
   /** Interrupt the agent running on the worker. */
