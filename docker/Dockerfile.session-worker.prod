@@ -24,8 +24,12 @@ RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip && 
 
 RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
 
-# Install Chrome and its system dependencies for Playwright MCP browser tools
-RUN npx playwright install --with-deps chromium
+# Install Chrome and its system dependencies for Playwright MCP browser tools.
+# Playwright MCP now defaults to the `chrome-for-testing` channel, so we install
+# system deps via the playwright CLI and then fetch the chrome-for-testing build
+# via @playwright/mcp's installer.
+RUN npx playwright install-deps chromium \
+ && npx @playwright/mcp install-browser chrome-for-testing
 
 WORKDIR /app
 
