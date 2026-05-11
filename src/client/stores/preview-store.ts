@@ -62,6 +62,14 @@ export interface PreviewError {
 /** Maximum number of errors to keep in the rolling buffer. */
 const MAX_ERRORS = 50;
 
+/**
+ * Cap on how many trailing log lines we retain per startup step. The overlay
+ * only renders ~5 lines (`max-h-[5lh]` in `StartupSteps.tsx`); 50 is enough
+ * to give us a comfortable buffer for the rendered tail without unbounded
+ * growth on chatty installs (npm install can emit thousands of log lines).
+ */
+const MAX_STARTUP_STEP_LOG_LINES = 50;
+
 /** Time window in ms for deduplication — same error within this window is dropped. */
 const DEDUP_WINDOW_MS = 1000;
 
@@ -128,6 +136,13 @@ interface PreviewState {
   toggleAutoFix: () => void;
   initStartupSteps: () => void;
   setStartupStep: (update: Partial<StartupStep> & { stepId: string }) => void;
+  /**
+   * Append a log line (or text chunk that may contain newlines) to the
+   * specified startup step, retaining only the trailing
+   * {@link MAX_STARTUP_STEP_LOG_LINES} so the in-overlay tail stays bounded.
+   * No-op when the step doesn't exist (e.g. startup steps were cleared).
+   */
+  appendStartupStepLog: (stepId: StartupStep["stepId"], text: string) => void;
   clearStartupSteps: () => void;
   /** Replace the full service list (from service_list WS message). */
   setServices: (services: ManagedServiceState[]) => void;
@@ -257,6 +272,25 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         s.stepId === update.stepId ? { ...s, ...update, logLines: update.logLines ?? s.logLines } : s,
       ),
     })),
+
+  appendStartupStepLog: (stepId, text) =>
+    set((state) => {
+      const idx = state.startupSteps.findIndex((s) => s.stepId === stepId);
+      if (idx < 0) return state;
+      // Split incoming chunk on \n and drop empty trailing lines that result
+      // from a chunk that happens to end with a newline. Keep blank
+      // intermediate lines (npm install renders progress with them).
+      const incoming = text.replace(/\n+$/, "").split("\n");
+      if (incoming.length === 0) return state;
+      const step = state.startupSteps[idx];
+      const merged = [...step.logLines, ...incoming];
+      const trimmed = merged.length > MAX_STARTUP_STEP_LOG_LINES
+        ? merged.slice(merged.length - MAX_STARTUP_STEP_LOG_LINES)
+        : merged;
+      const next = state.startupSteps.slice();
+      next[idx] = { ...step, logLines: trimmed };
+      return { startupSteps: next };
+    }),
 
   clearStartupSteps: () => set({ startupSteps: [] }),
 

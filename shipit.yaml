@@ -2,7 +2,14 @@ agent:
   memory: 3072
   cpu: 2.0
   pids: 2048
-  install: npm install
+  # `bash scripts/agent-install.sh` is a thin wrapper around `npm install`
+  # that opportunistically seeds /workspace/node_modules from a baked-in
+  # tree at /opt/shipit-prebake/ when the agent container's image provides
+  # one (see docker/Dockerfile.session-worker.dogfood). When no prebake
+  # exists it falls through to plain `npm install`, so this is a safe
+  # drop-in replacement that only speeds things up under the dogfood
+  # image. See docs/118-shipit-ui-local/plan.md for the dogfood loop.
+  install: bash scripts/agent-install.sh
 # ShipIt-in-ShipIt (feature 118): tells the outer orchestrator to start the
 # `dev` Compose service when this repo is opened. Without this line the
 # `setupServiceManager` short-circuits on the missing `compose:` key and the

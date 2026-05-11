@@ -722,6 +722,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   private _installComplete: Promise<void> | null = null;
   private _resolveInstallComplete: (() => void) | null = null;
+  /**
+   * True while the orchestrator believes an install is in flight on the
+   * worker. Used by the SSE reconnect path: if our SSE stream drops between
+   * `install_status: running` and the worker emitting `install_done`, the
+   * completion event would be silently lost. On reconnect we re-poll the
+   * worker's install state via `/install/status` and synthesize a completion.
+   */
+  private _installInFlight = false;
 
   /**
    * Run agent.install commands on the session worker. Returns a promise that
@@ -732,16 +740,38 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * `ServiceManager.setInstallRunning(true|false)` window so dev servers
    * that race install (deps still extracting) get retried instead of
    * latching to `error`.
+   *
+   * Idempotent under concurrent callers: if a previous `runInstall` is still
+   * awaiting completion, a second call short-circuits onto the same promise
+   * instead of resetting `_resolveInstallComplete` (which would orphan the
+   * first call's resolver and leak a never-resolving promise).
    */
   async runInstall(commands: string[]): Promise<void> {
     if (commands.length === 0) return;
 
-    await this._workerReady;
-    if (this._disposed) return;
-
+    // Concurrent-call guard: if an install is already in flight (either we
+    // armed `_installComplete` and haven't resolved yet, or the worker is
+    // still running its commands), join that in-flight promise rather than
+    // starting a new one. Prevents the orphaned-resolver leak that left the
+    // ServiceManager's `installRunning` gate stuck open.
+    //
+    // The promise is set up SYNCHRONOUSLY before any `await` so a second
+    // caller kicked off in the same tick takes the join branch instead of
+    // also slipping past the guard while we're still awaiting `_workerReady`.
+    if (this._installComplete) {
+      await this._installComplete;
+      return;
+    }
     this._installComplete = new Promise<void>((resolve) => {
       this._resolveInstallComplete = resolve;
     });
+    this._installInFlight = true;
+
+    await this._workerReady;
+    if (this._disposed) {
+      this.signalInstallComplete();
+      return;
+    }
 
     this.emitMessage({
       type: "install_status",
@@ -776,11 +806,70 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   /** Resolve the in-flight install promise (idempotent). */
   private signalInstallComplete(): void {
+    this._installInFlight = false;
     if (this._resolveInstallComplete) {
       const r = this._resolveInstallComplete;
       this._resolveInstallComplete = null;
       r();
     }
+    this._installComplete = null;
+  }
+
+  /**
+   * After an SSE reconnect, re-poll the worker for its current install
+   * state. If the worker finished install while we were disconnected, we
+   * never received the `install_done`/`install_error` event — synthesize
+   * the completion locally so a) the awaiting `runInstall` resolves and
+   * b) the client gets the terminal `install_status` it would have seen.
+   *
+   * No-op when no install was in flight from our POV (avoids double-emitting
+   * for the steady-state reconnect-during-idle case).
+   */
+  private async resyncInstallStateAfterReconnect(): Promise<void> {
+    if (!this._installInFlight || this._disposed) return;
+    let status: { running?: boolean; lastResult?: { ok: boolean; message?: string; command?: string } };
+    try {
+      status = await workerGet(this.workerUrl, "/install/status") as typeof status;
+    } catch (err) {
+      // Worker still wedged or endpoint missing — leave the install gate
+      // open; if SSE reconnects again we'll re-try this resync.
+      console.warn(
+        `[container-runner:${this.sessionId}] /install/status probe failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return;
+    }
+    if (status.running) return; // still installing — wait for the real event
+    const last = status.lastResult;
+    if (!last) {
+      // Install isn't running and there's no last result — likely the worker
+      // restarted (lost the in-memory `_lastInstallResult`). We can't tell
+      // success from failure; mark it complete so the orchestrator un-wedges
+      // and let auto-retry on the next session activation re-run install.
+      this.emitMessage({
+        type: "install_status",
+        sessionId: this.sessionId,
+        status: "complete",
+      });
+      this.signalInstallComplete();
+      return;
+    }
+    if (last.ok) {
+      this.emitMessage({
+        type: "install_status",
+        sessionId: this.sessionId,
+        status: "complete",
+      });
+    } else {
+      this.emitMessage({
+        type: "install_status",
+        sessionId: this.sessionId,
+        status: "error",
+        command: last.command,
+        message: last.message ?? "Install failed",
+      });
+    }
+    this.signalInstallComplete();
   }
 
   /**
@@ -871,6 +960,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           if (buffered) {
             this.emitMessage({ type: "terminal_output", data: `\x1bc${  buffered}` });
           }
+        }
+        // On reconnect with an in-flight install, re-poll worker for the
+        // current install state — if the worker fired install_done while
+        // SSE was disconnected, that event was lost and the orchestrator's
+        // install promise would hang forever otherwise.
+        if (isReconnect && this._installInFlight) {
+          void this.resyncInstallStateAfterReconnect();
         }
       },
       {

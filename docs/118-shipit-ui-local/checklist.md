@@ -80,6 +80,25 @@ Items intentionally cut from v1 but small enough to add later if the dogfooding 
 - [ ] **Inner UI terminal.** Lift the `ws-handlers/terminal-handlers.ts` `instanceof ContainerSessionRunner` gate. Have `SessionRunner` spawn a `TerminalProcess` (from `src/server/session/terminal.ts`) directly. The `TerminalProcess` class is not container-coupled — it's just node-pty.
 - [ ] **Inner UI file-watcher live updates.** Same shape: lift the handler gate, have `SessionRunner` spawn a `FileWatcher` instance (from `src/server/session/file-watcher.ts`) directly.
 
+## Outer-agent install pre-bake (landed)
+
+Wires the dogfood install loop end-to-end: the outer agent container hardlink-seeds `/workspace/node_modules` from a baked image layer, so `agent.install` collapses from 60-180s to ~5-10s.
+
+- [x] `scripts/agent-install.sh` — opportunistic prebake-seed wrapper around `npm install`. Falls through to plain `npm install` when no prebake is present, so it's safe as the default `agent.install` everywhere.
+- [x] `shipit.yaml` — `agent.install: bash scripts/agent-install.sh`.
+- [x] `docker/Dockerfile.session-worker.dogfood` — new session-worker variant that bakes ShipIt's `node_modules` at `/opt/shipit-prebake/`. Documented build / `SESSION_WORKER_IMAGE` invocation in `plan.md`.
+- [x] `.dockerignore` — exclude the new dogfood Dockerfile from build contexts (parity with the other session-worker variants).
+
+## Install state machine hardening (landed alongside the prebake)
+
+The "Installing dependencies..." overlay would sometimes stick forever if the orchestrator's SSE dropped between `install_status: running` and the worker's `install_done`, or if `setupServiceManager` triggered a concurrent `runInstall`. Both paths now have explicit fixes:
+
+- [x] `ContainerSessionRunner.runInstall()` is idempotent — concurrent callers join the existing in-flight promise instead of resetting `_resolveInstallComplete` and orphaning the original resolver.
+- [x] `session-worker.ts` retains `_lastInstallResult` per-process and exposes it via `GET /install/status`. The SSE endpoint replays the last `install_done`/`install_error` to late-connecting clients so a re-attached orchestrator never silently misses an install completion.
+- [x] On SSE reconnect with an install in flight, `ContainerSessionRunner.resyncInstallStateAfterReconnect()` polls `/install/status` and synthesizes the missed completion event.
+- [x] Client routes `install_log` chunks into the install step's `logLines` (in addition to the terminal panel), so the StartupSteps overlay shows progress instead of looking frozen.
+- [x] Client drives the `dev_server` startup step from real `service_status` / `preview_status` events and falls back to clearing the overlay 6s after install completes (manual-preview case) so the services panel can take over.
+
 ## Phase 2 — inner-session preview (deferred design)
 
 Goal: let the user preview an app they're building inside an inner session, despite the inner orch not having Docker.

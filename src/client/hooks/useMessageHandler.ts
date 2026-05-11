@@ -105,6 +105,20 @@ function processMessage(
           preview.setSelectedPort(null);
         }
       }
+      // Once the dev server is actually serving, complete the dev_server
+      // step and then clear the startup-steps overlay so it doesn't sit on
+      // top of the (now-running) iframe. Same intent as the service_status
+      // handler below — covers the non-compose preview path (vite-detected).
+      if (data.running) {
+        const steps = usePreviewStore.getState().startupSteps;
+        const devStep = steps.find((s) => s.stepId === "dev_server");
+        if (devStep && devStep.status !== "complete") {
+          preview.setStartupStep({ stepId: "dev_server", status: "complete" });
+          setTimeout(() => {
+            usePreviewStore.getState().clearStartupSteps();
+          }, 800);
+        }
+      }
     }
 
     if (data.type === "agent_event") {
@@ -595,14 +609,41 @@ function processMessage(
         status: stepStatus,
         message: data.message,
       });
+      // Once install is finished, advance the dev_server step from "pending"
+      // to "running" so the overlay communicates that we're now waiting on the
+      // dev server (instead of looking permanently stuck on "Installing
+      // dependencies..."). For manual previews where no auto-start fires, the
+      // fallback timer below clears the overlay so the services panel can
+      // surface the Start button.
+      if (stepStatus === "complete") {
+        preview.setStartupStep({ stepId: "dev_server", status: "running" });
+        // If nothing transitions dev_server within 6s (typical: manual
+        // preview, or no compose service), clear startup steps entirely so
+        // the services panel / "Starting dev server..." overlay can take
+        // over. This pairs with the dev_server completion logic below.
+        setTimeout(() => {
+          const steps = usePreviewStore.getState().startupSteps;
+          const devStep = steps.find((s) => s.stepId === "dev_server");
+          if (devStep?.status === "running") {
+            usePreviewStore.getState().clearStartupSteps();
+          }
+        }, 6_000);
+      }
+      // On error: do nothing extra — leave the overlay showing the failed
+      // install step so the user can act on it. dev_server stays pending.
     }
 
     if (data.type === "install_log") {
+      // Stream install output into the terminal panel for full history…
       terminal.addEntry({
         source: "install" as "preview",
         text: data.text,
         timestamp: new Date().toISOString(),
       });
+      // …and into the install step's logLines so the StartupSteps overlay
+      // shows progress instead of looking frozen on "Installing
+      // dependencies...".
+      preview.appendStartupStepLog("install", data.text);
     }
 
     if (data.type === "service_list") {
@@ -625,6 +666,32 @@ function processMessage(
         preview: data.preview,
         error: data.error,
       });
+      // Drive the dev_server startup step from real service state. This is
+      // what un-sticks the "Installing dependencies..." overlay for compose-
+      // backed previews — the install step finishing alone isn't enough,
+      // since the overlay stays visible until either a step completes or all
+      // steps are cleared.
+      const steps = usePreviewStore.getState().startupSteps;
+      const devStep = steps.find((s) => s.stepId === "dev_server");
+      if (devStep) {
+        if (data.status === "starting" && devStep.status !== "complete") {
+          preview.setStartupStep({ stepId: "dev_server", status: "running" });
+        } else if (data.status === "running" && devStep.status !== "complete") {
+          preview.setStartupStep({ stepId: "dev_server", status: "complete" });
+          // Clear startup steps shortly after the dev server is up so the
+          // overlay yields the surface to the live preview / services panel
+          // instead of camping out with a row of green checks.
+          setTimeout(() => {
+            usePreviewStore.getState().clearStartupSteps();
+          }, 800);
+        } else if (data.status === "error" && devStep.status === "running") {
+          preview.setStartupStep({
+            stepId: "dev_server",
+            status: "error",
+            message: data.error,
+          });
+        }
+      }
     }
 
     if (data.type === "compose_error") {

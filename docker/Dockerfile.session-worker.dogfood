@@ -1,0 +1,106 @@
+# ShipIt-in-ShipIt session-worker image (feature 118 — dogfooding mode).
+#
+# This image extends the production session-worker image with a baked-in
+# copy of ShipIt's node_modules at /opt/shipit-prebake/. The ShipIt repo's
+# `agent.install` (scripts/agent-install.sh) hardlink-seeds
+# /workspace/node_modules from this directory, which cuts the cold-start
+# `npm install` for the outer agent container from 60-180s to ~5-10s
+# (mostly a `npm install` lockfile-verify pass over an already-populated
+# tree).
+#
+# When dogfooding ShipIt-in-ShipIt: build this image and point the outer
+# orchestrator at it via `SESSION_WORKER_IMAGE=shipit-session-worker:dogfood`.
+# Build:
+#
+#   docker build -t shipit-session-worker:dogfood \
+#     -f docker/Dockerfile.session-worker.dogfood .
+#
+# Production deployments (non-dogfood) should keep using the lean
+# `Dockerfile.session-worker.prod` image — this dogfood variant adds
+# ~600MB to the image size, all of which is ShipIt-specific deps that
+# user repos don't need.
+#
+# Node version note: this base image runs Node 24 (matching
+# Dockerfile.session-worker.prod) so the prebake's native modules
+# (better-sqlite3, node-pty) are ABI-compatible at runtime. The dogfood
+# *Compose* service (docker-compose.yml `dev`) is on Node 22 and has its
+# own separate /workspace/node_modules via an anonymous volume; there's
+# no cross-container sharing of node_modules, so the version skew is
+# fine.
+
+# ---- Build stage: install ShipIt deps under Node 24 ----
+FROM node:24-slim AS prebake
+
+# Native-module build prereqs — better-sqlite3 needs python+gcc to compile
+# its addon. The runtime image below ships the prebuilt result, not these
+# tools.
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/shipit-prebake
+
+COPY package.json package-lock.json ./
+# `npm ci` not `npm install` — we want a deterministic install matching
+# the lockfile baked into the image. Drift between this and the user's
+# branch is reconciled by `npm install` in scripts/agent-install.sh.
+# `--prefer-offline` lets the build cache survive registry hiccups.
+RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
+
+# ---- Final stage: production session-worker + prebake overlay ----
+#
+# We rebuild on top of the upstream prod base rather than `FROM
+# shipit-session-worker:prod` so this image can be built from a clean
+# `docker build` without first having the prod image locally. The
+# duplication is mechanical — see Dockerfile.session-worker.prod for the
+# canonical version of these layers.
+
+FROM node:24-slim AS build
+
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
+
+COPY tsconfig.json ./
+COPY src/server/session/ ./src/server/session/
+COPY src/server/shared/ ./src/server/shared/
+
+RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
+
+FROM node:24-slim
+
+RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip && rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
+
+RUN npx playwright install --with-deps chromium
+
+WORKDIR /app
+
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./
+COPY --from=build /app/tsconfig.json ./
+COPY --from=build /app/src ./src
+
+# The dogfood-only addition: copy the baked ShipIt node_modules tree to
+# a path scripts/agent-install.sh knows to look for.
+COPY --from=prebake /opt/shipit-prebake/node_modules /opt/shipit-prebake/node_modules
+COPY --from=prebake /opt/shipit-prebake/package.json /opt/shipit-prebake/package.json
+COPY --from=prebake /opt/shipit-prebake/package-lock.json /opt/shipit-prebake/package-lock.json
+
+COPY src/server/shipit-docs/ /shipit-docs/
+
+RUN printf '#!/bin/sh\nexec /app/node_modules/.bin/tsx /app/src/server/session/agent-shim/gh.ts "$@"\n' > /usr/local/bin/gh \
+    && chmod 0755 /usr/local/bin/gh
+
+RUN mkdir -p /workspace /credentials \
+ && ln -s /credentials/.claude /root/.claude \
+ && ln -sf /credentials/.claude.json /root/.claude.json \
+ && ln -s /credentials/.codex /root/.codex
+
+ENV NODE_ENV=production
+
+EXPOSE 9100
+
+CMD ["node", "--import", "tsx", "src/server/session/session-worker.ts"]
