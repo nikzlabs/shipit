@@ -1149,4 +1149,147 @@ services:
     expect(mgr.getService("web")?.status).toBe("error");
     expect(mgr.getService("web")?.error).toContain("Exited with code 1");
   });
+
+  // --- Container-name conflict recovery on `compose up` ---
+  //
+  // The daemon rejects a create when a stale container with the predicted
+  // name lingers (prior teardown interrupted, labels drifted, or another
+  // `up` raced). Compose surfaces this verbatim as "already in use by
+  // container <id>". `composeUpService` must extract the conflict ID,
+  // force-remove the squatter, and retry once.
+
+  it("startService recovers from a container-name conflict by removing the squatter and retrying", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  dev:\n    image: node:20\n    x-shipit-preview: manual\n");
+
+    const composeUpCalls: string[][] = [];
+    const rmCalls: string[][] = [];
+    let firstUpFails = true;
+
+    const composeRunner: ComposeRunner = (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) {
+        composeUpCalls.push(args.slice(upIdx));
+        if (firstUpFails) {
+          firstUpFails = false;
+          return Promise.reject(new Error(
+            `docker compose compose failed (exit 1): Container shipit-test-session-dev-1 Creating ` +
+            `\n Container shipit-test-session-dev-1 Error response from daemon: Conflict. ` +
+            `The container name "/shipit-test-session-dev-1" is already in use by container ` +
+            `"6f943f7b45f75e4b321b707752b26f460155c64e6625243b312da9a3acdb0631". ` +
+            `You have to remove (or rename) that container to be able to reuse that name.`,
+          ));
+        }
+      }
+      return Promise.resolve();
+    };
+
+    const composeQuery: ComposeQuery = (args) => {
+      if (args[0] === "rm") {
+        rmCalls.push(args.slice());
+        return Promise.resolve("");
+      }
+      // pollStatus: `compose … ps --format json -a` → return running container
+      if (args.includes("ps") && args.includes("--format")) {
+        return Promise.resolve(JSON.stringify({
+          Service: "dev", ID: "newid", State: "running", ExitCode: 0,
+        }));
+      }
+      // killStaleContainers: `docker ps -aq --filter …` → no stale containers
+      if (args[0] === "ps") return Promise.resolve("");
+      if (args.includes("inspect")) {
+        return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      }
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+    await mgr.startService("dev");
+
+    // First up failed with conflict, then we removed the squatter, then up
+    // ran again.
+    expect(composeUpCalls.length).toBe(2);
+    expect(rmCalls.length).toBe(1);
+    expect(rmCalls[0]).toEqual([
+      "rm", "-f",
+      "6f943f7b45f75e4b321b707752b26f460155c64e6625243b312da9a3acdb0631",
+    ]);
+    expect(mgr.getService("dev")?.status).toBe("running");
+  });
+
+  it("startService surfaces the original error if the squatter can't be removed", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  dev:\n    image: node:20\n    x-shipit-preview: manual\n");
+
+    const conflictMsg =
+      `docker compose compose failed (exit 1): Container shipit-test-session-dev-1 Error response from daemon: ` +
+      `Conflict. The container name "/shipit-test-session-dev-1" is already in use by container ` +
+      `"6f943f7b45f75e4b321b707752b26f460155c64e6625243b312da9a3acdb0631". `;
+
+    const composeRunner: ComposeRunner = (args) => {
+      if (args.includes("up")) return Promise.reject(new Error(conflictMsg));
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      if (args[0] === "rm") return Promise.reject(new Error("docker rm failed: no such container"));
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+    await expect(mgr.startService("dev")).rejects.toThrow(/already in use by container/);
+    expect(mgr.getService("dev")?.status).toBe("error");
+  });
+
+  it("non-conflict compose-up errors are not retried", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  dev:\n    image: node:20\n    x-shipit-preview: manual\n");
+
+    const upCalls: string[][] = [];
+    const rmCalls: string[][] = [];
+    const composeRunner: ComposeRunner = (args) => {
+      if (args.includes("up")) {
+        upCalls.push(args.slice());
+        return Promise.reject(new Error("docker compose compose failed (exit 1): image not found"));
+      }
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      if (args[0] === "rm") { rmCalls.push(args.slice()); return Promise.resolve(""); }
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+    await expect(mgr.startService("dev")).rejects.toThrow(/image not found/);
+    // Exactly one `up` (the failing one) and no `rm` — non-conflict errors
+    // don't trigger the recovery path.
+    expect(upCalls.length).toBe(1);
+    expect(rmCalls.length).toBe(0);
+  });
 });
