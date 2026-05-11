@@ -10,6 +10,9 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
@@ -60,15 +63,15 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Wait for a condition to become true, polling every 50ms. */
+/** Wait for a condition to become true, polling every 50ms. Async predicates are awaited. */
 async function waitFor(
-  fn: () => boolean,
+  fn: () => boolean | Promise<boolean>,
   timeoutMs = 3000,
   label = "condition",
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (fn()) return;
+    if (await fn()) return;
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error(`waitFor(${label}) timed out after ${timeoutMs}ms`);
@@ -609,5 +612,176 @@ describe("Integration: Session Worker IPC", () => {
       payload: { secrets: ["not", "an", "object"] },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+});
+
+// ---- Install endpoint and SSE-reconnect resync (fix for "Installing
+// dependencies..." getting stuck after a transient SSE drop) ----
+//
+// These tests use an isolated worker with its own temporary workspaceDir —
+// the worker's install endpoint short-circuits when
+// `<workspaceDir>/.shipit/.install-done` exists, and the repo's own
+// .shipit/ has such a marker when running in-tree.
+describe("Integration: Session Worker install endpoint", () => {
+  let installWorker: SessionWorker;
+  let installWorkerPort: number;
+  let installWorkerUrl: string;
+  let installWorkspaceDir: string;
+
+  beforeEach(async () => {
+    installWorkspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-install-test-"));
+    installWorker = new SessionWorker({
+      agentFactory: () => new FakeWorkerAgent(),
+      port: 0,
+      host: "127.0.0.1",
+      workspaceDir: installWorkspaceDir,
+    });
+
+    const address = await installWorker.start();
+    const match = /:(\d+)$/.exec(address);
+    installWorkerPort = match ? Number(match[1]) : 0;
+    installWorkerUrl = `http://127.0.0.1:${installWorkerPort}`;
+  });
+
+  afterEach(async () => {
+    await installWorker.stop();
+    fs.rmSync(installWorkspaceDir, { recursive: true, force: true });
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  it("GET /install/status returns idle/no-result before any install runs", async () => {
+    const res = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ running: false, lastResult: null });
+  });
+
+  it("POST /install records a successful result that /install/status surfaces", async () => {
+    // `true` is a portable, instant-success command — no need to actually
+    // invoke npm.
+    const res = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true"] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ started: true });
+
+    await waitFor(async () => {
+      const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+      const body = s.json() as { running: boolean; lastResult: { ok: boolean } | null };
+      return !body.running && body.lastResult?.ok === true;
+    }, 3_000, "install completed");
+  });
+
+  it("POST /install records a failure result with the failing command", async () => {
+    const res = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["sh -c 'exit 7'"] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ started: true });
+
+    await waitFor(async () => {
+      const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+      const body = s.json() as { running: boolean; lastResult: { ok: boolean; command?: string } | null };
+      return !body.running && body.lastResult?.ok === false;
+    }, 3_000, "install failed");
+
+    const final = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+    const body = final.json() as { lastResult: { command?: string } };
+    expect(body.lastResult.command).toBe("sh -c 'exit 7'");
+  });
+
+  it("rejects a second install while one is running (409)", async () => {
+    // `sleep 1` keeps the install in flight long enough to race a second POST.
+    await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["sleep 1"] },
+    });
+    const second = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["sleep 1"] },
+    });
+    expect(second.statusCode).toBe(409);
+    expect(second.json().error).toContain("already running");
+  });
+
+  it("ContainerSessionRunner.runInstall is idempotent under concurrent callers", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-install-idempotent",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl: installWorkerUrl,
+    });
+    // Attach a viewer to establish the SSE connection — install_done flows
+    // back through SSE, so runInstall would otherwise wait forever for an
+    // event that never arrives.
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Capture every install_status emitted by the runner so we can assert
+    // the second concurrent call did not produce a duplicate "running"
+    // event (which would happen if the idempotency guard let it through).
+    const statusEvents: string[] = [];
+    runner.on("message", (msg) => {
+      if (msg.type === "install_status") statusEvents.push(msg.status);
+    });
+
+    // Fire two concurrent runInstall calls. The second should join the
+    // first's promise instead of starting a fresh install (which would
+    // hit /install with 409 on the worker).
+    const a = runner.runInstall(["true"]);
+    const b = runner.runInstall(["true"]);
+
+    await Promise.all([a, b]);
+
+    // Worker should have only seen one install. The second call must NOT
+    // have emitted a second "running" event (guard worked) and the worker
+    // must be back to idle with a successful lastResult.
+    expect(statusEvents.filter((s) => s === "running").length).toBe(1);
+    const status = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+    const body = status.json() as { running: boolean; lastResult: { ok: boolean } | null };
+    expect(body.running).toBe(false);
+    expect(body.lastResult?.ok).toBe(true);
+
+    runner.dispose();
+  });
+
+  it("SSE replays last install_done to a late-connecting client", async () => {
+    // First, run an install to completion with no SSE clients attached.
+    await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true"] },
+    });
+    await waitFor(async () => {
+      const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+      return !(s.json() as { running: boolean }).running;
+    }, 3_000, "install completed");
+
+    // Now attach a runner — its SSE connection should receive the replay
+    // and emit install_status: complete.
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-install-replay",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl: installWorkerUrl,
+    });
+
+    const completes: string[] = [];
+    runner.on("message", (msg) => {
+      if (msg.type === "install_status") completes.push(msg.status);
+    });
+
+    runner.attachViewer();
+    // SSE setup is async; give it time to connect and replay.
+    await waitFor(() => completes.includes("complete"), 3_000, "replayed install_done");
+    expect(completes).toContain("complete");
+
+    runner.dispose();
   });
 });

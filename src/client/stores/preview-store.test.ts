@@ -107,3 +107,72 @@ describe("preview-store device viewport", () => {
     });
   });
 });
+
+describe("preview-store startup steps", () => {
+  beforeEach(() => {
+    usePreviewStore.getState().reset();
+  });
+
+  describe("appendStartupStepLog", () => {
+    it("no-ops when the target step does not exist", () => {
+      // No initStartupSteps() call — appending should not crash.
+      usePreviewStore.getState().appendStartupStepLog("install", "hello\n");
+      expect(usePreviewStore.getState().startupSteps).toEqual([]);
+    });
+
+    it("appends each newline-separated chunk as its own line", () => {
+      usePreviewStore.getState().initStartupSteps();
+      usePreviewStore.getState().appendStartupStepLog("install", "added 50 packages\nfound 0 vulns\n");
+      const step = usePreviewStore.getState().startupSteps.find((s) => s.stepId === "install");
+      expect(step?.logLines).toEqual(["added 50 packages", "found 0 vulns"]);
+    });
+
+    it("strips trailing newlines but preserves blank intermediate lines", () => {
+      usePreviewStore.getState().initStartupSteps();
+      usePreviewStore.getState().appendStartupStepLog("install", "line a\n\nline b\n\n\n");
+      const step = usePreviewStore.getState().startupSteps.find((s) => s.stepId === "install");
+      // Blank line between line a and line b is intentional progress noise; keep it.
+      expect(step?.logLines).toEqual(["line a", "", "line b"]);
+    });
+
+    it("keeps only the most recent 50 lines for chatty installs", () => {
+      usePreviewStore.getState().initStartupSteps();
+      // Pump in 200 distinct lines.
+      for (let i = 0; i < 200; i++) {
+        usePreviewStore.getState().appendStartupStepLog("install", `line ${i}\n`);
+      }
+      const step = usePreviewStore.getState().startupSteps.find((s) => s.stepId === "install");
+      expect(step?.logLines.length).toBe(50);
+      // Last appended line wins.
+      expect(step?.logLines[49]).toBe("line 199");
+      // Trimmed from the front, so anything older than line 150 is gone.
+      expect(step?.logLines[0]).toBe("line 150");
+    });
+
+    it("does not affect sibling steps", () => {
+      usePreviewStore.getState().initStartupSteps();
+      usePreviewStore.getState().appendStartupStepLog("install", "only install\n");
+      const fetchStep = usePreviewStore.getState().startupSteps.find((s) => s.stepId === "fetch");
+      const devStep = usePreviewStore.getState().startupSteps.find((s) => s.stepId === "dev_server");
+      expect(fetchStep?.logLines).toEqual([]);
+      expect(devStep?.logLines).toEqual([]);
+    });
+  });
+
+  describe("setStartupStep", () => {
+    it("merges a status update into the existing step", () => {
+      usePreviewStore.getState().initStartupSteps();
+      usePreviewStore.getState().setStartupStep({ stepId: "install", status: "running" });
+      const step = usePreviewStore.getState().startupSteps.find((s) => s.stepId === "install");
+      expect(step?.status).toBe("running");
+    });
+
+    it("preserves logLines when no logLines field is included in the update", () => {
+      usePreviewStore.getState().initStartupSteps();
+      usePreviewStore.getState().appendStartupStepLog("install", "preserved\n");
+      usePreviewStore.getState().setStartupStep({ stepId: "install", status: "complete" });
+      const step = usePreviewStore.getState().startupSteps.find((s) => s.stepId === "install");
+      expect(step?.logLines).toEqual(["preserved"]);
+    });
+  });
+});
