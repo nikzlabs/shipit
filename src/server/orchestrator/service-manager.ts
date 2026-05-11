@@ -1267,12 +1267,47 @@ export class ServiceManager extends EventEmitter {
 
   /** Run `docker compose up -d`, optionally for specific services only. */
   private composeUp(serviceNames?: string[]): Promise<void> {
-    return this.runCompose("up", "-d", "--remove-orphans", ...(serviceNames ?? []));
+    return this.runComposeUpWithConflictRecovery("up", "-d", "--remove-orphans", ...(serviceNames ?? []));
   }
 
   /** Run `docker compose up -d` for a specific manual service. */
   private composeUpService(name: string): Promise<void> {
-    return this.runCompose("up", "-d", name);
+    return this.runComposeUpWithConflictRecovery("up", "-d", name);
+  }
+
+  /**
+   * Run `docker compose up …` and, on a Docker container-name conflict
+   * (a stale container with the predicted name exists but compose doesn't
+   * adopt it — e.g., labels drifted across orchestrator versions, the prior
+   * teardown was interrupted, or another `up` call raced and left a zombie),
+   * force-remove the conflicting container by ID and retry once.
+   *
+   * Why this lives here, not in `killStaleContainers()`: the broad pre-start
+   * label sweep was over-aggressive — it SIGKILLed healthy preview containers
+   * on every config reconcile (see efa1ec150 / docs/127-restart-agent §"Out
+   * of scope"). This handler is surgical: it only removes the *specific*
+   * container Docker named in the conflict error, so working stacks aren't
+   * disturbed. The conflicting container can't be useful anyway — its name
+   * is blocking the create we're about to issue.
+   */
+  private async runComposeUpWithConflictRecovery(...subArgs: string[]): Promise<void> {
+    try {
+      await this.runCompose(...subArgs);
+    } catch (err) {
+      const conflictId = extractConflictContainerId((err as Error).message);
+      if (!conflictId) throw err;
+      console.warn(
+        `[compose:${this.sessionId}] Container-name conflict; removing ${conflictId.slice(0, 12)} and retrying`,
+      );
+      try {
+        await this.composeQuery(["rm", "-f", conflictId], this.workspaceDir);
+      } catch {
+        // Removal failed — surface the original conflict error so the cause
+        // is clear, rather than masking it with the removal failure.
+        throw err;
+      }
+      await this.runCompose(...subArgs);
+    }
   }
 
   /** Run `docker compose stop <service>`. */
@@ -1375,6 +1410,21 @@ function defaultComposeQuery(args: string[], cwd: string): Promise<string> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Parse the conflicting container ID out of a Docker compose-up error.
+ *
+ * The daemon's name-collision message looks like:
+ *   `… The container name "/shipit-…-dev-1" is already in use by container
+ *    "6f943f7b45f75e4b321b707752b26f460155c64e6625243b312da9a3acdb0631". …`
+ *
+ * Returns the 64-hex container ID when present, otherwise `undefined` so the
+ * caller can rethrow the original error untouched.
+ */
+function extractConflictContainerId(message: string): string | undefined {
+  const m = /already in use by container "([0-9a-f]{12,64})"/.exec(message);
+  return m?.[1];
+}
 
 /**
  * Extract the host port from a port mapping string.
