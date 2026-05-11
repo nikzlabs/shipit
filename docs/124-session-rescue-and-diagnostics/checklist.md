@@ -99,3 +99,34 @@ The wiring helpers `handleStackError` and `createPreviewErrorReporter` were extr
 - [x] Update `plan.md` if implementation diverges (esp. phase names or endpoint shape) — phase set matches plan; `failed` carries `reason` instead of `failed:<reason>` (cleaner discriminated union).
 - [x] Marked `status: in-progress` when Phase 1 started.
 - [x] Marked `status: done` once all phases shipped.
+
+## Follow-up — Silent container death (post-ship)
+
+Field report from a production user (2026-05-11) showed a session
+diagnostic with `containerState: missing`, `runner: null`, and only the
+single "Agent process started" entry in `recentLogs` 70 minutes after
+the session started. Two gaps that Phase 1 missed:
+
+- [x] **`container_exited` handler didn't write to the per-session log
+      ring.** It emitted `session_status` via `runner.emitMessage` (which
+      goes into the turn buffer that's discarded on dispose) and
+      `console.error` (which doesn't surface in diagnostics), then
+      force-disposed. Net result: a container that OOMs or crashes leaves
+      zero trace in the diagnostic snapshot. Fixed by extracting the
+      inline handler into `handleContainerExited` and calling
+      `broadcastLog` before disposing. Exit 137 is annotated as "likely
+      OOMKilled" for the human-readable log line.
+- [x] **Runners whose container vanished without a `die` event were
+      undetectable.** The Docker event subscriber has a 5s reconnect
+      window during which die events are lost; daemon restarts and
+      external `docker rm` also bypass the event path. The 30s reconciler
+      from §3.3 only checks `/agent/status` (worker-level), not container
+      existence — so a missing container would never be detected. Fixed
+      by adding `createMissingContainerReconciler` in `app-lifecycle.ts`,
+      scheduled on the existing idle-enforcement timer in `index.ts`. It
+      walks `runnerRegistry.ids()`, force-disposes runners with no
+      corresponding container (skipping standbys), and writes a
+      "container vanished" log entry to the per-session ring.
+- [x] Tests in `integration_tests/container-exit-logging.test.ts` cover
+      both paths (OOM annotation, orphan detection, multi-runner mix,
+      standby skip, no-container-manager local-mode).

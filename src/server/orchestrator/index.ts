@@ -35,6 +35,7 @@ import {
   setupContainerManager,
   buildRunnerFactory,
   createIdleEnforcer,
+  createMissingContainerReconciler,
   createRunnerRegistry,
   createSSE,
   createPrStatusPoller,
@@ -60,6 +61,7 @@ export {
   setupContainerManager,
   buildRunnerFactory,
   createIdleEnforcer,
+  createMissingContainerReconciler,
   createRunnerRegistry,
   createSSE,
   createPrStatusPoller,
@@ -378,11 +380,27 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // enforcer itself also enforces a grace period (IDLE_GRACE_PERIOD_MS) so
   // a runner whose viewer just detached is not immediately eligible for
   // disposal.
+  //
+  // The missing-container reconciler runs on the same cadence — it catches
+  // runners whose container vanished without a `container_exited` event
+  // (Docker daemon restart, missed die event during the health-monitor
+  // reconnect window, external `docker rm`). Without it, the session
+  // looks stuck forever from the client's perspective.
+  const reconcileMissingContainers = containerManager
+    ? createMissingContainerReconciler({ containerManager, runnerRegistry, broadcastLog })
+    : null;
   const idleEnforcementInterval = containerManager ? setInterval(() => {
     try {
       enforceIdleContainerLimit();
     } catch (err) {
       console.error("[idle-cleanup] periodic enforcement failed:", err);
+    }
+    if (reconcileMissingContainers) {
+      try {
+        reconcileMissingContainers();
+      } catch (err) {
+        console.error("[orphan-runner] periodic reconciliation failed:", err);
+      }
     }
   }, 30_000) : null;
   // Don't keep the event loop alive just for idle enforcement — let process
