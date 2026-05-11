@@ -221,6 +221,18 @@ export function PreviewFrame({
     : (activePort ? `http://localhost:${activePort}` : null);
 
   // Poll and create/update the active slot when session/port changes.
+  //
+  // Cancellation invariant: only the effect that "owns" a `pollingRef` entry
+  // (the one that added it on mount) may remove it. The cleanup function is
+  // that owner. The async `poll()` body must NEVER call `pollingRef.delete()`
+  // on its own — if a re-render cancels poll #1 mid-loop, the cleanup removes
+  // its key; poll #2 then adds the SAME key back; if poll #1 also called
+  // `pollingRef.delete()` after the loop, it would remove poll #2's entry.
+  // The next dep change would then see `pollingRef.has(key) === false` and
+  // start poll #3 alongside the still-running poll #2 — a duplicate-poll
+  // cascade that, in the worst case (a long-running poll like the dogfood
+  // dev-container 15s timeout), can hold the spinner overlay open
+  // indefinitely while the iframe slot is never actually created.
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!activeSlotKey || !activePort || !preview?.running || !pollUrl) return;
@@ -239,7 +251,11 @@ export function PreviewFrame({
     const key = activeSlotKey;
 
     const poll = async () => {
-      for (let i = 0; i < 30 && !state.cancelled; i++) {
+      // Use a shorter interval so we react quickly when the dev server comes
+      // up fast (e.g. dogfood Vite "ready in 437ms"). Total budget stays the
+      // same (~15s = 60 × 250ms) so slow boots still get enough headroom
+      // before the spinner falls back to "create iframe anyway".
+      for (let i = 0; i < 60 && !state.cancelled; i++) {
         try {
           if (isContainerMode) {
             const resp = await fetch(pollUrl);
@@ -252,11 +268,14 @@ export function PreviewFrame({
         } catch {
           // Network error — retry
         }
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 250));
       }
 
-      pollingRef.current.delete(key);
       if (state.cancelled) return;
+      // Successful (non-cancelled) completion: clean up our own polling-ref
+      // entry now that nobody else will (the cleanup function below only
+      // fires on cancellation/unmount).
+      pollingRef.current.delete(key);
 
       // Compute the URL and add the slot
       const result = computePreviewUrl(sessionId ?? "_", activePort, preview, apiHost);
@@ -798,12 +817,18 @@ export function PreviewFrame({
             {overlayContent}
           </div>
         )}
-        {/* Spinner when no iframe exists for this session/port and preview is running but polling */}
+        {/* Spinner when no iframe exists for this session/port and preview is running but polling.
+            Wording note: at this point the orchestrator has told us the preview
+            is running — we're waiting on the preview-health poll before
+            attaching the iframe. Saying "Starting dev server" here is misleading
+            (especially in dogfooding, where Vite logs "ready in 437 ms" while
+            this overlay is on screen); the dev server *is* up, we're just
+            connecting to it. */}
         {isRunning && !activeSlotReady && !overlayContent && (
           <div className="absolute inset-0 flex items-center justify-center bg-(--color-bg-primary) text-(--color-text-secondary) text-sm">
             <div className="text-center space-y-3">
               <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
-              <p>Starting dev server...</p>
+              <p>Connecting to dev server...</p>
             </div>
           </div>
         )}
