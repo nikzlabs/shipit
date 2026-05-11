@@ -144,4 +144,47 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.close();
   });
+
+  it("interrupts the agent when it emits an AskUserQuestion tool_use", async () => {
+    // Without the interrupt, the Claude CLI in `-p` mode would auto-resolve
+    // the AskUserQuestion call (no interactive terminal to wait on) and the
+    // model would continue with whatever it planned next. The user would see
+    // the question card AND the agent's subsequent output even though they
+    // never answered. The fix in agent-listeners.ts interrupts the agent as
+    // soon as we observe the AskUserQuestion tool_use.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Pick one" });
+    await waitForClaude(() => lastClaude);
+    expect(lastClaude.interrupted).toBe(false);
+
+    // Simulate the CLI emitting an AskUserQuestion tool_use as part of the
+    // assistant turn — same shape that ClaudeAdapter would produce.
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "ask-1",
+          name: "AskUserQuestion",
+          input: {
+            questions: [{
+              question: "Pick a backend",
+              header: "Backend",
+              options: [{ label: "Redis", description: "" }],
+              multiSelect: false,
+            }],
+          },
+        }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Agent should have been interrupted — the CLI shouldn't be allowed to
+    // continue with whatever auto-resolved result the headless mode produced.
+    expect(lastClaude.interrupted).toBe(true);
+
+    client.close();
+  });
 });
