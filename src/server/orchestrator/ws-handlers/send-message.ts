@@ -290,6 +290,26 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     return;
   }
 
+  // Defensive guard: if the runner is already marked as running but
+  // `getAgent()` returned null, an agent-start is already in flight on
+  // this session — either from a parallel `answer_question` (UI
+  // double-click, two browser tabs) or from a system-turn that hasn't
+  // yet reached `setAgent`. The worker rejects duplicate /agent/start
+  // with 409, so the parallel start would fail anyway, but without
+  // this guard the orchestrator still goes through the full setup and
+  // emits a misleading flow of "Agent process started" log entries
+  // (now mitigated by moving that log to the agent_init handler).
+  // Match the handleSendMessage pattern: drop the duplicate when the
+  // worker confirms a turn is in flight. Note: there's no
+  // verifyRunningState() short-circuit here because the most common
+  // case is a genuine duplicate, not a stranded `running=true` flag.
+  if (runnerEarly?.running) {
+    console.warn(
+      `[answer_question] Runner ${runnerEarly.sessionId} already running — dropping duplicate answer (text="${answerText.slice(0, 60)}")`,
+    );
+    return;
+  }
+
   // Agent has finished — send the answer as a new prompt with --resume
   if (!ctx.authManager.authenticated) {
     ctx.authManager.checkCredentials();
@@ -426,5 +446,6 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     systemPrompt,
     cwd: capturedSessionDir ?? ctx.workspaceDir,
   });
-  ctx.broadcastLog("server", "Agent process started");
+  // "Agent process started" is emitted from agent-listeners.ts on
+  // agent_init — see the matching comment in agent-execution.ts.
 }
