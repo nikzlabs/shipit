@@ -270,6 +270,15 @@ export type RescuePhase =
   | "destroying_container"
   | "creating_container"
   | "starting_stack"
+  /**
+   * `restarting_agent` is emitted by the `restartAgent` recovery flow
+   * (POST /api/sessions/:id/agent/container/restart). It's a single
+   * cosmetic phase wrapping destroy+recreate of the agent container while
+   * leaving the compose stack running. The client renders "Restarting
+   * agent…" instead of the full Rescue phase sequence. See
+   * docs/127-restart-agent.
+   */
+  | "restarting_agent"
   | "ready"
   | "failed";
 

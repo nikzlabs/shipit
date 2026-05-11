@@ -28,12 +28,24 @@ const RECOVERY_WORKER_TIMEOUT_MS = 3000;
  */
 const RESTART_READY_TIMEOUT_MS = 8000;
 
-/** Per-phase max duration. On expiry we record the phase as failed and continue. */
+/**
+ * Per-phase max duration. On expiry we record the phase as failed and continue.
+ *
+ * Note: `creating_container`, `starting_stack`, and `restarting_agent` are
+ * declared here for type-completeness (the `Record<…, number>` shape
+ * enumerates every RescuePhase that *could* have a timeout) but aren't
+ * used as a `withTimeout()` bound — the actual readiness wait happens in
+ * `waitForContainerReady` with `RESTART_READY_TIMEOUT_MS`. Treat the
+ * non-zero entries here as the active phase budgets; the zeroed ones are
+ * placeholders so the Record type doesn't drift if we ever add a new
+ * RescuePhase.
+ */
 const PHASE_TIMEOUT_MS: Record<Exclude<RescuePhase, "ready" | "failed">, number> = {
   stopping_stack: 10000,
   destroying_container: 8000,
-  creating_container: 8000,
-  starting_stack: 0, // best-effort, no wait — happens lazily on next attach
+  creating_container: 0, // see note above
+  starting_stack: 0,      // see note above
+  restarting_agent: 0,    // cosmetic — destroying_container + creating_container are the real work
 };
 
 /**
@@ -49,6 +61,14 @@ const REAP_ORPHANS_TIMEOUT_MS = 10000;
 interface RecoveryRunner extends SessionRunnerInterface {
   killAgentOnWorker?: (opts?: { timeoutMs?: number }) => Promise<void>;
   serviceManager?: ServiceManager | null;
+  /**
+   * Lifecycle flag honored by the runner's `disposed` handler in
+   * app-lifecycle.ts. Set by `restartAgent` before disposing so the
+   * compose stack is preserved across the agent-container swap.
+   * Absent on in-process SessionRunner (test mode) — undefined assignment
+   * is harmless there.
+   */
+  preserveComposeOnDispose?: boolean;
 }
 
 export interface RecoveryDeps {
@@ -258,42 +278,11 @@ export async function restartContainer(
   emit("creating_container");
   deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, deps.defaultAgentId);
 
-  const deadline = Date.now() + RESTART_READY_TIMEOUT_MS;
-  let newContainerState: RestartContainerResult["newContainerState"] = "pending";
-  let error: string | null = null;
-  while (Date.now() < deadline) {
-    const sc = deps.containerManager.get(sessionId);
-    if (sc?.status === "running") {
-      newContainerState = "running";
-      break;
-    }
-    const errRecord = deps.containerManager.getLastCreateError(sessionId);
-    if (errRecord) {
-      newContainerState = "missing";
-      error = errRecord.error;
-      break;
-    }
-    if (sc?.status === "starting") {
-      newContainerState = "starting";
-      // Don't break — keep polling for "running" until the deadline.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  // Final read so we don't miss a state transition that happened on the
-  // last sleep before the deadline.
-  if (newContainerState === "pending" || newContainerState === "starting") {
-    const sc = deps.containerManager.get(sessionId);
-    if (sc?.status === "running") {
-      newContainerState = "running";
-    } else if (sc?.status === "starting") {
-      newContainerState = "starting";
-    }
-    const errRecord = deps.containerManager.getLastCreateError(sessionId);
-    if (errRecord && newContainerState !== "running") {
-      newContainerState = "missing";
-      error = errRecord.error;
-    }
-  }
+  const { newContainerState, error } = await waitForContainerReady(
+    deps.containerManager,
+    sessionId,
+    Date.now() + RESTART_READY_TIMEOUT_MS,
+  );
 
   // ---- Phase: starting_stack / ready / failed ----
   // The new ServiceManager will start lazily on next viewer attach (driven
@@ -326,6 +315,206 @@ export async function restartContainer(
   }
 
   return { ok: true, noContainer, newContainerState, error };
+}
+
+/**
+ * Restart the agent container WITHOUT touching the compose stack.
+ *
+ * Why this exists: today's `restartContainer` (Rescue session) tears down
+ * the compose stack as collateral damage when all the user actually needed
+ * was a fresh agent container. The compose stack is often expensive to
+ * rebuild (dev server cold start, dependent service warm-up) and in
+ * dogfood mode the compose service IS the inner orchestrator UI — Rescue
+ * destroys the UI the user was just looking at.
+ *
+ * Flow:
+ *   1. Best-effort kill the agent CLI on the worker.
+ *   2. Mark `runner.preserveComposeOnDispose = true` so the runner's
+ *      `disposed` lifecycle hook in app-lifecycle.ts leaves the
+ *      ServiceManager alive in the per-app map.
+ *   3. Force-dispose the runner.
+ *   4. Destroy the agent container (NOT the compose containers — they
+ *      carry `shipit-parent-session=<sid>` and we deliberately don't
+ *      touch them).
+ *   5. `runnerRegistry.getOrCreate(...)` to build a fresh runner; the
+ *      factory's `setupServiceManager` adopts the orphaned manager
+ *      instead of creating a new one (see `adoptExistingServiceManager`
+ *      in app-lifecycle.ts).
+ *
+ * Idempotent: safe to retry. If the agent container is already gone, the
+ * destroy step is a no-op and the next attach still creates a fresh one.
+ * See docs/127-restart-agent for the full design.
+ */
+export async function restartAgent(
+  deps: RecoveryDeps,
+  sessionId: string,
+): Promise<RestartContainerResult> {
+  const session = deps.sessionManager.get(sessionId);
+  if (!session) throw new ServiceError(404, "Session not found");
+  if (!deps.containerManager) {
+    throw new ServiceError(503, "Container manager not available");
+  }
+  if (!session.workspaceDir) {
+    throw new ServiceError(500, "Session has no workspaceDir — cannot create container");
+  }
+
+  const runner = deps.runnerRegistry.get(sessionId) as RecoveryRunner | undefined;
+
+  // Emit single cosmetic phase via the runner's message stream. We use the
+  // same `container_restarting` message type as Rescue session so the
+  // client's existing overlay logic handles it; only the phase value
+  // differs.
+  const emit = (phase: RescuePhase, extra: { reason?: string; message?: string } = {}) => {
+    runner?.emitMessage({
+      type: "container_restarting",
+      sessionId,
+      phase,
+      ...extra,
+    });
+  };
+
+  emit("restarting_agent");
+
+  // Best-effort: tell the worker to kill the agent CLI. Don't block on
+  // worker reachability — if the worker is wedged we still want to
+  // recreate the container. Surface the failure as a non-blocking toast
+  // via session_status.lastInterruptError, same pattern as restartContainer.
+  if (runner?.killAgentOnWorker) {
+    try {
+      await runner.killAgentOnWorker({ timeoutMs: RECOVERY_WORKER_TIMEOUT_MS });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      runner.emitMessage({
+        type: "session_status",
+        sessionId,
+        running: runner.running,
+        queueLength: runner.queueLength,
+        lastInterruptError: `Could not kill the wedged agent before restarting: ${msg}`,
+      });
+    }
+  }
+
+  // ---- Mark for compose preservation, then force-dispose. ----
+  // The runner's `disposed` event handler in app-lifecycle.ts reads
+  // `preserveComposeOnDispose` and skips `mgr.stop()` when set, leaving
+  // the ServiceManager in `serviceManagers` for the next runner to adopt.
+  // (Field is optional on `RecoveryRunner` to allow in-process test
+  // runners — the assignment is a no-op when the underlying object
+  // doesn't have a real setter for it.)
+  if (runner) runner.preserveComposeOnDispose = true;
+  deps.runnerRegistry.dispose(sessionId, { force: true });
+
+  // ---- Phase: destroying_container ----
+  emit("destroying_container");
+  const existing = deps.containerManager.get(sessionId);
+  const noContainer = !existing;
+  if (existing) {
+    try {
+      await withTimeout(
+        deps.containerManager.destroy(sessionId),
+        PHASE_TIMEOUT_MS.destroying_container,
+      );
+    } catch (err) {
+      console.warn(`[restart-agent] destroy container failed for ${sessionId}:`, err);
+    }
+  } else {
+    // No container, but a stale create-error from a previous failed attempt
+    // would persist otherwise — wipe it so we observe only THIS attempt's
+    // outcome below.
+    deps.containerManager.clearCreateError(sessionId);
+  }
+
+  // NOTE: We deliberately skip `reapOrphans` here. Rescue session reaps
+  // by `shipit-parent-session=<sid>` label, which would force-remove the
+  // running compose containers — exactly what we're trying to preserve.
+
+  // ---- Phase: creating_container ----
+  emit("creating_container");
+  deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, deps.defaultAgentId);
+
+  const { newContainerState, error } = await waitForContainerReady(
+    deps.containerManager,
+    sessionId,
+    Date.now() + RESTART_READY_TIMEOUT_MS,
+  );
+
+  // Final phase. Re-resolve the runner — the registry created a fresh one
+  // above, so we emit from the new runner so the next viewer attach picks
+  // it up via the turn-event buffer.
+  const newRunner = deps.runnerRegistry.get(sessionId) as RecoveryRunner | undefined;
+  const finalEmit = (phase: RescuePhase, extra: { reason?: string; message?: string } = {}) => {
+    newRunner?.emitMessage({
+      type: "container_restarting",
+      sessionId,
+      phase,
+      ...extra,
+    });
+  };
+  if (newContainerState === "running") {
+    finalEmit("ready");
+  } else if (newContainerState === "starting" || newContainerState === "pending") {
+    // Still in progress — client keeps polling and the next reconcile
+    // finalizes. Don't emit `ready` prematurely.
+  } else {
+    finalEmit("failed", {
+      reason: "create_failed",
+      ...(error !== null ? { message: error } : {}),
+    });
+  }
+
+  return { ok: true, noContainer, newContainerState, error };
+}
+
+/**
+ * Poll the container manager for a fresh `getOrCreate`'d session until
+ * one of:
+ *   - status === "running"  → returns `{ newContainerState: "running" }`
+ *   - getLastCreateError(...) populated → `{ newContainerState: "missing", error }`
+ *   - deadline expires      → `"pending"` or `"starting"` per last seen state
+ *
+ * Polls every 250 ms with a final-read fallback to catch transitions that
+ * landed during the last sleep. Shared between `restartContainer` and
+ * `restartAgent` so both flows agree on what "ready" looks like.
+ */
+async function waitForContainerReady(
+  containerManager: SessionContainerManager,
+  sessionId: string,
+  deadlineMs: number,
+): Promise<{ newContainerState: RestartContainerResult["newContainerState"]; error: string | null }> {
+  // Every populated-error branch returns directly with the specific
+  // error string. The trailing "deadline expired" return below can
+  // never have an error attached (we'd have returned from inside the
+  // loop if there were one), so `error: null` is correct.
+  let newContainerState: RestartContainerResult["newContainerState"] = "pending";
+  while (Date.now() < deadlineMs) {
+    const sc = containerManager.get(sessionId);
+    if (sc?.status === "running") {
+      return { newContainerState: "running", error: null };
+    }
+    const errRecord = containerManager.getLastCreateError(sessionId);
+    if (errRecord) {
+      return { newContainerState: "missing", error: errRecord.error };
+    }
+    if (sc?.status === "starting") {
+      newContainerState = "starting";
+      // Don't break — keep polling for "running" until the deadline.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  // Final read so we don't miss a state transition that happened on the
+  // last sleep before the deadline.
+  const sc = containerManager.get(sessionId);
+  if (sc?.status === "running") {
+    return { newContainerState: "running", error: null };
+  }
+  if (sc?.status === "starting") {
+    newContainerState = "starting";
+  }
+  const errRecord = containerManager.getLastCreateError(sessionId);
+  if (errRecord) {
+    return { newContainerState: "missing", error: errRecord.error };
+  }
+  return { newContainerState, error: null };
 }
 
 /** Race a promise against a timeout; resolves with the promise's value or throws on timeout. */

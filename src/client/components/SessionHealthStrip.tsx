@@ -23,6 +23,7 @@ import {
   CaretDownIcon,
   CaretUpIcon,
   StethoscopeIcon,
+  CpuIcon,
 } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
 import { StatusDot } from "./ui/status-dot.js";
@@ -95,8 +96,9 @@ const PHASE_LABEL: Record<RescuePhase, string> = {
   destroying_container: "Destroying container…",
   creating_container: "Recreating container…",
   starting_stack: "Starting services…",
-  ready: "Rescue complete",
-  failed: "Rescue failed",
+  restarting_agent: "Restarting agent…",
+  ready: "Restart complete",
+  failed: "Restart failed",
 };
 
 function summarize(
@@ -308,7 +310,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     const id = setTimeout(() => {
       setIsRestarting(false);
       restartStartedAtRef.current = null;
-      setActionError("Rescue timed out — the new container did not become ready. See diagnostics below.");
+      setActionError("Restart timed out — the new container did not become ready. See diagnostics below.");
     }, RESTART_OVERLAY_TIMEOUT_MS);
     return () => clearTimeout(id);
   }, [isRestarting]);
@@ -358,6 +360,45 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
         restartStartedAtRef.current = null;
       } else if (result.newContainerState === "missing" && result.error) {
         setActionError(`Rescue failed: ${result.error}`);
+        setIsRestarting(false);
+        restartStartedAtRef.current = null;
+        setRescueState({ phase: "failed", reason: "create_failed", message: result.error });
+      }
+      void poll();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : String(e));
+      setIsRestarting(false);
+      restartStartedAtRef.current = null;
+      setRescueState({ phase: "failed", reason: "request_error" });
+    }
+  }, [api, sessionId, onReconnectWs, poll, setRescueState]);
+
+  /**
+   * Restart the agent container only — leaves the compose stack running.
+   * Lighter-weight than Rescue session; intended for "the agent is wedged
+   * but the compose preview is fine." See docs/127-restart-agent.
+   *
+   * Uses the same overlay state machine as `onRestart` (the new container
+   * goes through `destroying_container` → `creating_container` → `ready`
+   * server-side) so the strip's existing poll-driven finalize logic
+   * applies unchanged.
+   */
+  const onRestartAgent = useCallback(async () => {
+    if (!sessionId) return;
+    setIsRestarting(true);
+    setActionError(null);
+    setRescueState({ phase: "restarting_agent" });
+    restartStartedAtRef.current = Date.now();
+    try {
+      const result = await api.post<RestartContainerResult>(
+        `/api/sessions/${sessionId}/agent/container/restart`,
+      );
+      onReconnectWs();
+      if (result.newContainerState === "running") {
+        setIsRestarting(false);
+        restartStartedAtRef.current = null;
+      } else if (result.newContainerState === "missing" && result.error) {
+        setActionError(`Restart agent failed: ${result.error}`);
         setIsRestarting(false);
         restartStartedAtRef.current = null;
         setRescueState({ phase: "failed", reason: "create_failed", message: result.error });
@@ -462,6 +503,18 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
             Kill agent
           </Button>
           <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void onRestartAgent()}
+            disabled={isRestarting}
+            title="Destroy and recreate just the agent container. Leaves the compose stack running — use when the agent is wedged but your preview/dev-server are fine."
+          >
+            {isRestarting
+              ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+              : <CpuIcon size={ICON_SIZE.XS} />}
+            Restart agent
+          </Button>
+          <Button
             variant="secondary"
             size="sm"
             onClick={() => void onRestart()}
@@ -522,12 +575,15 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           </button>
         </div>
       )}
-      {/* Phased Rescue session failure — deep-links to the diagnostics panel
-          so the user can see *which* phase hung. */}
+      {/* Phased recovery failure — deep-links to the diagnostics panel
+          so the user can see *which* phase hung. Shared between Rescue
+          session and Restart agent (both surface phased progress via
+          `container_restarting` / `rescueState`); copy stays neutral so
+          it makes sense for either action's failure. */}
       {rescueState?.phase === "failed" && (
         <div className="px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary) flex items-center gap-2">
           <span className="text-(--color-error) font-medium">
-            Rescue failed{rescueState.reason ? ` (${rescueState.reason})` : ""}
+            Recovery failed{rescueState.reason ? ` (${rescueState.reason})` : ""}
           </span>
           {rescueState.message && (
             <span className="text-(--color-text-secondary) font-mono truncate">{rescueState.message}</span>
