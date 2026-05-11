@@ -106,6 +106,14 @@ export async function cleanupOrphanContainers(
   deps: DiscoveryDeps,
   activeSessionIds: Set<string>,
 ): Promise<number> {
+  // Diagnostic: log caller. This is the other SIGTERM-emitting path
+  // (`container.stop({t:5})`) and the docs say it's only called at
+  // startup — if it's firing during steady-state we want to know.
+  // TODO(observability): downgrade once SIGTERM-loop investigation
+  // (docs/124-session-rescue-and-diagnostics follow-up) lands.
+  const stack = new Error("cleanupOrphanContainers caller trace").stack;
+  console.warn(`[container] cleanupOrphanContainers(active=${activeSessionIds.size}) called from:\n${stack}`);
+
   let removed = 0;
   try {
     const containers = await deps.docker.listContainers({

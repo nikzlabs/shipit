@@ -454,6 +454,18 @@ export async function destroyContainer(
   deps: LifecycleDeps,
   sessionId: string,
 ): Promise<void> {
+  // Diagnostic: emit a stack trace at every destroy entry. Field reports
+  // show session containers receiving SIGTERM with exit 0 (consistent
+  // with `container.stop({t:5})` below) without any of the known
+  // dispose-path log prefixes appearing — meaning either an unidentified
+  // code path is calling this OR something external is reaching into the
+  // Docker daemon. The stack trace tells us which.
+  // TODO(observability): remove or downgrade to debug once the field
+  // report from docs/124-session-rescue-and-diagnostics follow-up is
+  // resolved.
+  const stack = new Error("destroyContainer caller trace").stack;
+  console.warn(`[container] destroyContainer(${sessionId}) called from:\n${stack}`);
+
   deps.standbySessionIds.delete(sessionId);
   const sc = deps.containers.get(sessionId);
   if (!sc) return;
