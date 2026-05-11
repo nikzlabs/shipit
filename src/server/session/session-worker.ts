@@ -109,6 +109,15 @@ export class SessionWorker extends EventEmitter {
   // Install state
   private _installRunning = false;
   private _installProcess: ChildProcess | null = null;
+  /**
+   * Last completed install's result. Retained across the worker process
+   * lifetime (or until a new install starts) so the orchestrator can
+   * recover on SSE reconnect: if the orchestrator's SSE drops between
+   * `install_status: running` and the worker emitting `install_done`,
+   * the orchestrator polls `/install/status` to discover the outcome
+   * instead of waiting forever for an event that already fired.
+   */
+  private _lastInstallResult: { ok: boolean; command?: string; message?: string } | null = null;
 
   // Terminal backpressure state
   private _sseBackpressured = new Set<ServerResponse>();
@@ -446,9 +455,20 @@ export class SessionWorker extends EventEmitter {
 
       // Return immediately — progress streams via SSE
       this._installRunning = true;
+      // New install starts — clear any previous result so the SSE-reconnect
+      // resync path doesn't surface a stale outcome from a prior install.
+      this._lastInstallResult = null;
       void this.runInstallCommands(commands, markerDir, markerFile);
       return { started: true };
     });
+
+    // Install state probe — used by the orchestrator's SSE reconnect path
+    // to recover from a missed install_done/install_error. See
+    // `ContainerSessionRunner.resyncInstallStateAfterReconnect()`.
+    app.get("/install/status", async () => ({
+      running: this._installRunning,
+      lastResult: this._lastInstallResult,
+    }));
   }
 
   // --- Install command execution ---
@@ -462,12 +482,17 @@ export class SessionWorker extends EventEmitter {
       for (const cmd of commands) {
         const exitCode = await this.runSingleInstallCommand(cmd);
         if (exitCode !== 0) {
-          this.broadcastSSE({
-            type: "install_error",
-            data: { command: cmd, exitCode, message: `Command "${cmd}" exited with code ${exitCode}` },
-          });
+          const message = `Command "${cmd}" exited with code ${exitCode}`;
+          this._lastInstallResult = { ok: false, command: cmd, message };
+          // Update terminal state BEFORE broadcasting so an orchestrator that
+          // races to query `/install/status` after the SSE event sees a
+          // consistent `running: false` snapshot.
           this._installRunning = false;
           this._installProcess = null;
+          this.broadcastSSE({
+            type: "install_error",
+            data: { command: cmd, exitCode, message },
+          });
           return;
         }
       }
@@ -476,15 +501,21 @@ export class SessionWorker extends EventEmitter {
       fs.mkdirSync(markerDir, { recursive: true });
       fs.writeFileSync(markerFile, new Date().toISOString());
 
-      this.broadcastSSE({ type: "install_done", data: {} });
-    } catch (err) {
-      this.broadcastSSE({
-        type: "install_error",
-        data: { message: getErrorMessage(err) },
-      });
-    } finally {
+      this._lastInstallResult = { ok: true };
+      // See above — flip `running` to false before the success broadcast so
+      // the next `/install/status` poll observes consistent state.
       this._installRunning = false;
       this._installProcess = null;
+      this.broadcastSSE({ type: "install_done", data: {} });
+    } catch (err) {
+      const message = getErrorMessage(err);
+      this._lastInstallResult = { ok: false, message };
+      this._installRunning = false;
+      this._installProcess = null;
+      this.broadcastSSE({
+        type: "install_error",
+        data: { message },
+      });
     }
   }
 
@@ -598,6 +629,24 @@ export class SessionWorker extends EventEmitter {
       // Replay current state so late-connecting clients don't miss events
       if (this.terminal) {
         sendEvent({ type: "terminal_data", data: { data: "" } });
+      }
+      // Replay last install result so an orchestrator that reconnects after
+      // missing the original install_done/install_error still sees the
+      // outcome. The orchestrator's `_resolveInstallComplete` is idempotent
+      // (gates on a non-null resolver), so duplicate events are harmless if
+      // the original event already arrived.
+      if (this._lastInstallResult && !this._installRunning) {
+        if (this._lastInstallResult.ok) {
+          sendEvent({ type: "install_done", data: {} });
+        } else {
+          sendEvent({
+            type: "install_error",
+            data: {
+              command: this._lastInstallResult.command,
+              message: this._lastInstallResult.message ?? "Install failed",
+            },
+          });
+        }
       }
 
       const keepalive = setInterval(() => {
