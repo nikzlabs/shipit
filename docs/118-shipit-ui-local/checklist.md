@@ -99,6 +99,14 @@ The "Installing dependencies..." overlay would sometimes stick forever if the or
 - [x] Client routes `install_log` chunks into the install step's `logLines` (in addition to the terminal panel), so the StartupSteps overlay shows progress instead of looking frozen.
 - [x] Client drives the `dev_server` startup step from real `service_status` / `preview_status` events and falls back to clearing the overlay 6s after install completes (manual-preview case) so the services panel can take over.
 
+## "Connecting to dev server..." overlay hardening (landed)
+
+The previous fix renamed the spinner from "Starting dev server..." to "Connecting to dev server..." and tightened the poll interval, but the underlying bug — the spinner could stay on screen indefinitely — was unaddressed. Root cause: the poll loop in `PreviewFrame.tsx` did `await fetch(pollUrl)` with no timeout, so a single hung `/api/preview-health` response stranded the loop on the await; the `i < 60` cap never advanced, the post-loop slot-creation never fired, and the spinner stayed up forever.
+
+- [x] Add `AbortSignal.timeout(2000)` to each preview-health fetch so a hung response can't strand the poll on a single `await`.
+- [x] Add a wall-clock `deadline = Date.now() + 15_000` check at the top of the for-loop so cumulative slow fetches can't drag the total past ~15s; after that the iframe slot is created unconditionally and the spinner clears.
+- [x] Regression test in `PreviewFrame.test.tsx` verifying the fetch is invoked with an `AbortSignal`.
+
 ## Phase 2 — inner-session preview (deferred design)
 
 Goal: let the user preview an app they're building inside an inner session, despite the inner orch not having Docker.
