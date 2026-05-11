@@ -14,6 +14,8 @@ import type { SessionRunnerFactory, SessionRunnerInterface } from "./session-run
 import { SessionRunnerRegistry } from "./session-runner.js";
 import { resolveSessionConfig } from "../shared/session-config.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
+import { createSessionLoopDetector } from "./loop-detector.js";
+import type { SessionLoopDetector } from "./loop-detector.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
@@ -1747,9 +1749,33 @@ export function setupContainerHealthMonitoring(
   containerManager: SessionContainerManager,
   runnerRegistry: SessionRunnerRegistry,
   broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
+  loopDetector: SessionLoopDetector = createSessionLoopDetector(),
 ): void {
   containerManager.on("container_exited", (sessionId, exitCode, error) => {
     handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog);
+  });
+
+  // SIGTERM/recreate loop detector. Field reports show occasional
+  // intermittent loops where the same session's container is destroyed
+  // and recreated every 30-60s for many minutes. The loop is hard to
+  // investigate because it's not reproducible and often clears after
+  // an orchestrator restart. We emit a uniquely greppable
+  // `LOOP DETECTED` line on both console and the per-session log ring
+  // so post-hoc journalctl grep can confirm whether the loop occurred,
+  // even after a restart.
+  containerManager.on("container_started", (sessionId) => {
+    const alert = loopDetector.recordContainerStarted(sessionId);
+    if (!alert) return;
+    const windowLabel = `${Math.round(alert.windowMs / 1000)}s`;
+    const msg = `LOOP DETECTED: session ${sessionId} container created ${alert.countInWindow} times in last ${windowLabel} (threshold ${alert.threshold}).`;
+    console.error(`[loop-detector] ${msg}`);
+    if (broadcastLog) {
+      broadcastLog(
+        sessionId,
+        "server",
+        `${msg} Orchestrator is in a destroy/recreate loop — check journalctl for destroyContainer/dispose stack traces around this timestamp.`,
+      );
+    }
   });
 
   // Docker events stream reconnected after a gap. Any die/oom events
