@@ -192,6 +192,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._resolveWorkerReady();
   }
 
+  /**
+   * Resolves once the underlying container has a real worker URL — i.e.
+   * the container has been created and its IP resolved. For runners
+   * constructed without the placeholder URL, resolves immediately.
+   *
+   * Exposed so external lifecycle code (e.g. `adoptExistingServiceManager`
+   * in app-lifecycle.ts) can defer container-dependent operations like
+   * `connectToNetwork` until the container actually exists, instead of
+   * firing them synchronously after `getOrCreate` returns.
+   */
+  whenWorkerReady(): Promise<void> {
+    return this._workerReady;
+  }
+
   // --- Agent state (same interface as SessionRunner) ---
 
   get running(): boolean { return this._isRunning; }
@@ -1222,6 +1236,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.clearPushTimer();
     // Resolve any awaiters of in-flight install so they don't leak.
     this.signalInstallComplete();
+    // Resolve `_workerReady` so any `whenWorkerReady().then(...)` chain
+    // pending against a placeholder-URL runner doesn't leak when the
+    // container creation fails before `setWorkerUrl()` ever fires. The
+    // chained `.then` will run with no meaningful worker — that's fine:
+    // its callers (e.g. `adoptExistingServiceManager`'s connectToNetwork)
+    // will hit "No container found" and the `.catch` handles it.
+    this._resolveWorkerReady();
+    // Same defense for `_sseConnected`: if dispose runs before the SSE
+    // stream actually opens, any `connectEventStream()` awaiter would
+    // otherwise hang forever. Resolving here is safe — awaiters that
+    // proceed past it check `this._disposed` and bail.
+    if (this._resolveSseConnected) {
+      this._resolveSseConnected();
+      this._resolveSseConnected = null;
+    }
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
     this._isRunning = false;

@@ -54,11 +54,11 @@ function makeStubRunner(sessionId: string, withServiceManager: boolean): StubRun
     wasInterrupted: false,
     /**
      * Mirrors the real ContainerSessionRunner field. The `restartAgent`
-     * service writes to this before disposing so the runner's `disposed`
-     * lifecycle handler in app-lifecycle.ts skips `mgr.stop()`. Must be
-     * present on the stub (rather than added at write time) so the
-     * `"preserveComposeOnDispose" in runner` typeguard in recovery.ts
-     * resolves true.
+     * service writes `true` to this before disposing so the runner's
+     * `disposed` lifecycle handler in app-lifecycle.ts skips `mgr.stop()`.
+     * Initial value is `false` so the test starts in the same state as a
+     * fresh production runner — assertions then verify `restartAgent`
+     * flipped it before forcing the dispose.
      */
     preserveComposeOnDispose: false,
     serviceManager: stubMgr,
@@ -445,6 +445,91 @@ describe("restartAgent (docs/127)", () => {
     );
     expect(sessionStatus).toBeDefined();
     expect(sessionStatus?.lastInterruptError).toMatch(/worker EHOSTUNREACH/);
+  });
+
+  it("two consecutive restartAgent calls each preserve compose (idempotent chaining)", async () => {
+    // Three runners total: r0 is the original, r1 is the first replacement
+    // produced by the first restartAgent, r2 is the second replacement.
+    // Each round MUST set preserveComposeOnDispose=true on the runner
+    // being disposed (r0 in round 1, r1 in round 2) — that's the
+    // invariant that lets the compose stack survive both restarts.
+    const r0 = makeStubRunner("rescue-1", true);
+    const r1 = makeStubRunner("rescue-1", true);
+    const r2 = makeStubRunner("rescue-1", true);
+
+    const handouts = [r1, r2];
+    const disposeCalls: { sessionId: string; force?: boolean }[] = [];
+    let getOrCreateCalls = 0;
+    const runners = new Map<string, SessionRunnerInterface>([["rescue-1", r0]]);
+    const registry = {
+      get: (sid: string) => runners.get(sid),
+      dispose: (sid: string, opts?: { force?: boolean }) => {
+        disposeCalls.push({ sessionId: sid, force: opts?.force });
+        runners.delete(sid);
+      },
+      getOrCreate: (sid: string) => {
+        getOrCreateCalls += 1;
+        const next = handouts.shift();
+        if (!next) throw new Error("test ran out of runners");
+        runners.set(sid, next);
+        return next;
+      },
+    } as unknown as SessionRunnerRegistry;
+
+    // Round 1: r0 → r1
+    const cm1 = makeStubContainerManager({ hasExisting: true, finalState: "running" });
+    const result1 = await restartAgent(
+      {
+        sessionManager,
+        containerManager: cm1,
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+      },
+      "rescue-1",
+    );
+    expect(result1.newContainerState).toBe("running");
+    expect((r0 as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(true);
+    expect((r1 as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(false);
+
+    // Round 2: r1 → r2 (chaining — the runner that was just adopted is
+    // now being disposed again).
+    const cm2 = makeStubContainerManager({ hasExisting: true, finalState: "running" });
+    const result2 = await restartAgent(
+      {
+        sessionManager,
+        containerManager: cm2,
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+      },
+      "rescue-1",
+    );
+    expect(result2.newContainerState).toBe("running");
+    expect((r1 as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(true);
+    expect((r2 as unknown as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose).toBe(false);
+
+    // NOTE: We intentionally do NOT assert on `serviceManager._stopCalls`
+    // here. The stub runner's `dispose: () => undefined` never invokes
+    // the real disposed-handler (which lives in app-lifecycle.ts and is
+    // where `mgr.stop()` actually gates on the preserve flag). End-to-end
+    // verification of "preserve flag → mgr.stop() not called" lives in
+    // `integration_tests/service-manager-adoption.test.ts`, which
+    // exercises the disposed handler directly with a real
+    // ContainerSessionRunner.
+    //
+    // What this test DOES verify: `restartAgent` correctly sets the
+    // preserve flag on whichever runner it's disposing — including the
+    // runner adopted by a previous restartAgent (r1 in round 2). Without
+    // that, the adoption handoff would silently fall back to "tear down
+    // compose" on the second iteration.
+
+    // Two destroys, two getOrCreates, two forced disposes; zero reaps
+    // across both rounds (reaping by `shipit-parent-session` label would
+    // kill the surviving compose containers).
+    expect((cm1 as unknown as { _reapCalls: () => number })._reapCalls()).toBe(0);
+    expect((cm2 as unknown as { _reapCalls: () => number })._reapCalls()).toBe(0);
+    expect(disposeCalls).toHaveLength(2);
+    expect(disposeCalls.every((c) => c.force === true)).toBe(true);
+    expect(getOrCreateCalls).toBe(2);
   });
 
 });

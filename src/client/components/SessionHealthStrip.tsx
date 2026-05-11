@@ -310,7 +310,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     const id = setTimeout(() => {
       setIsRestarting(false);
       restartStartedAtRef.current = null;
-      setActionError("Rescue timed out — the new container did not become ready. See diagnostics below.");
+      setActionError("Restart timed out — the new container did not become ready. See diagnostics below.");
     }, RESTART_OVERLAY_TIMEOUT_MS);
     return () => clearTimeout(id);
   }, [isRestarting]);
@@ -575,12 +575,15 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           </button>
         </div>
       )}
-      {/* Phased Rescue session failure — deep-links to the diagnostics panel
-          so the user can see *which* phase hung. */}
+      {/* Phased recovery failure — deep-links to the diagnostics panel
+          so the user can see *which* phase hung. Shared between Rescue
+          session and Restart agent (both surface phased progress via
+          `container_restarting` / `rescueState`); copy stays neutral so
+          it makes sense for either action's failure. */}
       {rescueState?.phase === "failed" && (
         <div className="px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-tertiary) flex items-center gap-2">
           <span className="text-(--color-error) font-medium">
-            Rescue failed{rescueState.reason ? ` (${rescueState.reason})` : ""}
+            Recovery failed{rescueState.reason ? ` (${rescueState.reason})` : ""}
           </span>
           {rescueState.message && (
             <span className="text-(--color-text-secondary) font-mono truncate">{rescueState.message}</span>

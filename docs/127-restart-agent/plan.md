@@ -79,16 +79,18 @@ A small lifecycle hook on `ContainerSessionRunner`:
  *  app-lifecycle.ts honors this flag by skipping `mgr.stop()` and by
  *  leaving the ServiceManager in the orchestrator-wide `serviceManagers`
  *  map. The next `setupServiceManager(newRunner)` reuses it. */
-preserveComposeOnDispose: boolean = false;
+preserveComposeOnDispose = false;
 ```
 
 The disposed-handler reads the flag:
 
 ```ts
 runner.on("disposed", () => {
-  if (runner.preserveComposeOnDispose) {
+  if (isContainerRunner(runner) && runner.preserveComposeOnDispose) {
     // Keep the ServiceManager alive; the next setupServiceManager
-    // call adopts it.
+    // call adopts it. We only detach the listeners attached to *this*
+    // runner so its disposed state can't leak into future events.
+    mgr.off("stack_error", stackErrorListener);
     return;
   }
   serviceManagers.delete(runner.sessionId);
@@ -96,33 +98,56 @@ runner.on("disposed", () => {
 });
 ```
 
-And `setupServiceManager` learns to adopt an orphaned ServiceManager:
+And `setupServiceManager` learns to adopt an orphaned ServiceManager,
+delegating to a sibling helper:
 
 ```ts
 function setupServiceManager(runner, deps) {
-  // Adoption path: an existing ServiceManager survived a previous
-  // runner's disposal (RestartAgent flow). Reuse it — the compose
-  // stack is still running, we just need to re-wire listeners onto
-  // the new runner.
+  // …shared prelude: parse shipit.yaml, fire install, etc…
   const existing = serviceManagers.get(runner.sessionId);
-  if (existing && !existing.disposed) {
-    runner.setServiceManager(existing);
-    // Install still has to run on the new agent container — fresh
-    // container has no node_modules. Re-fire it like initial setup
-    // does, with the install-running gate around it so any compose
-    // service that races install gets retried.
-    if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
-      existing.setInstallRunning(true);
-      runner.runInstall(installCommands)
-        .catch(…)
-        .finally(() => existing.setInstallRunning(false));
-    }
+  if (existing) {
+    adoptExistingServiceManager(runner, existing, {
+      serviceManagers,
+      containerManager,
+      broadcastLog,
+      installPromise,
+      secretsLoader,
+    });
     return;
   }
   // Normal path: create a fresh ServiceManager and start the stack.
   // …existing code…
 }
 ```
+
+The `adoptExistingServiceManager` helper wires the new runner onto the
+preserved manager. The full sequence is:
+
+1. `runner.setServiceManager(mgr)` — attaches the new runner's
+   event listeners to the surviving manager.
+2. `mgr.setSecretsLoader(secretsLoader)` — replaces the OLD closure
+   (which referenced the disposed runner) with a fresh one. Today the
+   two closures are functionally equivalent, but defensive against
+   future wrappers.
+3. **Defer the network join until `runner.whenWorkerReady()` resolves.**
+   The runner is returned synchronously by `getOrCreate` with a
+   placeholder workerUrl; the container is created asynchronously by
+   the factory and `setWorkerUrl()` fires once the IP resolves. If we
+   call `connectToNetwork` immediately, the container manager hasn't
+   registered the new container yet — the call throws "No container
+   found" and gets swallowed in `.catch()`, silently leaving the new
+   agent off the compose network. The `whenWorkerReady()` gate is the
+   load-bearing piece that makes "compose stays attached" actually work.
+4. Re-bind a fresh `stack_error` listener so error logs route to the
+   new runner. Captured in a local variable so the disposed handler
+   can detach it cleanly.
+5. Re-arm the install-running gate for the new agent container's
+   install. The workspace volume is preserved, but a compose service
+   reading from it during the new install still benefits from the
+   retry-with-backoff treatment.
+6. Register a disposed handler with the same shape as the create path:
+   honors `preserveComposeOnDispose` for chained restartAgent calls;
+   stops the manager and evicts from the map otherwise.
 
 ### The new recovery service
 
@@ -266,10 +291,25 @@ This feature deliberately does NOT:
 ### Tests
 
 - `src/server/orchestrator/services/recovery.test.ts` — restartAgent
-  flow with a stub container manager + ServiceManager (covers
-  preserve-compose path, idempotency, failure surfacing).
-- Coverage for ServiceManager adoption in setupServiceManager (an
-  app-lifecycle unit test).
+  flow with a stub container manager + ServiceManager. Covers:
+  - Compose-untouched invariant (no `mgr.stop`, no `reapOrphans`).
+  - Emitted phases (`restarting_agent`, `destroying_container`,
+    `creating_container`, `ready`); no compose phases.
+  - Phase=failed on create error; lastInterruptError surfacing on
+    best-effort kill failures.
+  - **Chained restart-agent**: two consecutive `restartAgent` calls
+    each preserve compose. Catches regressions where the adoption
+    handoff drops state across iterations.
+- `src/server/orchestrator/integration_tests/service-manager-adoption.test.ts`
+  — focused coverage of `adoptExistingServiceManager`:
+  - `setServiceManager` is invoked on the new runner.
+  - Exactly one `stack_error` listener is attached.
+  - `connectToNetwork` is deferred until `whenWorkerReady()` resolves
+    (the load-bearing fix for the network-join race).
+  - Disposed handler preserves the manager when the flag is set;
+    tears it down when not.
+  - Install-running gate is re-armed and released around the new
+    container's install.
 
 ## Patterns this fits into
 

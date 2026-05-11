@@ -28,13 +28,24 @@ const RECOVERY_WORKER_TIMEOUT_MS = 3000;
  */
 const RESTART_READY_TIMEOUT_MS = 8000;
 
-/** Per-phase max duration. On expiry we record the phase as failed and continue. */
+/**
+ * Per-phase max duration. On expiry we record the phase as failed and continue.
+ *
+ * Note: `creating_container`, `starting_stack`, and `restarting_agent` are
+ * declared here for type-completeness (the `Record<…, number>` shape
+ * enumerates every RescuePhase that *could* have a timeout) but aren't
+ * used as a `withTimeout()` bound — the actual readiness wait happens in
+ * `waitForContainerReady` with `RESTART_READY_TIMEOUT_MS`. Treat the
+ * non-zero entries here as the active phase budgets; the zeroed ones are
+ * placeholders so the Record type doesn't drift if we ever add a new
+ * RescuePhase.
+ */
 const PHASE_TIMEOUT_MS: Record<Exclude<RescuePhase, "ready" | "failed">, number> = {
   stopping_stack: 10000,
   destroying_container: 8000,
-  creating_container: 8000,
-  starting_stack: 0, // best-effort, no wait — happens lazily on next attach
-  restarting_agent: 0, // cosmetic — actual work is done in destroying_container + creating_container
+  creating_container: 0, // see note above
+  starting_stack: 0,      // see note above
+  restarting_agent: 0,    // cosmetic — destroying_container + creating_container are the real work
 };
 
 /**
@@ -50,6 +61,14 @@ const REAP_ORPHANS_TIMEOUT_MS = 10000;
 interface RecoveryRunner extends SessionRunnerInterface {
   killAgentOnWorker?: (opts?: { timeoutMs?: number }) => Promise<void>;
   serviceManager?: ServiceManager | null;
+  /**
+   * Lifecycle flag honored by the runner's `disposed` handler in
+   * app-lifecycle.ts. Set by `restartAgent` before disposing so the
+   * compose stack is preserved across the agent-container swap.
+   * Absent on in-process SessionRunner (test mode) — undefined assignment
+   * is harmless there.
+   */
+  preserveComposeOnDispose?: boolean;
 }
 
 export interface RecoveryDeps {
@@ -259,42 +278,11 @@ export async function restartContainer(
   emit("creating_container");
   deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, deps.defaultAgentId);
 
-  const deadline = Date.now() + RESTART_READY_TIMEOUT_MS;
-  let newContainerState: RestartContainerResult["newContainerState"] = "pending";
-  let error: string | null = null;
-  while (Date.now() < deadline) {
-    const sc = deps.containerManager.get(sessionId);
-    if (sc?.status === "running") {
-      newContainerState = "running";
-      break;
-    }
-    const errRecord = deps.containerManager.getLastCreateError(sessionId);
-    if (errRecord) {
-      newContainerState = "missing";
-      error = errRecord.error;
-      break;
-    }
-    if (sc?.status === "starting") {
-      newContainerState = "starting";
-      // Don't break — keep polling for "running" until the deadline.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  // Final read so we don't miss a state transition that happened on the
-  // last sleep before the deadline.
-  if (newContainerState === "pending" || newContainerState === "starting") {
-    const sc = deps.containerManager.get(sessionId);
-    if (sc?.status === "running") {
-      newContainerState = "running";
-    } else if (sc?.status === "starting") {
-      newContainerState = "starting";
-    }
-    const errRecord = deps.containerManager.getLastCreateError(sessionId);
-    if (errRecord && newContainerState !== "running") {
-      newContainerState = "missing";
-      error = errRecord.error;
-    }
-  }
+  const { newContainerState, error } = await waitForContainerReady(
+    deps.containerManager,
+    sessionId,
+    Date.now() + RESTART_READY_TIMEOUT_MS,
+  );
 
   // ---- Phase: starting_stack / ready / failed ----
   // The new ServiceManager will start lazily on next viewer attach (driven
@@ -410,9 +398,10 @@ export async function restartAgent(
   // The runner's `disposed` event handler in app-lifecycle.ts reads
   // `preserveComposeOnDispose` and skips `mgr.stop()` when set, leaving
   // the ServiceManager in `serviceManagers` for the next runner to adopt.
-  if (runner && "preserveComposeOnDispose" in runner) {
-    (runner as { preserveComposeOnDispose: boolean }).preserveComposeOnDispose = true;
-  }
+  // (Field is optional on `RecoveryRunner` to allow in-process test
+  // runners — the assignment is a no-op when the underlying object
+  // doesn't have a real setter for it.)
+  if (runner) runner.preserveComposeOnDispose = true;
   deps.runnerRegistry.dispose(sessionId, { force: true });
 
   // ---- Phase: destroying_container ----
@@ -443,42 +432,11 @@ export async function restartAgent(
   emit("creating_container");
   deps.runnerRegistry.getOrCreate(sessionId, session.workspaceDir, deps.defaultAgentId);
 
-  const deadline = Date.now() + RESTART_READY_TIMEOUT_MS;
-  let newContainerState: RestartContainerResult["newContainerState"] = "pending";
-  let error: string | null = null;
-  while (Date.now() < deadline) {
-    const sc = deps.containerManager.get(sessionId);
-    if (sc?.status === "running") {
-      newContainerState = "running";
-      break;
-    }
-    const errRecord = deps.containerManager.getLastCreateError(sessionId);
-    if (errRecord) {
-      newContainerState = "missing";
-      error = errRecord.error;
-      break;
-    }
-    if (sc?.status === "starting") {
-      newContainerState = "starting";
-      // Keep polling for "running" until the deadline.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  // Final read so we don't miss a state transition that landed on the
-  // last sleep before the deadline.
-  if (newContainerState === "pending" || newContainerState === "starting") {
-    const sc = deps.containerManager.get(sessionId);
-    if (sc?.status === "running") {
-      newContainerState = "running";
-    } else if (sc?.status === "starting") {
-      newContainerState = "starting";
-    }
-    const errRecord = deps.containerManager.getLastCreateError(sessionId);
-    if (errRecord && newContainerState !== "running") {
-      newContainerState = "missing";
-      error = errRecord.error;
-    }
-  }
+  const { newContainerState, error } = await waitForContainerReady(
+    deps.containerManager,
+    sessionId,
+    Date.now() + RESTART_READY_TIMEOUT_MS,
+  );
 
   // Final phase. Re-resolve the runner — the registry created a fresh one
   // above, so we emit from the new runner so the next viewer attach picks
@@ -505,6 +463,58 @@ export async function restartAgent(
   }
 
   return { ok: true, noContainer, newContainerState, error };
+}
+
+/**
+ * Poll the container manager for a fresh `getOrCreate`'d session until
+ * one of:
+ *   - status === "running"  → returns `{ newContainerState: "running" }`
+ *   - getLastCreateError(...) populated → `{ newContainerState: "missing", error }`
+ *   - deadline expires      → `"pending"` or `"starting"` per last seen state
+ *
+ * Polls every 250 ms with a final-read fallback to catch transitions that
+ * landed during the last sleep. Shared between `restartContainer` and
+ * `restartAgent` so both flows agree on what "ready" looks like.
+ */
+async function waitForContainerReady(
+  containerManager: SessionContainerManager,
+  sessionId: string,
+  deadlineMs: number,
+): Promise<{ newContainerState: RestartContainerResult["newContainerState"]; error: string | null }> {
+  // Every populated-error branch returns directly with the specific
+  // error string. The trailing "deadline expired" return below can
+  // never have an error attached (we'd have returned from inside the
+  // loop if there were one), so `error: null` is correct.
+  let newContainerState: RestartContainerResult["newContainerState"] = "pending";
+  while (Date.now() < deadlineMs) {
+    const sc = containerManager.get(sessionId);
+    if (sc?.status === "running") {
+      return { newContainerState: "running", error: null };
+    }
+    const errRecord = containerManager.getLastCreateError(sessionId);
+    if (errRecord) {
+      return { newContainerState: "missing", error: errRecord.error };
+    }
+    if (sc?.status === "starting") {
+      newContainerState = "starting";
+      // Don't break — keep polling for "running" until the deadline.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  // Final read so we don't miss a state transition that happened on the
+  // last sleep before the deadline.
+  const sc = containerManager.get(sessionId);
+  if (sc?.status === "running") {
+    return { newContainerState: "running", error: null };
+  }
+  if (sc?.status === "starting") {
+    newContainerState = "starting";
+  }
+  const errRecord = containerManager.getLastCreateError(sessionId);
+  if (errRecord) {
+    return { newContainerState: "missing", error: errRecord.error };
+  }
+  return { newContainerState, error: null };
 }
 
 /** Race a promise against a timeout; resolves with the promise's value or throws on timeout. */

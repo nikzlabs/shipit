@@ -703,9 +703,11 @@ function isContainerRunner(
  * reconnect the new agent container to the existing network, and re-arm
  * the install-running gate around the new container's install.
  *
- * See docs/127-restart-agent for the full design.
+ * Exported for unit-test coverage of the lifecycle handoff
+ * (`integration_tests/service-manager-adoption.test.ts`). See
+ * docs/127-restart-agent for the full design.
  */
-function adoptExistingServiceManager(
+export function adoptExistingServiceManager(
   runner: SessionRunnerInterface,
   mgr: ServiceManager,
   deps: {
@@ -713,9 +715,17 @@ function adoptExistingServiceManager(
     containerManager: SessionContainerManager | null;
     broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
     installPromise: Promise<void> | null;
+    /**
+     * Fresh closure that reads the session's latest secrets (the OLD
+     * closure baked into `mgr` references the disposed runner; safe today
+     * because both closures read by sessionId, but defensive in case a
+     * future refactor makes the loader less idempotent — e.g. a per-runner
+     * secret store wrapper, or a remoteUrl change between disposals).
+     */
+    secretsLoader?: () => Promise<Record<string, string>>;
   },
 ): void {
-  const { serviceManagers, containerManager, broadcastLog, installPromise } = deps;
+  const { serviceManagers, containerManager, broadcastLog, installPromise, secretsLoader } = deps;
 
   // 1. Attach the new runner's listeners. `setServiceManager` internally
   //    calls `clearServiceManager()` first, but on a freshly-created runner
@@ -724,13 +734,38 @@ function adoptExistingServiceManager(
     runner.setServiceManager(mgr);
   }
 
+  // 1b. Replace the manager's secrets loader with the fresh closure scoped
+  //     to the new runner. Defensive — see field doc above.
+  if (secretsLoader) {
+    mgr.setSecretsLoader(secretsLoader);
+  }
+
   // 2. Reconnect the new agent container to the existing compose network.
   //    The old container was destroyed; the network outlived it (compose
   //    only removes networks on `down`, which we deliberately skipped).
-  if (containerManager) {
+  //
+  //    CRITICAL: we MUST wait for the new container to exist before
+  //    calling connectToNetwork — `SessionContainerManager.connectToNetwork`
+  //    looks the container up by sessionId and throws "No container found"
+  //    if the entry hasn't been registered yet. The runner factory's
+  //    container creation is async; the runner is returned synchronously
+  //    with a placeholder workerUrl, and `setWorkerUrl()` is called once
+  //    the IP resolves. `whenWorkerReady()` gates on that resolution.
+  //
+  //    Without this gate, the call fires immediately, throws, gets
+  //    swallowed in `.catch()`, and the new agent container is NEVER
+  //    joined to the compose network — silently breaking compose DNS for
+  //    the agent. That's exactly the regression the feature is supposed
+  //    to avoid, just from the other direction.
+  if (containerManager && isContainerRunner(runner)) {
     const networkName = `shipit-session-${runner.sessionId}`;
-    void containerManager
-      .connectToNetwork(runner.sessionId, networkName)
+    // Fire-and-forget — the connect must run after worker ready resolves
+    // but the parent function returns synchronously. eslint-disable is
+    // the documented escape for this pattern (see the lint rule's docs).
+    // eslint-disable-next-line no-restricted-syntax -- fire-and-forget after async readiness signal
+    void runner
+      .whenWorkerReady()
+      .then(() => containerManager.connectToNetwork(runner.sessionId, networkName))
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         if (!msg.includes("already exists")) {
@@ -900,6 +935,7 @@ function setupServiceManager(
       containerManager,
       broadcastLog,
       installPromise,
+      secretsLoader,
     });
     // Clear any stale migration warning — compose is now set up (still).
     composeWarnings.delete(runner.sessionId);
