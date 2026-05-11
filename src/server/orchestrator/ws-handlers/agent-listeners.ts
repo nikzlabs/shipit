@@ -194,6 +194,30 @@ export function wireAgentListeners(
         }
         runner.chatMessageGroups = groups;
       }
+
+      // AskUserQuestion blocking: the Claude CLI in `-p` (headless) mode has no
+      // way to actually wait for a real user answer — without `--input-format
+      // stream-json` there's no bidirectional channel — so the CLI auto-resolves
+      // the tool call (typically with an empty/"no user" result) and the model
+      // continues with whatever it had planned. From the user's POV the
+      // AskUserQuestion card appears AND the agent has already moved on without
+      // them pressing anything.
+      //
+      // Fix: when we see an AskUserQuestion tool_use at the top level, interrupt
+      // the CLI so it can't act on the auto-resolved result. The card stays
+      // rendered (we've already emitted the event and stored the message group).
+      // When the user picks an answer, `handleAnswerQuestion` resumes with
+      // `--resume` and the answer as the next prompt.
+      //
+      // We set `wasInterrupted = true` so the existing post-turn flow (see
+      // agent-execution.ts) suppresses the spurious "exited without result"
+      // error and skips the queue drain. Only fires for top-level events —
+      // parentToolUseId-carrying (subagent) events have already returned above.
+      if (runner && toolBlocks.some((t) => t.name === "AskUserQuestion")) {
+        runner.wasInterrupted = true;
+        agent.interrupt();
+        ctx.broadcastLog("server", "Agent interrupted: waiting for AskUserQuestion answer");
+      }
     }
 
     // Mark a message-group boundary when tool results arrive so the
