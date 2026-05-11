@@ -500,6 +500,68 @@ export function createIdleEnforcer(
   };
 }
 
+// ---- Missing-container reconciler ----
+
+/** Dependencies for the missing-container reconciler. */
+export interface MissingContainerReconcilerDeps {
+  containerManager: SessionContainerManager | null;
+  runnerRegistry: SessionRunnerRegistry;
+  /** Per-session log ring writer. Required — the whole point is to leave a breadcrumb. */
+  broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+}
+
+/**
+ * Create a reconciler that detects runners whose container has vanished
+ * without a `container_exited` event reaching the orchestrator. This is
+ * the inverse of the idle enforcer's "container without runner" check.
+ *
+ * The Docker event subscriber in `container-health.ts` reconnects with a
+ * 5s debounce on stream loss. If a container dies during that window
+ * (daemon restart, manual `docker rm`, host OOM-killer), the `die` event
+ * is missed and the orchestrator is left thinking the runner is alive
+ * while the container is gone. The user sees a stuck session with no
+ * error, and the diagnostic shows `containerState: missing` + `runner: <obj>`.
+ *
+ * This reconciler walks the registry every tick, looks each runner's
+ * container up in the manager, and force-disposes any that are orphaned
+ * — writing a log-ring entry first so the diagnostic snapshot preserves
+ * the reason.
+ *
+ * Skipped runners:
+ *  - Already disposed (registry lazily cleans these up).
+ *  - Standby (warm-pool containers don't get registered runners until
+ *    they're claimed; transient race during claim is fine — next tick).
+ */
+export function createMissingContainerReconciler(
+  deps: MissingContainerReconcilerDeps,
+): () => void {
+  const { containerManager, runnerRegistry, broadcastLog } = deps;
+  return () => {
+    if (!containerManager) return;
+    for (const sid of runnerRegistry.ids()) {
+      const runner = runnerRegistry.get(sid);
+      if (!runner) continue;
+      if (containerManager.isStandby(sid)) continue;
+      if (containerManager.get(sid)) continue;
+      console.error(
+        `[orphan-runner] Session ${sid} has runner but container is missing — force-disposing`,
+      );
+      broadcastLog(
+        sid,
+        "server",
+        "Session container vanished (no Docker exit event received). Send a message to start a fresh container.",
+      );
+      runner.emitMessage({
+        type: "session_status",
+        sessionId: sid,
+        running: false,
+        error: "Session container vanished — no Docker exit event received.",
+      });
+      runner.dispose({ force: true });
+    }
+  };
+}
+
 // ---- Runner registry setup ----
 
 /** Dependencies for runner registry creation. */
@@ -1603,6 +1665,48 @@ export function scheduleStartupTasks(
 // ---- Container health monitoring ----
 
 /**
+ * Handle a `container_exited` event for the agent container. Extracted from
+ * the inline subscriber in `setupContainerHealthMonitoring` so tests can
+ * exercise the wiring without spinning up Docker.
+ *
+ * Writes a breadcrumb to the per-session log ring BEFORE disposing the
+ * runner. `runner.emitMessage` buffers into the turn-event log which is
+ * discarded on dispose, and `console.error` doesn't surface in the
+ * diagnostics endpoint — so without `broadcastLog`, the diagnostic
+ * snapshot 70 minutes later shows only "Agent process started" and no
+ * trace of the failure.
+ */
+export function handleContainerExited(
+  sessionId: string,
+  exitCode: number | undefined,
+  error: string | undefined,
+  runnerRegistry: SessionRunnerRegistry,
+  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
+): void {
+  console.error(`[container] Session ${sessionId} container exited: ${error ?? "unknown"}`);
+  const exitDetail = error
+    ? `: ${error}`
+    : exitCode !== undefined && exitCode !== 0
+      ? ` (exit ${exitCode}${exitCode === 137 ? ", likely OOMKilled" : ""})`
+      : "";
+  if (broadcastLog) {
+    broadcastLog(sessionId, "server", `Session container exited unexpectedly${exitDetail}.`);
+  }
+  const runner = runnerRegistry.get(sessionId);
+  if (runner) {
+    runner.emitMessage({
+      type: "session_status",
+      sessionId,
+      running: false,
+      error: `Session container exited unexpectedly${exitDetail}`,
+    });
+    // Forced — the underlying container is gone, so the agent process is
+    // already dead. We must tear down the runner to release resources.
+    runner.dispose({ force: true });
+  }
+}
+
+/**
  * Wire container health monitoring — notify viewers and clean up when
  * a container dies unexpectedly (OOM, crash).
  */
@@ -1611,20 +1715,8 @@ export function setupContainerHealthMonitoring(
   runnerRegistry: SessionRunnerRegistry,
   broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
 ): void {
-  containerManager.on("container_exited", (sessionId, _exitCode, error) => {
-    console.error(`[container] Session ${sessionId} container exited: ${error ?? "unknown"}`);
-    const runner = runnerRegistry.get(sessionId);
-    if (runner) {
-      runner.emitMessage({
-        type: "session_status",
-        sessionId,
-        running: false,
-        error: `Session container exited unexpectedly${error ? `: ${error}` : ""}`,
-      });
-      // Forced — the underlying container is gone, so the agent process is
-      // already dead. We must tear down the runner to release resources.
-      runner.dispose({ force: true });
-    }
+  containerManager.on("container_exited", (sessionId, exitCode, error) => {
+    handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog);
   });
 
   /**

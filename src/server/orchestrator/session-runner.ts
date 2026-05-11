@@ -669,4 +669,12 @@ export class SessionRunnerRegistry {
 
   /** Number of active runners. */
   get size(): number { return this.runners.size; }
+
+  /**
+   * Iterate over all session IDs with a registered runner. Used by the
+   * missing-container reconciler to detect runners whose container has
+   * vanished (Docker daemon restart, external `docker rm`, missed die
+   * event during the health-monitor reconnect window).
+   */
+  ids(): string[] { return [...this.runners.keys()]; }
 }
