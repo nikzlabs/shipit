@@ -65,11 +65,30 @@ export class GitHubAuthManager extends EventEmitter {
   /**
    * Check if a token file exists and load it into memory.
    * Returns true if credentials were found.
+   *
+   * Resolution order:
+   *   1. `CredentialStore` (disk file). This is the persisted token written
+   *      when the user goes through the OAuth flow in the UI.
+   *   2. `process.env.GITHUB_TOKEN`. Used in dogfooding (ShipIt-in-ShipIt
+   *      local mode), where the outer orchestrator forwards its own token
+   *      to the inner orchestrator via `x-shipit-secrets` —
+   *      `platform:github_token`. The inner container has no `/credentials`
+   *      mount, so env is the only path.
+   *
+   * Env-sourced tokens are NOT persisted back to disk: env is the source of
+   * truth in local mode and the outer's token rotation should be picked up
+   * on the next `checkCredentials()` rather than masked by a stale on-disk
+   * copy.
    */
   checkCredentials(): boolean {
-    const token = this.credentialStore.getGithubToken();
-    if (token) {
-      this._token = token;
+    const diskToken = this.credentialStore.getGithubToken();
+    if (diskToken) {
+      this._token = diskToken;
+      return true;
+    }
+    const envToken = process.env.GITHUB_TOKEN?.trim();
+    if (envToken) {
+      this._token = envToken;
       return true;
     }
     this._token = null;

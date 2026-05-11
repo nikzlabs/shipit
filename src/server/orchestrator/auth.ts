@@ -146,15 +146,25 @@ export class AuthManager extends EventEmitter {
 
   /**
    * Quick check: does the Claude config directory contain credentials,
-   * or is ANTHROPIC_API_KEY set in the environment?
+   * or is one of the recognized auth env vars set?
+   *
+   * Recognized env vars:
+   *   - `ANTHROPIC_API_KEY` — standard API key. Sent as `x-api-key`.
+   *   - `ANTHROPIC_AUTH_TOKEN` — OAuth-style bearer token. Sent as
+   *     `Authorization: Bearer ...`. Used in dogfooding (ShipIt-in-ShipIt
+   *     local mode), where the outer orchestrator forwards its Claude
+   *     OAuth access token to the inner orch via `x-shipit-secrets` —
+   *     `platform:claude_oauth`. The inner container has no
+   *     `/root/.claude/.credentials.json` on disk, so env is the only path.
    */
   checkCredentials(): boolean {
     try {
       // The CLI may store credentials in different files depending on version
       const credentialFiles = [".credentials.json", "credentials.json", "auth.json"];
       const hasCredentials = credentialFiles.some((f) => existsSync(path.join(CLAUDE_CONFIG_DIR, f)));
-      const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-      this._authenticated = hasCredentials || hasApiKey;
+      const hasApiKey = !!process.env.ANTHROPIC_API_KEY?.trim();
+      const hasAuthToken = !!process.env.ANTHROPIC_AUTH_TOKEN?.trim();
+      this._authenticated = hasCredentials || hasApiKey || hasAuthToken;
       return this._authenticated;
     } catch {
       return false;
