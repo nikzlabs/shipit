@@ -16,6 +16,7 @@ import {
   waitForClaude,
   createTestCredentialStore,
   createTestDatabaseManager,
+  createTestSession,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
@@ -106,6 +107,73 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     expect(lastClaude.runCalled).toBe(true);
     expect(lastClaude.lastPrompt).toBe("PostgreSQL");
     expect(lastClaude.lastSessionId).toBe("existing-sess");
+
+    client.close();
+  });
+
+  it("answer_question fall-through emits session_status running=true to viewers", async () => {
+    // Regression test for: after answering an agent question, the UI's
+    // "Thinking..." indicator and sidebar active-runner dot fail to appear
+    // because the handler skipped the running-state side effects that
+    // handleSendMessage performs (set runner.running=true, broadcast
+    // session_agent_started SSE, emit session_status). Without this,
+    // useAttentionInfo on the client surfaces "Waiting for your input" and
+    // the chat panel stays idle even though the agent is actively working.
+    //
+    // Use createTestSession() to get a real workspaceDir — the session_status
+    // emit gates on `answerRunner`, which only exists for sessions whose
+    // sessionDir is tracked (otherwise the WS handler can't create a runner).
+    const { sessionId } = await createTestSession(sessionManager, tmpDir, "Ask-test");
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    // Drive the first turn to completion so the handler hits the
+    // fall-through (no-running-agent) branch on the next answer_question.
+    client.send({ type: "send_message", text: "First", sessionId });
+    await waitForClaude(() => lastClaude);
+    const firstClaude = lastClaude;
+    firstClaude.finish(sessionId);
+
+    // Wait for the post-turn cycle to settle — the test only needs the
+    // runner to be in the no-running-agent state before answer_question.
+    await new Promise((r) => setTimeout(r, 200));
+    // Drain everything currently buffered so the next receive() picks up
+    // messages emitted after answer_question, not stale ones from the
+    // first turn.
+    while (true) {
+      try {
+        await client.receive(50);
+      } catch {
+        break;
+      }
+    }
+
+    // Now send the answer — this is the fall-through path. We expect a
+    // session_status with running=true to be broadcast so attached viewers
+    // (including ones that didn't initiate the answer) get the right state.
+    client.send({ type: "answer_question", toolUseId: "tool-2", answers: { "0": "PostgreSQL" } });
+
+    let sawRunning = false;
+    const deadline = Date.now() + 2000;
+    while (!sawRunning && Date.now() < deadline) {
+      let msg;
+      try {
+        msg = await client.receive(500);
+      } catch {
+        break;
+      }
+      if (msg.type === "session_status" && msg.running && msg.sessionId === sessionId) {
+        sawRunning = true;
+      }
+    }
+    expect(sawRunning).toBe(true);
+
+    // Sanity: the new Claude process was actually started. Wait for run()
+    // because the handler awaits readSystemPrompt() between emitting
+    // session_status and calling currentAgent.run().
+    await waitForClaude(() => lastClaude, firstClaude);
+    expect(lastClaude).not.toBe(firstClaude);
+    expect(lastClaude.runCalled).toBe(true);
 
     client.close();
   });
