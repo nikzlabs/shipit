@@ -286,7 +286,26 @@ This feature deliberately does NOT:
 ### Client
 
 - `src/client/components/SessionHealthStrip.tsx` — new "Restart
-  agent" button; new phase label.
+  agent" button; new phase label. **`isRestarting`, `actionError`,
+  and `restartStartedAt` live in Zustand, not React-local state.** The
+  right-panel tabs (Preview / Terminal / Docs / Files / History)
+  render via ternary in `App.tsx`, so every tab switch unmounts the
+  strip — keeping in-flight rescue state as `useState` / `useRef`
+  meant a tab switch during a 5–30 s restart wiped the overlay,
+  the timestamp filter, and any error message. Symptom: "click
+  Restart agent → switch tabs → come back to bare 'Container missing'
+  with no logs." The mount-time reset effect is gated on an *actual*
+  session-id change (via a `prevSessionIdRef`) for the same reason —
+  a plain `[sessionId]` dep array also fires on mount, which used
+  to clear Zustand on every remount.
+- `src/client/stores/session-store.ts` — `RescueState.startedAt` plus
+  a top-level `recoveryActionError` field. Both back the
+  remount-survivable state above.
+- `src/client/hooks/useMessageHandler.ts` — preserves
+  `rescueState.startedAt` across `container_restarting` phase WS
+  messages from the server. Without this, the second phase message
+  would wipe the timestamp set by the button click and the poll's
+  "is this error newer than the click" filter would stop working.
 
 ### Tests
 
@@ -310,6 +329,15 @@ This feature deliberately does NOT:
     tears it down when not.
   - Install-running gate is re-armed and released around the new
     container's install.
+- `src/client/components/SessionHealthStrip.test.tsx` — UI-side
+  regression coverage for the tab-switch state loss:
+  - Rescue overlay survives unmount+remount of the strip.
+  - `recoveryActionError` survives unmount+remount.
+  - State DOES clear when the sessionId actually changes.
+  - Polling-driven finalize transitions to `ready` on healthy
+    container and `failed` on a fresh post-click `lastCreateError`.
+  - Stale `lastCreateError` older than the rescue's `startedAt`
+    is ignored (does not prematurely flip the overlay to failed).
 
 ## Patterns this fits into
 

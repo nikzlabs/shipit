@@ -168,18 +168,37 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
   const api = useApi();
   const [health, setHealth] = useState<ContainerHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isRestarting, setIsRestarting] = useState(false);
   const [isKilling, setIsKilling] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const rescueState = useSessionStore((s) => s.rescueState);
   const setRescueState = useSessionStore((s) => s.setRescueState);
+  const actionError = useSessionStore((s) => s.recoveryActionError);
+  const setActionError = useSessionStore((s) => s.setRecoveryActionError);
   const interruptError = useSessionStore((s) => s.interruptError);
   const setInterruptError = useSessionStore((s) => s.setInterruptError);
   const pauseNotice = useSessionStore((s) => s.pauseNotice);
   const setPauseNotice = useSessionStore((s) => s.setPauseNotice);
   const phaseLabel = rescueState ? PHASE_LABEL[rescueState.phase] : null;
+
+  /**
+   * Whether a restart is in flight. Derived from `rescueState` rather than a
+   * local `useState` so the in-flight indicator survives the SessionHealthStrip
+   * being unmounted+remounted by a right-panel tab switch. Terminal phases
+   * (`ready`, `failed`) are NOT in flight — the user has the final outcome.
+   */
+  const isRestarting =
+    !!rescueState && rescueState.phase !== "ready" && rescueState.phase !== "failed";
+
+  /**
+   * Wall-clock timestamp when the most recent restart was issued. Used to
+   * decide whether a server-side `lastCreateError` belongs to THIS restart
+   * (newer than the click) vs. a stale error from before. Without this,
+   * a leftover error from a previous attempt would prematurely clear the
+   * spinner. Lives on `rescueState.startedAt` (Zustand) so a tab switch
+   * during the 8-30 s creation window can't lose it.
+   */
+  const restartStartedAt = rescueState?.startedAt ?? null;
 
   // Auto-dismiss the interrupt-error toast after 8s — non-blocking by design.
   // eslint-disable-next-line no-restricted-syntax -- transient toast auto-dismiss
@@ -188,14 +207,6 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     const id = setTimeout(() => setInterruptError(null), 8000);
     return () => clearTimeout(id);
   }, [interruptError, setInterruptError]);
-  /**
-   * Wall-clock timestamp when the most recent restart was issued. Used to
-   * decide whether a server-side `lastCreateError` belongs to THIS restart
-   * (newer than the click) vs. a stale error from before. Without this,
-   * a leftover error from a previous attempt would prematurely clear the
-   * spinner.
-   */
-  const restartStartedAtRef = useRef<number | null>(null);
 
   // Use a ref so the polling effect doesn't restart on every health update.
   const sessionIdRef = useRef(sessionId);
@@ -233,31 +244,42 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
       // source of truth for "did the rescue actually finish?". See
       // docs/124-session-rescue-and-diagnostics §3.4.
       if (data.containerState === "running" && data.workerReachable) {
-        setIsRestarting(false);
-        restartStartedAtRef.current = null;
         // The session is back — clear any "paused" banner from the previous
         // disposal so the user doesn't see a stale notice.
         if (useSessionStore.getState().pauseNotice) setPauseNotice(null);
         const rs = useSessionStore.getState().rescueState;
         if (rs && rs.phase !== "ready" && rs.phase !== "failed") {
-          setRescueState({ phase: "ready" });
+          setRescueState({
+            phase: "ready",
+            ...(rs.startedAt !== undefined ? { startedAt: rs.startedAt } : {}),
+          });
           setTimeout(() => {
             if (useSessionStore.getState().rescueState?.phase === "ready") {
               setRescueState(null);
             }
           }, 1500);
         }
-      } else if (
-        data.lastCreateError &&
-        data.lastCreateErrorAt !== null &&
-        restartStartedAtRef.current !== null &&
-        data.lastCreateErrorAt >= restartStartedAtRef.current
-      ) {
-        setIsRestarting(false);
-        restartStartedAtRef.current = null;
+      } else {
+        // Mirror lastCreateError into rescueState=failed when the error is
+        // newer than this restart's startedAt — otherwise a stale error from
+        // a prior failed attempt would prematurely flip the UI to "failed".
+        // Resolve startedAt off the live store so concurrent renders don't
+        // race with a snapshot taken at the top of poll().
         const rs = useSessionStore.getState().rescueState;
-        if (rs && rs.phase !== "failed") {
-          setRescueState({ phase: "failed", reason: "create_failed", message: data.lastCreateError });
+        const startedAt = rs?.startedAt;
+        if (
+          data.lastCreateError &&
+          data.lastCreateErrorAt !== null &&
+          startedAt &&
+          data.lastCreateErrorAt >= startedAt &&
+          rs && rs.phase !== "failed"
+        ) {
+          setRescueState({
+            phase: "failed",
+            reason: "create_failed",
+            message: data.lastCreateError,
+            startedAt,
+          });
         }
       }
     } catch (e) {
@@ -270,21 +292,30 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
   }, [api, setRescueState, setPauseNotice]);
 
   // Reset all per-session UI state when the active session changes. Without
-  // this, an "actionError" or "isRestarting" overlay from a previous session
-  // bleeds into the next one (the component is mounted once in TerminalPanel
-  // without a key prop, so React reuses the same instance across switches).
+  // this, an "actionError" or rescue overlay from a previous session bleeds
+  // into the next one (the component is mounted once in TerminalPanel without
+  // a key prop, so React reuses the same instance across session switches).
+  //
+  // CRITICAL: gate on an ACTUAL session-id change. Plain `useEffect(…, [sid])`
+  // also fires on mount, which used to wipe in-flight rescue state every
+  // time the SessionHealthStrip remounted — and the right-panel tabs
+  // (Terminal / Preview / Docs) render via ternary, so any tab switch
+  // during a restart caused a remount and an unwanted reset. The bug
+  // surfaced as "click Restart agent → tab switch → comes back to
+  // 'Container missing' with no overlay, no error, no logs."
+  const prevSessionIdRef = useRef<string | undefined>(sessionId);
   // eslint-disable-next-line no-restricted-syntax -- resetting derived UI state on prop change
   useEffect(() => {
+    if (prevSessionIdRef.current === sessionId) return;
+    prevSessionIdRef.current = sessionId;
     setHealth(null);
     setError(null);
     setActionError(null);
-    setIsRestarting(false);
     setIsKilling(false);
     setRescueState(null);
     setInterruptError(null);
     setPauseNotice(null);
-    restartStartedAtRef.current = null;
-  }, [sessionId, setRescueState, setInterruptError, setPauseNotice]);
+  }, [sessionId, setActionError, setRescueState, setInterruptError, setPauseNotice]);
 
   // Poll on mount; cadence depends on whether a restart is in flight. While
   // restarting, poll fast so the new container's transition to "running"
@@ -304,16 +335,41 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
   // (e.g., the orchestrator is wedged or the container is in some
   // exotic intermediate state). The diagnostic strip below the spinner
   // will still be live, so the user has actionable info.
+  //
+  // Anchored to `rescueState.startedAt` (Zustand) rather than wall-clock from
+  // a mount-time `Date.now()` — when the strip is unmounted+remounted by a
+  // tab switch mid-restart, the timeout must reflect when the user clicked
+  // the button, not when the component remounted. Otherwise a remount would
+  // refresh the timer and the overlay could spin for 60s after a remount on
+  // top of however long the original click was waiting.
   // eslint-disable-next-line no-restricted-syntax -- timeout for derived UI state
   useEffect(() => {
-    if (!isRestarting) return;
-    const id = setTimeout(() => {
-      setIsRestarting(false);
-      restartStartedAtRef.current = null;
+    if (!isRestarting || !restartStartedAt) return;
+    const elapsed = Date.now() - restartStartedAt;
+    const remaining = RESTART_OVERLAY_TIMEOUT_MS - elapsed;
+    if (remaining <= 0) {
+      // Already past the deadline (e.g. component remounted after the
+      // timeout fired in a previous mount). Flip to failed immediately.
+      setRescueState({
+        phase: "failed",
+        reason: "timeout",
+        message: "Restart timed out — the new container did not become ready. See diagnostics below.",
+        startedAt: restartStartedAt,
+      });
       setActionError("Restart timed out — the new container did not become ready. See diagnostics below.");
-    }, RESTART_OVERLAY_TIMEOUT_MS);
+      return;
+    }
+    const id = setTimeout(() => {
+      setRescueState({
+        phase: "failed",
+        reason: "timeout",
+        message: "Restart timed out — the new container did not become ready. See diagnostics below.",
+        startedAt: restartStartedAt,
+      });
+      setActionError("Restart timed out — the new container did not become ready. See diagnostics below.");
+    }, remaining);
     return () => clearTimeout(id);
-  }, [isRestarting]);
+  }, [isRestarting, restartStartedAt, setRescueState, setActionError]);
 
   // Re-render once a second when the strip cares about elapsed time
   // (last event "47s ago" needs to tick). Cheap — only this component.
@@ -342,10 +398,9 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
 
   const onRestart = useCallback(async () => {
     if (!sessionId) return;
-    setIsRestarting(true);
+    const startedAt = Date.now();
     setActionError(null);
-    setRescueState({ phase: "stopping_stack" });
-    restartStartedAtRef.current = Date.now();
+    setRescueState({ phase: "stopping_stack", startedAt });
     try {
       const result = await api.post<RestartContainerResult>(
         `/api/sessions/${sessionId}/container/restart`,
@@ -354,24 +409,40 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
       // to the new container the recovery service just kicked off.
       onReconnectWs();
       // If the server already saw a definitive outcome inside its readiness
-      // window, surface it without waiting for the next poll.
+      // window, surface it without waiting for the next poll. We re-read
+      // rescueState from the live store so a concurrent poll that flipped
+      // it to "ready" doesn't get clobbered here.
       if (result.newContainerState === "running") {
-        setIsRestarting(false);
-        restartStartedAtRef.current = null;
+        const rs = useSessionStore.getState().rescueState;
+        if (rs && rs.phase !== "ready" && rs.phase !== "failed") {
+          setRescueState({ phase: "ready", startedAt });
+          setTimeout(() => {
+            if (useSessionStore.getState().rescueState?.phase === "ready") {
+              setRescueState(null);
+            }
+          }, 1500);
+        }
       } else if (result.newContainerState === "missing" && result.error) {
         setActionError(`Rescue failed: ${result.error}`);
-        setIsRestarting(false);
-        restartStartedAtRef.current = null;
-        setRescueState({ phase: "failed", reason: "create_failed", message: result.error });
+        setRescueState({
+          phase: "failed",
+          reason: "create_failed",
+          message: result.error,
+          startedAt,
+        });
       }
       void poll();
     } catch (e) {
-      setActionError(e instanceof ApiError ? e.message : String(e));
-      setIsRestarting(false);
-      restartStartedAtRef.current = null;
-      setRescueState({ phase: "failed", reason: "request_error" });
+      const msg = e instanceof ApiError ? e.message : String(e);
+      setActionError(`Rescue failed: ${msg}`);
+      setRescueState({
+        phase: "failed",
+        reason: "request_error",
+        message: msg,
+        startedAt,
+      });
     }
-  }, [api, sessionId, onReconnectWs, poll, setRescueState]);
+  }, [api, sessionId, onReconnectWs, poll, setRescueState, setActionError]);
 
   /**
    * Restart the agent container only — leaves the compose stack running.
@@ -385,32 +456,45 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
    */
   const onRestartAgent = useCallback(async () => {
     if (!sessionId) return;
-    setIsRestarting(true);
+    const startedAt = Date.now();
     setActionError(null);
-    setRescueState({ phase: "restarting_agent" });
-    restartStartedAtRef.current = Date.now();
+    setRescueState({ phase: "restarting_agent", startedAt });
     try {
       const result = await api.post<RestartContainerResult>(
         `/api/sessions/${sessionId}/agent/container/restart`,
       );
       onReconnectWs();
       if (result.newContainerState === "running") {
-        setIsRestarting(false);
-        restartStartedAtRef.current = null;
+        const rs = useSessionStore.getState().rescueState;
+        if (rs && rs.phase !== "ready" && rs.phase !== "failed") {
+          setRescueState({ phase: "ready", startedAt });
+          setTimeout(() => {
+            if (useSessionStore.getState().rescueState?.phase === "ready") {
+              setRescueState(null);
+            }
+          }, 1500);
+        }
       } else if (result.newContainerState === "missing" && result.error) {
         setActionError(`Restart agent failed: ${result.error}`);
-        setIsRestarting(false);
-        restartStartedAtRef.current = null;
-        setRescueState({ phase: "failed", reason: "create_failed", message: result.error });
+        setRescueState({
+          phase: "failed",
+          reason: "create_failed",
+          message: result.error,
+          startedAt,
+        });
       }
       void poll();
     } catch (e) {
-      setActionError(e instanceof ApiError ? e.message : String(e));
-      setIsRestarting(false);
-      restartStartedAtRef.current = null;
-      setRescueState({ phase: "failed", reason: "request_error" });
+      const msg = e instanceof ApiError ? e.message : String(e);
+      setActionError(`Restart agent failed: ${msg}`);
+      setRescueState({
+        phase: "failed",
+        reason: "request_error",
+        message: msg,
+        startedAt,
+      });
     }
-  }, [api, sessionId, onReconnectWs, poll, setRescueState]);
+  }, [api, sessionId, onReconnectWs, poll, setRescueState, setActionError]);
 
   if (!sessionId) {
     return (
