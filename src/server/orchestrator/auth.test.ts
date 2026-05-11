@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { AUTH_URL_PATTERNS, extractAuthUrl, extractUrlFromBuffer } from "./auth.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { AUTH_URL_PATTERNS, AuthManager, extractAuthUrl, extractUrlFromBuffer } from "./auth.js";
 
 describe("AUTH_URL_PATTERNS", () => {
   it("matches Anthropic console URLs", () => {
@@ -186,5 +186,51 @@ describe("extractUrlFromBuffer", () => {
     const triggerPos = fullBuffer.indexOf("Pastecodehereifprompted");
     const truncated = fullBuffer.substring(0, triggerPos);
     expect(extractUrlFromBuffer(truncated)).toBe("https://claude.ai/oauth/authorize?code=true&state=abc123");
+  });
+});
+
+describe("AuthManager.checkCredentials", () => {
+  // Save/restore Anthropic auth env vars so tests don't depend on the host
+  // shell and don't leak state between tests. We don't try to assert the
+  // *unauthenticated* case here because the dev container may have a real
+  // ~/.claude/.credentials.json on disk that flips the OR'd authentication
+  // check on regardless of env. The disk-only path is already exercised
+  // implicitly by the production deploy; what's new in this change is the
+  // env-var branch.
+  let origApiKey: string | undefined;
+  let origAuthToken: string | undefined;
+
+  beforeEach(() => {
+    origApiKey = process.env.ANTHROPIC_API_KEY;
+    origAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+  });
+
+  afterEach(() => {
+    if (origApiKey !== undefined) process.env.ANTHROPIC_API_KEY = origApiKey;
+    else delete process.env.ANTHROPIC_API_KEY;
+    if (origAuthToken !== undefined) process.env.ANTHROPIC_AUTH_TOKEN = origAuthToken;
+    else delete process.env.ANTHROPIC_AUTH_TOKEN;
+  });
+
+  it("returns true when ANTHROPIC_API_KEY is set", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    const mgr = new AuthManager();
+    expect(mgr.checkCredentials()).toBe(true);
+    expect(mgr.authenticated).toBe(true);
+  });
+
+  it("returns true when ANTHROPIC_AUTH_TOKEN is set (dogfooding path)", () => {
+    // ShipIt-in-ShipIt: the outer orch forwards its Claude OAuth access
+    // token to the inner orch as ANTHROPIC_AUTH_TOKEN. The inner orch has
+    // no /root/.claude/.credentials.json on disk, so this env var is the
+    // only signal that authentication is configured. Before this fix
+    // checkCredentials() only looked at ANTHROPIC_API_KEY and would report
+    // the inner orch as unauthenticated in OAuth-only setups.
+    process.env.ANTHROPIC_AUTH_TOKEN = "oauth-access-token-abc";
+    const mgr = new AuthManager();
+    expect(mgr.checkCredentials()).toBe(true);
+    expect(mgr.authenticated).toBe(true);
   });
 });

@@ -17,11 +17,17 @@ describe("GitHubAuthManager", () => {
   let tmpDir: string;
   let credentialStore: CredentialStore;
   let origGitConfigGlobal: string | undefined;
+  let origGithubToken: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-github-auth-"));
     credentialStore = new CredentialStore(tmpDir);
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    // Clear GITHUB_TOKEN so checkCredentials() tests don't accidentally
+    // pick up an env-injected token from the CI shell. Individual tests
+    // that exercise the env-fallback path re-set it explicitly.
+    origGithubToken = process.env.GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
     initGlobalGitConfig(tmpDir);
   });
 
@@ -31,6 +37,11 @@ describe("GitHubAuthManager", () => {
       process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
     } else {
       delete process.env.GIT_CONFIG_GLOBAL;
+    }
+    if (origGithubToken !== undefined) {
+      process.env.GITHUB_TOKEN = origGithubToken;
+    } else {
+      delete process.env.GITHUB_TOKEN;
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -47,6 +58,39 @@ describe("GitHubAuthManager", () => {
       const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       expect(mgr.checkCredentials()).toBe(true);
       expect(mgr.authenticated).toBe(true);
+    });
+
+    it("falls back to GITHUB_TOKEN env var when disk has nothing (dogfooding)", () => {
+      process.env.GITHUB_TOKEN = "ghp_from_env_456";
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      expect(mgr.checkCredentials()).toBe(true);
+      expect(mgr.authenticated).toBe(true);
+      expect(mgr.getToken()).toBe("ghp_from_env_456");
+    });
+
+    it("ignores empty / whitespace GITHUB_TOKEN env var", () => {
+      process.env.GITHUB_TOKEN = "   ";
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      expect(mgr.checkCredentials()).toBe(false);
+      expect(mgr.authenticated).toBe(false);
+    });
+
+    it("prefers disk token over env var when both are present", () => {
+      credentialStore.setGithubToken("ghp_disk_token");
+      process.env.GITHUB_TOKEN = "ghp_env_token";
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      expect(mgr.checkCredentials()).toBe(true);
+      expect(mgr.getToken()).toBe("ghp_disk_token");
+    });
+
+    it("does not persist env-sourced token to disk", () => {
+      process.env.GITHUB_TOKEN = "ghp_from_env_only";
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      expect(mgr.checkCredentials()).toBe(true);
+      // The CredentialStore on disk should remain empty — env is the source
+      // of truth in dogfooding mode and we don't want to mask token rotation
+      // with a stale on-disk copy.
+      expect(credentialStore.getGithubToken()).toBeNull();
     });
   });
 
