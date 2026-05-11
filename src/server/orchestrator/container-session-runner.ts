@@ -1305,6 +1305,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   dispose(opts?: { force?: boolean }): void {
     if (this._disposed) return;
+    // Diagnostic: log caller. Field reports show runners being disposed
+    // without any of the known dispose-path log prefixes appearing.
+    // Field-only; remove once docs/124 follow-up SIGTERM-loop is resolved.
+    const stack = new Error("ContainerSessionRunner.dispose caller").stack;
+    console.warn(`[container-runner:${this.sessionId}] dispose(force=${opts?.force ?? false}) called from:\n${stack}`);
     // Defensive: refuse to dispose a runner whose agent is currently running
     // unless the caller explicitly forces it. This guarantees that lifecycle
     // events (idle cleanup, transient WebSocket disconnects) never kill a
