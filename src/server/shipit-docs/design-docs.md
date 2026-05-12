@@ -42,6 +42,15 @@ Description of the feature...
 | `done` | Feature is complete |
 | `paused` | Has a design but not actively planned |
 
+#### Custom statuses
+
+Any other value (e.g. `status: experimental`, `status: blocked`) is preserved
+verbatim and rendered as a neutral badge. The doc is still considered
+**tracked** — it shows up in the Tracked tab and suppresses untracked siblings
+the same way a known status does. Custom-status docs sort between `paused`
+and `done`. The four values in the table above are the only ones with typed
+semantics in the UI; everything else is rendered as-is.
+
 ### Optional frontmatter fields
 
 You can also include a `title` field to override the auto-generated title:
@@ -105,6 +114,6 @@ How the feature works — architecture, data flow, key decisions.
 ## Common mistakes
 
 - **Missing frontmatter delimiters**: The `---` lines are required. Don't use ````yaml` fences.
-- **Wrong status value**: Must be exactly one of `planned`, `in-progress`, `done`, or `paused` (lowercase).
+- **Wrong status value**: Stick to `planned`, `in-progress`, `done`, or `paused` (lowercase) to get the typed UI bucketing — priority sorting, the Done collapse, and the success-coloured badge are all keyed on these four. A custom value works (the doc stays tracked, and the raw string renders as a neutral badge), but you forfeit those affordances.
 - **Frontmatter not at file start**: The `---` block must be the very first thing in the file — no blank lines or content before it.
 - **Not a `.md` file**: Only files ending in `.md` are scanned. Other formats (`.txt`, `.rst`) won't appear in the feature list.

@@ -6,6 +6,7 @@ import {
   orderSiblingsForTabs,
   siblingTabLabel,
   hasTrackedSibling,
+  isTracked,
 } from "./doc-paths.js";
 import type { DocEntry } from "../../server/shared/types.js";
 
@@ -102,12 +103,32 @@ describe("siblingTabLabel", () => {
   });
 });
 
+describe("isTracked", () => {
+  it("returns true for entries with a known status", () => {
+    expect(isTracked({ status: "planned" })).toBe(true);
+    expect(isTracked({ status: "in-progress" })).toBe(true);
+    expect(isTracked({ status: "done" })).toBe(true);
+    expect(isTracked({ status: "paused" })).toBe(true);
+  });
+
+  it("returns true for entries with a custom status", () => {
+    expect(isTracked({ customStatus: "experimental" })).toBe(true);
+    expect(isTracked({ customStatus: "blocked" })).toBe(true);
+  });
+
+  it("returns false when neither status nor customStatus is set", () => {
+    expect(isTracked({})).toBe(false);
+  });
+});
+
 describe("hasTrackedSibling", () => {
   const entries: DocEntry[] = [
     { path: "docs/095-foo/plan.md", title: "Plan", status: "in-progress" },
     { path: "docs/095-foo/checklist.md", title: "Checklist" },
     { path: "docs/orphan/checklist.md", title: "Orphan checklist" },
     { path: "docs/096-bar/plan.md", title: "Other plan", status: "planned" },
+    { path: "docs/097-experimental/plan.md", title: "X", customStatus: "experimental" },
+    { path: "docs/097-experimental/notes.md", title: "Notes" },
   ];
 
   it("returns true for checklist with a tracked plan sibling", () => {
@@ -120,6 +141,10 @@ describe("hasTrackedSibling", () => {
 
   it("ignores the entry itself when checking", () => {
     expect(hasTrackedSibling("docs/095-foo/plan.md", entries)).toBe(false);
+  });
+
+  it("treats a custom-status sibling as tracked", () => {
+    expect(hasTrackedSibling("docs/097-experimental/notes.md", entries)).toBe(true);
   });
 
   it("does not treat root-level files as siblings", () => {

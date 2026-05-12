@@ -268,6 +268,66 @@ describe("DocsViewer", () => {
     });
   });
 
+  describe("custom status", () => {
+    it("treats a doc with an unrecognized status: value as tracked", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001-exp/plan.md",
+          title: "Experiment",
+          customStatus: "experimental",
+        }),
+        makeDoc({ path: "README.md", title: "README" }),
+      ];
+      render(<DocsViewer {...props} />);
+      // The custom-status doc should land in Tracked, not Other.
+      expect(screen.getByText("Tracked (1)")).toBeInTheDocument();
+      expect(screen.getByText("Other (1)")).toBeInTheDocument();
+      // The raw custom status text renders as the badge label.
+      expect(screen.getByText("experimental")).toBeInTheDocument();
+    });
+
+    it("hides an untracked sibling of a custom-status plan", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001-exp/plan.md",
+          title: "Experiment",
+          customStatus: "blocked",
+        }),
+        makeDoc({ path: "docs/001-exp/checklist.md", title: "Experiment" }),
+      ];
+      render(<DocsViewer {...props} />);
+      // The checklist sibling should not show up in the "Other" tab, since its
+      // tracked plan sibling already represents the feature.
+      expect(screen.queryByText(/Other \(/)).not.toBeInTheDocument();
+    });
+
+    it("sorts custom-status docs between paused and archived (done + rejected)", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001-rejected/plan.md", title: "E-Rejected", status: "rejected" }),
+        makeDoc({ path: "docs/002-done/plan.md", title: "D-Done", status: "done" }),
+        makeDoc({ path: "docs/003-custom/plan.md", title: "C-Custom", customStatus: "experimental" }),
+        makeDoc({ path: "docs/004-paused/plan.md", title: "B-Paused", status: "paused" }),
+        makeDoc({ path: "docs/005-inprog/plan.md", title: "A-InProgress", status: "in-progress" }),
+      ];
+      render(<DocsViewer {...props} />);
+      // Expand the Archived group so done + rejected rows are visible too.
+      fireEvent.click(screen.getByRole("button", { name: /Archived \(2\)/ }));
+      const items = screen.getAllByRole("button").filter(
+        (btn) =>
+          !btn.textContent?.includes("Reload") &&
+          !/^Archived \(\d+\)$/.test(btn.textContent ?? ""),
+      );
+      expect(items[0].textContent).toContain("A-InProgress");
+      expect(items[1].textContent).toContain("B-Paused");
+      expect(items[2].textContent).toContain("C-Custom");
+      expect(items[3].textContent).toContain("D-Done");
+      expect(items[4].textContent).toContain("E-Rejected");
+    });
+  });
+
   describe("archived docs collapse", () => {
     it("collapses done docs by default and renders a toggle with the count", () => {
       const props = defaultProps();

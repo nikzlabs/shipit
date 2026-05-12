@@ -59,9 +59,23 @@ export function siblingTabLabel(path: string): string {
 }
 
 /**
- * Return true if `entries` contains a tracked doc (status set) in the same
- * directory as `path` other than `path` itself. Used to hide standalone
- * checklist.md entries in the Other tab when their plan sibling exists.
+ * Return true if the doc has any `status:` frontmatter — either one of the
+ * known enum values (`status`) or an unrecognized one (`customStatus`).
+ * Used to decide whether a doc shows up in the Tracked tab and as a sibling
+ * suppressor for unstatused files alongside it.
+ *
+ * The intent: the author wrote a `status:` line, so they meant to track it,
+ * even if the value isn't one we recognize. Compare with the closed enum
+ * `DocStatus`, which we keep strict so the UI's status buckets stay typed.
+ */
+export function isTracked(entry: Pick<DocEntry, "status" | "customStatus">): boolean {
+  return entry.status !== undefined || entry.customStatus !== undefined;
+}
+
+/**
+ * Return true if `entries` contains a tracked doc in the same directory as
+ * `path` other than `path` itself. Used to hide standalone checklist.md
+ * entries in the Other tab when their plan sibling exists.
  *
  * Files at the repo root (no directory prefix) are never considered siblings —
  * the "feature directory" concept only applies inside a folder like
@@ -72,6 +86,6 @@ export function hasTrackedSibling(path: string, entries: DocEntry[]): boolean {
   const dir = dirOf(path);
   if (dir === "") return false;
   return entries.some(
-    (e) => e.path !== path && e.status !== undefined && dirOf(e.path) === dir,
+    (e) => e.path !== path && isTracked(e) && dirOf(e.path) === dir,
   );
 }
