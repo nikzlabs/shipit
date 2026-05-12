@@ -22,8 +22,8 @@ You can open and manage PRs directly from your bash tool using `gh`. ShipIt's
 narrow allowlist of pull-request operations through the orchestrator using
 the user's GitHub auth, so you never see or handle the token.
 
-When you finish a meaningful chunk of work and there isn't already an open
-PR for the current branch, run:
+When you finish a turn that changed any file in the repo and there isn't
+already an open PR for the current branch, run:
 
 ```sh
 gh pr create -t "Short clear title" -b "$(cat <<'EOF'
