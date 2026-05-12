@@ -69,6 +69,15 @@ interface SessionState {
    */
   pauseNotice: { reason: "idle-disposed" | "memory-pressure"; idleMs?: number; at: number } | null;
   /**
+   * Agent-container OOM circuit-breaker trip notice. Set when the
+   * orchestrator sends a `session_memory_exhausted` WS message — the
+   * breaker has refused further container creation until the user
+   * explicitly retries via Rescue session / agent-container-restart.
+   * Cleared on session change and on successful container restart.
+   * See docs/124-session-rescue-and-diagnostics follow-up.
+   */
+  memoryExhausted: { countInWindow: number; windowMs: number; threshold: number; at: number } | null;
+  /**
    * Per-turn usage history keyed by session ID. Populated from
    * `turn_usage_update` WS messages live, and seeded on session attach from
    * `GET /api/sessions/:id/history` (sourced from the `usage_turns` table).
@@ -92,6 +101,7 @@ interface SessionState {
   setRecoveryActionError: (error: string | null) => void;
   setInterruptError: (error: string | null) => void;
   setPauseNotice: (notice: SessionState["pauseNotice"]) => void;
+  setMemoryExhausted: (notice: SessionState["memoryExhausted"]) => void;
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
@@ -145,6 +155,7 @@ const initialResettableState = {
   recoveryActionError: null as string | null,
   interruptError: null as string | null,
   pauseNotice: null as SessionState["pauseNotice"],
+  memoryExhausted: null as SessionState["memoryExhausted"],
 };
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
@@ -191,6 +202,8 @@ export const useSessionStore = create<SessionState>((set) => ({
   setInterruptError: (interruptError) => set({ interruptError }),
 
   setPauseNotice: (pauseNotice) => set({ pauseNotice }),
+
+  setMemoryExhausted: (memoryExhausted) => set({ memoryExhausted }),
 
   setSessions: (sessions) =>
     set((state) => ({

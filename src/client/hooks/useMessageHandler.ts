@@ -545,6 +545,23 @@ function processMessage(
       return;
     }
 
+    if (data.type === "session_memory_exhausted") {
+      // Agent-container OOM circuit breaker tripped on the server. The
+      // server has stopped recreating containers until the user explicitly
+      // opts back in. Show a banner in the SessionHealthStrip with the
+      // retry path; the same trip is also written to the per-session log
+      // ring and lastCreateError (defense-in-depth — a reconnecting viewer
+      // still sees it via either of those channels).
+      if (data.sessionId === useSessionStore.getState().sessionId) {
+        session.setMemoryExhausted({
+          countInWindow: data.countInWindow,
+          windowMs: data.windowMs,
+          threshold: data.threshold,
+          at: Date.now(),
+        });
+      }
+    }
+
     if (data.type === "preview_error") {
       preview.setPreviewProxyError({
         port: data.port,

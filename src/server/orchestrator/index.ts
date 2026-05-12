@@ -270,6 +270,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, credentialStore, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
+    oomBreaker,
   });
 
   // ---- Migration: derive RepoStore from existing sessions ----

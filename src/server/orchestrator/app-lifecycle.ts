@@ -1565,6 +1565,16 @@ export interface WarmPoolDeps {
   getDepCacheDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
   sseBroadcast: (event: string, data: unknown) => void;
+  /**
+   * Shared OOM circuit breaker. Standby creation consults it before
+   * spawning a container so the breaker stays the single authority over
+   * "should we make a container right now?" — defense-in-depth, since
+   * the standby ID is freshly allocated and would not normally carry
+   * OOM history. If we ever re-warm a session that previously tripped,
+   * this check stops the standby from being created at the
+   * under-provisioned limit just to OOM again.
+   */
+  oomBreaker?: SessionOomCircuitBreaker;
 }
 
 /**
@@ -1581,6 +1591,7 @@ export function createWarmPool(
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, credentialStore, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
+    oomBreaker,
   } = poolDeps;
 
   const warmingInProgress = new Set<string>();
@@ -1665,8 +1676,20 @@ export function createWarmPool(
         // the session (WS connect → activateSession → getOrCreate).
         repoStore.setWarmSessionId(repoUrl, appSessionId);
 
-        // Boot a standby container so the next activation is instant
-        if (opts?.withStandby && containerManager) {
+        // Boot a standby container so the next activation is instant.
+        // Defense-in-depth — the breaker is the single authority on
+        // "should we make a container right now?". `appSessionId` is
+        // brand new so this normally passes; the check matters only if
+        // a future re-warm path reuses a tripped session ID. We skip
+        // standby creation only (not the rest of the warm flow), so the
+        // session is still warmed and ready for on-demand activation —
+        // which goes through `createContainerForRunner`, which also
+        // consults the breaker.
+        const standbyAllowed = opts?.withStandby && containerManager && !oomBreaker?.isTripped(appSessionId);
+        if (opts?.withStandby && oomBreaker?.isTripped(appSessionId)) {
+          console.warn(`[warm] Skipping standby for ${appSessionId}: OOM circuit breaker tripped`);
+        }
+        if (standbyAllowed && containerManager) {
           const realCount = containerManager.size - containerManager.standbyCount;
           const maxIdle = credentialStore.getMaxIdleContainers();
           if (realCount < maxIdle) {

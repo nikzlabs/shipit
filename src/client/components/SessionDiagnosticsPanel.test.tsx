@@ -197,7 +197,7 @@ describe("SessionDiagnosticsPanel", () => {
     // children, so we match on the combined textContent of the <p>.
     expect(
       screen.getByText((_content, node) => {
-        if (!node || node.tagName !== "P") return false;
+        if (node?.tagName !== "P") return false;
         const text = node.textContent ?? "";
         return text.includes("Increase") && text.includes("agent.memory") && text.includes("Rescue session");
       }),

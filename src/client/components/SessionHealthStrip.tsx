@@ -179,6 +179,8 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
   const setInterruptError = useSessionStore((s) => s.setInterruptError);
   const pauseNotice = useSessionStore((s) => s.pauseNotice);
   const setPauseNotice = useSessionStore((s) => s.setPauseNotice);
+  const memoryExhausted = useSessionStore((s) => s.memoryExhausted);
+  const setMemoryExhausted = useSessionStore((s) => s.setMemoryExhausted);
   const phaseLabel = rescueState ? PHASE_LABEL[rescueState.phase] : null;
 
   /**
@@ -245,8 +247,11 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
       // docs/124-session-rescue-and-diagnostics §3.4.
       if (data.containerState === "running" && data.workerReachable) {
         // The session is back — clear any "paused" banner from the previous
-        // disposal so the user doesn't see a stale notice.
+        // disposal so the user doesn't see a stale notice. Same for the
+        // OOM-exhausted banner: a running container means the breaker has
+        // been reset (by Rescue / restart-agent) and the trip is moot.
         if (useSessionStore.getState().pauseNotice) setPauseNotice(null);
+        if (useSessionStore.getState().memoryExhausted) setMemoryExhausted(null);
         const rs = useSessionStore.getState().rescueState;
         if (rs && rs.phase !== "ready" && rs.phase !== "failed") {
           setRescueState({
@@ -289,7 +294,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
       if (sid !== sessionIdRef.current) return;
       setError(e instanceof ApiError ? e.message : String(e));
     }
-  }, [api, setRescueState, setPauseNotice]);
+  }, [api, setRescueState, setPauseNotice, setMemoryExhausted]);
 
   // Reset all per-session UI state when the active session changes. Without
   // this, an "actionError" or rescue overlay from a previous session bleeds
@@ -315,7 +320,8 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     setRescueState(null);
     setInterruptError(null);
     setPauseNotice(null);
-  }, [sessionId, setActionError, setRescueState, setInterruptError, setPauseNotice]);
+    setMemoryExhausted(null);
+  }, [sessionId, setActionError, setRescueState, setInterruptError, setPauseNotice, setMemoryExhausted]);
 
   // Poll on mount; cadence depends on whether a restart is in flight. While
   // restarting, poll fast so the new container's transition to "running"
@@ -612,6 +618,33 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           </Button>
         </div>
       </div>
+      {/* OOM circuit breaker tripped — the orchestrator has stopped
+          recreating the container after repeated agent-container OOM
+          kills. Without this banner the user only sees a stuck spinner
+          plus a buried Logs entry; with it they get the actionable retry
+          path (raise `agent.memory` + Rescue session) up front. Cleared
+          automatically when the container is running again (which happens
+          after Rescue resets the breaker). */}
+      {memoryExhausted && (
+        <div
+          role="status"
+          className="px-3 py-1.5 border-t border-(--color-error)/40 bg-(--color-error)/10 flex items-center gap-2"
+        >
+          <span className="flex-1 text-(--color-text-primary)">
+            <strong className="text-(--color-error)">Session disabled — agent container OOM-killed {memoryExhausted.countInWindow} times.</strong>
+            <span className="ml-1 text-(--color-text-secondary)">
+              Increase <code className="px-1 rounded bg-(--color-surface-2)">agent.memory</code> in <code className="px-1 rounded bg-(--color-surface-2)">shipit.yaml</code>, then use <strong>Rescue session</strong> to retry.
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setMemoryExhausted(null)}
+            className="text-(--color-text-tertiary) hover:text-(--color-text-primary) text-xs"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {/* Idle / memory-pressure pause notice — converts the silent
           "container went away" state into an explicit "send a message to
           resume" banner. Cleared automatically when the container is
