@@ -367,7 +367,7 @@ Feature docs describe individual features and may include planned-but-not-implem
 
 Features are numbered by creation order. When implementing or modifying a feature, read its `plan.md` first. When a feature has remaining work, check its `checklist.md`. When adding a new feature, create `docs/NNN-new-feature/plan.md`.
 
-Every `plan.md` must have YAML frontmatter with a `status` field. Valid values: `planned`, `in-progress`, `done`, `paused`. The feature tracking system (`src/server/orchestrator/features.ts`) reads this frontmatter to display feature status in the UI. Example:
+Every `plan.md` must have YAML frontmatter with a `status` field. Valid values: `planned`, `in-progress`, `done`, `paused`, `rejected`. The feature tracking system (`src/server/orchestrator/features.ts`) reads this frontmatter to display feature status in the UI. Example:
 
 ```yaml
 ---
@@ -375,7 +375,7 @@ status: in-progress
 ---
 ```
 
-When creating a new feature doc, set `status: planned`. Update to `in-progress` when work begins and `done` when complete. Set `paused` for features that have a design but are not currently planned for implementation. A `checklist.md` can exist alongside any status — it tracks remaining work items regardless of whether the feature is actively in progress. When a feature is done, set `status: done` and mark all checklist items as complete (`[x]`).
+When creating a new feature doc, set `status: planned`. Update to `in-progress` when work begins and `done` when complete. Set `paused` for features that have a design but are not currently planned for implementation. Set `rejected` for proposals that were considered and explicitly declined — the doc captures the reasoning so the proposal isn't re-litigated later; `rejected` docs render with a red badge and live in the collapsed "Archived" group alongside `done`. A `checklist.md` can exist alongside any status — it tracks remaining work items regardless of whether the feature is actively in progress. When a feature is done, set `status: done` and mark all checklist items as complete (`[x]`).
 
 `plan.md` may also include a `priority` field — `high`, `medium`, or `low` — as a hint for "which planned thing should we pick up next." It's only honored when `status: planned`; on any other status the field is ignored. The docs viewer sorts planned items by priority bucket (high → medium → low → unset), and within each bucket by *descending* path so the most recently added planned features bubble up. Leaving `priority` unset is fine — it just sorts after the prioritized items.
 

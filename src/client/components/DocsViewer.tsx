@@ -24,7 +24,17 @@ const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["var
   "planned": { label: "Planned", variant: "info", order: 1 },
   "paused": { label: "Paused", variant: "default", order: 2 },
   "done": { label: "Done", variant: "success", order: 3 },
+  "rejected": { label: "Rejected", variant: "error", order: 4 },
 };
+
+/**
+ * Statuses that are "archived" — terminal states the user generally doesn't
+ * want cluttering the active work list. We collapse them under a single
+ * "Archived" group below the active items.
+ */
+function isArchivedStatus(status: DocStatus | undefined): boolean {
+  return status === "done" || status === "rejected";
+}
 
 const PRIORITY_CONFIG: Record<DocPriority, { label: string; variant: BadgeProps["variant"]; order: number }> = {
   high: { label: "High", variant: "error", order: 0 },
@@ -162,10 +172,10 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
     return hasTracked ? "tracked" : "other";
   }, [userTab, hasTracked]);
 
-  // Done docs in the Tracked group are collapsed by default — they're
-  // historical context, not active work, and would otherwise dominate the list
-  // as a project ages.
-  const [doneExpanded, setDoneExpanded] = useState(false);
+  // Archived docs (done + rejected) in the Tracked group are collapsed by
+  // default — they're historical context, not active work, and would otherwise
+  // dominate the list as a project ages.
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
 
   if (files.length === 0) {
     return (
@@ -198,10 +208,10 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
     return a.path.localeCompare(b.path);
   });
   const sortedTracked = sortByStatusThenPath(tracked);
-  // Split tracked into active work and "done" so we can render done items
-  // inside a collapsible group below the active list.
-  const trackedActive = sortedTracked.filter((d) => d.status !== "done");
-  const trackedDone = sortedTracked.filter((d) => d.status === "done");
+  // Split tracked into active work and archived (done + rejected) so we can
+  // render archived items inside a collapsible group below the active list.
+  const trackedActive = sortedTracked.filter((d) => !isArchivedStatus(d.status));
+  const trackedArchived = sortedTracked.filter((d) => isArchivedStatus(d.status));
   const showTabs = hasTracked && hasUntracked;
 
   return (
@@ -328,20 +338,20 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                 </div>
               );
             })}
-            {trackedDone.length > 0 && (
+            {trackedArchived.length > 0 && (
               <>
                 <button
                   type="button"
-                  onClick={() => setDoneExpanded((v) => !v)}
-                  aria-expanded={doneExpanded}
+                  onClick={() => setArchivedExpanded((v) => !v)}
+                  aria-expanded={archivedExpanded}
                   className="flex items-center gap-1.5 w-full text-left px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-(--color-text-tertiary) hover:text-(--color-text-secondary) cursor-pointer"
                 >
-                  {doneExpanded
+                  {archivedExpanded
                     ? <CaretDownIcon size={ICON_SIZE.XS} />
                     : <CaretRightIcon size={ICON_SIZE.XS} />}
-                  <span>Done ({trackedDone.length})</span>
+                  <span>Archived ({trackedArchived.length})</span>
                 </button>
-                {doneExpanded && trackedDone.map((doc) => {
+                {archivedExpanded && trackedArchived.map((doc) => {
                   const ctx = pathContext(doc.path);
                   return (
                     <div
