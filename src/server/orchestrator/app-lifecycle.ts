@@ -1628,12 +1628,27 @@ export function createWarmPool(
           const realCount = containerManager.size - containerManager.standbyCount;
           const maxIdle = credentialStore.getMaxIdleContainers();
           if (realCount < maxIdle) {
+            // Read the workspace's shipit.yaml so the standby container
+            // is provisioned with the user's declared agent resources
+            // (memory/cpu/pids) and docker-access capability. Without
+            // this, `buildConfig` falls back to the manager's defaults
+            // (1 GB / 0.5 CPU / 256 pids) — so a repo declaring
+            // `agent.memory: 3072` would get a 1 GB container from the
+            // warm pool, OOMing on first turn when npm install + claude
+            // both run inside the under-provisioned cgroup. The
+            // non-warm runner-factory path already does this read
+            // (app-lifecycle.ts:311); the warm path was missing it.
+            const sessionConfig = resolveSessionConfig(workspaceDir);
             const config = containerManager.buildConfig({
               sessionId: appSessionId,
               sessionDir,
               workspaceDir,
               credentialsDir,
               depCacheDir: getDepCacheDir(repoUrl),
+              memoryLimit: sessionConfig.resources.agent.memory * 1024 * 1024,
+              cpuQuota: Math.round(sessionConfig.resources.agent.cpu * 100_000),
+              pidsLimit: sessionConfig.resources.agent.pids,
+              dockerAccess: sessionConfig.capabilities.docker,
             });
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
             containerManager.createStandby(config).then(async (sc) => {
