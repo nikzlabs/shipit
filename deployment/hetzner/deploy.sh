@@ -45,13 +45,14 @@ docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
 docker image prune -f || true
 #
 # DO use `-a` on `builder prune`. Without it BuildKit only reclaims
-# cache entries unreferenced by any image — which means most of the
-# accumulated build cache (entries reachable from a previous build's
-# intermediate stages) is skipped and the cache snowballs across
-# deploys. The original `--filter until=72h` form silently reclaimed
-# almost nothing on prod for this exact reason.
+# cache entries unreferenced by any image — most of the accumulated
+# cache (entries reachable from prior builds' intermediate stages) is
+# skipped and the cache snowballs across deploys.
 #
-# `unused-for=72h` keeps anything touched in the last 72 h so the next
-# deploy still hits warm cache for active layers, but evicts entries
-# that haven't been accessed in three days.
-docker builder prune -af --filter "unused-for=72h" || true
+# Filter on `until=` (creation time), NOT `unused-for=` (last-access
+# time). The deploy sequence is build → prune; the just-finished build
+# touches a lot of cache (that's the point of reuse), so `unused-for`
+# sees every entry as "0 minutes ago" and reclaims nothing. `until=72h`
+# matches entries CREATED more than 72 h ago even if they were re-used
+# during this build — which is exactly the cohort we want to evict.
+docker builder prune -af --filter "until=72h" || true
