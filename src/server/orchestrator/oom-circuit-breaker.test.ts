@@ -120,4 +120,37 @@ describe("createOomCircuitBreaker", () => {
     const r = breaker.recordOom("s");
     expect(r.lastOomAt).toBe(at());
   });
+
+  it("forceTrip immediately trips with justTripped=true", () => {
+    const { breaker, at } = mkBreaker();
+    const r = breaker.forceTrip("s");
+    expect(r.tripped).toBe(true);
+    expect(r.justTripped).toBe(true);
+    expect(r.trippedAt).toBe(at());
+    expect(breaker.isTripped("s")).toBe(true);
+  });
+
+  it("forceTrip is idempotent — justTripped only on the first call", () => {
+    const { breaker } = mkBreaker();
+    expect(breaker.forceTrip("s").justTripped).toBe(true);
+    expect(breaker.forceTrip("s").justTripped).toBe(false);
+    expect(breaker.forceTrip("s").justTripped).toBe(false);
+  });
+
+  it("forceTrip preserves existing OOM history (countInWindow)", () => {
+    const { breaker } = mkBreaker();
+    breaker.recordOom("s");
+    breaker.recordOom("s");
+    const r = breaker.forceTrip("s");
+    expect(r.countInWindow).toBe(2);
+    expect(r.tripped).toBe(true);
+  });
+
+  it("reset clears a forceTrip-induced trip", () => {
+    const { breaker } = mkBreaker();
+    breaker.forceTrip("s");
+    expect(breaker.isTripped("s")).toBe(true);
+    breaker.reset("s");
+    expect(breaker.isTripped("s")).toBe(false);
+  });
 });

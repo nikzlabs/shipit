@@ -19,7 +19,10 @@ import { EventEmitter } from "node:events";
 import {
   handleContainerExited,
   createMissingContainerReconciler,
+  setupContainerHealthMonitoring,
 } from "../app-lifecycle.js";
+import { createOomCircuitBreaker } from "../oom-circuit-breaker.js";
+import { createSessionLoopDetector } from "../loop-detector.js";
 import type { SessionContainerManager, SessionContainer } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { WsServerMessage, WsLogEntry } from "../../shared/types.js";
@@ -257,5 +260,109 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     reconcile();
 
     expect(disposeCalls).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setupContainerHealthMonitoring: OOM detection + loop force-trip
+// ---------------------------------------------------------------------------
+// Regression coverage for the bug where field diagnostics showed 3 container
+// exits in 3 minutes but breaker.countInWindow stuck at 1 — Docker emitted
+// `die` before `oom` for OOM-killed containers, the container-health handler
+// deleted the record on the first event, and the subsequent `oom` event hit
+// the "not found" early-out, losing the OOM signal entirely.
+
+/**
+ * Minimal `SessionContainerManager` stub — just needs to be an EventEmitter
+ * the wiring under test can subscribe to. We never invoke create/destroy.
+ */
+function makeManagerEmitter(): SessionContainerManager {
+  const emitter = new EventEmitter();
+  return Object.assign(emitter, {
+    getAll: () => [],
+    get: () => undefined,
+    isStandby: () => false,
+  }) as unknown as SessionContainerManager;
+}
+
+describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
+  function setup(sessionId = "sess-1") {
+    const manager = makeManagerEmitter();
+    const fake = makeFakeRunner(sessionId);
+    const registry = makeFakeRegistry(new Map([[sessionId, fake.runner]]));
+    const logs: { sid: string; source: WsLogEntry["source"]; text: string }[] = [];
+    const breaker = createOomCircuitBreaker({ windowMs: 60_000, threshold: 3 });
+    const loopDetector = createSessionLoopDetector({ threshold: 3, windowMs: 60_000 });
+    setupContainerHealthMonitoring(
+      manager,
+      registry,
+      (sid, source, text) => logs.push({ sid, source, text }),
+      loopDetector,
+      breaker,
+    );
+    return { manager, fake, breaker, loopDetector, logs, sessionId };
+  }
+
+  it("counts exit code 137 as OOM even when error is undefined (die-before-oom case)", () => {
+    const { manager, breaker, sessionId } = setup();
+    manager.emit("container_exited", sessionId, 137, undefined);
+    expect(breaker.getState(sessionId).countInWindow).toBe(1);
+  });
+
+  it("counts an explicit error='Out of memory' as OOM (oom-first case)", () => {
+    const { manager, breaker, sessionId } = setup();
+    manager.emit("container_exited", sessionId, 137, "Out of memory");
+    expect(breaker.getState(sessionId).countInWindow).toBe(1);
+  });
+
+  it("ignores non-OOM exits (exit 0 / exit 1, no OOM marker)", () => {
+    const { manager, breaker, sessionId } = setup();
+    manager.emit("container_exited", sessionId, 0, undefined);
+    manager.emit("container_exited", sessionId, 1, "crash");
+    expect(breaker.getState(sessionId).countInWindow).toBe(0);
+  });
+
+  it("trips after 3 mixed OOM signals (1 explicit + 2 die-only with exit 137)", () => {
+    // Mirrors the user's prod diagnostic: 1 entry tagged "Out of memory",
+    // 2 tagged only by exit code. Pre-fix the breaker stuck at countInWindow=1
+    // and never tripped. With Fix A all three count and the 3rd trips.
+    const { manager, fake, breaker, logs, sessionId } = setup();
+    manager.emit("container_exited", sessionId, 137, "Out of memory");
+    manager.emit("container_exited", sessionId, 137, undefined);
+    manager.emit("container_exited", sessionId, 137, undefined);
+    expect(breaker.isTripped(sessionId)).toBe(true);
+    expect(breaker.getState(sessionId).countInWindow).toBe(3);
+    expect(fake.emitted.some((m) => m.type === "session_memory_exhausted")).toBe(true);
+    expect(logs.some((l) => l.text.includes("Session disabled"))).toBe(true);
+  });
+
+  it("force-trips the breaker when the loop detector fires (Fix B)", () => {
+    // 3 container_started events in the same window — the loop detector
+    // fires, and we force-trip the breaker so the runner factory refuses
+    // the 4th create even when individual exits weren't tagged as OOM.
+    const { manager, fake, breaker, logs, sessionId } = setup();
+    manager.emit("container_started", sessionId);
+    manager.emit("container_started", sessionId);
+    manager.emit("container_started", sessionId);
+    expect(breaker.isTripped(sessionId)).toBe(true);
+    expect(fake.emitted.some((m) => m.type === "session_memory_exhausted")).toBe(true);
+    expect(logs.some((l) => l.text.includes("LOOP DETECTED"))).toBe(true);
+    expect(logs.some((l) => l.text.includes("Session disabled"))).toBe(true);
+  });
+
+  it("emits session_memory_exhausted exactly once across both trip paths", () => {
+    // OOM record-tripped the breaker; a subsequent loop alert must NOT
+    // re-emit because forceTrip is idempotent (justTripped=false after
+    // the first trip).
+    const { manager, fake, sessionId } = setup();
+    manager.emit("container_exited", sessionId, 137, undefined);
+    manager.emit("container_exited", sessionId, 137, undefined);
+    manager.emit("container_exited", sessionId, 137, undefined);
+    // …then a 4th start somehow happens and would re-alert the loop:
+    manager.emit("container_started", sessionId);
+    manager.emit("container_started", sessionId);
+    manager.emit("container_started", sessionId);
+    const memoryMsgs = fake.emitted.filter((m) => m.type === "session_memory_exhausted");
+    expect(memoryMsgs).toHaveLength(1);
   });
 });

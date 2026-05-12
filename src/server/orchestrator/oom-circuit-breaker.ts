@@ -63,6 +63,17 @@ export interface SessionOomCircuitBreaker {
    */
   recordOom(sessionId: string): OomRecordResult;
 
+  /**
+   * Immediately trip the breaker without recording an OOM. Used by the
+   * loop detector as a last-resort circuit: if the same session has
+   * spawned containers 3+ times in 5 min the cycle is pathological even
+   * when individual exits aren't tagged as OOM (e.g. die-before-oom
+   * event ordering loses the OOM signal). `justTripped` is true exactly
+   * once, mirroring `recordOom`'s semantics so the caller's
+   * trip-emission code path is shared.
+   */
+  forceTrip(sessionId: string): OomRecordResult;
+
   /** Whether new container creation should be refused for this session. */
   isTripped(sessionId: string): boolean;
 
@@ -124,6 +135,16 @@ export function createOomCircuitBreaker(opts: OomCircuitBreakerOpts = {}): Sessi
         ...stateFor(sessionId),
         justTripped,
       };
+    },
+    forceTrip(sessionId: string): OomRecordResult {
+      const t = now();
+      const alreadyTripped = trippedAt.has(sessionId);
+      let justTripped = false;
+      if (!alreadyTripped) {
+        trippedAt.set(sessionId, t);
+        justTripped = true;
+      }
+      return { ...stateFor(sessionId), justTripped };
     },
     isTripped(sessionId: string): boolean {
       return trippedAt.has(sessionId);
