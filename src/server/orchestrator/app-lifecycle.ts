@@ -1923,29 +1923,58 @@ export function setupContainerHealthMonitoring(
   loopDetector: SessionLoopDetector = createSessionLoopDetector(),
   oomBreaker?: SessionOomCircuitBreaker,
 ): void {
+  // Shared "breaker just tripped" emission — sends the WS message to
+  // attached viewers and the per-session log ring + journalctl line.
+  // Idempotent: `trip.justTripped` is true exactly once, so a duplicate
+  // call (e.g. exit + loop alert in the same window) no-ops cleanly.
+  const emitBreakerTrip = (
+    trip: { justTripped: boolean; countInWindow: number; windowMs: number; threshold: number },
+    sessionId: string,
+    summary: string,
+  ): void => {
+    if (!trip.justTripped) return;
+    const msg = `Session disabled — ${summary}. Increase \`agent.memory\` in shipit.yaml and use "Rescue session" to retry.`;
+    console.error(`[oom-breaker] ${msg} (session=${sessionId})`);
+    if (broadcastLog) broadcastLog(sessionId, "server", msg);
+    const runner = runnerRegistry.get(sessionId);
+    runner?.emitMessage({
+      type: "session_memory_exhausted",
+      sessionId,
+      countInWindow: trip.countInWindow,
+      windowMs: trip.windowMs,
+      threshold: trip.threshold,
+    });
+  };
+
   containerManager.on("container_exited", (sessionId, exitCode, error) => {
     // Record agent-container OOM kills BEFORE disposing the runner — the
     // dispose tears down the WS channel, so a `session_memory_exhausted`
-    // emit afterwards never reaches the attached viewers. The signal
-    // comes from `container-health.ts` which sets error="Out of memory"
-    // on Docker `oom` events for the agent container; compose-child OOMs
-    // go through the `service_exited` path instead.
-    if (oomBreaker && error === "Out of memory") {
+    // emit afterwards never reaches attached viewers.
+    //
+    // Two signals trigger the OOM count, because Docker is unreliable
+    // here:
+    //   1. error === "Out of memory" — `container-health.ts` set this
+    //      from a Docker `oom` event.
+    //   2. exitCode === 137 — the cgroup OOM-killer's SIGKILL signature.
+    //      Docker emits both `oom` and `die` on an OOM, but event
+    //      ordering is daemon-dependent; with cgroup v2 the `oom`
+    //      event is sometimes not emitted at all. When `die` arrives
+    //      first our handler deletes the container from the map and
+    //      the subsequent `oom` event hits the "container not found"
+    //      early-out, losing the OOM signal. 137 with no other emitter
+    //      means an external SIGKILL, which inside a memory-limited
+    //      cgroup is overwhelmingly the kernel OOM-killer.
+    //
+    // Compose-child OOMs go through the `service_exited` path and are
+    // not the breaker's concern.
+    if (oomBreaker && (error === "Out of memory" || exitCode === 137)) {
       const trip = oomBreaker.recordOom(sessionId);
-      if (trip.justTripped) {
-        const windowLabel = `${Math.round(trip.windowMs / 1000)}s`;
-        const msg = `Session disabled — agent container OOM-killed ${trip.countInWindow} times in last ${windowLabel}. Increase \`agent.memory\` in shipit.yaml and use "Rescue session" to retry.`;
-        console.error(`[oom-breaker] ${msg} (session=${sessionId})`);
-        if (broadcastLog) broadcastLog(sessionId, "server", msg);
-        const runner = runnerRegistry.get(sessionId);
-        runner?.emitMessage({
-          type: "session_memory_exhausted",
-          sessionId,
-          countInWindow: trip.countInWindow,
-          windowMs: trip.windowMs,
-          threshold: trip.threshold,
-        });
-      }
+      const windowLabel = `${Math.round(trip.windowMs / 1000)}s`;
+      emitBreakerTrip(
+        trip,
+        sessionId,
+        `agent container OOM-killed ${trip.countInWindow} times in last ${windowLabel}`,
+      );
     }
     handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog);
   });
@@ -1958,6 +1987,13 @@ export function setupContainerHealthMonitoring(
   // `LOOP DETECTED` line on both console and the per-session log ring
   // so post-hoc journalctl grep can confirm whether the loop occurred,
   // even after a restart.
+  //
+  // Belt-and-suspenders for the breaker: if the loop is happening but
+  // individual exits aren't reaching the breaker as OOMs (event
+  // ordering, exit code 0 from a SIGTERM-handler, etc.), `forceTrip`
+  // catches it. After this trips, the runner factory refuses the next
+  // create — the loop stops even when no signal cleanly identifies the
+  // failure mode.
   containerManager.on("container_started", (sessionId) => {
     const alert = loopDetector.recordContainerStarted(sessionId);
     if (!alert) return;
@@ -1969,6 +2005,14 @@ export function setupContainerHealthMonitoring(
         sessionId,
         "server",
         `${msg} Orchestrator is in a destroy/recreate loop — check journalctl for destroyContainer/dispose stack traces around this timestamp.`,
+      );
+    }
+    if (oomBreaker) {
+      const trip = oomBreaker.forceTrip(sessionId);
+      emitBreakerTrip(
+        trip,
+        sessionId,
+        `${alert.countInWindow} container creation attempts in last ${windowLabel}`,
       );
     }
   });
