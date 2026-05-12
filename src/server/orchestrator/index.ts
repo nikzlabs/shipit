@@ -52,6 +52,7 @@ import {
   autoStart,
 } from "./app-lifecycle.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
+import { runDiskJanitor, pruneSessionVolumes } from "./disk-janitor.js";
 
 // ---- Re-exports for backwards compatibility ----
 export { CONTEXT_WINDOW_TOKENS } from "./ws-handlers/send-message.js";
@@ -252,6 +253,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const prStatusPoller = createPrStatusPoller({
     deps, githubAuthManager, sessionManager, sseBroadcast,
     runnerRegistry, createRepoGit, getBareCacheDir,
+    // Skip the volume-prune fallback in test mode so the poller's
+    // auto-archive-on-merge path doesn't shell out to docker from tests.
+    pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,
   });
 
   // ---- Event wiring (deployment + auth) ----
@@ -425,6 +429,28 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     idleEnforcementInterval.unref();
   }
 
+  // ---- Disk janitor (startup-only sweep) ----
+  // Reclaims orphan ShipIt-labeled compose volumes, archived session
+  // workspaces (opt-in), and unreferenced repo / dep caches. Each item
+  // is recovering from a failure earlier in the lifecycle (archive
+  // teardown crashed, fs.rm failed, repo removal didn't cascade) — none
+  // accumulate steadily, so we run once at boot rather than on a timer.
+  // Skipped in test mode so unit tests don't shell out to docker.
+  if (!isTestMode) {
+    const archivedWorkspaceDays = parseFloat(process.env.DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS ?? "0");
+    const cacheDays = parseFloat(process.env.DISK_JANITOR_CACHE_DAYS ?? "30");
+    // Fire-and-forget — we don't want the sweep to block first-request
+    // latency, and `runDiskJanitor` swallows its own errors (see the
+    // module docstring) so there's nothing to await for safety.
+    void runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir,
+      archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
+      cacheDays: Number.isFinite(cacheDays) ? cacheDays : 30,
+    });
+  }
+
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
     sessionManager,
@@ -456,6 +482,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     secretStore,
     reviewStore,
     serviceManagers,
+    composeStopPromises,
+    // Skip the volume-prune fallback in test mode so unit / integration
+    // tests don't shell out to a real Docker daemon. Production always
+    // wires this; the function itself is defensive (catches its own
+    // errors) so it's safe even when Docker isn't reachable.
+    pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,
     getLogBuffer,
     agentFactory,
     oomBreaker,

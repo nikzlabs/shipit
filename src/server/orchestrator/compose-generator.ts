@@ -69,6 +69,14 @@ export interface ComposeOverrideOptions {
   /** Docker stack name (e.g. "shipit-dev") — added as a label for cleanup filtering. */
   stackName?: string;
   /**
+   * User-declared top-level named volumes (from the user's compose file).
+   * When provided, the override emits a labels overlay for each entry so
+   * the disk janitor's `docker volume prune --filter "label=shipit-managed"`
+   * can sweep orphaned per-session compose volumes without touching the
+   * user's other Docker volumes.
+   */
+  userNamedVolumes?: UserNamedVolume[];
+  /**
    * Phase 1 follow-up: when present, generate Docker-secrets-style
    * delivery instead of `env_file:`. The `secrets:` map at the top-level
    * uses the file paths from `dockerSecrets.filePathFor(name)`, and each
@@ -107,6 +115,49 @@ export class ComposeValidationError extends Error {
 // ---------------------------------------------------------------------------
 // Compose file parsing
 // ---------------------------------------------------------------------------
+
+/**
+ * Top-level named volume declared by the user (i.e., keys under the
+ * compose file's `volumes:` block). The override emits a labels overlay
+ * for each one so the disk janitor's volume prune can safely target only
+ * ShipIt-managed leftovers without touching the user's own data.
+ */
+export interface UserNamedVolume {
+  name: string;
+}
+
+/**
+ * Extract the list of top-level user-declared named volumes from a compose
+ * file. Defensive — never throws, returns `[]` on read or parse failure.
+ * Called from `ServiceManager.refreshSecrets()` which can fire while the
+ * user is mid-edit on their compose file; a transient YAML parse error
+ * must not propagate up and break the secrets refresh.
+ *
+ * Note: entries declared `external: true` in the user's volumes block are
+ * still returned. The override's labels overlay is silently ignored by
+ * compose for external volumes (they're not created or modified by the
+ * compose project), so they won't carry the `shipit-managed` label and
+ * the disk-janitor's prune-by-label will skip them. That's the right
+ * behavior — externals belong to the user's other workloads, not us.
+ */
+export function parseUserNamedVolumes(composePath: string): UserNamedVolume[] {
+  let content: string;
+  try {
+    content = fs.readFileSync(composePath, "utf-8");
+  } catch {
+    return [];
+  }
+  let doc: Record<string, unknown> | null;
+  try {
+    doc = parseYaml(content) as Record<string, unknown> | null;
+  } catch {
+    return [];
+  }
+  if (!doc || typeof doc !== "object") return [];
+  const volumes = doc.volumes;
+  if (!volumes || typeof volumes !== "object" || Array.isArray(volumes)) return [];
+  return Object.keys(volumes as Record<string, unknown>).map((name) => ({ name }));
+}
 
 /**
  * Parse a docker-compose.yml file and extract service definitions.
@@ -535,15 +586,31 @@ export function generateComposeOverride(
     override.secrets = secretsBlock;
   }
 
-  // When using a workspace volume, declare it as external so compose doesn't
-  // try to create it (it's managed by the orchestrator).
+  // Top-level `volumes:` block:
+  //   - shipit-workspace is declared external when workspaceVolume is set
+  //     (orchestrator-managed; no labels — compose can't label externals).
+  //   - User-declared named volumes get a labels overlay so the disk
+  //     janitor can prune orphans by label without touching the user's
+  //     other Docker volumes.
+  const volumeOverlay: Record<string, Record<string, unknown>> = {};
   if (opts.workspaceVolume) {
-    override.volumes = {
-      "shipit-workspace": {
-        name: opts.workspaceVolume,
-        external: true,
-      },
+    volumeOverlay["shipit-workspace"] = {
+      name: opts.workspaceVolume,
+      external: true,
     };
+  }
+  if (opts.userNamedVolumes && opts.userNamedVolumes.length > 0) {
+    for (const v of opts.userNamedVolumes) {
+      volumeOverlay[v.name] = {
+        labels: {
+          "shipit-managed": "true",
+          "shipit-session": opts.sessionId,
+        },
+      };
+    }
+  }
+  if (Object.keys(volumeOverlay).length > 0) {
+    override.volumes = volumeOverlay;
   }
 
   let yaml = stringifyYaml(override, { lineWidth: 120 });

@@ -155,6 +155,22 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   preserveComposeOnDispose = false;
 
+  /**
+   * When `true`, the disposed-handler in `setupServiceManager` /
+   * `adoptExistingServiceManager` passes `removeVolumes: true` to the
+   * compose-stop call, dropping per-session named volumes (user-declared
+   * `node_modules` caches, etc.) along with the containers.
+   *
+   * Set by archive / full-reset paths that genuinely want to reclaim the
+   * disk those volumes occupy. The default `false` keeps the stop "safe":
+   * idle eviction, restartAgent recovery, and reconciles can resume
+   * without losing build state. See `disk-janitor.ts` for the orthogonal
+   * pass that prunes orphaned volumes at orchestrator startup (handles
+   * the case where the runner was already disposed by idle eviction
+   * before archive ran, so the flag never had a chance to fire).
+   */
+  removeVolumesOnDispose = false;
+
   /** Config files that trigger a compose reconcile when changed. */
   private static readonly CONFIG_FILES = new Set([
     "shipit.yaml",

@@ -86,6 +86,19 @@ export interface ApiDeps {
   /** Service managers — per-session compose lifecycle (keyed by sessionId). */
   serviceManagers?: Map<string, ServiceManager>;
   /**
+   * In-flight `mgr.stop()` promises keyed by sessionId. Used by `fullReset`
+   * to await per-session compose-downs before wiping the workspace dir,
+   * so we don't race the docker tool that's still tearing volumes down.
+   */
+  composeStopPromises?: Map<string, Promise<void>>;
+  /**
+   * Fallback volume prune for `archiveSession` when no runner is in the
+   * registry (so `removeVolumesOnDispose` can't fire). Shells out to
+   * `docker volume prune` filtered by `shipit-session=<id>`. Omitted in
+   * test mode so tests don't touch the host Docker daemon.
+   */
+  pruneSessionVolumes?: (sessionId: string) => Promise<void>;
+  /**
    * Read the per-session orchestrator log ring. Used by the diagnostics
    * endpoint to include the most recent log entries in the bug-report
    * payload. Optional — test setups may omit it (the endpoint then

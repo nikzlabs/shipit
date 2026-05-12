@@ -321,6 +321,79 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     expect(mgr.getService("web")?.status).toBe("stopped");
   });
 
+  it("stop({ removeVolumes: true }) appends --volumes to compose down", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+
+    const composeCalls: string[][] = [];
+    const composeRunner: ComposeRunner = (args) => {
+      composeCalls.push(args);
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find((a) => a === "ps" || a === "inspect") ?? args[0];
+      if (key === "ps") {
+        return Promise.resolve(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+      }
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+    composeCalls.length = 0;
+
+    await mgr.stop({ removeVolumes: true });
+
+    const downCall = composeCalls.find((args) => args.includes("down"));
+    expect(downCall).toBeDefined();
+    expect(downCall).toContain("--remove-orphans");
+    expect(downCall).toContain("--volumes");
+  });
+
+  it("stop() omits --volumes by default (resumable)", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+
+    const composeCalls: string[][] = [];
+    const composeRunner: ComposeRunner = (args) => {
+      composeCalls.push(args);
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find((a) => a === "ps" || a === "inspect") ?? args[0];
+      if (key === "ps") {
+        return Promise.resolve(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+      }
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+    composeCalls.length = 0;
+
+    await mgr.stop();
+
+    const downCall = composeCalls.find((args) => args.includes("down"));
+    expect(downCall).toBeDefined();
+    expect(downCall).not.toContain("--volumes");
+  });
+
   it("reconcile clears startError on success", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");

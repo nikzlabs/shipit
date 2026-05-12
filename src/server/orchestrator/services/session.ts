@@ -344,18 +344,51 @@ export function renameSession(
   return renamed;
 }
 
-/** Archive a session, cleaning up clone directory. */
+/**
+ * Archive a session, cleaning up clone directory.
+ *
+ * `pruneVolumes` is invoked when no runner exists at archive time (so the
+ * `removeVolumesOnDispose` flag couldn't fire) to prune named volumes
+ * labeled `shipit-session=<sessionId>`. Optional: when omitted, the
+ * fallback prune is skipped — used by tests so we don't shell out to a
+ * real Docker daemon. Production wires this to `pruneSessionVolumes`
+ * from `disk-janitor.ts`.
+ */
 export async function archiveSession(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
   getBareCacheDir: (url: string) => string,
   sessionId: string,
+  pruneVolumes?: (sessionId: string) => Promise<void>,
 ): Promise<{ sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
+
+  // Signal the compose-stop hook (in app-lifecycle.ts's setupServiceManager
+  // disposed handler) to drop the stack's named volumes. Archive is a
+  // genuine "this session is going away" event — any per-session compose
+  // volumes (user-declared node_modules caches, etc.) should be reclaimed.
+  const runner = runnerRegistry.get(sessionId);
+  const runnerWasAlive = runner !== undefined;
+  if (runner && "removeVolumesOnDispose" in runner) {
+    (runner as { removeVolumesOnDispose: boolean }).removeVolumesOnDispose = true;
+  }
 
   // Dispose runner (forced — user explicitly archived this session, so we
   // tear it down even if an agent is still running)
   runnerRegistry.dispose(sessionId, { force: true });
+
+  // Fallback path: if no runner existed (e.g. idle eviction already
+  // disposed it), the `removeVolumesOnDispose` flag never had a chance
+  // to fire — the prior compose-down ran without `--volumes` and the
+  // named volumes are still on the daemon. Prune them now by label. This
+  // is the case for auto-archive of merged sessions, where idle eviction
+  // typically wins the race. When the runner WAS alive, the flag-driven
+  // path already did the work and the label-scoped prune is unnecessary.
+  // Tests omit `pruneVolumes` so we don't shell out to a real Docker
+  // daemon from unit / integration tests.
+  if (!runnerWasAlive && pruneVolumes) {
+    await pruneVolumes(sessionId);
+  }
 
   // Clean up session workspace directory for repo-backed clones only.
   // Standalone sessions preserve their directory so they can be unarchived.
@@ -406,6 +439,7 @@ export async function markMergedAndPruneExcess(
   runnerRegistry: SessionRunnerRegistry,
   getBareCacheDir: (url: string) => string,
   sessionId: string,
+  pruneVolumes?: (sessionId: string) => Promise<void>,
 ): Promise<{ sessions: SessionInfo[] }> {
   sessionManager.markMerged(sessionId);
 
@@ -420,10 +454,14 @@ export async function markMergedAndPruneExcess(
 
   const merged = sessionManager.listMergedNotArchivedByRemoteUrl(session.remoteUrl);
   // Archive oldest merged sessions beyond the per-repo limit
-  // (list is sorted newest-first).
+  // (list is sorted newest-first). Forward `pruneVolumes` so the
+  // auto-archive path reclaims per-session named volumes immediately —
+  // idle eviction has usually disposed the runner by now, so without
+  // this the named volumes would leak until the next orchestrator
+  // restart's disk-janitor pass.
   const toArchive = merged.slice(MAX_MERGED_SESSIONS_PER_REPO);
   for (const excess of toArchive) {
-    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, excess.id);
+    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, excess.id, pruneVolumes);
   }
 
   return { sessions: sessionManager.list() };

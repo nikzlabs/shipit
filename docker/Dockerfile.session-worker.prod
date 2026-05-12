@@ -22,7 +22,13 @@ FROM node:24-slim
 # in user sessions (npm install inside /workspace may compile C/C++ addons).
 RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip && rm -rf /var/lib/apt/lists/*
 
-RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
+# Bump this build-arg per deploy (deploy.sh sets it to $(date +%s)) so the
+# Claude/Codex CLI layer is rebuilt on every deploy, picking up the latest
+# published versions. The npm cache mount keeps the download itself fast.
+ARG NPM_GLOBALS_REBUILD=0
+RUN --mount=type=cache,target=/root/.npm \
+    echo "rebuild=${NPM_GLOBALS_REBUILD}" \
+ && npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
 
 # Install Chrome and its system dependencies for Playwright MCP browser tools.
 # Playwright MCP now defaults to the `chrome-for-testing` channel, so we install
