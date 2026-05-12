@@ -37,6 +37,7 @@ import {
   type HealthDeps,
   type HealthMonitorState,
 } from "./container-health.js";
+import { resolveSessionConfig } from "../shared/session-config.js";
 
 // ---------------------------------------------------------------------------
 // Re-export sub-module public symbols for backwards compatibility
@@ -212,6 +213,42 @@ export const CONTAINER_LABEL_VALUE = "true";
 export const CONTAINER_SESSION_ID_LABEL = "shipit-session-id";
 export const CONTAINER_STACK_LABEL = "shipit-stack";
 export const CONTAINER_STANDBY_LABEL = "shipit-standby";
+
+// ---------------------------------------------------------------------------
+// Agent resource limits — single source of truth for shipit.yaml → Docker
+// ---------------------------------------------------------------------------
+
+/** Docker-units limits derived from a workspace's shipit.yaml. */
+export interface AgentDockerLimits {
+  /** Container memory ceiling in bytes (cgroup memory.max). */
+  memoryLimit: number;
+  /** CPU quota: microseconds per 100ms period. */
+  cpuQuota: number;
+  /** Max processes inside the container's pids cgroup. */
+  pidsLimit: number;
+  /** Whether the agent gets a Docker socket proxy + session network. */
+  dockerAccess: boolean;
+}
+
+/**
+ * Read a workspace's shipit.yaml and map `agent.memory/cpu/pids` and
+ * `capabilities.docker` to canonical Docker-units limits.
+ *
+ * This is the single place that translates the user's declared resources
+ * into Docker units. Every container creation path (fresh, standby fallback,
+ * warm-pool standby, rediscover) must derive its limits from here — anything
+ * else silently falls back to the manager's compiled-in defaults (1 GiB /
+ * 0.5 CPU / 256 pids), under-provisioning containers that declared more.
+ */
+export function resolveAgentDockerLimits(workspaceDir: string): AgentDockerLimits {
+  const cfg = resolveSessionConfig(workspaceDir);
+  return {
+    memoryLimit: cfg.resources.agent.memory * 1024 * 1024,
+    cpuQuota: Math.round(cfg.resources.agent.cpu * 100_000),
+    pidsLimit: cfg.resources.agent.pids,
+    dockerAccess: cfg.capabilities.docker,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // SessionContainerManager
@@ -563,8 +600,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   // --- Build container config ---
 
   /**
-   * Build a ContainerConfig with defaults applied. Convenience method
-   * for callers that don't want to specify every field.
+   * Build a ContainerConfig with defaults applied. Low-level convenience for
+   * callers that already know the limits they want. Most callers should use
+   * `buildConfigForWorkspace` instead — it reads the workspace's shipit.yaml
+   * and applies the declared `agent.memory/cpu/pids` and `capabilities.docker`,
+   * which is the only way to honor the user's resource declarations.
    */
   buildConfig(opts: {
     sessionId: string;
@@ -584,6 +624,40 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       defaultCpuQuota: this.defaultCpuQuota,
       defaultPidsLimit: this.defaultPidsLimit,
     }, opts);
+  }
+
+  /**
+   * Build a ContainerConfig from a workspace directory. Reads the workspace's
+   * shipit.yaml via `resolveSessionConfig` and applies the declared agent
+   * resources (memory/cpu/pids) and capabilities (docker) — this is the only
+   * container-creation entry point that honors user-declared limits.
+   *
+   * All real container creation flows (runner-factory fresh + standby
+   * fallback + warm-pool standby) must go through here so user-declared
+   * resources are propagated consistently. See `resolveAgentDockerLimits`
+   * for the underlying shipit.yaml → Docker-units translation.
+   */
+  buildConfigForWorkspace(opts: {
+    sessionId: string;
+    sessionDir: string;
+    workspaceDir: string;
+    credentialsDir: string;
+    depCacheDir?: string;
+    env?: Record<string, string>;
+  }): ContainerConfig {
+    const limits = resolveAgentDockerLimits(opts.workspaceDir);
+    return this.buildConfig({
+      sessionId: opts.sessionId,
+      sessionDir: opts.sessionDir,
+      workspaceDir: opts.workspaceDir,
+      credentialsDir: opts.credentialsDir,
+      depCacheDir: opts.depCacheDir,
+      env: opts.env,
+      memoryLimit: limits.memoryLimit,
+      cpuQuota: limits.cpuQuota,
+      pidsLimit: limits.pidsLimit,
+      dockerAccess: limits.dockerAccess,
+    });
   }
 
   // --- Dispose ---
