@@ -107,10 +107,12 @@ describe("Integration: Context window usage (105)", () => {
       session_id: "ctx-session",
       total_cost_usd: 0.1,
       duration_ms: 2500,
-      input_tokens: 10_000,
-      output_tokens: 500,
-      cache_read_tokens: 2_000,
-      cache_write_tokens: 1_000,
+      usage: {
+        input_tokens: 10_000,
+        output_tokens: 500,
+        cache_read_input_tokens: 2_000,
+        cache_creation_input_tokens: 1_000,
+      },
     });
 
     const turnUsage = (await client.receiveType("turn_usage_update")) as WsTurnUsageUpdate;
@@ -156,8 +158,7 @@ describe("Integration: Context window usage (105)", () => {
       session_id: "ctx-2turn",
       total_cost_usd: 0.05,
       duration_ms: 1000,
-      input_tokens: 5_000,
-      output_tokens: 200,
+      usage: { input_tokens: 5_000, output_tokens: 200 },
     });
     const u1 = (await client.receiveType("turn_usage_update")) as WsTurnUsageUpdate;
     expect(u1.turnCount).toBe(1);
@@ -190,8 +191,7 @@ describe("Integration: Context window usage (105)", () => {
       session_id: "ctx-2turn",
       total_cost_usd: 0.07,
       duration_ms: 1200,
-      input_tokens: 12_000,
-      output_tokens: 300,
+      usage: { input_tokens: 12_000, output_tokens: 300 },
     });
     const u2 = (await client.receiveType("turn_usage_update")) as WsTurnUsageUpdate;
     expect(u2.turnCount).toBe(2);
@@ -225,8 +225,7 @@ describe("Integration: Context window usage (105)", () => {
       session_id: "persist-session",
       total_cost_usd: 0.02,
       duration_ms: 800,
-      input_tokens: 3_000,
-      output_tokens: 100,
+      usage: { input_tokens: 3_000, output_tokens: 100 },
     });
     await client.receiveType("turn_usage_update");
     lastClaude.emit("done", 0);

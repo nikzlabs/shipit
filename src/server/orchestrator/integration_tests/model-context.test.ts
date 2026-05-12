@@ -163,8 +163,7 @@ describe("Integration: Model context & token tracking", () => {
       session_id: "token-session",
       total_cost_usd: 0.05,
       duration_ms: 1500,
-      input_tokens: 5000,
-      output_tokens: 1200,
+      usage: { input_tokens: 5000, output_tokens: 1200 },
     });
 
     // Drain the agent_event for result
