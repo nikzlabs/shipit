@@ -1,9 +1,15 @@
 /**
  * Disk janitor — runs once at orchestrator startup to reclaim:
- *   - **Orphan compose volumes** (label `shipit-managed=true`). Catches
- *     volumes that should have been dropped by `mgr.stop({ removeVolumes })`
- *     during archive / full-reset but weren't (worker crash mid-`down`,
- *     daemon restart, legacy data from before the cleanup code shipped).
+ *   - **Orphan session compose volumes** — both labeled (post-fix) and
+ *     unlabeled legacy ones. Identified by the predictable compose
+ *     project-name pattern `shipit-<12-hex-of-sid>_<volname>`. We
+ *     cross-reference the embedded session prefix against the **active
+ *     sessions in the DB** and only delete volumes whose session is no
+ *     longer tracked (i.e., archived or deleted). This is critical:
+ *     idle-evicted sessions leave their volumes dangling on disk by
+ *     design (so a warm resume can re-attach), and a naive `docker
+ *     volume prune --filter dangling=true` would silently destroy that
+ *     state.
  *   - **Archived session workspaces** older than
  *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` days. Safety net for archives
  *     where `fs.rm` didn't run — `archiveSession` already drops the
@@ -69,7 +75,8 @@ export interface DiskJanitorDeps {
 }
 
 export interface DiskJanitorResult {
-  volumeBytes: number;
+  /** Session-compose volumes removed (cross-referenced against active sessions). */
+  orphanVolumesRemoved: number;
   workspacesRemoved: number;
   cachesRemoved: number;
 }
@@ -84,19 +91,18 @@ const DEFAULT_CACHE_DAYS = 30;
  */
 export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitorResult> {
   const result: DiskJanitorResult = {
-    volumeBytes: 0,
+    orphanVolumesRemoved: 0,
     workspacesRemoved: 0,
     cachesRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
 
   try {
-    const out = await runDocker([
-      "volume", "prune", "-f", "--filter", "label=shipit-managed=true",
-    ]);
-    result.volumeBytes = parseReclaimedBytes(out);
+    result.orphanVolumesRemoved = await sweepOrphanSessionVolumes(
+      deps.sessionManager, runDocker,
+    );
   } catch (err) {
-    console.warn("[disk-janitor] volume prune failed:", getMessage(err));
+    console.warn("[disk-janitor] orphan volume sweep failed:", getMessage(err));
   }
 
   try {
@@ -116,11 +122,89 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
   }
 
   console.log(
-    `[disk-janitor] reclaimed volumes=${formatMB(result.volumeBytes)} `
+    `[disk-janitor] reclaimed orphan-volumes=${result.orphanVolumesRemoved} `
     + `workspaces=${result.workspacesRemoved} `
     + `caches=${result.cachesRemoved}`,
   );
   return result;
+}
+
+/**
+ * Remove session-compose named volumes whose session is no longer
+ * tracked in the active sessions list — handles both labeled
+ * (`shipit-managed=true`, post-fix) and unlabeled legacy volumes
+ * uniformly. Volumes are identified by the predictable compose
+ * project-name pattern:
+ *
+ *     shipit-<first-12-chars-of-sessionId>_<volname>
+ *
+ * The 12-char prefix is extracted and cross-referenced against
+ * `sessionManager.list()` (active, non-archived sessions). If the
+ * prefix matches an active session, the volume is preserved — this is
+ * critical for **idle-evicted** sessions whose containers are gone but
+ * whose volumes must remain on disk for a warm resume. A naive
+ * `docker volume prune --filter dangling=true` would silently destroy
+ * that state.
+ *
+ * Safety properties:
+ *   - The orchestrator's own data volumes start with `shipit_`
+ *     (underscore), never `shipit-`, so they can't match.
+ *   - Regex check rejects volume names a user might have created
+ *     (e.g. `shipit-foo`); only names matching the strict
+ *     `shipit-<12 hex/hyphen chars>_` shape are considered.
+ *   - `--filter dangling=true` is still applied as defence-in-depth —
+ *     docker returns only unattached volumes, so an attached
+ *     currently-active session's volumes are invisible to the sweep.
+ *
+ * Returns the count of volumes actually removed.
+ */
+async function sweepOrphanSessionVolumes(
+  sessionManager: SessionManager,
+  runDocker: (args: string[]) => Promise<string>,
+): Promise<number> {
+  const SESSION_VOLUME_RE = /^shipit-([a-f0-9-]{12})_/;
+
+  const livePrefixes = new Set(
+    sessionManager.list().map((s) => s.id.slice(0, 12).toLowerCase()),
+  );
+
+  let listOut: string;
+  try {
+    listOut = await runDocker([
+      "volume", "ls", "-q",
+      "--filter", "name=shipit-",
+      "--filter", "dangling=true",
+    ]);
+  } catch (err) {
+    console.warn("[disk-janitor] volume ls failed:", getMessage(err));
+    return 0;
+  }
+
+  const toRemove: string[] = [];
+  for (const raw of listOut.split("\n")) {
+    const name = raw.trim();
+    if (!name) continue;
+    const m = SESSION_VOLUME_RE.exec(name);
+    if (!m) continue;
+    const prefix = m[1].toLowerCase();
+    if (livePrefixes.has(prefix)) continue;
+    toRemove.push(name);
+  }
+
+  let removed = 0;
+  for (const name of toRemove) {
+    try {
+      await runDocker(["volume", "rm", name]);
+      removed += 1;
+    } catch {
+      // Volume might have just been attached or already removed by a
+      // concurrent sweep — both are fine, skip silently.
+    }
+  }
+  if (removed > 0) {
+    console.log(`[disk-janitor] removed ${removed} orphan session volume(s)`);
+  }
+  return removed;
 }
 
 /**
@@ -250,31 +334,6 @@ export async function pruneSessionVolumes(
       getMessage(err),
     );
   }
-}
-
-/**
- * Extract `Total reclaimed space: <N><unit>` from a `docker … prune` output.
- * Returns bytes (0 when absent or unparseable — we don't fail the sweep on
- * formatting drift).
- */
-export function parseReclaimedBytes(output: string): number {
-  const match = /Total reclaimed space:\s*([\d.]+)\s*([KMGT]?B)/i.exec(output);
-  if (!match) return 0;
-  const value = parseFloat(match[1]);
-  const unit = match[2].toUpperCase();
-  const multipliers: Record<string, number> = {
-    B: 1,
-    KB: 1_000,
-    MB: 1_000_000,
-    GB: 1_000_000_000,
-    TB: 1_000_000_000_000,
-  };
-  const mult = multipliers[unit] ?? 1;
-  return Math.round(value * mult);
-}
-
-function formatMB(bytes: number): string {
-  return `${Math.round(bytes / 1_000_000)} MB`;
 }
 
 function getMessage(err: unknown): string {

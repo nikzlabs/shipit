@@ -6,29 +6,8 @@ import Database from "better-sqlite3";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
-import { runDiskJanitor, parseReclaimedBytes } from "./disk-janitor.js";
+import { runDiskJanitor } from "./disk-janitor.js";
 import { repoUrlToHash } from "./git-utils.js";
-
-describe("parseReclaimedBytes", () => {
-  it("parses MB output", () => {
-    const output = "deleted: sha256:abc\nTotal reclaimed space: 421.3MB\n";
-    expect(parseReclaimedBytes(output)).toBe(421_300_000);
-  });
-
-  it("parses GB output", () => {
-    const output = "Total reclaimed space: 1.5GB";
-    expect(parseReclaimedBytes(output)).toBe(1_500_000_000);
-  });
-
-  it("returns 0 when no Total line present", () => {
-    expect(parseReclaimedBytes("nothing matched")).toBe(0);
-    expect(parseReclaimedBytes("")).toBe(0);
-  });
-
-  it("parses bytes with B suffix", () => {
-    expect(parseReclaimedBytes("Total reclaimed space: 512B")).toBe(512);
-  });
-});
 
 describe("runDiskJanitor", () => {
   let tmpDir: string;
@@ -50,7 +29,7 @@ describe("runDiskJanitor", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("invokes only the label-scoped volume prune (not builder/image prune)", async () => {
+  it("does not call builder/image prune (deploy.sh owns those)", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -58,7 +37,60 @@ describe("runDiskJanitor", () => {
     const calls: string[][] = [];
     const runDocker = (args: string[]): Promise<string> => {
       calls.push(args);
-      if (args[0] === "volume") return Promise.resolve("Total reclaimed space: 50MB");
+      return Promise.resolve("");
+    };
+
+    await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker,
+    });
+
+    const subcommands = calls.map((args) => `${args[0]} ${args[1]}`);
+    expect(subcommands).not.toContain("builder prune");
+    expect(subcommands).not.toContain("image prune");
+  });
+
+  it("sweeps orphan session volumes whose session is no longer tracked", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    // Build one active session in the DB. Its compose volumes (matching
+    // the `shipit-<sid12>_` prefix) MUST be preserved even though they're
+    // dangling — that's the idle-evicted state, ready for warm resume.
+    const liveSessionId = "abc123def456-aaaa-bbbb-cccc-dddddddddddd";
+    const liveSessionPrefix = liveSessionId.slice(0, 12); // "abc123def456"
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+    ).run(liveSessionId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+
+    const lsRequests: string[][] = [];
+    const rmRequests: string[] = [];
+    // Listing includes:
+    //   - one volume for the live session (must be PRESERVED)
+    //   - three volumes for sessions that no longer exist in DB (REMOVE)
+    //   - one user-named volume that doesn't match the strict regex (PRESERVE)
+    //   - the orchestrator's `shipit_workspace` (PRESERVE — underscore prefix)
+    const dockerListing = [
+      `shipit-${liveSessionPrefix}_node_modules`,
+      "shipit-fed987654321_dist",
+      "shipit-aaaa11112222_build",
+      "shipit-deadbeef0000_cache",
+      "shipit-foo-bar",         // wrong shape — no `_` after 12-hex
+      "shipit_workspace",        // orchestrator volume, different prefix
+    ].join("\n");
+
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "volume" && args[1] === "ls") {
+        lsRequests.push(args);
+        return Promise.resolve(dockerListing);
+      }
+      if (args[0] === "volume" && args[1] === "rm") {
+        rmRequests.push(args[2]);
+        return Promise.resolve("");
+      }
       return Promise.resolve("");
     };
 
@@ -69,19 +101,82 @@ describe("runDiskJanitor", () => {
       runDocker,
     });
 
-    // Builder + image prune are owned by deploy.sh; the janitor must NOT
-    // duplicate them here.
-    const subcommands = calls.map((args) => `${args[0]} ${args[1]}`);
-    expect(subcommands).not.toContain("builder prune");
-    expect(subcommands).not.toContain("image prune");
-    expect(subcommands).toContain("volume prune");
+    // The `ls` call must include the dangling=true safety filter and the
+    // `name=shipit-` scoping filter.
+    expect(lsRequests).toHaveLength(1);
+    expect(lsRequests[0]).toContain("--filter");
+    expect(lsRequests[0]).toContain("dangling=true");
+    expect(lsRequests[0]).toContain("name=shipit-");
 
-    const volumeCall = calls.find((args) => args[0] === "volume");
-    expect(volumeCall).toBeDefined();
-    expect(volumeCall).toContain("--filter");
-    expect(volumeCall).toContain("label=shipit-managed=true");
+    // Only the three orphan-session volumes get rm'd. The live session's
+    // volume, the user-named oddball, and the orchestrator volume all stay.
+    expect(rmRequests.sort()).toEqual([
+      "shipit-aaaa11112222_build",
+      "shipit-deadbeef0000_cache",
+      "shipit-fed987654321_dist",
+    ]);
+    expect(result.orphanVolumesRemoved).toBe(3);
+    expect(rmRequests).not.toContain(`shipit-${liveSessionPrefix}_node_modules`);
+  });
 
-    expect(result.volumeBytes).toBe(50_000_000);
+  it("preserves volumes for idle-evicted (still-tracked) sessions", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    // Active session — represents an idle-evicted session whose container
+    // was stopped but whose row stays in the DB.
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+    ).run(sessionId, "Idle-Evicted", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+
+    const rmRequests: string[] = [];
+    const dockerListing = `shipit-${sessionId.slice(0, 12)}_node_modules`;
+
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "volume" && args[1] === "ls") return Promise.resolve(dockerListing);
+      if (args[0] === "volume" && args[1] === "rm") {
+        rmRequests.push(args[2]);
+        return Promise.resolve("");
+      }
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker,
+    });
+
+    expect(rmRequests).toEqual([]);
+    expect(result.orphanVolumesRemoved).toBe(0);
+  });
+
+  it("orphan volume sweep ignores rm failures (volume reattached / already gone)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "volume" && args[1] === "ls") {
+        return Promise.resolve("shipit-abc123def456_node_modules");
+      }
+      if (args[0] === "volume" && args[1] === "rm") {
+        return Promise.reject(new Error("volume is in use"));
+      }
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker,
+    });
+
+    expect(result.orphanVolumesRemoved).toBe(0);
   });
 
   it("sweeps archived workspaces older than archivedWorkspaceDays", async () => {
@@ -99,8 +194,6 @@ describe("runDiskJanitor", () => {
 
     const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
     const recent = new Date(Date.now() - 5 * 86_400_000).toISOString();
-    // Both sessions need a remote_url — the janitor skips entries without
-    // one defensively, even though the product guarantees they're set.
     const remote = "https://github.com/example/repo.git";
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived) VALUES (?, ?, ?, ?, ?, ?, 1)",
@@ -204,13 +297,13 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(tmpDir, "dep-cache", staleHash))).toBe(false);
   });
 
-  it("continues with workspace + cache sweeps when the volume prune fails", async () => {
+  it("continues with workspace + cache sweeps when the volume sweep fails", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
 
     // Stage an old archived workspace so the workspace sweep has something
-    // to do; if the volume-prune failure short-circuited the run we'd see
+    // to do; if the volume sweep failure short-circuited the run we'd see
     // workspacesRemoved=0 below.
     const oldDir = path.join(tmpDir, "sessions", "old-session", "workspace");
     fs.mkdirSync(oldDir, { recursive: true });
@@ -228,7 +321,7 @@ describe("runDiskJanitor", () => {
       runDocker,
     });
 
-    expect(result.volumeBytes).toBe(0);
+    expect(result.orphanVolumesRemoved).toBe(0);
     expect(result.workspacesRemoved).toBe(1);
   });
 });
