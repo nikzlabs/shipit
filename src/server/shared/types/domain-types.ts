@@ -65,8 +65,17 @@ export type DocPriority = "high" | "medium" | "low";
 export interface DocEntry {
   /** Relative path from workspace root, e.g. "docs/001-websocket-protocol/plan.md". */
   path: string;
-  /** Status from YAML frontmatter, if present. Undefined for plain docs. */
+  /** Status from YAML frontmatter, if present and one of the known enum values.
+   * Undefined when the frontmatter is absent OR when it carries an unrecognized
+   * value (which is captured in `customStatus` instead). */
   status?: DocStatus;
+  /**
+   * Raw `status:` value from frontmatter when it isn't one of the known enum
+   * values. Lowercased and trimmed. Lets us still consider the doc "tracked"
+   * (the author clearly intended to label it) without leaking unrecognized
+   * values into the closed enum used for UI bucketing.
+   */
+  customStatus?: string;
   /**
    * Priority from YAML frontmatter, only surfaced when `status === "planned"`.
    * Drives sort order in the docs viewer; otherwise advisory.

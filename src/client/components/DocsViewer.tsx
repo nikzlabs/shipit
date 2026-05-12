@@ -5,7 +5,7 @@ import type { BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { DocEntry, DocPriority, DocStatus } from "../../server/shared/types.js";
-import { hasTrackedSibling } from "../utils/doc-paths.js";
+import { hasTrackedSibling, isTracked } from "../utils/doc-paths.js";
 
 export interface DocsViewerProps {
   files: DocEntry[];
@@ -23,14 +23,21 @@ const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["var
   "in-progress": { label: "In Progress", variant: "warning", order: 0 },
   "planned": { label: "Planned", variant: "info", order: 1 },
   "paused": { label: "Paused", variant: "default", order: 2 },
-  "done": { label: "Done", variant: "success", order: 3 },
-  "rejected": { label: "Rejected", variant: "error", order: 4 },
+  "done": { label: "Done", variant: "success", order: 4 },
+  "rejected": { label: "Rejected", variant: "error", order: 5 },
 };
+
+/** Sort order for docs that carry a `customStatus` (unrecognized status:
+ * value). Sits between Paused (2) and Done (4) so author-tagged-but-unknown
+ * docs stay visible above completed work. */
+const CUSTOM_STATUS_ORDER = 3;
 
 /**
  * Statuses that are "archived" — terminal states the user generally doesn't
  * want cluttering the active work list. We collapse them under a single
- * "Archived" group below the active items.
+ * "Archived" group below the active items. Custom-status docs are NOT
+ * archived: an unknown status is by definition "I don't know what this
+ * means", so we keep it visible alongside active work.
  */
 function isArchivedStatus(status: DocStatus | undefined): boolean {
   return status === "done" || status === "rejected";
@@ -52,6 +59,19 @@ function StatusBadge({ status }: { status: DocStatus }) {
   return (
     <Badge variant={config.variant} className="text-[11px]">
       {config.label}
+    </Badge>
+  );
+}
+
+/**
+ * Renders the raw, unrecognized `customStatus` value (e.g. "experimental",
+ * "blocked") with a neutral badge. The doc is still tracked — see
+ * `isTracked()` — but doesn't fall into one of our four typed buckets.
+ */
+function CustomStatusBadge({ customStatus }: { customStatus: string }) {
+  return (
+    <Badge variant="default" className="text-[11px]">
+      {customStatus}
     </Badge>
   );
 }
@@ -94,10 +114,17 @@ function pathContext(docPath: string): string | null {
   return docPath.slice(0, lastSlash + 1);
 }
 
+/** Sort key for a doc's status: known enum order, then custom-status order, then last. */
+function statusOrder(doc: DocEntry): number {
+  if (doc.status) return STATUS_CONFIG[doc.status]?.order ?? 99;
+  if (doc.customStatus) return CUSTOM_STATUS_ORDER;
+  return 99;
+}
+
 function sortByStatusThenPath(docs: DocEntry[]): DocEntry[] {
   return [...docs].sort((a, b) => {
-    const orderA = a.status ? STATUS_CONFIG[a.status]?.order ?? 99 : 99;
-    const orderB = b.status ? STATUS_CONFIG[b.status]?.order ?? 99 : 99;
+    const orderA = statusOrder(a);
+    const orderB = statusOrder(b);
     if (orderA !== orderB) return orderA - orderB;
     // Within the planned bucket, sort by priority (high → medium → low → unset),
     // then by path *descending* so the most recently added planned items
@@ -136,7 +163,7 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
       files.filter(
         (f) =>
           wasModifiedInSession(f, sessionStartedAt) &&
-          (f.status !== undefined || !hasTrackedSibling(f.path, files)),
+          (isTracked(f) || !hasTrackedSibling(f.path, files)),
       ),
     [files, sessionStartedAt],
   );
@@ -153,14 +180,14 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
     [files, modifiedPaths],
   );
 
-  const tracked = remaining.filter((f) => f.status !== undefined);
+  const tracked = remaining.filter((f) => isTracked(f));
   // Hide untracked siblings (e.g. `checklist.md`) when a tracked plan exists
   // in the same directory — they're now reachable via the modal's sibling
   // tabs, so listing them separately is redundant noise. We check against the
   // full `files` list so a tracked plan that was pulled into the "Modified"
   // group above still suppresses its untracked sibling here.
   const untracked = remaining.filter(
-    (f) => f.status === undefined && !hasTrackedSibling(f.path, files),
+    (f) => !isTracked(f) && !hasTrackedSibling(f.path, files),
   );
   const hasTracked = tracked.length > 0;
   const hasUntracked = untracked.length > 0;
@@ -266,6 +293,9 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                       <PriorityBadge priority={doc.priority} />
                     )}
                     {doc.status && <StatusBadge status={doc.status} />}
+                    {!doc.status && doc.customStatus && (
+                      <CustomStatusBadge customStatus={doc.customStatus} />
+                    )}
                   </div>
                 </div>
               );
@@ -334,6 +364,9 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                       <PriorityBadge priority={doc.priority} />
                     )}
                     {doc.status && <StatusBadge status={doc.status} />}
+                    {!doc.status && doc.customStatus && (
+                      <CustomStatusBadge customStatus={doc.customStatus} />
+                    )}
                   </div>
                 </div>
               );

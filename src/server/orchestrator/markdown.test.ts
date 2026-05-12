@@ -45,7 +45,11 @@ describe("parseStatusFromFrontmatter", () => {
     expect(parseStatusFromFrontmatter("---\nstatus: Done\n---")).toBe("done");
   });
 
-  it("returns undefined for unknown status values", () => {
+  it("returns undefined for unknown status values (caller falls back to customStatus via findMarkdownFiles)", () => {
+    // parseStatusFromFrontmatter intentionally returns ONLY the closed-enum
+    // values — unknown values are reported through DocEntry.customStatus,
+    // not through this helper. See the "customStatus" test block in
+    // findMarkdownFiles below.
     expect(parseStatusFromFrontmatter("---\nstatus: unknown-value\n---")).toBeUndefined();
   });
 
@@ -198,6 +202,56 @@ describe("findMarkdownFiles", () => {
 
     const docs = await findMarkdownFiles(tmpDir);
     expect(docs[0].title).toBe("Auth");
+  });
+
+  describe("customStatus", () => {
+    it("captures unrecognized status values as customStatus", async () => {
+      fs.writeFileSync(
+        path.join(tmpDir, "experimental.md"),
+        "---\nstatus: experimental\n---\n# Experimental",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].status).toBeUndefined();
+      expect(docs[0].customStatus).toBe("experimental");
+    });
+
+    it("normalizes case and whitespace on custom status", async () => {
+      fs.writeFileSync(
+        path.join(tmpDir, "blocked.md"),
+        "---\nstatus:   BLOCKED  \n---",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].customStatus).toBe("blocked");
+    });
+
+    it("does not set customStatus when status is one of the known enum values", async () => {
+      fs.writeFileSync(
+        path.join(tmpDir, "planned.md"),
+        "---\nstatus: planned\n---",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].status).toBe("planned");
+      expect(docs[0].customStatus).toBeUndefined();
+    });
+
+    it("leaves both status and customStatus undefined when frontmatter is absent", async () => {
+      fs.writeFileSync(path.join(tmpDir, "plain.md"), "# Just content");
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].status).toBeUndefined();
+      expect(docs[0].customStatus).toBeUndefined();
+    });
+
+    it("propagates customStatus from a sibling-aware checklist read", async () => {
+      // Read path is different for `checklist.md` (full read vs. 512-byte
+      // sniff), so cover it explicitly.
+      fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-feature", "checklist.md"),
+        "---\nstatus: blocked\n---\n- [ ] one",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].customStatus).toBe("blocked");
+    });
   });
 
   describe("priority frontmatter", () => {
