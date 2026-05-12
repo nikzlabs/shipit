@@ -24,6 +24,7 @@ import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { WsLogEntry } from "../shared/types.js";
+import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 
 import { ServiceError } from "./services/index.js";
 
@@ -91,6 +92,12 @@ export interface ApiDeps {
    * returns an empty `recentLogs` array).
    */
   getLogBuffer?: (sessionId: string) => WsLogEntry[];
+  /**
+   * OOM circuit breaker — passed into recovery service handlers so
+   * user-initiated restarts reset the trip, and into the diagnostics
+   * service so the panel can render the current breaker state.
+   */
+  oomBreaker?: SessionOomCircuitBreaker;
   /**
    * Optional fallback agent factory. Container runners create their own agents
    * via `runner.createAgent()`; this is only used when the runner has no

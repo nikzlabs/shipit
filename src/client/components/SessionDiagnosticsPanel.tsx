@@ -73,6 +73,26 @@ interface LogEntry {
   timestamp: string;
 }
 
+interface ParsedShipitConfig {
+  agent: { memory: number; cpu: number; pids: number; install: string[] };
+  compose?: { file: string; dockerSocket: boolean };
+  version?: number;
+  warnings: string[];
+  /** YAML parse error message, if shipit.yaml is malformed. */
+  parseError?: string;
+  /** Post-clamp values the container actually boots on. */
+  effectiveAgent: { memory: number; cpu: number; pids: number; dockerAccess: boolean };
+}
+
+interface OomBreakerState {
+  tripped: boolean;
+  countInWindow: number;
+  lastOomAt: number | null;
+  trippedAt: number | null;
+  threshold: number;
+  windowMs: number;
+}
+
 interface DiagnosticsPayload {
   sessionId: string;
   generatedAt: number;
@@ -81,6 +101,8 @@ interface DiagnosticsPayload {
   stackStartError: string | null;
   runner: RunnerDiagnostic | null;
   recentLogs: LogEntry[];
+  parsedConfig: ParsedShipitConfig | null;
+  oomBreaker: OomBreakerState | null;
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -177,6 +199,14 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
                     valueClass="text-(--color-error) whitespace-pre-wrap"
                   />
                 )}
+              </Section>
+
+              <Section title="Parsed shipit.yaml">
+                <ParsedConfigRows config={data.parsedConfig} />
+              </Section>
+
+              <Section title="OOM circuit breaker">
+                <OomBreakerRows state={data.oomBreaker} />
               </Section>
 
               <Section title={`Compose stack (${data.services.length})`}>
@@ -317,6 +347,121 @@ function RunnerRows({ runner }: { runner: RunnerDiagnostic }) {
       />
       <KvRow label="turn buffer size" value={String(runner.turnEventBufferSize)} />
       <KvRow label="disposed" value={String(runner.disposed)} />
+    </>
+  );
+}
+
+function ParsedConfigRows({ config }: { config: ParsedShipitConfig | null }) {
+  if (!config) {
+    return (
+      <p className="text-(--color-text-tertiary)">
+        No workspace directory resolved for this session — shipit.yaml not read.
+      </p>
+    );
+  }
+  const { agent, compose, warnings, version, parseError, effectiveAgent } = config;
+
+  // When env caps shrink a declared value, render "declared → effective"
+  // inline so the panel reads exactly the way someone debugging an OOM
+  // would want: the value they wrote, an arrow, the value the container
+  // actually booted on.
+  const memoryClamped = effectiveAgent.memory !== agent.memory;
+  const cpuClamped = effectiveAgent.cpu !== agent.cpu;
+  const pidsClamped = effectiveAgent.pids !== agent.pids;
+
+  return (
+    <>
+      {parseError && (
+        <KvRow
+          label="parse error"
+          value={parseError}
+          valueClass="text-(--color-error) whitespace-pre-wrap"
+        />
+      )}
+      <KvRow
+        label="agent.memory"
+        value={memoryClamped
+          ? `${agent.memory} MiB → ${effectiveAgent.memory} MiB (capped)`
+          : `${agent.memory} MiB`}
+        valueClass={memoryClamped ? "text-(--color-warning)" : undefined}
+      />
+      <KvRow
+        label="agent.cpu"
+        value={cpuClamped
+          ? `${agent.cpu} → ${effectiveAgent.cpu} (capped)`
+          : `${agent.cpu}`}
+        valueClass={cpuClamped ? "text-(--color-warning)" : undefined}
+      />
+      <KvRow
+        label="agent.pids"
+        value={pidsClamped
+          ? `${agent.pids} → ${effectiveAgent.pids} (capped)`
+          : `${agent.pids}`}
+        valueClass={pidsClamped ? "text-(--color-warning)" : undefined}
+      />
+      <KvRow
+        label="agent.install"
+        value={agent.install.length === 0 ? "—" : agent.install.join(" && ")}
+      />
+      <KvRow
+        label="compose"
+        value={
+          compose
+            ? `${compose.file}${compose.dockerSocket ? " (docker-socket: true)" : ""}`
+            : "—"
+        }
+      />
+      {version !== undefined && <KvRow label="version" value={String(version)} />}
+      {warnings.length > 0 && (
+        <div className="mt-1 rounded border border-(--color-warning) bg-(--color-warning)/10 p-2 space-y-1">
+          <div className="text-(--color-warning) font-semibold uppercase tracking-wide text-[11px]">
+            {warnings.length === 1 ? "warning" : `${warnings.length} warnings`}
+          </div>
+          {warnings.map((w, i) => (
+            <p key={i} className="text-(--color-text-secondary) whitespace-pre-wrap break-words">
+              {w}
+            </p>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function OomBreakerRows({ state }: { state: OomBreakerState | null }) {
+  if (!state) {
+    return <p className="text-(--color-text-tertiary)">Not wired (test mode / local runtime).</p>;
+  }
+  const windowLabel = `${Math.round(state.windowMs / 1000)}s`;
+  return (
+    <>
+      <KvRow
+        label="status"
+        value={state.tripped
+          ? `tripped — refusing new containers until "Rescue session" resets it`
+          : `healthy (${state.countInWindow}/${state.threshold} OOM kills in last ${windowLabel})`}
+        valueClass={state.tripped ? "text-(--color-error)" : ""}
+      />
+      <KvRow
+        label="last OOM"
+        value={state.lastOomAt
+          ? `${formatRelative(state.lastOomAt)} (${new Date(state.lastOomAt).toISOString()})`
+          : "—"}
+      />
+      {state.trippedAt !== null && (
+        <KvRow
+          label="tripped at"
+          value={`${formatRelative(state.trippedAt)} (${new Date(state.trippedAt).toISOString()})`}
+          valueClass="text-(--color-error)"
+        />
+      )}
+      {state.tripped && (
+        <p className="mt-1 text-(--color-text-secondary)">
+          The agent container hit its memory cap repeatedly. Increase
+          {" "}<code>agent.memory</code> in <code>shipit.yaml</code> and use
+          {" "}<strong>Rescue session</strong> to retry — that clears the breaker.
+        </p>
+      )}
     </>
   );
 }

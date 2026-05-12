@@ -79,6 +79,8 @@ export async function registerContainerRoutes(
             runnerRegistry: deps.runnerRegistry,
             serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
             getLogBuffer: deps.getLogBuffer ?? (() => []),
+            getWorkspaceDir: (id) => sessionManager.get(id)?.workspaceDir ?? null,
+            ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
           },
           request.params.id,
         );
@@ -128,6 +130,7 @@ export async function registerContainerRoutes(
             containerManager: deps.containerManager ?? null,
             runnerRegistry: deps.runnerRegistry,
             defaultAgentId: deps.defaultAgentId,
+            ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
           },
           request.params.id,
         );
@@ -155,6 +158,7 @@ export async function registerContainerRoutes(
             containerManager: deps.containerManager ?? null,
             runnerRegistry: deps.runnerRegistry,
             defaultAgentId: deps.defaultAgentId,
+            ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
           },
           request.params.id,
         );

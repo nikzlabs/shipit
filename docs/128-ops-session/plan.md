@@ -181,7 +181,7 @@ independently.)
    strict allow-listing: only `/var/run/docker.sock` (via proxy
    path) and `/var/log/journal`, `/run/log/journal`. Anything else
    is rejected. Validation in
-   `src/shared/session-config.ts`. This is the smallest blast-radius
+   `src/server/shared/shipit-config.ts`. This is the smallest blast-radius
    way to expose privileged mounts — no syntax for arbitrary paths.
 
 4. **Container creation respects host mounts** — `container-lifecycle.ts`
