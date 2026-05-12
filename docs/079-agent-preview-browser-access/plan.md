@@ -246,7 +246,7 @@ const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
 | `src/server/orchestrator/agent-instructions.ts` | Add browser access section to system prompt template |
 | `src/server/orchestrator/container-session-runner.ts` | Resolve preview URL from `previewWorkerUrl` + detected port; pass in `AgentRunParams` to `_startAgentViaProxy()` |
 | `src/server/orchestrator/proxy-agent-process.ts` | Forward `previewUrl` through to container |
-| `Dockerfile.session-worker.dev` | Install `@playwright/mcp` (pinned) + `npx playwright install --with-deps chromium` |
+| `Dockerfile.session-worker.dev` | Install `@playwright/mcp` (pinned) + `npx playwright install-deps chromium` + `npx @playwright/mcp install-browser chrome-for-testing` |
 
 ## Considerations
 
@@ -256,10 +256,11 @@ Chromium adds ~400MB to the session container image. The Dockerfile needs both t
 
 ```dockerfile
 RUN npm install -g @playwright/mcp \
-    && npx playwright install --with-deps chromium
+    && npx playwright install-deps chromium \
+    && npx @playwright/mcp install-browser chrome-for-testing
 ```
 
-The `--with-deps` flag installs required system libraries (`libnss3`, `libatk-bridge2.0-0`, `libgbm1`, `libx11-6`, etc.) via `apt-get`. Put this in its own Docker layer for caching.
+`playwright install-deps chromium` installs the required system libraries (`libnss3`, `libatk-bridge2.0-0`, `libgbm1`, `libx11-6`, etc.) via `apt-get`. We then fetch the actual browser binary via `@playwright/mcp install-browser chrome-for-testing` — recent `@playwright/mcp` versions resolve the `chromium` browser channel to a `chrome-for-testing` build, so the plain `playwright install chromium` download is no longer the binary the MCP server looks for. Put both commands in their own Docker layer for caching.
 
 Recommendation: bake it into the image. The lazy browser launch already avoids runtime cost for sessions that don't use it. Paying 400MB of disk to avoid 30s of download latency on first use is worth it.
 
