@@ -141,6 +141,7 @@ export class ClaudeAdapter
       permissionMode: params.permissionMode,
       mcpConfigPath: params.mcpConfigPath,
       model: params.model,
+      settingsPath: params.settingsPath,
     });
   }
 

@@ -375,6 +375,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // Preview URL — compose services are accessed via the preview proxy
   const previewUrl: string | undefined = undefined;
 
+  // Auto-create-PR gate: drives both the system-prompt nudge and the Stop-hook
+  // enforcement that lives in the session container at
+  // /etc/shipit/managed-settings.json. Single source of truth — the harness
+  // fallback in post-turn.ts uses the same predicate.
+  const autoCreatePrActive = ctx.credentialStore.getAutoCreatePr()
+    && ctx.githubAuthManager.authenticated;
+
   // Build the system prompt, incorporating agent system instructions and conversation replay.
   // The auto-create-PR nudge is gated on the same `autoCreatePr` setting that drives the
   // harness-side fallback in post-turn.ts — so users who turn off auto-PR don't get the
@@ -382,7 +389,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const agentInstructions = ctx.credentialStore.getAgentSystemInstructionsEnabled()
     ? buildAgentSystemInstructions({
         previewUrl,
-        autoCreatePr: ctx.credentialStore.getAutoCreatePr() && ctx.githubAuthManager.authenticated,
+        autoCreatePr: autoCreatePrActive,
       })
     : undefined;
   const userSystemPrompt = await ctx.readSystemPrompt();
@@ -412,6 +419,14 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     prompt = `${imageContext}\n\n${prompt}`;
   }
 
+  // When autoCreatePr is on, point Claude at the baked managed-settings.json
+  // that registers our Stop hook. The hook enforces "open a PR before
+  // ending the turn" — see docs/129-stop-hook-pr-enforcement/plan.md.
+  // Claude-only; ignored by other adapters.
+  const settingsPath = autoCreatePrActive && currentAgent.agentId === "claude"
+    ? "/etc/shipit/managed-settings.json"
+    : undefined;
+
   currentAgent.run({
     prompt,
     sessionId: agentSessionId,
@@ -420,6 +435,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     permissionMode,
     previewUrl,
     model: ctx.getSelectedModel(),
+    settingsPath,
   });
   // "Agent process started" is now emitted from agent-listeners.ts
   // when the agent_init event arrives, so the log reflects an actual

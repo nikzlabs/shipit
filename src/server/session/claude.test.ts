@@ -302,6 +302,34 @@ describe("ClaudeProcess", () => {
       expect(args).not.toContain("--mcp-config");
     });
 
+    it("includes --settings flag when settingsPath is provided", () => {
+      // Settings path is how the orchestrator enables the PR-enforcement
+      // Stop hook (docs/129-stop-hook-pr-enforcement). Regression-protect
+      // the wiring so the flag actually reaches the CLI.
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", settingsPath: "/etc/shipit/managed-settings.json" });
+
+      expect(mockPtySpawn).toHaveBeenCalledWith(
+        "claude",
+        expect.arrayContaining(["--settings", "/etc/shipit/managed-settings.json"]),
+        expect.any(Object),
+      );
+    });
+
+    it("does not include --settings when settingsPath is omitted", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--settings");
+    });
+
     it("includes browser tools in allowed tools list", () => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
