@@ -5,7 +5,13 @@ import { WORKSPACE_SKIP_DIRS } from "../shared/fs-constants.js";
 import type { DocEntry, DocPriority, DocStatus } from "../shared/types.js";
 
 /** Valid doc statuses. */
-const VALID_STATUSES = new Set<DocStatus>(["planned", "in-progress", "done", "paused"]);
+const VALID_STATUSES = new Set<DocStatus>([
+  "planned",
+  "in-progress",
+  "done",
+  "paused",
+  "rejected",
+]);
 
 /** Valid doc priorities. Only meaningful when status === "planned". */
 const VALID_PRIORITIES = new Set<DocPriority>(["high", "medium", "low"]);
@@ -43,7 +49,7 @@ export function parseStatusFromFrontmatter(content: string): DocStatus | undefin
  *
  * `priority` is only returned when `status === "planned"` — it's a sort hint
  * for picking the next thing to work on, so it's meaningless on
- * in-progress/done/paused docs and we drop it there to prevent drift.
+ * in-progress/done/paused/rejected docs and we drop it there to prevent drift.
  */
 function parseFrontmatterFields(
   content: string,

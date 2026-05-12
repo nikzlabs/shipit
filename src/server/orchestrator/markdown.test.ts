@@ -33,6 +33,10 @@ describe("parseStatusFromFrontmatter", () => {
     expect(parseStatusFromFrontmatter("---\nstatus: paused\n---\n# Feature")).toBe("paused");
   });
 
+  it("parses 'rejected' status", () => {
+    expect(parseStatusFromFrontmatter("---\nstatus: rejected\n---\n# Feature")).toBe("rejected");
+  });
+
   it("handles extra whitespace in status value", () => {
     expect(parseStatusFromFrontmatter("---\nstatus:   in-progress  \n---")).toBe("in-progress");
   });
@@ -251,6 +255,10 @@ describe("findMarkdownFiles", () => {
       fs.writeFileSync(
         path.join(tmpDir, "paused.md"),
         "---\nstatus: paused\npriority: high\n---",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "rejected.md"),
+        "---\nstatus: rejected\npriority: high\n---",
       );
       const docs = await findMarkdownFiles(tmpDir);
       for (const doc of docs) {

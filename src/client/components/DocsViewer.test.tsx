@@ -44,7 +44,7 @@ describe("DocsViewer", () => {
       render(<DocsViewer {...props} />);
       expect(screen.getByText("Auth")).toBeInTheDocument();
       // "Done" docs are collapsed by default — expand to view them.
-      fireEvent.click(screen.getByRole("button", { name: /Done \(1\)/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
       expect(screen.getByText("Deploy")).toBeInTheDocument();
     });
 
@@ -71,7 +71,7 @@ describe("DocsViewer", () => {
       expect(screen.getByText("Paused")).toBeInTheDocument();
       // The "Done" group is collapsed by default; the toggle header still
       // renders, but the per-doc Done badge only appears once expanded.
-      fireEvent.click(screen.getByRole("button", { name: /Done \(1\)/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
       expect(screen.getByText("Done")).toBeInTheDocument();
     });
 
@@ -125,13 +125,13 @@ describe("DocsViewer", () => {
       ];
       render(<DocsViewer {...props} />);
       // Done items live behind a collapsed toggle — expand to assert ordering.
-      fireEvent.click(screen.getByRole("button", { name: /Done \(1\)/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
       const items = screen.getAllByRole("button").filter(
         (btn) =>
           !btn.textContent?.includes("Reload") &&
           !btn.textContent?.includes("Tracked") &&
           !btn.textContent?.includes("Other") &&
-          !/^Done \(\d+\)$/.test(btn.textContent ?? ""),
+          !/^Archived \(\d+\)$/.test(btn.textContent ?? ""),
       );
       // in-progress first, sorted alphabetically by path (no priority)
       expect(items[0].textContent).toContain("B-InProgress");
@@ -195,7 +195,7 @@ describe("DocsViewer", () => {
       ];
       render(<DocsViewer {...props} />);
       // Done section is collapsed by default — expand it to inspect the badges.
-      fireEvent.click(screen.getByRole("button", { name: /Done \(1\)/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
       expect(screen.getByText("Done")).toBeInTheDocument();
       expect(screen.queryByText("High")).not.toBeInTheDocument();
     });
@@ -263,12 +263,12 @@ describe("DocsViewer", () => {
       render(<DocsViewer {...props} />);
       // The Done group is collapsed by default — the badge should not show yet.
       expect(screen.queryByText("12/12")).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: /Done \(1\)/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
       expect(screen.getByText("12/12")).toBeInTheDocument();
     });
   });
 
-  describe("done docs collapse", () => {
+  describe("archived docs collapse", () => {
     it("collapses done docs by default and renders a toggle with the count", () => {
       const props = defaultProps();
       props.files = [
@@ -281,9 +281,9 @@ describe("DocsViewer", () => {
       expect(screen.getByText("Active")).toBeInTheDocument();
       expect(screen.queryByText("Finished-One")).not.toBeInTheDocument();
       expect(screen.queryByText("Finished-Two")).not.toBeInTheDocument();
-      // The toggle reflects the count of hidden done docs.
+      // The toggle reflects the count of hidden archived docs.
       expect(
-        screen.getByRole("button", { name: /Done \(2\)/ }),
+        screen.getByRole("button", { name: /Archived \(2\)/ }),
       ).toBeInTheDocument();
     });
 
@@ -294,20 +294,42 @@ describe("DocsViewer", () => {
         makeDoc({ path: "docs/002/plan.md", title: "Finished", status: "done" }),
       ];
       render(<DocsViewer {...props} />);
-      const toggle = screen.getByRole("button", { name: /Done \(1\)/ });
+      const toggle = screen.getByRole("button", { name: /Archived \(1\)/ });
       expect(toggle).toHaveAttribute("aria-expanded", "false");
       fireEvent.click(toggle);
       expect(toggle).toHaveAttribute("aria-expanded", "true");
       expect(screen.getByText("Finished")).toBeInTheDocument();
     });
 
-    it("does not render the Done toggle when there are no done docs", () => {
+    it("does not render the Archived toggle when there are no archived docs", () => {
       const props = defaultProps();
       props.files = [
         makeDoc({ path: "docs/001/plan.md", title: "Active", status: "in-progress" }),
       ];
       render(<DocsViewer {...props} />);
-      expect(screen.queryByRole("button", { name: /Done \(/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Archived \(/ })).toBeNull();
+    });
+
+    it("groups rejected docs together with done under the Archived toggle", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001/plan.md", title: "Active", status: "in-progress" }),
+        makeDoc({ path: "docs/002/plan.md", title: "Shipped", status: "done" }),
+        makeDoc({ path: "docs/003/plan.md", title: "Declined", status: "rejected" }),
+      ];
+      render(<DocsViewer {...props} />);
+      // Active doc is visible; archived docs (done + rejected) are hidden.
+      expect(screen.getByText("Active")).toBeInTheDocument();
+      expect(screen.queryByText("Shipped")).not.toBeInTheDocument();
+      expect(screen.queryByText("Declined")).not.toBeInTheDocument();
+      // One toggle covers both archived statuses with a combined count.
+      const toggle = screen.getByRole("button", { name: /Archived \(2\)/ });
+      fireEvent.click(toggle);
+      expect(screen.getByText("Shipped")).toBeInTheDocument();
+      expect(screen.getByText("Declined")).toBeInTheDocument();
+      // Both badges render with their distinct labels.
+      expect(screen.getByText("Done")).toBeInTheDocument();
+      expect(screen.getByText("Rejected")).toBeInTheDocument();
     });
   });
 
