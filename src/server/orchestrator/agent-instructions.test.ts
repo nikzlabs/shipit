@@ -55,14 +55,18 @@ describe("buildAgentSystemInstructions", () => {
 
   it("uses imperative language and an explicit anti-pattern for autoCreatePr", () => {
     const out = buildAgentSystemInstructions({ autoCreatePr: true });
-    // Edit 2: pulls the action-oriented principle into this section.
+    // Pulls the action-oriented principle into this section.
     expect(out).toContain("action-oriented");
-    // Edit 1: imperative — do, don't ask — and the explicit anti-pattern.
+    // Imperative — do, don't ask — and the explicit anti-pattern.
     expect(out).toContain("Do not ask first");
     expect(out).toMatch(/want me to open a PR\??/i);
-    // Edit 3: concrete examples of "meaningful" so the threshold isn't fuzzy.
-    expect(out).toContain("multi-file");
+    // Any-change threshold: the agent must not talk itself out of opening a
+    // PR by calling a change "trivial". Typos, config tweaks, one-line bug
+    // fixes all qualify — the prompt must say so explicitly.
+    expect(out).toContain("no \"this change is too small\" exception");
     expect(out).toContain("typo");
+    expect(out).toContain("config");
+    expect(out).toContain("one-line");
   });
 
   it("composes preview + autoCreatePr sections together", () => {
