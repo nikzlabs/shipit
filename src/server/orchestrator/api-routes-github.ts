@@ -586,7 +586,7 @@ export async function registerGitHubRoutes(
     "/api/github/token",
     async (request, reply) => {
       try {
-        const result = await setGitHubToken(deps.githubAuthManager, request.body.token);
+        const result = await setGitHubToken(deps.githubAuthManager, request.body.token, sessionManager);
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {

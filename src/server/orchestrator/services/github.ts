@@ -9,6 +9,7 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import type { PrAutoMergeError } from "../../shared/types/github-types.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionManager } from "../sessions.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 import { getErrorMessage } from "../validation.js";
@@ -841,10 +842,19 @@ export async function updateMergeMethod(
   return { mergeMethod: method };
 }
 
-/** Set GitHub token. Returns status and repos. */
+/** Set GitHub token. Returns status and repos.
+ *
+ * Backfills the per-repo credential helper into every existing session's
+ * workspace. `configureGitCredentials` is otherwise only invoked at session
+ * creation (new, fork, unarchive, warm), so sessions that pre-date the auth
+ * have no `credential.helper` in their `.git/config` and `git push` falls back
+ * to interactive auth — which GitHub rejects with "Password authentication is
+ * not supported."
+ */
 export async function setGitHubToken(
   githubAuthManager: GitHubAuthManager,
   token: string,
+  sessionManager?: SessionManager,
 ): Promise<{
   status: GitHubStatus;
   repos: { fullName: string; description: string | null; private: boolean; defaultBranch: string; cloneUrl: string }[];
@@ -853,6 +863,18 @@ export async function setGitHubToken(
   if (!trimmed) throw new ServiceError(400, "GitHub token cannot be empty");
   const success = await githubAuthManager.setToken(trimmed);
   if (!success) throw new ServiceError(400, "Invalid GitHub token");
+
+  if (sessionManager) {
+    for (const s of sessionManager.list()) {
+      if (!s.workspaceDir) continue;
+      try {
+        githubAuthManager.configureGitCredentials(s.workspaceDir);
+      } catch (err) {
+        console.error(`[github-auth] Failed to configure credentials for session ${s.id}:`, getErrorMessage(err));
+      }
+    }
+  }
+
   const repos = await githubAuthManager.listUserRepos();
   return { status: githubAuthManager.getStatus(), repos };
 }
