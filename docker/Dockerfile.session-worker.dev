@@ -6,7 +6,11 @@ RUN npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
 
 # Install Chrome and its system dependencies for Playwright MCP browser tools.
 # The browser launches lazily — sessions that don't use browser tools pay zero cost.
-RUN npx playwright install --with-deps chromium
+# Playwright MCP now defaults to the `chrome-for-testing` channel, so we install
+# system deps via the playwright CLI and then fetch the chrome-for-testing build
+# via @playwright/mcp's installer.
+RUN npx playwright install-deps chromium \
+ && npx @playwright/mcp install-browser chrome-for-testing
 
 WORKDIR /app
 
