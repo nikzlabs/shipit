@@ -51,6 +51,7 @@ function createFakeDocker() {
   let containerCounter = 0;
   const containers = new Map<string, {
     id: string; started: boolean; labels: Record<string, string>; ip: string;
+    hostConfig: Record<string, unknown>;
   }>();
   const eventEmitter = new EventEmitter();
 
@@ -68,7 +69,10 @@ function createFakeDocker() {
       containerCounter++;
       const id = `fake-container-${containerCounter}`;
       const ip = `172.18.0.${containerCounter + 2}`;
-      containers.set(id, { id, started: false, labels: opts.Labels ?? {}, ip });
+      containers.set(id, {
+        id, started: false, labels: opts.Labels ?? {}, ip,
+        hostConfig: opts.HostConfig ?? {},
+      });
 
       return {
         id,
@@ -119,11 +123,14 @@ function getSharedRepoDirForUrl(workspaceDir: string, repoUrl: string): string {
   return path.join(workspaceDir, "repo-cache", repoUrlToHash(repoUrl));
 }
 
-function createSharedRepo(repoDir: string): void {
+function createSharedRepo(repoDir: string, opts?: { shipitYaml?: string }): void {
   fs.mkdirSync(repoDir, { recursive: true });
   execSync("git init", { cwd: repoDir, stdio: "ignore" });
   execSync("git checkout -b main", { cwd: repoDir, stdio: "ignore" });
   fs.writeFileSync(path.join(repoDir, "README.md"), "# test\n");
+  if (opts?.shipitYaml) {
+    fs.writeFileSync(path.join(repoDir, "shipit.yaml"), opts.shipitYaml);
+  }
   execSync("git add .", { cwd: repoDir, stdio: "ignore" });
   execSync('git commit -m "init" --no-gpg-sign', { cwd: repoDir, stdio: "ignore" });
   execSync(`git remote add origin ${REPO_URL}`, { cwd: repoDir, stdio: "ignore" });
@@ -526,5 +533,125 @@ describe("standby container pre-warming", () => {
     // No standby should be created — we're at the container cap
     expect(containerManager.isStandby(newWarmId)).toBe(false);
     expect(containerManager.get(newWarmId)).toBeUndefined();
+  }, 25000);
+});
+
+// ---------------------------------------------------------------------------
+// Standby resources propagated from shipit.yaml
+// ---------------------------------------------------------------------------
+//
+// Regression: warm-pool standby containers were created via
+// `containerManager.buildConfig(...)` without passing `memoryLimit` /
+// `cpuQuota` / `pidsLimit`, so they silently fell back to the manager's
+// defaults (1 GiB / 0.5 CPU / 256 pids). A workspace declaring
+// `agent.memory: 3072` in shipit.yaml would still get a 1 GiB container
+// from the warm pool, OOMing on first turn (npm install + claude
+// competing inside the under-provisioned cgroup — see the field report
+// in docs/124-session-rescue-and-diagnostics follow-up). Fix:
+// `warmSessionForRepo` now reads shipit.yaml from the cloned workspace
+// before building the standby config.
+// ---------------------------------------------------------------------------
+
+describe("standby container resources propagated from shipit.yaml", () => {
+  let tmpDir: string;
+  let app: FastifyInstance;
+  let sessionManager: SessionManager;
+  let repoStore: RepoStore;
+  let containerManager: SessionContainerManager;
+  let fakeDocker: ReturnType<typeof createFakeDocker>;
+  let origGitTerminalPrompt: string | undefined;
+  let dbManager: DatabaseManager;
+
+  beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-standby-rsrc-"));
+    sessionManager = new SessionManager(dbManager);
+    repoStore = new RepoStore(dbManager);
+    origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
+    process.env.GIT_TERMINAL_PROMPT = "0";
+
+    fakeDocker = createFakeDocker();
+    containerManager = new SessionContainerManager({
+      docker: fakeDocker as any,
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
+      workerPort: 9100,
+      skipHealthCheck: true,
+      stackName: "shipit-test",
+    });
+
+    const credentialStore = createTestCredentialStore(tmpDir);
+
+    // Bare cache contains a shipit.yaml requesting 3 GiB / 2 CPU / 2048 pids.
+    const repoDir = getSharedRepoDirForUrl(tmpDir, REPO_URL);
+    createSharedRepo(repoDir, {
+      shipitYaml: "agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n",
+    });
+    repoStore.add(REPO_URL);
+    repoStore.setReady(REPO_URL);
+
+    app = await buildApp({
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      repoStore,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      credentialStore,
+      agentFactory: () => new FakeClaudeProcess() as any,
+      workspaceDir: tmpDir,
+      credentialsDir: tmpDir,
+      serveStatic: false,
+      sessionContainerManager: containerManager,
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+  });
+
+  afterEach(async () => {
+    dbManager.close();
+    if (origGitTerminalPrompt === undefined) delete process.env.GIT_TERMINAL_PROMPT;
+    else process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
+    await app.close();
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch { /* ignore */ }
+  });
+
+  it("standby container honors agent.memory/cpu/pids from shipit.yaml", async () => {
+    await waitFor(
+      () => !!repoStore.get(REPO_URL)?.warmSessionId,
+      10000,
+      "initial warm session",
+    );
+    const firstWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
+
+    // Claim → re-warm with { withStandby: true } reads shipit.yaml.
+    const encodedUrl = encodeURIComponent(REPO_URL);
+    await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
+
+    await waitFor(
+      () => {
+        const repo = repoStore.get(REPO_URL);
+        return !!repo?.warmSessionId && repo.warmSessionId !== firstWarmId;
+      },
+      10000,
+      "re-warmed session",
+    );
+    const standbySessionId = repoStore.get(REPO_URL)!.warmSessionId!;
+    await waitFor(
+      () => containerManager.isStandby(standbySessionId),
+      5000,
+      "standby ready",
+    );
+
+    // The fake docker captured the HostConfig passed to createContainer.
+    const standbyDocker = [...fakeDocker._containers.values()].find(
+      (c) => c.labels[CONTAINER_SESSION_ID_LABEL] === standbySessionId,
+    );
+    expect(standbyDocker).toBeDefined();
+    expect(standbyDocker!.hostConfig.Memory).toBe(3072 * 1024 * 1024);
+    expect(standbyDocker!.hostConfig.PidsLimit).toBe(2048);
+    // cpuQuota = cpu * 100_000 → 2.0 * 100_000 = 200_000.
+    expect(standbyDocker!.hostConfig.CpuQuota).toBe(200_000);
   }, 25000);
 });
