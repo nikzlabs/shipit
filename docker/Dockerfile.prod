@@ -24,7 +24,13 @@ RUN apt-get update && apt-get install -y git curl ca-certificates gnupg \
     && apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code @openai/codex
+# Bump this build-arg per deploy (deploy.sh sets it to $(date +%s)) so the
+# Claude/Codex CLI layer is rebuilt on every deploy, picking up the latest
+# published versions. The npm cache mount keeps the download itself fast.
+ARG NPM_GLOBALS_REBUILD=0
+RUN --mount=type=cache,target=/root/.npm \
+    echo "rebuild=${NPM_GLOBALS_REBUILD}" \
+ && npm install -g @anthropic-ai/claude-code @openai/codex
 
 WORKDIR /app
 

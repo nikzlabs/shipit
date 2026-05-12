@@ -250,6 +250,7 @@ export async function registerSessionRoutes(
           deps.runnerRegistry,
           deps.getSharedRepoDir,
           request.params.id,
+          deps.pruneSessionVolumes,
         );
         return result;
       } catch (err) {

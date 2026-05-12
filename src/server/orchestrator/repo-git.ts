@@ -65,6 +65,15 @@ export class RepoGit {
     // Touch the marker file
     fs.writeFileSync(markerPath, String(Date.now()));
     console.log("[git] Fetched bare cache:", this.repoDir);
+    // Run gc --auto so accumulated loose objects don't grow the bare cache
+    // unboundedly. --auto is cheap when thresholds aren't met (no-op);
+    // when they are, git repacks behind the scenes. Non-fatal — gc
+    // failure must not block the fetch path.
+    try {
+      await this.git.raw(["gc", "--auto"]);
+    } catch (err) {
+      console.warn("[git] gc --auto failed (non-fatal):", String(err));
+    }
   }
 
   /**

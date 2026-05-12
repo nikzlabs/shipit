@@ -30,6 +30,16 @@ services:
       - DOCKER_NETWORK=shipit
       - SESSION_WORKER_IMAGE=shipit-session-worker:prod
       - DOCKER_STACK=shipit
+      # Disk janitor — see src/server/orchestrator/disk-janitor.ts. Runs
+      # once at orchestrator startup (no periodic timer). archiveSession
+      # already drops the workspace at archive time; the 30-day workspace
+      # sweep is a safety net for archives that failed mid-flight or
+      # predate the cleanup code. Chat history, usage, and session
+      # metadata are always preserved (unarchive re-clones from the bare
+      # cache). Cache cutoff matches the in-code default; listed here for
+      # visibility / easy per-host override.
+      - DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=30
+      - DISK_JANITOR_CACHE_DAYS=30
     networks:
       - shipit
     logging:

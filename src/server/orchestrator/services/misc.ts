@@ -82,9 +82,33 @@ export async function fullReset(
   workspaceDir: string,
   repoStore?: RepoStore,
   databaseManager?: DatabaseManager,
+  composeStopPromises?: Map<string, Promise<void>>,
 ): Promise<void> {
-  // Dispose all runners
+  // Signal compose-stop to drop named volumes for every active session
+  // before we tear them down — full reset is the user saying "wipe
+  // everything," so per-session named volumes (node_modules caches, etc.)
+  // must not survive.
+  for (const sid of runnerRegistry.ids()) {
+    const runner = runnerRegistry.get(sid);
+    if (runner && "removeVolumesOnDispose" in runner) {
+      (runner as { removeVolumesOnDispose: boolean }).removeVolumesOnDispose = true;
+    }
+  }
+
+  // Dispose all runners. Each runner.dispose() fires its "disposed" event
+  // synchronously, which causes `trackComposeStop` to populate
+  // `composeStopPromises` with the in-flight `docker compose down
+  // --volumes` for that session.
   runnerRegistry.disposeAll();
+
+  // Wait for those compose-downs to finish before we wipe the workspace
+  // directory and clear the DB. Without this, a long-running compose-down
+  // can still be holding volumes the user expects to be gone, and the
+  // subsequent fs.rm of the workspace dir races the compose tool that's
+  // also reading it.
+  if (composeStopPromises && composeStopPromises.size > 0) {
+    await Promise.allSettled([...composeStopPromises.values()]);
+  }
 
   // Clear all database tables first (before deleting the DB file on disk).
   // This keeps the in-memory prepared statements consistent for the remainder

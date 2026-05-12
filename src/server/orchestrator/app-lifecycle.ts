@@ -958,7 +958,8 @@ export function adoptExistingServiceManager(
     }
     mgr.off("stack_error", stackErrorListener);
     serviceManagers.delete(runner.sessionId);
-    trackComposeStop(composeStopPromises, runner.sessionId, mgr);
+    const removeVolumes = isContainerRunner(runner) && runner.removeVolumesOnDispose;
+    trackComposeStop(composeStopPromises, runner.sessionId, mgr, { removeVolumes });
   });
 }
 
@@ -987,9 +988,10 @@ const COMPOSE_STOP_WAIT_TIMEOUT_MS = 15_000;
 export function trackComposeStop(
   composeStopPromises: Map<string, Promise<void>>,
   sessionId: string,
-  mgr: { stop: () => Promise<void> },
+  mgr: { stop: (opts?: { removeVolumes?: boolean }) => Promise<void> },
+  opts: { removeVolumes?: boolean } = {},
 ): void {
-  const stopPromise = mgr.stop()
+  const stopPromise = mgr.stop(opts)
     .catch((err: unknown) => {
       console.error(`[compose:${sessionId}] Failed to stop compose stack:`, err);
     })
@@ -1249,7 +1251,8 @@ function setupServiceManager(
     // session awaits it before calling mgr.start(). Same project name
     // (shipit-{sid12}) means an old `compose down` running in parallel
     // with the new `compose up` would tear down the new agent container.
-    trackComposeStop(composeStopPromises, runner.sessionId, mgr);
+    const removeVolumes = isContainerRunner(runner) && runner.removeVolumesOnDispose;
+    trackComposeStop(composeStopPromises, runner.sessionId, mgr, { removeVolumes });
   });
 
   // Start the compose stack asynchronously — the full sequence (compose up →
@@ -1317,6 +1320,15 @@ export interface PrPollerDeps {
   runnerRegistry: SessionRunnerRegistry;
   createRepoGit: (dir: string) => RepoGit;
   getBareCacheDir: (repoUrl: string) => string;
+  /**
+   * Forwarded to `markMergedAndPruneExcess` so the auto-archive of merged
+   * sessions reclaims per-session named volumes immediately. The runner is
+   * usually already idle-disposed by the time the poller fires, so without
+   * this the named volumes would leak until the next orchestrator restart
+   * (the disk-janitor sweep catches them eventually, but slower).
+   * Omitted in test mode.
+   */
+  pruneSessionVolumes?: (sessionId: string) => Promise<void>;
 }
 
 /**
@@ -1327,7 +1339,7 @@ export function createPrStatusPoller(
 ): PrStatusPoller {
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
-    runnerRegistry, getBareCacheDir,
+    runnerRegistry, getBareCacheDir, pruneSessionVolumes,
   } = pollerDeps;
 
   const prStatusPoller = deps.prStatusPoller ?? new PrStatusPoller({
@@ -1350,7 +1362,7 @@ export function createPrStatusPoller(
     onMergeDetectedCb: async (sessionId) => {
       try {
         const result = await markMergedAndPruneExcess(
-          sessionManager, runnerRegistry, getBareCacheDir, sessionId,
+          sessionManager, runnerRegistry, getBareCacheDir, sessionId, pruneSessionVolumes,
         );
         sseBroadcast("session_list", { sessions: result.sessions });
         console.log(`[pr-poller] Post-merge: marked ${sessionId} as merged`);

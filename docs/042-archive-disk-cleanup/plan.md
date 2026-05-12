@@ -1,182 +1,111 @@
 ---
-status: planned
+status: done
 ---
-# 042 — Archive Disk Cleanup
+# 042 — Disk Cleanup
 
-## Problem
+ShipIt's host can fill up from several independent sources: BuildKit cache that grows with every image build, dangling tagged images, orphan compose volumes left behind when sessions get archived, archived workspaces that hold `node_modules`/`.next`/build output forever, and unreferenced `repo-cache`/`dep-cache` bare clones. This doc records the implemented cleanup design — three orthogonal surfaces, split so each prune runs where the leak actually happens.
 
-Archiving a standalone session sets `archived: true` in metadata but **never deletes the workspace directory**. Over time, archived sessions accumulate and consume disk indefinitely. The only way to reclaim space today is `full_reset`, which destroys everything.
+## What was leaking on prod (2026-05)
 
-Worktree sessions are better — `git worktree remove` cleans up the checkout on archive — but even they leave heavy artifacts in the shared repo clone.
+The Hetzner box reached 79% full (~114 GB / 150 GB):
 
-A single session with a Node.js project can easily consume 500 MB+ from `node_modules` alone. A user with 10 archived sessions could be sitting on 5+ GB of dead weight.
+| Source | Size | Cause |
+|--------|------|-------|
+| `/var/lib/containerd` BuildKit cache | ~79 GB | `docker compose build --no-cache --pull` on every deploy + nothing pruning the builder |
+| `/var/lib/docker/volumes` orphan volumes | ~28 GB | `docker compose down` without `--volumes`; per-session named volumes leaked on archive |
+| `shipit_workspace/sessions/` | ~4.8 GB | Archived standalone workspaces never reclaimed |
+| `shipit_workspace/dep-cache/` | ~2.4 GB | Shared npm cache never pruned |
+| `shipit_workspace/repo-cache/` | ~120 MB | Bare clones never pruned |
 
-### What gets left behind today
+The biggest hitters (BuildKit + orphan volumes) were both caused by *our* code paths, not by user activity.
 
-| Artifact | Typical size | Cleaned on archive? |
-|----------|-------------|---------------------|
-| `node_modules/` | 200 MB – 2 GB | No |
-| `.git/` (standalone) | 50 – 500 MB | No |
-| `.next/` | 50 – 500 MB | No |
-| `dist/`, `build/` | 10 – 100 MB | No |
-| `.cache/`, `.vite/` | 10 – 50 MB | No |
-| Project source files | 1 – 50 MB | No (standalone), Yes (worktree) |
-| Chat history JSON | < 1 MB | No |
-| Thread data JSON | < 1 MB | No |
+## Design — three surfaces
 
----
+Each prune is owned by the layer closest to where the leak originates.
 
-## Design
+### 1. Build-time prune — `deployment/hetzner/deploy.sh`
 
-Two-tier cleanup: **aggressive on archive** (delete heavy artifacts immediately) and **full delete option** for users who want to reclaim all space.
+BuildKit cache and dangling images only grow as a side effect of `docker compose build`. The deploy script that triggers the build also owns the prune that follows it:
 
-### Tier 1: Heavy artifact cleanup on archive (automatic)
-
-When a session is archived, immediately delete known-heavy generated directories from the workspace. These are always regenerable — `npm install` recreates `node_modules`, builds recreate `dist`, etc.
-
-**Directories to delete**:
-
-```typescript
-const HEAVY_ARTIFACTS = [
-  "node_modules",
-  ".next",
-  "dist",
-  "build",
-  ".cache",
-  ".vite",
-  ".turbo",
-  ".parcel-cache",
-  "__pycache__",
-  ".pytest_cache",
-  "venv",
-  ".venv",
-  "target",        // Rust
-  "vendor",        // Go (when not using modules)
-];
+```bash
+docker image prune -af --filter "until=168h" || true
+docker builder prune -f --filter "until=72h" || true
 ```
 
-This list aligns with what `file-tree.ts` already skips in `SKIP_DIRS` (plus common equivalents from other ecosystems). These are all generated/cacheable — deleting them loses nothing that can't be recreated.
+Also changed in `deploy.sh`:
 
-**Implementation**: In `handleArchiveSession`, after marking `archived: true`, walk the session's workspace directory one level deep and `fs.rm()` any directory matching `HEAVY_ARTIFACTS`.
+- **`--no-cache` is no longer the default.** It used to be passed unconditionally, which is what caused the 80 GB BuildKit snowball — every deploy created a fresh duplicate set of intermediate layers. Now cache is reused; `FORCE_REBUILD=1 deploy.sh` opts back in to a clean rebuild.
+- **`NPM_GLOBALS_REBUILD=$(date +%s)` is passed every deploy.** Both prod Dockerfiles declare `ARG NPM_GLOBALS_REBUILD` and reference it inside the `npm install -g @anthropic-ai/claude-code @openai/codex` RUN line. The ARG value changes every deploy, so just that one layer is invalidated and reruns — picking up the latest published Claude/Codex CLI versions while everything around it stays cache-warm. The existing `--mount=type=cache,target=/root/.npm` keeps the npm download itself fast.
 
-```typescript
-// In session-handlers.ts, after ctx.sessionManager.archive(msg.sessionId):
-if (sessionToArchive?.workspaceDir) {
-  await cleanHeavyArtifacts(sessionToArchive.workspaceDir);
-}
+### 2. Per-session teardown — drop named volumes when a session is going away for good
 
-async function cleanHeavyArtifacts(workspaceDir: string): Promise<void> {
-  for (const name of HEAVY_ARTIFACTS) {
-    const target = path.join(workspaceDir, name);
-    try {
-      await fs.rm(target, { recursive: true, force: true });
-    } catch {
-      // Best-effort — directory may not exist or may be locked
-    }
-  }
-}
+`ServiceManager.stop({ removeVolumes: true })` appends `--volumes` to `docker compose down`. The flag is signaled by a `removeVolumesOnDispose` boolean on `ContainerSessionRunner`, set by code paths that genuinely mean "this session is gone":
+
+- `archiveSession` (services/session.ts)
+- `fullReset` (services/misc.ts)
+
+Code paths that mean "tear down but the user can resume" — idle eviction, `restartAgent` recovery, config reconciles — do **not** set the flag, so `docker compose down` runs without `--volumes` and the user keeps their build state.
+
+For the volume-prune-by-label safety net in surface 3 to work, every user-declared top-level named volume in the compose override is now stamped with two labels:
+
+```yaml
+volumes:
+  node_modules:
+    labels:
+      shipit-managed: "true"
+      shipit-session: "<sessionId>"
 ```
 
-**Scope**: Only cleans the top-level workspace directory. Doesn't recurse into subdirectories looking for nested `node_modules` — that would be slow and the top-level is where 90%+ of the size lives.
+`shipit-managed=true` scopes the janitor's `docker volume prune` to volumes ShipIt created; it never touches volumes that belong to the user's other Docker workloads.
 
-### Tier 2: Full workspace deletion (optional, user-triggered)
+### 3. Startup janitor — `src/server/orchestrator/disk-janitor.ts`
 
-Add a "Delete session" option (distinct from archive) that removes the workspace directory entirely. This is for users who want to reclaim all space and don't need the source files.
+The janitor runs **once at orchestrator startup** (fire-and-forget; never blocks the event loop). No periodic timer — every item it sweeps is recovering from a failure earlier in the lifecycle (archive teardown crashed, fs.rm failed, repo removal didn't cascade), and none accumulate steadily, so running on a 6-hour timer would mostly burn cycles doing nothing. Startup is the natural "we just came back from possibly-unclean shutdown — clean up after the previous run" moment. ShipIt's prod box auto-deploys on push (so startup is frequent in practice); long-uptime self-hosted boxes get the sweep on their next restart.
 
-**When available**: Only on already-archived sessions. Archive is the soft delete; full delete is the hard delete.
+It covers the leaks the two layers above can't see:
 
-**What it deletes**:
-- The entire `/workspace/sessions/{uuid}/` directory
-- Chat history file (`.vibe-chat-history/{sessionId}.json` and any thread variants)
-- Thread data file (`.vibe-threads/{sessionId}.json`)
-- Usage records for the session (from `.shipit-usage.json`)
-- Session metadata entry from `.vibe-sessions.json`
+- **Orphan `shipit-managed` compose volumes.** Sessions can be archived in the gap between deploys; `docker compose down --volumes` should have dropped the volume but if it failed (compose-stack already torn down, daemon restart mid-operation) the label-scoped prune sweeps it next tick. `docker volume prune -f --filter "label=shipit-managed=true"`.
+- **Orphan `repo-cache/<hash>` and `dep-cache/<hash>` directories.** Each tick reads `repoStore.list()`, builds the set of live hashes (where `last_used_at` is within `DISK_JANITOR_CACHE_DAYS`, default 30), and `fs.rm`s any cache subdir whose hash isn't in that set.
+- **Archived workspaces** (safety net, opt-in). `archiveSession` already drops `workspaceDir` at archive time for every session — all sessions in the current product have a `remoteUrl` and can re-clone from the bare cache on unarchive. The janitor's workspace sweep exists as a backstop: archives that failed mid-flight (worker crash, fs error), legacy sessions from before the cleanup code shipped, or any future edge case where the workspace outlives the archive. Enabled via `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=<n>` (sessions older than `<n>` days). **Conversation data is always preserved** — chat history rows, usage rows, session metadata, PR snapshot. Only the on-disk git checkout + `node_modules` go. Sessions without a `remoteUrl` are skipped defensively (no remote to re-clone from). Default `0` (sweep disabled). Prod opts in via `docker-compose.yml`: `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=30`.
 
-After full delete, the session disappears completely — it's no longer visible anywhere.
+Build-time prunes (BuildKit cache, dangling images) deliberately **do not** live in the janitor — they're owned by `deploy.sh`. They only grow as a side effect of builds, so pruning at deploy time is causal.
 
-**Implementation**: New WS message `delete_session { sessionId }`.
+### 4. git gc on bare caches
 
----
+`RepoGit.fetchCache()` runs `git gc --auto` after each successful fetch. `--auto` is a no-op unless git's thresholds for loose-object accumulation are met, so the cost is essentially zero in steady state and amortizes the repack when it matters.
 
-## Changes
+## Production configuration
 
-### Server
+`deployment/hetzner/docker-compose.yml` sets the janitor knobs explicitly for visibility:
 
-**`src/server/ws-handlers/session-handlers.ts`**:
-- Add `cleanHeavyArtifacts()` call in `handleArchiveSession` after marking archived
-- Add new `handleDeleteSession()` handler for full deletion
+```yaml
+- DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=30
+- DISK_JANITOR_CACHE_DAYS=30
+```
 
-**`src/server/types.ts`**:
-- Add `delete_session` to `WsClientMessage` union
-- Add `session_deleted` to `WsServerMessage` union (confirms deletion, triggers session list refresh)
+Self-hosted deployments using their own compose file get the safe defaults (no archive sweep, 30-day cache cutoff) unless they opt in.
 
-**`src/server/index.ts`**:
-- Add `case "delete_session"` to switch dispatcher
-
-**`src/server/sessions.ts`**:
-- Add `SessionManager.remove(sessionId)` method that fully removes the entry (not just archive flag)
-
-**`src/server/chat-history.ts`**:
-- Add `ChatHistoryManager.delete(sessionId)` to remove all chat history files for a session
-
-### Client
-
-**Sidebar**: Add "Delete permanently" option in the context menu for archived sessions (not for active ones — must archive first).
-
-### Constants
-
-Extract `HEAVY_ARTIFACTS` to a shared constant (e.g., in `src/server/constants.ts` or at the top of `session-handlers.ts`). Could unify with `SKIP_DIRS` in `file-tree.ts` to keep the lists in sync, though the overlap isn't exact (`.git` and `.vibe-chat-history` are in `SKIP_DIRS` but should not be cleaned as "heavy artifacts" on archive).
-
----
-
-## Edge Cases
-
-### 1. Archive while agent is running (post-041)
-
-After doc 041 lands, archiving a session with a running agent disposes the SessionRunner first (kills agent), then cleans artifacts. The agent may have created files in `node_modules` etc. that are still being written — `fs.rm` with `force: true` handles this.
-
-### 2. Archive a worktree session
-
-Worktree cleanup already removes the checkout directory via `git worktree remove`. Heavy artifact cleanup runs **before** worktree removal (since the directory still exists). If worktree removal also deletes the directory, the artifact cleanup is a no-op (already gone). Order: clean artifacts → remove worktree → delete branch.
-
-### 3. Shared repo cleanup
-
-When the last session for a shared repo is archived, the entire `/workspace/repos/{hash}/` directory is already deleted. Heavy artifact cleanup of the individual session directory happens first, reducing the size before the full rm. No special handling needed.
-
-### 4. Full delete of a session that's currently viewed
-
-If another tab is viewing a session that gets fully deleted, the viewer should detach and show an error/redirect to home. The `session_deleted` broadcast message triggers this on all connected clients.
-
-### 5. Disk permissions / locked files
-
-On some systems, files in `node_modules/.cache` or build output may have restricted permissions. `fs.rm` with `force: true` handles most cases. If deletion fails, log a warning and continue — best-effort cleanup is better than no cleanup.
-
----
-
-## Testing
-
-### Unit tests
-- `cleanHeavyArtifacts()` deletes matching directories, ignores missing ones
-- `cleanHeavyArtifacts()` doesn't delete non-matching directories (source files safe)
-- `SessionManager.remove()` fully removes entry
-
-### Integration tests
-- Archive session triggers artifact cleanup (verify `node_modules` deleted)
-- Archive session preserves source files
-- `delete_session` removes workspace directory, chat history, threads
-- `delete_session` on non-archived session returns error
-- `delete_session` broadcasts updated session list
-- Worktree session archive: artifacts cleaned before worktree removal
-
----
-
-## Key Files
+## Key files
 
 | File | Role |
 |------|------|
-| `src/server/ws-handlers/session-handlers.ts` | Archive cleanup + delete handler |
-| `src/server/sessions.ts` | `remove()` method |
-| `src/server/chat-history.ts` | `delete()` method |
-| `src/server/types.ts` | New message types |
-| `src/server/index.ts` | Wire `delete_session` |
-| `src/client/components/Sidebar.tsx` | "Delete permanently" UI |
+| `deployment/hetzner/deploy.sh` | Build-cache-reuse default, `FORCE_REBUILD` opt-in, `NPM_GLOBALS_REBUILD` per-deploy, post-build `image prune` + `builder prune` |
+| `deployment/hetzner/docker-compose.yml` | Sets `DISK_JANITOR_*` env vars for prod |
+| `docker/Dockerfile.prod`, `docker/Dockerfile.session-worker.prod` | `ARG NPM_GLOBALS_REBUILD` declarations |
+| `src/server/orchestrator/service-manager.ts` | `stop({ removeVolumes })` plumbs `--volumes` into `composeDown` |
+| `src/server/orchestrator/container-session-runner.ts` | `removeVolumesOnDispose` flag |
+| `src/server/orchestrator/app-lifecycle.ts` | Disposed-handler reads the flag and passes `{ removeVolumes }` to `trackComposeStop` |
+| `src/server/orchestrator/services/session.ts` | `archiveSession` sets `removeVolumesOnDispose = true` before disposing |
+| `src/server/orchestrator/services/misc.ts` | `fullReset` sets the flag on every active runner before `disposeAll()` |
+| `src/server/orchestrator/compose-generator.ts` | Stamps `shipit-managed` / `shipit-session` labels on user-declared volumes; `parseUserNamedVolumes()` |
+| `src/server/orchestrator/disk-janitor.ts` | Periodic timer: volume prune, archived workspace sweep, cache sweep |
+| `src/server/orchestrator/index.ts` | Wires `startDiskJanitor` next to the idle enforcer; cleans up in `onClose` |
+| `src/server/orchestrator/repo-git.ts` | `git gc --auto` after `fetchCache` |
+| `src/server/orchestrator/disk-janitor.test.ts` | Janitor unit tests (stubbed `runDocker`) |
+| `src/server/orchestrator/service-manager.test.ts` | `stop({ removeVolumes })` plumbing test |
+
+## Things deliberately not implemented
+
+- **SQLite `messages` retention / VACUUM.** Archived sessions keep their full `tool_use` payloads. Doable but needs its own design call on what "retention" means for tool-result blobs vs. text content. Separate doc when it becomes a problem.
+- **Per-session "Reclaim disk" button.** A manual purge action for individual archived sessions was considered and dropped: all sessions have a `remoteUrl`, `archiveSession` already drops the workspace at archive time, and the time-based janitor sweep covers the remaining edge cases. Nothing left for a user to manually reclaim.
+- **Heavy-artifact cleanup at archive time** (delete `node_modules`/`.next`/`dist` inline during archive). The earlier draft of this doc proposed this; superseded by the janitor's scheduled workspace sweep, which is opt-in and respects the "keep conversations indefinitely" principle.

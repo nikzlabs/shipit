@@ -242,7 +242,15 @@ export async function registerBootstrapRoutes(
     "/api/reset",
     async (_request, reply) => {
       try {
-        await fullReset(deps.sessionManager, deps.usageManager, deps.runnerRegistry, deps.workspaceDir, deps.repoStore, deps.databaseManager);
+        await fullReset(
+          deps.sessionManager,
+          deps.usageManager,
+          deps.runnerRegistry,
+          deps.workspaceDir,
+          deps.repoStore,
+          deps.databaseManager,
+          deps.composeStopPromises,
+        );
         deps.sseBroadcast("full_reset_complete", {});
         return { success: true };
       } catch (err) {

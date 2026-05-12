@@ -21,6 +21,7 @@ import type { ComposeConfig } from "../shared/shipit-config.js";
 import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import {
   parseComposeFile,
+  parseUserNamedVolumes,
   generateComposeOverride,
   writeComposeOverride,
   type ComposeOverrideOptions,
@@ -441,12 +442,14 @@ export class ServiceManager extends EventEmitter {
     await this.syncSecrets(parsedServices);
 
     // Generate override
+    const userNamedVolumes = parseUserNamedVolumes(composePath);
     const overrideOpts: ComposeOverrideOptions = {
       sessionId: this.sessionId,
       composeConfig: this.composeConfig,
       workspaceVolume: this.workspaceVolume,
       workspaceSubpath: this.workspaceSubpath,
       stackName: this.stackName,
+      userNamedVolumes,
       ...(this.dockerSecretsBuild ? { dockerSecrets: this.dockerSecretsBuild } : {}),
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
@@ -640,8 +643,13 @@ export class ServiceManager extends EventEmitter {
 
   /**
    * Tear down the entire compose stack.
+   *
+   * Pass `{ removeVolumes: true }` from session-deletion / full-reset paths
+   * so per-stack named volumes (e.g. user-declared `node_modules` caches) are
+   * dropped along with the containers. Idle-eviction and reconcile pass the
+   * default `false` so the user can resume without losing build state.
    */
-  async stop(): Promise<void> {
+  async stop(opts: { removeVolumes?: boolean } = {}): Promise<void> {
     this._disposed = true;
     this.stopPolling();
     this.cancelAllRetries();
@@ -653,7 +661,7 @@ export class ServiceManager extends EventEmitter {
     }
 
     try {
-      await this.composeDown();
+      await this.composeDown({ removeVolumes: opts.removeVolumes ?? false });
     } catch {
       // Best-effort cleanup
     }
@@ -694,9 +702,12 @@ export class ServiceManager extends EventEmitter {
     // content can change without regenerating. We always regenerate when
     // Docker-secrets mode is active to be safe.
     if (this.dockerSecretsBuild) {
+      const composePath = path.join(this.workspaceDir, this.composeConfig.file);
+      const userNamedVolumes = parseUserNamedVolumes(composePath);
       const overrideOpts: ComposeOverrideOptions = {
         sessionId: this.sessionId,
         composeConfig: this.composeConfig,
+        userNamedVolumes,
         ...(this.workspaceVolume ? { workspaceVolume: this.workspaceVolume } : {}),
         ...(this.workspaceSubpath ? { workspaceSubpath: this.workspaceSubpath } : {}),
         ...(this.stackName ? { stackName: this.stackName } : {}),
@@ -1315,9 +1326,11 @@ export class ServiceManager extends EventEmitter {
     return this.runCompose("stop", name);
   }
 
-  /** Run `docker compose down --remove-orphans`. */
-  private composeDown(): Promise<void> {
-    return this.runCompose("down", "--remove-orphans");
+  /** Run `docker compose down --remove-orphans`, optionally dropping volumes. */
+  private composeDown(opts: { removeVolumes: boolean }): Promise<void> {
+    const args = ["down", "--remove-orphans"];
+    if (opts.removeVolumes) args.push("--volumes");
+    return this.runCompose(...args);
   }
 
   /**
