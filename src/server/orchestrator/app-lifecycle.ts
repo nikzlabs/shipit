@@ -8,11 +8,10 @@ import type { GitManager } from "../shared/git.js";
 import simpleGit from "simple-git";
 import { generateBranchPrefix, repoUrlToHash, pushToOrigin } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
-import { SessionContainerManager } from "./session-container.js";
+import { SessionContainerManager, resolveAgentDockerLimits } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionRunnerFactory, SessionRunnerInterface } from "./session-runner.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
-import { resolveSessionConfig } from "../shared/session-config.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import type { SessionLoopDetector } from "./loop-detector.js";
@@ -105,14 +104,14 @@ export async function setupContainerManager(
       const rediscovered = await containerManager.rediscover(activeIds, (sessionId) => {
         const session = sessionManager.get(sessionId);
         if (!session?.workspaceDir) return undefined;
-        const cfg = resolveSessionConfig(session.workspaceDir);
+        const limits = resolveAgentDockerLimits(session.workspaceDir);
         return {
           workspaceDir: session.workspaceDir,
-          dockerAccess: cfg.capabilities.docker,
-          resourceLimits: cfg.capabilities.docker ? {
-            memory: cfg.resources.agent.memory * 1024 * 1024,
-            cpuQuota: cfg.resources.agent.cpu * 100_000,
-            pidsLimit: cfg.resources.agent.pids,
+          dockerAccess: limits.dockerAccess,
+          resourceLimits: limits.dockerAccess ? {
+            memory: limits.memoryLimit,
+            cpuQuota: limits.cpuQuota,
+            pidsLimit: limits.pidsLimit,
           } : undefined,
         };
       });
@@ -188,6 +187,70 @@ export interface RunnerFactoryDeps {
 }
 
 /**
+ * Single entry point for creating a container and wiring it to a runner.
+ *
+ * Both runner-factory paths that materialize a new container — the
+ * standby-fallback path (after the in-progress standby timed out) and the
+ * fresh-create path (no existing or stale container) — go through here.
+ * Keeping the [destroy-existing → build config → create → wire runner →
+ * handle failure] sequence in one place means the per-session resource
+ * limits and error-handling stay in lock-step across all real container
+ * creation flows.
+ *
+ * The warm-pool standby creator does NOT go through this helper because
+ * it produces a standby (no runner to wire) and reports failures
+ * differently — it uses `mgr.createStandby` + `mgr.buildConfigForWorkspace`
+ * directly.
+ */
+async function createContainerForRunner(opts: {
+  mgr: SessionContainerManager;
+  runner: ContainerSessionRunner;
+  sessionId: string;
+  /** Parent session dir (workspaceDir's parent — used for uploads mount etc). */
+  sessionDir: string;
+  workspaceDir: string;
+  credentialsDir: string;
+  depCacheDir?: string;
+  /** Destroy any existing (stale) container under this sessionId first. */
+  destroyExisting: boolean;
+  /** Optional qualifier appended to the failure broadcast (e.g. "from standby fallback"). */
+  failureContext?: string;
+  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+}): Promise<void> {
+  const { mgr, runner, sessionId } = opts;
+  try {
+    if (opts.destroyExisting) await mgr.destroy(sessionId);
+    const config = mgr.buildConfigForWorkspace({
+      sessionId,
+      sessionDir: opts.sessionDir,
+      workspaceDir: opts.workspaceDir,
+      credentialsDir: opts.credentialsDir,
+      depCacheDir: opts.depCacheDir,
+    });
+    const sc = await mgr.create(config);
+    console.log(`[container] Container ready for ${sessionId} at ${sc.workerUrl}`);
+    runner.setWorkerUrl(sc.workerUrl);
+    mgr.clearCreateError(sessionId);
+  } catch (err) {
+    const errMsg = getErrorMessage(err);
+    console.error(`[container] Failed to start container for ${sessionId}:`, errMsg);
+    // Record so the health endpoint can surface it to the UI — without this
+    // async creation failures from the fire-and-forget block are invisible.
+    mgr.recordCreateError(sessionId, errMsg);
+    // Mirror into the per-session ring — `lastCreateError` is wiped on
+    // the next successful create, but a copied diagnostic still shows the
+    // failure in recentLogs.
+    const qualifier = opts.failureContext ? ` (${opts.failureContext})` : "";
+    opts.broadcastLog?.(sessionId, "server", `Container creation failed${qualifier}: ${errMsg}`);
+    // Forced — container start failed, the runner is unusable and must be
+    // torn down. The agent isn't running on any worker yet, but if some
+    // race ever flipped `_isRunning` (early enqueue, etc.), an unforced
+    // dispose would silently no-op and leak the registry entry.
+    runner.dispose({ force: true });
+  }
+}
+
+/**
  * Build the effective SessionRunnerFactory.
  *
  * - `containerized` (production): creates ContainerSessionRunner instances
@@ -255,106 +318,58 @@ export function buildRunnerFactory(
       });
 
       void (async () => {
-        try {
-          const deadline = Date.now() + 30_000;
-          while (Date.now() < deadline) {
-            const sc = mgr.get(o.sessionId);
-            if (sc?.status === "running") {
-              mgr.claimStandby(o.sessionId);
-              console.log(`[container] Standby container ready for ${o.sessionId} at ${sc.workerUrl}`);
-              runner.setWorkerUrl(sc.workerUrl);
-              mgr.clearCreateError(o.sessionId);
-              return;
-            }
-            if (!sc) break; // Creation failed and entry was removed
-            await new Promise((r) => setTimeout(r, 500));
+        // Poll the in-progress standby until it's running or the deadline
+        // expires. Standby `create()` updates the SessionContainer in-place
+        // so polling `mgr.get()` sees the status flip from starting→running.
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline) {
+          const sc = mgr.get(o.sessionId);
+          if (sc?.status === "running") {
+            mgr.claimStandby(o.sessionId);
+            console.log(`[container] Standby container ready for ${o.sessionId} at ${sc.workerUrl}`);
+            runner.setWorkerUrl(sc.workerUrl);
+            mgr.clearCreateError(o.sessionId);
+            return;
           }
-          // Standby creation failed or timed out — create fresh container.
-          console.log(`[container] Standby not ready, creating fresh container for ${o.sessionId}...`);
-          const sessionConfig = resolveSessionConfig(o.sessionDir);
-          const config = mgr.buildConfig({
-            sessionId: o.sessionId,
-            sessionDir: parentSessionDir,
-            workspaceDir: o.sessionDir,
-            credentialsDir,
-            depCacheDir: o.depCacheDir,
-            memoryLimit: sessionConfig.resources.agent.memory * 1024 * 1024,
-            cpuQuota: Math.round(sessionConfig.resources.agent.cpu * 100_000),
-            pidsLimit: sessionConfig.resources.agent.pids,
-            dockerAccess: sessionConfig.capabilities.docker,
-          });
-          const sc = await mgr.create(config);
-          console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
-          runner.setWorkerUrl(sc.workerUrl);
-          mgr.clearCreateError(o.sessionId);
-        } catch (err) {
-          const errMsg = getErrorMessage(err);
-          console.error(`[container] Failed to start container for ${o.sessionId}:`, errMsg);
-          mgr.recordCreateError(o.sessionId, errMsg);
-          // Mirror into the per-session ring — `lastCreateError` is wiped
-          // on the next successful create, but a copied diagnostic still
-          // shows the failure in recentLogs.
-          if (broadcastLog) {
-            broadcastLog(o.sessionId, "server", `Container creation failed (from standby fallback): ${errMsg}`);
-          }
-          // Forced — container start failed, the runner is unusable and must
-          // be torn down. The agent isn't actually running on a worker yet.
-          runner.dispose({ force: true });
+          if (!sc) break; // Creation failed and entry was removed
+          await new Promise((r) => setTimeout(r, 500));
         }
+        // Standby creation failed or timed out — fall back to a fresh container.
+        console.log(`[container] Standby not ready, creating fresh container for ${o.sessionId}...`);
+        await createContainerForRunner({
+          mgr, runner,
+          sessionId: o.sessionId,
+          sessionDir: parentSessionDir,
+          workspaceDir: o.sessionDir,
+          credentialsDir,
+          depCacheDir: o.depCacheDir,
+          destroyExisting: false,
+          failureContext: "from standby fallback",
+          broadcastLog,
+        });
       })();
 
       return runner;
     }
 
-    // Build config for fresh container creation.
-    const sessionConfig = resolveSessionConfig(o.sessionDir);
-    const config = mgr.buildConfig({
-      sessionId: o.sessionId,
-      sessionDir: parentSessionDir,
-      workspaceDir: o.sessionDir,
-      credentialsDir,
-      depCacheDir: o.depCacheDir,
-      memoryLimit: sessionConfig.resources.agent.memory * 1024 * 1024,
-      cpuQuota: Math.round(sessionConfig.resources.agent.cpu * 100_000),
-      pidsLimit: sessionConfig.resources.agent.pids,
-      dockerAccess: sessionConfig.capabilities.docker,
-    });
+    // Fresh-create path: no existing container, or a stale (stopping/stopped) one.
     const runner = new ContainerSessionRunner({
       sessionId: o.sessionId,
       sessionDir: o.sessionDir,
       defaultAgentId: o.defaultAgentId,
       workerUrl: "http://0.0.0.0:0", // placeholder — updated after container starts
     });
-
-    // If a stale container exists (stopping/stopped), destroy it first.
     console.log(`[container] ${existing ? "Replacing stale" : "Creating"} container for session ${o.sessionId}...`);
-    void (async () => {
-      try {
-        if (existing) await mgr.destroy(o.sessionId);
-        const sc = await mgr.create(config);
-        console.log(`[container] Container ready for ${o.sessionId} at ${sc.workerUrl}`);
-        runner.setWorkerUrl(sc.workerUrl);
-        mgr.clearCreateError(o.sessionId);
-      } catch (err) {
-        const errMsg = getErrorMessage(err);
-        console.error(`[container] Failed to start container for ${o.sessionId}:`, errMsg);
-        // Record the error so the health endpoint can surface it to the UI.
-        // Without this, async creation failures from the fire-and-forget block
-        // are invisible to the client — the user sees "Restarting…" forever.
-        mgr.recordCreateError(o.sessionId, errMsg);
-        // Also mirror into the per-session ring — `lastCreateError` is
-        // wiped on the next successful create, but a copied diagnostic
-        // still shows the failure in recentLogs.
-        if (broadcastLog) {
-          broadcastLog(o.sessionId, "server", `Container creation failed: ${errMsg}`);
-        }
-        // Forced — container start failed, the runner is unusable and must be
-        // torn down. The agent isn't running on any worker yet, but if some
-        // race ever flipped `_isRunning` (early enqueue, etc.), an unforced
-        // dispose would silently no-op and leak the registry entry.
-        runner.dispose({ force: true });
-      }
-    })();
+    void createContainerForRunner({
+      mgr, runner,
+      sessionId: o.sessionId,
+      sessionDir: parentSessionDir,
+      workspaceDir: o.sessionDir,
+      credentialsDir,
+      depCacheDir: o.depCacheDir,
+      destroyExisting: !!existing,
+      broadcastLog,
+    });
 
     return runner;
   }) : undefined;
@@ -1628,27 +1643,21 @@ export function createWarmPool(
           const realCount = containerManager.size - containerManager.standbyCount;
           const maxIdle = credentialStore.getMaxIdleContainers();
           if (realCount < maxIdle) {
-            // Read the workspace's shipit.yaml so the standby container
-            // is provisioned with the user's declared agent resources
-            // (memory/cpu/pids) and docker-access capability. Without
-            // this, `buildConfig` falls back to the manager's defaults
-            // (1 GB / 0.5 CPU / 256 pids) — so a repo declaring
-            // `agent.memory: 3072` would get a 1 GB container from the
-            // warm pool, OOMing on first turn when npm install + claude
-            // both run inside the under-provisioned cgroup. The
-            // non-warm runner-factory path already does this read
-            // (app-lifecycle.ts:311); the warm path was missing it.
-            const sessionConfig = resolveSessionConfig(workspaceDir);
-            const config = containerManager.buildConfig({
+            // `buildConfigForWorkspace` reads shipit.yaml so the standby
+            // container is provisioned with the user's declared agent
+            // resources (memory/cpu/pids) and docker-access capability.
+            // Without this entry point, plain `buildConfig` falls back to
+            // the manager's defaults (1 GB / 0.5 CPU / 256 pids) — so a
+            // repo declaring `agent.memory: 3072` would get a 1 GB
+            // container from the warm pool, OOMing on first turn when
+            // npm install + claude both run inside the under-provisioned
+            // cgroup.
+            const config = containerManager.buildConfigForWorkspace({
               sessionId: appSessionId,
               sessionDir,
               workspaceDir,
               credentialsDir,
               depCacheDir: getDepCacheDir(repoUrl),
-              memoryLimit: sessionConfig.resources.agent.memory * 1024 * 1024,
-              cpuQuota: Math.round(sessionConfig.resources.agent.cpu * 100_000),
-              pidsLimit: sessionConfig.resources.agent.pids,
-              dockerAccess: sessionConfig.capabilities.docker,
             });
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
             containerManager.createStandby(config).then(async (sc) => {
