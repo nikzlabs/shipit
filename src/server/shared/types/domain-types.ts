@@ -54,7 +54,7 @@ export interface RepoInfo {
 
 // ---- Doc types ----
 
-export type DocStatus = "planned" | "in-progress" | "done" | "paused";
+export type DocStatus = "planned" | "in-progress" | "done" | "paused" | "rejected";
 
 /**
  * Priority hint for `planned` docs — used to answer "which planned feature is
