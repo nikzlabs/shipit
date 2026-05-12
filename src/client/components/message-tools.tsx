@@ -49,6 +49,13 @@ export function ToolCallGroup({ items, isStreaming }: {
 }
 
 export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped, planContent }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean; planContent?: string }) {
+  // IMPORTANT: all hooks must be called before any conditional `return` below.
+  // `tool.name` and `tool.input` can change between renders while a tool is
+  // streaming in (e.g. `AskUserQuestion` only matches once `input.questions`
+  // arrives as an array), and any branch that returns early before this hook
+  // would change the hook count across renders → React error #310.
+  const [showModal, setShowModal] = useState(false);
+
   // Show a spinner on the last tool when the message is still streaming
   const inProgress = isLast && isStreaming && !result;
   const hasResult = !!result;
@@ -113,7 +120,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   }
 
   // Fallback: compact one-liner for non-file tools, with optional tool result
-  const [showModal, setShowModal] = useState(false);
+  // (showModal state is hoisted to the top of the component — see comment there)
 
   // Build a summary of the command/input for the tool line
   const commandText = "command" in tool.input && tool.input.command
