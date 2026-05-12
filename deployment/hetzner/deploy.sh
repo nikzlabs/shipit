@@ -34,14 +34,24 @@ docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit
 docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
 
 # Clean up dangling images and stale builder cache to reclaim disk.
-# IMPORTANT: do NOT use `-a` here. `docker image prune -a` deletes any
-# image without a running container, and the session-worker image only
-# runs on-demand (no container between sessions) — so `-a` deletes the
-# image the orchestrator needs to spawn new sessions. `-f` alone prunes
-# only dangling (untagged) images, which is what we actually want:
+#
+# IMPORTANT: do NOT use `-a` on `image prune`. `docker image prune -a`
+# deletes any image without a running container, and the session-worker
+# image only runs on-demand (no container between sessions) — so `-a`
+# deletes the image the orchestrator needs to spawn new sessions. `-f`
+# alone prunes only dangling (untagged) images, which is what we want:
 # when a fresh build takes the `:prod` tag, the prior image becomes
 # dangling automatically and is reclaimed.
-# --keep-storage was removed because the flag is deprecated in newer
-# BuildKit versions; time-only filtering works across versions.
 docker image prune -f || true
-docker builder prune -f --filter "until=72h" || true
+#
+# DO use `-a` on `builder prune`. Without it BuildKit only reclaims
+# cache entries unreferenced by any image — which means most of the
+# accumulated build cache (entries reachable from a previous build's
+# intermediate stages) is skipped and the cache snowballs across
+# deploys. The original `--filter until=72h` form silently reclaimed
+# almost nothing on prod for this exact reason.
+#
+# `unused-for=72h` keeps anything touched in the last 72 h so the next
+# deploy still hits warm cache for active layers, but evicts entries
+# that haven't been accessed in three days.
+docker builder prune -af --filter "unused-for=72h" || true
