@@ -33,8 +33,15 @@ docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit
 # Start orchestrator (session-worker containers are spawned on demand)
 docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
 
-# Clean up old images and stale builder cache to reclaim disk.
+# Clean up dangling images and stale builder cache to reclaim disk.
+# IMPORTANT: do NOT use `-a` here. `docker image prune -a` deletes any
+# image without a running container, and the session-worker image only
+# runs on-demand (no container between sessions) — so `-a` deletes the
+# image the orchestrator needs to spawn new sessions. `-f` alone prunes
+# only dangling (untagged) images, which is what we actually want:
+# when a fresh build takes the `:prod` tag, the prior image becomes
+# dangling automatically and is reclaimed.
 # --keep-storage was removed because the flag is deprecated in newer
 # BuildKit versions; time-only filtering works across versions.
-docker image prune -af --filter "until=168h" || true
+docker image prune -f || true
 docker builder prune -f --filter "until=72h" || true
