@@ -49,18 +49,22 @@ docker image prune -f || true
 # cache (entries reachable from prior builds' intermediate stages) is
 # skipped and the cache snowballs across deploys.
 #
-# We deliberately do NOT pass a time filter. Tested on prod (May 2026):
-# both `--filter unused-for=72h` and `--filter until=72h` returned
-# `Total: 0B` even though `docker builder du` reported 83 GB of
-# reclaimable cache. Some BuildKit versions silently skip cache that's
-# reachable from a recently-built image, and the duration-string filter
-# is brittle across versions. The unfiltered `-af` form is the only
-# thing that reliably reclaims on prod.
+# Cap the cache at 10 GB via a size-based filter. Time-based filters
+# (`--filter until=72h` / `--filter unused-for=72h`) do NOT work in our
+# build → prune flow: both translate to BuildKit's `KeepDuration`,
+# which is checked against `last_used`, and the build we just ran
+# refreshed `last_used` on every layer it touched. Tested on prod:
+# 0 B reclaimed against 83 GB of reclaimable cache. See the BuildKit
+# source at moby/buildkit's cache/manager.go for the comparison logic.
 #
-# Trade-off: the build *immediately* after this prune still has its
-# cache (we ran build before prune). The build *after that* (next
-# deploy) gets a cold cache and is slower one time, then the cache
-# rebuilds organically. This is the same cost users pay on any host
-# that hasn't built recently, and it's bounded — subsequent deploys
-# only retain the cache the latest build actually needed.
-docker builder prune -af || true
+# `--max-used-space` is the semantically-correct flag (caps total
+# cache size, prunes oldest-by-last-used to stay under) but requires
+# BuildKit v0.17+. `--keep-storage` is the deprecated alias for
+# `--reserved-space` that works on every version: when used alone it
+# also acts as a cap (keepBytes = max(MaxUsedSpace, ReservedSpace) in
+# the GC, with MaxUsedSpace=0 when unset). The final unfiltered
+# `-af` is the nuke fallback if neither flag is recognized.
+docker builder prune -af --max-used-space 10GB \
+  || docker builder prune -af --keep-storage 10GB \
+  || docker builder prune -af \
+  || true
