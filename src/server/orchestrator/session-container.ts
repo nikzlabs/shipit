@@ -37,7 +37,7 @@ import {
   type HealthDeps,
   type HealthMonitorState,
 } from "./container-health.js";
-import { resolveSessionConfig } from "../shared/session-config.js";
+import { resolveShipitConfig, AGENT_DEFAULTS, type ShipitConfig } from "../shared/shipit-config.js";
 
 // ---------------------------------------------------------------------------
 // Re-export sub-module public symbols for backwards compatibility
@@ -232,22 +232,139 @@ export interface AgentDockerLimits {
 
 /**
  * Read a workspace's shipit.yaml and map `agent.memory/cpu/pids` and
- * `capabilities.docker` to canonical Docker-units limits.
+ * `compose.docker-socket` to canonical Docker-units limits.
  *
  * This is the single place that translates the user's declared resources
  * into Docker units. Every container creation path (fresh, standby fallback,
  * warm-pool standby, rediscover) must derive its limits from here — anything
  * else silently falls back to the manager's compiled-in defaults (1 GiB /
  * 0.5 CPU / 256 pids), under-provisioning containers that declared more.
+ *
+ * Old-format shipit.yaml (`resources:` / `capabilities:` blocks) is no longer
+ * recognised: `resolveShipitConfig` emits warnings for those keys but does
+ * not extract values from them, so misconfigured files fall through to
+ * defaults. The warnings are surfaced in the diagnostics panel.
  */
 export function resolveAgentDockerLimits(workspaceDir: string): AgentDockerLimits {
-  const cfg = resolveSessionConfig(workspaceDir);
+  const { effective, warnings } = applyEnvCaps(readAgentConfig(workspaceDir));
+
+  // The clamp used to be silent. Surface it in the orchestrator log so a
+  // misconfigured MAX_SESSION_MEMORY_MB can't shrink a declared limit
+  // without anyone knowing — that's how a 3072-declared session boots at
+  // 1024 and then OOMs on `npm install`. We deliberately log here (and not
+  // only in the diagnostics endpoint) so journalctl carries the breadcrumb
+  // even when nobody opens the panel.
+  for (const w of warnings) {
+    console.warn(`[shipit-config] ${workspaceDir}: ${w}`);
+  }
+
   return {
-    memoryLimit: cfg.resources.agent.memory * 1024 * 1024,
-    cpuQuota: Math.round(cfg.resources.agent.cpu * 100_000),
-    pidsLimit: cfg.resources.agent.pids,
-    dockerAccess: cfg.capabilities.docker,
+    memoryLimit: effective.memory * 1024 * 1024,
+    cpuQuota: Math.round(effective.cpu * 100_000),
+    pidsLimit: effective.pids,
+    dockerAccess: effective.dockerAccess,
   };
+}
+
+/**
+ * Parse a workspace's shipit.yaml. Malformed YAML falls back to the
+ * library defaults — the same parser is also called from app-lifecycle.ts
+ * on the warm path, which surfaces parse errors via the
+ * `compose_error` WS message, so we don't re-log here.
+ *
+ * Exported for `services/diagnostics.ts` so the panel can reuse the exact
+ * "declared vs effective" computation.
+ */
+export function readAgentConfig(workspaceDir: string): ShipitConfig {
+  try {
+    return resolveShipitConfig(workspaceDir);
+  } catch {
+    return { agent: { ...AGENT_DEFAULTS, install: [] }, warnings: [] };
+  }
+}
+
+/** What the container actually boots with — declared values after env caps applied. */
+export interface EffectiveAgentResources {
+  memory: number;
+  cpu: number;
+  pids: number;
+  dockerAccess: boolean;
+}
+
+/**
+ * Apply deployment-level env caps to a parsed shipit.yaml's agent block.
+ * Returns the post-clamp values that the container will actually boot on,
+ * plus a list of human-readable warnings for each metric that was capped.
+ *
+ * Exported so the diagnostics endpoint can surface the same clamp warnings
+ * in the UI alongside the orchestrator log line — visibility on both sides.
+ */
+export function applyEnvCaps(cfg: ShipitConfig): {
+  effective: EffectiveAgentResources;
+  warnings: string[];
+} {
+  const caps = getResourceCaps();
+  const warnings: string[] = [];
+
+  const memory = Math.min(cfg.agent.memory, caps.memoryMb);
+  if (cfg.agent.memory > caps.memoryMb) {
+    warnings.push(
+      `agent.memory ${cfg.agent.memory} MiB clamped to ${caps.memoryMb} MiB by MAX_SESSION_MEMORY_MB`,
+    );
+  }
+
+  const cpu = Math.min(cfg.agent.cpu, caps.cpu);
+  if (cfg.agent.cpu > caps.cpu) {
+    warnings.push(
+      `agent.cpu ${cfg.agent.cpu} clamped to ${caps.cpu} by MAX_SESSION_CPU`,
+    );
+  }
+
+  const pids = Math.min(cfg.agent.pids, caps.pids);
+  if (cfg.agent.pids > caps.pids) {
+    warnings.push(
+      `agent.pids ${cfg.agent.pids} clamped to ${caps.pids} by MAX_SESSION_PIDS`,
+    );
+  }
+
+  return {
+    effective: {
+      memory,
+      cpu,
+      pids,
+      dockerAccess: cfg.compose?.dockerSocket ?? false,
+    },
+    warnings,
+  };
+}
+
+interface AgentResourceCaps {
+  memoryMb: number;
+  cpu: number;
+  pids: number;
+}
+
+/** Deployment-level ceiling on per-session resources, read from env vars at call time. */
+function getResourceCaps(): AgentResourceCaps {
+  return {
+    memoryMb: parseEnvInt("MAX_SESSION_MEMORY_MB", 4096),
+    cpu: parseEnvFloat("MAX_SESSION_CPU", 4),
+    pids: parseEnvInt("MAX_SESSION_PIDS", 2048),
+  };
+}
+
+function parseEnvInt(key: string, fallback: number): number {
+  const val = process.env[key];
+  if (val === undefined) return fallback;
+  const n = parseInt(val, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function parseEnvFloat(key: string, fallback: number): number {
+  const val = process.env[key];
+  if (val === undefined) return fallback;
+  const n = parseFloat(val);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -628,9 +745,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   /**
    * Build a ContainerConfig from a workspace directory. Reads the workspace's
-   * shipit.yaml via `resolveSessionConfig` and applies the declared agent
-   * resources (memory/cpu/pids) and capabilities (docker) — this is the only
-   * container-creation entry point that honors user-declared limits.
+   * shipit.yaml via `resolveAgentDockerLimits` and applies the declared agent
+   * resources (memory/cpu/pids) and compose.docker-socket capability —
+   * this is the only container-creation entry point that honors
+   * user-declared limits.
    *
    * All real container creation flows (runner-factory fresh + standby
    * fallback + warm-pool standby) must go through here so user-declared

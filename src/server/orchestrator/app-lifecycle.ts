@@ -15,6 +15,7 @@ import { SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import type { SessionLoopDetector } from "./loop-detector.js";
+import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
@@ -184,6 +185,14 @@ export interface RunnerFactoryDeps {
    * failure history.
    */
   broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  /**
+   * OOM circuit breaker, shared with `setupContainerHealthMonitoring`.
+   * When tripped for a session, container creation is refused with a
+   * clear error rather than entering the destroy/recreate loop. The
+   * breaker is reset by user-initiated restart endpoints — see
+   * `services/recovery.ts`.
+   */
+  oomBreaker?: SessionOomCircuitBreaker;
 }
 
 /**
@@ -216,8 +225,24 @@ async function createContainerForRunner(opts: {
   /** Optional qualifier appended to the failure broadcast (e.g. "from standby fallback"). */
   failureContext?: string;
   broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  /** OOM circuit breaker — when tripped, creation is refused. */
+  oomBreaker?: SessionOomCircuitBreaker;
 }): Promise<void> {
   const { mgr, runner, sessionId } = opts;
+
+  // Circuit-break before doing any work. If the breaker is tripped the
+  // last few container creates ended in cgroup-OOM; doing it again wastes
+  // host memory and the user just sees more spinners. Refuse with a
+  // greppable error that the SessionHealthStrip surfaces directly.
+  if (opts.oomBreaker?.isTripped(sessionId)) {
+    const errMsg = `Session disabled — agent container OOM-killed too many times. Increase \`agent.memory\` in shipit.yaml and use "Rescue session" to retry.`;
+    console.warn(`[container] Refusing to create container for ${sessionId}: OOM circuit breaker tripped`);
+    mgr.recordCreateError(sessionId, errMsg);
+    opts.broadcastLog?.(sessionId, "server", errMsg);
+    runner.dispose({ force: true });
+    return;
+  }
+
   try {
     if (opts.destroyExisting) await mgr.destroy(sessionId);
     const config = mgr.buildConfigForWorkspace({
@@ -263,7 +288,7 @@ async function createContainerForRunner(opts: {
 export function buildRunnerFactory(
   factoryDeps: RunnerFactoryDeps,
 ): SessionRunnerFactory | undefined {
-  const { deps, containerManager, credentialsDir, runtimeMode, broadcastLog } = factoryDeps;
+  const { deps, containerManager, credentialsDir, runtimeMode, broadcastLog, oomBreaker } = factoryDeps;
 
   // Explicit injection always wins (tests, custom orchestrations).
   if (deps.runnerFactory) return deps.runnerFactory;
@@ -346,6 +371,7 @@ export function buildRunnerFactory(
           destroyExisting: false,
           failureContext: "from standby fallback",
           broadcastLog,
+          oomBreaker,
         });
       })();
 
@@ -369,6 +395,7 @@ export function buildRunnerFactory(
       depCacheDir: o.depCacheDir,
       destroyExisting: !!existing,
       broadcastLog,
+      oomBreaker,
     });
 
     return runner;
@@ -1859,8 +1886,32 @@ export function setupContainerHealthMonitoring(
   runnerRegistry: SessionRunnerRegistry,
   broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
   loopDetector: SessionLoopDetector = createSessionLoopDetector(),
+  oomBreaker?: SessionOomCircuitBreaker,
 ): void {
   containerManager.on("container_exited", (sessionId, exitCode, error) => {
+    // Record agent-container OOM kills BEFORE disposing the runner — the
+    // dispose tears down the WS channel, so a `session_memory_exhausted`
+    // emit afterwards never reaches the attached viewers. The signal
+    // comes from `container-health.ts` which sets error="Out of memory"
+    // on Docker `oom` events for the agent container; compose-child OOMs
+    // go through the `service_exited` path instead.
+    if (oomBreaker && error === "Out of memory") {
+      const trip = oomBreaker.recordOom(sessionId);
+      if (trip.justTripped) {
+        const windowLabel = `${Math.round(trip.windowMs / 1000)}s`;
+        const msg = `Session disabled — agent container OOM-killed ${trip.countInWindow} times in last ${windowLabel}. Increase \`agent.memory\` in shipit.yaml and use "Rescue session" to retry.`;
+        console.error(`[oom-breaker] ${msg} (session=${sessionId})`);
+        if (broadcastLog) broadcastLog(sessionId, "server", msg);
+        const runner = runnerRegistry.get(sessionId);
+        runner?.emitMessage({
+          type: "session_memory_exhausted",
+          sessionId,
+          countInWindow: trip.countInWindow,
+          windowMs: trip.windowMs,
+          threshold: trip.threshold,
+        });
+      }
+    }
     handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog);
   });
 

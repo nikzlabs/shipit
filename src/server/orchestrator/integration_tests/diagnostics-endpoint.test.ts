@@ -81,6 +81,8 @@ describe("GET /api/sessions/:id/diagnostics", () => {
       stackStartError: string | null;
       runner: unknown;
       recentLogs: unknown[];
+      parsedConfig: unknown;
+      oomBreaker: unknown;
     };
 
     expect(body.sessionId).toBe("diag-1");
@@ -93,6 +95,55 @@ describe("GET /api/sessions/:id/diagnostics", () => {
     expect(body.runner).toBeNull();
     // No stack-start error in clean state.
     expect(body.stackStartError).toBeNull();
+    // No shipit.yaml in the workspace → parsedConfig falls back to defaults
+    // (the same shape the parser returns for an empty file).
+    expect(body.parsedConfig).toMatchObject({
+      agent: { memory: 1024, cpu: 0.5, pids: 256, install: [] },
+      effectiveAgent: { memory: 1024, cpu: 0.5, pids: 256, dockerAccess: false },
+      warnings: [],
+    });
+  });
+
+  it("surfaces the parsed shipit.yaml and migration warnings", async () => {
+    const sessionDir = path.join(tmpDir, "sessions", "diag-cfg");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    sessionManager.track("diag-cfg", "Diag cfg", sessionDir);
+
+    fs.writeFileSync(
+      path.join(sessionDir, "shipit.yaml"),
+      [
+        "agent:",
+        "  memory: 3072",
+        "  cpu: 2.0",
+        "  pids: 2048",
+        "compose:",
+        "  file: docker-compose.yml",
+        "  docker-socket: true",
+        // Old-format key — should appear in `warnings` instead of overriding
+        // memory back down to a silent 1 GiB.
+        "resources:",
+        "  memory: 8192",
+        "",
+      ].join("\n"),
+    );
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/sessions/diag-cfg/diagnostics",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      parsedConfig: {
+        agent: { memory: number; cpu: number; pids: number; install: string[] };
+        compose?: { file: string; dockerSocket: boolean };
+        warnings: string[];
+        parseError?: string;
+      };
+    };
+    expect(body.parsedConfig.agent).toMatchObject({ memory: 3072, cpu: 2.0, pids: 2048 });
+    expect(body.parsedConfig.compose).toEqual({ file: "docker-compose.yml", dockerSocket: true });
+    expect(body.parsedConfig.warnings.join("\n")).toMatch(/`resources` block has been replaced/);
+    expect(body.parsedConfig.parseError).toBeUndefined();
   });
 
   it("returns 404 for an unknown session", async () => {

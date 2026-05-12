@@ -1,4 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import type { SessionContainerManager, SessionContainer } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager, ManagedService } from "../service-manager.js";
@@ -78,6 +81,7 @@ describe("getSessionDiagnostics", () => {
         runnerRegistry: fakeRegistry(runner),
         serviceManagers: new Map([["sess-1", mgr]]),
         getLogBuffer: () => [entry("hello")],
+        getWorkspaceDir: () => null,
       },
       "sess-1",
     );
@@ -109,7 +113,9 @@ describe("getSessionDiagnostics", () => {
         runnerRegistry: fakeRegistry(fakeRunner()),
         serviceManagers: new Map(),
         getLogBuffer: () => [],
+        getWorkspaceDir: () => null,
       },
+
       "sess-1",
     );
     expect(result.health).toEqual({ error: "Container manager not available" });
@@ -125,7 +131,9 @@ describe("getSessionDiagnostics", () => {
         runnerRegistry: fakeRegistry(null),
         serviceManagers: new Map(),
         getLogBuffer: () => [],
+        getWorkspaceDir: () => null,
       },
+
       "sess-missing",
     );
     expect(result.runner).toBeNull();
@@ -139,7 +147,9 @@ describe("getSessionDiagnostics", () => {
         runnerRegistry: fakeRegistry(fakeRunner()),
         serviceManagers: new Map([["sess-1", mgr]]),
         getLogBuffer: () => [],
+        getWorkspaceDir: () => null,
       },
+
       "sess-1",
     );
     expect(result.stackStartError).toBe("compose up failed: image pull denied");
@@ -157,13 +167,122 @@ describe("getSessionDiagnostics", () => {
         runnerRegistry: fakeRegistry(fakeRunner()),
         serviceManagers: new Map([["sess-1", mgr]]),
         getLogBuffer: () => [],
+        getWorkspaceDir: () => null,
       },
+
       "sess-1",
     );
     const tail = result.services[0]?.logTail.split("\n");
     expect(tail).toHaveLength(20);
     expect(tail?.[0]).toBe("line31");
     expect(tail?.[19]).toBe("line50");
+  });
+
+  describe("parsedConfig surfacing", () => {
+    let tmpDir: string | undefined;
+
+    afterEach(() => {
+      if (tmpDir) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        tmpDir = undefined;
+      }
+    });
+
+    function workspace(yaml?: string): string {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-cfg-"));
+      if (yaml !== undefined) fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), yaml);
+      return tmpDir;
+    }
+
+    async function diagnose(workspaceDir: string | null) {
+      return getSessionDiagnostics(
+        {
+          containerManager: fakeContainerManager({ container: null }),
+          runnerRegistry: fakeRegistry(fakeRunner()),
+          serviceManagers: new Map(),
+          getLogBuffer: () => [],
+          getWorkspaceDir: () => workspaceDir,
+        },
+        "sess-1",
+      );
+    }
+
+    it("returns null when no workspace is assigned", async () => {
+      const result = await diagnose(null);
+      expect(result.parsedConfig).toBeNull();
+    });
+
+    it("returns the parsed agent block from the new schema", async () => {
+      const dir = workspace("agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\ncompose: docker-compose.yml\n");
+      const result = await diagnose(dir);
+      expect(result.parsedConfig?.agent).toMatchObject({ memory: 3072, cpu: 2.0, pids: 2048 });
+      expect(result.parsedConfig?.compose).toEqual({ file: "docker-compose.yml", dockerSocket: false });
+      expect(result.parsedConfig?.warnings).toEqual([]);
+      expect(result.parsedConfig?.parseError).toBeUndefined();
+      // No env cap exceeded → effectiveAgent mirrors declared values.
+      expect(result.parsedConfig?.effectiveAgent).toMatchObject({ memory: 3072, cpu: 2.0, pids: 2048 });
+      // Breaker dep wasn't injected → payload reports null.
+      expect(result.oomBreaker).toBeNull();
+    });
+
+    it("surfaces warnings for legacy `resources:` keys instead of silently using their values", async () => {
+      // Regression: the old parser silently dropped `resources.memory: 3072`
+      // to a 1 GiB default and the container OOM'd. Now the user sees both
+      // the warning AND the actual default the container booted on.
+      const dir = workspace("resources:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n");
+      const result = await diagnose(dir);
+      expect(result.parsedConfig?.agent.memory).toBe(1024); // library default
+      expect(result.parsedConfig?.warnings.join("\n")).toMatch(/`resources` block has been replaced/);
+    });
+
+    it("surfaces env-cap clamp warnings alongside the effective value", async () => {
+      // Sibling regression: even when shipit.yaml is new-schema and parses
+      // cleanly, a low MAX_SESSION_MEMORY_MB silently shrinks the declared
+      // memory. The diagnostics panel must show both the declared and the
+      // post-clamp value so the operator can spot the cap.
+      const prevCap = process.env.MAX_SESSION_MEMORY_MB;
+      process.env.MAX_SESSION_MEMORY_MB = "1024";
+      try {
+        const dir = workspace("agent:\n  memory: 3072\n");
+        const result = await diagnose(dir);
+        expect(result.parsedConfig?.agent.memory).toBe(3072);
+        expect(result.parsedConfig?.effectiveAgent.memory).toBe(1024);
+        expect(result.parsedConfig?.warnings.join("\n")).toMatch(/MAX_SESSION_MEMORY_MB/);
+      } finally {
+        if (prevCap === undefined) delete process.env.MAX_SESSION_MEMORY_MB;
+        else process.env.MAX_SESSION_MEMORY_MB = prevCap;
+      }
+    });
+
+    it("captures YAML parse errors without failing the request", async () => {
+      const dir = workspace("agent: not_a_mapping\n");
+      const result = await diagnose(dir);
+      expect(result.parsedConfig?.parseError).toMatch(/agent/);
+    });
+  });
+
+  describe("oomBreaker surfacing", () => {
+    it("returns the breaker state when a breaker is wired", async () => {
+      const { createOomCircuitBreaker } = await import("../oom-circuit-breaker.js");
+      const breaker = createOomCircuitBreaker({ windowMs: 60_000, threshold: 2 });
+      breaker.recordOom("sess-1");
+      breaker.recordOom("sess-1"); // trips
+
+      const result = await getSessionDiagnostics(
+        {
+          containerManager: fakeContainerManager({ container: null }),
+          runnerRegistry: fakeRegistry(fakeRunner()),
+          serviceManagers: new Map(),
+          getLogBuffer: () => [],
+          getWorkspaceDir: () => null,
+          oomBreaker: breaker,
+        },
+        "sess-1",
+      );
+      expect(result.oomBreaker?.tripped).toBe(true);
+      expect(result.oomBreaker?.countInWindow).toBe(2);
+      expect(result.oomBreaker?.threshold).toBe(2);
+    });
   });
 
   it("trims recent logs to the last 50 entries", async () => {
@@ -174,6 +293,7 @@ describe("getSessionDiagnostics", () => {
         runnerRegistry: fakeRegistry(fakeRunner()),
         serviceManagers: new Map(),
         getLogBuffer: () => all,
+        getWorkspaceDir: () => null,
       },
       "sess-1",
     );

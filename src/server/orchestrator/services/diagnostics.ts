@@ -17,11 +17,19 @@
  */
 
 import type { SessionContainerManager } from "../session-container.js";
+import { applyEnvCaps, type EffectiveAgentResources } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager, ManagedService } from "../service-manager.js";
 import type { WsLogEntry } from "../../shared/types.js";
 import { getContainerHealth, type ContainerHealth } from "./health.js";
 import { ServiceError } from "./types.js";
+import {
+  resolveShipitConfig,
+  ShipitConfigError,
+  type AgentConfig,
+  type ComposeConfig,
+} from "../../shared/shipit-config.js";
+import type { SessionOomCircuitBreaker, OomBreakerState } from "../oom-circuit-breaker.js";
 
 /** Tail of the per-service compose log buffer included in diagnostics. */
 const SERVICE_LOG_TAIL_LINES = 20;
@@ -54,6 +62,40 @@ export interface RunnerDiagnostic {
   disposed: boolean;
 }
 
+/**
+ * Snapshot of how the orchestrator parsed the session's `shipit.yaml` — the
+ * agent block, compose block, schema version, and any warnings (e.g. for
+ * legacy keys like `resources:` / `capabilities:` that no longer set
+ * values). When the file is malformed, `parseError` carries the message
+ * and the agent fields reflect the library defaults the container actually
+ * booted on.
+ *
+ * Surfaced in `SessionDiagnosticsPanel` so a misconfigured yaml — e.g. an
+ * old-format file that silently drops memory to 1 GiB — is visible at a
+ * glance rather than only manifesting later as an `npm install` OOM kill.
+ */
+export interface ParsedShipitConfig {
+  /** The values as written in shipit.yaml (after parsing). */
+  agent: AgentConfig;
+  compose?: ComposeConfig;
+  version?: number;
+  /**
+   * Migration warnings from the parser (legacy keys like `resources:`)
+   * + clamp warnings from `applyEnvCaps` (`MAX_SESSION_MEMORY_MB`, etc.).
+   * Both kinds are user-visible problems with the same root: declared
+   * memory not matching the value the container actually booted on.
+   */
+  warnings: string[];
+  /** YAML parse error message, if shipit.yaml is malformed. */
+  parseError?: string;
+  /**
+   * What the container will actually boot with — declared values clamped
+   * by env caps. Diverges from `agent` when an env cap is smaller than
+   * the declared value; the matching `warnings` entry explains why.
+   */
+  effectiveAgent: EffectiveAgentResources;
+}
+
 export interface SessionDiagnostics {
   sessionId: string;
   /** Server-side ms epoch when this snapshot was assembled. */
@@ -71,6 +113,18 @@ export interface SessionDiagnostics {
   runner: RunnerDiagnostic | null;
   /** Last {@link RECENT_LOG_LINES} orchestrator log entries for this session. */
   recentLogs: WsLogEntry[];
+  /**
+   * Parsed `shipit.yaml` for this session — `null` when the workspace
+   * directory isn't resolvable (e.g. session has no workspaceDir yet).
+   */
+  parsedConfig: ParsedShipitConfig | null;
+  /**
+   * OOM circuit breaker state — `null` when no breaker is wired (test
+   * mode / local runtime). When tripped, future container creation for
+   * this session is refused until the user opts back in via "Rescue
+   * session" / agent-container-restart.
+   */
+  oomBreaker: OomBreakerState | null;
 }
 
 export interface DiagnosticsDeps {
@@ -78,6 +132,17 @@ export interface DiagnosticsDeps {
   runnerRegistry: SessionRunnerRegistry;
   serviceManagers: Map<string, ServiceManager>;
   getLogBuffer: (sessionId: string) => WsLogEntry[];
+  /**
+   * Returns the on-disk workspace directory for a session, or `null` when
+   * the session has no workspace assigned yet. Used to parse and surface
+   * the session's `shipit.yaml`.
+   */
+  getWorkspaceDir: (sessionId: string) => string | null;
+  /**
+   * Shared OOM circuit breaker. Omitted in test mode / local runtime;
+   * when present, its per-session state is included in the payload.
+   */
+  oomBreaker?: SessionOomCircuitBreaker;
 }
 
 /**
@@ -90,7 +155,7 @@ export async function getSessionDiagnostics(
   deps: DiagnosticsDeps,
   sessionId: string,
 ): Promise<SessionDiagnostics> {
-  const { containerManager, runnerRegistry, serviceManagers, getLogBuffer } = deps;
+  const { containerManager, runnerRegistry, serviceManagers, getLogBuffer, getWorkspaceDir, oomBreaker } = deps;
 
   // Health probe — gracefully degrade when no container manager is
   // configured. The panel still has value for service + runner state.
@@ -136,6 +201,9 @@ export async function getSessionDiagnostics(
     ? allLogs.slice(-RECENT_LOG_LINES)
     : allLogs.slice();
 
+  const workspaceDir = getWorkspaceDir(sessionId);
+  const parsedConfig = workspaceDir ? readParsedConfig(workspaceDir) : null;
+
   return {
     sessionId,
     generatedAt: Date.now(),
@@ -144,7 +212,47 @@ export async function getSessionDiagnostics(
     stackStartError,
     runner: runnerDiagnostic,
     recentLogs,
+    parsedConfig,
+    oomBreaker: oomBreaker ? oomBreaker.getState(sessionId) : null,
   };
+}
+
+/**
+ * Read and parse the workspace's `shipit.yaml`. Errors are captured into
+ * `parseError` rather than thrown — the diagnostics endpoint should
+ * always succeed so the user can actually see why their config is broken.
+ */
+function readParsedConfig(workspaceDir: string): ParsedShipitConfig {
+  try {
+    const cfg = resolveShipitConfig(workspaceDir);
+    const { effective, warnings: clampWarnings } = applyEnvCaps(cfg);
+    return {
+      agent: cfg.agent,
+      compose: cfg.compose,
+      version: cfg.version,
+      warnings: [...cfg.warnings, ...clampWarnings],
+      effectiveAgent: effective,
+    };
+  } catch (err) {
+    // Capture the error message but still return a usable shape — the
+    // panel can render `parseError` alongside the (default) values the
+    // container actually booted on.
+    const message = err instanceof ShipitConfigError || err instanceof Error
+      ? err.message
+      : String(err);
+    const defaultAgent = { memory: 1024, cpu: 0.5, pids: 256, install: [] };
+    return {
+      agent: defaultAgent,
+      warnings: [],
+      parseError: message,
+      effectiveAgent: {
+        memory: defaultAgent.memory,
+        cpu: defaultAgent.cpu,
+        pids: defaultAgent.pids,
+        dockerAccess: false,
+      },
+    };
+  }
 }
 
 /**
