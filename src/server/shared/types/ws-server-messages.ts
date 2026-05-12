@@ -546,6 +546,33 @@ export interface WsServiceOom {
   containerId: string;
 }
 
+/**
+ * Server → Client: the OOM circuit breaker tripped for this session.
+ *
+ * Fired once when the breaker flips from healthy to tripped — i.e. the
+ * Nth agent-container OOM kill within the rolling window. Future
+ * container creations for this session will be refused (with a clear
+ * error in the SessionHealthStrip) until the user explicitly opts back
+ * in via the "Rescue session" / agent-container-restart endpoint, which
+ * resets the breaker.
+ *
+ * Note: this is the *agent* container OOM, not a compose-child OOM
+ * (which still uses `service_oom`). The two events are intentionally
+ * distinct — a service OOM is recoverable, an agent-container OOM kills
+ * the agent and triggers the destroy/recreate loop this breaker exists
+ * to short-circuit.
+ */
+export interface WsSessionMemoryExhausted {
+  type: "session_memory_exhausted";
+  sessionId: string;
+  /** OOM kills counted in the rolling window when the breaker tripped. */
+  countInWindow: number;
+  /** Rolling-window length in ms (informational, for UI copy). */
+  windowMs: number;
+  /** Threshold the breaker tripped at (informational, for UI copy). */
+  threshold: number;
+}
+
 /** Server → Client: agent started running in a session (broadcast to all clients). */
 export interface WsSessionAgentStarted {
   type: "session_agent_started";
@@ -683,6 +710,7 @@ export type WsServerMessage =
   | WsServiceLog
   | WsServiceLogBuffer
   | WsServiceOom
+  | WsSessionMemoryExhausted
   | WsPreviewError
   | WsComposeError
   | WsStackError

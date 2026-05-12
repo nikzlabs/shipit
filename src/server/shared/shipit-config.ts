@@ -1,8 +1,7 @@
 /**
  * Unified shipit.yaml parser — reads `version`, `agent`, and `compose` blocks.
  *
- * Replaces the split parsing between `session-config.ts` (resources/capabilities)
- * and `preview-config.ts` (preview block). The new schema has three top-level keys:
+ * The schema has three top-level keys:
  *
  *   version: 1          # optional schema version
  *   agent:              # optional agent container config

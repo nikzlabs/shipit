@@ -15,6 +15,7 @@ import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
+import type { SessionOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import { ServiceError } from "./types.js";
 
 /** Short timeout for recovery-time worker calls — never block on a wedged worker. */
@@ -82,6 +83,13 @@ export interface RecoveryDeps {
    * non-undefined value during the gap.
    */
   defaultAgentId: AgentId;
+  /**
+   * OOM circuit breaker. The "Rescue session" / agent-container-restart
+   * endpoints are the explicit user-initiated opt-in path, so resetting
+   * here lets the runner factory try again. Without the reset, the
+   * breaker would refuse the very restart the user asked for.
+   */
+  oomBreaker?: SessionOomCircuitBreaker;
 }
 
 export interface KillAgentResult {
@@ -186,6 +194,13 @@ export async function restartContainer(
 ): Promise<RestartContainerResult> {
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
+
+  // Rescue session is the explicit user opt-in to retry — clear the
+  // breaker so the new container actually gets created. Without this,
+  // the factory would see the trip flag and refuse to make a container
+  // for the very restart the user just requested.
+  deps.oomBreaker?.reset(sessionId);
+
   if (!deps.containerManager) {
     throw new ServiceError(503, "Container manager not available");
   }
@@ -351,6 +366,12 @@ export async function restartAgent(
 ): Promise<RestartContainerResult> {
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
+
+  // Same rationale as restartContainer — see comment there. The
+  // agent-container restart is an explicit user retry so the breaker
+  // should not gate it.
+  deps.oomBreaker?.reset(sessionId);
+
   if (!deps.containerManager) {
     throw new ServiceError(503, "Container manager not available");
   }

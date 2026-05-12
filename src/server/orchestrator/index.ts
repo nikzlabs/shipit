@@ -51,6 +51,7 @@ import {
   registerShutdownHook,
   autoStart,
 } from "./app-lifecycle.js";
+import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 
 // ---- Re-exports for backwards compatibility ----
 export { CONTEXT_WINDOW_TOKENS } from "./ws-handlers/send-message.js";
@@ -160,8 +161,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- Log buffer ----
   const { getLogBuffer, clearLogBuffer, broadcastLog } = createLogBuffer();
 
+  // ---- OOM circuit breaker ----
+  // One process-local instance shared between the health monitor (which
+  // records OOMs and trips the breaker), the runner factory (which refuses
+  // to create a container when tripped), the recovery handlers (which
+  // reset on user-initiated restart), and the diagnostics endpoint
+  // (which surfaces the current state to the panel).
+  const oomBreaker = createOomCircuitBreaker();
+
   // ---- Runner factory ----
-  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, runtimeMode, broadcastLog });
+  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, runtimeMode, broadcastLog, oomBreaker });
 
   // ---- Service manager registry (per-session compose stacks) ----
   const serviceManagers = new Map<string, ServiceManager>();
@@ -261,6 +270,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, credentialStore, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
+    oomBreaker,
   });
 
   // ---- Migration: derive RepoStore from existing sessions ----
@@ -448,6 +458,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     serviceManagers,
     getLogBuffer,
     agentFactory,
+    oomBreaker,
   });
 
   // ---- Preview reverse proxy (container mode) ----
@@ -953,7 +964,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
 
   // ---- Container health monitoring ----
   if (containerManager) {
-    setupContainerHealthMonitoring(containerManager, runnerRegistry, broadcastLog);
+    setupContainerHealthMonitoring(containerManager, runnerRegistry, broadcastLog, undefined, oomBreaker);
   }
 
   // Graceful shutdown
