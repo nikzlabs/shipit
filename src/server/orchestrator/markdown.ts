@@ -50,19 +50,28 @@ export function parseStatusFromFrontmatter(content: string): DocStatus | undefin
  * `priority` is only returned when `status === "planned"` — it's a sort hint
  * for picking the next thing to work on, so it's meaningless on
  * in-progress/done/paused/rejected docs and we drop it there to prevent drift.
+ *
+ * Unrecognized status values (e.g. `status: experimental`) are surfaced as
+ * `customStatus` rather than being silently dropped. This keeps the closed
+ * enum used for UI bucketing strict while still treating the doc as
+ * "tracked" — the author wrote a `status:` line, so they intended to track
+ * it. See doc-paths' `isTracked()` for the consumer side.
  */
 function parseFrontmatterFields(
   content: string,
-): { status?: DocStatus; priority?: DocPriority; title?: string } {
+): { status?: DocStatus; customStatus?: string; priority?: DocPriority; title?: string } {
   const fm = extractFrontmatter(content);
   if (!fm) return {};
 
   let status: DocStatus | undefined;
+  let customStatus: string | undefined;
   const statusMatch = /^status:\s*(.+)$/m.exec(fm);
   if (statusMatch) {
     const raw = statusMatch[1].trim().toLowerCase();
     if (VALID_STATUSES.has(raw as DocStatus)) {
       status = raw as DocStatus;
+    } else if (raw.length > 0) {
+      customStatus = raw;
     }
   }
 
@@ -83,7 +92,7 @@ function parseFrontmatterFields(
     title = titleMatch[1].trim();
   }
 
-  return { status, priority, title };
+  return { status, customStatus, priority, title };
 }
 
 /** Generic filenames where the parent directory name is more meaningful. */
@@ -151,6 +160,7 @@ async function readMarkdownEntry(
   basename: string,
 ): Promise<DocEntry> {
   let status: DocStatus | undefined;
+  let customStatus: string | undefined;
   let priority: DocPriority | undefined;
   let title: string | undefined;
   let modifiedAt: string | undefined;
@@ -165,6 +175,7 @@ async function readMarkdownEntry(
       const content = await fs.readFile(fullPath, "utf-8");
       const fields = parseFrontmatterFields(content);
       status = fields.status;
+      customStatus = fields.customStatus;
       priority = fields.priority;
       title = fields.title;
       const progress = parseChecklistProgress(content);
@@ -180,6 +191,7 @@ async function readMarkdownEntry(
         const content = buf.toString("utf-8", 0, bytesRead);
         const fields = parseFrontmatterFields(content);
         status = fields.status;
+        customStatus = fields.customStatus;
         priority = fields.priority;
         title = fields.title;
         // Capture mtime from the same handle to avoid a second syscall.
@@ -197,6 +209,7 @@ async function readMarkdownEntry(
   return {
     path: relativePath,
     status,
+    customStatus,
     priority,
     title: title ?? titleFromPath(relativePath),
     modifiedAt,

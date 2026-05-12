@@ -367,7 +367,7 @@ Feature docs describe individual features and may include planned-but-not-implem
 
 Features are numbered by creation order. When implementing or modifying a feature, read its `plan.md` first. When a feature has remaining work, check its `checklist.md`. When adding a new feature, create `docs/NNN-new-feature/plan.md`.
 
-Every `plan.md` must have YAML frontmatter with a `status` field. Valid values: `planned`, `in-progress`, `done`, `paused`, `rejected`. The feature tracking system (`src/server/orchestrator/features.ts`) reads this frontmatter to display feature status in the UI. Example:
+Every `plan.md` must have YAML frontmatter with a `status` field. The five typed values are `planned`, `in-progress`, `done`, `paused`, `rejected` — these drive the UI's status buckets, priority sorting, and the Archived collapse. The markdown scanner (`src/server/orchestrator/markdown.ts`) reads this frontmatter to display feature status in the UI. Any other value (e.g. `status: experimental`) is preserved as a raw `customStatus` string on `DocEntry`: the doc still counts as tracked and gets a neutral badge, but forfeits the typed affordances. Example:
 
 ```yaml
 ---
