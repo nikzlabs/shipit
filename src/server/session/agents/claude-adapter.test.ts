@@ -132,10 +132,12 @@ describe("ClaudeAdapter", () => {
       session_id: "sess-123",
       total_cost_usd: 0.05,
       duration_ms: 1200,
-      input_tokens: 100,
-      output_tokens: 50,
-      cache_read_tokens: 10,
-      cache_write_tokens: 5,
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_input_tokens: 10,
+        cache_creation_input_tokens: 5,
+      },
     } satisfies ClaudeEvent);
 
     expect(events).toHaveLength(1);

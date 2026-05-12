@@ -52,10 +52,17 @@ export interface ClaudeResultEvent {
   total_cost_usd?: number;
   duration_ms?: number;
   result?: string;
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_read_tokens?: number;
-  cache_write_tokens?: number;
+  /**
+   * Token counts are emitted by the Claude Code CLI nested inside a `usage`
+   * object (matching the Anthropic API schema), not as top-level fields.
+   * Cache fields use the API's `*_input_tokens` suffix.
+   */
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
 }
 
 export type ClaudeEvent =

@@ -104,7 +104,8 @@ export class ClaudeAdapter
           parentToolUseId: raw.parent_tool_use_id,
         };
 
-      case "result":
+      case "result": {
+        const u = raw.usage;
         return {
           type: "agent_result",
           status: raw.subtype,
@@ -112,17 +113,18 @@ export class ClaudeAdapter
           cost: raw.total_cost_usd !== null && raw.total_cost_usd !== undefined
             ? { totalUsd: raw.total_cost_usd }
             : undefined,
-          tokens: raw.input_tokens !== null && raw.input_tokens !== undefined
+          tokens: u && (u.input_tokens !== undefined || u.output_tokens !== undefined)
             ? {
-                input: raw.input_tokens,
-                output: raw.output_tokens ?? 0,
-                cacheRead: raw.cache_read_tokens,
-                cacheWrite: raw.cache_write_tokens,
+                input: u.input_tokens ?? 0,
+                output: u.output_tokens ?? 0,
+                cacheRead: u.cache_read_input_tokens,
+                cacheWrite: u.cache_creation_input_tokens,
               }
             : undefined,
           durationMs: raw.duration_ms,
           error: raw.subtype === "error" ? raw.result : undefined,
         };
+      }
 
       default:
         return null;

@@ -454,10 +454,12 @@ interface RawClaudeEvent {
   message?: { content?: unknown[] };
   subtype?: string;
   total_cost_usd?: number | null;
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  cache_read_tokens?: number;
-  cache_write_tokens?: number;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
   duration_ms?: number;
   result?: string;
   parent_tool_use_id?: string;
@@ -491,23 +493,25 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         content: raw.message?.content ?? [],
         parentToolUseId: raw.parent_tool_use_id,
       };
-    case "result":
+    case "result": {
+      const u = raw.usage;
       return {
         type: "agent_result",
         status: raw.subtype,
         sessionId: raw.session_id,
         cost: raw.total_cost_usd !== null && raw.total_cost_usd !== undefined ? { totalUsd: raw.total_cost_usd } : undefined,
-        tokens: raw.input_tokens !== null && raw.input_tokens !== undefined
+        tokens: u && (u.input_tokens !== undefined || u.output_tokens !== undefined)
           ? {
-              input: raw.input_tokens,
-              output: raw.output_tokens ?? 0,
-              cacheRead: raw.cache_read_tokens,
-              cacheWrite: raw.cache_write_tokens,
+              input: u.input_tokens ?? 0,
+              output: u.output_tokens ?? 0,
+              cacheRead: u.cache_read_input_tokens,
+              cacheWrite: u.cache_creation_input_tokens,
             }
           : undefined,
         durationMs: raw.duration_ms,
         error: raw.subtype === "error" ? raw.result : undefined,
       };
+    }
     default:
       // Already an AgentEvent or unrecognized — pass through
       return null;
