@@ -54,6 +54,13 @@ COPY src/server/shipit-docs/ /shipit-docs/
 RUN printf '#!/bin/sh\nexec /app/node_modules/.bin/tsx /app/src/server/session/agent-shim/gh.ts "$@"\n' > /usr/local/bin/gh \
     && chmod 0755 /usr/local/bin/gh
 
+# Bake the Stop-hook enforcement (docs/129-stop-hook-pr-enforcement).
+# The settings file is referenced via `claude --settings <path>` from
+# src/server/session/claude.ts only when autoCreatePr is on.
+COPY docker/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/stop-pr-check.sh
+COPY docker/agent-hooks/managed-settings.json /etc/shipit/managed-settings.json
+RUN chmod 0755 /etc/shipit/agent-hooks/stop-pr-check.sh
+
 # Credential symlinks (same as dev/prod images).
 # .codex/ holds the ChatGPT subscription login written by `codex login`
 # (feature 119). Persisting it on the credentials volume lets the session
