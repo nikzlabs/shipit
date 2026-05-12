@@ -49,10 +49,18 @@ docker image prune -f || true
 # cache (entries reachable from prior builds' intermediate stages) is
 # skipped and the cache snowballs across deploys.
 #
-# Filter on `until=` (creation time), NOT `unused-for=` (last-access
-# time). The deploy sequence is build → prune; the just-finished build
-# touches a lot of cache (that's the point of reuse), so `unused-for`
-# sees every entry as "0 minutes ago" and reclaims nothing. `until=72h`
-# matches entries CREATED more than 72 h ago even if they were re-used
-# during this build — which is exactly the cohort we want to evict.
-docker builder prune -af --filter "until=72h" || true
+# We deliberately do NOT pass a time filter. Tested on prod (May 2026):
+# both `--filter unused-for=72h` and `--filter until=72h` returned
+# `Total: 0B` even though `docker builder du` reported 83 GB of
+# reclaimable cache. Some BuildKit versions silently skip cache that's
+# reachable from a recently-built image, and the duration-string filter
+# is brittle across versions. The unfiltered `-af` form is the only
+# thing that reliably reclaims on prod.
+#
+# Trade-off: the build *immediately* after this prune still has its
+# cache (we ran build before prune). The build *after that* (next
+# deploy) gets a cold cache and is slower one time, then the cache
+# rebuilds organically. This is the same cost users pay on any host
+# that hasn't built recently, and it's bounded — subsequent deploys
+# only retain the cache the latest build actually needed.
+docker builder prune -af || true
