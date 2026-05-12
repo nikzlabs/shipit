@@ -15,6 +15,12 @@ export interface ClaudeRunOptions {
   mcpConfigPath?: string;
   /** Model alias or ID to use (e.g., "sonnet", "opus"). */
   model?: string;
+  /**
+   * Path to a Claude Code settings file (passed as `--settings`). Used by the
+   * orchestrator to enable the Stop-hook PR enforcement when autoCreatePr is
+   * on. See docs/129-stop-hook-pr-enforcement/plan.md.
+   */
+  settingsPath?: string;
 }
 
 export class ClaudeProcess extends EventEmitter {
@@ -33,7 +39,7 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, model } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, model, settingsPath } = opts;
 
     const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__*";
     const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
@@ -66,6 +72,10 @@ export class ClaudeProcess extends EventEmitter {
 
     if (model) {
       args.push("--model", model);
+    }
+
+    if (settingsPath) {
+      args.push("--settings", settingsPath);
     }
 
     // Build effective system prompt, injecting normal-mode instructions if needed

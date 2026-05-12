@@ -110,6 +110,13 @@ export interface AgentRunParams {
   previewUrl?: string;
   /** Model alias or ID to use (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
+  /**
+   * Path to a Claude Code settings file (passed as `--settings`). Currently
+   * used to enable the PR-enforcement Stop hook baked at
+   * /etc/shipit/managed-settings.json when autoCreatePr is on. Claude-only;
+   * other adapters ignore it. See docs/129-stop-hook-pr-enforcement/plan.md.
+   */
+  settingsPath?: string;
 }
 
 // ---- AgentProcess interface ----
