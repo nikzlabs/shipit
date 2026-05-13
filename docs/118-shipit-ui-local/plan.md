@@ -250,6 +250,12 @@ Vite ≥ 5 enforces a `Host` header allowlist on its dev server (defaulting to l
 
 `vite.config.ts` sets `server.allowedHosts: true` to disable the check. The trust model is fine: the dev server only ever sits behind ShipIt's preview proxy, never directly on the public internet. The setting only affects `vite dev`; production `vite build` is unaffected.
 
+### All-manual compose stacks must lazy-join the orchestrator network
+
+`ServiceManager.start()` skips `composeUp` entirely when every service in the compose file is `x-shipit-preview: manual` (the dogfood case — only `dev` exists, and it's manual). Compose only materializes the per-session `shipit-session-<id>` network during an `up`, so when `start()` then calls `networkJoinFn`, the network doesn't exist yet and the call silently fails. The user clicks "Start" → `startService()` → `composeUpService()` finally creates the network and attaches the dev container — but historically `networkJoinFn` was never re-invoked, so the **orchestrator** never joined. The preview proxy resolved a correct container IP that the orchestrator had no route to, surfacing as `Preview unreachable on port 3000 — connect ETIMEDOUT 172.x.y.z:3000` in the outer UI. Auto-preview repos worked fine because their `composeUp` at startup creates the network before the join attempt.
+
+Fix lives in `service-manager.ts`: a private `joinSessionNetwork()` helper is now invoked after every successful `composeUpService` (in `startService`, `restartService`, and the install-retry path `runRetryNow`) in addition to the original call from `start()`. `networkJoinFn`'s "already exists" handling at the call site (`app-lifecycle.ts`) makes the helper idempotent. Regression coverage: `service-manager.test.ts` — "joins the orchestrator to the session network when the first manual service starts (all-manual stack)".
+
 ### `compose_not_configured` event flood and similar inner-UI noise
 
 When `setupServiceManager` runs without a `compose:` field configured (which is the case for *every* inner session since they don't have inner Compose stacks), it emits `compose_not_configured` events. In `test-helpers.ts:51` these are filtered out for tests. In production-local they are not, and the inner UI will receive them on every inner-session creation.

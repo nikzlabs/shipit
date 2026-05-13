@@ -188,6 +188,63 @@ services:
     expect(upCalls).toHaveLength(0);
   });
 
+  it("joins the orchestrator to the session network when the first manual service starts (all-manual stack)", async () => {
+    // Regression: when every service is `x-shipit-preview: manual`,
+    // `start()` skips `composeUp`, so the `shipit-session-<id>` Docker
+    // network is never created at startup time. `networkJoinFn` then
+    // tries to attach the orchestrator to a non-existent network and
+    // silently fails. The user then clicks "Start" on the manual
+    // service → `startService` → `composeUpService` creates the network,
+    // BUT without this fix `networkJoinFn` was never re-invoked, so the
+    // orchestrator never joined. Result: preview proxy resolves a
+    // correct container IP that the orchestrator has no route to →
+    // `ETIMEDOUT 172.x.y.z:<port>`. This is exactly the dogfood case.
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  dev:
+    image: node:22
+    ports: ["3000:3000"]
+    x-shipit-preview: manual
+`);
+
+    const composeRunner: ComposeRunner = () => Promise.resolve();
+    const composeQuery: ComposeQuery = () => Promise.resolve("");
+    const networkJoinCalls: string[] = [];
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+      networkJoinFn: (name) => {
+        networkJoinCalls.push(name);
+        return Promise.resolve();
+      },
+    });
+
+    await mgr.start();
+
+    // Even though `start()` invoked `joinSessionNetwork` defensively, the
+    // helper still ran — it's just a no-op against a missing network in
+    // production. We assert at least one call so a regression in the
+    // start-path can't silently drop it either.
+    const callsAfterStart = networkJoinCalls.length;
+    expect(callsAfterStart).toBeGreaterThanOrEqual(1);
+
+    await mgr.startService("dev");
+
+    // The post-composeUpService join is the one that actually matters:
+    // it must fire AFTER the first manual service is started, because
+    // that's when compose materializes the session network.
+    expect(networkJoinCalls.length).toBeGreaterThan(callsAfterStart);
+    expect(networkJoinCalls[networkJoinCalls.length - 1]).toBe(
+      "shipit-session-test-session",
+    );
+  });
+
   it("throws for unknown service in startService", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n");
