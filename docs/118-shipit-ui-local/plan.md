@@ -244,6 +244,12 @@ What does **not** move:
 
 Add `.inner-shipit/` to outer's `.gitignore` alongside `sessions/` and `.shipit/`.
 
+### Vite `allowedHosts` blocks the preview-proxy host
+
+Vite ≥ 5 enforces a `Host` header allowlist on its dev server (defaulting to localhost / 127.0.0.1 / the bound IP). The dogfood `dev` Compose service is reached through ShipIt's preview proxy, which forwards requests with `Host: <sessionId>--3000.<preview-domain>`. To Vite that is an unknown host, so it answers every request with `403 Blocked request. This host is not allowed.` From the user's side this looks like "the preview never loads" — the inner orch and Vite are both healthy, the page just never gets served.
+
+`vite.config.ts` sets `server.allowedHosts: true` to disable the check. The trust model is fine: the dev server only ever sits behind ShipIt's preview proxy, never directly on the public internet. The setting only affects `vite dev`; production `vite build` is unaffected.
+
 ### `compose_not_configured` event flood and similar inner-UI noise
 
 When `setupServiceManager` runs without a `compose:` field configured (which is the case for *every* inner session since they don't have inner Compose stacks), it emits `compose_not_configured` events. In `test-helpers.ts:51` these are filtered out for tests. In production-local they are not, and the inner UI will receive them on every inner-session creation.
