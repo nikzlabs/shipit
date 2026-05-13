@@ -478,15 +478,13 @@ export class ServiceManager extends EventEmitter {
       }
       this._started = true;
 
-      // 2. Join agent container to compose network (before IP resolution)
-      if (this.networkJoinFn) {
-        const networkName = `shipit-session-${this.sessionId}`;
-        try {
-          await this.networkJoinFn(networkName);
-        } catch {
-          // Non-fatal — agent may not reach services by DNS but proxy still works
-        }
-      }
+      // 2. Join agent + orchestrator to compose network (before IP resolution).
+      //    No-op when `autoNames.length === 0` because we just skipped
+      //    `composeUp`, so the network doesn't exist yet — `joinSessionNetwork`
+      //    will be re-invoked from `startService()` once the first manual
+      //    service finally creates it. See the "all-manual stacks" comment on
+      //    `joinSessionNetwork` for the full story.
+      await this.joinSessionNetwork();
 
       // 3. Resolve container IPs and actual statuses
       await this.pollStatus();
@@ -531,6 +529,14 @@ export class ServiceManager extends EventEmitter {
     this.updateServiceStatus(name, "starting");
     try {
       await this.composeUpService(name);
+      // The first manual-service start is the moment the compose network
+      // actually gets created (compose materializes the network on `up`,
+      // not just when the file is parsed). If this stack is all-manual,
+      // `start()`'s earlier `joinSessionNetwork()` no-op'd because the
+      // network didn't exist yet — the orchestrator + agent container
+      // still need to be attached or the preview proxy can't reach the
+      // freshly-started container by IP. Idempotent on subsequent starts.
+      await this.joinSessionNetwork();
       await this.pollStatus();
       this.streamLogs(name);
     } catch (err) {
@@ -553,6 +559,10 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.composeStop(name);
       await this.composeUpService(name);
+      // Defensive: if a previous all-manual `start()` skipped the network
+      // join (see startService comment), the first restartService after
+      // adoption could be the first time the orchestrator gets attached.
+      await this.joinSessionNetwork();
       await this.pollStatus();
       // Restart log streaming to pick up new container output
       this.streamLogs(name);
@@ -1026,6 +1036,10 @@ export class ServiceManager extends EventEmitter {
     if (!svc) return;
     try {
       await this.composeUpService(name);
+      // See `startService` — first manual-service start is the moment
+      // the network actually exists, so re-attempt the orchestrator
+      // network join here too. Idempotent on subsequent retries.
+      await this.joinSessionNetwork();
       // Status is updated by the next pollStatus pass (periodic poller).
       // Trigger a poll now so we don't wait up to pollIntervalMs to learn
       // whether the retry succeeded.
@@ -1175,6 +1189,39 @@ export class ServiceManager extends EventEmitter {
     if (timer) {
       clearTimeout(timer);
       this.oomStableTimers.delete(name);
+    }
+  }
+
+  /**
+   * Attach the orchestrator (and the agent container, where applicable) to
+   * the per-session compose network so the preview proxy can reach service
+   * containers by IP, and the agent container can reach them by DNS.
+   *
+   * Idempotent: `networkJoinFn` swallows "already exists" errors at the
+   * call site (see `setupServiceManager` in `app-lifecycle.ts`). Safe to
+   * invoke after every successful `composeUp`/`composeUpService`.
+   *
+   * Why this is called from multiple places: compose only creates the
+   * `shipit-session-<id>` network during a `docker compose up`. For stacks
+   * where every service is `x-shipit-preview: manual` (the ShipIt-in-ShipIt
+   * dogfood case is the canonical example), `start()` deliberately skips
+   * `composeUp` — so the network does not exist yet, and this helper is a
+   * no-op when invoked from `start()`. The network is then materialized
+   * lazily by the first `composeUpService` from `startService` (or one of
+   * its variants — `restartService`, `runRetryNow`), and the helper must
+   * be called again from there to actually attach the orchestrator. Without
+   * the post-`composeUpService` call, the proxy would resolve a perfectly
+   * correct container IP that the orchestrator has no route to → ETIMEDOUT.
+   */
+  private async joinSessionNetwork(): Promise<void> {
+    if (!this.networkJoinFn) return;
+    const networkName = `shipit-session-${this.sessionId}`;
+    try {
+      await this.networkJoinFn(networkName);
+    } catch {
+      // Non-fatal — agent may not reach services by DNS but proxy still works.
+      // The orchestrator-side join inside `networkJoinFn` has its own
+      // try/catch with "already exists" handling (see app-lifecycle.ts).
     }
   }
 
