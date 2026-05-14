@@ -180,6 +180,43 @@ describe("Integration: Claude message flow — basics", () => {
     client.close();
   });
 
+  it("claude error preserves the partial turn in chat history", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "do work" });
+    await waitForClaude(() => lastClaude);
+
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "test-session",
+    });
+    const sessionMsg = await client.receiveType("session_started");
+    const sessionId = (sessionMsg as any).session.id;
+
+    // Agent produces some work before crashing...
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Working on it" }] },
+    });
+    await client.receiveType("agent_event");
+
+    // ...then the process errors mid-turn.
+    lastClaude.emit("error", new Error("spawn ENOENT"));
+    await client.receiveType("error");
+
+    // The partial turn must survive — not be wiped by the old clearInProgress().
+    const history = chatHistoryManager.load(sessionId);
+    const texts = history.map((m) => m.text);
+    expect(texts).toContain("Working on it");
+    expect(texts.some((t) => t.includes("spawn ENOENT"))).toBe(true);
+    // Nothing should be left flagged in-progress.
+    expect(history.every((m) => !m.inProgress)).toBe(true);
+
+    client.close();
+  });
+
   it("claude process exit without result sends error to client", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
