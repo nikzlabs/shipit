@@ -10,6 +10,17 @@
  *     design (so a warm resume can re-attach), and a naive `docker
  *     volume prune --filter dangling=true` would silently destroy that
  *     state.
+ *   - **Orphan session networks** — both the per-session bridge network
+ *     created for Docker-enabled agent containers (`shipit-session-<12-hex>`,
+ *     `container-lifecycle.ts`) and the compose network created by
+ *     `docker compose up` (`shipit-session-<full-sid>`, `compose-generator.ts`).
+ *     Both embed the session id after a `shipit-session-` name prefix, so
+ *     the same active-sessions cross-reference used for volumes applies:
+ *     a network whose session is no longer tracked is removed; an
+ *     idle-evicted session's network is preserved for warm resume. The
+ *     primary cleanup paths (`cleanupSessionDockerResources`, compose
+ *     teardown, `killStaleContainers`) handle the happy path — this is
+ *     the safety net for when they didn't run (unclean shutdown).
  *   - **Archived session workspaces** older than
  *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` days. Safety net for archives
  *     where `fs.rm` didn't run — `archiveSession` already drops the
@@ -23,7 +34,8 @@
  * Why startup-only (no timer): every item above is recovering from a
  * failure earlier in the lifecycle — orphan volumes only exist if archive
  * teardown crashed, orphan workspaces only exist if archive's fs.rm
- * failed, orphan caches only exist if repo removal didn't cascade. None
+ * failed, orphan caches only exist if repo removal didn't cascade, orphan
+ * networks only exist if the disposal/teardown path didn't run. None
  * of them accumulate steadily, so running periodically would mostly
  * burn cycles doing nothing. Startup is the natural "we just came back
  * from possibly-unclean shutdown — clean up after the previous run"
@@ -77,6 +89,8 @@ export interface DiskJanitorDeps {
 export interface DiskJanitorResult {
   /** Session-compose volumes removed (cross-referenced against active sessions). */
   orphanVolumesRemoved: number;
+  /** Session networks removed (cross-referenced against active sessions). */
+  orphanNetworksRemoved: number;
   workspacesRemoved: number;
   cachesRemoved: number;
 }
@@ -92,6 +106,7 @@ const DEFAULT_CACHE_DAYS = 30;
 export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitorResult> {
   const result: DiskJanitorResult = {
     orphanVolumesRemoved: 0,
+    orphanNetworksRemoved: 0,
     workspacesRemoved: 0,
     cachesRemoved: 0,
   };
@@ -103,6 +118,14 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     );
   } catch (err) {
     console.warn("[disk-janitor] orphan volume sweep failed:", getMessage(err));
+  }
+
+  try {
+    result.orphanNetworksRemoved = await sweepOrphanSessionNetworks(
+      deps.sessionManager, runDocker,
+    );
+  } catch (err) {
+    console.warn("[disk-janitor] orphan network sweep failed:", getMessage(err));
   }
 
   try {
@@ -123,6 +146,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   console.log(
     `[disk-janitor] reclaimed orphan-volumes=${result.orphanVolumesRemoved} `
+    + `orphan-networks=${result.orphanNetworksRemoved} `
     + `workspaces=${result.workspacesRemoved} `
     + `caches=${result.cachesRemoved}`,
   );
@@ -203,6 +227,86 @@ async function sweepOrphanSessionVolumes(
   }
   if (removed > 0) {
     console.log(`[disk-janitor] removed ${removed} orphan session volume(s)`);
+  }
+  return removed;
+}
+
+/**
+ * Remove session networks whose session is no longer tracked in the
+ * active sessions list. Two network shapes are created per session and
+ * both are handled here uniformly:
+ *
+ *   - `shipit-session-<first-12-chars-of-sessionId>` — the per-session
+ *     bridge network for Docker-enabled agent containers
+ *     (`container-lifecycle.ts:createContainer`).
+ *   - `shipit-session-<full-sessionId>` — the compose network created by
+ *     `docker compose up` from the generated override
+ *     (`compose-generator.ts`).
+ *
+ * Both embed the session id directly after the `shipit-session-` name
+ * prefix, and the first 12 characters of that id are always
+ * `sessionId.slice(0, 12)` — the same key `sweepOrphanSessionVolumes`
+ * cross-references. So we extract those 12 chars and preserve any
+ * network whose session is still tracked (critical for idle-evicted
+ * sessions, whose container/services are gone but whose row remains in
+ * the DB for a warm resume).
+ *
+ * Safety properties:
+ *   - `--filter dangling=true` is applied as defence-in-depth — Docker
+ *     only returns networks with no attached containers, so an active
+ *     session's network (agent container or running compose services
+ *     attached) is invisible to the sweep.
+ *   - The strict `^shipit-session-([a-f0-9-]{12})` regex rejects any
+ *     network a user might have named `shipit-session-foo`.
+ *
+ * Returns the count of networks actually removed.
+ */
+async function sweepOrphanSessionNetworks(
+  sessionManager: SessionManager,
+  runDocker: (args: string[]) => Promise<string>,
+): Promise<number> {
+  const SESSION_NETWORK_RE = /^shipit-session-([a-f0-9-]{12})/;
+
+  const livePrefixes = new Set(
+    sessionManager.list().map((s) => s.id.slice(0, 12).toLowerCase()),
+  );
+
+  let listOut: string;
+  try {
+    listOut = await runDocker([
+      "network", "ls",
+      "--filter", "name=shipit-session-",
+      "--filter", "dangling=true",
+      "--format", "{{.Name}}",
+    ]);
+  } catch (err) {
+    console.warn("[disk-janitor] network ls failed:", getMessage(err));
+    return 0;
+  }
+
+  const toRemove: string[] = [];
+  for (const raw of listOut.split("\n")) {
+    const name = raw.trim();
+    if (!name) continue;
+    const m = SESSION_NETWORK_RE.exec(name);
+    if (!m) continue;
+    const prefix = m[1].toLowerCase();
+    if (livePrefixes.has(prefix)) continue;
+    toRemove.push(name);
+  }
+
+  let removed = 0;
+  for (const name of toRemove) {
+    try {
+      await runDocker(["network", "rm", name]);
+      removed += 1;
+    } catch {
+      // Network might have just been attached or already removed by a
+      // concurrent sweep — both are fine, skip silently.
+    }
+  }
+  if (removed > 0) {
+    console.log(`[disk-janitor] removed ${removed} orphan session network(s)`);
   }
   return removed;
 }
