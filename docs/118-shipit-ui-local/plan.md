@@ -276,6 +276,14 @@ command: sh -c "npm install && npm run dev"
 
 This is what the entry-point compose snippet now shows. A previous draft assumed `agent.install` would handle it; that was wrong. (For inner sessions opened in the inner orch, `agent.install` from those sessions' repos is also skipped — see "Degraded or unsupported behaviors.")
 
+### Agent CLIs must be baked into the dev image
+
+The dev compose service runs the inner orch in `RUNTIME_MODE=local`, which spawns `claude` / `codex` as **in-process subprocesses** via `ClaudeAdapter` / `CodexAdapter`. The shared `AgentRegistry` detects agents by probing `which <binary>` — so if the CLIs aren't on `PATH`, the inner UI sits on the "Agent Setup" screen with both agents shown as "Not installed" and no session can start.
+
+Production session-worker images install these via an `npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp` layer. `Dockerfile.dogfood` carries the **same layer** (placed before the `COPY package.json` so it stays cached across lockfile churn). Without it the dogfood loop is dead on arrival.
+
+**Note on rebuilds.** `docker-compose.yml` pins `image: shipit-dogfood:local` and the orchestrator's `composeUp` runs `docker compose up -d` *without* `--build`. Compose builds the image only when it's missing — so a `Dockerfile.dogfood` change is **not** picked up by an outer host that already has a cached `shipit-dogfood:local`. To pick up Dockerfile changes there, the stale image must be removed (or rebuilt) so the next `up` rebuilds it.
+
 ### Real `ClaudeAdapter` is not test-exercised
 
 A previous draft claimed local mode is "exercised on every test run" because integration tests use `SessionRunner` + injected `agentFactory`. That's true for the *runner*, but the integration tests inject `FakeClaudeProcess`, not `ClaudeAdapter`. The real adapter's PTY lifecycle, NDJSON parsing, CLI error paths, and OS-process supervision are **not** exercised by `npm test`.
