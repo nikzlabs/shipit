@@ -179,6 +179,132 @@ describe("runDiskJanitor", () => {
     expect(result.orphanVolumesRemoved).toBe(0);
   });
 
+  it("sweeps orphan session networks whose session is no longer tracked", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    // Active session — its networks (agent bridge + compose) MUST be
+    // preserved even when dangling: that's the idle-evicted state.
+    const liveSessionId = "abc123def456-aaaa-bbbb-cccc-dddddddddddd";
+    const liveSessionPrefix = liveSessionId.slice(0, 12); // "abc123def456"
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+    ).run(liveSessionId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+
+    const lsRequests: string[][] = [];
+    const rmRequests: string[] = [];
+    // Listing includes:
+    //   - the live session's agent + compose networks (PRESERVE)
+    //   - an orphan agent network + orphan compose network (REMOVE)
+    //   - a user-named network that doesn't match the strict regex (PRESERVE)
+    //   - the default `bridge` network (PRESERVE — no prefix)
+    const dockerListing = [
+      `shipit-session-${liveSessionPrefix}`,                       // agent — live
+      `shipit-session-${liveSessionId}`,                           // compose — live
+      "shipit-session-fed987654321",                               // agent — orphan
+      "shipit-session-deadbeef0000-1111-2222-3333-444444444444",   // compose — orphan
+      "shipit-session-foo",                                        // wrong shape
+      "bridge",                                                    // default network
+    ].join("\n");
+
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "network" && args[1] === "ls") {
+        lsRequests.push(args);
+        return Promise.resolve(dockerListing);
+      }
+      if (args[0] === "network" && args[1] === "rm") {
+        rmRequests.push(args[2]);
+        return Promise.resolve("");
+      }
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker,
+    });
+
+    // The `ls` call must include the dangling=true safety filter and the
+    // `name=shipit-session-` scoping filter.
+    expect(lsRequests).toHaveLength(1);
+    expect(lsRequests[0]).toContain("--filter");
+    expect(lsRequests[0]).toContain("dangling=true");
+    expect(lsRequests[0]).toContain("name=shipit-session-");
+
+    // Only the two orphan networks get rm'd — both the agent-style and
+    // compose-style names. The live session's networks, the user-named
+    // oddball, and the default `bridge` all stay.
+    expect(rmRequests.sort()).toEqual([
+      "shipit-session-deadbeef0000-1111-2222-3333-444444444444",
+      "shipit-session-fed987654321",
+    ]);
+    expect(result.orphanNetworksRemoved).toBe(2);
+  });
+
+  it("preserves networks for idle-evicted (still-tracked) sessions", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+    ).run(sessionId, "Idle-Evicted", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+
+    const rmRequests: string[] = [];
+    const dockerListing = [
+      `shipit-session-${sessionId.slice(0, 12)}`,
+      `shipit-session-${sessionId}`,
+    ].join("\n");
+
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "network" && args[1] === "ls") return Promise.resolve(dockerListing);
+      if (args[0] === "network" && args[1] === "rm") {
+        rmRequests.push(args[2]);
+        return Promise.resolve("");
+      }
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker,
+    });
+
+    expect(rmRequests).toEqual([]);
+    expect(result.orphanNetworksRemoved).toBe(0);
+  });
+
+  it("orphan network sweep ignores rm failures (network reattached / already gone)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "network" && args[1] === "ls") {
+        return Promise.resolve("shipit-session-abc123def456");
+      }
+      if (args[0] === "network" && args[1] === "rm") {
+        return Promise.reject(new Error("network has active endpoints"));
+      }
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker,
+    });
+
+    expect(result.orphanNetworksRemoved).toBe(0);
+  });
+
   it("sweeps archived workspaces older than archivedWorkspaceDays", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
