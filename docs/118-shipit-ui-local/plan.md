@@ -284,6 +284,8 @@ Production session-worker images install these via an `npm install -g @anthropic
 
 **Note on rebuilds.** `docker-compose.yml` pins `image: shipit-dogfood:local` and the orchestrator's `composeUp` runs `docker compose up -d` *without* `--build`. Compose builds the image only when it's missing — so a `Dockerfile.dogfood` change is **not** picked up by an outer host that already has a cached `shipit-dogfood:local`. To pick up Dockerfile changes there, the stale image must be removed (or rebuilt) so the next `up` rebuilds it.
 
+**Self-heal for stale images.** Because that stale-image trap silently breaks the dogfood loop (the inner UI sits on "Agent Setup → Not installed" with no obvious cause), the `dev` service `command` also carries a `which claude || npm install -g …` guard. On a correctly baked image the `which` probe is a sub-second no-op; on a stale image it does a one-time ~15s global install so the inner orch can detect the CLIs without anyone having to manually nuke the cached image. The Dockerfile layer stays as the fast path for fresh builds; the command guard is the safety net.
+
 ### Real `ClaudeAdapter` is not test-exercised
 
 A previous draft claimed local mode is "exercised on every test run" because integration tests use `SessionRunner` + injected `agentFactory`. That's true for the *runner*, but the integration tests inject `FakeClaudeProcess`, not `ClaudeAdapter`. The real adapter's PTY lifecycle, NDJSON parsing, CLI error paths, and OS-process supervision are **not** exercised by `npm test`.
