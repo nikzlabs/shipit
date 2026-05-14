@@ -111,6 +111,18 @@ This shipped a visible $1.31 vs $5.41-style discrepancy. The fix collapses the t
 - The standalone cost pill, the `showSessionCost` setting, and its localStorage key were removed.
 - `turnUsage` rehydration moved from "attach to the last message group of each turn in chat history" to "fetch from `/api/sessions/:id/history` (sourced from `usage_turns`)". `PersistedMessage.turnUsage` and `WsChatHistoryMessage.turnUsage` are gone; the `messages.turn_usage` SQLite column stays (read-only) for back-compat.
 
+## Context occupancy includes cache tokens
+
+The dial originally read the "current context size" straight off `TurnUsage.inputTokens`. That was wrong under prompt caching (the default for Claude Code): the CLI reports `input_tokens` as **only the uncached** portion of the prompt, so a turn that actually occupies ~70K of the window can report `inputTokens: 4` while the rest shows up as `cache_read_input_tokens` / `cache_creation_input_tokens`. The dial displayed "Context: 4 / 200K".
+
+Fix: a shared `turnContextTokens(turn)` helper in `usage-types.ts` returns `inputTokens + cacheRead + cacheCreate` — the real context-window occupancy. Every "context size" surface now goes through it:
+
+- `ContextDial` — the dial reading, fill %, level color, sparkline scaling, `wasCompacted()` detection, and the "Largest turns" rows (now sorted by, and labelled with, context occupancy).
+- `useMessageHandler` — the `turn_usage_update` handler sets the UI store's `contextTokens` from `turnContextTokens(turn)` (drives the status-bar meter and usage modal).
+- `session-data.ts` — rehydration on session attach uses `turnContextTokens()` for the last turn.
+
+`inputTokens` alone is still used where it's genuinely wanted (the popover's "Input tokens" total, the usage modal's "Token totals" → Input row).
+
 ## Future extensions
 
 - **Auto-compact** — a setting that, on reaching 90%, has the agent itself proactively run a compaction during its next turn (agent-driven, not a UI button).
