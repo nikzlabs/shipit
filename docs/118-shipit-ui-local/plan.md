@@ -282,7 +282,7 @@ The dev compose service runs the inner orch in `RUNTIME_MODE=local`, which spawn
 
 Production session-worker images install these via an `npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp` layer. `Dockerfile.dogfood` carries the **same layer** (placed before the `COPY package.json` so it stays cached across lockfile churn). Without it the dogfood loop is dead on arrival.
 
-**Note on rebuilds.** `docker-compose.yml` pins `image: shipit-dogfood:local` and the orchestrator's `composeUp` runs `docker compose up -d` *without* `--build`. Compose builds the image only when it's missing — so a `Dockerfile.dogfood` change is **not** picked up by an outer host that already has a cached `shipit-dogfood:local`. To pick up Dockerfile changes there, the stale image must be removed (or rebuilt) so the next `up` rebuilds it.
+**Rebuilds.** `docker-compose.yml` pins `image: shipit-dogfood:local`. `ServiceManager.composeUp` / `composeUpService` run `docker compose up -d --build` — the `--build` flag forces Compose to re-evaluate the `build:` section on every `up`, so a changed `Dockerfile.dogfood` (or anything in its build context) is always rebuilt rather than silently ignored on a host that still has a cached `shipit-dogfood:local`. Docker's layer cache keeps the no-change case cheap (all cache hits). This is a general `ServiceManager` property, not dogfood-specific: any repo with a `build:` section gets the same always-fresh behavior, and repos that only declare `image:` see `--build` as a harmless no-op.
 
 ### Real `ClaudeAdapter` is not test-exercised
 
