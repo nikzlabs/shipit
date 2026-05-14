@@ -9,6 +9,10 @@ Run a working-enough ShipIt orchestrator *inside* a ShipIt session container, wi
 
 This replaces the deleted `docs/089-shipit-in-shipit/` plan, which tried to make nested *real* Docker work by relaxing the Docker proxy. That solved a different problem (production-fidelity nesting). For pure dogfooding, never trying Docker is simpler, smaller, and more aligned with the goal.
 
+> **Related:** `docs/131-dogfood-seed-sessions/plan.md` builds on this — a seed
+> script that provisions reproducible repo-backed inner sessions on dev-service
+> boot, and decouples the inner orch's GitHub token from the outer user's.
+
 ## Goal & non-goals
 
 **Goal.** Inside an outer ShipIt session whose workspace is the ShipIt repo, a Compose `dev` service runs the orchestrator with `RUNTIME_MODE=local`. Outer ShipIt's preview panel shows the inner UI. The inner UI lets the developer edit the ShipIt source via chat, run tests, see diffs, do git, manage PRs — i.e. all the things that don't require the inner orchestrator to spawn containers itself.
