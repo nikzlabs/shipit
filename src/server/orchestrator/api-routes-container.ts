@@ -131,6 +131,7 @@ export async function registerContainerRoutes(
             runnerRegistry: deps.runnerRegistry,
             defaultAgentId: deps.defaultAgentId,
             ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
+            ...(deps.loopDetector ? { loopDetector: deps.loopDetector } : {}),
           },
           request.params.id,
         );
@@ -159,6 +160,7 @@ export async function registerContainerRoutes(
             runnerRegistry: deps.runnerRegistry,
             defaultAgentId: deps.defaultAgentId,
             ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
+            ...(deps.loopDetector ? { loopDetector: deps.loopDetector } : {}),
           },
           request.params.id,
         );

@@ -48,8 +48,30 @@ export class RepoGit {
   }
 
   /**
+   * Read the bare cache's current HEAD commit, or `"unknown"` if it can't
+   * be resolved (empty repo, corrupt ref). Used to verify `fetchCache`
+   * actually advanced the cache — a fetch that "succeeds" against a stale
+   * embedded token but never moves HEAD is the silent root cause behind
+   * warm sessions provisioned from 270-commit-old config.
+   */
+  async readHead(): Promise<string> {
+    try {
+      return (await this.git.raw(["rev-parse", "HEAD"])).trim();
+    } catch {
+      return "unknown";
+    }
+  }
+
+  /**
    * Fetch all refs in the bare cache from origin.
    * Skips if the last fetch was less than `ttlMs` ago.
+   *
+   * Logs HEAD before/after so a fetch that completes without advancing the
+   * cache (stale embedded token, wrong remote) is visible in journalctl —
+   * the old log line only said "Fetched bare cache" and gave no way to
+   * tell a real update from a no-op. Throws on fetch failure so callers
+   * can surface a stale-cache warning to the user instead of silently
+   * serving warm sessions off frozen config.
    */
   async fetchCache(ttlMs = 60_000): Promise<void> {
     const markerPath = path.join(this.repoDir, ".shipit-last-fetch");
@@ -61,10 +83,15 @@ export class RepoGit {
     } catch {
       // Marker doesn't exist — proceed with fetch
     }
+    const headBefore = await this.readHead();
     await this.git.raw(["fetch", "--all", "--force", "--prune"]);
     // Touch the marker file
     fs.writeFileSync(markerPath, String(Date.now()));
-    console.log("[git] Fetched bare cache:", this.repoDir);
+    const headAfter = await this.readHead();
+    const advanced = headBefore !== headAfter ? "advanced" : "unchanged";
+    console.log(
+      `[git] Fetched bare cache: ${this.repoDir} HEAD ${headBefore.slice(0, 9)} → ${headAfter.slice(0, 9)} (${advanced})`,
+    );
     // Run gc --auto so accumulated loose objects don't grow the bare cache
     // unboundedly. --auto is cheap when thresholds aren't met (no-op);
     // when they are, git repacks behind the scenes. Non-fatal — gc

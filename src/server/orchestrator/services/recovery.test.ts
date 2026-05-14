@@ -19,6 +19,8 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { restartAgent, restartContainer } from "./recovery.js";
+import { createOomCircuitBreaker } from "../oom-circuit-breaker.js";
+import { createSessionLoopDetector } from "../loop-detector.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
@@ -532,5 +534,86 @@ describe("restartAgent (docs/127)", () => {
     expect(getOrCreateCalls).toBe(2);
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// Breaker + loop-detector reset on user-initiated restart
+// ---------------------------------------------------------------------------
+// Regression for Bug B: `restartContainer`/`restartAgent` reset the OOM
+// breaker but used to leave the loop detector's independent event window
+// intact. Since both gate the same runner factory — and the loop detector
+// can re-`forceTrip` the breaker off its stale window — a restart that
+// only cleared the breaker stayed sticky.
+
+describe("recovery clears BOTH the OOM breaker and the loop detector", () => {
+  it("restartContainer forgets the loop-detector window and un-trips the breaker", async () => {
+    const oomBreaker = createOomCircuitBreaker();
+    const loopDetector = createSessionLoopDetector();
+
+    // Drive the loop: 3 container_started events trip the detector, which
+    // force-trips the breaker — the exact state a session lands in after
+    // the create/phantom-exit loop.
+    loopDetector.recordContainerStarted("rescue-1");
+    loopDetector.recordContainerStarted("rescue-1");
+    const alert = loopDetector.recordContainerStarted("rescue-1");
+    expect(alert).not.toBeNull();
+    oomBreaker.forceTrip("rescue-1");
+    expect(oomBreaker.isTripped("rescue-1")).toBe(true);
+    expect(loopDetector.countInWindow("rescue-1")).toBe(3);
+
+    const oldRunner = makeStubRunner("rescue-1", false);
+    const freshRunner = makeStubRunner("rescue-1", false);
+    const registry = makeStubRegistry({ "rescue-1": oldRunner }, freshRunner);
+    const cm = makeStubContainerManager({ hasExisting: true, finalState: "running" });
+
+    await restartContainer(
+      {
+        sessionManager,
+        containerManager: cm,
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+        oomBreaker,
+        loopDetector,
+      },
+      "rescue-1",
+    );
+
+    // Both gates must be clear, or the very next create the user asked for
+    // would be refused (breaker) or instantly re-tripped (loop detector).
+    expect(oomBreaker.isTripped("rescue-1")).toBe(false);
+    expect(loopDetector.countInWindow("rescue-1")).toBe(0);
+  });
+
+  it("restartAgent forgets the loop-detector window and un-trips the breaker", async () => {
+    const oomBreaker = createOomCircuitBreaker();
+    const loopDetector = createSessionLoopDetector();
+
+    loopDetector.recordContainerStarted("rescue-1");
+    loopDetector.recordContainerStarted("rescue-1");
+    loopDetector.recordContainerStarted("rescue-1");
+    oomBreaker.forceTrip("rescue-1");
+    expect(oomBreaker.isTripped("rescue-1")).toBe(true);
+    expect(loopDetector.countInWindow("rescue-1")).toBe(3);
+
+    const oldRunner = makeStubRunner("rescue-1", false);
+    const freshRunner = makeStubRunner("rescue-1", false);
+    const registry = makeStubRegistry({ "rescue-1": oldRunner }, freshRunner);
+    const cm = makeStubContainerManager({ hasExisting: true, finalState: "running" });
+
+    await restartAgent(
+      {
+        sessionManager,
+        containerManager: cm,
+        runnerRegistry: registry,
+        defaultAgentId: "claude" as never,
+        oomBreaker,
+        loopDetector,
+      },
+      "rescue-1",
+    );
+
+    expect(oomBreaker.isTripped("rescue-1")).toBe(false);
+    expect(loopDetector.countInWindow("rescue-1")).toBe(0);
+  });
 });
 

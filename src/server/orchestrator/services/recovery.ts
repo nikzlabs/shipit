@@ -16,6 +16,7 @@ import type { SessionContainerManager } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { SessionOomCircuitBreaker } from "../oom-circuit-breaker.js";
+import type { SessionLoopDetector } from "../loop-detector.js";
 import { ServiceError } from "./types.js";
 
 /** Short timeout for recovery-time worker calls — never block on a wedged worker. */
@@ -90,6 +91,14 @@ export interface RecoveryDeps {
    * breaker would refuse the very restart the user asked for.
    */
   oomBreaker?: SessionOomCircuitBreaker;
+  /**
+   * SIGTERM/recreate loop detector. Reset alongside the OOM breaker on a
+   * user-initiated restart — the loop detector keeps its own independent
+   * per-session event window, and a `forceTrip` driven by that window
+   * survives an `oomBreaker.reset()` alone. Both gate the same runner
+   * factory, so a restart must clear both or it stays blocked.
+   */
+  loopDetector?: SessionLoopDetector;
 }
 
 export interface KillAgentResult {
@@ -198,8 +207,11 @@ export async function restartContainer(
   // Rescue session is the explicit user opt-in to retry — clear the
   // breaker so the new container actually gets created. Without this,
   // the factory would see the trip flag and refuse to make a container
-  // for the very restart the user just requested.
+  // for the very restart the user just requested. The loop detector
+  // keeps an independent event window that can re-`forceTrip` the
+  // breaker, so it must be forgotten in the same breath.
   deps.oomBreaker?.reset(sessionId);
+  deps.loopDetector?.forget(sessionId);
 
   if (!deps.containerManager) {
     throw new ServiceError(503, "Container manager not available");
@@ -368,9 +380,10 @@ export async function restartAgent(
   if (!session) throw new ServiceError(404, "Session not found");
 
   // Same rationale as restartContainer — see comment there. The
-  // agent-container restart is an explicit user retry so the breaker
-  // should not gate it.
+  // agent-container restart is an explicit user retry so neither the
+  // breaker nor the loop detector should gate it.
   deps.oomBreaker?.reset(sessionId);
+  deps.loopDetector?.forget(sessionId);
 
   if (!deps.containerManager) {
     throw new ServiceError(503, "Container manager not available");

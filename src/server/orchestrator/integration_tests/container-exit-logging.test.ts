@@ -73,10 +73,19 @@ function makeFakeRegistry(entries: Map<string, SessionRunnerInterface>): Session
 function makeFakeContainerManager(
   containers: Map<string, Partial<SessionContainer>>,
   standby: Set<string>,
+  /**
+   * Optional `adoptRunningContainer` stub. Receives the session id; when it
+   * returns `true` the reconciler treats the container as re-adopted and
+   * must NOT dispose the runner. `adoptCalls` records every invocation.
+   */
+  adopt?: { impl: (sid: string) => Promise<boolean>; calls: string[] },
 ): SessionContainerManager {
   return {
     get: (sid: string) => containers.get(sid) as SessionContainer | undefined,
     isStandby: (sid: string) => standby.has(sid),
+    adoptRunningContainer: adopt
+      ? async (sid: string) => { adopt.calls.push(sid); return adopt.impl(sid); }
+      : async () => false,
   } as unknown as SessionContainerManager;
 }
 
@@ -161,7 +170,7 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
 });
 
 describe("createMissingContainerReconciler (orphan-runner detector)", () => {
-  it("force-disposes a runner whose container has vanished and writes a log entry", () => {
+  it("force-disposes a runner whose container has vanished and writes a log entry", async () => {
     const { runner, emitted, disposeCalls } = makeFakeRunner("sess-orphan");
     const registry = makeFakeRegistry(new Map([["sess-orphan", runner]]));
     // No container for sess-orphan — simulates a missed `die` event.
@@ -173,7 +182,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       runnerRegistry: registry,
       broadcastLog: (sid, source, text) => calls.push({ sid, source, text }),
     });
-    reconcile();
+    await reconcile();
 
     expect(disposeCalls).toEqual([{ force: true }]);
     expect(calls).toHaveLength(1);
@@ -182,7 +191,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(emitted.find((m) => m.type === "session_status")).toBeDefined();
   });
 
-  it("leaves healthy runners alone when their container is present", () => {
+  it("leaves healthy runners alone when their container is present", async () => {
     const { runner, disposeCalls } = makeFakeRunner("sess-ok");
     const registry = makeFakeRegistry(new Map([["sess-ok", runner]]));
     const containerManager = makeFakeContainerManager(
@@ -196,13 +205,13 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       runnerRegistry: registry,
       broadcastLog: (...args) => calls.push(args),
     });
-    reconcile();
+    await reconcile();
 
     expect(disposeCalls).toEqual([]);
     expect(calls).toEqual([]);
   });
 
-  it("skips standby sessions (warm pool transient race)", () => {
+  it("skips standby sessions (warm pool transient race)", async () => {
     const { runner, disposeCalls } = makeFakeRunner("sess-warm");
     const registry = makeFakeRegistry(new Map([["sess-warm", runner]]));
     // Container missing AND standby — the warm pool may have a registered
@@ -214,12 +223,12 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       runnerRegistry: registry,
       broadcastLog: () => undefined,
     });
-    reconcile();
+    await reconcile();
 
     expect(disposeCalls).toEqual([]);
   });
 
-  it("handles multiple runners — orphans go, healthy stay", () => {
+  it("handles multiple runners — orphans go, healthy stay", async () => {
     const a = makeFakeRunner("sess-a");
     const b = makeFakeRunner("sess-b");
     const c = makeFakeRunner("sess-c");
@@ -240,7 +249,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       runnerRegistry: registry,
       broadcastLog: (sid) => logged.push(sid),
     });
-    reconcile();
+    await reconcile();
 
     expect(a.disposeCalls).toEqual([{ force: true }]);
     expect(b.disposeCalls).toEqual([]);
@@ -248,7 +257,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(logged.sort()).toEqual(["sess-a", "sess-c"]);
   });
 
-  it("is a no-op when no containerManager is wired (local mode)", () => {
+  it("is a no-op when no containerManager is wired (local mode)", async () => {
     const { runner, disposeCalls } = makeFakeRunner("sess-x");
     const registry = makeFakeRegistry(new Map([["sess-x", runner]]));
 
@@ -257,9 +266,83 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       runnerRegistry: registry,
       broadcastLog: () => undefined,
     });
-    reconcile();
+    await reconcile();
 
     expect(disposeCalls).toEqual([]);
+  });
+
+  // ---- C3: re-adopt a live-but-untracked container before disposing ----
+
+  it("re-adopts a live untracked container and does NOT dispose the runner", async () => {
+    const { runner, emitted, disposeCalls } = makeFakeRunner("sess-adopt");
+    const registry = makeFakeRegistry(new Map([["sess-adopt", runner]]));
+    // Container missing from the manager map, but `adoptRunningContainer`
+    // finds a live Docker container and re-adopts it.
+    const adopt = { impl: async () => true, calls: [] as string[] };
+    const containerManager = makeFakeContainerManager(new Map(), new Set(), adopt);
+    const logged: { sid: string; text: string }[] = [];
+
+    const reconcile = createMissingContainerReconciler({
+      containerManager,
+      runnerRegistry: registry,
+      broadcastLog: (sid, _source, text) => logged.push({ sid, text }),
+      // The resolver itself isn't exercised here (the stub ignores it) — its
+      // mere presence is what enables the adoption branch.
+      sessionInfoResolver: (sid) => ({ workspaceDir: `/ws/${sid}`, dockerAccess: false }),
+    });
+    await reconcile();
+
+    expect(adopt.calls).toEqual(["sess-adopt"]);
+    // Re-adopted → the runner is healed in place, NOT disposed.
+    expect(disposeCalls).toEqual([]);
+    expect(emitted.find((m) => m.type === "session_status")).toBeUndefined();
+    // A breadcrumb is still written so the recovery is visible in the log ring.
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.text).toMatch(/recovered/i);
+  });
+
+  it("force-disposes the runner when adoption fails (no live container found)", async () => {
+    const { runner, disposeCalls } = makeFakeRunner("sess-gone");
+    const registry = makeFakeRegistry(new Map([["sess-gone", runner]]));
+    // `adoptRunningContainer` returns false — e.g. the resolver had no
+    // workspaceDir, or there genuinely is no live container.
+    const adopt = { impl: async () => false, calls: [] as string[] };
+    const containerManager = makeFakeContainerManager(new Map(), new Set(), adopt);
+
+    const reconcile = createMissingContainerReconciler({
+      containerManager,
+      runnerRegistry: registry,
+      broadcastLog: () => undefined,
+      sessionInfoResolver: (sid) => ({ workspaceDir: `/ws/${sid}`, dockerAccess: false }),
+    });
+    await reconcile();
+
+    expect(adopt.calls).toEqual(["sess-gone"]);
+    // Adoption failed → fall through to the original force-dispose path.
+    expect(disposeCalls).toEqual([{ force: true }]);
+  });
+
+  it("still force-disposes when adoptRunningContainer throws (Docker error)", async () => {
+    const { runner, disposeCalls } = makeFakeRunner("sess-throw");
+    const registry = makeFakeRegistry(new Map([["sess-throw", runner]]));
+    const adopt = {
+      impl: async () => { throw new Error("docker daemon unreachable"); },
+      calls: [] as string[],
+    };
+    const containerManager = makeFakeContainerManager(new Map(), new Set(), adopt);
+
+    const reconcile = createMissingContainerReconciler({
+      containerManager,
+      runnerRegistry: registry,
+      broadcastLog: () => undefined,
+      sessionInfoResolver: (sid) => ({ workspaceDir: `/ws/${sid}`, dockerAccess: false }),
+    });
+    await reconcile();
+
+    expect(adopt.calls).toEqual(["sess-throw"]);
+    // A throwing adoption must not abort the reconcile — the runner is still
+    // force-disposed so the session doesn't hang forever.
+    expect(disposeCalls).toEqual([{ force: true }]);
   });
 });
 

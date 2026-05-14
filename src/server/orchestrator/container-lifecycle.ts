@@ -281,6 +281,15 @@ export async function createContainer(
     hostWorkspaceDir: config.sessionDir,
     dockerAccess: config.dockerAccess ?? false,
     sessionNetworkName,
+    // Always record what the agent container actually booted with — the
+    // claim-time refresh compares this against the now-current shipit.yaml
+    // to detect a stale-limit standby. (`resourceLimits` below is the
+    // separate child-container budget, docker-access sessions only.)
+    bootedLimits: {
+      memoryLimit: config.memoryLimit,
+      cpuQuota: config.cpuQuota,
+      pidsLimit: config.pidsLimit,
+    },
     resourceLimits: (config.dockerAccess) ? {
       memory: config.memoryLimit,
       cpuQuota: config.cpuQuota,
@@ -320,6 +329,13 @@ export async function createContainer(
       Env: env,
     });
 
+    // Assign the container ID BEFORE start() so the health monitor's
+    // stale-incarnation guard (`containerId !== sc.id`) is armed as early
+    // as possible. If the new container dies before we'd otherwise reach
+    // the `sc.id = …` below, a `die` event arriving with this ID is
+    // correctly attributed instead of being mistaken for a stale event.
+    sc.id = container.id;
+
     await container.start();
 
     // Get the container's IP on the bridge network
@@ -330,7 +346,6 @@ export async function createContainer(
       throw new Error(`Container has no IP on network ${deps.networkName}`);
     }
 
-    sc.id = container.id;
     sc.containerIp = networkInfo.IPAddress;
     sc.workerUrl = `http://${sc.containerIp}:${deps.workerPort}`;
 
