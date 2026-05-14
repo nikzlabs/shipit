@@ -48,10 +48,10 @@ import { resolveAgentDockerLimits } from "./session-container.js";
 async function refreshCloneToLatestMain(
   sessionDir: string,
   createGitManager: ApiDeps["createGitManager"],
-): Promise<{ headChanged: boolean; fetchDurationMs: number }> {
+): Promise<{ headChanged: boolean; fetched: boolean; fetchDurationMs: number }> {
   const sessionGit = createGitManager(sessionDir);
   const headBefore = await sessionGit.getHeadHash();
-  const { resetTarget, fetchDurationMs } = await fetchAndResolveDefaultBranch(sessionDir);
+  const { resetTarget, fetched, fetchDurationMs } = await fetchAndResolveDefaultBranch(sessionDir);
   if (resetTarget) {
     await sessionGit.rollback(resetTarget);
   }
@@ -60,7 +60,9 @@ async function refreshCloneToLatestMain(
   if (headChanged) {
     try { unlinkSync(path.join(sessionDir, ".shipit", ".install-done")); } catch { /* marker may not exist */ }
   }
-  return { headChanged, fetchDurationMs };
+  // `fetched` is propagated so the claim handler can surface a stale-clone
+  // warning — a workspace fetch that silently no-ops is the W2 root cause.
+  return { headChanged, fetched, fetchDurationMs };
 }
 
 export async function registerSessionRoutes(
@@ -127,6 +129,20 @@ export async function registerSessionRoutes(
         `rebuilds with the current shipit.yaml on first attach.`,
     );
     await cm.destroy(sessionId);
+  }
+
+  /**
+   * Surface a workspace-clone fetch that silently no-op'd during a claim —
+   * the W2 root cause. When `fetched` is false the clone was *not* refreshed
+   * against the real remote, so the claimed session may be on stale code.
+   * Shared by all `refreshCloneToLatestMain` call sites in the claim handler.
+   */
+  function warnIfStaleClaimFetch(fetched: boolean, url: string): void {
+    if (fetched) return;
+    console.warn(`[claim-session] Workspace fetch failed for ${url} — using the existing clone, which may be stale`);
+    deps.sseBroadcast("error", {
+      message: `Claimed session for ${url} may be based on stale code — could not fetch the latest commits.`,
+    });
   }
 
   // ---- Session-scoped reads ----
@@ -493,6 +509,7 @@ export async function registerSessionRoutes(
             try {
               const result = await refreshCloneToLatestMain(reusable.workspaceDir, createGitManager);
               fetchDurationMs = result.fetchDurationMs;
+              warnIfStaleClaimFetch(result.fetched, url);
               if (result.headChanged) {
                 // HEAD moved — the standby container may have booted with
                 // limits from a now-stale shipit.yaml. Re-provision if so.
@@ -517,6 +534,7 @@ export async function registerSessionRoutes(
               try {
                 const result = await refreshCloneToLatestMain(warmSession.workspaceDir, createGitManager);
                 fetchDurationMs = result.fetchDurationMs;
+                warnIfStaleClaimFetch(result.fetched, url);
                 if (result.headChanged) {
                   // HEAD moved — re-provision the standby if its booted
                   // limits no longer match the now-current shipit.yaml.
@@ -544,6 +562,7 @@ export async function registerSessionRoutes(
                 try {
                   const result = await refreshCloneToLatestMain(warmSession.workspaceDir, createGitManager);
                   fetchDurationMs = result.fetchDurationMs;
+                  warnIfStaleClaimFetch(result.fetched, url);
                   if (result.headChanged) {
                     // HEAD moved — re-provision the standby if its booted
                     // limits no longer match the now-current shipit.yaml.

@@ -34,6 +34,14 @@ export async function pushToOrigin(git: GitManager): Promise<string | null> {
 }
 
 /**
+ * Kill the `git fetch` child if it produces no output for this long — a
+ * credential prompt or a dead remote stalls silently, so a stall is our
+ * only signal. Progress output (on stderr) resets the timer, so a slow
+ * but live fetch of a large repo is not affected.
+ */
+const FETCH_STALL_TIMEOUT_MS = 30_000;
+
+/**
  * Fetch `origin` in a session/workspace clone and resolve the current
  * default-branch ref.
  *
@@ -69,14 +77,6 @@ export async function pushToOrigin(git: GitManager): Promise<string | null> {
  *   resolved; `fetched` is whether the network fetch actually succeeded;
  *   plus the fetch duration for telemetry.
  */
-/**
- * Kill the `git fetch` child if it produces no output for this long — a
- * credential prompt or a dead remote stalls silently, so a stall is our
- * only signal. Progress output (on stderr) resets the timer, so a slow
- * but live fetch of a large repo is not affected.
- */
-const FETCH_STALL_TIMEOUT_MS = 30_000;
-
 export async function fetchAndResolveDefaultBranch(
   workspaceDir: string,
 ): Promise<{ resetTarget: string | undefined; fetched: boolean; fetchDurationMs: number }> {
