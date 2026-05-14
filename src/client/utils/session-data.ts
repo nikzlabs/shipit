@@ -1,6 +1,7 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import type { GitCommit } from "../components/GitHistory.js";
 import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage } from "../../server/shared/types.js";
+import { turnContextTokens } from "../../server/shared/types.js";
 import type { AgentOption } from "../components/AgentPicker.js";
 import type { TemplateInfo } from "../components/TemplateSelector.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -94,7 +95,9 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   if (data.turnUsage) {
     session.setTurnUsageForSession(sessionId, data.turnUsage);
     if (data.turnUsage.length > 0) {
-      ui.setContextTokens(data.turnUsage[data.turnUsage.length - 1].inputTokens);
+      // Real context occupancy = uncached input + cache reads + cache writes;
+      // `inputTokens` alone undercounts massively under prompt caching.
+      ui.setContextTokens(turnContextTokens(data.turnUsage[data.turnUsage.length - 1]));
     }
   }
   if (data.sessionUsage) {
