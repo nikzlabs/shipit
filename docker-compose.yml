@@ -39,6 +39,13 @@ services:
     # parent dirs). Required because `.inner-shipit/` is in .gitignore
     # and won't exist on a fresh checkout.
     #
+    # The agent CLIs (claude / codex) are NOT installed here — they're baked
+    # into Dockerfile.dogfood. ServiceManager runs `docker compose up -d
+    # --build`, so a changed Dockerfile.dogfood is always rebuilt and the
+    # bake can't go stale on a host with an old cached `shipit-dogfood:local`.
+    # See "Agent CLIs must be baked into the dev image" in
+    # docs/118-shipit-ui-local/plan.md.
+    #
     # Dev-mode wiring: Vite's dev server runs on the exposed port 3000
     # (so the outer preview proxy reaches it directly) and the inner
     # orchestrator runs on internal port 4000. Vite proxies `/api`,

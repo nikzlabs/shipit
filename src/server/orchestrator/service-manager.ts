@@ -1323,14 +1323,26 @@ export class ServiceManager extends EventEmitter {
     ];
   }
 
-  /** Run `docker compose up -d`, optionally for specific services only. */
+  /**
+   * Run `docker compose up -d --build`, optionally for specific services only.
+   *
+   * `--build` matters for any service that declares a `build:` section (e.g.
+   * the ShipIt-in-ShipIt dogfood `dev` service). Without it, `docker compose
+   * up` only builds when the named image is *missing* — so a changed
+   * `Dockerfile` or build context on a host that already has the cached image
+   * is silently ignored, and the stale image runs forever. `--build` forces
+   * Compose to re-evaluate the build every `up`; Docker's layer cache makes
+   * the no-change case cheap (all cache hits). For services that only declare
+   * `image:` (the common case — most user repos pull a prebuilt image), there
+   * is nothing to build and `--build` is a harmless no-op.
+   */
   private composeUp(serviceNames?: string[]): Promise<void> {
-    return this.runComposeUpWithConflictRecovery("up", "-d", "--remove-orphans", ...(serviceNames ?? []));
+    return this.runComposeUpWithConflictRecovery("up", "-d", "--build", "--remove-orphans", ...(serviceNames ?? []));
   }
 
-  /** Run `docker compose up -d` for a specific manual service. */
+  /** Run `docker compose up -d --build` for a specific manual service. */
   private composeUpService(name: string): Promise<void> {
-    return this.runComposeUpWithConflictRecovery("up", "-d", name);
+    return this.runComposeUpWithConflictRecovery("up", "-d", "--build", name);
   }
 
   /**
