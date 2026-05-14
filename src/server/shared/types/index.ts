@@ -1,5 +1,6 @@
 export * from "./claude-types.js";
 export * from "./agent-types.js";
+export * from "./mcp-types.js";
 export * from "./domain-types.js";
 export * from "./attachment-types.js";
 export * from "./github-types.js";

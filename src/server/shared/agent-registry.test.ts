@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AgentRegistry } from "./agent-registry.js";
+import { AgentRegistry, ALLOWED_ENV_KEYS, isAllowedAgentEnvKey } from "./agent-registry.js";
 
 const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
 
@@ -101,5 +101,26 @@ describe("AgentRegistry / isAuthConfigured('codex')", () => {
     process.env.OPENAI_API_KEY = "sk-only";
     registry.refreshAuth("codex");
     expect(registry.get("codex")?.authConfigured).toBe(true);
+  });
+});
+
+describe("isAllowedAgentEnvKey (docs/088)", () => {
+  it("accepts literal allowlist entries", () => {
+    for (const key of ALLOWED_ENV_KEYS) {
+      expect(isAllowedAgentEnvKey(key)).toBe(true);
+    }
+  });
+
+  it("accepts any mcp__* key", () => {
+    expect(isAllowedAgentEnvKey("mcp__linear__LINEAR_API_KEY")).toBe(true);
+    expect(isAllowedAgentEnvKey("mcp__sentry__SENTRY_AUTH_TOKEN")).toBe(true);
+    expect(isAllowedAgentEnvKey("mcp__a__b")).toBe(true);
+  });
+
+  it("rejects unknown keys, empty strings, and near-misses", () => {
+    expect(isAllowedAgentEnvKey("")).toBe(false);
+    expect(isAllowedAgentEnvKey("RANDOM_SECRET")).toBe(false);
+    expect(isAllowedAgentEnvKey("mcp_linear_KEY")).toBe(false);
+    expect(isAllowedAgentEnvKey("MCP__linear__KEY")).toBe(false);
   });
 });

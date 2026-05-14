@@ -1,0 +1,457 @@
+/**
+ * Settings → MCP Servers panel (docs/088-mcp-integration).
+ *
+ * Account-level CRUD for user-configured MCP servers. Server config blobs
+ * carry `$secret:` placeholders; the form collects raw secret values
+ * separately and the store sends them as a `secrets` map that the server
+ * stores in `CredentialStore.agentEnv` (never echoed back). Per-server
+ * runtime status arrives via `mcp_server_status` WS messages.
+ */
+
+// eslint-disable-next-line no-restricted-imports -- useEffect: one-shot fetch of account-level MCP servers on panel mount (external system sync)
+import { useEffect, useState } from "react";
+import { Button } from "./ui/button.js";
+import { useMcpStore } from "../stores/mcp-store.js";
+import type {
+  McpServerConfig,
+  McpStdioServerConfig,
+  McpHttpServerConfig,
+  McpTestResult,
+} from "../../server/shared/types.js";
+
+interface KvRow {
+  key: string;
+  value: string;
+}
+
+interface FormState {
+  /** Original name when editing (for the PUT :id path). Empty when adding. */
+  editingId: string;
+  name: string;
+  type: "stdio" | "http";
+  command: string;
+  args: string;
+  url: string;
+  npmPackage: string;
+  /** stdio env vars / http headers — values are raw secrets. */
+  kv: KvRow[];
+  enabled: boolean;
+}
+
+const EMPTY_FORM: FormState = {
+  editingId: "",
+  name: "",
+  type: "stdio",
+  command: "npx",
+  args: "",
+  url: "",
+  npmPackage: "",
+  kv: [],
+  enabled: true,
+};
+
+// Hyphens are disallowed — the name becomes part of the `mcp__<name>__<KEY>`
+// env-var identifier (see services/mcp.ts).
+const NAME_RE = /^[a-z][a-z0-9]*$/;
+
+/** Build the config blob + secrets map from form state. */
+function buildPayload(form: FormState): {
+  config: McpServerConfig;
+  secrets: Record<string, string>;
+} {
+  const secrets: Record<string, string> = {};
+  const placeholders: Record<string, string> = {};
+  for (const row of form.kv) {
+    const k = row.key.trim();
+    if (!k) continue;
+    const secretKey = `mcp__${form.name}__${k}`;
+    placeholders[k] = `$secret:${secretKey}`;
+    if (row.value) secrets[secretKey] = row.value;
+  }
+
+  if (form.type === "stdio") {
+    const config: McpStdioServerConfig = {
+      name: form.name,
+      type: "stdio",
+      command: form.command.trim(),
+      enabled: form.enabled,
+    };
+    const args = form.args
+      .split(/\s+/)
+      .map((a) => a.trim())
+      .filter(Boolean);
+    if (args.length > 0) config.args = args;
+    if (Object.keys(placeholders).length > 0) config.env = placeholders;
+    if (form.npmPackage.trim()) config.npmPackage = form.npmPackage.trim();
+    return { config, secrets };
+  }
+
+  const config: McpHttpServerConfig = {
+    name: form.name,
+    type: "http",
+    url: form.url.trim(),
+    enabled: form.enabled,
+  };
+  if (Object.keys(placeholders).length > 0) config.headers = placeholders;
+  return { config, secrets };
+}
+
+/** Derive form state from an existing server (secrets are never echoed). */
+function formFromServer(server: McpServerConfig): FormState {
+  const kvSource =
+    server.type === "stdio" ? server.env ?? {} : server.headers ?? {};
+  return {
+    editingId: server.name,
+    name: server.name,
+    type: server.type,
+    command: server.type === "stdio" ? server.command : "npx",
+    args: server.type === "stdio" ? (server.args ?? []).join(" ") : "",
+    url: server.type === "http" ? server.url : "",
+    npmPackage: server.type === "stdio" ? server.npmPackage ?? "" : "",
+    // Keys are kept; values start empty — the user re-enters secrets to change them.
+    kv: Object.keys(kvSource).map((key) => ({ key, value: "" })),
+    enabled: server.enabled,
+  };
+}
+
+const inputClass =
+  "w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-accent)";
+
+function StatusBadge({ name }: { name: string }) {
+  const status = useMcpStore((s) => s.statuses[name]);
+  if (!status) return null;
+  const color =
+    status.state === "loaded"
+      ? "text-(--color-success)"
+      : status.state === "failed"
+        ? "text-(--color-error)"
+        : status.state === "crashed"
+          ? "text-(--color-warning)"
+          : "text-(--color-text-tertiary)";
+  return (
+    <span className={`text-xs ${color}`} title={status.reason}>
+      ● {status.state}
+      {status.reason ? ` — ${status.reason}` : ""}
+    </span>
+  );
+}
+
+export function McpServerSettings({ hasActiveSession }: { hasActiveSession: boolean }) {
+  const servers = useMcpStore((s) => s.servers);
+  const loading = useMcpStore((s) => s.loading);
+  const error = useMcpStore((s) => s.error);
+  const fetchServers = useMcpStore((s) => s.fetchServers);
+  const addServer = useMcpStore((s) => s.addServer);
+  const updateServer = useMcpStore((s) => s.updateServer);
+  const removeServer = useMcpStore((s) => s.removeServer);
+  const testServer = useMcpStore((s) => s.testServer);
+
+  const [form, setForm] = useState<FormState | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [testResults, setTestResults] = useState<Record<string, McpTestResult | "loading">>({});
+
+  // eslint-disable-next-line no-restricted-syntax -- one-shot fetch on mount; the MCP server list is account-level external state
+  useEffect(() => {
+    void fetchServers();
+  }, [fetchServers]);
+
+  function startAdd() {
+    setForm({ ...EMPTY_FORM });
+    setFormError(null);
+  }
+
+  function startEdit(server: McpServerConfig) {
+    setForm(formFromServer(server));
+    setFormError(null);
+  }
+
+  async function save() {
+    if (!form) return;
+    if (!NAME_RE.test(form.name)) {
+      setFormError("Name must be lowercase alphanumeric, starting with a letter (no hyphens).");
+      return;
+    }
+    if (form.type === "stdio" && !form.command.trim()) {
+      setFormError("Command is required for stdio servers.");
+      return;
+    }
+    if (form.type === "http" && !form.url.trim()) {
+      setFormError("URL is required for HTTP servers.");
+      return;
+    }
+    setSaving(true);
+    setFormError(null);
+    try {
+      const { config, secrets } = buildPayload(form);
+      if (form.editingId) {
+        await updateServer(form.editingId, config, secrets);
+      } else {
+        await addServer(config, secrets);
+      }
+      setForm(null);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleEnabled(server: McpServerConfig) {
+    try {
+      await updateServer(server.name, { ...server, enabled: !server.enabled }, {});
+    } catch {
+      /* error surfaced via store */
+    }
+  }
+
+  async function runTest(server: McpServerConfig) {
+    setTestResults((r) => ({ ...r, [server.name]: "loading" }));
+    try {
+      const result = await testServer(server.name);
+      setTestResults((r) => ({ ...r, [server.name]: result }));
+    } catch (err) {
+      setTestResults((r) => ({
+        ...r,
+        [server.name]: { ok: false, error: err instanceof Error ? err.message : String(err) },
+      }));
+    }
+  }
+
+  function updateForm(patch: Partial<FormState>) {
+    setForm((f) => (f ? { ...f, ...patch } : f));
+  }
+
+  function setKv(idx: number, patch: Partial<KvRow>) {
+    setForm((f) => {
+      if (!f) return f;
+      const kv = [...f.kv];
+      kv[idx] = { ...kv[idx], ...patch };
+      return { ...f, kv };
+    });
+  }
+
+  return (
+    <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="mcp-settings">
+      <div>
+        <h3 className="text-sm font-medium text-(--color-text-primary)">MCP Servers</h3>
+        <p className="text-xs text-(--color-text-tertiary) mt-0.5">
+          Connect your own Model Context Protocol servers (Linear, Sentry, Notion, …) so the
+          agent can use their tools. Configured once per account — available in every session.
+        </p>
+      </div>
+
+      {error && (
+        <div className="rounded-md border border-(--color-error) bg-(--color-bg-secondary) px-3 py-2 text-xs text-(--color-error)">
+          {error}
+        </div>
+      )}
+
+      {loading && servers.length === 0 ? (
+        <p className="text-sm text-(--color-text-tertiary)">Loading…</p>
+      ) : servers.length === 0 && !form ? (
+        <p className="text-sm text-(--color-text-tertiary)">No MCP servers configured yet.</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {servers.map((server) => {
+            const result = testResults[server.name];
+            return (
+              <li
+                key={server.name}
+                className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 flex flex-col gap-2"
+                data-testid={`mcp-server-${server.name}`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-medium text-(--color-text-primary) truncate">
+                      {server.name}
+                    </span>
+                    <span className="text-xs text-(--color-text-tertiary)">{server.type}</span>
+                    {!server.enabled && (
+                      <span className="text-xs text-(--color-text-tertiary)">(disabled)</span>
+                    )}
+                    <StatusBadge name={server.name} />
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button size="sm" variant="ghost" onClick={() => void toggleEnabled(server)}>
+                      {server.enabled ? "Disable" : "Enable"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void runTest(server)}
+                      disabled={!hasActiveSession}
+                      title={hasActiveSession ? undefined : "Start a session to test"}
+                    >
+                      Test
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => startEdit(server)}>
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void removeServer(server.name)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+                <p className="text-xs text-(--color-text-tertiary) truncate">
+                  {server.type === "stdio"
+                    ? `${server.command} ${(server.args ?? []).join(" ")}`
+                    : server.url}
+                </p>
+                {result === "loading" && (
+                  <p className="text-xs text-(--color-text-tertiary)">Testing…</p>
+                )}
+                {result && result !== "loading" && result.ok && (
+                  <p className="text-xs text-(--color-success)">
+                    Connected — {result.tools.length} tool(s):{" "}
+                    {result.tools.map((t) => t.name).join(", ") || "none"}
+                  </p>
+                )}
+                {result && result !== "loading" && !result.ok && (
+                  <p className="text-xs text-(--color-error)">Test failed: {result.error}</p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {form ? (
+        <div
+          className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 flex flex-col gap-3"
+          data-testid="mcp-server-form"
+        >
+          <h4 className="text-sm font-medium text-(--color-text-primary)">
+            {form.editingId ? `Edit "${form.editingId}"` : "Add MCP Server"}
+          </h4>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-(--color-text-secondary)">Name</span>
+            <input
+              className={inputClass}
+              value={form.name}
+              placeholder="linear"
+              onChange={(e) => updateForm({ name: e.target.value })}
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-(--color-text-secondary)">Type</span>
+            <select
+              className={inputClass}
+              value={form.type}
+              onChange={(e) => updateForm({ type: e.target.value as "stdio" | "http" })}
+            >
+              <option value="stdio">stdio (spawned process)</option>
+              <option value="http">http (remote endpoint)</option>
+            </select>
+          </label>
+
+          {form.type === "stdio" ? (
+            <>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-(--color-text-secondary)">Command</span>
+                <input
+                  className={inputClass}
+                  value={form.command}
+                  placeholder="npx"
+                  onChange={(e) => updateForm({ command: e.target.value })}
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-(--color-text-secondary)">
+                  Arguments (space-separated)
+                </span>
+                <input
+                  className={inputClass}
+                  value={form.args}
+                  placeholder="-y @anthropic-ai/linear-mcp"
+                  onChange={(e) => updateForm({ args: e.target.value })}
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-(--color-text-secondary)">
+                  npm package (optional — installed at session start)
+                </span>
+                <input
+                  className={inputClass}
+                  value={form.npmPackage}
+                  placeholder="@anthropic-ai/linear-mcp"
+                  onChange={(e) => updateForm({ npmPackage: e.target.value })}
+                />
+              </label>
+            </>
+          ) : (
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-(--color-text-secondary)">URL</span>
+              <input
+                className={inputClass}
+                value={form.url}
+                placeholder="https://mcp.linear.app/mcp"
+                onChange={(e) => updateForm({ url: e.target.value })}
+              />
+            </label>
+          )}
+
+          <div className="flex flex-col gap-2">
+            <span className="text-xs text-(--color-text-secondary)">
+              {form.type === "stdio" ? "Environment variables" : "Headers"} (stored as secrets)
+            </span>
+            {form.kv.map((row, idx) => (
+              <div key={idx} className="flex gap-2 items-center">
+                <input
+                  className={inputClass}
+                  value={row.key}
+                  placeholder={form.type === "stdio" ? "LINEAR_API_KEY" : "Authorization"}
+                  onChange={(e) => setKv(idx, { key: e.target.value })}
+                />
+                <input
+                  className={inputClass}
+                  type="password"
+                  value={row.value}
+                  placeholder={form.editingId ? "(unchanged)" : "value"}
+                  onChange={(e) => setKv(idx, { value: e.target.value })}
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() =>
+                    updateForm({ kv: form.kv.filter((_, i) => i !== idx) })
+                  }
+                >
+                  ✕
+                </Button>
+              </div>
+            ))}
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => updateForm({ kv: [...form.kv, { key: "", value: "" }] })}
+            >
+              + Add {form.type === "stdio" ? "variable" : "header"}
+            </Button>
+          </div>
+
+          {formError && <p className="text-xs text-(--color-error)">{formError}</p>}
+
+          <div className="flex gap-2">
+            <Button size="md" variant="primary" onClick={() => void save()} disabled={saving}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
+            <Button size="md" variant="ghost" onClick={() => setForm(null)} disabled={saving}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button size="md" variant="secondary" onClick={startAdd} data-testid="mcp-add-server">
+          + Add MCP Server
+        </Button>
+      )}
+    </div>
+  );
+}

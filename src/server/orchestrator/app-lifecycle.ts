@@ -35,6 +35,7 @@ import type { CodexAuthManager, CodexAuthFailedEvent, CodexAuthPendingEvent } fr
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
+import { collectMcpAgentEnv } from "./secret-resolver.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, DockerMemoryStats, WsLogEntry } from "../shared/types.js";
@@ -709,6 +710,13 @@ export interface RunnerRegistryDeps {
   /** Container manager for connecting agent containers to compose networks. */
   containerManager: SessionContainerManager | null;
   /**
+   * Account-level credential store (docs/088). Used to wire ServiceManager's
+   * `mcpAgentEnvLoader` (merging `mcp__*` secrets into the agent env) and to
+   * trigger MCP npm-package installs at session activation. Optional so test
+   * setups without credentials still work.
+   */
+  credentialStore?: CredentialStore;
+  /**
    * Per-repo secret store. Used to auto-load secrets into compose services on
    * session activation — wired into ServiceManager via its `secretsLoader`
    * callback. Optional so test setups without secrets still work.
@@ -759,7 +767,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
-    secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
+    credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -833,6 +841,7 @@ export function createRunnerRegistry(
           platformCredentials,
           dockerSecretsConfig,
           broadcastLog,
+          credentialStore,
         };
         setupServiceManager(runner, setupDeps);
 
@@ -1080,6 +1089,8 @@ function setupServiceManager(
     platformCredentials?: PlatformCredentialProvider;
     dockerSecretsConfig?: { internalDir: string; hostDir?: string; entrypointSourcePath: string };
     broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+    /** docs/088 — account-level MCP secrets store. */
+    credentialStore?: CredentialStore;
   },
 ): void {
   const {
@@ -1093,6 +1104,7 @@ function setupServiceManager(
     platformCredentials,
     dockerSecretsConfig,
     broadcastLog,
+    credentialStore,
   } = deps;
   const session = sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
@@ -1136,6 +1148,21 @@ function setupServiceManager(
     });
   }
 
+  // docs/088 — install npm packages for enabled stdio MCP servers at session
+  // activation, alongside `agent.install`. Fire-and-forget; per-package
+  // failures surface as `mcp_server_status` events from the worker.
+  if (credentialStore && runner instanceof ContainerSessionRunner) {
+    const mcpPackages = Object.values(credentialStore.getAllMcpServers())
+      .filter((s) => s.enabled && s.type === "stdio" && s.npmPackage)
+      .map((s) => (s as { npmPackage?: string }).npmPackage)
+      .filter((p): p is string => !!p);
+    if (mcpPackages.length > 0) {
+      void runner.installMcpPackages(mcpPackages).catch((err: unknown) => {
+        console.error(`[mcp-install:${runner.sessionId}] failed:`, getErrorMessage(err));
+      });
+    }
+  }
+
   if (!shipitConfig.compose) {
     composeNotConfigured.add(runner.sessionId);
     runner.emitMessage({ type: "compose_not_configured", sessionId: runner.sessionId });
@@ -1163,6 +1190,13 @@ function setupServiceManager(
         if (!remoteUrl) return {};
         return secretStore.loadSecrets(remoteUrl);
       }
+    : undefined;
+
+  // docs/088 — account-level MCP secrets (`mcp__*` keys). Read fresh from
+  // CredentialStore on every compose start/reconcile so a server added while
+  // the session was idle is picked up on next sync.
+  const mcpAgentEnvLoader = credentialStore
+    ? () => collectMcpAgentEnv(credentialStore)
     : undefined;
 
   // ---- Adoption path: orphaned ServiceManager from a previous runner ----
@@ -1206,6 +1240,7 @@ function setupServiceManager(
     workspaceSubpath: wsSubpath,
     stackName: process.env.DOCKER_STACK,
     secretsLoader,
+    mcpAgentEnvLoader,
     platformCredentials,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     networkJoinFn: containerManager

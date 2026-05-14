@@ -1,5 +1,5 @@
 export { ClaudeAdapter } from "./claude-adapter.js";
-export { AgentRegistry, ALLOWED_ENV_KEYS } from "./agent-registry.js";
+export { AgentRegistry, ALLOWED_ENV_KEYS, isAllowedAgentEnvKey } from "./agent-registry.js";
 export { canonicalizeTool, agentToolName } from "./tool-map.js";
 export type {
   AgentId,

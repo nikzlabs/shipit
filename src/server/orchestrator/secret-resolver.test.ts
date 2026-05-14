@@ -4,6 +4,8 @@ import path from "node:path";
 import os from "node:os";
 import {
   resolveSecrets,
+  collectMcpAgentEnv,
+  renderAgentEnvBody,
   writePerServiceEnvFiles,
   writeAgentEnvFile,
   writeIsolatedSecretFiles,
@@ -11,6 +13,54 @@ import {
 } from "./secret-resolver.js";
 import type { ComposeService } from "./compose-generator.js";
 import { fixedPlatformCredentialProvider } from "./platform-credentials.js";
+
+describe("collectMcpAgentEnv (docs/088)", () => {
+  it("returns only mcp__* entries from CredentialStore.agentEnv", () => {
+    const store = {
+      getAllAgentEnv: () => ({
+        OPENAI_API_KEY: "sk-test",
+        mcp__linear__LINEAR_API_KEY: "lin_api_abc",
+        mcp__sentry__SENTRY_AUTH_TOKEN: "sntrys_xyz",
+      }),
+    };
+    expect(collectMcpAgentEnv(store)).toEqual({
+      mcp__linear__LINEAR_API_KEY: "lin_api_abc",
+      mcp__sentry__SENTRY_AUTH_TOKEN: "sntrys_xyz",
+    });
+  });
+
+  it("skips empty values and returns {} when there are no mcp__* keys", () => {
+    expect(
+      collectMcpAgentEnv({ getAllAgentEnv: () => ({ OPENAI_API_KEY: "sk" }) }),
+    ).toEqual({});
+    expect(
+      collectMcpAgentEnv({ getAllAgentEnv: () => ({ mcp__a__B: "" }) }),
+    ).toEqual({});
+  });
+
+  it("is independent of resolveSecrets — does not consult compose declarations", () => {
+    // resolveSecrets with no services produces no agentValues; collectMcpAgentEnv
+    // still surfaces the account-level mcp__* keys.
+    const resolution = resolveSecrets({ services: [], userSecrets: {} });
+    expect(resolution.agentValues).toEqual({});
+    expect(
+      collectMcpAgentEnv({ getAllAgentEnv: () => ({ mcp__x__KEY: "v" }) }),
+    ).toEqual({ mcp__x__KEY: "v" });
+  });
+});
+
+describe("renderAgentEnvBody (docs/088)", () => {
+  it("renders sorted KEY=VALUE lines and a ShipIt header", () => {
+    const body = renderAgentEnvBody({ B_KEY: "2", A_KEY: "1" });
+    expect(body).toContain("A_KEY=1");
+    expect(body).toContain("B_KEY=2");
+    expect(body.indexOf("A_KEY")).toBeLessThan(body.indexOf("B_KEY"));
+  });
+
+  it("returns an empty string for an empty map", () => {
+    expect(renderAgentEnvBody({})).toBe("");
+  });
+});
 
 describe("resolveSecrets", () => {
   it("returns empty resolution when no service declares secrets", () => {

@@ -5,5 +5,5 @@
  * This file re-exports for backwards compatibility with existing imports.
  */
 
-export { AgentRegistry, ALLOWED_ENV_KEYS } from "../../shared/agent-registry.js";
+export { AgentRegistry, ALLOWED_ENV_KEYS, isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 export type { AgentInfo } from "../../shared/agent-registry.js";

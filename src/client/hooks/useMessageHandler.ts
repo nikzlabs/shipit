@@ -18,6 +18,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
+import { useMcpStore } from "../stores/mcp-store.js";
 import type { NotifyContext } from "./useNotification.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 
@@ -632,6 +633,10 @@ function processMessage(
 
     if (data.type === "clear_logs") {
       terminal.clearEntries();
+    }
+
+    if (data.type === "mcp_server_status") {
+      useMcpStore.getState().applyStatus(data.name, data.state, data.reason);
     }
 
     if (data.type === "install_status") {

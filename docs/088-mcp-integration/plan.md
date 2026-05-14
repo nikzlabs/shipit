@@ -1,8 +1,18 @@
 ---
-status: planned
+status: in-progress
 ---
 
 # 088 — User MCP Server Integration
+
+> **Implementation note (Phase 1 landed).** The server name regex was tightened
+> from `/^[a-z][a-z0-9-]*$/` to `/^[a-z][a-z0-9]*$/` — hyphens are disallowed
+> because the name becomes part of the `mcp__<name>__<KEY>` env-var identifier
+> and env var names can't contain hyphens. The `collectMcpAgentEnv()` merge is
+> wired through `ServiceManager` via a new `mcpAgentEnvLoader` option (closure
+> over `CredentialStore`), so MCP secrets only reach sessions that have a
+> `ServiceManager` (i.e. a compose config) — same limitation as 087's agent-env
+> pipeline. The connectivity-test endpoint proxies to a minimal MCP JSON-RPC
+> client in `src/server/session/mcp-test.ts`.
 
 ## Overview
 
@@ -566,17 +576,18 @@ Covers ~80% of MCP servers. Users paste API keys or pre-obtained tokens. Builds 
 
 **Migration:** No schema migration required. `CredentialData.mcpServers` defaults to `{}` for existing credential files; `agentEnv` already exists. Sessions running an older worker simply ignore `mcp__*` env vars (the worker accepts them via `PUT /secrets` since the regex already matches, and unused env vars are harmless). Sessions running a newer worker against an older orchestrator see no `mcpServers` in `AgentRunParams` and behave exactly as today.
 
-- `CredentialStore` extensions: `mcpServers` map, CRUD methods, `mcp__*` agentEnv setters, ensure `clear()` covers both.
-- Replace `ALLOWED_ENV_KEYS` set in `agent-registry.ts` with an exported `isAllowedAgentEnvKey()` predicate (literal allowlist + `/^mcp__/`); update consumers in `app-di.ts` and `services/settings.ts`.
-- New `collectMcpAgentEnv()` helper in `secret-resolver.ts` (returns `mcp__*` entries from `CredentialStore.agentEnv`); wire it into `ServiceManager.syncSecrets()` so the merged `agentValues` flows into `.shipit/.env.agent` and the worker push.
-- `ContainerSessionRunner` updated so the at-activation push is awaited at its callsite (currently `void this.tryPushAgentSecrets(...)`; the change is at the caller, not in the already-`async` method).
-- API routes for CRUD + connectivity test (`/api/mcp-servers`).
-- `session-worker.ts` `generateMcpConfig()` extension: resolves `$secret:` substring placeholders locally, merges user servers with built-in Playwright, emits `mcp_server_status` SSE events.
-- New `POST /mcp/install` and `POST /mcp/test` endpoints on the session worker (install runs at session activation; test is proxied from the orchestrator route).
-- `claude.ts` (`AUTO_TOOLS` / `NORMAL_TOOLS` / `PLAN_TOOLS` strings at lines 38–46) extended with `mcp__<server>__*` per enabled server, mode-aware: `AUTO_TOOLS` and `NORMAL_TOOLS` include user servers; `PLAN_TOOLS` excludes them.
-- `AgentRunParams.mcpServers` field plumbed through `proxy-agent-process.ts` (configs only, no resolved secret values).
-- Settings UI for add / edit / remove / toggle / test, including the per-server status badges driven by `mcp_server_status`.
-- Client store (`mcp-store.ts`).
+- [x] `CredentialStore` extensions: `mcpServers` map, CRUD methods, `mcp__*` agentEnv setters (`setMcpSecret` / `deleteMcpSecret` / `deleteMcpSecretsForServer`), `clear()` covers both (it already wipes `this.data`).
+- [x] Added an exported `isAllowedAgentEnvKey()` predicate to `agent-registry.ts` (literal allowlist + `mcp__*`); `ALLOWED_ENV_KEYS` kept for tests/re-exports; consumers in `app-di.ts` and `services/settings.ts` switched to the predicate.
+- [x] New `collectMcpAgentEnv()` helper in `secret-resolver.ts`; wired into `ServiceManager.syncSecrets()` via a new `mcpAgentEnvLoader` option, merged into `agentValues` (compose-wins) before `.shipit/.env.agent` write + worker push. `renderAgentEnvBody()` added to render the merged map.
+- [x] API routes for CRUD + connectivity test (`api-routes-mcp.ts`, registered in `api-routes.ts`), backed by `services/mcp.ts` (validation, name conflicts, enabled-server cap).
+- [x] `session-worker.ts` `generateMcpConfig()` extension: resolves `$secret:` substring placeholders locally, merges user servers with built-in Playwright, emits `mcp_server_status` SSE events.
+- [x] New `POST /mcp/install` (per-package mutex, `/tmp/mcp-installed.json` marker) and `POST /mcp/test` (minimal MCP JSON-RPC client in `mcp-test.ts`) endpoints on the session worker; install fired at session activation from `app-lifecycle.ts`.
+- [x] `claude.ts` `AUTO_TOOLS` / `NORMAL_TOOLS` extended with `mcp__<server>__*` per enabled server; `PLAN_TOOLS` excludes them. `normalInstruction` prompt updated to require `AskUserQuestion` confirmation for side-effecting MCP tools.
+- [x] `AgentRunParams.mcpServers` field added; populated in `agent-execution.ts` with enabled (unresolved) configs; carried whole through `proxy-agent-process.ts` / `POST /agent/start`; `claude-adapter.ts` derives `mcpServerNames` for the allowlist.
+- [x] Settings UI (`McpServerSettings.tsx`, new "MCP Servers" tab in `Settings.tsx`) for add / edit / remove / toggle / test, with per-server status badges driven by the `mcp_server_status` WS message.
+- [x] Client store (`mcp-store.ts`); `mcp_server_status` WS message type added and relayed from the worker SSE through `container-session-runner.ts` → `useMessageHandler.ts`.
+- Tests: `agent-registry.test.ts`, `credential-store.test.ts`, `secret-resolver.test.ts`, `services/mcp.test.ts`.
+- Deferred to a follow-up: per-server `mcp_server_status` driven by a real liveness signal (Phase 1 emits `loaded`/`failed` from `generateMcpConfig()` only), `crashed` state, and integration/client-component tests for the routes + UI.
 
 ### Phase 2 — Native OAuth (extends 087's platform-credentials)
 

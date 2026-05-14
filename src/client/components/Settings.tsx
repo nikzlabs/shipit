@@ -6,6 +6,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
+import { McpServerSettings } from "./McpServerSettings.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { usePreviewStore, type DeclaredSecretState } from "../stores/preview-store.js";
@@ -17,7 +18,7 @@ const MAX_LENGTH = 50_000;
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent" | "github" | "git" | "instructions" | "advanced" | "deployments" | "secrets";
+type Tab = "agent" | "github" | "git" | "instructions" | "mcp" | "advanced" | "deployments" | "secrets";
 
 export interface SettingsProps {
   initialContent: string;
@@ -593,13 +594,14 @@ export function Settings({
   const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
 
-  const generalTabs = ["agent", "github", "git", "instructions", "advanced"] as const;
+  const generalTabs = ["agent", "github", "git", "instructions", "mcp", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "agent": return "Agent";
       case "github": return "GitHub";
       case "git": return "Git";
       case "instructions": return "Instructions";
+      case "mcp": return "MCP Servers";
       case "advanced": return "Advanced";
       case "deployments": return "Deployments";
       case "secrets": return "Secrets";
@@ -788,6 +790,10 @@ export function Settings({
                 </Button>
               </div>
             </div>
+          </TabsContent>
+
+          <TabsContent value="mcp">
+            <McpServerSettings hasActiveSession={hasActiveSession} />
           </TabsContent>
 
           <TabsContent value="github">
