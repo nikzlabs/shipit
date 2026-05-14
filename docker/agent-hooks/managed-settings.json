@@ -1,7 +1,18 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "_comment": "ShipIt-managed Claude Code settings. Baked into /etc/shipit/managed-settings.json in the session-worker image. The orchestrator passes --settings to the Claude CLI only when autoCreatePr is on — see src/server/session/claude.ts and docs/129-stop-hook-pr-enforcement/plan.md.",
+  "_comment": "ShipIt-managed Claude Code settings. Baked into /etc/shipit/managed-settings.json in the session-worker image. The orchestrator always passes --settings to the Claude CLI for the `claude` agent (see src/server/session/claude.ts) so the PreToolUse branch-block hook is always active. The Stop hook self-gates on the SHIPIT_AUTO_CREATE_PR env var, which the orchestrator sets only when autoCreatePr is on — see docs/129-stop-hook-pr-enforcement/plan.md and docs/130-block-branch-ops/plan.md.",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/etc/shipit/agent-hooks/block-branch-ops.mjs"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

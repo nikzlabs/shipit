@@ -111,12 +111,18 @@ export interface AgentRunParams {
   /** Model alias or ID to use (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
   /**
-   * Path to a Claude Code settings file (passed as `--settings`). Currently
-   * used to enable the PR-enforcement Stop hook baked at
-   * /etc/shipit/managed-settings.json when autoCreatePr is on. Claude-only;
-   * other adapters ignore it. See docs/129-stop-hook-pr-enforcement/plan.md.
+   * Path to a Claude Code settings file (passed as `--settings`). The
+   * orchestrator always points this at /etc/shipit/managed-settings.json for
+   * the `claude` agent so the PreToolUse branch-block hook is active.
+   * Claude-only; other adapters ignore it. See docs/130-block-branch-ops/plan.md.
    */
   settingsPath?: string;
+  /**
+   * When true, the Claude adapter sets SHIPIT_AUTO_CREATE_PR=1 in the CLI
+   * environment, which the managed-settings.json Stop hook self-gates on to
+   * enforce PR creation. Claude-only. See docs/129-stop-hook-pr-enforcement/plan.md.
+   */
+  autoCreatePr?: boolean;
 }
 
 // ---- AgentProcess interface ----

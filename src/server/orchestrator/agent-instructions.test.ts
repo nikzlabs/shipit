@@ -69,6 +69,17 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("one-line");
   });
 
+  it("tells the agent to stay on the session branch and not create branches", () => {
+    const out = buildAgentSystemInstructions();
+    expect(out).toContain("git checkout -b");
+    expect(out).toMatch(/do not create.*branch/i);
+  });
+
+  it("repeats the no-branch guidance in the autoCreatePr section", () => {
+    const out = buildAgentSystemInstructions({ autoCreatePr: true });
+    expect(out).toMatch(/do not create or switch branches/i);
+  });
+
   it("composes preview + autoCreatePr sections together", () => {
     const out = buildAgentSystemInstructions({
       previewUrl: "http://preview.example/",

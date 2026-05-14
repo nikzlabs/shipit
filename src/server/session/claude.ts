@@ -16,11 +16,18 @@ export interface ClaudeRunOptions {
   /** Model alias or ID to use (e.g., "sonnet", "opus"). */
   model?: string;
   /**
-   * Path to a Claude Code settings file (passed as `--settings`). Used by the
-   * orchestrator to enable the Stop-hook PR enforcement when autoCreatePr is
-   * on. See docs/129-stop-hook-pr-enforcement/plan.md.
+   * Path to a Claude Code settings file (passed as `--settings`). The
+   * orchestrator always points this at /etc/shipit/managed-settings.json for
+   * the `claude` agent so the PreToolUse branch-block hook is active. See
+   * docs/130-block-branch-ops/plan.md.
    */
   settingsPath?: string;
+  /**
+   * When true, set SHIPIT_AUTO_CREATE_PR=1 in the CLI environment. The
+   * managed-settings.json Stop hook self-gates on this var to enforce PR
+   * creation. See docs/129-stop-hook-pr-enforcement/plan.md.
+   */
+  autoCreatePr?: boolean;
 }
 
 export class ClaudeProcess extends EventEmitter {
@@ -39,7 +46,7 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, model, settingsPath } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, model, settingsPath, autoCreatePr } = opts;
 
     const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__*";
     const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
@@ -99,7 +106,15 @@ export class ClaudeProcess extends EventEmitter {
         cols: 200,
         rows: 24,
         cwd,
-        env: { ...process.env, HOME: "/root", NODE_ENV: "development" } as Record<string, string>,
+        env: {
+          ...process.env,
+          HOME: "/root",
+          NODE_ENV: "development",
+          // Consumed by the managed-settings.json Stop hook to decide whether
+          // to enforce PR creation. The hook is always registered; this gates
+          // it. See docs/130-block-branch-ops/plan.md.
+          ...(autoCreatePr ? { SHIPIT_AUTO_CREATE_PR: "1" } : {}),
+        } as Record<string, string>,
       });
     } catch (err) {
       this.emit("error", err instanceof Error ? err : new Error(String(err)));

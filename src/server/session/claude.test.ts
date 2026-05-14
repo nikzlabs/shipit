@@ -330,6 +330,30 @@ describe("ClaudeProcess", () => {
       expect(args).not.toContain("--settings");
     });
 
+    it("sets SHIPIT_AUTO_CREATE_PR=1 in the env when autoCreatePr is true", () => {
+      // The managed-settings.json Stop hook self-gates on this env var so PR
+      // enforcement stays opt-in. See docs/130-block-branch-ops/plan.md.
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", autoCreatePr: true });
+
+      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.SHIPIT_AUTO_CREATE_PR).toBe("1");
+    });
+
+    it("does not set SHIPIT_AUTO_CREATE_PR when autoCreatePr is falsy", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.SHIPIT_AUTO_CREATE_PR).toBeUndefined();
+    });
+
     it("includes browser tools in allowed tools list", () => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
