@@ -158,4 +158,84 @@ describe("CredentialStore", () => {
       expect(stat.mode & 0o777).toBe(0o600);
     });
   });
+
+  // ---- MCP servers (docs/088-mcp-integration) ----
+
+  describe("mcpServers", () => {
+    const linear = {
+      name: "linear",
+      type: "stdio" as const,
+      command: "npx",
+      args: ["-y", "@anthropic-ai/linear-mcp"],
+      env: { LINEAR_API_KEY: "$secret:mcp__linear__LINEAR_API_KEY" },
+      enabled: true,
+    };
+
+    it("set/get/getAll round-trips and survives reload", () => {
+      const dir = createTmpDir();
+      const store = new CredentialStore(dir);
+      store.setMcpServer("linear", linear);
+
+      expect(store.getMcpServer("linear")).toEqual(linear);
+      expect(Object.keys(store.getAllMcpServers())).toEqual(["linear"]);
+
+      const reloaded = new CredentialStore(dir);
+      expect(reloaded.getMcpServer("linear")).toEqual(linear);
+    });
+
+    it("enforces config.name === key on write", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpServer("renamed", { ...linear, name: "stale" });
+      expect(store.getMcpServer("renamed")?.name).toBe("renamed");
+    });
+
+    it("deleteMcpServer removes the blob but not its secrets", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpServer("linear", linear);
+      store.setMcpSecret("mcp__linear__LINEAR_API_KEY", "lin_api_abc");
+      store.deleteMcpServer("linear");
+
+      expect(store.getMcpServer("linear")).toBeUndefined();
+      expect(store.getAgentEnv("mcp__linear__LINEAR_API_KEY")).toBe("lin_api_abc");
+    });
+
+    it("setMcpSecret rejects non-mcp keys", () => {
+      const store = new CredentialStore(createTmpDir());
+      expect(() => store.setMcpSecret("OPENAI_API_KEY", "x")).toThrow(/mcp__/);
+    });
+
+    it("setMcpSecret persists mcp__* values that survive reload", () => {
+      const dir = createTmpDir();
+      const store = new CredentialStore(dir);
+      store.setMcpSecret("mcp__linear__LINEAR_API_KEY", "lin_api_abc");
+      expect(new CredentialStore(dir).getAgentEnv("mcp__linear__LINEAR_API_KEY")).toBe(
+        "lin_api_abc",
+      );
+    });
+
+    it("deleteMcpSecretsForServer clears only that server's mcp__* keys", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpSecret("mcp__linear__LINEAR_API_KEY", "a");
+      store.setMcpSecret("mcp__linear__OTHER", "b");
+      store.setMcpSecret("mcp__sentry__SENTRY_AUTH_TOKEN", "c");
+      store.setAgentEnv("OPENAI_API_KEY", "sk");
+
+      store.deleteMcpSecretsForServer("linear");
+
+      expect(store.getAgentEnv("mcp__linear__LINEAR_API_KEY")).toBeUndefined();
+      expect(store.getAgentEnv("mcp__linear__OTHER")).toBeUndefined();
+      expect(store.getAgentEnv("mcp__sentry__SENTRY_AUTH_TOKEN")).toBe("c");
+      expect(store.getAgentEnv("OPENAI_API_KEY")).toBe("sk");
+    });
+
+    it("clear() wipes both mcpServers and mcp__* secrets", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpServer("linear", linear);
+      store.setMcpSecret("mcp__linear__LINEAR_API_KEY", "lin_api_abc");
+      store.clear();
+
+      expect(store.getAllMcpServers()).toEqual({});
+      expect(store.getAgentEnv("mcp__linear__LINEAR_API_KEY")).toBeUndefined();
+    });
+  });
 });

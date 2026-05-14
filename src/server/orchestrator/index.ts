@@ -256,7 +256,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
-    secretStore, platformCredentials, runtimeMode, broadcastLog,
+    credentialStore, secretStore, platformCredentials, runtimeMode, broadcastLog,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
   });
   registryHolder.ref = runnerRegistry;

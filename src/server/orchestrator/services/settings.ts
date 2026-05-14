@@ -7,7 +7,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
-import { ALLOWED_ENV_KEYS } from "../../shared/agent-registry.js";
+import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AgentId } from "../../shared/types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
@@ -163,7 +163,7 @@ export function setAgentEnv(
   if (!agentId || !key || typeof value !== "string") {
     throw new ServiceError(400, "Invalid set_agent_env request");
   }
-  if (!ALLOWED_ENV_KEYS.has(key)) {
+  if (!isAllowedAgentEnvKey(key)) {
     throw new ServiceError(400, `Environment variable ${key} is not in the allowlist`);
   }
   if (value.trim().length === 0) {

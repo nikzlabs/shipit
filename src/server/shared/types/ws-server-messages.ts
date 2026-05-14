@@ -316,6 +316,21 @@ export interface WsInstallStatus {
   message?: string;
 }
 
+/**
+ * Server → Client: per-MCP-server runtime status (docs/088-mcp-integration).
+ * Originates as a worker SSE `mcp_server_status` event and is relayed to the
+ * browser so the Settings → MCP Servers panel can render load state.
+ */
+export interface WsMcpServerStatus {
+  type: "mcp_server_status";
+  sessionId: string;
+  /** Server name (the `mcp__<name>__*` namespace identifier). */
+  name: string;
+  state: "loaded" | "failed" | "crashed" | "disabled";
+  /** Human-readable reason when `state` is "failed" or "crashed". */
+  reason?: string;
+}
+
 /** Server → Client: log output from agent.install execution. */
 export interface WsInstallLog {
   type: "install_log";
@@ -718,6 +733,7 @@ export type WsServerMessage =
   | WsSecretsStatus
   | WsInstallStatus
   | WsInstallLog
+  | WsMcpServerStatus
   | WsGitPushRejected
   | WsRebaseStarted
   | WsRebaseConflicts

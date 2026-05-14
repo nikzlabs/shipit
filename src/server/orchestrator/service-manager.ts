@@ -30,6 +30,7 @@ import {
 import fs from "node:fs";
 import {
   resolveSecrets,
+  renderAgentEnvBody,
   writePerServiceEnvFiles,
   writeAgentEnvFile,
   writeIsolatedSecretFiles,
@@ -91,6 +92,15 @@ export interface ServiceManagerOptions {
    * file (Phase 2 surfaces this as a missing-secrets warning).
    */
   secretsLoader?: () => Promise<Record<string, string>>;
+  /**
+   * Collects account-level MCP secret values (`mcp__*` keys from
+   * `CredentialStore.agentEnv`) — docs/088. Called inside `syncSecrets()`
+   * after `resolveSecrets()` runs; the result is merged into the resolved
+   * `agentValues` map (compose-declared entries win on key collision) before
+   * `.shipit/.env.agent` is written and pushed to the worker. Synchronous —
+   * `CredentialStore` is an in-memory JSON store.
+   */
+  mcpAgentEnvLoader?: () => Record<string, string>;
   /**
    * Resolves `source: platform:*` entries against orchestrator-level
    * credentials (Claude OAuth, GitHub token). When omitted, those entries
@@ -199,6 +209,7 @@ export class ServiceManager extends EventEmitter {
   private readonly stackName?: string;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   private secretsLoader?: () => Promise<Record<string, string>>;
+  private mcpAgentEnvLoader?: () => Record<string, string>;
   private platformCredentials?: PlatformCredentialProvider;
   private dockerSecretsConfig?: {
     internalDir: string;
@@ -305,6 +316,7 @@ export class ServiceManager extends EventEmitter {
     this.stackName = opts.stackName;
     this.networkJoinFn = opts.networkJoinFn;
     this.secretsLoader = opts.secretsLoader;
+    this.mcpAgentEnvLoader = opts.mcpAgentEnvLoader;
     this.platformCredentials = opts.platformCredentials;
     this.dockerSecretsConfig = opts.dockerSecretsConfig;
   }
@@ -772,6 +784,22 @@ export class ServiceManager extends EventEmitter {
     this.declaredSecretNames = resolution.declaredNames;
     this.missingSecretsByService = resolution.missingByService;
 
+    // docs/088: merge account-level MCP secrets (`mcp__*` keys) into the
+    // resolved agent-env set. This runs AFTER `resolveSecrets()` — MCP
+    // secrets are account-level and never declared in compose, so they take
+    // a separate path. Compose-declared entries win on key collision (they
+    // are explicit per-repo overrides).
+    let mergedAgentValues = resolution.agentValues;
+    if (this.mcpAgentEnvLoader) {
+      let mcpEnv: Record<string, string> = {};
+      try {
+        mcpEnv = this.mcpAgentEnvLoader();
+      } catch (err) {
+        console.warn(`[compose:${this.sessionId}] mcpAgentEnvLoader failed:`, (err as Error).message);
+      }
+      mergedAgentValues = { ...mcpEnv, ...resolution.agentValues };
+    }
+
     // De-duplicate required-and-missing across services. Same secret name
     // declared `required: true` by multiple services collapses to one entry
     // in the banner — duplicate entries would produce duplicate UI rows.
@@ -782,8 +810,8 @@ export class ServiceManager extends EventEmitter {
       declared: resolution.declared,
       missingByService: resolution.missingByService,
       missingRequired,
-      agentNames: Object.keys(resolution.agentValues).sort(),
-      agentValues: resolution.agentValues,
+      agentNames: Object.keys(mergedAgentValues).sort(),
+      agentValues: mergedAgentValues,
     };
     this.emit("secrets_status", this.getSecretsSnapshot());
 
@@ -800,10 +828,12 @@ export class ServiceManager extends EventEmitter {
       });
     }
 
-    // Phase 3: also write the agent env file. Empty body removes the file.
+    // Phase 3 (087) + docs/088: write the agent env file from the merged
+    // set (compose `agent: true` values + account-level `mcp__*` secrets).
+    // Empty body removes the file.
     writeAgentEnvFile({
       workspaceDir: this.workspaceDir,
-      body: resolution.agentEnv,
+      body: renderAgentEnvBody(mergedAgentValues),
     });
   }
 

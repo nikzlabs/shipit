@@ -37,6 +37,7 @@ import { registerSessionRoutes } from "./api-routes-session.js";
 import { registerPreviewRoutes } from "./api-routes-preview.js";
 import { registerGitHubRoutes } from "./api-routes-github.js";
 import { registerSecretsRoutes } from "./api-routes-secrets.js";
+import { registerMcpRoutes } from "./api-routes-mcp.js";
 import { registerReviewRoutes } from "./api-routes-reviews.js";
 import { registerUpdateRoutes } from "./api-routes-updates.js";
 import type { SecretStore } from "./secret-store.js";
@@ -187,4 +188,11 @@ export async function registerApiRoutes(
     });
   }
   await registerUpdateRoutes(app);
+
+  // MCP server CRUD + connectivity test (docs/088-mcp-integration).
+  await registerMcpRoutes(app, {
+    credentialStore: deps.credentialStore,
+    runnerRegistry: deps.runnerRegistry,
+    serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
+  });
 }

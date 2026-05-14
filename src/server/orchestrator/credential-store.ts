@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils.js";
+import type { McpServerConfig } from "../shared/types/mcp-types.js";
 
 interface CredentialData {
   agentEnv?: Record<string, string>;
@@ -8,6 +9,12 @@ interface CredentialData {
   maxIdleContainers?: number;
   agentSystemInstructionsEnabled?: boolean;
   autoCreatePr?: boolean;
+  /**
+   * Account-level MCP server configs keyed by name (docs/088). Values use
+   * `$secret:` placeholders — the raw secret values live in `agentEnv` under
+   * the `mcp__<server>__<KEY>` namespace, not here.
+   */
+  mcpServers?: Record<string, McpServerConfig>;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -65,6 +72,69 @@ export class CredentialStore {
     this.data.agentEnv ??= {};
     this.data.agentEnv[key] = value;
     this.save();
+  }
+
+  // ---- MCP servers (docs/088-mcp-integration) ----
+
+  /** Get a single MCP server config by name. */
+  getMcpServer(name: string): McpServerConfig | undefined {
+    return this.data.mcpServers?.[name];
+  }
+
+  /** Get all MCP server configs keyed by name. */
+  getAllMcpServers(): Record<string, McpServerConfig> {
+    return { ...this.data.mcpServers };
+  }
+
+  /** Add or replace an MCP server config. Enforces `config.name === name`. */
+  setMcpServer(name: string, config: McpServerConfig): void {
+    this.data.mcpServers ??= {};
+    this.data.mcpServers[name] = { ...config, name };
+    this.save();
+  }
+
+  /** Remove an MCP server config. Does NOT clear its `mcp__*` secrets. */
+  deleteMcpServer(name: string): void {
+    if (this.data.mcpServers) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by user-provided server name
+      delete this.data.mcpServers[name];
+      this.save();
+    }
+  }
+
+  /**
+   * Set the secret value behind a server's `$secret:` reference. `key` must be
+   * in the `mcp__*` namespace — these are always agent-bound.
+   */
+  setMcpSecret(key: string, value: string): void {
+    if (!key.startsWith("mcp__")) {
+      throw new Error(`MCP secret key must start with "mcp__": ${key}`);
+    }
+    this.setAgentEnv(key, value);
+  }
+
+  /** Clear a single `mcp__*` secret value. */
+  deleteMcpSecret(key: string): void {
+    if (this.data.agentEnv && key in this.data.agentEnv) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by mcp__* secret name
+      delete this.data.agentEnv[key];
+      this.save();
+    }
+  }
+
+  /** Clear every `mcp__<server>__*` secret for a given server name. */
+  deleteMcpSecretsForServer(serverName: string): void {
+    if (!this.data.agentEnv) return;
+    const prefix = `mcp__${serverName}__`;
+    let changed = false;
+    for (const key of Object.keys(this.data.agentEnv)) {
+      if (key.startsWith(prefix)) {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by mcp__* secret name
+        delete this.data.agentEnv[key];
+        changed = true;
+      }
+    }
+    if (changed) this.save();
   }
 
   // ---- GitHub token ----

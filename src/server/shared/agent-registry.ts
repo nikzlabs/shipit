@@ -60,8 +60,27 @@ const AUTH_ENV_KEYS: Partial<Record<AgentId, string>> = {
   codex: "OPENAI_API_KEY",
 };
 
-/** Allowed env var keys that can be set via the `set_agent_env` message. */
+/**
+ * Literal exact-match allowlist of env var keys that can be set via the
+ * `set_agent_env` message. MCP secrets (`mcp__*`) are allowed in addition to
+ * these via {@link isAllowedAgentEnvKey} — prefer that predicate over direct
+ * `.has()` checks. The set is kept exported because tests and re-export sites
+ * still reference it directly.
+ */
 export const ALLOWED_ENV_KEYS = new Set(["OPENAI_API_KEY"]);
+
+/** Prefix reserved for MCP server secrets (docs/088-mcp-integration). */
+const MCP_ENV_KEY_PREFIX = "mcp__";
+
+/**
+ * Predicate for agent env keys: true for any literal allowlist entry OR any
+ * key in the `mcp__*` namespace. Consumed by `app-di.ts` (loading persisted
+ * `CredentialStore.agentEnv` into `process.env` at startup) and
+ * `services/settings.ts` (validating `set_agent_env` writes).
+ */
+export function isAllowedAgentEnvKey(key: string): boolean {
+  return ALLOWED_ENV_KEYS.has(key) || key.startsWith(MCP_ENV_KEY_PREFIX);
+}
 
 /**
  * Default context window in tokens, used when a model is not in
