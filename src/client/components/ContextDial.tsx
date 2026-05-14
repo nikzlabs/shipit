@@ -4,6 +4,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
 import type { ModelInfo } from "./StatusBar.js";
 import { formatTokenCount, getContextLevel } from "./StatusBar.js";
 import type { TurnUsage } from "../../server/shared/types.js";
+import { turnContextTokens } from "../../server/shared/types.js";
 
 const levelTextColors: Record<string, string> = {
   green: "text-(--color-context-ok)",
@@ -26,19 +27,23 @@ function formatCost(usd: number): string {
 }
 
 /**
- * Detect a `/compact` event by checking for a sharp drop in input tokens
+ * Detect a `/compact` event by checking for a sharp drop in context size
  * between the previous turn and the most recent turn — Claude Code's
  * `/compact` slash command replaces in-context history with a summary,
- * which surfaces as a step-change reduction in the next turn's input
- * token count. Threshold (40%) is conservative so normal turn-to-turn
+ * which surfaces as a step-change reduction in the next turn's context
+ * occupancy. Threshold (40%) is conservative so normal turn-to-turn
  * variance doesn't trigger a false positive.
+ *
+ * Uses `turnContextTokens()` (input + cache reads + cache writes) rather than
+ * raw `inputTokens` — with prompt caching active, `inputTokens` is tiny and
+ * noisy, so comparing it would never reliably detect a compaction.
  */
 function wasCompacted(turns: TurnUsage[]): boolean {
   if (turns.length < 2) return false;
-  const last = turns[turns.length - 1];
-  const prev = turns[turns.length - 2];
-  if (prev.inputTokens < 5_000) return false;
-  return last.inputTokens < prev.inputTokens * 0.6;
+  const last = turnContextTokens(turns[turns.length - 1]);
+  const prev = turnContextTokens(turns[turns.length - 2]);
+  if (prev < 5_000) return false;
+  return last < prev * 0.6;
 }
 
 /**
@@ -92,7 +97,10 @@ export function ContextDial({
   const [open, setOpen] = useState(false);
 
   const lastTurn = turnUsage.length > 0 ? turnUsage[turnUsage.length - 1] : null;
-  const contextTokens = contextTokensOverride ?? lastTurn?.inputTokens ?? 0;
+  // Context occupancy = uncached input + cache reads + cache writes. Using
+  // `lastTurn.inputTokens` alone here was the bug behind "Context: 4 / 200K" —
+  // with prompt caching, virtually the entire window shows up as cache tokens.
+  const contextTokens = contextTokensOverride ?? (lastTurn ? turnContextTokens(lastTurn) : 0);
   const compacted = wasCompacted(turnUsage);
 
   // Cumulative cache totals are still derived from the per-turn series — the
@@ -108,8 +116,8 @@ export function ContextDial({
     return { totalCacheRead, totalCacheCreate };
   }, [turnUsage]);
 
-  // Top contributors — biggest input-token turns; mostly informative when the
-  // context is approaching full.
+  // Top contributors — biggest turns by context occupancy (input + cache);
+  // mostly informative when the context is approaching full.
   //
   // IMPORTANT: this hook must stay above the `if (!modelInfo) return null`
   // guard below. `modelInfo` flips from null → populated once the first
@@ -118,8 +126,8 @@ export function ContextDial({
   // error #310 ("Rendered more hooks than during the previous render").
   const topTurns = useMemo(() => {
     return [...turnUsage]
-      .map((t, i) => ({ ...t, index: i + 1 }))
-      .sort((a, b) => b.inputTokens - a.inputTokens)
+      .map((t, i) => ({ ...t, index: i + 1, contextTokens: turnContextTokens(t) }))
+      .sort((a, b) => b.contextTokens - a.contextTokens)
       .slice(0, 3);
   }, [turnUsage]);
 
@@ -137,9 +145,10 @@ export function ContextDial({
   const textColor = levelTextColors[level];
   const barColor = levelBarColors[level];
 
-  // Sparkline scaling — top of the chart is the largest input ever seen so the
-  // dial reflects the running maximum (= effective context size).
-  const maxInput = turnUsage.reduce((m, t) => Math.max(m, t.inputTokens), 1);
+  // Sparkline scaling — top of the chart is the largest context occupancy
+  // ever seen so the dial reflects the running maximum (= effective context
+  // size, including cache reads/writes).
+  const maxContext = turnUsage.reduce((m, t) => Math.max(m, turnContextTokens(t)), 1);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -249,7 +258,7 @@ export function ContextDial({
           {turnUsage.length > 0 && (
             <div className="space-y-1">
               <div className="flex items-center justify-between text-(--color-text-secondary)">
-                <span>Per-turn input</span>
+                <span>Per-turn context</span>
                 <span className="font-mono">
                   {turnUsage.length} {turnUsage.length === 1 ? "turn" : "turns"}
                 </span>
@@ -259,13 +268,14 @@ export function ContextDial({
                 data-testid="context-dial-sparkline"
               >
                 {turnUsage.map((t, i) => {
-                  const h = maxInput > 0 ? Math.max(2, (t.inputTokens / maxInput) * 100) : 2;
+                  const ctx = turnContextTokens(t);
+                  const h = maxContext > 0 ? Math.max(2, (ctx / maxContext) * 100) : 2;
                   return (
                     <div
                       key={i}
                       className={`flex-1 ${barColor} rounded-sm`}
                       style={{ height: `${h}%`, opacity: 0.4 + 0.6 * (i / Math.max(1, turnUsage.length - 1)) }}
-                      title={`Turn ${i + 1}: ${formatTokenCount(t.inputTokens)} in, ${formatTokenCount(t.outputTokens)} out`}
+                      title={`Turn ${i + 1}: ${formatTokenCount(ctx)} context, ${formatTokenCount(t.outputTokens)} out`}
                     />
                   );
                 })}
@@ -283,7 +293,7 @@ export function ContextDial({
                     className="flex justify-between text-(--color-text-primary)"
                   >
                     <span className="text-(--color-text-secondary)">#{t.index}</span>
-                    <span>{formatTokenCount(t.inputTokens)} in</span>
+                    <span>{formatTokenCount(t.contextTokens)} ctx</span>
                     <span>{formatTokenCount(t.outputTokens)} out</span>
                     <span>{formatCost(t.costUsd)}</span>
                   </div>

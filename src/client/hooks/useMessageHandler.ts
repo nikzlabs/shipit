@@ -7,6 +7,7 @@ import type {
   WsServerMessage,
   AgentContentBlock, WsClientMessage,
 } from "../../server/shared/types.js";
+import { turnContextTokens } from "../../server/shared/types.js";
 import { SIDEBAR_COLLAPSED_KEY, AGENT_PREFERENCE_KEY } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
@@ -461,14 +462,16 @@ function processMessage(
         totalDurationMs: update.totalDurationMs,
         turnCount: update.turnCount,
       });
-      // contextTokens reflects the *last turn's* input tokens (= the current
-      // context size in the model's prompt window), not the cumulative sum.
-      // Falling back to cumulativeInputTokens preserves prior behavior on
-      // sessions that don't yet emit per-turn input data.
-      if (update.lastTurnInputTokens !== undefined) {
-        ui.setContextTokens(update.lastTurnInputTokens);
-      } else if (update.cumulativeInputTokens !== undefined) {
+      // contextTokens reflects the *last turn's* context occupancy. The
+      // `turn_usage_update` handler below sets the precise value (input +
+      // cache reads + cache writes); this is just a coarse fallback for
+      // sessions that don't emit per-turn data. `lastTurnInputTokens` alone
+      // undercounts heavily when prompt caching is active, so prefer the
+      // cumulative figure when that's all we have.
+      if (update.cumulativeInputTokens !== undefined) {
         ui.setContextTokens(update.cumulativeInputTokens);
+      } else if (update.lastTurnInputTokens !== undefined) {
+        ui.setContextTokens(update.lastTurnInputTokens);
       }
       ui.setCumulativeTokens(
         update.cumulativeInputTokens ?? 0,
@@ -479,6 +482,11 @@ function processMessage(
     if (data.type === "turn_usage_update") {
       // Append to the per-session turn-usage history powering the context dial.
       session.appendTurnUsage(data.sessionId, data.turn);
+      // The status-bar meter and usage modal read `contextTokens` from the UI
+      // store — set it to the real context occupancy (uncached input + cache
+      // reads + cache writes), not just `inputTokens`, which is tiny under
+      // prompt caching.
+      ui.setContextTokens(turnContextTokens(data.turn));
     }
 
     if (data.type === "system_user_message") {

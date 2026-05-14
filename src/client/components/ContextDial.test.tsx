@@ -136,4 +136,19 @@ describe("ContextDial", () => {
     fireEvent.click(screen.getByTestId("context-dial"));
     expect(screen.queryByTestId("context-compacted-pill")).toBeNull();
   });
+
+  it("counts cache reads + writes toward context occupancy (not just inputTokens)", () => {
+    // Regression: with prompt caching, a turn reports tiny `inputTokens` while
+    // the real context lives in cacheRead/cacheCreate. The dial used to show
+    // "4 / 200K" — it must now report ~70K (4 + 38.7K + 30.4K) → orange.
+    render(
+      <ContextDial
+        modelInfo={window200k}
+        turnUsage={[makeTurn(4, { cacheRead: 120_000, cacheCreate: 50_000 })]}
+      />,
+    );
+    const dial = screen.getByTestId("context-dial");
+    // 4 + 120K + 50K = ~170K of a 200K window → orange.
+    expect(dial.getAttribute("data-level")).toBe("orange");
+  });
 });
