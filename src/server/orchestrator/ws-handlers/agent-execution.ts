@@ -10,6 +10,7 @@ import { postTurnCommit } from "./post-turn.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { quickCreatePr } from "../services/github.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { ContainerSessionRunner } from "../container-session-runner.js";
 /**
  * Save base64 images to the session's uploads directory on the host.
  * Returns a prompt prefix referencing the on-disk files (container paths).
@@ -438,6 +439,23 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const mcpServers = Object.values(ctx.credentialStore.getAllMcpServers()).filter(
     (s) => s.enabled,
   );
+
+  // docs/088: compose-less sessions never get a `ServiceManager`, so the
+  // account-level agent env (`mcp__*` secrets, `OPENAI_API_KEY`, …) is never
+  // pushed to the worker via `ServiceManager.syncSecrets()`. Push it here —
+  // awaited, before `/agent/start` — so the worker's `process.env` carries
+  // the `mcp__*` keys before `generateMcpConfig()` resolves `$secret:` refs.
+  // Guarded on `!serviceManager`: compose sessions already get the *merged*
+  // (compose-declared + MCP) set via `syncSecrets()`, and pushing the
+  // partial account-level set here would clobber their `agent: true`
+  // secrets (the worker REPLACES its tracked set on every push).
+  // `tryPushAgentSecrets` is internally fault-tolerant — a transient HTTP
+  // failure is logged worker-side and never throws — so awaiting it here
+  // just sequences the push ahead of `/agent/start` without adding a
+  // failure path.
+  if (runner instanceof ContainerSessionRunner && !runner.serviceManager) {
+    await runner.tryPushAgentSecrets(ctx.credentialStore.getAllAgentEnv());
+  }
 
   currentAgent.run({
     prompt,

@@ -19,17 +19,23 @@
 
 ## Phase 1 — remaining work to fix
 
-- [ ] **MCP secrets only reach sessions that have a `ServiceManager`.** The
-  secret transport piggybacks on `ServiceManager.syncSecrets()`
+- [x] **MCP secrets now reach compose-less sessions.** The secret transport
+  used to piggyback solely on `ServiceManager.syncSecrets()`
   (`mcpAgentEnvLoader` merge), but `setupServiceManager()` returns early when
-  the project has no compose config — so a compose-less session never gets a
-  `ServiceManager`, never writes `.shipit/.env.agent`, and never pushes
-  `mcp__*` keys to its worker. The `mcpServers` config blobs still arrive in
-  `AgentRunParams`, so `generateMcpConfig()` drops every server with a missing
-  secret. Fix: give compose-less sessions a path to push `mcp__*` agent env to
-  the worker (e.g. a runner-level push that runs regardless of compose, or
-  always create a minimal `ServiceManager`). Same gap exists for 087's
-  `agent: true` secrets — consider fixing both together.
+  the project has no compose config — so a compose-less session never got a
+  `ServiceManager` and never pushed `mcp__*` keys to its worker. Fixed in
+  `ws-handlers/agent-execution.ts`: on every turn, if the resolved runner is a
+  `ContainerSessionRunner` with **no** `ServiceManager`, the orchestrator
+  `await`s `runner.tryPushAgentSecrets(credentialStore.getAllAgentEnv())`
+  before calling `/agent/start`. This (a) covers compose-less sessions, (b)
+  closes the per-turn sequencing race (the push is awaited ahead of agent
+  start), and (c) picks up servers added mid-session. The `!serviceManager`
+  guard is the correctness boundary — compose sessions still get the *merged*
+  (compose-declared + MCP) set via `syncSecrets()`, and pushing the partial
+  account-level set for them would clobber their `agent: true` secrets since
+  the worker REPLACES its tracked set on every push. `tryPushAgentSecrets`
+  was made public for this. Covered by `container-agent-wiring.test.ts`
+  (`tryPushAgentSecrets()` describe block).
 - [ ] Per-server `mcp_server_status` driven by a real liveness signal — Phase 1
   only emits `loaded` / `failed` from `generateMcpConfig()` at agent start; no
   `crashed` detection mid-session.
@@ -39,9 +45,11 @@
   (form validation, status badges, error states).
 - [ ] `session-worker.test.ts` coverage for `generateMcpConfig()` placeholder
   resolution + missing-secret drop, and `mcp-test.ts` handshake.
-- [ ] Confirm the `await`-the-`PUT /secrets`-before-agent-ready sequencing from
-  the plan ("Sequencing: secrets must arrive before the agent starts") — the
-  at-activation push is currently still fire-and-forget via `secrets_status`.
+- [~] `await`-the-`PUT /secrets`-before-agent-start sequencing — **done for
+  compose-less sessions** (the per-turn awaited push above). Compose sessions
+  still rely on the fire-and-forget `secrets_status`-driven push at activation;
+  closing that race needs a merge-aware push (the worker REPLACES its set, so
+  the per-turn push must carry the *full* compose+MCP set) and is deferred.
 
 ## Phase 2 — Native OAuth (not started)
 
