@@ -39,16 +39,12 @@ services:
     # parent dirs). Required because `.inner-shipit/` is in .gitignore
     # and won't exist on a fresh checkout.
     #
-    # Agent-CLI self-heal: the inner orch (RUNTIME_MODE=local) spawns
-    # `claude` / `codex` in-process, and AgentRegistry detects them with
-    # `which`. They're baked into Dockerfile.dogfood — but `composeUp` runs
-    # `docker compose up -d` WITHOUT `--build`, so an outer host that still
-    # has a cached `shipit-dogfood:local` from before the CLI layer was
-    # added never picks up the bake, and the inner UI sits forever on
-    # "Agent Setup → Not installed". The `which claude || npm install -g`
-    # guard makes the command self-healing: a no-op probe on a correctly
-    # baked image, a one-time ~15s global install on a stale one. Keeping
-    # the Dockerfile layer too means fresh builds stay fast.
+    # The agent CLIs (claude / codex) are NOT installed here — they're baked
+    # into Dockerfile.dogfood. ServiceManager runs `docker compose up -d
+    # --build`, so a changed Dockerfile.dogfood is always rebuilt and the
+    # bake can't go stale on a host with an old cached `shipit-dogfood:local`.
+    # See "Agent CLIs must be baked into the dev image" in
+    # docs/118-shipit-ui-local/plan.md.
     #
     # Dev-mode wiring: Vite's dev server runs on the exposed port 3000
     # (so the outer preview proxy reaches it directly) and the inner
@@ -61,7 +57,6 @@ services:
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} &&
-      (which claude > /dev/null 2>&1 || npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp) &&
       npm install &&
       (PORT=4000 npm run dev 2>&1 | sed 's/^/[orch] /' &) &&
       API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
