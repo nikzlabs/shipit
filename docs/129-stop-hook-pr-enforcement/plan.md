@@ -18,6 +18,16 @@ existing system-prompt nudge (`agent-instructions.ts:62-81`): agents read
 "please run `gh pr create`" and routinely don't. The hook makes the prompt
 non-optional without taking the title/body authorship away from the agent.
 
+> **Update (docs/130-block-branch-ops):** the gating mechanism described
+> below changed. `managed-settings.json` is now passed to the Claude CLI
+> *unconditionally* (for the `claude` agent) so it can also register an
+> always-on PreToolUse branch-block hook. PR enforcement stays opt-in: the
+> Stop hook self-gates on the `SHIPIT_AUTO_CREATE_PR` env var, which
+> `agent-execution.ts` sets only when `autoCreatePrActive` is true. The
+> "Wire-up", "Files", and "Why `--settings` flag" sections below describe
+> the original conditional-`--settings` design; the decision table and
+> fail-open posture are unchanged.
+
 ## Motivation
 
 Two compounding facts:

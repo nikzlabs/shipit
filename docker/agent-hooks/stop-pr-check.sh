@@ -13,11 +13,14 @@
 #
 # This is the enforcement layer for the "open a PR when files changed"
 # instruction in agent-instructions.ts and CLAUDE.md. Wired up in
-# /etc/shipit/managed-settings.json and gated per-session by autoCreatePr
-# (the orchestrator only passes `--settings` to the Claude CLI when the
-# setting is on; with the setting off, this hook never runs).
+# /etc/shipit/managed-settings.json, which the orchestrator now *always*
+# passes to the Claude CLI (so the PreToolUse branch-block hook is always
+# active). PR enforcement itself stays opt-in: this hook self-gates on the
+# SHIPIT_AUTO_CREATE_PR env var, which the orchestrator sets only when the
+# autoCreatePr setting is on. With the setting off, this hook exits early.
 #
-# See docs/129-stop-hook-pr-enforcement/plan.md.
+# See docs/129-stop-hook-pr-enforcement/plan.md and
+# docs/130-block-branch-ops/plan.md.
 
 set -eu
 
@@ -29,6 +32,13 @@ PAYLOAD=$(cat || true)
 case "$PAYLOAD" in
   *'"stop_hook_active"'*'true'*) exit 0 ;;
 esac
+
+# PR enforcement is opt-in. The managed-settings.json that registers this
+# hook is always wired up (so the PreToolUse branch-block hook is always
+# active), but the orchestrator only sets SHIPIT_AUTO_CREATE_PR=1 in the
+# Claude CLI environment when the autoCreatePr setting is on. Without it,
+# do nothing. See docs/130-block-branch-ops/plan.md.
+[ "${SHIPIT_AUTO_CREATE_PR:-}" = "1" ] || exit 0
 
 # Operate in whatever cwd Claude invoked us with — that's the session's
 # workspace at agent-spawn time (see src/server/session/claude.ts where the

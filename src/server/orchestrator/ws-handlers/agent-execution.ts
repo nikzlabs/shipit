@@ -419,11 +419,15 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     prompt = `${imageContext}\n\n${prompt}`;
   }
 
-  // When autoCreatePr is on, point Claude at the baked managed-settings.json
-  // that registers our Stop hook. The hook enforces "open a PR before
-  // ending the turn" — see docs/129-stop-hook-pr-enforcement/plan.md.
-  // Claude-only; ignored by other adapters.
-  const settingsPath = autoCreatePrActive && currentAgent.agentId === "claude"
+  // Always point the Claude CLI at the baked managed-settings.json. It
+  // registers two hooks: a PreToolUse branch-block hook (always active —
+  // keeps the agent on the session branch) and a Stop hook that enforces
+  // "open a PR before ending the turn". The Stop hook self-gates on the
+  // SHIPIT_AUTO_CREATE_PR env var, which `autoCreatePr` below controls — so
+  // PR enforcement stays opt-in even though the settings file is always
+  // wired up. Claude-only; ignored by other adapters.
+  // See docs/129-stop-hook-pr-enforcement and docs/130-block-branch-ops.
+  const settingsPath = currentAgent.agentId === "claude"
     ? "/etc/shipit/managed-settings.json"
     : undefined;
 
@@ -436,6 +440,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     previewUrl,
     model: ctx.getSelectedModel(),
     settingsPath,
+    autoCreatePr: autoCreatePrActive,
   });
   // "Agent process started" is now emitted from agent-listeners.ts
   // when the agent_init event arrives, so the log reflects an actual
