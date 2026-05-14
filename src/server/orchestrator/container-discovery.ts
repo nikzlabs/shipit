@@ -184,13 +184,11 @@ export async function cleanupOrphanContainers(
   deps: DiscoveryDeps,
   activeSessionIds: Set<string>,
 ): Promise<number> {
-  // Diagnostic: log caller. This is the other SIGTERM-emitting path
-  // (`container.stop({t:5})`) and the docs say it's only called at
-  // startup — if it's firing during steady-state we want to know.
-  // TODO(observability): downgrade once SIGTERM-loop investigation
-  // (docs/124-session-rescue-and-diagnostics follow-up) lands.
-  const stack = new Error("cleanupOrphanContainers caller trace").stack;
-  console.warn(`[container] cleanupOrphanContainers(active=${activeSessionIds.size}) called from:\n${stack}`);
+  // This path emits SIGTERM via `container.stop({t:5})`. The docs/124
+  // SIGTERM-loop investigation confirmed it only runs once at startup
+  // (from `setupContainerManager`), so the stack-trace diagnostic that
+  // used to live here was downgraded to a plain startup log line.
+  console.log(`[container] cleanupOrphanContainers(active=${activeSessionIds.size})`);
 
   let removed = 0;
   try {
