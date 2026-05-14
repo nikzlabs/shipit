@@ -108,6 +108,21 @@ export function ContextDial({
     return { totalCacheRead, totalCacheCreate };
   }, [turnUsage]);
 
+  // Top contributors — biggest input-token turns; mostly informative when the
+  // context is approaching full.
+  //
+  // IMPORTANT: this hook must stay above the `if (!modelInfo) return null`
+  // guard below. `modelInfo` flips from null → populated once the first
+  // turn's usage arrives, so a component instance that rendered while it was
+  // null (1 fewer hook) would render more hooks on the next pass → React
+  // error #310 ("Rendered more hooks than during the previous render").
+  const topTurns = useMemo(() => {
+    return [...turnUsage]
+      .map((t, i) => ({ ...t, index: i + 1 }))
+      .sort((a, b) => b.inputTokens - a.inputTokens)
+      .slice(0, 3);
+  }, [turnUsage]);
+
   // Authoritative cost / token totals — fall back to per-turn sums only if
   // the parent didn't pass them (e.g. tests, or a pre-rehydration render).
   const totalCost = sessionTotalCostUsd ?? turnUsage.reduce((sum, t) => sum + t.costUsd, 0);
@@ -125,15 +140,6 @@ export function ContextDial({
   // Sparkline scaling — top of the chart is the largest input ever seen so the
   // dial reflects the running maximum (= effective context size).
   const maxInput = turnUsage.reduce((m, t) => Math.max(m, t.inputTokens), 1);
-
-  // Top contributors — biggest input-token turns; mostly informative when the
-  // context is approaching full.
-  const topTurns = useMemo(() => {
-    return [...turnUsage]
-      .map((t, i) => ({ ...t, index: i + 1 }))
-      .sort((a, b) => b.inputTokens - a.inputTokens)
-      .slice(0, 3);
-  }, [turnUsage]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

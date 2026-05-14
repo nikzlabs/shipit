@@ -26,6 +26,18 @@ describe("ContextDial", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("does not throw a hook-order error when modelInfo flips from null to set", () => {
+    // Regression: `topTurns` useMemo used to live *after* the
+    // `if (!modelInfo) return null` guard, so a re-render that populated
+    // modelInfo rendered one more hook than the previous pass → React #310.
+    const { rerender, container } = render(
+      <ContextDial modelInfo={null} turnUsage={[makeTurn(10_000)]} />,
+    );
+    expect(container.firstChild).toBeNull();
+    rerender(<ContextDial modelInfo={window200k} turnUsage={[makeTurn(10_000)]} />);
+    expect(screen.getByTestId("context-dial")).toBeInTheDocument();
+  });
+
   it("renders the dial with green level for low usage", () => {
     render(
       <ContextDial
