@@ -24,6 +24,15 @@ FROM node:22
 
 WORKDIR /workspace
 
+# Install the agent CLIs globally so the inner orchestrator (RUNTIME_MODE=local)
+# can spawn them in-process via claude-adapter / codex-adapter. The shared
+# AgentRegistry detects agents with `which <binary>`, so without these on PATH
+# the inner UI shows "Not installed" on the Agent Setup screen and no session
+# can start. This mirrors the npm-globals layer in Dockerfile.session-worker.prod.
+# Placed before the COPY below so it stays cached across lockfile changes.
+RUN --mount=type=cache,target=/root/.npm \
+    npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
+
 # package.json/package-lock.json at /workspace are shadowed at runtime by the
 # bind mount of the outer session's working tree — they only matter during
 # image build. The resulting node_modules at /workspace/node_modules is what
