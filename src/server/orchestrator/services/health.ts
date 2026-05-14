@@ -62,6 +62,19 @@ export interface ContainerHealth {
   workerUrl: string | null;
   /** The container's Docker ID (short-prefix), when known. Useful for debug display. */
   containerId: string | null;
+  /**
+   * Resource limits the container was *actually created with*, in Docker
+   * units (memory bytes, CPU quota µs per 100 ms period, pids count).
+   * Null for non-container runners and for rediscovered/re-adopted
+   * containers whose booted limits aren't known.
+   *
+   * Surfaced so the diagnostics panel can show booted-vs-parsed side by
+   * side: the parsed `shipit.yaml` is read at request time and can
+   * disagree with what the container booted on — exactly the
+   * warm→claim incident where diagnostics showed `memory: 3072` while the
+   * container ran on a 1 GiB cgroup.
+   */
+  bootedLimits: { memoryLimit: number; cpuQuota: number; pidsLimit: number } | null;
 }
 
 export interface ContainerHealthDeps {
@@ -107,6 +120,7 @@ export async function getContainerHealth(
       lastCreateErrorAt: lastErr?.at ?? null,
       workerUrl: sc?.workerUrl ?? null,
       containerId: sc?.id ? sc.id.slice(0, 12) : null,
+      bootedLimits: sc?.bootedLimits ?? null,
     };
   }
 
@@ -143,6 +157,7 @@ export async function getContainerHealth(
     lastCreateErrorAt: lastErr?.at ?? null,
     workerUrl: sc.workerUrl,
     containerId: sc.id ? sc.id.slice(0, 12) : null,
+    bootedLimits: sc.bootedLimits ?? null,
   };
 }
 

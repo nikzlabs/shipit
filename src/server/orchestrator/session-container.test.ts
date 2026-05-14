@@ -7,12 +7,16 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   SessionContainerManager,
   CONTAINER_LABEL_KEY,
   CONTAINER_LABEL_VALUE,
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STACK_LABEL,
+  readAgentConfig,
 } from "./session-container.js";
 import type { ContainerConfig } from "./session-container.js";
 
@@ -296,6 +300,40 @@ describe("SessionContainerManager", () => {
       await expect(manager.create(buildConfig())).rejects.toThrow("image not found");
       expect(manager.get("test-session-1")).toBeUndefined();
       expect(manager.size).toBe(0);
+    });
+  });
+
+  // --- bootedLimits (W3) ---
+
+  describe("bootedLimits", () => {
+    it("records the resource limits the container was actually created with", async () => {
+      const sc = await manager.create(buildConfig({
+        memoryLimit: 3072 * 1024 * 1024,
+        cpuQuota: 200_000,
+        pidsLimit: 2048,
+      }));
+
+      // bootedLimits is always populated by createContainer — it's how the
+      // claim-time refresh detects a standby that booted off stale config.
+      expect(sc.bootedLimits).toEqual({
+        memoryLimit: 3072 * 1024 * 1024,
+        cpuQuota: 200_000,
+        pidsLimit: 2048,
+      });
+      // Survives lookup via the manager map.
+      expect(manager.get("test-session-1")?.bootedLimits).toEqual(sc.bootedLimits);
+    });
+
+    it("records bootedLimits even for non-docker-access sessions (unlike resourceLimits)", async () => {
+      const sc = await manager.create(buildConfig());
+      // resourceLimits (child-container budget) is only set for dockerAccess.
+      expect(sc.resourceLimits).toBeUndefined();
+      // bootedLimits is always set.
+      expect(sc.bootedLimits).toEqual({
+        memoryLimit: 512 * 1024 * 1024,
+        cpuQuota: 50_000,
+        pidsLimit: 256,
+      });
     });
   });
 
@@ -600,5 +638,67 @@ describe("SessionContainerManager", () => {
       await manager.dispose();
       await manager.dispose(); // should not throw
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readAgentConfig — W4a: a broken shipit.yaml falls back to defaults, LOUDLY
+// ---------------------------------------------------------------------------
+
+describe("readAgentConfig (W4a)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-read-agent-config-"));
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch { /* ignore */ }
+  });
+
+  it("logs the workspace + error and returns defaults when shipit.yaml is malformed", () => {
+    // Malformed YAML — `: : :` is not parseable.
+    fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: [unclosed\n: : :\n");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const config = readAgentConfig(tmpDir);
+
+    // Fallback is preserved — a broken config must not block the session.
+    expect(config.agent.memory).toBe(1024);
+    expect(config.agent.cpu).toBe(0.5);
+    expect(config.agent.pids).toBe(256);
+
+    // ...but it is NOT silent: the catch logs the workspace dir + the cause
+    // so a 1 GiB container never appears with zero trace.
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    const logged = String(errSpy.mock.calls[0]?.[0] ?? "");
+    expect(logged).toContain(tmpDir);
+    expect(logged).toMatch(/default agent resources/i);
+
+    errSpy.mockRestore();
+  });
+
+  it("does not log for a genuinely-absent shipit.yaml (the common, legitimate case)", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const config = readAgentConfig(tmpDir); // no shipit.yaml written
+
+    expect(config.agent.memory).toBe(1024);
+    // Absent file resolves to defaults *without* hitting the catch — only a
+    // genuinely broken file is loud.
+    expect(errSpy).not.toHaveBeenCalled();
+
+    errSpy.mockRestore();
+  });
+
+  it("returns the declared values for a valid new-format shipit.yaml", () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "shipit.yaml"),
+      "agent:\n  memory: 3072\n  cpu: 2\n  pids: 2048\n",
+    );
+    const config = readAgentConfig(tmpDir);
+    expect(config.agent).toMatchObject({ memory: 3072, cpu: 2, pids: 2048 });
   });
 });

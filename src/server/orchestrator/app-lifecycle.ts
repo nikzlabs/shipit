@@ -6,7 +6,7 @@ import type { Server as HttpServer } from "node:http";
 import type { FastifyInstance } from "fastify";
 import type { GitManager } from "../shared/git.js";
 import simpleGit from "simple-git";
-import { generateBranchPrefix, repoUrlToHash, pushToOrigin } from "./git-utils.js";
+import { generateBranchPrefix, repoUrlToHash, pushToOrigin, fetchAndResolveDefaultBranch } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { SessionContainerManager, resolveAgentDockerLimits } from "./session-container.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
@@ -585,6 +585,18 @@ export interface MissingContainerReconcilerDeps {
   runnerRegistry: SessionRunnerRegistry;
   /** Per-session log ring writer. Required — the whole point is to leave a breadcrumb. */
   broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  /**
+   * Resolves a session's workspace dir + Docker limits, used to re-adopt a
+   * live-but-untracked container before force-disposing its runner. Same
+   * shape as the resolver `rediscover` uses. Optional — when omitted, the
+   * reconciler skips adoption and force-disposes orphaned runners as
+   * before (the pre-C3 behavior).
+   */
+  sessionInfoResolver?: (sessionId: string) => {
+    workspaceDir: string;
+    dockerAccess: boolean;
+    resourceLimits?: { memory: number; cpuQuota: number; pidsLimit: number };
+  } | undefined;
 }
 
 /**
@@ -611,15 +623,38 @@ export interface MissingContainerReconcilerDeps {
  */
 export function createMissingContainerReconciler(
   deps: MissingContainerReconcilerDeps,
-): () => void {
-  const { containerManager, runnerRegistry, broadcastLog } = deps;
-  return () => {
+): () => Promise<void> {
+  const { containerManager, runnerRegistry, broadcastLog, sessionInfoResolver } = deps;
+  return async () => {
     if (!containerManager) return;
     for (const sid of runnerRegistry.ids()) {
       const runner = runnerRegistry.get(sid);
       if (!runner) continue;
       if (containerManager.isStandby(sid)) continue;
       if (containerManager.get(sid)) continue;
+      // Inverse-leak backstop (C3): the runner has no container entry, but
+      // a live Docker container may still exist — orphaned because a
+      // `die`/`oom` event deleted a healthy container's map entry. Try to
+      // re-adopt it before force-disposing; a successful adoption heals
+      // the session in place instead of churning another container.
+      if (sessionInfoResolver) {
+        try {
+          const adopted = await containerManager.adoptRunningContainer(sid, sessionInfoResolver);
+          if (adopted) {
+            console.error(
+              `[orphan-runner] Session ${sid} had a live container with no manager entry — re-adopted instead of disposing`,
+            );
+            broadcastLog(
+              sid,
+              "server",
+              "Recovered a session container that had lost its orchestrator tracking entry — no restart needed.",
+            );
+            continue;
+          }
+        } catch (err) {
+          console.error(`[orphan-runner] adoptRunningContainer failed for ${sid}:`, err);
+        }
+      }
       console.error(
         `[orphan-runner] Session ${sid} has runner but container is missing — force-disposing`,
       );
@@ -1646,12 +1681,18 @@ export function createWarmPool(
           await cacheGit.setRemoteUrl(freshUrl);
         }
 
-        // Fetch latest refs in the bare cache (with 60s TTL).
-        // Non-fatal — cache may not have a reachable remote (e.g. tests).
+        // Fetch latest refs in the bare cache (with 60s TTL). Non-fatal —
+        // the real-remote fetch in the workspace clone below (W2) is what
+        // actually determines the branch point now — but a cache that
+        // can't fetch is surfaced so a stale repo doesn't silently serve
+        // warm sessions frozen at an old commit.
         try {
           await cacheGit.fetchCache();
         } catch (fetchErr) {
           console.warn("[warm] Cache fetch failed (non-fatal):", String(fetchErr));
+          sseBroadcast("error", {
+            message: `Repository cache for ${repoUrl} could not be refreshed — warm sessions may be based on stale code: ${getErrorMessage(fetchErr)}`,
+          });
         }
 
         // Remove the workspace subdir (clone needs it absent)
@@ -1660,26 +1701,32 @@ export function createWarmPool(
         // Clone from bare cache into workspace subdir (hardlinked, fast)
         await cacheGit.cloneFromCache(workspaceDir, repoUrl);
 
-        // Checkout a new branch from the default branch
-        let startPoint: string | undefined;
-        try {
-          const defaultBranch = await cacheGit.getDefaultBranch();
-          if (defaultBranch && !defaultBranch.includes("(")) {
-            startPoint = `origin/${defaultBranch}`;
-          }
-        } catch {
-          // Fallback: let git use HEAD
-        }
-
-        // Create branch in the session clone
-        const branchArgs = ["checkout", "-b", branchPrefix];
-        if (startPoint) branchArgs.push(startPoint);
-        await simpleGit(workspaceDir).raw(branchArgs);
-
-        // Configure credentials
+        // Configure credentials BEFORE the real-remote fetch below — the
+        // workspace clone's origin is the plain (unauthenticated) URL, so
+        // a private-repo fetch needs the credential helper in place.
         if (githubAuthManager.authenticated) {
           githubAuthManager.configureGitCredentials(workspaceDir);
         }
+
+        // W2: `cloneFromCache` only snapshotted the (possibly hundreds-of-
+        // commits-stale) bare cache. Fetch the real remote in the workspace
+        // clone so the warm branch is cut from the genuine latest commit —
+        // otherwise the standby container's memory limit is derived from a
+        // frozen `shipit.yaml`. Shared helper with the claim path so they
+        // can't drift.
+        const { resetTarget, fetched } = await fetchAndResolveDefaultBranch(workspaceDir);
+        if (!fetched) {
+          // The workspace-clone fetch failed — the warm branch is being cut
+          // from the (possibly stale) `git clone --local` snapshot. Surface
+          // it: a silent no-op fetch here is the W2 root cause.
+          console.warn(`[warm] Workspace fetch failed for ${appSessionId} — branching from the bare-cache snapshot, which may be stale`);
+          sseBroadcast("error", {
+            message: `Warm session for ${repoUrl} may be based on stale code — could not fetch the latest commits.`,
+          });
+        }
+        const branchArgs = ["checkout", "-b", branchPrefix];
+        if (resetTarget) branchArgs.push(resetTarget);
+        await simpleGit(workspaceDir).raw(branchArgs);
 
         sessionManager.setBranch(appSessionId, branchPrefix);
 

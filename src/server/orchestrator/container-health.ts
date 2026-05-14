@@ -139,18 +139,31 @@ export async function startHealthMonitor(
       try {
         const event = JSON.parse(chunk.toString()) as {
           Action?: string;
-          Actor?: { Attributes?: Record<string, string> };
+          Actor?: { ID?: string; Attributes?: Record<string, string> };
         };
         const attrs = event.Actor?.Attributes ?? {};
         const action = event.Action;
         if (action !== "die" && action !== "oom") return;
-        const containerId = attrs.id ?? "";
+        // Read the real container ID from `Actor.ID` — `attrs.id` is never
+        // populated by Docker, so the old `attrs.id ?? ""` was always "".
+        // This ID is what disambiguates container incarnations below.
+        const containerId = event.Actor?.ID ?? "";
 
         // ---- Path 1: agent container -----------------------------------
         const sessionId = attrs[CONTAINER_SESSION_ID_LABEL];
         if (sessionId) {
           const sc = deps.containers.get(sessionId);
           if (!sc) return;
+          // Stale-incarnation guard: the container name (`agent-<shortId>`)
+          // and `shipit-session-id` label are reused across recreations. A
+          // `die`/`oom` event for a PREVIOUS container (e.g. the one Rescue
+          // just stopped) must not be attributed to the current container —
+          // doing so deletes a healthy container's map entry and emits a
+          // phantom `container_exited`, which is the root of the
+          // Rescue-doesn't-work create/phantom-exit loop. An empty `sc.id`
+          // means the new container is mid-create (id not yet assigned); a
+          // non-matching id is unambiguously a stale event.
+          if (containerId && containerId !== sc.id) return;
           // Skip if destroy() is already in-flight — it will handle cleanup
           if (sc.status === "stopping") return;
           const exitCode = Number(attrs.exitCode ?? 1);
