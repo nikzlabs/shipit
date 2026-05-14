@@ -1,7 +1,7 @@
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
-import { AgentRegistry, ALLOWED_ENV_KEYS } from "../shared/agent-registry.js";
+import { AgentRegistry, isAllowedAgentEnvKey } from "../shared/agent-registry.js";
 import { RepoGit } from "./repo-git.js";
 import { AuthManager } from "./auth.js";
 import { CodexAuthManager } from "./codex-auth.js";
@@ -267,7 +267,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // Load persisted agent env vars into process.env before agent detection
   const storedEnv = credentialStore.getAllAgentEnv();
   for (const [key, value] of Object.entries(storedEnv)) {
-    if (ALLOWED_ENV_KEYS.has(key) && !process.env[key]) {
+    if (isAllowedAgentEnvKey(key) && !process.env[key]) {
       process.env[key] = value;
     }
   }

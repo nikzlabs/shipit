@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import type { AgentProcess, AgentRunParams, AgentEvent, AgentId } from "./agents/agent-process.js";
+import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, McpServerConfig } from "./agents/agent-process.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
@@ -40,7 +40,8 @@ export interface WorkerSSEEvent {
     | "terminal_data" | "terminal_exit"
     | "file_changes"
     | "service_request"
-    | "install_log" | "install_done" | "install_error";
+    | "install_log" | "install_done" | "install_error"
+    | "mcp_server_status";
   data: unknown;
 }
 
@@ -123,6 +124,13 @@ export class SessionWorker extends EventEmitter {
   private _sseBackpressured = new Set<ServerResponse>();
   private _terminalPaused = false;
 
+  // docs/088 — MCP npm install state. Per-package mutex coalesces concurrent
+  // install requests for the same package; `/tmp/mcp-installed.json` records
+  // completed installs so a worker restart within the same container doesn't
+  // reinstall (cross-container caching is out of scope for Phase 1).
+  private _mcpInstallMutex = new Map<string, Promise<void>>();
+  private static readonly MCP_INSTALLED_MARKER = "/tmp/mcp-installed.json";
+
   constructor(deps: SessionWorkerDeps) {
     super();
     this.agentFactory = deps.agentFactory;
@@ -163,7 +171,7 @@ export class SessionWorker extends EventEmitter {
    * the output dir so suggested filenames also stay out of the repo.
    * See coreBundle.js:`workspaceFile()` and `resolveClientFilename()`.
    */
-  private generateMcpConfig(agentId: AgentId): string | undefined {
+  private generateMcpConfig(agentId: AgentId, params?: AgentRunParams): string | undefined {
     if (agentId !== "claude") return undefined;
 
     const configPath = `/tmp/mcp-config-${Date.now()}.json`;
@@ -172,20 +180,87 @@ export class SessionWorker extends EventEmitter {
     // (Chrome doesn't ship for Linux ARM64). Without this flag, @playwright/mcp
     // defaults to `chrome` and fails on the first browser tool call with
     // "Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome".
-    const config = {
-      mcpServers: {
-        playwright: {
-          command: "sh",
-          args: [
-            "-c",
-            `mkdir -p ${outputDir} && cd ${outputDir} && exec playwright-mcp --browser chromium --headless --no-sandbox --output-dir ${outputDir}`,
-          ],
-        },
+    const mcpServers: Record<string, unknown> = {
+      playwright: {
+        command: "sh",
+        args: [
+          "-c",
+          `mkdir -p ${outputDir} && cd ${outputDir} && exec playwright-mcp --browser chromium --headless --no-sandbox --output-dir ${outputDir}`,
+        ],
       },
     };
 
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    // docs/088: merge user-configured MCP servers. Configs arrive UNRESOLVED
+    // — `$secret:` placeholders are substituted here against the worker's own
+    // process.env (populated by 087's agent-env pipeline). A server that
+    // references a missing secret is dropped and reported over SSE; it never
+    // blocks agent start.
+    for (const server of params?.mcpServers ?? []) {
+      const resolved = this.resolveMcpServer(server);
+      if (resolved) {
+        mcpServers[server.name] = resolved;
+        this.broadcastSSE({
+          type: "mcp_server_status",
+          data: { name: server.name, state: "loaded" },
+        });
+      }
+    }
+
+    fs.writeFileSync(configPath, JSON.stringify({ mcpServers }, null, 2));
     return configPath;
+  }
+
+  /**
+   * Resolve a single user MCP server config into the Claude-CLI `--mcp-config`
+   * shape, substituting `$secret:KEY` placeholders in `env` / `headers` /
+   * `args` against `process.env`. Returns `null` (and emits an SSE
+   * `mcp_server_status` failure) when a referenced secret is missing.
+   */
+  private resolveMcpServer(server: McpServerConfig): Record<string, unknown> | null {
+    const missing: string[] = [];
+    // Substring substitution — `"Bearer $secret:mcp__x__TOKEN"` keeps the
+    // literal `Bearer ` prefix and only the token portion is replaced.
+    const subst = (value: string): string =>
+      value.replace(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g, (_m, key: string) => {
+        const v = process.env[key];
+        if (v === undefined || v === "") {
+          missing.push(key);
+          return "";
+        }
+        return v;
+      });
+    const substRecord = (rec?: Record<string, string>): Record<string, string> | undefined => {
+      if (!rec) return undefined;
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) out[k] = subst(v);
+      return out;
+    };
+
+    let resolved: Record<string, unknown>;
+    if (server.type === "stdio") {
+      resolved = {
+        command: server.command,
+        ...(server.args ? { args: server.args.map(subst) } : {}),
+        ...(server.env ? { env: substRecord(server.env) } : {}),
+      };
+    } else {
+      resolved = {
+        type: "http",
+        url: server.url,
+        ...(server.headers ? { headers: substRecord(server.headers) } : {}),
+      };
+    }
+
+    if (missing.length > 0) {
+      const reason = `missing secret: ${[...new Set(missing)].join(", ")}`;
+      console.warn(`[mcp] dropping server "${server.name}": ${reason}`);
+      this.broadcastSSE({
+        type: "mcp_server_status",
+        data: { name: server.name, state: "failed", reason },
+      });
+      return null;
+    }
+    return resolved;
   }
 
   // --- Session mode endpoints (agent, terminal, file watcher) ---
@@ -204,8 +279,8 @@ export class SessionWorker extends EventEmitter {
       }
 
       try {
-        // Generate MCP config for Playwright browser tools
-        const mcpConfigPath = this.generateMcpConfig(agentId);
+        // Generate MCP config — built-in Playwright + user-configured servers.
+        const mcpConfigPath = this.generateMcpConfig(agentId, params);
 
         this.agent = this.agentFactory(agentId);
         this.wireAgentEvents(this.agent);
@@ -469,6 +544,161 @@ export class SessionWorker extends EventEmitter {
       running: this._installRunning,
       lastResult: this._lastInstallResult,
     }));
+
+    // --- MCP endpoints (docs/088-mcp-integration) ---
+
+    // Install npm packages for stdio MCP servers. Runs at session activation,
+    // alongside the existing `agent.install` step. Packages already recorded
+    // in /tmp/mcp-installed.json are skipped. Concurrent requests for the same
+    // package coalesce via the per-package mutex.
+    app.post<{ Body: { packages?: string[] } }>("/mcp/install", async (request, reply) => {
+      const { packages } = request.body ?? {};
+      if (!Array.isArray(packages) || packages.some((p) => typeof p !== "string")) {
+        return reply.code(400).send({ error: "packages must be an array of strings" });
+      }
+      const installed = this.readMcpInstalledMarker();
+      const pending = [...new Set(packages)].filter((p) => p && !installed.has(p));
+      if (pending.length === 0) {
+        return { installed: [], skipped: packages };
+      }
+      const results = await Promise.allSettled(
+        pending.map((pkg) => this.installMcpPackage(pkg)),
+      );
+      const ok: string[] = [];
+      const failed: { package: string; error: string }[] = [];
+      results.forEach((r, i) => {
+        const pkg = pending[i];
+        if (r.status === "fulfilled") {
+          ok.push(pkg);
+        } else {
+          const error = getErrorMessage(r.reason);
+          failed.push({ package: pkg, error });
+          this.broadcastSSE({
+            type: "mcp_server_status",
+            data: { name: pkg, state: "failed", reason: `install failed: ${error}` },
+          });
+        }
+      });
+      return { installed: ok, failed };
+    });
+
+    // Connectivity test — spawn the configured stdio server (or open the HTTP
+    // connection), run `initialize` + `tools/list`, tear it down. The config
+    // arrives with `$secret:` placeholders; resolve them locally first.
+    app.post<{ Body: { config?: McpServerConfig } }>("/mcp/test", async (request, reply) => {
+      const { config } = request.body ?? {};
+      if (!config || typeof config !== "object") {
+        return reply.code(400).send({ error: "config is required" });
+      }
+      const { testMcpServer } = await import("./mcp-test.js");
+      const resolved = this.resolveMcpServerConfig(config);
+      if (!resolved.ok) {
+        return { ok: false, error: resolved.error };
+      }
+      return testMcpServer(resolved.config);
+    });
+  }
+
+  // --- MCP helpers (docs/088) ---
+
+  /** Read the set of MCP npm packages already installed in this container. */
+  private readMcpInstalledMarker(): Set<string> {
+    try {
+      const raw = fs.readFileSync(SessionWorker.MCP_INSTALLED_MARKER, "utf-8");
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) return new Set(parsed.filter((p): p is string => typeof p === "string"));
+    } catch {
+      /* no marker yet */
+    }
+    return new Set();
+  }
+
+  /** Append a package to the installed-marker file. */
+  private recordMcpInstalled(pkg: string): void {
+    const installed = this.readMcpInstalledMarker();
+    installed.add(pkg);
+    try {
+      fs.writeFileSync(SessionWorker.MCP_INSTALLED_MARKER, JSON.stringify([...installed]));
+    } catch (err) {
+      console.warn("[mcp] failed to write installed marker:", getErrorMessage(err));
+    }
+  }
+
+  /** `npm install -g <pkg>` with a per-package mutex. */
+  private installMcpPackage(pkg: string): Promise<void> {
+    const existing = this._mcpInstallMutex.get(pkg);
+    if (existing) return existing;
+    const run = new Promise<void>((resolve, reject) => {
+      const proc = spawn("npm", ["install", "-g", pkg], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, NODE_ENV: "development" },
+      });
+      let stderr = "";
+      proc.stdout?.on("data", (c: Buffer) =>
+        this.broadcastSSE({ type: "install_log", data: { text: c.toString(), stream: "stdout" } }),
+      );
+      proc.stderr?.on("data", (c: Buffer) => {
+        stderr += c.toString();
+        this.broadcastSSE({ type: "install_log", data: { text: c.toString(), stream: "stderr" } });
+      });
+      proc.on("error", (err) => reject(err));
+      proc.on("close", (code) => {
+        if (code === 0) {
+          this.recordMcpInstalled(pkg);
+          resolve();
+        } else {
+          reject(new Error(stderr.trim().slice(-400) || `npm exited with code ${code}`));
+        }
+      });
+    }).finally(() => {
+      this._mcpInstallMutex.delete(pkg);
+    });
+    this._mcpInstallMutex.set(pkg, run);
+    return run;
+  }
+
+  /**
+   * Resolve `$secret:` placeholders in a user MCP server config against
+   * `process.env`, returning a fully-resolved `McpServerConfig`. Used by the
+   * test endpoint. Returns `{ ok: false }` when a referenced secret is absent.
+   */
+  private resolveMcpServerConfig(
+    server: McpServerConfig,
+  ): { ok: true; config: McpServerConfig } | { ok: false; error: string } {
+    const missing: string[] = [];
+    const subst = (value: string): string =>
+      value.replace(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g, (_m, key: string) => {
+        const v = process.env[key];
+        if (v === undefined || v === "") {
+          missing.push(key);
+          return "";
+        }
+        return v;
+      });
+    const substRecord = (rec?: Record<string, string>): Record<string, string> | undefined => {
+      if (!rec) return undefined;
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec)) out[k] = subst(v);
+      return out;
+    };
+
+    let config: McpServerConfig;
+    if (server.type === "stdio") {
+      config = {
+        ...server,
+        ...(server.args ? { args: server.args.map(subst) } : {}),
+        ...(server.env ? { env: substRecord(server.env) } : {}),
+      };
+    } else {
+      config = {
+        ...server,
+        ...(server.headers ? { headers: substRecord(server.headers) } : {}),
+      };
+    }
+    if (missing.length > 0) {
+      return { ok: false, error: `missing secret: ${[...new Set(missing)].join(", ")}` };
+    }
+    return { ok: true, config };
   }
 
   // --- Install command execution ---

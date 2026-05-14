@@ -32,6 +32,7 @@ type SettingsTab =
   | "github"
   | "git"
   | "instructions"
+  | "mcp"
   | "advanced"
   | "deployments"
   | "secrets"

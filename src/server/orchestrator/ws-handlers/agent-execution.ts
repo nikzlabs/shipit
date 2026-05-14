@@ -431,6 +431,14 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     ? "/etc/shipit/managed-settings.json"
     : undefined;
 
+  // docs/088: pass the enabled user MCP servers as UNRESOLVED config blobs
+  // ($secret: placeholders intact). Raw secret values are NOT in this payload
+  // — they reach the worker's process.env via 087's agent-env pipeline. The
+  // worker resolves placeholders locally in generateMcpConfig().
+  const mcpServers = Object.values(ctx.credentialStore.getAllMcpServers()).filter(
+    (s) => s.enabled,
+  );
+
   currentAgent.run({
     prompt,
     sessionId: agentSessionId,
@@ -441,6 +449,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     model: ctx.getSelectedModel(),
     settingsPath,
     autoCreatePr: autoCreatePrActive,
+    mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
   });
   // "Agent process started" is now emitted from agent-listeners.ts
   // when the agent_init event arrives, so the log reflects an actual

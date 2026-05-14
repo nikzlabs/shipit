@@ -13,6 +13,13 @@ export interface ClaudeRunOptions {
   permissionMode?: PermissionMode;
   /** Path to an MCP config JSON file passed via --mcp-config. */
   mcpConfigPath?: string;
+  /**
+   * Names of enabled user MCP servers (docs/088). Each contributes a
+   * `mcp__<name>__*` glob to the `auto` and `normal` tool allowlists.
+   * Deliberately excluded from `plan` mode — third-party MCP tools cannot be
+   * assumed read-only.
+   */
+  mcpServerNames?: string[];
   /** Model alias or ID to use (e.g., "sonnet", "opus"). */
   model?: string;
   /**
@@ -46,17 +53,26 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, model, settingsPath, autoCreatePr } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr } = opts;
 
     const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__*";
     const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
     const NORMAL_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
 
+    // docs/088: enabled user MCP servers contribute a `mcp__<name>__*` glob to
+    // the `auto` and `normal` allowlists. `plan` mode deliberately omits them
+    // — third-party MCP tools can't be assumed read-only.
+    const userMcpGlobs = (mcpServerNames ?? [])
+      .map((name) => `mcp__${name}__*`)
+      .join(",");
+    const withUserMcp = (base: string): string =>
+      userMcpGlobs ? `${base},${userMcpGlobs}` : base;
+
     const tools = permissionMode === "plan"
       ? PLAN_TOOLS
       : permissionMode === "normal"
-        ? NORMAL_TOOLS
-        : AUTO_TOOLS;
+        ? withUserMcp(NORMAL_TOOLS)
+        : withUserMcp(AUTO_TOOLS);
 
     const args = [
       "-p", prompt,
@@ -88,7 +104,7 @@ export class ClaudeProcess extends EventEmitter {
     // Build effective system prompt, injecting normal-mode instructions if needed
     let effectiveSystemPrompt = systemPrompt;
     if (permissionMode === "normal") {
-      const normalInstruction = `IMPORTANT: You are in supervised mode. Before making ANY file changes or running commands:\n1. Describe what you plan to do\n2. Use AskUserQuestion to get approval first\n3. Only proceed after the user approves\nNever skip the approval step.`;
+      const normalInstruction = `IMPORTANT: You are in supervised mode. Before making ANY file changes or running commands:\n1. Describe what you plan to do\n2. Use AskUserQuestion to get approval first\n3. Only proceed after the user approves\nNever skip the approval step. This also applies to MCP tools (\`mcp__*\`): before calling any side-effecting MCP tool (creating issues, posting messages, modifying external state), confirm with the user via AskUserQuestion first.`;
       effectiveSystemPrompt = effectiveSystemPrompt
         ? `${normalInstruction}\n\n${effectiveSystemPrompt}`
         : normalInstruction;

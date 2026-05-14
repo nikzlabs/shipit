@@ -734,6 +734,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return workerGet(this.workerUrl, "/files/tree");
   }
 
+  /**
+   * Proxy an MCP connectivity test to the session worker (docs/088). The
+   * worker spawns the configured stdio server (or opens the HTTP connection),
+   * calls `tools/list`, and tears the connection down. 30s timeout — matches
+   * the worker-side cap. The worker resolves `$secret:` placeholders against
+   * its own `process.env`, so the orchestrator never handles raw values here.
+   */
+  async proxyMcpTest(config: unknown): Promise<unknown> {
+    await this._workerReady;
+    return workerPost(this.workerUrl, "/mcp/test", { config }, { timeoutMs: 30_000 });
+  }
+
+  /** Install MCP server npm packages on the worker (docs/088). */
+  async installMcpPackages(packages: string[]): Promise<unknown> {
+    await this._workerReady;
+    return workerPost(this.workerUrl, "/mcp/install", { packages });
+  }
+
   // --- Worker resource lifecycle ---
 
   /** Start file watcher on session worker. */
@@ -1168,6 +1186,22 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           });
           this.signalInstallComplete();
           break;
+
+        // --- MCP server status (docs/088) ---
+
+        case "mcp_server_status": {
+          const status = data as { name?: string; state?: string; reason?: string };
+          if (typeof status.name === "string" && typeof status.state === "string") {
+            this.emitMessage({
+              type: "mcp_server_status",
+              sessionId: this.sessionId,
+              name: status.name,
+              state: status.state as "loaded" | "failed" | "crashed" | "disabled",
+              reason: status.reason,
+            } as WsServerMessage);
+          }
+          break;
+        }
 
         // --- File watcher events ---
 

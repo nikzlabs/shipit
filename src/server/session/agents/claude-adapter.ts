@@ -140,6 +140,10 @@ export class ClaudeAdapter
       cwd: params.cwd,
       permissionMode: params.permissionMode,
       mcpConfigPath: params.mcpConfigPath,
+      // docs/088 — names of enabled user MCP servers drive the tool allowlist.
+      mcpServerNames: params.mcpServers
+        ?.filter((s) => s.enabled)
+        .map((s) => s.name),
       model: params.model,
       settingsPath: params.settingsPath,
       autoCreatePr: params.autoCreatePr,

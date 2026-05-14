@@ -2,6 +2,7 @@
 
 import type { EventEmitter } from "node:events";
 import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
+import type { McpServerConfig } from "./mcp-types.js";
 
 // ---- Agent identity ----
 
@@ -106,6 +107,13 @@ export interface AgentRunParams {
   permissionMode?: PermissionMode;
   /** Path to MCP config JSON file (e.g., for Playwright browser tools). */
   mcpConfigPath?: string;
+  /**
+   * User-configured MCP servers (docs/088). Configs are UNRESOLVED — `env`
+   * and `headers` may still contain `$secret:` placeholders. The worker
+   * resolves them against its own `process.env` in `generateMcpConfig()`.
+   * Raw secret values never travel in this payload.
+   */
+  mcpServers?: McpServerConfig[];
   /** Internal preview URL the agent can navigate to (e.g., http://preview-host:5173). */
   previewUrl?: string;
   /** Model alias or ID to use (e.g., "sonnet", "opus", "gpt-5.4"). */

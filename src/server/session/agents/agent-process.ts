@@ -18,3 +18,13 @@ export type {
   AgentProcessEvents,
   AgentRunParams,
 } from "../../shared/types/agent-types.js";
+
+export type {
+  McpServerConfig,
+  McpStdioServerConfig,
+  McpHttpServerConfig,
+  McpServerState,
+  McpServerStatus,
+  McpTool,
+  McpTestResult,
+} from "../../shared/types/mcp-types.js";
