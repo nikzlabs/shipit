@@ -442,19 +442,29 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         },
       })
     : null;
+  // Guards against overlapping reconciler passes: the reconciler is async
+  // (C3 awaits Docker queries to re-adopt orphaned containers) and a hung
+  // Docker daemon can make a pass outlast the 30s interval. Two concurrent
+  // passes over `runnerRegistry.ids()` could both decide the same runner is
+  // orphaned and race dispose-vs-adopt — so a pass that's still running
+  // skips the next tick entirely.
+  let reconcileInFlight = false;
   const idleEnforcementInterval = containerManager ? setInterval(() => {
     try {
       enforceIdleContainerLimit();
     } catch (err) {
       console.error("[idle-cleanup] periodic enforcement failed:", err);
     }
-    if (reconcileMissingContainers) {
+    if (reconcileMissingContainers && !reconcileInFlight) {
       // Async since C3 — the reconciler may await a Docker query to
       // re-adopt an orphaned container. Fire-and-forget with a catch so a
       // hung Docker daemon can't wedge the idle-enforcement interval.
-      void reconcileMissingContainers().catch((err: unknown) => {
-        console.error("[orphan-runner] periodic reconciliation failed:", err);
-      });
+      reconcileInFlight = true;
+      void reconcileMissingContainers()
+        .catch((err: unknown) => {
+          console.error("[orphan-runner] periodic reconciliation failed:", err);
+        })
+        .finally(() => { reconcileInFlight = false; });
     }
   }, 30_000) : null;
   // Don't keep the event loop alive just for idle enforcement — let process

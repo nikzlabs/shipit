@@ -151,12 +151,22 @@ export async function adoptRunningContainer(
           deps.standbySessionIds.add(sessionId);
         }
         return true;
-      } catch {
-        // Container may have exited between list and inspect — try the next.
+      } catch (err) {
+        // Usually the container exited between `listContainers` and
+        // `inspect` — benign, try the next. But this also catches a broken
+        // daemon / permissions error, after which we return `false` and the
+        // caller force-disposes the runner. Leave a breadcrumb so a future
+        // "adoption never works" report has something to grep for.
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[adopt] inspect failed for container ${ci.Id.slice(0, 12)} (session ${sessionId}): ${detail}`,
+        );
       }
     }
-  } catch {
-    // Docker may not be available
+  } catch (err) {
+    // Docker daemon unreachable — caller force-disposes the runner.
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`[adopt] listContainers failed for session ${sessionId}: ${detail}`);
   }
   return false;
 }

@@ -1714,7 +1714,16 @@ export function createWarmPool(
         // otherwise the standby container's memory limit is derived from a
         // frozen `shipit.yaml`. Shared helper with the claim path so they
         // can't drift.
-        const { resetTarget } = await fetchAndResolveDefaultBranch(workspaceDir);
+        const { resetTarget, fetched } = await fetchAndResolveDefaultBranch(workspaceDir);
+        if (!fetched) {
+          // The workspace-clone fetch failed — the warm branch is being cut
+          // from the (possibly stale) `git clone --local` snapshot. Surface
+          // it: a silent no-op fetch here is the W2 root cause.
+          console.warn(`[warm] Workspace fetch failed for ${appSessionId} — branching from the bare-cache snapshot, which may be stale`);
+          sseBroadcast("error", {
+            message: `Warm session for ${repoUrl} may be based on stale code — could not fetch the latest commits.`,
+          });
+        }
         const branchArgs = ["checkout", "-b", branchPrefix];
         if (resetTarget) branchArgs.push(resetTarget);
         await simpleGit(workspaceDir).raw(branchArgs);

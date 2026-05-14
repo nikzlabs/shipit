@@ -300,9 +300,13 @@ export function readAgentConfig(workspaceDir: string): ShipitConfig {
     return resolveShipitConfig(workspaceDir);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
+    // Interpolate AGENT_DEFAULTS rather than hard-coding the numbers so the
+    // log line can't drift if the defaults ever change.
+    const d = AGENT_DEFAULTS;
     console.error(
       `[shipit-config] Failed to parse shipit.yaml in ${workspaceDir} — ` +
-        `falling back to default agent resources (1 GiB / 0.5 CPU / 256 pids): ${detail}`,
+        `falling back to default agent resources ` +
+        `(${d.memory} MiB / ${d.cpu} CPU / ${d.pids} pids): ${detail}`,
     );
     return { agent: { ...AGENT_DEFAULTS, install: [] }, warnings: [] };
   }

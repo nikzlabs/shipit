@@ -73,10 +73,19 @@ function makeFakeRegistry(entries: Map<string, SessionRunnerInterface>): Session
 function makeFakeContainerManager(
   containers: Map<string, Partial<SessionContainer>>,
   standby: Set<string>,
+  /**
+   * Optional `adoptRunningContainer` stub. Receives the session id; when it
+   * returns `true` the reconciler treats the container as re-adopted and
+   * must NOT dispose the runner. `adoptCalls` records every invocation.
+   */
+  adopt?: { impl: (sid: string) => Promise<boolean>; calls: string[] },
 ): SessionContainerManager {
   return {
     get: (sid: string) => containers.get(sid) as SessionContainer | undefined,
     isStandby: (sid: string) => standby.has(sid),
+    adoptRunningContainer: adopt
+      ? async (sid: string) => { adopt.calls.push(sid); return adopt.impl(sid); }
+      : async () => false,
   } as unknown as SessionContainerManager;
 }
 
@@ -260,6 +269,80 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     await reconcile();
 
     expect(disposeCalls).toEqual([]);
+  });
+
+  // ---- C3: re-adopt a live-but-untracked container before disposing ----
+
+  it("re-adopts a live untracked container and does NOT dispose the runner", async () => {
+    const { runner, emitted, disposeCalls } = makeFakeRunner("sess-adopt");
+    const registry = makeFakeRegistry(new Map([["sess-adopt", runner]]));
+    // Container missing from the manager map, but `adoptRunningContainer`
+    // finds a live Docker container and re-adopts it.
+    const adopt = { impl: async () => true, calls: [] as string[] };
+    const containerManager = makeFakeContainerManager(new Map(), new Set(), adopt);
+    const logged: { sid: string; text: string }[] = [];
+
+    const reconcile = createMissingContainerReconciler({
+      containerManager,
+      runnerRegistry: registry,
+      broadcastLog: (sid, _source, text) => logged.push({ sid, text }),
+      // The resolver itself isn't exercised here (the stub ignores it) — its
+      // mere presence is what enables the adoption branch.
+      sessionInfoResolver: (sid) => ({ workspaceDir: `/ws/${sid}`, dockerAccess: false }),
+    });
+    await reconcile();
+
+    expect(adopt.calls).toEqual(["sess-adopt"]);
+    // Re-adopted → the runner is healed in place, NOT disposed.
+    expect(disposeCalls).toEqual([]);
+    expect(emitted.find((m) => m.type === "session_status")).toBeUndefined();
+    // A breadcrumb is still written so the recovery is visible in the log ring.
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.text).toMatch(/recovered/i);
+  });
+
+  it("force-disposes the runner when adoption fails (no live container found)", async () => {
+    const { runner, disposeCalls } = makeFakeRunner("sess-gone");
+    const registry = makeFakeRegistry(new Map([["sess-gone", runner]]));
+    // `adoptRunningContainer` returns false — e.g. the resolver had no
+    // workspaceDir, or there genuinely is no live container.
+    const adopt = { impl: async () => false, calls: [] as string[] };
+    const containerManager = makeFakeContainerManager(new Map(), new Set(), adopt);
+
+    const reconcile = createMissingContainerReconciler({
+      containerManager,
+      runnerRegistry: registry,
+      broadcastLog: () => undefined,
+      sessionInfoResolver: (sid) => ({ workspaceDir: `/ws/${sid}`, dockerAccess: false }),
+    });
+    await reconcile();
+
+    expect(adopt.calls).toEqual(["sess-gone"]);
+    // Adoption failed → fall through to the original force-dispose path.
+    expect(disposeCalls).toEqual([{ force: true }]);
+  });
+
+  it("still force-disposes when adoptRunningContainer throws (Docker error)", async () => {
+    const { runner, disposeCalls } = makeFakeRunner("sess-throw");
+    const registry = makeFakeRegistry(new Map([["sess-throw", runner]]));
+    const adopt = {
+      impl: async () => { throw new Error("docker daemon unreachable"); },
+      calls: [] as string[],
+    };
+    const containerManager = makeFakeContainerManager(new Map(), new Set(), adopt);
+
+    const reconcile = createMissingContainerReconciler({
+      containerManager,
+      runnerRegistry: registry,
+      broadcastLog: () => undefined,
+      sessionInfoResolver: (sid) => ({ workspaceDir: `/ws/${sid}`, dockerAccess: false }),
+    });
+    await reconcile();
+
+    expect(adopt.calls).toEqual(["sess-throw"]);
+    // A throwing adoption must not abort the reconcile — the runner is still
+    // force-disposed so the session doesn't hang forever.
+    expect(disposeCalls).toEqual([{ force: true }]);
   });
 });
 

@@ -54,28 +54,45 @@ export async function pushToOrigin(git: GitManager): Promise<string | null> {
  * Credentials must already be configured in `workspaceDir` for private
  * repos — callers run `configureGitCredentials` first.
  *
- * The fetch is best-effort: when the remote is unreachable (offline,
- * rotated token, a non-fetchable URL in tests) the error is swallowed and
- * resolution falls back to whatever `origin/*` refs the local clone
- * already has — i.e. it degrades to "branch from the snapshot", the
- * pre-W2 behavior, rather than failing the warm/claim path outright.
+ * The fetch is best-effort and bounded: when the remote is unreachable
+ * (offline, rotated token, a non-fetchable URL in tests) the error is
+ * swallowed and resolution falls back to whatever `origin/*` refs the
+ * local clone already has — i.e. it degrades to "branch from the
+ * snapshot", the pre-W2 behavior, rather than failing the warm/claim path
+ * outright. `GIT_TERMINAL_PROMPT=0` plus a stall timeout guarantee the
+ * fetch can never block on an interactive credential prompt — important
+ * because this runs on the per-repo-serialized claim slow-path, where a
+ * hang would wedge every claim for that repo.
  *
  * @returns the resolved ref (a SHA from `origin/HEAD`, or the
  *   `origin/main` / `origin/master` ref name), or `undefined` if none
  *   resolved; `fetched` is whether the network fetch actually succeeded;
  *   plus the fetch duration for telemetry.
  */
+/**
+ * Kill the `git fetch` child if it produces no output for this long — a
+ * credential prompt or a dead remote stalls silently, so a stall is our
+ * only signal. Progress output (on stderr) resets the timer, so a slow
+ * but live fetch of a large repo is not affected.
+ */
+const FETCH_STALL_TIMEOUT_MS = 30_000;
+
 export async function fetchAndResolveDefaultBranch(
   workspaceDir: string,
 ): Promise<{ resetTarget: string | undefined; fetched: boolean; fetchDurationMs: number }> {
   const t0 = Date.now();
-  const sg = simpleGit(workspaceDir);
+  // `GIT_TERMINAL_PROMPT=0` makes git fail fast instead of prompting on the
+  // controlling terminal; the `timeout.block` plugin kills the child if it
+  // stalls (e.g. a credential helper that itself blocks). Both are needed —
+  // neither alone covers every "fetch hangs forever" mode.
+  const sg = simpleGit(workspaceDir, { timeout: { block: FETCH_STALL_TIMEOUT_MS } })
+    .env({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
   let fetched = false;
   try {
     await sg.fetch("origin");
     fetched = true;
   } catch (err) {
-    // Remote unreachable — fall through to local-ref resolution below.
+    // Remote unreachable / timed out — fall through to local-ref resolution.
     console.warn(
       `[git] fetchAndResolveDefaultBranch: origin fetch failed for ${workspaceDir} ` +
         `(resolving from local refs instead): ${err instanceof Error ? err.message : String(err)}`,
