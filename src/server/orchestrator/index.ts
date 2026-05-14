@@ -52,6 +52,8 @@ import {
   autoStart,
 } from "./app-lifecycle.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
+import { createSessionLoopDetector } from "./loop-detector.js";
+import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes } from "./disk-janitor.js";
 
 // ---- Re-exports for backwards compatibility ----
@@ -169,6 +171,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // reset on user-initiated restart), and the diagnostics endpoint
   // (which surfaces the current state to the panel).
   const oomBreaker = createOomCircuitBreaker();
+
+  // ---- SIGTERM/recreate loop detector ----
+  // Process-local instance shared between the health monitor (which
+  // records `container_started` events and force-trips the breaker on a
+  // loop) and the recovery handlers (which call `forget()` on a
+  // user-initiated restart). Hoisted out of `setupContainerHealthMonitoring`'s
+  // default parameter so recovery can reach it — resetting the breaker
+  // without also clearing the loop detector leaves the trip sticky, since
+  // both gate the same runner factory.
+  const loopDetector = createSessionLoopDetector();
 
   // ---- Runner factory ----
   const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, runtimeMode, broadcastLog, oomBreaker });
@@ -407,7 +419,28 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // reconnect window, external `docker rm`). Without it, the session
   // looks stuck forever from the client's perspective.
   const reconcileMissingContainers = containerManager
-    ? createMissingContainerReconciler({ containerManager, runnerRegistry, broadcastLog })
+    ? createMissingContainerReconciler({
+        containerManager,
+        runnerRegistry,
+        broadcastLog,
+        // Lets the reconciler re-adopt a live-but-untracked container
+        // instead of force-disposing its runner — same resolver shape as
+        // the startup `rediscover` path.
+        sessionInfoResolver: (sessionId) => {
+          const session = sessionManager.get(sessionId);
+          if (!session?.workspaceDir) return undefined;
+          const limits = resolveAgentDockerLimits(session.workspaceDir);
+          return {
+            workspaceDir: session.workspaceDir,
+            dockerAccess: limits.dockerAccess,
+            resourceLimits: limits.dockerAccess ? {
+              memory: limits.memoryLimit,
+              cpuQuota: limits.cpuQuota,
+              pidsLimit: limits.pidsLimit,
+            } : undefined,
+          };
+        },
+      })
     : null;
   const idleEnforcementInterval = containerManager ? setInterval(() => {
     try {
@@ -416,11 +449,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       console.error("[idle-cleanup] periodic enforcement failed:", err);
     }
     if (reconcileMissingContainers) {
-      try {
-        reconcileMissingContainers();
-      } catch (err) {
+      // Async since C3 — the reconciler may await a Docker query to
+      // re-adopt an orphaned container. Fire-and-forget with a catch so a
+      // hung Docker daemon can't wedge the idle-enforcement interval.
+      void reconcileMissingContainers().catch((err: unknown) => {
         console.error("[orphan-runner] periodic reconciliation failed:", err);
-      }
+      });
     }
   }, 30_000) : null;
   // Don't keep the event loop alive just for idle enforcement — let process
@@ -491,6 +525,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     getLogBuffer,
     agentFactory,
     oomBreaker,
+    loopDetector,
   });
 
   // ---- Preview reverse proxy (container mode) ----
@@ -996,7 +1031,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
 
   // ---- Container health monitoring ----
   if (containerManager) {
-    setupContainerHealthMonitoring(containerManager, runnerRegistry, broadcastLog, undefined, oomBreaker);
+    setupContainerHealthMonitoring(containerManager, runnerRegistry, broadcastLog, loopDetector, oomBreaker);
   }
 
   // Graceful shutdown

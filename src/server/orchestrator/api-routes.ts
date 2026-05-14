@@ -25,6 +25,7 @@ import type { DatabaseManager } from "../shared/database.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { WsLogEntry } from "../shared/types.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
+import type { SessionLoopDetector } from "./loop-detector.js";
 
 import { ServiceError } from "./services/index.js";
 
@@ -111,6 +112,13 @@ export interface ApiDeps {
    * service so the panel can render the current breaker state.
    */
   oomBreaker?: SessionOomCircuitBreaker;
+  /**
+   * SIGTERM/recreate loop detector — passed into recovery service handlers
+   * so a user-initiated restart clears the per-session event window. The
+   * loop detector and the OOM breaker both gate the runner factory;
+   * resetting one without the other leaves the restart blocked.
+   */
+  loopDetector?: SessionLoopDetector;
   /**
    * Optional fallback agent factory. Container runners create their own agents
    * via `runner.createAgent()`; this is only used when the runner has no

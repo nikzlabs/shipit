@@ -33,38 +33,25 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
-import { generateBranchPrefix } from "./git-utils.js";
+import { generateBranchPrefix, fetchAndResolveDefaultBranch } from "./git-utils.js";
+import { resolveAgentDockerLimits } from "./session-container.js";
 
 /**
  * Fetch latest origin refs and hard-reset a warm session clone to the current
  * remote HEAD. Safe because warm sessions have zero user changes.
  * Non-fatal — if fetch or reset fails, the session still works with older code.
+ *
+ * Shares `fetchAndResolveDefaultBranch` with the warm pool and the claim
+ * slow-path so all three resolve "latest main" against the *real* remote,
+ * never against a stale `git clone --local` snapshot of the bare cache.
  */
 async function refreshCloneToLatestMain(
   sessionDir: string,
   createGitManager: ApiDeps["createGitManager"],
 ): Promise<{ headChanged: boolean; fetchDurationMs: number }> {
-  const t0 = Date.now();
   const sessionGit = createGitManager(sessionDir);
   const headBefore = await sessionGit.getHeadHash();
-  const sg = simpleGit(sessionDir);
-  // Fetch directly in the session clone and reset to origin's default branch
-  await sg.fetch("origin");
-  // Try origin/HEAD first, then fall back to common default branch names.
-  // Avoid `git remote set-head --auto` here — it hits the network and can
-  // hang if credentials aren't configured in this clone yet.
-  let resetTarget: string | undefined;
-  try {
-    resetTarget = (await sg.raw(["rev-parse", "origin/HEAD"])).trim();
-  } catch {
-    // origin/HEAD not set — try common defaults
-    for (const branch of ["origin/main", "origin/master"]) {
-      try {
-        resetTarget = (await sg.raw(["rev-parse", branch])).trim();
-        break;
-      } catch { /* try next */ }
-    }
-  }
+  const { resetTarget, fetchDurationMs } = await fetchAndResolveDefaultBranch(sessionDir);
   if (resetTarget) {
     await sessionGit.rollback(resetTarget);
   }
@@ -73,7 +60,7 @@ async function refreshCloneToLatestMain(
   if (headChanged) {
     try { unlinkSync(path.join(sessionDir, ".shipit", ".install-done")); } catch { /* marker may not exist */ }
   }
-  return { headChanged, fetchDurationMs: Date.now() - t0 };
+  return { headChanged, fetchDurationMs };
 }
 
 export async function registerSessionRoutes(
@@ -95,6 +82,51 @@ export async function registerSessionRoutes(
     } finally {
       if (claimChains.get(repoUrl) === next) claimChains.delete(repoUrl);
     }
+  }
+
+  /**
+   * After a claim-time clone refresh moved HEAD, the standby container may
+   * have booted with resource limits derived from a now-stale `shipit.yaml`
+   * — the irreducible warm→claim time gap (warm provisions from commit C1,
+   * claim refreshes to C2). Container memory is immutable at runtime, so the
+   * only fix is to destroy the standby: the runner factory's fresh-create
+   * path rebuilds it with the current limits on first attach.
+   *
+   * No-op when there's no container manager, no tracked container, the
+   * container has no recorded `bootedLimits` (rediscovered), the workspace's
+   * shipit.yaml is unparseable (the on-demand create path surfaces that
+   * loudly — see W4), or the limits already match.
+   */
+  async function reprovisionStandbyIfLimitsChanged(
+    sessionId: string,
+    workspaceDir: string,
+  ): Promise<void> {
+    const cm = deps.containerManager;
+    if (!cm) return;
+    const container = cm.get(sessionId);
+    if (!container?.bootedLimits) return;
+    let fresh;
+    try {
+      fresh = resolveAgentDockerLimits(workspaceDir);
+    } catch (err) {
+      console.warn(`[claim-session] Cannot re-derive limits for ${sessionId}: ${getErrorMessage(err)}`);
+      return;
+    }
+    const booted = container.bootedLimits;
+    if (
+      fresh.memoryLimit === booted.memoryLimit &&
+      fresh.cpuQuota === booted.cpuQuota &&
+      fresh.pidsLimit === booted.pidsLimit
+    ) {
+      return;
+    }
+    console.warn(
+      `[claim-session] Standby container for ${sessionId} booted with stale resource limits ` +
+        `(mem ${booted.memoryLimit} → ${fresh.memoryLimit}, cpu ${booted.cpuQuota} → ${fresh.cpuQuota}, ` +
+        `pids ${booted.pidsLimit} → ${fresh.pidsLimit}) after a HEAD change — destroying so it ` +
+        `rebuilds with the current shipit.yaml on first attach.`,
+    );
+    await cm.destroy(sessionId);
   }
 
   // ---- Session-scoped reads ----
@@ -462,7 +494,11 @@ export async function registerSessionRoutes(
               const result = await refreshCloneToLatestMain(reusable.workspaceDir, createGitManager);
               fetchDurationMs = result.fetchDurationMs;
               if (result.headChanged) {
-                // Compose stack restart handled by ServiceManager on config change
+                // HEAD moved — the standby container may have booted with
+                // limits from a now-stale shipit.yaml. Re-provision if so.
+                // (Compose stack restart is handled by ServiceManager on
+                // config change.)
+                await reprovisionStandbyIfLimitsChanged(reusable.id, reusable.workspaceDir);
               }
             } catch (err) {
               console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
@@ -482,7 +518,9 @@ export async function registerSessionRoutes(
                 const result = await refreshCloneToLatestMain(warmSession.workspaceDir, createGitManager);
                 fetchDurationMs = result.fetchDurationMs;
                 if (result.headChanged) {
-                  // Compose stack restart handled by ServiceManager on config change
+                  // HEAD moved — re-provision the standby if its booted
+                  // limits no longer match the now-current shipit.yaml.
+                  await reprovisionStandbyIfLimitsChanged(sessionId, warmSession.workspaceDir);
                 }
               } catch (err) {
                 console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
@@ -507,7 +545,9 @@ export async function registerSessionRoutes(
                   const result = await refreshCloneToLatestMain(warmSession.workspaceDir, createGitManager);
                   fetchDurationMs = result.fetchDurationMs;
                   if (result.headChanged) {
-                    // Compose stack restart handled by ServiceManager on config change
+                    // HEAD moved — re-provision the standby if its booted
+                    // limits no longer match the now-current shipit.yaml.
+                    await reprovisionStandbyIfLimitsChanged(sessionId, warmSession.workspaceDir);
                   }
                 } catch (err) {
                   console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
@@ -535,32 +575,37 @@ export async function registerSessionRoutes(
             await cacheGit.setRemoteUrl(freshUrl);
           }
 
-          const fetchT0 = Date.now();
           try {
             await cacheGit.fetchCache();
           } catch (err) {
+            // Non-fatal here — the `fetchAndResolveDefaultBranch` below
+            // fetches the real remote directly in the workspace clone, so
+            // a stale bare cache no longer freezes the slow path. Still
+            // surfaced so a repo whose cache can't fetch is visible.
             console.error(`[claim-session] Fetch cache failed for ${url}:`, getErrorMessage(err));
+            deps.sseBroadcast("error", {
+              message: `Repository cache for ${url} could not be refreshed: ${getErrorMessage(err)}`,
+            });
           }
-          const fetchDurationMs = Date.now() - fetchT0;
 
           await cacheGit.cloneFromCache(workspaceDir, url);
 
-          let startPoint: string | undefined;
-          try {
-            const defaultBranch = await cacheGit.getDefaultBranch();
-            if (defaultBranch && !defaultBranch.includes("(")) {
-              startPoint = `origin/${defaultBranch}`;
-            }
-          } catch {
-            // Fallback
-          }
-          const branchArgs = ["checkout", "-b", branchPrefix];
-          if (startPoint) branchArgs.push(startPoint);
-          await simpleGit(workspaceDir).raw(branchArgs);
-
+          // Configure credentials BEFORE fetching the real remote — the
+          // workspace clone's origin is the plain (unauthenticated) URL, so
+          // a private-repo fetch needs the credential helper in place.
           if (deps.githubAuthManager.authenticated) {
             deps.githubAuthManager.configureGitCredentials(workspaceDir);
           }
+
+          // W2: `cloneFromCache` only gave us a snapshot of the (possibly
+          // 270-commits-stale) bare cache. Fetch the real remote in the
+          // workspace clone so the branch is cut from the genuine latest
+          // commit — otherwise the container's memory limit is derived from
+          // a frozen `shipit.yaml`.
+          const { resetTarget, fetchDurationMs } = await fetchAndResolveDefaultBranch(workspaceDir);
+          const branchArgs = ["checkout", "-b", branchPrefix];
+          if (resetTarget) branchArgs.push(resetTarget);
+          await simpleGit(workspaceDir).raw(branchArgs);
 
           sessionManager.setRemoteUrl(appSessionId, url);
           sessionManager.setBranch(appSessionId, branchPrefix);

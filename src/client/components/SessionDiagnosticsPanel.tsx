@@ -45,6 +45,8 @@ interface ContainerHealthPayload {
   lastCreateErrorAt: number | null;
   workerUrl: string | null;
   containerId: string | null;
+  /** Docker-units limits the container actually booted with, or null when unknown. */
+  bootedLimits: { memoryLimit: number; cpuQuota: number; pidsLimit: number } | null;
 }
 
 interface ServiceDiagnostic {
@@ -202,7 +204,14 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
               </Section>
 
               <Section title="Parsed shipit.yaml">
-                <ParsedConfigRows config={data.parsedConfig} />
+                <ParsedConfigRows
+                  config={data.parsedConfig}
+                  bootedLimits={
+                    data.health && !("error" in data.health)
+                      ? data.health.bootedLimits
+                      : null
+                  }
+                />
               </Section>
 
               <Section title="OOM circuit breaker">
@@ -351,7 +360,14 @@ function RunnerRows({ runner }: { runner: RunnerDiagnostic }) {
   );
 }
 
-function ParsedConfigRows({ config }: { config: ParsedShipitConfig | null }) {
+function ParsedConfigRows({
+  config,
+  bootedLimits,
+}: {
+  config: ParsedShipitConfig | null;
+  /** Docker-units limits the container actually booted with — see ContainerHealth.bootedLimits. */
+  bootedLimits: { memoryLimit: number; cpuQuota: number; pidsLimit: number } | null;
+}) {
   if (!config) {
     return (
       <p className="text-(--color-text-tertiary)">
@@ -368,6 +384,19 @@ function ParsedConfigRows({ config }: { config: ParsedShipitConfig | null }) {
   const memoryClamped = effectiveAgent.memory !== agent.memory;
   const cpuClamped = effectiveAgent.cpu !== agent.cpu;
   const pidsClamped = effectiveAgent.pids !== agent.pids;
+
+  // What the container *actually* booted with (Docker units → human units).
+  // The parsed config above is read live at request time; the booted
+  // limits are frozen at container-create. They diverge exactly when a
+  // warm→claim HEAD jump changed agent.memory after the container booted —
+  // the incident where diagnostics showed memory: 3072 while the container
+  // ran on a 1 GiB cgroup. Showing both side by side surfaces that.
+  const bootedMemoryMiB = bootedLimits ? Math.round(bootedLimits.memoryLimit / 1024 / 1024) : null;
+  const bootedCpu = bootedLimits ? bootedLimits.cpuQuota / 100_000 : null;
+  const bootedPids = bootedLimits ? bootedLimits.pidsLimit : null;
+  const memoryMismatch = bootedMemoryMiB !== null && bootedMemoryMiB !== effectiveAgent.memory;
+  const cpuMismatch = bootedCpu !== null && bootedCpu !== effectiveAgent.cpu;
+  const pidsMismatch = bootedPids !== null && bootedPids !== effectiveAgent.pids;
 
   return (
     <>
@@ -398,6 +427,33 @@ function ParsedConfigRows({ config }: { config: ParsedShipitConfig | null }) {
           ? `${agent.pids} → ${effectiveAgent.pids} (capped)`
           : `${agent.pids}`}
         valueClass={pidsClamped ? "text-(--color-warning)" : undefined}
+      />
+      <KvRow
+        label="booted memory"
+        value={bootedMemoryMiB === null
+          ? "— (container not running / limits unknown)"
+          : memoryMismatch
+            ? `${bootedMemoryMiB} MiB ⚠ differs from parsed ${effectiveAgent.memory} MiB`
+            : `${bootedMemoryMiB} MiB (matches parsed)`}
+        valueClass={memoryMismatch ? "text-(--color-error)" : undefined}
+      />
+      <KvRow
+        label="booted cpu"
+        value={bootedCpu === null
+          ? "—"
+          : cpuMismatch
+            ? `${bootedCpu} ⚠ differs from parsed ${effectiveAgent.cpu}`
+            : `${bootedCpu}`}
+        valueClass={cpuMismatch ? "text-(--color-error)" : undefined}
+      />
+      <KvRow
+        label="booted pids"
+        value={bootedPids === null
+          ? "—"
+          : pidsMismatch
+            ? `${bootedPids} ⚠ differs from parsed ${effectiveAgent.pids}`
+            : `${bootedPids}`}
+        valueClass={pidsMismatch ? "text-(--color-error)" : undefined}
       />
       <KvRow
         label="agent.install"

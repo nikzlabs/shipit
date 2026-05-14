@@ -261,6 +261,91 @@ describe("getSessionDiagnostics", () => {
     });
   });
 
+  describe("bootedLimits surfacing (W4b)", () => {
+    let tmpDir: string | undefined;
+
+    afterEach(() => {
+      if (tmpDir) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        tmpDir = undefined;
+      }
+    });
+
+    it("includes the container's bootedLimits in health", async () => {
+      const sc = {
+        id: "abcdef1234567890",
+        workerUrl: "http://127.0.0.1:1",
+        status: "running",
+        bootedLimits: { memoryLimit: 1024 * 1024 * 1024, cpuQuota: 50_000, pidsLimit: 256 },
+      } as SessionContainer;
+      const result = await getSessionDiagnostics(
+        {
+          containerManager: fakeContainerManager({ container: sc }),
+          runnerRegistry: fakeRegistry(fakeRunner()),
+          serviceManagers: new Map(),
+          getLogBuffer: () => [],
+          getWorkspaceDir: () => null,
+        },
+        "sess-1",
+      );
+      expect(result.health).not.toHaveProperty("error");
+      const health = result.health as Extract<typeof result.health, { containerState: string }>;
+      expect(health.bootedLimits).toEqual({
+        memoryLimit: 1024 * 1024 * 1024,
+        cpuQuota: 50_000,
+        pidsLimit: 256,
+      });
+    });
+
+    it("surfaces booted vs parsed distinctly when they disagree (the warm→claim incident)", async () => {
+      // The container booted on a 1 GiB cgroup...
+      const sc = {
+        id: "abcdef1234567890",
+        workerUrl: "http://127.0.0.1:1",
+        status: "running",
+        bootedLimits: { memoryLimit: 1024 * 1024 * 1024, cpuQuota: 50_000, pidsLimit: 256 },
+      } as SessionContainer;
+      // ...while the workspace's shipit.yaml (read live) now declares 3 GiB.
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-booted-"));
+      fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: 3072\n");
+
+      const result = await getSessionDiagnostics(
+        {
+          containerManager: fakeContainerManager({ container: sc }),
+          runnerRegistry: fakeRegistry(fakeRunner()),
+          serviceManagers: new Map(),
+          getLogBuffer: () => [],
+          getWorkspaceDir: () => tmpDir ?? null,
+        },
+        "sess-1",
+      );
+
+      const health = result.health as Extract<typeof result.health, { containerState: string }>;
+      // Both values are present and distinct — the panel renders them side
+      // by side so the mismatch is visible without kernel-log inspection.
+      expect(health.bootedLimits?.memoryLimit).toBe(1024 * 1024 * 1024); // booted
+      expect(result.parsedConfig?.effectiveAgent.memory).toBe(3072);     // parsed (MiB)
+      expect(health.bootedLimits!.memoryLimit / 1024 / 1024).not.toBe(
+        result.parsedConfig?.effectiveAgent.memory,
+      );
+    });
+
+    it("reports bootedLimits: null when no container is tracked", async () => {
+      const result = await getSessionDiagnostics(
+        {
+          containerManager: fakeContainerManager({ container: null }),
+          runnerRegistry: fakeRegistry(fakeRunner()),
+          serviceManagers: new Map(),
+          getLogBuffer: () => [],
+          getWorkspaceDir: () => null,
+        },
+        "sess-1",
+      );
+      const health = result.health as Extract<typeof result.health, { containerState: string }>;
+      expect(health.bootedLimits).toBeNull();
+    });
+  });
+
   describe("oomBreaker surfacing", () => {
     it("returns the breaker state when a breaker is wired", async () => {
       const { createOomCircuitBreaker } = await import("../oom-circuit-breaker.js");

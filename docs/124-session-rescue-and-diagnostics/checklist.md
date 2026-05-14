@@ -130,3 +130,92 @@ the session started. Two gaps that Phase 1 missed:
 - [x] Tests in `integration_tests/container-exit-logging.test.ts` cover
       both paths (OOM annotation, orphan detection, multi-runner mix,
       standby skip, no-container-manager local-mode).
+
+## Follow-up — Rescue create/phantom-exit loop (OOM cascade, post-ship)
+
+Field report (session 90afd431, 2026-05-14): clicking **Rescue session**
+created a healthy container, but a stale Docker `die` event for the
+*previous* container — same `agent-<shortId>` name and `shipit-session-id`
+label — was attributed to the *new* one, deleting its manager-map entry
+and emitting a phantom `container_exited`. Every WS attach then created
+another container; after 3 in 300s the loop detector force-tripped the
+breaker. Result: `oomBreaker.tripped`, `containerState: missing`, and a
+healthy untracked container left running.
+
+- [x] **Stale-incarnation guard in `container-health.ts`.** The `die`/`oom`
+      handler now reads the real container ID from `event.Actor.ID`
+      (`attrs.id` was never populated — always `""`) and skips the event
+      when `containerId !== sc.id`. An empty `sc.id` (new container
+      mid-create) still skips a non-empty stale ID. Path 2 (`service_exited`)
+      now also carries the real container ID — latent-bug fix for compose.
+- [x] **`sc.id` assigned before `start()` in `container-lifecycle.ts`.**
+      Moved `sc.id = container.id` to immediately after `createContainer()`
+      returns, so the health-monitor ID guard is armed before the new
+      container can emit any event.
+- [x] **Loop detector hoisted + reset on recovery (Bug B).** The
+      `SessionLoopDetector` was a hidden default-parameter singleton inside
+      `setupContainerHealthMonitoring` with no DI handle. Hoisted to
+      `index.ts` next to the OOM breaker, plumbed through `ApiDeps` →
+      `RecoveryDeps`. `restartContainer`/`restartAgent` now call
+      `loopDetector.forget(sessionId)` alongside `oomBreaker.reset(...)` —
+      both gate the same runner factory, so resetting one without the
+      other left the trip sticky.
+- [x] **Inverse-leak backstop (C3).** `adoptRunningContainer` added to
+      `container-discovery.ts` + `SessionContainerManager`; the
+      missing-container reconciler now tries to re-adopt a live-but-untracked
+      container (via an optional `sessionInfoResolver`) before
+      force-disposing the runner. The reconciler is now async; `index.ts`
+      fire-and-forgets it with a `.catch`.
+- [x] Tests: `container-health.test.ts` (new — stale-ID drop, matching-ID
+      process, no-ID fallthrough, mid-create empty `sc.id`) and
+      `services/recovery.test.ts` (both recovery paths clear breaker +
+      loop detector).
+
+## Follow-up — Warm-pool provisioned containers from stale config (same incident)
+
+Root cause behind the *original* OOM in session 90afd431: the bare cache
+`repo-cache/<hash>` was 270 commits stale (its `fetchCache` had been
+failing silently for a long time). The warm pool clones from that cache
+with `git clone --local` — a snapshot — and resolved `origin/main` inside
+that snapshot, so the session container's memory limit was derived from a
+frozen `shipit.yaml`. The claim-time refresh then jumped the workspace 270
+commits to a heavier `agent.memory: 3072` config, but the already-booted
+1 GiB container kept its (immutable) limit → `npm install` OOM.
+
+- [x] **W1 — `fetchCache` visibility.** `repo-git.ts` `fetchCache` now logs
+      HEAD before/after (`advanced`/`unchanged`) so a fetch that "succeeds"
+      without moving the cache is visible in journalctl; added `readHead()`.
+      Warm path + claim slow-path surface a `fetchCache` failure via an SSE
+      `error` event instead of only `console.warn`.
+- [x] **W2 — land on the actual latest commit.** New shared helper
+      `fetchAndResolveDefaultBranch` (`git-utils.ts`) fetches the *real
+      remote* in the workspace clone and resolves `origin/HEAD` →
+      `origin/main` → `origin/master`. The warm pool, the claim slow-path,
+      and `refreshCloneToLatestMain` all use it, so none can branch from a
+      stale `--local` snapshot. Best-effort: a failed fetch falls back to
+      local refs (offline / unreachable remote) rather than aborting.
+      Credentials are configured before the fetch on both paths.
+- [x] **W3 — re-provision the standby on a claim-time HEAD jump.**
+      `SessionContainer.bootedLimits` always records what the agent
+      container was created with (`container-lifecycle.ts`). The claim
+      handler's `reprovisionStandbyIfLimitsChanged` compares it against
+      `resolveAgentDockerLimits()` of the refreshed workspace when
+      `headChanged`, and `destroy()`s the standby on mismatch — the runner
+      factory rebuilds it with correct limits on first attach.
+- [x] **W4a — loud `readAgentConfig` fallback.** The catch in
+      `readAgentConfig` no longer swallows silently — it logs the workspace
+      dir + the underlying error before falling back to `AGENT_DEFAULTS`,
+      so a broken `shipit.yaml` can't quietly produce a 1 GiB container.
+      (The old-format hard-fail gate considered here was dropped — W2/W3
+      already remove the staleness, and `resolveShipitConfig` keeps
+      emitting old-format parse warnings for diagnostics.)
+- [x] **W4b — booted-vs-parsed in diagnostics.** `ContainerHealth` carries
+      `bootedLimits`; `SessionDiagnosticsPanel` renders "booted memory/cpu/
+      pids" alongside the parsed `effectiveAgent` values and highlights a
+      mismatch — the warm→claim divergence is now visible at a glance.
+- [x] Tests: `git-utils.test.ts` (new — W2 helper resolves to latest after
+      fetch + offline fallback), `session-container.test.ts` (`bootedLimits`
+      population, W4a loud-fallback), `services/diagnostics.test.ts` (W4b
+      booted-vs-parsed surfacing), `integration_tests/warm-pool-staleness.test.ts`
+      (new — W2 warm standby boots at the remote's latest `agent.memory`;
+      W3 claim destroys a stale-limit standby on `headChanged`).

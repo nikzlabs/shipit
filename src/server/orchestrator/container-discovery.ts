@@ -94,6 +94,74 @@ export async function rediscoverContainers(
 }
 
 // ---------------------------------------------------------------------------
+// Adopt a single running container (inverse-leak reconciler backstop)
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-adopt a single running Docker container into the manager map when it
+ * has no `deps.containers` entry. This is the inverse leak of
+ * `rediscoverContainers`: a *live* container with no map entry, which
+ * happens when a `die`/`oom` event was attributed to the wrong
+ * incarnation and deleted a healthy container's entry. Without
+ * re-adoption the orchestrator force-disposes the runner and the next
+ * attach creates yet another container — leaking the live one.
+ *
+ * Returns `true` when a running container was found and adopted.
+ */
+export async function adoptRunningContainer(
+  deps: DiscoveryDeps,
+  sessionId: string,
+  sessionInfoResolver?: (sessionId: string) => {
+    workspaceDir: string;
+    dockerAccess: boolean;
+    resourceLimits?: { memory: number; cpuQuota: number; pidsLimit: number };
+  } | undefined,
+): Promise<boolean> {
+  if (deps.containers.has(sessionId)) return false;
+  try {
+    const containers = await deps.docker.listContainers({
+      all: true,
+      filters: { label: [`${CONTAINER_SESSION_ID_LABEL}=${sessionId}`] },
+    });
+    for (const ci of containers) {
+      if (ci.State !== "running") continue;
+      try {
+        const container = deps.docker.getContainer(ci.Id);
+        const info = await container.inspect();
+        const networkInfo = info.NetworkSettings?.Networks?.[deps.networkName];
+        if (!networkInfo?.IPAddress) continue;
+        const resolved = sessionInfoResolver?.(sessionId);
+        // Without a valid workspace dir, bind mount validation would be
+        // unsafe — leave the container unadopted (the caller force-disposes
+        // the runner, same as the no-resolver path).
+        if (!resolved?.workspaceDir) return false;
+        const dockerAccess = resolved.dockerAccess;
+        deps.containers.set(sessionId, {
+          id: ci.Id,
+          sessionId,
+          containerIp: networkInfo.IPAddress,
+          workerUrl: `http://${networkInfo.IPAddress}:${deps.workerPort}`,
+          status: "running",
+          hostWorkspaceDir: resolved.workspaceDir,
+          dockerAccess,
+          sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
+          resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
+        });
+        if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
+          deps.standbySessionIds.add(sessionId);
+        }
+        return true;
+      } catch {
+        // Container may have exited between list and inspect — try the next.
+      }
+    }
+  } catch {
+    // Docker may not be available
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Orphan cleanup
 // ---------------------------------------------------------------------------
 

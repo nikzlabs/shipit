@@ -161,7 +161,7 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
 });
 
 describe("createMissingContainerReconciler (orphan-runner detector)", () => {
-  it("force-disposes a runner whose container has vanished and writes a log entry", () => {
+  it("force-disposes a runner whose container has vanished and writes a log entry", async () => {
     const { runner, emitted, disposeCalls } = makeFakeRunner("sess-orphan");
     const registry = makeFakeRegistry(new Map([["sess-orphan", runner]]));
     // No container for sess-orphan — simulates a missed `die` event.
@@ -173,7 +173,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       runnerRegistry: registry,
       broadcastLog: (sid, source, text) => calls.push({ sid, source, text }),
     });
-    reconcile();
+    await reconcile();
 
     expect(disposeCalls).toEqual([{ force: true }]);
     expect(calls).toHaveLength(1);
@@ -182,7 +182,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(emitted.find((m) => m.type === "session_status")).toBeDefined();
   });
 
-  it("leaves healthy runners alone when their container is present", () => {
+  it("leaves healthy runners alone when their container is present", async () => {
     const { runner, disposeCalls } = makeFakeRunner("sess-ok");
     const registry = makeFakeRegistry(new Map([["sess-ok", runner]]));
     const containerManager = makeFakeContainerManager(
@@ -196,13 +196,13 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       runnerRegistry: registry,
       broadcastLog: (...args) => calls.push(args),
     });
-    reconcile();
+    await reconcile();
 
     expect(disposeCalls).toEqual([]);
     expect(calls).toEqual([]);
   });
 
-  it("skips standby sessions (warm pool transient race)", () => {
+  it("skips standby sessions (warm pool transient race)", async () => {
     const { runner, disposeCalls } = makeFakeRunner("sess-warm");
     const registry = makeFakeRegistry(new Map([["sess-warm", runner]]));
     // Container missing AND standby — the warm pool may have a registered
@@ -214,12 +214,12 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       runnerRegistry: registry,
       broadcastLog: () => undefined,
     });
-    reconcile();
+    await reconcile();
 
     expect(disposeCalls).toEqual([]);
   });
 
-  it("handles multiple runners — orphans go, healthy stay", () => {
+  it("handles multiple runners — orphans go, healthy stay", async () => {
     const a = makeFakeRunner("sess-a");
     const b = makeFakeRunner("sess-b");
     const c = makeFakeRunner("sess-c");
@@ -240,7 +240,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       runnerRegistry: registry,
       broadcastLog: (sid) => logged.push(sid),
     });
-    reconcile();
+    await reconcile();
 
     expect(a.disposeCalls).toEqual([{ force: true }]);
     expect(b.disposeCalls).toEqual([]);
@@ -248,7 +248,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     expect(logged.sort()).toEqual(["sess-a", "sess-c"]);
   });
 
-  it("is a no-op when no containerManager is wired (local mode)", () => {
+  it("is a no-op when no containerManager is wired (local mode)", async () => {
     const { runner, disposeCalls } = makeFakeRunner("sess-x");
     const registry = makeFakeRegistry(new Map([["sess-x", runner]]));
 
@@ -257,7 +257,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
       runnerRegistry: registry,
       broadcastLog: () => undefined,
     });
-    reconcile();
+    await reconcile();
 
     expect(disposeCalls).toEqual([]);
   });

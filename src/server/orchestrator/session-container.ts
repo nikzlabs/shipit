@@ -26,6 +26,7 @@ import {
 } from "./container-lifecycle.js";
 import {
   rediscoverContainers,
+  adoptRunningContainer,
   cleanupOrphanContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
@@ -57,6 +58,7 @@ export {
 
 export {
   rediscoverContainers,
+  adoptRunningContainer,
   cleanupOrphanContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
@@ -122,6 +124,20 @@ export interface SessionContainer {
   sessionNetworkName?: string;
   /** Resource limits for child containers created through the proxy. */
   resourceLimits?: { memory: number; cpuQuota: number; pidsLimit: number };
+  /**
+   * The Docker-units resource limits the *agent* container was actually
+   * created with. Always populated by `createContainer`, regardless of
+   * `dockerAccess` — unlike `resourceLimits`, which is the child-container
+   * budget set only for docker-access sessions.
+   *
+   * The claim-time refresh compares this against
+   * `resolveAgentDockerLimits()` of the now-current workspace: when a
+   * warm→claim HEAD jump changed the declared `agent.memory`, the standby
+   * container booted with the wrong (stale) limit and must be re-provisioned
+   * — container memory is immutable at runtime. Absent on rediscovered /
+   * re-adopted containers, where the booted limits genuinely aren't known.
+   */
+  bootedLimits?: { memoryLimit: number; cpuQuota: number; pidsLimit: number };
 }
 
 export interface SessionContainerManagerEvents {
@@ -267,18 +283,27 @@ export function resolveAgentDockerLimits(workspaceDir: string): AgentDockerLimit
 }
 
 /**
- * Parse a workspace's shipit.yaml. Malformed YAML falls back to the
- * library defaults — the same parser is also called from app-lifecycle.ts
- * on the warm path, which surfaces parse errors via the
- * `compose_error` WS message, so we don't re-log here.
+ * Parse a workspace's shipit.yaml, falling back to AGENT_DEFAULTS when the
+ * file is genuinely broken (malformed YAML, unreadable, schema violation).
  *
- * Exported for `services/diagnostics.ts` so the panel can reuse the exact
- * "declared vs effective" computation.
+ * The fallback is deliberate — a broken config shouldn't block the session
+ * entirely — but it is NOT silent: a broken shipit.yaml that quietly
+ * produces a 1 GiB container is a real footgun (the session then OOMs and
+ * nobody can tell why). The catch logs the workspace dir, the fact that
+ * defaults are being applied, and the underlying error so journalctl
+ * carries the breadcrumb. A genuinely-absent shipit.yaml is the common,
+ * legitimate case and does not throw — `resolveShipitConfig` returns
+ * defaults for it without hitting this catch.
  */
 export function readAgentConfig(workspaceDir: string): ShipitConfig {
   try {
     return resolveShipitConfig(workspaceDir);
-  } catch {
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[shipit-config] Failed to parse shipit.yaml in ${workspaceDir} — ` +
+        `falling back to default agent resources (1 GiB / 0.5 CPU / 256 pids): ${detail}`,
+    );
     return { agent: { ...AGENT_DEFAULTS, install: [] }, warnings: [] };
   }
 }
@@ -697,6 +722,24 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     } | undefined,
   ): Promise<number> {
     return rediscoverContainers(this.discoveryDeps(), activeSessionIds, sessionInfoResolver);
+  }
+
+  /**
+   * Re-adopt a single running container that has no manager-map entry.
+   * The durable backstop for the inverse leak — a live Docker container
+   * orphaned because a `die`/`oom` event deleted a healthy container's
+   * entry. Called from the missing-container reconciler before it
+   * force-disposes a runner. Returns `true` when a container was adopted.
+   */
+  async adoptRunningContainer(
+    sessionId: string,
+    sessionInfoResolver?: (sessionId: string) => {
+      workspaceDir: string;
+      dockerAccess: boolean;
+      resourceLimits?: { memory: number; cpuQuota: number; pidsLimit: number };
+    } | undefined,
+  ): Promise<boolean> {
+    return adoptRunningContainer(this.discoveryDeps(), sessionId, sessionInfoResolver);
   }
 
   // --- Health monitoring (delegates to container-health.ts) ---
