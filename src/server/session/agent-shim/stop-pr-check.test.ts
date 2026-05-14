@@ -55,17 +55,30 @@ function runHook(opts: {
   cwd: string;
   ghScript: string;
   stdin?: string;
+  /**
+   * Value of SHIPIT_AUTO_CREATE_PR in the hook's environment. The hook
+   * self-gates on this var (set to "1" by the orchestrator only when
+   * autoCreatePr is on). Defaults to "1" so the existing decision-table
+   * tests exercise the enforcement path; pass `undefined` to test the gate.
+   */
+  autoCreatePr?: string;
 }): Result {
   const binDir = mkdtempSync(path.join(tmpdir(), "stop-pr-bin-"));
   const ghPath = path.join(binDir, "gh");
   writeFileSync(ghPath, `#!/bin/sh\n${opts.ghScript}\n`);
   chmodSync(ghPath, 0o755);
 
-  const env = {
+  const env: Record<string, string | undefined> = {
     ...process.env,
     PATH: `${binDir}:${process.env.PATH ?? ""}`,
     HOME: opts.cwd,
   };
+  const autoCreatePr = "autoCreatePr" in opts ? opts.autoCreatePr : "1";
+  if (autoCreatePr === undefined) {
+    delete env.SHIPIT_AUTO_CREATE_PR;
+  } else {
+    env.SHIPIT_AUTO_CREATE_PR = autoCreatePr;
+  }
 
   const r = spawnSync("/bin/sh", [HOOK_SCRIPT], {
     cwd: opts.cwd,
@@ -213,5 +226,19 @@ describe("stop-pr-check.sh", () => {
     expect(r.stderr).toContain("gh pr create");
     expect(r.stderr).toContain("Summary");
     expect(r.stderr).toContain("Test plan");
+  });
+
+  it("exits 0 (no enforcement) when SHIPIT_AUTO_CREATE_PR is unset", () => {
+    // The settings file is always wired up so the PreToolUse branch-block
+    // hook runs, but PR enforcement is gated: without the env var the Stop
+    // hook does nothing, even when commits exist and no PR is open.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 1 }));
+    const r = runHook({
+      cwd,
+      autoCreatePr: undefined,
+      ghScript: 'echo "gh should not be invoked" 1>&2; exit 42',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
   });
 });

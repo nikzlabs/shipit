@@ -8,6 +8,12 @@ repository for branches, PRs, and CI.
 - Each session works on its own branch, created automatically.
 - Branch names follow the pattern `shipit/{session-name}`.
 - The branch is created from the repo's default branch (usually `main`).
+- **Do not create or switch branches yourself** (`git checkout -b`, `git switch
+  -c`, `git branch`). You are already on the session branch, and auto-commit,
+  auto-push, and `gh pr create` all target it. Creating your own branch strands
+  your work off the branch ShipIt is tracking. ShipIt enforces this — branch
+  create/switch commands are blocked before they run, so just stay on the
+  current branch and run your `git` / `gh` commands there.
 
 ## Auto-push
 
@@ -23,7 +29,9 @@ narrow allowlist of pull-request operations through the orchestrator using
 the user's GitHub auth, so you never see or handle the token.
 
 When you finish a turn that changed any file in the repo and there isn't
-already an open PR for the current branch, run:
+already an open PR for the current branch, run the following — do **not**
+create or switch branches first, you are already on the session branch and
+`gh pr create` pushes it for you:
 
 ```sh
 gh pr create -t "Short clear title" -b "$(cat <<'EOF'

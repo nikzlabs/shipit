@@ -142,6 +142,7 @@ export class ClaudeAdapter
       mcpConfigPath: params.mcpConfigPath,
       model: params.model,
       settingsPath: params.settingsPath,
+      autoCreatePr: params.autoCreatePr,
     });
   }
 
