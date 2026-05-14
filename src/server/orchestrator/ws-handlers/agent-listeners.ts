@@ -404,7 +404,23 @@ export function wireAgentListeners(
     emitToViewers({ type: "error", message: `Agent process error: ${err.message}` });
     const turnSessionId = opts.capturedSessionId;
     if (turnSessionId) {
-      ctx.chatHistoryManager.clearInProgress(turnSessionId);
+      // Preserve whatever partial turn the agent produced before it errored.
+      // Mirrors the agent_result path: persist the accumulated message groups
+      // and finalize them, *then* append the error message. The old code
+      // called clearInProgress() here, which deleted the entire in-progress
+      // turn — so a crash mid-turn wiped all of the agent's work from the UI
+      // on the next history load.
+      const groups = runner?.chatMessageGroups ?? [];
+      const persistableGroups = groups.filter((g) => g.text || g.toolUse.length > 0);
+      const partialMessages = persistableGroups.map((g) => ({
+        role: "assistant" as const,
+        text: g.text,
+        toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
+        toolResults: g.toolResults?.length ? g.toolResults : undefined,
+        subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
+      }));
+      ctx.chatHistoryManager.replaceInProgress(turnSessionId, partialMessages);
+      ctx.chatHistoryManager.finalizeInProgress(turnSessionId);
       ctx.chatHistoryManager.append(turnSessionId, {
         role: "assistant",
         text: `Error: ${err.message}`,
