@@ -596,8 +596,8 @@ Covers ~80% of MCP servers. Users paste API keys or pre-obtained tokens. Builds 
 - [x] `AgentRunParams.mcpServers` field added; populated in `agent-execution.ts` with enabled (unresolved) configs; carried whole through `proxy-agent-process.ts` / `POST /agent/start`; `claude-adapter.ts` derives `mcpServerNames` for the allowlist.
 - [x] Settings UI (`McpServerSettings.tsx`, new "MCP Servers" tab in `Settings.tsx`) for add / edit / remove / toggle / test, with per-server status badges driven by the `mcp_server_status` WS message.
 - [x] Client store (`mcp-store.ts`); `mcp_server_status` WS message type added and relayed from the worker SSE through `container-session-runner.ts` → `useMessageHandler.ts`.
-- Tests: `agent-registry.test.ts`, `credential-store.test.ts`, `secret-resolver.test.ts`, `services/mcp.test.ts`.
-- Deferred to a follow-up: per-server `mcp_server_status` driven by a real liveness signal (Phase 1 emits `loaded`/`failed` from `generateMcpConfig()` only), `crashed` state, and integration/client-component tests for the routes + UI.
+- Tests: `agent-registry.test.ts`, `credential-store.test.ts`, `secret-resolver.test.ts`, `services/mcp.test.ts`, `mcp-resolve.test.ts` (pure substring resolver extracted from `session-worker.ts`), `integration_tests/mcp-routes.test.ts` (HTTP CRUD + secret non-echo + cap + test-endpoint 409), `client/stores/mcp-store.test.ts`, `client/components/McpServerSettings.test.tsx`.
+- Deferred to a follow-up: per-server `mcp_server_status` driven by a real liveness signal (Phase 1 emits `loaded`/`failed` from `generateMcpConfig()` only) and `crashed` state.
 
 ### Phase 2 — Native OAuth (extends 087's platform-credentials)
 
@@ -678,6 +678,8 @@ Per ShipIt's testing-and-quality conventions (server tests use temp dirs and the
 - `src/server/shared/types/mcp-types.ts` — MCP server config types (`McpStdioServerConfig`, `McpHttpServerConfig`).
 - `src/server/orchestrator/api-routes-mcp.ts` — HTTP routes for CRUD + test.
 - `src/server/orchestrator/services/mcp.ts` — Service layer for MCP operations (validation, name conflicts, server count cap).
+- `src/server/session/mcp-resolve.ts` — Pure `$secret:` substring resolver consumed by `session-worker.ts`'s `generateMcpConfig()`. Extracted so the substitution contract (env walk, missing-key drop, dedup) is unit-testable without a Fastify worker.
+- `src/server/session/mcp-test.ts` — Minimal MCP JSON-RPC client used by the `POST /mcp/test` connectivity endpoint.
 - `src/client/stores/mcp-store.ts` — Client state store.
 - `src/client/components/McpServerSettings.tsx` — Settings UI component.
 
