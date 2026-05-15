@@ -354,6 +354,52 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
+  // ---- tryPushAgentSecrets (docs/088 compose-less agent-env path) ----
+
+  describe("tryPushAgentSecrets()", () => {
+    it("pushes account-level agent env into the worker's process.env", async () => {
+      const runner = new ContainerSessionRunner({
+        sessionId: "test-push-agent-env",
+        sessionDir: "/tmp/test",
+        defaultAgentId: "claude",
+        workerUrl,
+      });
+
+      const key = "mcp__test__PUSH_KEY";
+      try {
+        await runner.tryPushAgentSecrets({ [key]: "secret-value" });
+        // Worker runs in-process in this test — PUT /secrets mutates the
+        // shared process.env directly.
+        expect(process.env[key]).toBe("secret-value");
+
+        // A subsequent push REPLACES the tracked set: the old key is unset.
+        await runner.tryPushAgentSecrets({});
+        expect(process.env[key]).toBeUndefined();
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- test cleanup of a fixed key
+        delete process.env[key];
+        runner.dispose();
+      }
+    });
+
+    it("resolves without throwing when the worker is unreachable", async () => {
+      const runner = new ContainerSessionRunner({
+        sessionId: "test-push-unreachable",
+        sessionDir: "/tmp/test",
+        defaultAgentId: "claude",
+        workerUrl: "http://127.0.0.1:1", // unreachable
+      });
+
+      // Must not throw — callers (agent-execution.ts) await this on the
+      // hot path and a transient worker failure must not abort the turn.
+      await expect(
+        runner.tryPushAgentSecrets({ mcp__test__KEY: "v" }),
+      ).resolves.toBeUndefined();
+
+      runner.dispose();
+    });
+  });
+
   // ---- verifyRunningState (stuck running flag recovery) ----
 
   describe("verifyRunningState() stuck-running recovery", () => {
