@@ -9,10 +9,20 @@ status: in-progress
 > because the name becomes part of the `mcp__<name>__<KEY>` env-var identifier
 > and env var names can't contain hyphens. The `collectMcpAgentEnv()` merge is
 > wired through `ServiceManager` via a new `mcpAgentEnvLoader` option (closure
-> over `CredentialStore`), so MCP secrets only reach sessions that have a
-> `ServiceManager` (i.e. a compose config) — same limitation as 087's agent-env
-> pipeline. The connectivity-test endpoint proxies to a minimal MCP JSON-RPC
-> client in `src/server/session/mcp-test.ts`.
+> over `CredentialStore`). The connectivity-test endpoint proxies to a minimal
+> MCP JSON-RPC client in `src/server/session/mcp-test.ts`.
+>
+> **Compose-less sessions (follow-up landed).** The `ServiceManager`-piggybacked
+> push only reaches sessions that *have* a `ServiceManager` (i.e. a compose
+> config). Compose-less sessions are now covered by a per-turn awaited push in
+> `ws-handlers/agent-execution.ts`: when the resolved runner is a
+> `ContainerSessionRunner` with no `ServiceManager`, the orchestrator `await`s
+> `runner.tryPushAgentSecrets(credentialStore.getAllAgentEnv())` before
+> `/agent/start`. This also closes the per-turn secrets-before-agent-start race
+> for those sessions. Compose sessions deliberately keep the `syncSecrets()`
+> path (the per-turn push is guarded on `!serviceManager` so it can't clobber
+> their merged compose+MCP set, since the worker REPLACES its tracked set on
+> every `PUT /secrets`).
 
 ## Overview
 
@@ -675,7 +685,8 @@ Per ShipIt's testing-and-quality conventions (server tests use temp dirs and the
 - `src/server/orchestrator/credential-store.ts` — Add `mcpServers` map, MCP CRUD methods, `setMcpSecret` / `deleteMcpSecret` helpers for `mcp__*` agentEnv writes, ensure `clear()` wipes both.
 - `src/server/orchestrator/secret-resolver.ts` — Add `collectMcpAgentEnv(credentialStore)` helper (returns `Record<string, string>` of `mcp__*` entries from `CredentialStore.agentEnv`). `resolveSecrets()` itself is unchanged — MCP secrets do **not** flow through compose declarations or `userSecrets`.
 - `src/server/orchestrator/service-manager.ts` — Inside `syncSecrets()`, merge `collectMcpAgentEnv()` into the `agentValues` map (after `resolveSecrets()` runs, before writing `.shipit/.env.agent` and emitting `secrets_status`). This is the actual callsite where the merge happens.
-- `src/server/orchestrator/container-session-runner.ts` — Pass unresolved MCP server configs in `AgentRunParams`; await `tryPushAgentSecrets()` at session activation before signaling agent-ready (replacing the current `void this.tryPushAgentSecrets(...)`).
+- `src/server/orchestrator/container-session-runner.ts` — Pass unresolved MCP server configs in `AgentRunParams`. `tryPushAgentSecrets()` is now `public` so the per-turn agent-start path can `await` it for compose-less sessions (callers must pass the *full* account-level agent env — the worker REPLACES its tracked set).
+- `src/server/orchestrator/ws-handlers/agent-execution.ts` — Build the enabled `mcpServers` blob list for `AgentRunParams`; for compose-less `ContainerSessionRunner`s (no `ServiceManager`), `await runner.tryPushAgentSecrets(credentialStore.getAllAgentEnv())` before `/agent/start` so `mcp__*` keys land in the worker's `process.env` ahead of `generateMcpConfig()`.
 - `src/server/orchestrator/app-di.ts` — Update the `ALLOWED_ENV_KEYS` consumer to use the new `isAllowedAgentEnvKey()` predicate when loading persisted `CredentialStore.agentEnv` into `process.env` at startup.
 - `src/server/orchestrator/services/settings.ts` — Update the `set_agent_env` validation site to use the new predicate.
 - `src/server/orchestrator/proxy-agent-process.ts` — Thread `mcpServers` field through the proxy to the worker (`AgentRunParams` already crosses this boundary; this is purely additive).

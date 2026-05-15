@@ -944,8 +944,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    *
    * Empty `agentValues` triggers a push with `{}` — that explicitly clears
    * any previously-injected names from process.env.
+   *
+   * Public so the per-turn agent-start path (docs/088) can await it for
+   * compose-less sessions, which never get a `ServiceManager` and so never
+   * reach the `secrets_status`-driven push above. Because the worker
+   * REPLACES its tracked set, callers MUST pass the *full* account-level
+   * agent env — never a partial subset — or previously-pushed keys are
+   * silently unset.
    */
-  private async tryPushAgentSecrets(agentValues: Record<string, string>): Promise<void> {
+  async tryPushAgentSecrets(agentValues: Record<string, string>): Promise<void> {
     if (this._disposed) return;
     try {
       await this._workerReady;
