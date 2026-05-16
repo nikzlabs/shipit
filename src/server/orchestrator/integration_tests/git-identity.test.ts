@@ -40,6 +40,15 @@ describe("Integration: git identity flow", () => {
 
     // Save original GIT_CONFIG_GLOBAL so we can restore it
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    // Clear it before starting the app so `app-di.ts`'s
+    // `if (!process.env.GIT_CONFIG_GLOBAL) initGlobalGitConfig(...)` runs and
+    // points GIT_CONFIG_GLOBAL at the test's tmpDir (with no identity). If
+    // the surrounding environment has a real `GIT_CONFIG_GLOBAL` set (e.g.
+    // when this test suite is dogfooded under an outer ShipIt whose
+    // /credentials/.gitconfig has a baked-in identity), the init step would
+    // be skipped and `getGitIdentity()` would return that real identity,
+    // suppressing the `git_identity_required` event this test expects.
+    delete process.env.GIT_CONFIG_GLOBAL;
   });
 
   afterEach(async () => {
