@@ -315,13 +315,13 @@ export class StubGitHubAuthManager extends EventEmitter {
 
   // ---- Test control methods ----
 
-  private _prData: { url: string; number: number; base: string; title: string } | null = null;
+  private _prData: { url: string; number: number; base: string; title: string; body: string } | null = null;
   private _mergeResult: { success: boolean; message: string } | null = null;
   private _checkStatus: { state: "pending" | "success" | "failure" | "none"; total: number; passed: number; failed: number; pending: number } | null = null;
 
-  /** Set what findPullRequest returns for tests. */
-  setPrData(data: { url: string; number: number; base: string; title: string } | null) {
-    this._prData = data;
+  /** Set what findPullRequest returns for tests. `body` defaults to "". */
+  setPrData(data: { url: string; number: number; base: string; title: string; body?: string } | null) {
+    this._prData = data === null ? null : { ...data, body: data.body ?? "" };
   }
 
   /** Set what mergePullRequest returns for tests. */

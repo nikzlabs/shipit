@@ -53,6 +53,7 @@ query($owner: String!, $name: String!) {
       nodes {
         number
         title
+        body
         url
         state
         mergeable
@@ -108,6 +109,7 @@ query($owner: String!, $name: String!) {
 interface GraphQLPrNode {
   number: number;
   title: string;
+  body: string | null;
   url: string;
   state: string;
   mergeable: string; // MERGEABLE, CONFLICTING, UNKNOWN
@@ -226,6 +228,7 @@ export function parsePrNode(
     prNumber: node.number,
     prUrl: node.url,
     prTitle: node.title,
+    prBody: node.body ?? "",
     prState: "open",
     baseBranch: node.baseRefName,
     headBranch: node.headRefName,
@@ -853,6 +856,11 @@ export class PrStatusPoller {
       prNumber: pr.number,
       prUrl: pr.url,
       prTitle: pr.title,
+      // catchUpProbe only fires for merged/closed PRs (returns early for open)
+      // — body isn't shown for terminal states, so we don't pay the extra
+      // REST call to fetch it. The next GraphQL poll would re-populate it
+      // anyway if the PR were re-opened.
+      prBody: "",
       prState,
       baseBranch: pr.base,
       headBranch: branch,
