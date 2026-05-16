@@ -19,10 +19,29 @@ status: in-progress
 > `ContainerSessionRunner` with no `ServiceManager`, the orchestrator `await`s
 > `runner.tryPushAgentSecrets(credentialStore.getAllAgentEnv())` before
 > `/agent/start`. This also closes the per-turn secrets-before-agent-start race
-> for those sessions. Compose sessions deliberately keep the `syncSecrets()`
-> path (the per-turn push is guarded on `!serviceManager` so it can't clobber
-> their merged compose+MCP set, since the worker REPLACES its tracked set on
-> every `PUT /secrets`).
+> for those sessions.
+>
+> **Compose sessions covered (follow-up landed).** The per-turn awaited push
+> now covers compose `ContainerSessionRunner`s too — closing the same
+> activation-time race where the first agent turn could start before the
+> fire-and-forget `secrets_status` listener push completed. The
+> compose-vs-compose-less decision is extracted into
+> `selectAgentEnvForPush()` (also in `agent-execution.ts`). Compose
+> sessions push `ServiceManager.getSecretsSnapshot().agentValues` — the
+> *merged* (compose-declared + `mcp__*` + `MCP_PLATFORM_*`) set produced
+> inside the most recent `syncSecrets()` pass. Pushing the partial
+> account-level set instead would clobber `agent: true` compose secrets
+> since the worker REPLACES its tracked set on every push.
+>
+> **Mid-session `crashed` detection landed.** `agent-listeners.ts` records
+> every tool_use it sees within a turn and, on `agent_tool_result` with
+> `is_error: true`, attributes the failure back to the right MCP server by
+> matching `mcp__<server>__*` on the parent tool name. Emits
+> `mcp_server_status` with `state: "crashed"` and a one-line reason; dedups
+> per-server-per-turn so a single bad server doesn't spam the badge. The
+> McpStore's last-write-wins `applyStatus()` means a successful init event
+> on a later turn clears the badge back to `loaded`. Non-`mcp__*` tool
+> failures are ignored (they don't belong to any user-configured server).
 
 ## Overview
 
@@ -598,8 +617,31 @@ Covers ~80% of MCP servers. Users paste API keys or pre-obtained tokens. Builds 
 - [x] Settings UI (`McpServerSettings.tsx`, new "MCP Servers" tab in `Settings.tsx`) for add / edit / remove / toggle / test, with per-server status badges driven by the `mcp_server_status` WS message.
 - [x] Client store (`mcp-store.ts`); `mcp_server_status` WS message type added and relayed from the worker SSE through `container-session-runner.ts` → `useMessageHandler.ts`.
 - [x] **Real liveness signal from the Claude CLI init event.** `ClaudeSystemEvent` extended with `mcp_servers?: Array<{ name; status }>`. `ClaudeAdapter` parses this and emits an `mcp_status` event on a new `AgentProcessEvents.mcp_status` channel; `SessionWorker.wireAgentEvents()` broadcasts each entry as an `mcp_server_status` SSE event. The speculative `loaded` emit in `generateMcpConfig()` is gone — that path now only emits `failed` for missing secrets (a definitive pre-spawn failure). `mapCliMcpStatus()` maps `connected→loaded`, `needs-auth→failed("authentication required")`, `failed→failed("connection failed")`, unknown→`failed("unknown status: ...")` so we don't silently swallow a new CLI signal. Codex deliberately never emits `mcp_status` — it doesn't support MCP.
-- Tests: `agent-registry.test.ts`, `credential-store.test.ts`, `secret-resolver.test.ts`, `services/mcp.test.ts`, `mcp-resolve.test.ts` (pure substring resolver extracted from `session-worker.ts`), `integration_tests/mcp-routes.test.ts` (HTTP CRUD + secret non-echo + cap + test-endpoint 409), `client/stores/mcp-store.test.ts`, `client/components/McpServerSettings.test.tsx`, `claude-adapter.test.ts` (new "MCP server liveness" describe block + `mapCliMcpStatus` unit cases).
-- Deferred to a follow-up: mid-session `crashed` detection (the init-event signal covers cold-start liveness only; spotting a server that dies mid-turn would require inspecting tool-result error payloads).
+- [x] **Mid-session `crashed` detection.** `agent-listeners.ts` records every
+  tool_use it sees within a turn (id → name, top-level and subagent) and
+  on `agent_tool_result` with `is_error: true` extracts the parent tool's
+  server namespace from `mcp__<server>__*` and emits a `mcp_server_status`
+  WS message with `state: "crashed"`. Per-server dedup within the turn
+  prevents one bad server from spamming the badge; the McpStore's
+  last-write-wins `applyStatus()` lets a later successful init event
+  clear the badge back to `loaded`. Built-in (non-`mcp__*`) tool failures
+  are ignored. The reason string is the first line of the error content,
+  capped to ~240 chars so a megabyte stack trace can't bloat the WS
+  payload. Covered by `integration_tests/mcp-crash-detection.test.ts`.
+- [x] **Per-turn awaited `PUT /secrets` for compose sessions.** The
+  awaited push in `agent-execution.ts` now covers both compose-less and
+  compose `ContainerSessionRunner`s — closing the activation-time race
+  where the agent's first turn could start before the fire-and-forget
+  push from the `secrets_status` listener completed. The compose-vs-not
+  decision is in `selectAgentEnvForPush()` (exported for testability):
+  compose-less pulls `getAllAgentEnv()` + `collectMcpAgentEnv()`
+  directly; compose returns
+  `ServiceManager.getSecretsSnapshot().agentValues` verbatim so the
+  *merged* (compose-declared + MCP) set is pushed — the worker REPLACES
+  its tracked set on every push, so pushing a partial subset would
+  clobber `agent: true` compose secrets. Covered by
+  `ws-handlers/agent-env-push.test.ts`.
+- Tests: `agent-registry.test.ts`, `credential-store.test.ts`, `secret-resolver.test.ts`, `services/mcp.test.ts`, `mcp-resolve.test.ts` (pure substring resolver extracted from `session-worker.ts`), `integration_tests/mcp-routes.test.ts` (HTTP CRUD + secret non-echo + cap + test-endpoint 409), `client/stores/mcp-store.test.ts`, `client/components/McpServerSettings.test.tsx`, `claude-adapter.test.ts` (new "MCP server liveness" describe block + `mapCliMcpStatus` unit cases), `ws-handlers/agent-env-push.test.ts` (per-turn agent-env push selector — both regimes), `integration_tests/mcp-crash-detection.test.ts` (mid-turn crash detection from tool-result errors).
 
 ### Phase 2 — Native OAuth (extends 087's platform-credentials) — **landed**
 
