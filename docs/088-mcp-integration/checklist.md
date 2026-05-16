@@ -123,12 +123,19 @@
   (`McpOAuthProviderConfig.registrationEndpoint`). Once a provider needs
   it, plug it into `startOAuthFlow` between the source lookup and the
   authorize-URL build.
-- [ ] **Startup-time token refresh sweep.** Currently refresh runs only
-  on the per-turn path (`agent-execution.ts`). A long-idle session has
-  fresh tokens on its first turn — fine — but a session that ran a turn
-  > 1h ago and then the orchestrator restarts gets the stale persisted
-  token until the next turn rotates it. Easy to add via `app-lifecycle.ts`
-  `scheduleStartupTasks`.
+- [x] **Startup-time token refresh sweep.** Landed in `app-lifecycle.ts` as
+  the exported `runMcpOAuthStartupRefresh()` helper, kicked off
+  (fire-and-forget) from `scheduleStartupTasks` when a `CredentialStore` is
+  threaded through `StartupDeps`. `index.ts` now passes `credentialStore`
+  into the call. The helper delegates to the existing
+  `refreshExpiredMcpOAuthTokens()` service with the standard 5-minute
+  safety margin, logs refreshed and failed sources to the console, and
+  swallows errors so startup is never blocked. Covered by four cases in
+  `app-lifecycle.test.ts` (`runMcpOAuthStartupRefresh` describe block):
+  rotates a token inside the margin via injected `fetchImpl`, leaves a
+  fresh token untouched, returns cleanly on a 500 from the token endpoint
+  (stale token preserved so the worker can still emit a meaningful
+  `mcp_server_status`), and no-ops when no OAuth tokens are persisted.
 
 ## Phase 3 — Advanced (not started)
 

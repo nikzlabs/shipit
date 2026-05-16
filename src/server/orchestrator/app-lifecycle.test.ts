@@ -1,9 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { buildRunnerFactory, createIdleEnforcer, IDLE_GRACE_PERIOD_MS } from "./app-lifecycle.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  buildRunnerFactory,
+  createIdleEnforcer,
+  IDLE_GRACE_PERIOD_MS,
+  runMcpOAuthStartupRefresh,
+} from "./app-lifecycle.js";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
+import { CredentialStore } from "./credential-store.js";
 import type { AgentId } from "../shared/types.js";
-import type { CredentialStore } from "./credential-store.js";
 import type { SessionContainerManager } from "./session-container.js";
 
 /**
@@ -538,5 +546,103 @@ describe("SessionRunner forced dispose with running agent", () => {
     runner.dispose({ force: true });
     expect(disposedSpy).toHaveBeenCalled();
     expect(fakeAgent.kill).toHaveBeenCalled();
+  });
+});
+
+/**
+ * docs/088 Phase 2 follow-up — the startup-time MCP OAuth token refresh
+ * sweep. The function is fire-and-forget from `scheduleStartupTasks`, but
+ * exported separately so the wiring contract is testable without spinning
+ * up the full orchestrator.
+ *
+ * Why these tests matter: without a startup refresh, a token that expired
+ * while the orchestrator was down would be carried into the first agent
+ * turn after restart and the worker would emit a `needs-auth` failure on
+ * the next MCP tool call. The sweep closes that race.
+ */
+describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
+  let tmpDir: string;
+  let store: CredentialStore;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-startup-refresh-"));
+    store = new CredentialStore(tmpDir);
+  });
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("rotates a token within the safety margin via the injected fetch", async () => {
+    // Token is 1 minute from expiry — well inside the 5-minute safety margin.
+    store.setMcpOAuthTokens("linear_oauth", {
+      accessToken: "stale",
+      refreshToken: "rt-1",
+      clientId: "cid",
+      expiresAt: Date.now() + 60 * 1000,
+    });
+
+    let calls = 0;
+    const fakeFetch: typeof fetch = async () => {
+      calls++;
+      return new Response(
+        JSON.stringify({ access_token: "fresh", expires_in: 3600 }),
+        { status: 200 },
+      );
+    };
+
+    await runMcpOAuthStartupRefresh({ credentialStore: store, fetchImpl: fakeFetch });
+
+    expect(calls).toBe(1);
+    expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("fresh");
+  });
+
+  it("leaves a fresh token untouched", async () => {
+    // 1 hour from expiry — safely outside the safety margin.
+    store.setMcpOAuthTokens("linear_oauth", {
+      accessToken: "fresh",
+      refreshToken: "rt-1",
+      clientId: "cid",
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    });
+
+    const fakeFetch: typeof fetch = async () => {
+      throw new Error("should not be called for a fresh token");
+    };
+
+    await runMcpOAuthStartupRefresh({ credentialStore: store, fetchImpl: fakeFetch });
+
+    // Token still in place, unchanged.
+    expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("fresh");
+  });
+
+  it("swallows refresh failures so startup is never blocked", async () => {
+    store.setMcpOAuthTokens("linear_oauth", {
+      accessToken: "stale",
+      refreshToken: "rt-1",
+      clientId: "cid",
+      expiresAt: Date.now() - 1000, // already expired
+    });
+
+    const fakeFetch: typeof fetch = async () =>
+      new Response("upstream blew up", { status: 500 });
+
+    // Must not throw — the contract is "log and continue".
+    await expect(
+      runMcpOAuthStartupRefresh({ credentialStore: store, fetchImpl: fakeFetch }),
+    ).resolves.toBeUndefined();
+
+    // Stale token left in place so the worker can still surface a meaningful
+    // `mcp_server_status` failure when the first MCP tool call lands.
+    expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("stale");
+  });
+
+  it("is a no-op when no OAuth tokens are persisted", async () => {
+    const fakeFetch: typeof fetch = async () => {
+      throw new Error("should not be called when there are no tokens");
+    };
+    await expect(
+      runMcpOAuthStartupRefresh({ credentialStore: store, fetchImpl: fakeFetch }),
+    ).resolves.toBeUndefined();
   });
 });
