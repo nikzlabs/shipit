@@ -39,12 +39,27 @@
 - [ ] Per-server `mcp_server_status` driven by a real liveness signal — Phase 1
   only emits `loaded` / `failed` from `generateMcpConfig()` at agent start; no
   `crashed` detection mid-session.
-- [ ] Integration tests for `/api/mcp-servers` routes (CRUD, secret non-echo,
-  cap enforcement, test-endpoint 409/proxy) and the agent-env push flow.
-- [ ] Client component tests for `McpServerSettings.tsx` and `mcp-store.ts`
-  (form validation, status badges, error states).
-- [ ] `session-worker.test.ts` coverage for `generateMcpConfig()` placeholder
-  resolution + missing-secret drop, and `mcp-test.ts` handshake.
+- [x] Integration tests for `/api/mcp-servers` routes (CRUD, secret non-echo,
+  cap enforcement, test-endpoint 409 with no active session). Landed in
+  `integration_tests/mcp-routes.test.ts` — 16 cases covering name/type
+  validation, duplicate-name 409, secret-namespace 400, the enabled-server
+  cap, rename clearing old secrets, and 404 paths. The agent-env push flow
+  (`tryPushAgentSecrets` on compose-less sessions) is exercised in
+  `container-agent-wiring.test.ts`.
+- [x] Client component tests for `McpServerSettings.tsx` and `mcp-store.ts`.
+  Landed in `stores/mcp-store.test.ts` (9 cases: CRUD round-trips through a
+  fake fetch, error surfacing, `applyStatus()` merge semantics, `reset()`)
+  and `components/McpServerSettings.test.tsx` (9 cases: empty state, server
+  list, status badge from `useMcpStore.statuses`, disabled Test button
+  without an active session, form validation for invalid names + missing
+  command, store-level error banner, secrets-not-echoed on edit).
+- [x] `session-worker.test.ts` coverage for `generateMcpConfig()` placeholder
+  resolution + missing-secret drop. The `$secret:` resolver was extracted to
+  `src/server/session/mcp-resolve.ts` (pure function over env map) so it can
+  be unit-tested without spinning up a Fastify worker — `mcp-resolve.test.ts`
+  exercises substring substitution in env/headers/args, the missing-secret
+  drop path (incl. empty-string and undefined-as-missing), the dedupe of
+  reported missing keys, and the no-placeholder pass-through.
 - [~] `await`-the-`PUT /secrets`-before-agent-start sequencing — **done for
   compose-less sessions** (the per-turn awaited push above). Compose sessions
   still rely on the fire-and-forget `secrets_status`-driven push at activation;
