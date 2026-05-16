@@ -48,11 +48,21 @@
   `failed→failed("connection failed")`, unknown→`failed("unknown status: ...")`.
   Covered by `claude-adapter.test.ts` (the new "MCP server liveness" describe
   block + `mapCliMcpStatus` unit cases).
-- [ ] Mid-session `crashed` detection — the init event covers cold-start
-  liveness only. Spotting a server that dies mid-turn requires inspecting
-  tool-result error payloads (or waiting for a future CLI signal); deferred
-  for now since the failure surface still reaches the user via the
-  individual tool-call error.
+- [x] **Mid-session `crashed` detection.** `agent-listeners.ts` now records
+  every tool_use it sees during a turn (id → name, including subagent ones
+  since Task children dispatch MCP tools too) and, on any
+  `agent_tool_result` with `is_error: true`, looks up the parent tool name.
+  If it matches `mcp__<server>__*`, the failure is attributed to that
+  server and emitted as an `mcp_server_status` WS message with
+  `state: "crashed"` and a one-line summary of the error content as the
+  reason. Per-server dedup within a turn prevents a single failing server
+  from spamming the badge; the next successful agent init event clears the
+  status back to `loaded` via the existing last-write-wins `applyStatus()`.
+  Built-in (non-`mcp__*`) tool failures are ignored — they're not
+  attributable to any MCP server. Covered by
+  `integration_tests/mcp-crash-detection.test.ts` (6 cases: single failure,
+  per-turn dedup, multi-server attribution, non-MCP-tool no-op,
+  successful-call no-op, long-error reason truncation).
 - [x] Integration tests for `/api/mcp-servers` routes (CRUD, secret non-echo,
   cap enforcement, test-endpoint 409 with no active session). Landed in
   `integration_tests/mcp-routes.test.ts` — 16 cases covering name/type
@@ -74,11 +84,28 @@
   exercises substring substitution in env/headers/args, the missing-secret
   drop path (incl. empty-string and undefined-as-missing), the dedupe of
   reported missing keys, and the no-placeholder pass-through.
-- [~] `await`-the-`PUT /secrets`-before-agent-start sequencing — **done for
-  compose-less sessions** (the per-turn awaited push above). Compose sessions
-  still rely on the fire-and-forget `secrets_status`-driven push at activation;
-  closing that race needs a merge-aware push (the worker REPLACES its set, so
-  the per-turn push must carry the *full* compose+MCP set) and is deferred.
+- [x] **`await`-the-`PUT /secrets`-before-agent-start sequencing — now done
+  for compose sessions too.** The per-turn awaited push in
+  `ws-handlers/agent-execution.ts` now covers *every* `ContainerSessionRunner`,
+  not just the compose-less ones. The compose-vs-not decision is extracted
+  into `selectAgentEnvForPush()` (also in `agent-execution.ts`) so it can
+  be unit-tested without the surrounding turn machinery:
+    * Compose-less session → push
+      `{ ...getAllAgentEnv(), ...collectMcpAgentEnv() }` (unchanged).
+    * Compose session → push the snapshot's
+      `agentValues` from `ServiceManager.getSecretsSnapshot()`. The snapshot
+      already reflects the most recent `syncSecrets()` merge
+      (compose-declared + `mcp__*` + `MCP_PLATFORM_*`), so pushing it
+      verbatim preserves compose-wins semantics — pushing the partial
+      account-level set instead would clobber `agent: true` compose
+      secrets since the worker REPLACES its tracked set on every push.
+  Closes the activation-time race for compose sessions that previously
+  relied on the fire-and-forget `secrets_status`-driven push (which could
+  still be in flight when the agent's first turn started). The
+  fire-and-forget listener push at activation is kept — it covers viewers
+  attaching mid-stack-boot — and the per-turn awaited push is the
+  guarantee surface. Covered by `ws-handlers/agent-env-push.test.ts` (7
+  cases across both regimes).
 
 ## Phase 2 — Native OAuth — landed
 

@@ -11,8 +11,48 @@ import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { quickCreatePr } from "../services/github.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
+import type { ServiceManager } from "../service-manager.js";
+import type { CredentialStore } from "../credential-store.js";
 import { collectMcpAgentEnv } from "../secret-resolver.js";
 import { refreshExpiredMcpOAuthTokens } from "../services/mcp-oauth.js";
+
+/**
+ * Compute the full agent-env map that should be pushed to the worker's
+ * `process.env` ahead of `/agent/start` (docs/088).
+ *
+ * Two regimes, distinguished by whether the runner has a `ServiceManager`:
+ *
+ *   * Compose-less session (`serviceManager` is `null`) — pull directly from
+ *     `CredentialStore`. The account-level set covers `mcp__*` secrets,
+ *     `MCP_PLATFORM_*` OAuth tokens, and `OPENAI_API_KEY`-style top-level
+ *     keys. `collectMcpAgentEnv` returns both `mcp__*` and `MCP_PLATFORM_*`
+ *     entries; the `mcp__*` ones overlap with `getAllAgentEnv()` but the
+ *     values are identical, so spread order doesn't matter.
+ *
+ *   * Compose session — return the snapshot's `agentValues` map. The snapshot
+ *     is the merged set (compose-declared + MCP) produced inside the most
+ *     recent `ServiceManager.syncSecrets()` pass. The worker REPLACES its
+ *     tracked set on every `PUT /secrets` call, so we MUST carry the *full*
+ *     merged set here — pushing just the account-level subset would clobber
+ *     the compose-declared `agent: true` secrets.
+ *
+ * Extracted from `runAgentWithMessage` for unit testability — the if/else
+ * decision is the contract; the surrounding `runAgentWithMessage` flow
+ * (queue drain, post-turn commit, PR card) is too entangled to test
+ * directly.
+ */
+export function selectAgentEnvForPush(input: {
+  serviceManager: Pick<ServiceManager, "getSecretsSnapshot"> | null;
+  credentialStore: Pick<CredentialStore, "getAllAgentEnv" | "getAllMcpOAuthTokens">;
+}): Record<string, string> {
+  if (input.serviceManager) {
+    return input.serviceManager.getSecretsSnapshot().agentValues;
+  }
+  return {
+    ...input.credentialStore.getAllAgentEnv(),
+    ...collectMcpAgentEnv(input.credentialStore),
+  };
+}
 /**
  * Save base64 images to the session's uploads directory on the host.
  * Returns a prompt prefix referencing the on-disk files (container paths).
@@ -455,31 +495,29 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     },
   );
 
-  // docs/088: compose-less sessions never get a `ServiceManager`, so the
-  // account-level agent env (`mcp__*` secrets, `MCP_PLATFORM_*` OAuth
-  // tokens, `OPENAI_API_KEY`, …) is never pushed to the worker via
-  // `ServiceManager.syncSecrets()`. Push it here — awaited, before
-  // `/agent/start` — so the worker's `process.env` carries the keys before
-  // `generateMcpConfig()` resolves `$secret:` / `$platform:` refs.
+  // docs/088: sequence the agent-env push ahead of `/agent/start` so the
+  // worker's `process.env` carries the right keys before `generateMcpConfig()`
+  // resolves `$secret:` / `$platform:` refs. The compose-vs-compose-less
+  // decision lives in `selectAgentEnvForPush` (see its docstring); both
+  // regimes are exercised in `agent-env-push.test.ts`.
   //
-  // Guarded on `!serviceManager`: compose sessions already get the *merged*
-  // (compose-declared + MCP) set via `syncSecrets()`, and pushing the
-  // partial account-level set here would clobber their `agent: true`
-  // secrets (the worker REPLACES its tracked set on every push).
+  // Previously only compose-less sessions were covered. Compose sessions
+  // relied on a fire-and-forget push from the `secrets_status` listener at
+  // activation, leaving an activation-time race where the agent's first turn
+  // could start before the push landed. The per-turn awaited push closes
+  // that gap.
   //
   // `tryPushAgentSecrets` is internally fault-tolerant — a transient HTTP
   // failure is logged worker-side and never throws — so awaiting it here
   // just sequences the push ahead of `/agent/start` without adding a
   // failure path.
-  if (runner instanceof ContainerSessionRunner && !runner.serviceManager) {
-    // Merge regular agentEnv with MCP_PLATFORM_* values derived from
-    // CredentialStore.mcpOAuth. `collectMcpAgentEnv` returns both `mcp__*`
-    // and `MCP_PLATFORM_*` keys; the `mcp__*` ones are duplicated with
-    // `getAllAgentEnv()` but identical, so spread order doesn't matter.
-    await runner.tryPushAgentSecrets({
-      ...ctx.credentialStore.getAllAgentEnv(),
-      ...collectMcpAgentEnv(ctx.credentialStore),
-    });
+  if (runner instanceof ContainerSessionRunner) {
+    await runner.tryPushAgentSecrets(
+      selectAgentEnvForPush({
+        serviceManager: runner.serviceManager,
+        credentialStore: ctx.credentialStore,
+      }),
+    );
   }
 
   currentAgent.run({

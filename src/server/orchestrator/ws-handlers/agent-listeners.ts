@@ -52,6 +52,32 @@ export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
 }
 
 /**
+ * Pattern for MCP tool names: `mcp__<server>__<tool>`. Capture group 1 is the
+ * server namespace, used to attribute a failed tool call back to a specific
+ * configured MCP server (docs/088 mid-session crash detection). `<server>` is
+ * lowercase alphanumeric per the same validation as
+ * `services/mcp.ts#NAME_RE`; `<tool>` can include underscores. The outer
+ * anchors guarantee a full-name match so an unrelated tool that happens to
+ * contain `mcp__` in its arguments doesn't trigger crash attribution.
+ */
+const MCP_TOOL_NAME_RE = /^mcp__([a-z][a-z0-9]*)__/;
+
+/**
+ * Truncate a tool-result error payload for inclusion in the per-server
+ * `crashed` reason string. Tool errors can be megabytes (stack traces,
+ * dumped JSON), and we forward the reason verbatim to the UI badge —
+ * cap it so a single bad tool call can't bloat the WS message or the
+ * Settings panel hover state.
+ */
+function summarizeCrashReason(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) return "tool call failed";
+  const firstLine = trimmed.split(/\r?\n/, 1)[0] ?? trimmed;
+  const MAX = 240;
+  return firstLine.length > MAX ? `${firstLine.slice(0, MAX - 1)}…` : firstLine;
+}
+
+/**
  * Wire up common agent event listeners shared across send_message,
  * answer_question, and the queued-message replay inside runAgentWithMessage.
  */
@@ -102,6 +128,52 @@ export function wireAgentListeners(
     }
   };
 
+  // ---- MCP mid-turn crash detection (docs/088) ----
+  //
+  // The CLI's init event covers cold-start liveness (ClaudeAdapter →
+  // `mcp_status`), but doesn't say anything when a server dies mid-turn.
+  // We can recover that signal from tool-result errors: every MCP tool call
+  // is named `mcp__<server>__<tool>`, so an `is_error: true` result whose
+  // parent `tool_use_id` resolved to an MCP tool means that server failed
+  // *while serving the agent*, which is the user-visible definition of
+  // "crashed". We:
+  //   1. Record `id → name` for every tool_use we see this turn (including
+  //      subagent ones — Task children dispatch MCP tools too).
+  //   2. On `is_error: true` tool_result, look up the name, extract the
+  //      server, dedupe per-turn-per-server, and emit `mcp_server_status`
+  //      with `state: "crashed"` and a short reason derived from the error
+  //      content. Dedupe avoids spamming one badge per failed tool call when
+  //      the agent retries.
+  //
+  // McpStore.applyStatus is last-write-wins, so the next successful init
+  // event from a future turn naturally clears the badge back to `loaded`.
+  const toolUseIdToName = new Map<string, string>();
+  const crashedServersThisTurn = new Set<string>();
+  const recordToolUses = (
+    blocks: readonly { id: string; name: string }[],
+  ) => {
+    for (const block of blocks) toolUseIdToName.set(block.id, block.name);
+  };
+  const reportMcpCrashesFromResults = (results: ToolResultEntry[]) => {
+    for (const result of results) {
+      if (!result.isError) continue;
+      const toolName = toolUseIdToName.get(result.toolUseId);
+      if (!toolName) continue;
+      const match = MCP_TOOL_NAME_RE.exec(toolName);
+      if (!match) continue;
+      const serverName = match[1];
+      if (crashedServersThisTurn.has(serverName)) continue;
+      crashedServersThisTurn.add(serverName);
+      emitToViewers({
+        type: "mcp_server_status",
+        sessionId: opts.capturedSessionId!,
+        name: serverName,
+        state: "crashed",
+        reason: summarizeCrashReason(result.content),
+      });
+    }
+  };
+
   agent.on("log", (source: string, text: string) => {
     ctx.broadcastLog(source as "stderr" | "stdout" | "server", text);
   });
@@ -149,6 +221,12 @@ export function wireAgentListeners(
 
       const toolBlocks = (event.content ?? [])
         .filter((b): b is ClaudeContentBlockToolUse => b.type === "tool_use");
+
+      // Record every tool_use this turn — including subagent (Task) ones,
+      // since their children dispatch MCP tools whose failures we still want
+      // attributed to the right server. See `recordToolUses` block at the
+      // top of this function (docs/088 mid-turn crash detection).
+      if (toolBlocks.length > 0) recordToolUses(toolBlocks);
 
       // Subagent (Task) events carry parentToolUseId. Route them under the
       // group that contains the parent Task tool, *not* into the main flow —
@@ -232,6 +310,13 @@ export function wireAgentListeners(
     // next agent_assistant starts a new chat history entry.
     if (event.type === "agent_tool_result") {
       const toolResults = extractToolResults(event);
+
+      // docs/088 mid-turn crash detection: scan tool results for failures
+      // attributable to a configured MCP server. Done BEFORE the subagent
+      // routing fork below so failures inside Task children are caught too.
+      // No-op when there are no errors / no MCP-prefixed names — cheap to
+      // call on every result block.
+      if (toolResults.length > 0) reportMcpCrashesFromResults(toolResults);
 
       // Subagent tool_result events: attach to the parent group's subagentEvents
       // and do NOT split the main message group. (109 — subagent transparency)
