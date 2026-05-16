@@ -30,8 +30,12 @@ import {
   addRepo,
   removeRepo,
   createRepoWithTemplate,
+  spawnChildSession,
+  listSpawnedChildren,
+  getSpawnedChild,
   ServiceError,
 } from "./services/index.js";
+import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
 import { generateBranchPrefix, fetchAndResolveDefaultBranch } from "./git-utils.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
@@ -352,6 +356,118 @@ export async function registerSessionRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to fork session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ===========================================================================
+  // Agent-spawned child sessions (docs/117)
+  //
+  // These three routes back the `shipit session create|list|view` shim
+  // subcommands. The shim → worker hop injects the worker's bound session
+  // id into the URL as `:parentId`, so the agent cannot specify a different
+  // parent — the cross-tenancy guarantee comes from the worker, not the
+  // orchestrator. The orchestrator still enforces "child must be a direct
+  // descendant of parent" on every read.
+  // ===========================================================================
+
+  // POST /api/sessions/:parentId/spawn — agent-driven session spawn
+  app.post<{
+    Params: { parentId: string };
+    Body: {
+      prompt?: string;
+      title?: string;
+      branch?: string;
+      base?: string;
+      agent?: AgentId;
+      model?: string;
+      spawnedByTurn?: string;
+    };
+  }>(
+    "/api/sessions/:parentId/spawn",
+    async (request, reply) => {
+      const body = request.body ?? {};
+      try {
+        const result = await spawnChildSession(
+          sessionManager,
+          deps.runnerRegistry,
+          createRepoGit,
+          deps.getSharedRepoDir,
+          deps.sessionsRoot,
+          deps.githubAuthManager,
+          request.params.parentId,
+          {
+            prompt: body.prompt ?? "",
+            ...(body.title !== undefined ? { title: body.title } : {}),
+            ...(body.branch !== undefined ? { branch: body.branch } : {}),
+            ...(body.base !== undefined ? { base: body.base } : {}),
+            ...(body.agent !== undefined ? { agent: body.agent } : {}),
+            ...(body.model !== undefined ? { model: body.model } : {}),
+            ...(body.spawnedByTurn !== undefined ? { spawnedByTurn: body.spawnedByTurn } : {}),
+          },
+          deps.defaultAgentId,
+        );
+        // Broadcast the updated session list so the parent's sidebar shows
+        // the new child immediately — same pattern as `fork` / `unarchive`.
+        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        return {
+          sessionId: result.sessionId,
+          branch: result.branch,
+          status: "running" as const,
+          session: result.session,
+        };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to spawn child session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:parentId/children — list children spawned by this parent
+  app.get<{
+    Params: { parentId: string };
+    Querystring: { turn?: string };
+  }>(
+    "/api/sessions/:parentId/children",
+    async (request, reply) => {
+      const parent = sessionManager.get(request.params.parentId);
+      if (!parent) {
+        reply.code(404).send({ error: "Parent session not found" });
+        return;
+      }
+      const children = listSpawnedChildren(
+        sessionManager,
+        deps.runnerRegistry,
+        request.params.parentId,
+        request.query.turn,
+      );
+      return { children };
+    },
+  );
+
+  // GET /api/sessions/:parentId/children/:childId — view one child session
+  app.get<{
+    Params: { parentId: string; childId: string };
+  }>(
+    "/api/sessions/:parentId/children/:childId",
+    async (request, reply) => {
+      try {
+        const child = getSpawnedChild(
+          sessionManager,
+          deps.runnerRegistry,
+          request.params.parentId,
+          request.params.childId,
+        );
+        return { child };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to read child session: ${getErrorMessage(err)}` });
       }
     },
   );

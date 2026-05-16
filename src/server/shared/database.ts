@@ -191,6 +191,18 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN subagent_events TEXT");
   },
+  // Migration 11: parent linkage for agent-spawned sessions (117). When a
+  // session is created via the `shipit session create` shim, its row carries
+  // the parent's session id (used to render sidebar grouping and to scope
+  // the agent-facing `shipit session view/message/archive` operations to
+  // children the parent itself spawned). `spawned_by_turn` is a free-form
+  // string identifying the spawning turn — used for "this turn first"
+  // sorting in `shipit session list`.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT");
+    db.exec("ALTER TABLE sessions ADD COLUMN spawned_by_turn TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)");
+  },
 ];
 
 export class DatabaseManager {

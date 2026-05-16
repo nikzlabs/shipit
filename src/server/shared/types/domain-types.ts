@@ -35,6 +35,21 @@ export interface SessionInfo {
   mergedAt?: string;
   /** Model alias or ID selected for this session (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
+  /**
+   * If this session was spawned by another session via `shipit session create`
+   * (see docs/117-agent-spawned-sessions/), the parent's session ID. Used to
+   * render the sidebar grouping ("spawned by parent") and to scope the
+   * agent-facing `shipit session view/message/archive` operations so a parent
+   * agent can only touch sessions it actually spawned.
+   */
+  parentSessionId?: string;
+  /**
+   * Optional identifier of the turn that spawned this session (the parent's
+   * message group id at spawn time). Lets us scope `shipit session list` to
+   * "this turn first" without walking chat history. Free-form string; the
+   * orchestrator does not interpret it beyond persistence.
+   */
+  spawnedByTurn?: string;
 }
 
 // ---- Repo types ----
