@@ -25,6 +25,7 @@ function makePrStatus(overrides: Partial<PrStatusSummary> = {}): PrStatusSummary
     prNumber: 1,
     prUrl: "https://github.com/test/repo/pull/1",
     prTitle: "Test PR",
+    prBody: "",
     prState: "open",
     baseBranch: "main",
     headBranch: "feature",

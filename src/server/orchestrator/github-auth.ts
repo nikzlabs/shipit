@@ -273,7 +273,7 @@ export class GitHubAuthManager extends EventEmitter {
     owner: string,
     repo: string,
     head: string,
-  ): Promise<{ url: string; number: number; base: string; title: string } | null> {
+  ): Promise<{ url: string; number: number; base: string; title: string; body: string } | null> {
     if (!this._token) return null;
     return findPullRequestImpl(this._token, owner, repo, head);
   }

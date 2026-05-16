@@ -15,6 +15,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { Button } from "./ui/button.js";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import {
   GitBranchIcon,
   GitPullRequestIcon,
@@ -79,25 +80,96 @@ function useOpenPrDiff(baseBranch?: string) {
   }, [sessionId, baseBranch]);
 }
 
-/** Displays branch info: just head branch if base is default, otherwise "base ← head". Copies branch name on click. */
-function BranchLabel({ baseBranch, headBranch }: { baseBranch?: string; headBranch?: string }) {
+/**
+ * Truncate a PR body for tooltip display. PR bodies can be long; the tooltip
+ * is a quick-glance affordance, not a reading surface. Caps at ~12 lines /
+ * 600 chars with an ellipsis. Returns an empty string if input is blank.
+ */
+function truncateBodyForTooltip(body: string, maxLines = 12, maxChars = 600): string {
+  let result = body.trim();
+  if (result.length === 0) return "";
+  const lines = result.split("\n");
+  if (lines.length > maxLines) {
+    result = `${lines.slice(0, maxLines).join("\n")}\n…`;
+  }
+  if (result.length > maxChars) {
+    result = `${result.slice(0, maxChars).trimEnd()}…`;
+  }
+  return result;
+}
+
+/**
+ * Displays branch info, or — when a PR exists — the PR title with the PR body
+ * surfaced in a rich tooltip. Clicking always copies the head branch name.
+ *
+ * Rendering rules:
+ *   - `prTitle` set       → render `prTitle`; tooltip shows truncated `prBody`
+ *                            (or a fallback "Copy branch name: <head>" hint
+ *                            when the PR has no description).
+ *   - `prTitle` unset, non-default base → "base ← head".
+ *   - otherwise            → just `headBranch`.
+ */
+function BranchLabel({
+  baseBranch,
+  headBranch,
+  prTitle,
+  prBody,
+}: {
+  baseBranch?: string;
+  headBranch?: string;
+  prTitle?: string;
+  prBody?: string;
+}) {
   const setToast = useUiStore((s) => s.setToast);
   if (!headBranch) return null;
-  const content = baseBranch && !isDefaultBranch(baseBranch) ? (
-    <>{baseBranch} <span className="text-(--color-text-tertiary)">←</span> {headBranch}</>
-  ) : headBranch;
+
   const handleCopy = () => {
     void navigator.clipboard.writeText(headBranch);
     setToast({ message: "Branch name copied" });
   };
+
+  const buttonClass =
+    "h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors cursor-pointer";
+
+  // Branch-only rendering (ready phase, or open phase without a title yet).
+  if (!prTitle) {
+    const content = baseBranch && !isDefaultBranch(baseBranch) ? (
+      <>{baseBranch} <span className="text-(--color-text-tertiary)">←</span> {headBranch}</>
+    ) : headBranch;
+    return (
+      <button onClick={handleCopy} title="Copy branch name" className={buttonClass}>
+        <span className="truncate">{content}</span>
+      </button>
+    );
+  }
+
+  // PR-title rendering — tooltip shows the description.
+  const truncatedBody = truncateBodyForTooltip(prBody ?? "");
+  const tooltipBody = truncatedBody.length > 0 ? truncatedBody : "No description";
+
   return (
-    <button
-      onClick={handleCopy}
-      title="Copy branch name"
-      className="h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
-    >
-      <span className="truncate">{content}</span>
-    </button>
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={handleCopy}
+            aria-label={`Copy branch name ${headBranch}`}
+            className={buttonClass}
+          >
+            <span className="truncate">{prTitle}</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          className="max-w-sm whitespace-pre-line text-left"
+        >
+          <div className="text-(--color-text-primary)">{tooltipBody}</div>
+          <div className="mt-1.5 pt-1.5 border-t border-(--color-border-secondary) text-(--color-text-tertiary)">
+            Click to copy <span className="font-mono">{headBranch}</span>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
@@ -505,7 +577,12 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
     <div>
       <div className="flex items-center gap-3 flex-nowrap">
         <PrStateBadge sessionId={sessionId} url={pr.url} prNumber={pr.number} />
-        <BranchLabel baseBranch={pr.baseBranch} headBranch={pr.headBranch} />
+        <BranchLabel
+          baseBranch={pr.baseBranch}
+          headBranch={pr.headBranch}
+          prTitle={pr.title}
+          prBody={pr.body}
+        />
         <span className="ml-auto shrink-0 flex items-center gap-3">
           <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
           <CiIndicator checks={card.checks} />
