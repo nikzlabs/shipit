@@ -203,6 +203,15 @@ const MIGRATIONS: Migration[] = [
     db.exec("ALTER TABLE sessions ADD COLUMN spawned_by_turn TEXT");
     db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)");
   },
+  // Migration 12: real per-turn context occupancy. Adds `context_tokens` to
+  // `usage_turns` — populated from the last entry in `result.usage.iterations[]`
+  // so the context dial doesn't over-count by N× for tool-heavy turns
+  // (top-level `usage.cache_read_input_tokens` is the SUM across all API
+  // calls). Old rows leave the column NULL and the dial falls back to the
+  // sum (`turnContextTokens()`).
+  (db) => {
+    db.exec("ALTER TABLE usage_turns ADD COLUMN context_tokens INTEGER");
+  },
 ];
 
 export class DatabaseManager {

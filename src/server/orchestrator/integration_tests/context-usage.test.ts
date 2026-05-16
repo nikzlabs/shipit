@@ -260,6 +260,84 @@ describe("Integration: Context window usage (105)", () => {
     client.close();
   });
 
+  it("emits dynamic model_info from result.modelUsage.contextWindow (Opus 4.7 → 1M)", async () => {
+    // Two-bug regression: (a) Opus 4.7 has a 1M window, not 200K; (b) a tool-
+    // heavy turn's top-level cache_read_input_tokens is the SUM across all API
+    // calls and over-counts context. Both are fixed by reading
+    // `result.modelUsage.contextWindow` and `result.usage.iterations[]`.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "do a lot of work" });
+    await waitForClaude(() => lastClaude);
+
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "opus-1m-session",
+      model: "claude-opus-4-7",
+    });
+    await client.receiveType("session_started");
+
+    // Static fallback fires first via agent_init (still correct here because
+    // the longest substring "claude-opus-4-7" → 1_000_000).
+    const initModelInfo = await client.receiveType("model_info");
+    expect(initModelInfo).toMatchObject({
+      type: "model_info",
+      model: "claude-opus-4-7",
+      contextWindowTokens: 1_000_000,
+    });
+
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "done" }] },
+    });
+
+    // Multi-iteration turn: 3 API calls, top-level sums are 3× the real
+    // context. Last iteration is the truth (~110K tokens occupied).
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "opus-1m-session",
+      total_cost_usd: 0.5,
+      duration_ms: 8000,
+      usage: {
+        input_tokens: 30,
+        output_tokens: 600,
+        cache_read_input_tokens: 270_000,
+        cache_creation_input_tokens: 30_000,
+        iterations: [
+          { input_tokens: 10, cache_read_input_tokens: 80_000, cache_creation_input_tokens: 10_000 },
+          { input_tokens: 10, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 10_000 },
+          { input_tokens: 10, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 10_000 },
+        ],
+      },
+      modelUsage: {
+        "claude-opus-4-7": { contextWindow: 1_000_000 },
+      },
+    });
+
+    // Authoritative model_info re-emit from result.modelUsage.contextWindow.
+    const resultModelInfo = await client.receiveType("model_info");
+    expect(resultModelInfo).toMatchObject({
+      type: "model_info",
+      model: "claude-opus-4-7",
+      contextWindowTokens: 1_000_000,
+    });
+
+    const turnUsage = (await client.receiveType("turn_usage_update")) as WsTurnUsageUpdate;
+    // Real per-turn context = 10 + 100_000 + 10_000 = 110_010 (last iteration),
+    // NOT 30 + 270_000 + 30_000 = 300_030 (the sum, which would over-count 3×).
+    expect(turnUsage.turn.contextTokens).toBe(110_010);
+    // Turn-wide totals remain the sums (used for billing).
+    expect(turnUsage.turn.inputTokens).toBe(30);
+    expect(turnUsage.turn.cacheRead).toBe(270_000);
+    expect(turnUsage.turn.cacheCreate).toBe(30_000);
+
+    lastClaude.emit("done", 0);
+    client.close();
+  });
+
   it("MODEL_CONTEXT_WINDOWS resolves known and unknown models", () => {
     // Exact match
     expect(getContextWindowForModel("sonnet")).toBe(MODEL_CONTEXT_WINDOWS.sonnet);
@@ -267,6 +345,11 @@ describe("Integration: Context window usage (105)", () => {
     // Substring match (real CLI model identifiers contain dates/versions)
     expect(getContextWindowForModel("claude-sonnet-4-20250514")).toBe(200_000);
     expect(getContextWindowForModel("gpt-5.4-mini-2025")).toBe(256_000);
+    // Opus 4.7 has a 1M window — the longest substring "claude-opus-4-7"
+    // beats the shorter "opus" fallback (200K). This is the static fallback
+    // for the first frame; the authoritative window comes from the CLI's
+    // `result.modelUsage.contextWindow` on the first turn.
+    expect(getContextWindowForModel("claude-opus-4-7")).toBe(1_000_000);
     // Unknown
     expect(getContextWindowForModel("unknown-model-xyz")).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
     expect(getContextWindowForModel(undefined)).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);

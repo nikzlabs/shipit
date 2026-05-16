@@ -66,6 +66,39 @@ export interface ClaudeUserEvent {
   parent_tool_use_id?: string;
 }
 
+/**
+ * Per-API-call token breakdown inside `result.usage.iterations`. Each entry
+ * corresponds to one round-trip to the model within the turn. Critical for
+ * computing "current context occupancy" — the top-level `usage.*_input_tokens`
+ * fields are SUMS across every iteration, so a turn with 10 tool-use round-
+ * trips reports ~10× the actual context size. The LAST iteration's
+ * `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` is
+ * the true context-window occupancy at turn end.
+ */
+export interface ClaudeUsageIteration {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  type?: string;
+}
+
+/**
+ * Per-model usage summary inside `result.modelUsage`. Carries the model's
+ * actual context window — used in preference to ShipIt's static
+ * `MODEL_CONTEXT_WINDOWS` map so 1M-window models (e.g. Opus 4.7) get the
+ * correct denominator without requiring a code change for each new model.
+ */
+export interface ClaudeModelUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  costUSD?: number;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
+
 export interface ClaudeResultEvent {
   type: "result";
   subtype: "success" | "error";
@@ -77,13 +110,26 @@ export interface ClaudeResultEvent {
    * Token counts are emitted by the Claude Code CLI nested inside a `usage`
    * object (matching the Anthropic API schema), not as top-level fields.
    * Cache fields use the API's `*_input_tokens` suffix.
+   *
+   * IMPORTANT: top-level `input_tokens` / `cache_read_input_tokens` /
+   * `cache_creation_input_tokens` are the SUM across all API calls in the
+   * turn. For the real per-turn context occupancy, use the last entry in
+   * `iterations`.
    */
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
+    iterations?: ClaudeUsageIteration[];
   };
+  /**
+   * Per-model usage summary keyed by model name (e.g. `"claude-opus-4-7"`).
+   * The CLI populates this for every model that contributed tokens to the
+   * turn. `contextWindow` is the authoritative window size for the model —
+   * preferred over ShipIt's static fallback map.
+   */
+  modelUsage?: Record<string, ClaudeModelUsage>;
 }
 
 export type ClaudeEvent =

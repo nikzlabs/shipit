@@ -75,12 +75,35 @@ export interface AgentResultEvent {
   status: "success" | "error";
   sessionId: string;
   cost?: { totalUsd: number };
+  /**
+   * Turn-wide token totals — these are SUMS across every API call (iteration)
+   * in the turn. Use them for cost/billing rollups, NOT for "current context
+   * size" (which would be over-counted by N× for an N-iteration turn). The
+   * authoritative context-occupancy reading is `contextTokens` below.
+   */
   tokens?: {
     input: number;
     output: number;
     cacheRead?: number;
     cacheWrite?: number;
   };
+  /**
+   * Real context-window occupancy at turn end: input + cache_read + cache_create
+   * from the LAST API call in the turn. The Claude CLI exposes this via
+   * `result.usage.iterations[]`. For single-call turns this equals the sum;
+   * for multi-call (tool-use) turns it is dramatically smaller. Drives the
+   * context dial. Adapters that can't break down per-iteration leave this
+   * undefined and the client falls back to summing.
+   */
+  contextTokens?: number;
+  /**
+   * Model's context window in tokens, as reported by the backend's
+   * `result.modelUsage[<model>].contextWindow`. Preferred over ShipIt's
+   * static `MODEL_CONTEXT_WINDOWS` map so models like Opus 4.7 (1M window)
+   * automatically get the right denominator. Undefined when the adapter
+   * can't surface it.
+   */
+  contextWindow?: number;
   durationMs?: number;
   error?: string;
 }

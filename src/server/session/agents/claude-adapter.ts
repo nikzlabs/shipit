@@ -119,6 +119,34 @@ export class ClaudeAdapter
 
       case "result": {
         const u = raw.usage;
+        // Real per-turn context occupancy = the LAST iteration's input +
+        // cache_read + cache_create. The top-level `usage.*_input_tokens`
+        // values are sums across every API call in the turn, so using them
+        // directly multiplies context size by the iteration count.
+        let contextTokens: number | undefined;
+        const lastIter = u?.iterations?.length
+          ? u.iterations[u.iterations.length - 1]
+          : undefined;
+        if (lastIter) {
+          contextTokens =
+            (lastIter.input_tokens ?? 0) +
+            (lastIter.cache_read_input_tokens ?? 0) +
+            (lastIter.cache_creation_input_tokens ?? 0);
+        }
+        // Authoritative context window comes from `modelUsage.<model>.contextWindow`
+        // (e.g. Opus 4.7 reports 1_000_000). Falls back to the static map on
+        // the receiving end when undefined.
+        const modelUsage = raw.modelUsage;
+        let contextWindow: number | undefined;
+        if (modelUsage) {
+          // Prefer the largest reported window across models touched in the
+          // turn (handles model switches mid-turn — keep the more permissive).
+          for (const m of Object.values(modelUsage)) {
+            if (m?.contextWindow && (!contextWindow || m.contextWindow > contextWindow)) {
+              contextWindow = m.contextWindow;
+            }
+          }
+        }
         return {
           type: "agent_result",
           status: raw.subtype,
@@ -134,6 +162,8 @@ export class ClaudeAdapter
                 cacheWrite: u.cache_creation_input_tokens,
               }
             : undefined,
+          contextTokens,
+          contextWindow,
           durationMs: raw.duration_ms,
           error: raw.subtype === "error" ? raw.result : undefined,
         };

@@ -373,6 +373,19 @@ export function wireAgentListeners(
       }
 
       const usageSessionId = turnSessionId ?? event.sessionId;
+
+      // If the backend reported the real context window for this turn's
+      // model (e.g. Opus 4.7 → 1_000_000), re-emit `model_info` with the
+      // authoritative value. This overrides whatever `agent_init` derived
+      // from the static `MODEL_CONTEXT_WINDOWS` map.
+      if (event.contextWindow && turnModel) {
+        emitToViewers({
+          type: "model_info",
+          model: turnModel,
+          contextWindowTokens: event.contextWindow,
+        });
+      }
+
       // Build the per-turn usage record for the live `turn_usage_update` emit.
       // Per-turn data is no longer attached to chat-history messages — the
       // canonical per-turn series is owned by `UsageManager` and rehydrated
@@ -390,6 +403,11 @@ export function wireAgentListeners(
         if (event.tokens?.cacheRead !== undefined) perTurnUsage.cacheRead = event.tokens.cacheRead;
         if (event.tokens?.cacheWrite !== undefined) perTurnUsage.cacheCreate = event.tokens.cacheWrite;
         if (turnModel) perTurnUsage.model = turnModel;
+        // `contextTokens` is the real context-window occupancy at turn end
+        // (last iteration's input + cache). Distinct from `inputTokens +
+        // cacheRead + cacheCreate`, which sums over every iteration and
+        // dramatically overstates context for tool-heavy turns.
+        if (event.contextTokens !== undefined) perTurnUsage.contextTokens = event.contextTokens;
       }
 
       if (event.cost?.totalUsd !== undefined) {
@@ -403,6 +421,7 @@ export function wireAgentListeners(
             cacheRead: event.tokens?.cacheRead,
             cacheCreate: event.tokens?.cacheWrite,
             model: turnModel,
+            contextTokens: event.contextTokens,
           },
         );
         const sessionUsage = ctx.usageManager.getSessionUsage(usageSessionId);

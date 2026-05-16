@@ -459,7 +459,14 @@ interface RawClaudeEvent {
     output_tokens?: number;
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
+    iterations?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    }[];
   };
+  modelUsage?: Record<string, { contextWindow?: number }>;
   duration_ms?: number;
   result?: string;
   parent_tool_use_id?: string;
@@ -495,6 +502,25 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
       };
     case "result": {
       const u = raw.usage;
+      // Mirror ClaudeAdapter: extract real per-turn context from the last
+      // iteration's input + cache, and the authoritative context window from
+      // `modelUsage[<model>].contextWindow`.
+      let contextTokens: number | undefined;
+      const lastIter = u?.iterations?.length ? u.iterations[u.iterations.length - 1] : undefined;
+      if (lastIter) {
+        contextTokens =
+          (lastIter.input_tokens ?? 0) +
+          (lastIter.cache_read_input_tokens ?? 0) +
+          (lastIter.cache_creation_input_tokens ?? 0);
+      }
+      let contextWindow: number | undefined;
+      if (raw.modelUsage) {
+        for (const m of Object.values(raw.modelUsage)) {
+          if (m?.contextWindow && (!contextWindow || m.contextWindow > contextWindow)) {
+            contextWindow = m.contextWindow;
+          }
+        }
+      }
       return {
         type: "agent_result",
         status: raw.subtype,
@@ -508,6 +534,8 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
               cacheWrite: u.cache_creation_input_tokens,
             }
           : undefined,
+        contextTokens,
+        contextWindow,
         durationMs: raw.duration_ms,
         error: raw.subtype === "error" ? raw.result : undefined,
       };
