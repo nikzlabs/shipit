@@ -36,9 +36,23 @@
   the worker REPLACES its tracked set on every push. `tryPushAgentSecrets`
   was made public for this. Covered by `container-agent-wiring.test.ts`
   (`tryPushAgentSecrets()` describe block).
-- [ ] Per-server `mcp_server_status` driven by a real liveness signal — Phase 1
-  only emits `loaded` / `failed` from `generateMcpConfig()` at agent start; no
-  `crashed` detection mid-session.
+- [x] **Per-server `mcp_server_status` now driven by a real liveness signal.**
+  The Claude CLI's init event includes an `mcp_servers[]` field reporting the
+  actual per-server connection result (`connected` / `failed` / `needs-auth`).
+  `ClaudeAdapter` parses this and emits an `mcp_status` event on a new
+  AgentProcess channel; `SessionWorker.wireAgentEvents()` broadcasts each
+  entry as an `mcp_server_status` SSE event. The speculative `loaded` emit
+  in `generateMcpConfig()` is gone — that path now only emits `failed` for
+  missing secrets (a definitive pre-spawn failure). `mapCliMcpStatus()`
+  maps `connected→loaded`, `needs-auth→failed("authentication required")`,
+  `failed→failed("connection failed")`, unknown→`failed("unknown status: ...")`.
+  Covered by `claude-adapter.test.ts` (the new "MCP server liveness" describe
+  block + `mapCliMcpStatus` unit cases).
+- [ ] Mid-session `crashed` detection — the init event covers cold-start
+  liveness only. Spotting a server that dies mid-turn requires inspecting
+  tool-result error payloads (or waiting for a future CLI signal); deferred
+  for now since the failure surface still reaches the user via the
+  individual tool-call error.
 - [x] Integration tests for `/api/mcp-servers` routes (CRUD, secret non-echo,
   cap enforcement, test-endpoint 409 with no active session). Landed in
   `integration_tests/mcp-routes.test.ts` — 16 cases covering name/type

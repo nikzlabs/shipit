@@ -1,11 +1,32 @@
 // ---- Claude CLI NDJSON event types ----
 
+/**
+ * Per-server connection status reported by the Claude CLI in its init event.
+ * The CLI emits one entry per MCP server it was asked to connect to
+ * (via `--mcp-config`), with a string `status` describing whether the
+ * connection succeeded. Observed values include `"connected"`, `"failed"`,
+ * and `"needs-auth"` — see docs/088-mcp-integration/plan.md for the full
+ * mapping into ShipIt's `McpServerState`.
+ */
+export interface ClaudeMcpServerInit {
+  name: string;
+  status: string;
+}
+
 export interface ClaudeSystemEvent {
   type: "system";
   subtype: "init";
   session_id: string;
   tools?: string[];
   model?: string;
+  /**
+   * Real connection status for each MCP server the CLI tried to load. ShipIt
+   * uses this as the authoritative liveness signal for `mcp_server_status`
+   * events, since `generateMcpConfig()` itself only knows whether secret
+   * placeholders resolved — not whether the spawned process or remote
+   * endpoint actually accepted the connection. (docs/088)
+   */
+  mcp_servers?: ClaudeMcpServerInit[];
 }
 
 export interface ClaudeContentBlockText {
