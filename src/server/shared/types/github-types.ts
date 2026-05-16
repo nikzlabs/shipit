@@ -188,6 +188,8 @@ export interface PrStatusSummary {
   prNumber: number;
   prUrl: string;
   prTitle: string;
+  /** PR description body (markdown source). Empty string when none. */
+  prBody: string;
   prState: "open" | "merged" | "closed";
   baseBranch: string;
   headBranch: string;
@@ -250,6 +252,8 @@ export interface WsPrLifecycleUpdate {
   pr?: {
     number: number;
     title: string;
+    /** PR description body (markdown source). Optional; omitted when none. */
+    body?: string;
     url: string;
     baseBranch: string;
     headBranch: string;

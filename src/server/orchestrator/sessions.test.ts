@@ -189,6 +189,7 @@ describe("SessionManager", () => {
         prNumber: overrides.prNumber ?? 42,
         prUrl: "https://github.com/o/r/pull/42",
         prTitle: "Add thing",
+        prBody: "",
         prState: overrides.prState ?? "open",
         baseBranch: "main",
         headBranch: "shipit/feature",

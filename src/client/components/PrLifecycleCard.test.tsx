@@ -36,6 +36,7 @@ function setMergeable(sessionId: string, mergeable: PrMergeableState) {
         prNumber: 1,
         prUrl: "https://github.com/o/r/pull/1",
         prTitle: "Test PR",
+        prBody: "",
         prState: "open",
         baseBranch: "main",
         headBranch: "feature",
@@ -66,6 +67,7 @@ function setStatus(sessionId: string, prState: "open" | "merged", checksState?: 
         prNumber: 1,
         prUrl: "https://github.com/o/r/pull/1",
         prTitle: "Test PR",
+        prBody: "",
         prState,
         baseBranch: "main",
         headBranch: "feature",
@@ -137,7 +139,7 @@ describe("PrLifecycleCard", () => {
     expect(button).toBeDisabled();
   });
 
-  it("renders open phase with branch flow and diff stats", () => {
+  it("renders open phase with PR title (not branch name) and diff stats", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
@@ -145,7 +147,14 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText("feature-branch")).toBeInTheDocument();
+    // PR title replaces the "base ← head" branch label when a PR exists.
+    // Branch name remains accessible via the button's aria-label (and is
+    // copied to clipboard on click).
+    expect(screen.getByText("Add feature")).toBeInTheDocument();
+    expect(screen.queryByText("feature-branch")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Copy branch name feature-branch/i }),
+    ).toBeInTheDocument();
     expect(screen.getByTitle("PR #42")).toBeInTheDocument();
     expect(screen.getByText(/CI/)).toBeInTheDocument();
   });
@@ -644,6 +653,7 @@ describe("PrStateBadge", () => {
           prNumber: 1,
           prUrl: "https://github.com/o/r/pull/1",
           prTitle: "Test PR",
+          prBody: "",
           prState: "closed",
           baseBranch: "main",
           headBranch: "feature",

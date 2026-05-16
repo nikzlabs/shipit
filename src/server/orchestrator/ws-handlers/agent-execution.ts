@@ -329,6 +329,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
                   pr: {
                     number: result.number,
                     title: result.title,
+                    body: result.body,
                     url: result.url,
                     baseBranch: result.baseBranch,
                     headBranch: result.headBranch,

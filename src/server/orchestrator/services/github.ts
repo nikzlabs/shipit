@@ -229,6 +229,7 @@ export async function quickCreatePr(
   number: number;
   url: string;
   title: string;
+  body: string;
   baseBranch: string;
   headBranch: string;
   insertions: number;
@@ -249,6 +250,7 @@ export async function quickCreatePr(
       number: existingPr.number,
       url: existingPr.url,
       title: existingPr.title,
+      body: existingPr.body,
       baseBranch: existingPr.base,
       headBranch: head,
       insertions: stats.insertions,
@@ -303,6 +305,7 @@ export async function quickCreatePr(
     number: result.number,
     url: result.url,
     title,
+    body: description,
     baseBranch,
     headBranch: head,
     insertions: stats.insertions,

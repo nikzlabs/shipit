@@ -74,14 +74,14 @@ export async function findPullRequest(
   owner: string,
   repo: string,
   head: string,
-): Promise<{ url: string; number: number; base: string; title: string } | null> {
+): Promise<{ url: string; number: number; base: string; title: string; body: string } | null> {
   const res = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=open`,
     { headers: GITHUB_HEADERS(token) },
   );
 
   if (!res.ok) return null;
-  const prs = (await res.json()) as { html_url: string; number: number; base: { ref: string }; title: string }[];
+  const prs = (await res.json()) as { html_url: string; number: number; base: { ref: string }; title: string; body: string | null }[];
   if (prs.length === 0) return null;
 
   const pr = prs[0];
@@ -90,6 +90,7 @@ export async function findPullRequest(
     number: pr.number,
     base: pr.base.ref,
     title: pr.title,
+    body: pr.body ?? "",
   };
 }
 

@@ -25,6 +25,8 @@ export interface PrCardState {
   pr?: {
     number: number;
     title: string;
+    /** PR description body (markdown source). Optional; omitted when none. */
+    body?: string;
     url: string;
     baseBranch: string;
     headBranch: string;
@@ -150,6 +152,7 @@ export const usePrStore = create<PrState>((set, get) => ({
             pr: {
               number: update.prNumber,
               title: update.prTitle,
+              body: update.prBody,
               url: update.prUrl,
               baseBranch: update.baseBranch,
               headBranch: update.headBranch,
@@ -164,6 +167,7 @@ export const usePrStore = create<PrState>((set, get) => ({
             pr: {
               number: update.prNumber,
               title: update.prTitle,
+              body: update.prBody,
               url: update.prUrl,
               baseBranch: update.baseBranch,
               headBranch: update.headBranch,
@@ -251,10 +255,11 @@ export const usePrStore = create<PrState>((set, get) => ({
         get().setCardError(sessionId, data.error || "Failed to create pull request");
         return;
       }
-      const data = await res.json() as { number: number; title: string; url: string; baseBranch: string; headBranch: string; insertions: number; deletions: number };
+      const data = await res.json() as { number: number; title: string; body?: string; url: string; baseBranch: string; headBranch: string; insertions: number; deletions: number };
       get().setCardOpen(sessionId, {
         number: data.number,
         title: data.title,
+        body: data.body,
         url: data.url,
         baseBranch: data.baseBranch,
         headBranch: data.headBranch,
