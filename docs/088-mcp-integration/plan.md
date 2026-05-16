@@ -615,9 +615,13 @@ Browser-based OAuth consent flow for providers that support it. ShipIt acts as a
 > `clientSecretEnv` field is also wired through but optional; PKCE alone
 > protects the flow for public clients, which is what ShipIt is.
 >
-> Token refresh runs on two cadences: (a) at orchestrator startup (deferred
-> to a follow-up — currently triggered per-turn only), and (b) before each
-> agent turn in `ws-handlers/agent-execution.ts`, where the existing
+> Token refresh runs on two cadences: (a) at orchestrator startup via the
+> exported `runMcpOAuthStartupRefresh()` helper in `app-lifecycle.ts`,
+> fire-and-forget from `scheduleStartupTasks` when `StartupDeps.credentialStore`
+> is threaded through — this closes the window where a token that expired
+> while the orchestrator was down would otherwise be carried into the first
+> agent turn after restart; and (b) before each agent turn in
+> `ws-handlers/agent-execution.ts`, where the existing
 > `refreshExpiredMcpOAuthTokens()` call refreshes any token within 5 minutes
 > of expiry before pushing the merged env set to the worker. Refresh
 > failures leave the stale token in place so the worker emits a meaningful
@@ -665,9 +669,9 @@ The worker's resolver is extended to recognize both `$secret:KEY` and `$platform
 - [x] PKCE-only flow (no `client_secret` required, per RFC 8252 for native apps). When the operator does set `<PROVIDER>_OAUTH_CLIENT_SECRET`, the service passes it along for providers that mandate confidential clients.
 - [x] In-memory `InMemoryOAuthStateStore` with a 10-minute TTL holds per-flow PKCE state between `POST /start` and `GET /callback`. Single-use (consumed by `take()`).
 - [x] Per-turn awaited refresh in `ws-handlers/agent-execution.ts`: `refreshExpiredMcpOAuthTokens` runs before the worker push so tokens within 5 minutes of expiry are rotated proactively. Failures are logged and don't block agent start.
+- [x] Startup-time refresh sweep in `app-lifecycle.ts` via exported `runMcpOAuthStartupRefresh()` (fire-and-forget from `scheduleStartupTasks` when `credentialStore` is threaded through `StartupDeps`). Closes the window where a token that expired while the orchestrator was down would otherwise be carried into the first turn after restart. Failures are logged and leave the stale token in place. Covered by four cases in `app-lifecycle.test.ts`.
 - Deferred to a follow-up:
   - Dynamic client registration (RFC 7591) — neither Linear nor Notion supports it today; the schema field is reserved for when a future provider does.
-  - Startup-time refresh sweep (currently per-turn only — a long-idle session has fresh tokens on its first turn).
   - Multi-instance OAuth (parameterized `platform:linear_oauth:<workspace_id>`) — Phase 3.
 
 ### Phase 3 — Advanced features

@@ -300,9 +300,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
 
   // ---- Startup: validate warm sessions + re-warm missing ----
+  // `credentialStore` enables the docs/088 Phase 2 MCP OAuth token refresh
+  // sweep — see `scheduleStartupTasks` for rationale.
   const startupTimer = scheduleStartupTasks({
     repoStore, sessionManager, chatHistoryManager, usageManager,
-    containerManager, getBareCacheDir, warmSessionForRepo,
+    containerManager, getBareCacheDir, warmSessionForRepo, credentialStore,
   }, migratedRepoUrls);
 
   // SSE endpoint — long-lived HTTP response with text/event-stream

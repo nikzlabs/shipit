@@ -36,6 +36,7 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
+import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, DockerMemoryStats, WsLogEntry } from "../shared/types.js";
@@ -1848,6 +1849,16 @@ export interface StartupDeps {
   containerManager: SessionContainerManager | null;
   getBareCacheDir: (repoUrl: string) => string;
   warmSessionForRepo: (repoUrl: string) => Promise<void>;
+  /**
+   * Optional — when provided, triggers a one-shot MCP OAuth token refresh
+   * sweep at startup (docs/088 Phase 2 follow-up). Tokens whose `expiresAt`
+   * is within the 5-minute safety margin are refreshed proactively so the
+   * first agent turn after a restart doesn't fail on a stale token.
+   *
+   * Optional rather than required so existing tests that don't exercise the
+   * OAuth surface don't have to thread a `CredentialStore` through.
+   */
+  credentialStore?: CredentialStore;
 }
 
 /**
@@ -1883,6 +1894,48 @@ export async function runRepoMigration(
 }
 
 /**
+ * docs/088 Phase 2 follow-up: refresh any MCP OAuth tokens whose access
+ * tokens are within the safety margin of expiry.
+ *
+ * The per-turn refresh path in `ws-handlers/agent-execution.ts` covers
+ * active sessions, but a long-idle session whose token expired while the
+ * orchestrator was down would otherwise carry the stale token into the
+ * first turn after restart — the worker would emit a `needs-auth` failure
+ * on the next MCP tool call. The startup sweep closes that gap.
+ *
+ * Fault-tolerant by design: any failures are logged and leave the stale
+ * token in place so the worker still surfaces a meaningful
+ * `mcp_server_status` failure on use rather than silently dropping the
+ * server. Exported so `app-lifecycle.test.ts` can exercise it directly
+ * without spinning up the rest of `scheduleStartupTasks`.
+ */
+export async function runMcpOAuthStartupRefresh(opts: {
+  credentialStore: CredentialStore;
+  /** Injectable for tests; defaults to global `fetch` via the service. */
+  fetchImpl?: typeof fetch;
+}): Promise<void> {
+  try {
+    const result = await refreshExpiredMcpOAuthTokens({
+      credentialStore: opts.credentialStore,
+      ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
+    });
+    if (result.refreshed.length > 0) {
+      console.log(
+        `[mcp-oauth] startup refresh rotated ${result.refreshed.length} token(s): ${result.refreshed.join(", ")}`,
+      );
+    }
+    if (result.failed.length > 0) {
+      const details = result.failed.map((f) => `${f.source} (${f.error})`).join(", ");
+      console.warn(
+        `[mcp-oauth] startup refresh failed for ${result.failed.length} source(s): ${details}`,
+      );
+    }
+  } catch (err) {
+    console.warn("[mcp-oauth] startup refresh sweep failed:", getErrorMessage(err));
+  }
+}
+
+/**
  * Schedule startup tasks: validate warm sessions, re-warm missing, clean up zombies.
  * Returns the timer handle so it can be cleared on shutdown.
  */
@@ -1892,8 +1945,15 @@ export function scheduleStartupTasks(
 ): ReturnType<typeof setTimeout> {
   const {
     repoStore, sessionManager, chatHistoryManager, usageManager,
-    containerManager, warmSessionForRepo,
+    containerManager, warmSessionForRepo, credentialStore,
   } = startupDeps;
+
+  // docs/088 Phase 2 follow-up: refresh any MCP OAuth tokens whose access
+  // tokens are within the safety margin of expiry. Fire-and-forget — the
+  // returned promise is for tests only.
+  if (credentialStore) {
+    void runMcpOAuthStartupRefresh({ credentialStore });
+  }
 
   return setTimeout(() => {
     // Collect current warm session IDs so we can clean up zombies.
