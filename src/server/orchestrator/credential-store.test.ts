@@ -238,4 +238,81 @@ describe("CredentialStore", () => {
       expect(store.getAgentEnv("mcp__linear__LINEAR_API_KEY")).toBeUndefined();
     });
   });
+
+  // ---- MCP OAuth tokens (docs/088 Phase 2) ----
+
+  describe("mcpOAuth", () => {
+    it("setMcpOAuthTokens persists and stamps obtainedAt", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpOAuthTokens("linear_oauth", {
+        accessToken: "at_xyz",
+        refreshToken: "rt_xyz",
+        clientId: "cid",
+        expiresAt: 1_700_000_000_000,
+      });
+      const got = store.getMcpOAuthTokens("linear_oauth");
+      expect(got?.accessToken).toBe("at_xyz");
+      expect(got?.refreshToken).toBe("rt_xyz");
+      expect(got?.clientId).toBe("cid");
+      expect(got?.expiresAt).toBe(1_700_000_000_000);
+      expect(got?.obtainedAt).toBeTruthy();
+    });
+
+    it("preserves a caller-supplied obtainedAt", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpOAuthTokens("linear_oauth", {
+        accessToken: "x",
+        obtainedAt: "2024-01-01T00:00:00.000Z",
+      });
+      expect(store.getMcpOAuthTokens("linear_oauth")?.obtainedAt).toBe(
+        "2024-01-01T00:00:00.000Z",
+      );
+    });
+
+    it("returns a defensive copy from get", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpOAuthTokens("linear_oauth", { accessToken: "x" });
+      const got = store.getMcpOAuthTokens("linear_oauth")!;
+      got.accessToken = "mutated";
+      expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("x");
+    });
+
+    it("getAllMcpOAuthTokens returns a fresh per-entry copy", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpOAuthTokens("linear_oauth", { accessToken: "x" });
+      store.setMcpOAuthTokens("notion_oauth", { accessToken: "y" });
+      const all = store.getAllMcpOAuthTokens();
+      all.linear_oauth.accessToken = "mutated";
+      expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("x");
+      expect(Object.keys(all).sort()).toEqual(["linear_oauth", "notion_oauth"]);
+    });
+
+    it("deleteMcpOAuthTokens removes a single source", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpOAuthTokens("linear_oauth", { accessToken: "x" });
+      store.setMcpOAuthTokens("notion_oauth", { accessToken: "y" });
+      store.deleteMcpOAuthTokens("linear_oauth");
+      expect(store.getMcpOAuthTokens("linear_oauth")).toBeUndefined();
+      expect(store.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("y");
+    });
+
+    it("survives a reload from disk", () => {
+      const dir = createTmpDir();
+      const store = new CredentialStore(dir);
+      store.setMcpOAuthTokens("linear_oauth", {
+        accessToken: "at_xyz",
+        refreshToken: "rt_xyz",
+      });
+      const reloaded = new CredentialStore(dir);
+      expect(reloaded.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("at_xyz");
+      expect(reloaded.getMcpOAuthTokens("linear_oauth")?.refreshToken).toBe("rt_xyz");
+    });
+
+    it("clear() wipes mcpOAuth tokens too", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpOAuthTokens("linear_oauth", { accessToken: "x" });
+      store.clear();
+      expect(store.getMcpOAuthTokens("linear_oauth")).toBeUndefined();
+    });
+  });
 });

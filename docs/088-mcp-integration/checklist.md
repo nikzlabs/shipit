@@ -80,13 +80,55 @@
   closing that race needs a merge-aware push (the worker REPLACES its set, so
   the per-turn push must carry the *full* compose+MCP set) and is deferred.
 
-## Phase 2 — Native OAuth (not started)
+## Phase 2 — Native OAuth — landed
 
-- [ ] OAuth callback endpoint + popup-close landing page
-- [ ] Extend `platform-credentials.ts` with `platform:linear_oauth`, `platform:notion_oauth`
-- [ ] `mcpOAuth` token storage + refresh logic
-- [ ] Worker resolves `$platform:<source>` placeholders (`MCP_PLATFORM_*` env mapping)
-- [ ] "Connect with Linear" UI
+- [x] **OAuth callback endpoint + popup-close landing page.**
+  `GET /api/mcp-servers/oauth/callback` exchanges code → tokens, persists,
+  and renders a small HTML page that `postMessage`s the result to the
+  opener (the Settings panel) and closes itself. Falls back to a static
+  success/failure message if the popup wasn't opened with `window.open()`.
+- [x] **Extend `platform-credentials.ts` with `platform:linear_oauth`,
+  `platform:notion_oauth`.** `createPlatformCredentialProvider` now takes
+  an optional `credentialStore` and resolves any registered MCP OAuth
+  source by reading the persisted access token from
+  `CredentialStore.mcpOAuth`. `isPlatformSource` recognizes the union of
+  hand-maintained sources + dynamically-registered MCP OAuth provider ids.
+- [x] **`mcpOAuth` token storage + refresh logic.** `CredentialStore` got
+  `mcpOAuth?: Record<string, OAuthTokens>`, plus
+  `setMcpOAuthTokens` / `getMcpOAuthTokens` / `getAllMcpOAuthTokens` /
+  `deleteMcpOAuthTokens`. `services/mcp-oauth.ts` owns the flow:
+  `startOAuthFlow` (PKCE + state), `handleOAuthCallback` (code exchange),
+  `refreshOAuthTokens` (single source), and `refreshExpiredMcpOAuthTokens`
+  (sweep within a 5-minute safety margin). Refresh runs per agent turn
+  via `ws-handlers/agent-execution.ts`; the resolver itself stays sync
+  per 087's contract.
+- [x] **Worker resolves `$platform:<source>` placeholders.** `mcp-resolve.ts`
+  now applies the parallel regex `/\$platform:([a-z][a-z0-9_]*)/g` and
+  looks up `MCP_PLATFORM_<UPPER_SOURCE>`. The orchestrator writes those
+  env vars via `collectMcpAgentEnv()`, which reads
+  `CredentialStore.mcpOAuth.accessToken` and maps each entry to
+  `MCP_PLATFORM_<UPPER>`. Missing source → drops the server with the
+  env-var name in the missing list (consistent with `$secret:`).
+- [x] **"Connect with Linear" UI.** Settings → MCP Servers now shows a
+  "One-click connections" section listing every provider in the registry
+  with Connect / Disconnect buttons. Connect opens a popup, awaits
+  `postMessage` from the callback, refreshes the provider list, and
+  auto-creates a placeholder MCP server config with
+  `headers: { Authorization: "Bearer $platform:<id>" }`.
+
+### Phase 2 — deferred / follow-up
+
+- [ ] **Dynamic client registration (RFC 7591).** Neither Linear nor
+  Notion supports it today; the schema field is reserved
+  (`McpOAuthProviderConfig.registrationEndpoint`). Once a provider needs
+  it, plug it into `startOAuthFlow` between the source lookup and the
+  authorize-URL build.
+- [ ] **Startup-time token refresh sweep.** Currently refresh runs only
+  on the per-turn path (`agent-execution.ts`). A long-idle session has
+  fresh tokens on its first turn — fine — but a session that ran a turn
+  > 1h ago and then the orchestrator restarts gets the stale persisted
+  token until the next turn rotates it. Easy to add via `app-lifecycle.ts`
+  `scheduleStartupTasks`.
 
 ## Phase 3 — Advanced (not started)
 

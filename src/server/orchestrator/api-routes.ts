@@ -126,6 +126,12 @@ export interface ApiDeps {
    * factory of its own (in-process tests).
    */
   agentFactory?: (agentId: AgentId) => AgentProcess;
+  /**
+   * Override the `fetch` used by MCP OAuth code-exchange / refresh
+   * (docs/088 Phase 2). Tests inject a fake; production leaves this
+   * undefined and the OAuth service uses the global `fetch`.
+   */
+  mcpOAuthFetchImpl?: typeof fetch;
 }
 
 /**
@@ -194,5 +200,8 @@ export async function registerApiRoutes(
     credentialStore: deps.credentialStore,
     runnerRegistry: deps.runnerRegistry,
     serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
+    ...(deps.mcpOAuthFetchImpl !== undefined
+      ? { oauthFetchImpl: deps.mcpOAuthFetchImpl }
+      : {}),
   });
 }

@@ -31,13 +31,24 @@ export interface McpResolveResult {
 
 /**
  * Resolve a single user MCP server config. Walks every string in `env`,
- * `headers`, and `args` and applies the regex `/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g`,
- * replacing each match with `env[capturedGroup]`. **Substring substitution**
- * — `"Bearer $secret:mcp__x__TOKEN"` keeps the literal `Bearer ` prefix.
+ * `headers`, and `args` and applies two placeholder regexes:
+ *
+ *   `/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g`   → `env[capturedGroup]`
+ *   `/\$platform:([a-z][a-z0-9_]*)/g`        → `env[MCP_PLATFORM_<UPPER>]`
+ *
+ * Both substitutions are **substring** — `"Bearer $secret:mcp__x__TOKEN"`
+ * keeps the literal `Bearer ` prefix; `"Bearer $platform:linear_oauth"`
+ * looks up `MCP_PLATFORM_LINEAR_OAUTH`. The orchestrator-side writer
+ * (`collectMcpAgentEnv()` in `secret-resolver.ts`) is responsible for
+ * populating `MCP_PLATFORM_*` env vars from `CredentialStore.mcpOAuth`
+ * before this resolver runs.
  *
  * Missing env vars cause the entire server to be dropped (returns
  * `resolved: null`). The caller is responsible for emitting an
- * `mcp_server_status` failure event with the `missing` list.
+ * `mcp_server_status` failure event with the `missing` list. Missing
+ * platform sources are reported under the `MCP_PLATFORM_<UPPER>` env-var
+ * name they would have been read from — that's what the user sees in
+ * orchestrator logs, so consistency aids debugging.
  *
  * Note: we treat `undefined` and `""` identically as "missing" — a worker
  * with `LINEAR_API_KEY=""` in its env can't authenticate to Linear, so the
@@ -49,15 +60,21 @@ export function resolveMcpServer(
 ): McpResolveResult {
   const missing: string[] = [];
 
+  const lookup = (envKey: string): string => {
+    const v = env[envKey];
+    if (v === undefined || v === "") {
+      missing.push(envKey);
+      return "";
+    }
+    return v;
+  };
+
   const subst = (value: string): string =>
-    value.replace(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g, (_m, key: string) => {
-      const v = env[key];
-      if (v === undefined || v === "") {
-        missing.push(key);
-        return "";
-      }
-      return v;
-    });
+    value
+      .replace(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g, (_m, key: string) => lookup(key))
+      .replace(/\$platform:([a-z][a-z0-9_]*)/g, (_m, source: string) =>
+        lookup(`MCP_PLATFORM_${source.toUpperCase()}`),
+      );
 
   const substRecord = (rec?: Record<string, string>): Record<string, string> | undefined => {
     if (!rec) return undefined;

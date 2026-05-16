@@ -601,9 +601,37 @@ Covers ~80% of MCP servers. Users paste API keys or pre-obtained tokens. Builds 
 - Tests: `agent-registry.test.ts`, `credential-store.test.ts`, `secret-resolver.test.ts`, `services/mcp.test.ts`, `mcp-resolve.test.ts` (pure substring resolver extracted from `session-worker.ts`), `integration_tests/mcp-routes.test.ts` (HTTP CRUD + secret non-echo + cap + test-endpoint 409), `client/stores/mcp-store.test.ts`, `client/components/McpServerSettings.test.tsx`, `claude-adapter.test.ts` (new "MCP server liveness" describe block + `mapCliMcpStatus` unit cases).
 - Deferred to a follow-up: mid-session `crashed` detection (the init-event signal covers cold-start liveness only; spotting a server that dies mid-turn would require inspecting tool-result error payloads).
 
-### Phase 2 — Native OAuth (extends 087's platform-credentials)
+### Phase 2 — Native OAuth (extends 087's platform-credentials) — **landed**
 
 Browser-based OAuth consent flow for providers that support it. ShipIt acts as an OAuth client. Treat each MCP OAuth provider as a new entry in 087's platform-credentials registry rather than building a parallel system.
+
+> **Implementation note (Phase 2 landed).** The first cut ships with two
+> seeded providers (Linear, Notion) and uses operator-supplied OAuth client
+> ids (env vars `LINEAR_OAUTH_CLIENT_ID` / `NOTION_OAUTH_CLIENT_ID`).
+> Dynamic client registration (RFC 7591) is intentionally deferred — neither
+> provider exposes it today, so we'd be writing infrastructure with no
+> production target. The provider config schema (`McpOAuthProviderConfig.registrationEndpoint`)
+> reserves the field for when a future provider supports it. The
+> `clientSecretEnv` field is also wired through but optional; PKCE alone
+> protects the flow for public clients, which is what ShipIt is.
+>
+> Token refresh runs on two cadences: (a) at orchestrator startup (deferred
+> to a follow-up — currently triggered per-turn only), and (b) before each
+> agent turn in `ws-handlers/agent-execution.ts`, where the existing
+> `refreshExpiredMcpOAuthTokens()` call refreshes any token within 5 minutes
+> of expiry before pushing the merged env set to the worker. Refresh
+> failures leave the stale token in place so the worker emits a meaningful
+> `failed` `mcp_server_status` (mapped from the CLI's `needs-auth` signal)
+> instead of silently dropping the server.
+>
+> The worker-side resolver (`mcp-resolve.ts`) now recognizes both
+> `$secret:KEY` and `$platform:<source>` placeholders. `$platform:linear_oauth`
+> looks up `MCP_PLATFORM_LINEAR_OAUTH` — the orchestrator writes that key
+> into the merged env set via `collectMcpAgentEnv()`, which now reads both
+> `CredentialStore.agentEnv` (`mcp__*` namespace) AND
+> `CredentialStore.mcpOAuth` (each `accessToken` → `MCP_PLATFORM_<UPPER>`).
+> The mapping is documented in `mcp-oauth-providers.ts` as the single
+> source of truth.
 
 **Scope: one connection per provider per account.** 087's `PlatformCredentialProvider` is a singleton resolver — `platform:claude_oauth` resolves to "the" Claude token, no parameter for "which one." Phase 2 adopts the same constraint: one Linear connection per ShipIt account, one Notion connection per ShipIt account. Users with multiple workspaces pick one as the active connection. Multi-instance support (e.g., `platform:linear_oauth:<workspace_id>`) is **out of scope for Phase 2** and would require parameterizing `PlatformCredentialProvider.resolve(source)` to accept an instance qualifier — flagged as a Phase 3 follow-up if demand exists.
 
@@ -625,15 +653,22 @@ The worker's resolver is extended to recognize both `$secret:KEY` and `$platform
 
 **Phase 2 work items:**
 
-- OAuth callback endpoint (`/api/mcp-servers/oauth/callback`).
-- Callback page closes the popup (or `postMessage`s the parent window) so the user is returned to the Settings panel without manually switching tabs (per ShipIt principle: external tabs only for things ShipIt doesn't own — the consent screen is, but the post-auth landing isn't).
-- Provider registry extends `platform-credentials.ts` with `platform:linear_oauth`, `platform:notion_oauth`, etc. Each entry encapsulates the provider-specific auth URL, token URL, scopes, and refresh logic.
-- Token storage with refresh tokens (initially in `CredentialStore` under a new `mcpOAuth?: Record<string, OAuthTokens>` field; can split into its own store later if it grows).
-- Token refresh logic in the platform-credentials resolver — checks expiry on each `resolve()`, calls refresh endpoint, persists the new tokens, returns the access token.
-- Worker resolves `$platform:<source>` refs per the mapping above.
-- "Connect with Linear" button in Settings UI that triggers the OAuth flow.
-- Provider list seeded with Linear and Notion first (both support OAuth 2.1 + dynamic client registration).
-- Fallback: users can still paste tokens manually as Phase 1 Bearer tokens — the two paths coexist on the same server type.
+- [x] OAuth callback endpoint (`GET /api/mcp-servers/oauth/callback`).
+- [x] Callback page closes the popup via `postMessage` to the opener so the user is returned to the Settings panel without manually switching tabs (per ShipIt principle: external tabs only for things ShipIt doesn't own — the consent screen is, but the post-auth landing isn't).
+- [x] Provider registry (`mcp-oauth-providers.ts`) seeded with `linear_oauth` and `notion_oauth`. Each entry encapsulates the provider's authorization endpoint, token endpoint, scopes, MCP URL, and the env var name for the operator-supplied client id.
+- [x] `platform-credentials.ts` extended: `createPlatformCredentialProvider` now resolves `platform:<provider_id>` for any registered MCP OAuth provider by reading the persisted access token from `CredentialStore.mcpOAuth`. `isPlatformSource` accepts the union of hand-maintained sources + MCP OAuth provider ids. `knownSources()` returns both.
+- [x] Token storage in `CredentialStore.mcpOAuth?: Record<string, OAuthTokens>` with `setMcpOAuthTokens` / `getMcpOAuthTokens` / `getAllMcpOAuthTokens` / `deleteMcpOAuthTokens`. `clear()` wipes the map. Persistence survives reload.
+- [x] Token refresh logic in `services/mcp-oauth.ts` (`refreshOAuthTokens` + `refreshExpiredMcpOAuthTokens`). The platform-credentials resolver stays sync (087's contract) and reads the most recently persisted access token; refresh runs on an async path before agent start.
+- [x] Worker resolves `$platform:<source>` refs via the parallel regex `/\$platform:([a-z][a-z0-9_]*)/g`, looking up `MCP_PLATFORM_<UPPER_SOURCE>` in `process.env`. The env var name contract is owned by `platformSourceEnvName()` in `mcp-oauth-providers.ts`.
+- [x] "Connect with Linear" / "Connect with Notion" button in the Settings → MCP Servers panel. Opens the authorize URL in a popup, awaits a `postMessage` from the callback page, and refreshes the provider list. On successful connect, auto-creates a placeholder MCP server entry with `headers: { Authorization: "Bearer $platform:<id>" }` so the connection is usable immediately.
+- [x] Fallback: users can still paste tokens manually as Phase 1 Bearer tokens — the two paths coexist on the same server type. The new OAuth path is additive.
+- [x] PKCE-only flow (no `client_secret` required, per RFC 8252 for native apps). When the operator does set `<PROVIDER>_OAUTH_CLIENT_SECRET`, the service passes it along for providers that mandate confidential clients.
+- [x] In-memory `InMemoryOAuthStateStore` with a 10-minute TTL holds per-flow PKCE state between `POST /start` and `GET /callback`. Single-use (consumed by `take()`).
+- [x] Per-turn awaited refresh in `ws-handlers/agent-execution.ts`: `refreshExpiredMcpOAuthTokens` runs before the worker push so tokens within 5 minutes of expiry are rotated proactively. Failures are logged and don't block agent start.
+- Deferred to a follow-up:
+  - Dynamic client registration (RFC 7591) — neither Linear nor Notion supports it today; the schema field is reserved for when a future provider does.
+  - Startup-time refresh sweep (currently per-turn only — a long-idle session has fresh tokens on its first turn).
+  - Multi-instance OAuth (parameterized `platform:linear_oauth:<workspace_id>`) — Phase 3.
 
 ### Phase 3 — Advanced features
 
@@ -677,13 +712,15 @@ Per ShipIt's testing-and-quality conventions (server tests use temp dirs and the
 ## Key files
 
 ### New files
-- `src/server/shared/types/mcp-types.ts` — MCP server config types (`McpStdioServerConfig`, `McpHttpServerConfig`).
-- `src/server/orchestrator/api-routes-mcp.ts` — HTTP routes for CRUD + test.
+- `src/server/shared/types/mcp-types.ts` — MCP server config types (`McpStdioServerConfig`, `McpHttpServerConfig`). Extended in Phase 2 with `OAuthTokens`, `McpOAuthProviderConfig`, `McpOAuthStatus`.
+- `src/server/orchestrator/api-routes-mcp.ts` — HTTP routes for CRUD + test (Phase 1) + OAuth start/callback/disconnect/providers (Phase 2).
 - `src/server/orchestrator/services/mcp.ts` — Service layer for MCP operations (validation, name conflicts, server count cap).
-- `src/server/session/mcp-resolve.ts` — Pure `$secret:` substring resolver consumed by `session-worker.ts`'s `generateMcpConfig()`. Extracted so the substitution contract (env walk, missing-key drop, dedup) is unit-testable without a Fastify worker.
+- `src/server/orchestrator/services/mcp-oauth.ts` — **(Phase 2)** OAuth service: PKCE start, callback exchange, refresh, in-memory state store, normalization, listing, disconnect. Pure functions over `CredentialStore`; the `fetch` boundary is injectable for tests.
+- `src/server/orchestrator/mcp-oauth-providers.ts` — **(Phase 2)** Provider registry seeded with Linear and Notion. Owns the `MCP_PLATFORM_<UPPER_SOURCE>` env-var contract via `platformSourceEnvName()`.
+- `src/server/session/mcp-resolve.ts` — Pure `$secret:` / `$platform:` substring resolver consumed by `session-worker.ts`'s `generateMcpConfig()`. Extracted so the substitution contract (env walk, missing-key drop, dedup) is unit-testable without a Fastify worker.
 - `src/server/session/mcp-test.ts` — Minimal MCP JSON-RPC client used by the `POST /mcp/test` connectivity endpoint.
-- `src/client/stores/mcp-store.ts` — Client state store.
-- `src/client/components/McpServerSettings.tsx` — Settings UI component.
+- `src/client/stores/mcp-store.ts` — Client state store. Extended in Phase 2 with `oauthProviders`, `fetchOAuthProviders`, `startOAuthFlow` (with popup + postMessage), `disconnectOAuth`.
+- `src/client/components/McpServerSettings.tsx` — Settings UI component. Extended in Phase 2 with a "One-click connections" section that surfaces every registered OAuth provider as a Connect / Disconnect button.
 
 ### Modified files (orchestrator)
 - `src/server/orchestrator/credential-store.ts` — Add `mcpServers` map, MCP CRUD methods, `setMcpSecret` / `deleteMcpSecret` helpers for `mcp__*` agentEnv writes, ensure `clear()` wipes both.

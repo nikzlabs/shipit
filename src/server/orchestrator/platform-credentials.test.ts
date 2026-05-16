@@ -27,9 +27,15 @@ function makeStubAuth() {
 }
 
 describe("isPlatformSource", () => {
-  it("recognizes known sources", () => {
+  it("recognizes known hand-maintained sources", () => {
     expect(isPlatformSource("platform:claude_oauth")).toBe(true);
     expect(isPlatformSource("platform:github_token")).toBe(true);
+  });
+
+  it("recognizes MCP OAuth provider sources (docs/088 Phase 2)", () => {
+    // Sourced dynamically from MCP_OAUTH_PROVIDERS.
+    expect(isPlatformSource("platform:linear_oauth")).toBe(true);
+    expect(isPlatformSource("platform:notion_oauth")).toBe(true);
   });
 
   it("rejects unknown / arbitrary strings", () => {
@@ -137,6 +143,64 @@ describe("createPlatformCredentialProvider — unknown sources", () => {
     });
     expect(provider.resolve("platform:something_else")).toBeNull();
     expect(provider.resolve("not:a:platform:source")).toBeNull();
+  });
+});
+
+describe("createPlatformCredentialProvider — MCP OAuth providers (docs/088 Phase 2)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plat-cred-mcp-"));
+  });
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns the access token from CredentialStore when present", async () => {
+    const { CredentialStore } = await import("./credential-store.js");
+    const store = new CredentialStore(tmpDir);
+    store.setMcpOAuthTokens("linear_oauth", {
+      accessToken: "lin_at_xyz",
+      clientId: "cid",
+    });
+    const provider = createPlatformCredentialProvider({
+      authManager: makeStubAuth(),
+      githubAuthManager: makeStubGithub(null),
+      credentialStore: store,
+    });
+    expect(provider.resolve("platform:linear_oauth")).toBe("lin_at_xyz");
+  });
+
+  it("returns null when the source is in the registry but no token is stored", async () => {
+    const { CredentialStore } = await import("./credential-store.js");
+    const store = new CredentialStore(tmpDir);
+    const provider = createPlatformCredentialProvider({
+      authManager: makeStubAuth(),
+      githubAuthManager: makeStubGithub(null),
+      credentialStore: store,
+    });
+    expect(provider.resolve("platform:linear_oauth")).toBeNull();
+  });
+
+  it("returns null when credentialStore wasn't supplied", () => {
+    const provider = createPlatformCredentialProvider({
+      authManager: makeStubAuth(),
+      githubAuthManager: makeStubGithub(null),
+    });
+    expect(provider.resolve("platform:linear_oauth")).toBeNull();
+  });
+
+  it("knownSources() includes both hand-maintained sources and MCP OAuth providers", () => {
+    const provider = createPlatformCredentialProvider({
+      authManager: makeStubAuth(),
+      githubAuthManager: makeStubGithub(null),
+    });
+    const known = provider.knownSources();
+    expect(known).toContain("platform:claude_oauth");
+    expect(known).toContain("platform:github_token");
+    expect(known).toContain("platform:linear_oauth");
+    expect(known).toContain("platform:notion_oauth");
   });
 });
 

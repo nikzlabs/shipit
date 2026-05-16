@@ -28,6 +28,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AuthManager } from "./auth.js";
 import type { GitHubAuthManager } from "./github-auth.js";
+import type { CredentialStore } from "./credential-store.js";
+import { MCP_OAUTH_PROVIDERS } from "./mcp-oauth-providers.js";
 
 // ---------------------------------------------------------------------------
 // Source identifiers
@@ -38,6 +40,13 @@ import type { GitHubAuthManager } from "./github-auth.js";
  *   1. Adding an entry here.
  *   2. Wiring it up in {@link createPlatformCredentialProvider}.
  *   3. Documenting it in `src/server/shipit-docs/secrets.md`.
+ *
+ * Note: MCP OAuth providers (docs/088 Phase 2 — `platform:linear_oauth`,
+ * `platform:notion_oauth`, …) are registered dynamically from
+ * `mcp-oauth-providers.ts` at provider-list time and don't appear here.
+ * They share the same `source:` shape so compose-declared secrets can
+ * still reference them (e.g. a future preview service that wants the
+ * Linear token); see {@link isPlatformSource} which accepts both.
  */
 export const PLATFORM_SOURCES = [
   /** Claude OAuth access token from the orchestrator's AuthManager. */
@@ -48,8 +57,18 @@ export const PLATFORM_SOURCES = [
 
 export type PlatformSource = (typeof PLATFORM_SOURCES)[number];
 
-export function isPlatformSource(s: string): s is PlatformSource {
-  return (PLATFORM_SOURCES as readonly string[]).includes(s);
+/**
+ * True for any source string recognized by the resolver — the hand-maintained
+ * {@link PLATFORM_SOURCES} list **or** any MCP OAuth provider id registered
+ * in `mcp-oauth-providers.ts` (prefixed with `platform:`).
+ */
+export function isPlatformSource(s: string): boolean {
+  if ((PLATFORM_SOURCES as readonly string[]).includes(s)) return true;
+  if (s.startsWith("platform:")) {
+    const id = s.slice("platform:".length);
+    return MCP_OAUTH_PROVIDERS.some((p) => p.id === id);
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,8 +90,11 @@ export interface PlatformCredentialProvider {
    * Names of all sources this provider knows how to handle. Used for
    * surface-level introspection (e.g. UI showing available platform
    * sources). Order doesn't matter.
+   *
+   * Includes the hand-maintained {@link PLATFORM_SOURCES} plus any
+   * `platform:<id>` strings derived from the MCP OAuth registry.
    */
-  knownSources(): readonly PlatformSource[];
+  knownSources(): readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -99,10 +121,17 @@ export interface PlatformCredentialProvider {
 export function createPlatformCredentialProvider(deps: {
   authManager: AuthManager;
   githubAuthManager: GitHubAuthManager;
+  /**
+   * Optional credential store — when present, enables resolution of MCP
+   * OAuth providers (docs/088 Phase 2) via `platform:<provider_id>`. When
+   * omitted, those sources return `null` and fall through to the user-secret
+   * lookup, matching pre-Phase-2 behavior.
+   */
+  credentialStore?: CredentialStore;
   /** Override the default credentials directory (mainly for tests). */
   claudeCredentialsDir?: string;
 }): PlatformCredentialProvider {
-  const { githubAuthManager, claudeCredentialsDir } = deps;
+  const { githubAuthManager, credentialStore, claudeCredentialsDir } = deps;
   const claudeDir = claudeCredentialsDir ?? "/root/.claude";
 
   return {
@@ -123,11 +152,20 @@ export function createPlatformCredentialProvider(deps: {
           }
           return githubAuthManager.getToken() ?? null;
         }
-        default:
-          return null;
+        default: {
+          // MCP OAuth providers — `platform:linear_oauth`, etc. (docs/088 Phase 2)
+          if (!credentialStore || !source.startsWith("platform:")) return null;
+          const id = source.slice("platform:".length);
+          if (!MCP_OAUTH_PROVIDERS.some((p) => p.id === id)) return null;
+          const tokens = credentialStore.getMcpOAuthTokens(id);
+          return tokens?.accessToken ?? null;
+        }
       }
     },
-    knownSources: () => PLATFORM_SOURCES,
+    knownSources: () => {
+      const mcpSources = MCP_OAUTH_PROVIDERS.map((p) => `platform:${p.id}`);
+      return [...PLATFORM_SOURCES, ...mcpSources];
+    },
   };
 }
 
@@ -167,9 +205,12 @@ function readClaudeOAuthToken(claudeDir: string): string | null {
  * Build a fixed-value provider — useful for tests that want to assert the
  * resolver path without standing up real AuthManager / GitHubAuthManager
  * instances.
+ *
+ * Accepts any string key (the hand-maintained {@link PlatformSource} list
+ * plus any MCP OAuth provider source like `"platform:linear_oauth"`).
  */
 export function fixedPlatformCredentialProvider(
-  values: Partial<Record<PlatformSource, string>>,
+  values: Record<string, string>,
 ): PlatformCredentialProvider {
   return {
     resolve(source: string): string | null {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils.js";
-import type { McpServerConfig } from "../shared/types/mcp-types.js";
+import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
 
 interface CredentialData {
   agentEnv?: Record<string, string>;
@@ -15,6 +15,16 @@ interface CredentialData {
    * the `mcp__<server>__<KEY>` namespace, not here.
    */
   mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * MCP OAuth tokens (docs/088 Phase 2) keyed by provider source id
+   * (e.g. `"linear_oauth"`). Tokens are written here after a successful
+   * OAuth exchange; the resolver in `platform-credentials.ts` reads them on
+   * every `syncSecrets()` pass and refreshes lazily when expired. Per
+   * provider registry, the source id is uppercased into the env var name
+   * the worker substitutes for `$platform:<id>` placeholders
+   * (`linear_oauth` → `MCP_PLATFORM_LINEAR_OAUTH`).
+   */
+  mcpOAuth?: Record<string, OAuthTokens>;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -135,6 +145,50 @@ export class CredentialStore {
       }
     }
     if (changed) this.save();
+  }
+
+  // ---- MCP OAuth tokens (docs/088 Phase 2) ----
+
+  /**
+   * Get the persisted OAuth tokens for a provider source id. The returned
+   * object is a defensive copy so callers can mutate freely without
+   * affecting the in-memory store.
+   */
+  getMcpOAuthTokens(source: string): OAuthTokens | undefined {
+    const t = this.data.mcpOAuth?.[source];
+    return t ? { ...t } : undefined;
+  }
+
+  /** Get all persisted MCP OAuth token entries as a fresh map copy. */
+  getAllMcpOAuthTokens(): Record<string, OAuthTokens> {
+    const out: Record<string, OAuthTokens> = {};
+    for (const [k, v] of Object.entries(this.data.mcpOAuth ?? {})) {
+      out[k] = { ...v };
+    }
+    return out;
+  }
+
+  /**
+   * Persist OAuth tokens for a provider. Called after a successful exchange
+   * or refresh. Stamps `obtainedAt` if the caller didn't provide one so the
+   * UI can show "Connected 3 days ago".
+   */
+  setMcpOAuthTokens(source: string, tokens: OAuthTokens): void {
+    this.data.mcpOAuth ??= {};
+    this.data.mcpOAuth[source] = {
+      ...tokens,
+      obtainedAt: tokens.obtainedAt ?? new Date().toISOString(),
+    };
+    this.save();
+  }
+
+  /** Remove tokens for a single source ("disconnect"). */
+  deleteMcpOAuthTokens(source: string): void {
+    if (this.data.mcpOAuth && source in this.data.mcpOAuth) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by provider source id
+      delete this.data.mcpOAuth[source];
+      this.save();
+    }
   }
 
   // ---- GitHub token ----

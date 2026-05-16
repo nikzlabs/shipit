@@ -73,7 +73,8 @@ describe("McpServerSettings (docs/088)", () => {
 
   it("renders the empty state when no servers exist", async () => {
     const fake = new FakeFetch();
-    fake.on("GET", /\/api\/mcp-servers/, () => ({ servers: [] }));
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
     render(<McpServerSettings hasActiveSession={false} />);
@@ -84,7 +85,8 @@ describe("McpServerSettings (docs/088)", () => {
 
   it("lists existing servers and shows the add button", async () => {
     const fake = new FakeFetch();
-    fake.on("GET", /\/api\/mcp-servers/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
     render(<McpServerSettings hasActiveSession={true} />);
@@ -96,7 +98,8 @@ describe("McpServerSettings (docs/088)", () => {
 
   it("renders a per-server status badge from useMcpStore.statuses", async () => {
     const fake = new FakeFetch();
-    fake.on("GET", /\/api\/mcp-servers/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
     render(<McpServerSettings hasActiveSession={true} />);
@@ -113,7 +116,8 @@ describe("McpServerSettings (docs/088)", () => {
 
   it("disables the Test button when no session is active", async () => {
     const fake = new FakeFetch();
-    fake.on("GET", /\/api\/mcp-servers/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
     render(<McpServerSettings hasActiveSession={false} />);
@@ -126,7 +130,8 @@ describe("McpServerSettings (docs/088)", () => {
 
   it("shows the add form when '+ Add MCP Server' is clicked", async () => {
     const fake = new FakeFetch();
-    fake.on("GET", /\/api\/mcp-servers/, () => ({ servers: [] }));
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
     render(<McpServerSettings hasActiveSession={false} />);
@@ -140,7 +145,8 @@ describe("McpServerSettings (docs/088)", () => {
 
   it("surfaces a validation error for invalid names", async () => {
     const fake = new FakeFetch();
-    fake.on("GET", /\/api\/mcp-servers/, () => ({ servers: [] }));
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
     render(<McpServerSettings hasActiveSession={false} />);
@@ -164,7 +170,8 @@ describe("McpServerSettings (docs/088)", () => {
 
   it("requires a command for stdio servers", async () => {
     const fake = new FakeFetch();
-    fake.on("GET", /\/api\/mcp-servers/, () => ({ servers: [] }));
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
     render(<McpServerSettings hasActiveSession={false} />);
@@ -188,10 +195,11 @@ describe("McpServerSettings (docs/088)", () => {
 
   it("displays the store-level error banner when one is set", async () => {
     const fake = new FakeFetch();
-    fake.on("GET", /\/api\/mcp-servers/, () => ({
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({
       status: 500,
       body: { error: "backend unavailable" },
     }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
     render(<McpServerSettings hasActiveSession={false} />);
@@ -203,7 +211,8 @@ describe("McpServerSettings (docs/088)", () => {
 
   it("populates the form when editing an existing server (secrets are NOT echoed)", async () => {
     const fake = new FakeFetch();
-    fake.on("GET", /\/api\/mcp-servers/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [stdioConfig] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({ providers: [] }));
     fake.install();
 
     render(<McpServerSettings hasActiveSession={false} />);

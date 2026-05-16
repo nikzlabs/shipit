@@ -146,6 +146,12 @@ export interface AppDeps {
    * See {@link RuntimeMode}.
    */
   runtimeMode?: RuntimeMode;
+  /**
+   * Override the `fetch` implementation used by MCP OAuth code exchange /
+   * refresh (docs/088 Phase 2). Tests inject a fake to assert wire-level
+   * behavior without touching the network.
+   */
+  mcpOAuthFetchImpl?: typeof fetch;
 }
 
 /** Return type of `initializeManagers()` — all instantiated managers and helpers. */

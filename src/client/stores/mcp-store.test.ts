@@ -229,6 +229,82 @@ describe("mcp-store (docs/088)", () => {
       statuses: {},
       loading: false,
       error: null,
+      oauthProviders: [],
+      oauthError: null,
+    });
+  });
+
+  // ---- Phase 2: OAuth ----
+
+  describe("OAuth (docs/088 Phase 2)", () => {
+    it("fetchOAuthProviders() populates the provider list", async () => {
+      const fake = new FakeFetch();
+      fake.on("GET", "/api/mcp-servers/oauth/providers", () => ({
+        providers: [
+          {
+            id: "linear_oauth",
+            label: "Linear",
+            mcpUrl: "https://mcp.linear.app/mcp",
+            defaultServerName: "linear",
+            status: { source: "linear_oauth", connected: false },
+          },
+        ],
+      }));
+      fake.install();
+
+      await useMcpStore.getState().fetchOAuthProviders();
+      const { oauthProviders, oauthLoading, oauthError } = useMcpStore.getState();
+      expect(oauthLoading).toBe(false);
+      expect(oauthError).toBeNull();
+      expect(oauthProviders).toHaveLength(1);
+      expect(oauthProviders[0].id).toBe("linear_oauth");
+    });
+
+    it("fetchOAuthProviders() defends against missing providers field", async () => {
+      const fake = new FakeFetch();
+      fake.on("GET", "/api/mcp-servers/oauth/providers", () => ({ wat: 1 }));
+      fake.install();
+
+      await useMcpStore.getState().fetchOAuthProviders();
+      expect(useMcpStore.getState().oauthProviders).toEqual([]);
+    });
+
+    it("fetchOAuthProviders() surfaces backend errors as oauthError", async () => {
+      const fake = new FakeFetch();
+      fake.on("GET", "/api/mcp-servers/oauth/providers", () => ({
+        status: 500,
+        body: { error: "boom" },
+      }));
+      fake.install();
+
+      await useMcpStore.getState().fetchOAuthProviders();
+      expect(useMcpStore.getState().oauthError).toBe("boom");
+      expect(useMcpStore.getState().oauthProviders).toEqual([]);
+    });
+
+    it("disconnectOAuth() round-trips a DELETE and refreshes the provider list", async () => {
+      const fake = new FakeFetch();
+      fake.on("DELETE", "/api/mcp-servers/oauth/linear_oauth", () => ({ deleted: true }));
+      fake.on("GET", "/api/mcp-servers/oauth/providers", () => ({
+        providers: [
+          {
+            id: "linear_oauth",
+            label: "Linear",
+            mcpUrl: "https://mcp.linear.app/mcp",
+            defaultServerName: "linear",
+            status: { source: "linear_oauth", connected: false },
+          },
+        ],
+      }));
+      fake.install();
+
+      await useMcpStore.getState().disconnectOAuth("linear_oauth");
+      // The fetch fake recorded both the DELETE and the follow-up GET.
+      const methods = fake.calls.map((c) => c.method);
+      expect(methods).toContain("DELETE");
+      expect(methods).toContain("GET");
+      // Final state shows the (refreshed) disconnected provider.
+      expect(useMcpStore.getState().oauthProviders[0].status.connected).toBe(false);
     });
   });
 });
