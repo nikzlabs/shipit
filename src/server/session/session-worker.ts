@@ -18,6 +18,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, McpServerConfig } from "./agents/agent-process.js";
+import { resolveMcpServer } from "./mcp-resolve.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
@@ -196,71 +197,25 @@ export class SessionWorker extends EventEmitter {
     // references a missing secret is dropped and reported over SSE; it never
     // blocks agent start.
     for (const server of params?.mcpServers ?? []) {
-      const resolved = this.resolveMcpServer(server);
+      const { resolved, missing } = resolveMcpServer(server);
       if (resolved) {
         mcpServers[server.name] = resolved;
         this.broadcastSSE({
           type: "mcp_server_status",
           data: { name: server.name, state: "loaded" },
         });
+      } else {
+        const reason = `missing secret: ${missing.join(", ")}`;
+        console.warn(`[mcp] dropping server "${server.name}": ${reason}`);
+        this.broadcastSSE({
+          type: "mcp_server_status",
+          data: { name: server.name, state: "failed", reason },
+        });
       }
     }
 
     fs.writeFileSync(configPath, JSON.stringify({ mcpServers }, null, 2));
     return configPath;
-  }
-
-  /**
-   * Resolve a single user MCP server config into the Claude-CLI `--mcp-config`
-   * shape, substituting `$secret:KEY` placeholders in `env` / `headers` /
-   * `args` against `process.env`. Returns `null` (and emits an SSE
-   * `mcp_server_status` failure) when a referenced secret is missing.
-   */
-  private resolveMcpServer(server: McpServerConfig): Record<string, unknown> | null {
-    const missing: string[] = [];
-    // Substring substitution — `"Bearer $secret:mcp__x__TOKEN"` keeps the
-    // literal `Bearer ` prefix and only the token portion is replaced.
-    const subst = (value: string): string =>
-      value.replace(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g, (_m, key: string) => {
-        const v = process.env[key];
-        if (v === undefined || v === "") {
-          missing.push(key);
-          return "";
-        }
-        return v;
-      });
-    const substRecord = (rec?: Record<string, string>): Record<string, string> | undefined => {
-      if (!rec) return undefined;
-      const out: Record<string, string> = {};
-      for (const [k, v] of Object.entries(rec)) out[k] = subst(v);
-      return out;
-    };
-
-    let resolved: Record<string, unknown>;
-    if (server.type === "stdio") {
-      resolved = {
-        command: server.command,
-        ...(server.args ? { args: server.args.map(subst) } : {}),
-        ...(server.env ? { env: substRecord(server.env) } : {}),
-      };
-    } else {
-      resolved = {
-        type: "http",
-        url: server.url,
-        ...(server.headers ? { headers: substRecord(server.headers) } : {}),
-      };
-    }
-
-    if (missing.length > 0) {
-      const reason = `missing secret: ${[...new Set(missing)].join(", ")}`;
-      console.warn(`[mcp] dropping server "${server.name}": ${reason}`);
-      this.broadcastSSE({
-        type: "mcp_server_status",
-        data: { name: server.name, state: "failed", reason },
-      });
-      return null;
-    }
-    return resolved;
   }
 
   // --- Session mode endpoints (agent, terminal, file watcher) ---
