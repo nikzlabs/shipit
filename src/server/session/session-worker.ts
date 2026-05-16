@@ -196,14 +196,18 @@ export class SessionWorker extends EventEmitter {
     // process.env (populated by 087's agent-env pipeline). A server that
     // references a missing secret is dropped and reported over SSE; it never
     // blocks agent start.
+    //
+    // We only emit `mcp_server_status` here for the *failure* case (missing
+    // secret) — that's a definitive "this server is not going to start" signal
+    // we know before the CLI runs. The matching `loaded` signal is emitted
+    // later when the Claude CLI's init event reports the server as
+    // `connected`; see ClaudeAdapter's `mcp_status` channel and
+    // `wireAgentEvents()`. Emitting `loaded` here would be misleading: it
+    // would mean "we sent the config" rather than "the connection succeeded."
     for (const server of params?.mcpServers ?? []) {
       const { resolved, missing } = resolveMcpServer(server);
       if (resolved) {
         mcpServers[server.name] = resolved;
-        this.broadcastSSE({
-          type: "mcp_server_status",
-          data: { name: server.name, state: "loaded" },
-        });
       } else {
         const reason = `missing secret: ${missing.join(", ")}`;
         console.warn(`[mcp] dropping server "${server.name}": ${reason}`);
@@ -878,6 +882,19 @@ export class SessionWorker extends EventEmitter {
 
     agent.on("log", (source: string, text: string) => {
       this.broadcastSSE({ type: "agent_log", data: { source, text } });
+    });
+
+    // docs/088: per-MCP-server liveness reported by the CLI (Claude's init
+    // event populates this; Codex never emits). One SSE event per server so
+    // the orchestrator's relay (container-session-runner.ts) doesn't need to
+    // unpack arrays.
+    agent.on("mcp_status", (statuses) => {
+      for (const status of statuses) {
+        this.broadcastSSE({
+          type: "mcp_server_status",
+          data: status,
+        });
+      }
     });
   }
 

@@ -9,7 +9,7 @@
 
 import { EventEmitter } from "node:events";
 import { ClaudeProcess } from "../claude.js";
-import type { ClaudeEvent } from "../../shared/types.js";
+import type { ClaudeEvent, ClaudeMcpServerInit } from "../../shared/types.js";
 import type {
   AgentId,
   AgentCapabilities,
@@ -18,6 +18,7 @@ import type {
   AgentProcessEvents,
   AgentRunParams,
 } from "./agent-process.js";
+import type { McpServerStatus } from "../../shared/types/mcp-types.js";
 
 export class ClaudeAdapter
   extends EventEmitter<AgentProcessEvents>
@@ -52,6 +53,18 @@ export class ClaudeAdapter
   /** Forward and translate events from the inner ClaudeProcess. */
   private wireEvents(): void {
     this.inner.on("event", (raw: ClaudeEvent) => {
+      // docs/088: when the CLI reports per-MCP-server connection status in
+      // its init event, surface that as a separate `mcp_status` emission so
+      // the worker can broadcast it as the authoritative liveness signal —
+      // overriding the speculative `loaded`/`failed` that `generateMcpConfig`
+      // emits based on placeholder resolution alone.
+      if (raw.type === "system" && raw.subtype === "init" && raw.mcp_servers) {
+        const statuses = raw.mcp_servers.map(mapCliMcpStatus);
+        if (statuses.length > 0) {
+          this.emit("mcp_status", statuses);
+        }
+      }
+
       const mapped = this.mapEvent(raw);
       if (mapped) {
         this.emit("event", mapped);
@@ -160,5 +173,37 @@ export class ClaudeAdapter
 
   kill(): void {
     this.inner.kill();
+  }
+}
+
+/**
+ * Translate a Claude CLI `mcp_servers[]` entry into ShipIt's
+ * `McpServerStatus`. Observed CLI statuses: `"connected"`, `"failed"`,
+ * `"needs-auth"`. Anything else is treated as a failure with the raw status
+ * preserved in `reason` so we don't silently swallow a new CLI signal.
+ *
+ * `needs-auth` is mapped to `failed` (not a dedicated state) for Phase 1 —
+ * the existing `McpServerState` union has no `needs-auth` value, and the
+ * UI's red badge with the reason text conveys the right action ("connect via
+ * the provider"). Phase 2's OAuth flow is what removes this gap properly.
+ */
+export function mapCliMcpStatus(entry: ClaudeMcpServerInit): McpServerStatus {
+  switch (entry.status) {
+    case "connected":
+      return { name: entry.name, state: "loaded" };
+    case "needs-auth":
+      return {
+        name: entry.name,
+        state: "failed",
+        reason: "authentication required",
+      };
+    case "failed":
+      return { name: entry.name, state: "failed", reason: "connection failed" };
+    default:
+      return {
+        name: entry.name,
+        state: "failed",
+        reason: `unknown status: ${entry.status}`,
+      };
   }
 }

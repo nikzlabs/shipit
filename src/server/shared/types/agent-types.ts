@@ -2,7 +2,7 @@
 
 import type { EventEmitter } from "node:events";
 import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
-import type { McpServerConfig } from "./mcp-types.js";
+import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
 
 // ---- Agent identity ----
 
@@ -141,6 +141,17 @@ export interface AgentProcessEvents {
   error: [Error];
   auth_required: [];
   log: [source: string, text: string];
+  /**
+   * Per-MCP-server runtime status (docs/088-mcp-integration). Emitted by
+   * adapters whose underlying CLI surfaces real connection state — Claude
+   * Code reports this in its init event's `mcp_servers` field. Adapters
+   * that can't observe MCP liveness (e.g., Codex) simply never emit this.
+   *
+   * Each emission carries the full set of servers reported by the CLI in
+   * that observation, so consumers can replace state per-server without
+   * tracking which entries dropped out of a partial update.
+   */
+  mcp_status: [McpServerStatus[]];
 }
 
 /**
