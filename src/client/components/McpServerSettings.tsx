@@ -145,16 +145,66 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
   const updateServer = useMcpStore((s) => s.updateServer);
   const removeServer = useMcpStore((s) => s.removeServer);
   const testServer = useMcpStore((s) => s.testServer);
+  const oauthProviders = useMcpStore((s) => s.oauthProviders);
+  const oauthError = useMcpStore((s) => s.oauthError);
+  const fetchOAuthProviders = useMcpStore((s) => s.fetchOAuthProviders);
+  const startOAuthFlow = useMcpStore((s) => s.startOAuthFlow);
+  const disconnectOAuth = useMcpStore((s) => s.disconnectOAuth);
 
   const [form, setForm] = useState<FormState | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, McpTestResult | "loading">>({});
+  /** Source id currently mid-flow (button disabled, label "Connecting…"). */
+  const [oauthInFlight, setOauthInFlight] = useState<string | null>(null);
 
   // eslint-disable-next-line no-restricted-syntax -- one-shot fetch on mount; the MCP server list is account-level external state
   useEffect(() => {
     void fetchServers();
-  }, [fetchServers]);
+    void fetchOAuthProviders();
+  }, [fetchServers, fetchOAuthProviders]);
+
+  async function connectProvider(source: string) {
+    setOauthInFlight(source);
+    try {
+      const result = await startOAuthFlow(source);
+      if (result.ok) {
+        // After a successful connect, auto-create a placeholder MCP server
+        // entry pointing at the provider's MCP URL with the OAuth bearer
+        // header pre-wired. The user can edit the name / disable later.
+        const provider = oauthProviders.find((p) => p.id === source);
+        if (provider && !servers.some((s) => s.name === provider.defaultServerName)) {
+          const config: McpHttpServerConfig = {
+            name: provider.defaultServerName,
+            type: "http",
+            url: provider.mcpUrl,
+            headers: { Authorization: `Bearer $platform:${source}` },
+            enabled: true,
+          };
+          try {
+            await addServer(config, {});
+          } catch {
+            // The server might already exist or another validation issue —
+            // the OAuth token is still saved and the UI shows "Connected",
+            // so this is best-effort.
+          }
+        }
+      }
+    } finally {
+      setOauthInFlight(null);
+    }
+  }
+
+  async function disconnectProvider(source: string) {
+    setOauthInFlight(source);
+    try {
+      await disconnectOAuth(source);
+    } catch {
+      /* error surfaced via store.oauthError */
+    } finally {
+      setOauthInFlight(null);
+    }
+  }
 
   function startAdd() {
     setForm({ ...EMPTY_FORM });
@@ -244,6 +294,68 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
       {error && (
         <div className="rounded-md border border-(--color-error) bg-(--color-bg-secondary) px-3 py-2 text-xs text-(--color-error)">
           {error}
+        </div>
+      )}
+
+      {oauthError && (
+        <div className="rounded-md border border-(--color-error) bg-(--color-bg-secondary) px-3 py-2 text-xs text-(--color-error)">
+          {oauthError}
+        </div>
+      )}
+
+      {oauthProviders.length > 0 && (
+        <div className="flex flex-col gap-2" data-testid="mcp-oauth-providers">
+          <div className="text-xs uppercase tracking-wide text-(--color-text-tertiary)">
+            One-click connections
+          </div>
+          <ul className="flex flex-col gap-2">
+            {oauthProviders.map((provider) => {
+              const inFlight = oauthInFlight === provider.id;
+              const connected = provider.status.connected;
+              return (
+                <li
+                  key={provider.id}
+                  className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 flex items-center justify-between gap-3"
+                  data-testid={`mcp-oauth-${provider.id}`}
+                >
+                  <div className="flex flex-col gap-0.5 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-(--color-text-primary)">
+                        {provider.label}
+                      </span>
+                      {connected && (
+                        <span className="text-xs text-(--color-success)">● Connected</span>
+                      )}
+                    </div>
+                    {provider.description && (
+                      <p className="text-xs text-(--color-text-tertiary)">
+                        {provider.description}
+                      </p>
+                    )}
+                  </div>
+                  {connected ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={inFlight}
+                      onClick={() => void disconnectProvider(provider.id)}
+                    >
+                      {inFlight ? "…" : "Disconnect"}
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={inFlight}
+                      onClick={() => void connectProvider(provider.id)}
+                    >
+                      {inFlight ? "Connecting…" : `Connect ${provider.label}`}
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
 

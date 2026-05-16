@@ -11,6 +11,8 @@ import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { quickCreatePr } from "../services/github.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
+import { collectMcpAgentEnv } from "../secret-resolver.js";
+import { refreshExpiredMcpOAuthTokens } from "../services/mcp-oauth.js";
 /**
  * Save base64 images to the session's uploads directory on the host.
  * Returns a prompt prefix referencing the on-disk files (container paths).
@@ -440,21 +442,44 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     (s) => s.enabled,
   );
 
+  // docs/088 Phase 2: refresh any OAuth tokens whose access tokens are
+  // within the safety margin of expiry, BEFORE collecting the env map.
+  // Without this, the freshly-pushed env could carry a token that's about
+  // to expire and the first MCP tool call would fail. Fault-tolerant by
+  // design — refresh failures leave the stale token in place so the worker
+  // emits a meaningful `failed` status rather than silently dropping the
+  // server.
+  await refreshExpiredMcpOAuthTokens({ credentialStore: ctx.credentialStore }).catch(
+    (err: unknown) => {
+      console.warn("[mcp-oauth] background refresh failed:", getErrorMessage(err));
+    },
+  );
+
   // docs/088: compose-less sessions never get a `ServiceManager`, so the
-  // account-level agent env (`mcp__*` secrets, `OPENAI_API_KEY`, …) is never
-  // pushed to the worker via `ServiceManager.syncSecrets()`. Push it here —
-  // awaited, before `/agent/start` — so the worker's `process.env` carries
-  // the `mcp__*` keys before `generateMcpConfig()` resolves `$secret:` refs.
+  // account-level agent env (`mcp__*` secrets, `MCP_PLATFORM_*` OAuth
+  // tokens, `OPENAI_API_KEY`, …) is never pushed to the worker via
+  // `ServiceManager.syncSecrets()`. Push it here — awaited, before
+  // `/agent/start` — so the worker's `process.env` carries the keys before
+  // `generateMcpConfig()` resolves `$secret:` / `$platform:` refs.
+  //
   // Guarded on `!serviceManager`: compose sessions already get the *merged*
   // (compose-declared + MCP) set via `syncSecrets()`, and pushing the
   // partial account-level set here would clobber their `agent: true`
   // secrets (the worker REPLACES its tracked set on every push).
+  //
   // `tryPushAgentSecrets` is internally fault-tolerant — a transient HTTP
   // failure is logged worker-side and never throws — so awaiting it here
   // just sequences the push ahead of `/agent/start` without adding a
   // failure path.
   if (runner instanceof ContainerSessionRunner && !runner.serviceManager) {
-    await runner.tryPushAgentSecrets(ctx.credentialStore.getAllAgentEnv());
+    // Merge regular agentEnv with MCP_PLATFORM_* values derived from
+    // CredentialStore.mcpOAuth. `collectMcpAgentEnv` returns both `mcp__*`
+    // and `MCP_PLATFORM_*` keys; the `mcp__*` ones are duplicated with
+    // `getAllAgentEnv()` but identical, so spread order doesn't matter.
+    await runner.tryPushAgentSecrets({
+      ...ctx.credentialStore.getAllAgentEnv(),
+      ...collectMcpAgentEnv(ctx.credentialStore),
+    });
   }
 
   currentAgent.run({

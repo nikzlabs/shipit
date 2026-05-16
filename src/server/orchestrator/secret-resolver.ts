@@ -238,24 +238,50 @@ export function resolveSecrets(opts: {
 /**
  * Collect account-level MCP secret values (docs/088-mcp-integration).
  *
- * Returns every `CredentialStore.agentEnv` entry whose key matches `/^mcp__/`.
- * This is a deliberately separate path from {@link resolveSecrets}: MCP secrets
- * are account-level (not declared in any compose file, not keyed by repo), so
- * they don't flow through the compose-declaration resolver. `ServiceManager`
- * merges this map into the resolved `agentValues` *after* `resolveSecrets()`
- * runs, before writing `.shipit/.env.agent` and pushing to the worker.
+ * Returns the union of two namespaces from `CredentialStore`:
  *
- * `mcp__*` keys are always agent-bound — no `agent: true` opt-in is needed,
- * because every MCP secret is by definition consumed by the agent container.
+ *   1. Every `agentEnv` entry whose key matches `/^mcp__/` — Phase 1 secret
+ *      values referenced from server blobs via `$secret:` placeholders.
+ *   2. Every `mcpOAuth[source].accessToken` rewrapped as
+ *      `MCP_PLATFORM_<UPPER_SOURCE>` — Phase 2 OAuth tokens referenced from
+ *      server blobs via `$platform:<source>` placeholders. The worker
+ *      substitutes both forms in `mcp-resolve.ts`.
+ *
+ * Token refresh is **not** performed here — this function is called from
+ * synchronous code paths (the `mcpAgentEnvLoader` plumbed into
+ * `ServiceManager`). Near-expired tokens are refreshed by a separate
+ * async path (`refreshExpiredMcpOAuthTokens()` in `mcp-oauth.ts`),
+ * triggered at orchestrator startup and before each agent turn.
+ *
+ * This is a deliberately separate path from {@link resolveSecrets}: MCP
+ * secrets are account-level (not declared in any compose file, not keyed by
+ * repo), so they don't flow through the compose-declaration resolver.
+ * `ServiceManager` merges this map into the resolved `agentValues` *after*
+ * `resolveSecrets()` runs, before writing `.shipit/.env.agent` and pushing
+ * to the worker.
+ *
+ * `mcp__*` and `MCP_PLATFORM_*` keys are always agent-bound — no
+ * `agent: true` opt-in is needed, because every MCP secret/token is by
+ * definition consumed by the agent container.
  */
 export function collectMcpAgentEnv(
-  credentialStore: Pick<CredentialStore, "getAllAgentEnv">,
+  credentialStore: Pick<
+    CredentialStore,
+    "getAllAgentEnv" | "getAllMcpOAuthTokens"
+  >,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(credentialStore.getAllAgentEnv())) {
     if (key.startsWith("mcp__") && typeof value === "string" && value.length > 0) {
       out[key] = value;
     }
+  }
+  for (const [source, tokens] of Object.entries(credentialStore.getAllMcpOAuthTokens())) {
+    if (!tokens?.accessToken) continue;
+    // Mirror `platformSourceEnvName()` in `mcp-oauth-providers.ts` — kept
+    // inline to avoid a worker-side import (this module is orchestrator-only
+    // but the env-name contract is shared verbatim with the worker resolver).
+    out[`MCP_PLATFORM_${source.toUpperCase()}`] = tokens.accessToken;
   }
   return out;
 }

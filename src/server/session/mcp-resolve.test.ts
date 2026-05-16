@@ -156,4 +156,83 @@ describe("resolveMcpServer (docs/088)", () => {
       headers: { Auth: "Bearer alpha:beta" },
     });
   });
+
+  describe("$platform: placeholders (docs/088 Phase 2)", () => {
+    it("resolves $platform:linear_oauth against MCP_PLATFORM_LINEAR_OAUTH", () => {
+      const config: McpServerConfig = {
+        name: "linear",
+        type: "http",
+        url: "https://mcp.linear.app/mcp",
+        headers: { Authorization: "Bearer $platform:linear_oauth" },
+        enabled: true,
+      };
+      const { resolved, missing } = resolveMcpServer(config, {
+        MCP_PLATFORM_LINEAR_OAUTH: "lin_oauth_xyz",
+      });
+      expect(missing).toEqual([]);
+      expect(resolved).toEqual({
+        type: "http",
+        url: "https://mcp.linear.app/mcp",
+        headers: { Authorization: "Bearer lin_oauth_xyz" },
+      });
+    });
+
+    it("drops the server and reports MCP_PLATFORM_<UPPER> missing when env empty", () => {
+      const config: McpServerConfig = {
+        name: "notion",
+        type: "http",
+        url: "https://mcp.notion.com/mcp",
+        headers: { Authorization: "Bearer $platform:notion_oauth" },
+        enabled: true,
+      };
+      const { resolved, missing } = resolveMcpServer(config, {});
+      expect(resolved).toBeNull();
+      expect(missing).toEqual(["MCP_PLATFORM_NOTION_OAUTH"]);
+    });
+
+    it("mixes $secret: and $platform: in the same value", () => {
+      const config: McpServerConfig = {
+        name: "x",
+        type: "http",
+        url: "https://example.com/mcp",
+        headers: {
+          Authorization: "Bearer $platform:linear_oauth",
+          "X-Extra": "scheme=$secret:mcp__x__SCHEME",
+        },
+        enabled: true,
+      };
+      const { resolved, missing } = resolveMcpServer(config, {
+        MCP_PLATFORM_LINEAR_OAUTH: "lin_xyz",
+        mcp__x__SCHEME: "abc",
+      });
+      expect(missing).toEqual([]);
+      expect(resolved).toMatchObject({
+        headers: {
+          Authorization: "Bearer lin_xyz",
+          "X-Extra": "scheme=abc",
+        },
+      });
+    });
+
+    it("rejects $platform: identifiers with uppercase or invalid characters", () => {
+      // $platform: ids must match /[a-z][a-z0-9_]*/. Anything else isn't a
+      // valid placeholder and is left as a literal — there's no way the user
+      // could have stored tokens under those source ids anyway.
+      const config: McpServerConfig = {
+        name: "x",
+        type: "http",
+        url: "https://example.com/mcp",
+        headers: { Authorization: "Bearer $platform:LINEAR_OAUTH" },
+        enabled: true,
+      };
+      const { resolved, missing } = resolveMcpServer(config, {});
+      // No placeholders matched → no substitutions, no missing reports.
+      expect(missing).toEqual([]);
+      expect(resolved).toEqual({
+        type: "http",
+        url: "https://example.com/mcp",
+        headers: { Authorization: "Bearer $platform:LINEAR_OAUTH" },
+      });
+    });
+  });
 });
