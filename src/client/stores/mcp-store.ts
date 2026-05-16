@@ -15,7 +15,18 @@ import type {
   McpServerConfig,
   McpServerState,
   McpTestResult,
+  McpOAuthStatus,
 } from "../../server/shared/types.js";
+
+/** Provider info returned by `GET /api/mcp-servers/oauth/providers`. */
+export interface McpOAuthProviderInfo {
+  id: string;
+  label: string;
+  description?: string;
+  mcpUrl: string;
+  defaultServerName: string;
+  status: McpOAuthStatus;
+}
 
 class McpApiError extends Error {
   constructor(public status: number, message: string) {
@@ -59,6 +70,13 @@ interface McpState {
   /** Last load/mutation error, surfaced in the Settings panel. */
   error: string | null;
 
+  // ---- Phase 2: OAuth providers ----
+  /** Available OAuth providers (Linear, Notion, …) with connection state. */
+  oauthProviders: McpOAuthProviderInfo[];
+  oauthLoading: boolean;
+  /** Last OAuth flow error (popup close / disconnect / start). */
+  oauthError: string | null;
+
   fetchServers: () => Promise<void>;
   /**
    * Add a server. `config` carries `$secret:` placeholders; `secrets` maps
@@ -76,13 +94,27 @@ interface McpState {
   applyStatus: (name: string, state: McpServerState, reason?: string) => void;
   /** Reset store state (session switch / full reset). */
   reset: () => void;
+
+  // ---- OAuth actions ----
+  fetchOAuthProviders: () => Promise<void>;
+  /**
+   * Begin an OAuth flow for a provider. Opens the authorize URL in a popup
+   * and resolves when the callback page postMessages a result back. Refreshes
+   * `oauthProviders` on success.
+   */
+  startOAuthFlow: (source: string) => Promise<{ ok: boolean; message?: string }>;
+  /** Remove stored OAuth tokens for a provider. */
+  disconnectOAuth: (source: string) => Promise<void>;
 }
 
-export const useMcpStore = create<McpState>((set) => ({
+export const useMcpStore = create<McpState>((set, get) => ({
   servers: [],
   statuses: {},
   loading: false,
   error: null,
+  oauthProviders: [],
+  oauthLoading: false,
+  oauthError: null,
 
   fetchServers: async () => {
     set({ loading: true, error: null });
@@ -159,5 +191,128 @@ export const useMcpStore = create<McpState>((set) => ({
     set((s) => ({ statuses: { ...s.statuses, [name]: { state, reason } } }));
   },
 
-  reset: () => set({ servers: [], statuses: {}, loading: false, error: null }),
+  reset: () =>
+    set({
+      servers: [],
+      statuses: {},
+      loading: false,
+      error: null,
+      oauthProviders: [],
+      oauthLoading: false,
+      oauthError: null,
+    }),
+
+  // ---- OAuth ----
+
+  fetchOAuthProviders: async () => {
+    set({ oauthLoading: true, oauthError: null });
+    try {
+      const { providers } = await request<{ providers?: McpOAuthProviderInfo[] }>(
+        "GET",
+        "/api/mcp-servers/oauth/providers",
+      );
+      // Defensive: a partial / unexpected response shouldn't crash the UI
+      // — fall back to an empty list so the existing servers section keeps
+      // working. Real server always returns { providers: [...] }.
+      set({ oauthProviders: providers ?? [], oauthLoading: false });
+    } catch (err) {
+      set({
+        oauthLoading: false,
+        oauthError: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
+
+  startOAuthFlow: async (source) => {
+    set({ oauthError: null });
+    try {
+      const { authorizeUrl } = await request<{ authorizeUrl: string; state: string }>(
+        "POST",
+        "/api/mcp-servers/oauth/start",
+        { source },
+      );
+      // Open the consent screen in a popup so the user comes back to ShipIt
+      // automatically — no manual tab switching required.
+      const popup = window.open(
+        authorizeUrl,
+        `shipit-mcp-oauth-${source}`,
+        "width=520,height=720,popup=yes",
+      );
+      if (!popup) {
+        const msg = "Popup was blocked. Allow popups for ShipIt and try again.";
+        set({ oauthError: msg });
+        return { ok: false, message: msg };
+      }
+      const result = await waitForOAuthCallback(source, popup);
+      // Refresh provider list so the UI flips Connected/Disconnected.
+      await get().fetchOAuthProviders();
+      if (!result.ok && result.message) {
+        set({ oauthError: result.message });
+      }
+      return result;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ oauthError: message });
+      return { ok: false, message };
+    }
+  },
+
+  disconnectOAuth: async (source) => {
+    set({ oauthError: null });
+    try {
+      await request("DELETE", `/api/mcp-servers/oauth/${encodeURIComponent(source)}`);
+      await get().fetchOAuthProviders();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ oauthError: message });
+      throw err;
+    }
+  },
 }));
+
+/**
+ * Wait for the OAuth callback popup to postMessage a result. Resolves when
+ * either the popup posts back or the user closes it without completing.
+ */
+function waitForOAuthCallback(
+  source: string,
+  popup: Window,
+): Promise<{ ok: boolean; message?: string }> {
+  return new Promise((resolve) => {
+    function cleanup() {
+      window.removeEventListener("message", onMessage);
+      clearInterval(poll);
+    }
+    function onMessage(ev: MessageEvent<unknown>) {
+      if (ev.origin !== window.location.origin) return;
+      const data = ev.data;
+      if (
+        !data ||
+        typeof data !== "object" ||
+        (data as { type?: string }).type !== "shipit-mcp-oauth-result"
+      ) {
+        return;
+      }
+      const payload = data as { ok?: boolean; source?: string; message?: string };
+      if (payload.source !== source) return;
+      cleanup();
+      try {
+        popup.close();
+      } catch {
+        /* ignore */
+      }
+      resolve({
+        ok: Boolean(payload.ok),
+        ...(payload.message !== undefined ? { message: payload.message } : {}),
+      });
+    }
+    window.addEventListener("message", onMessage);
+    // Poll for popup-closed too — the user might dismiss without completing.
+    const poll = setInterval(() => {
+      if (popup.closed) {
+        cleanup();
+        resolve({ ok: false, message: "Authentication window was closed." });
+      }
+    }, 500);
+  });
+}

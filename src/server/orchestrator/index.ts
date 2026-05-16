@@ -228,8 +228,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // entries in `x-shipit-secrets`. Built once and shared across all
   // ServiceManagers so token rotation in AuthManager / GitHubAuthManager is
   // picked up on the next compose reconcile without restart.
+  //
+  // docs/088 Phase 2: also resolves `platform:<mcp-oauth-id>` sources
+  // (e.g. `platform:linear_oauth`) from CredentialStore.mcpOAuth so any
+  // future compose service can opt into the same Linear/Notion token the
+  // agent uses for MCP.
   const platformCredentials = createPlatformCredentialProvider({
-    authManager, githubAuthManager,
+    authManager, githubAuthManager, credentialStore,
   });
 
   // Docker-secrets isolation (087 Phase 1 follow-up) — opt-in via env vars.
@@ -536,6 +541,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     agentFactory,
     oomBreaker,
     loopDetector,
+    ...(deps.mcpOAuthFetchImpl !== undefined
+      ? { mcpOAuthFetchImpl: deps.mcpOAuthFetchImpl }
+      : {}),
   });
 
   // ---- Preview reverse proxy (container mode) ----

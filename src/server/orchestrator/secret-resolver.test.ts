@@ -15,27 +15,37 @@ import type { ComposeService } from "./compose-generator.js";
 import { fixedPlatformCredentialProvider } from "./platform-credentials.js";
 
 describe("collectMcpAgentEnv (docs/088)", () => {
-  it("returns only mcp__* entries from CredentialStore.agentEnv", () => {
-    const store = {
-      getAllAgentEnv: () => ({
-        OPENAI_API_KEY: "sk-test",
-        mcp__linear__LINEAR_API_KEY: "lin_api_abc",
-        mcp__sentry__SENTRY_AUTH_TOKEN: "sntrys_xyz",
-      }),
+  // Stub helper covering both methods the new signature touches.
+  function stub(opts: {
+    agentEnv?: Record<string, string>;
+    mcpOAuth?: Record<string, { accessToken: string }>;
+  }) {
+    return {
+      getAllAgentEnv: () => opts.agentEnv ?? {},
+      getAllMcpOAuthTokens: () => opts.mcpOAuth ?? {},
     };
-    expect(collectMcpAgentEnv(store)).toEqual({
+  }
+
+  it("returns only mcp__* entries from CredentialStore.agentEnv", () => {
+    expect(
+      collectMcpAgentEnv(
+        stub({
+          agentEnv: {
+            OPENAI_API_KEY: "sk-test",
+            mcp__linear__LINEAR_API_KEY: "lin_api_abc",
+            mcp__sentry__SENTRY_AUTH_TOKEN: "sntrys_xyz",
+          },
+        }),
+      ),
+    ).toEqual({
       mcp__linear__LINEAR_API_KEY: "lin_api_abc",
       mcp__sentry__SENTRY_AUTH_TOKEN: "sntrys_xyz",
     });
   });
 
   it("skips empty values and returns {} when there are no mcp__* keys", () => {
-    expect(
-      collectMcpAgentEnv({ getAllAgentEnv: () => ({ OPENAI_API_KEY: "sk" }) }),
-    ).toEqual({});
-    expect(
-      collectMcpAgentEnv({ getAllAgentEnv: () => ({ mcp__a__B: "" }) }),
-    ).toEqual({});
+    expect(collectMcpAgentEnv(stub({ agentEnv: { OPENAI_API_KEY: "sk" } }))).toEqual({});
+    expect(collectMcpAgentEnv(stub({ agentEnv: { mcp__a__B: "" } }))).toEqual({});
   });
 
   it("is independent of resolveSecrets — does not consult compose declarations", () => {
@@ -43,9 +53,54 @@ describe("collectMcpAgentEnv (docs/088)", () => {
     // still surfaces the account-level mcp__* keys.
     const resolution = resolveSecrets({ services: [], userSecrets: {} });
     expect(resolution.agentValues).toEqual({});
-    expect(
-      collectMcpAgentEnv({ getAllAgentEnv: () => ({ mcp__x__KEY: "v" }) }),
-    ).toEqual({ mcp__x__KEY: "v" });
+    expect(collectMcpAgentEnv(stub({ agentEnv: { mcp__x__KEY: "v" } }))).toEqual({
+      mcp__x__KEY: "v",
+    });
+  });
+
+  describe("MCP OAuth tokens → MCP_PLATFORM_* env vars (docs/088 Phase 2)", () => {
+    it("maps each stored mcpOAuth source to MCP_PLATFORM_<UPPER>", () => {
+      expect(
+        collectMcpAgentEnv(
+          stub({
+            mcpOAuth: {
+              linear_oauth: { accessToken: "lin_at" },
+              notion_oauth: { accessToken: "ntn_at" },
+            },
+          }),
+        ),
+      ).toEqual({
+        MCP_PLATFORM_LINEAR_OAUTH: "lin_at",
+        MCP_PLATFORM_NOTION_OAUTH: "ntn_at",
+      });
+    });
+
+    it("merges mcp__* secrets with MCP_PLATFORM_* tokens in one map", () => {
+      expect(
+        collectMcpAgentEnv(
+          stub({
+            agentEnv: { mcp__sentry__SENTRY_AUTH_TOKEN: "sntrys_xyz" },
+            mcpOAuth: { linear_oauth: { accessToken: "lin_at" } },
+          }),
+        ),
+      ).toEqual({
+        mcp__sentry__SENTRY_AUTH_TOKEN: "sntrys_xyz",
+        MCP_PLATFORM_LINEAR_OAUTH: "lin_at",
+      });
+    });
+
+    it("skips OAuth entries with no accessToken (defensive)", () => {
+      expect(
+        collectMcpAgentEnv(
+          stub({
+            mcpOAuth: {
+              // @ts-expect-error — exercising defensive guard
+              broken: { refreshToken: "rt_only" },
+            },
+          }),
+        ),
+      ).toEqual({});
+    });
   });
 });
 

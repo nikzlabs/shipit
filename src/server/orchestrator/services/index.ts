@@ -12,6 +12,7 @@ export * from "./git.js";
 export * from "./github.js";
 export * from "./settings.js";
 export * from "./mcp.js";
+export * from "./mcp-oauth.js";
 export * from "./templates.js";
 export * from "./misc.js";
 export * from "./repos.js";
