@@ -13,6 +13,14 @@ export interface UsageTurn {
   cacheCreate?: number;
   /** Model identifier responsible for this turn. */
   model?: string;
+  /**
+   * Real context-window occupancy at turn end (last API call's input + cache
+   * reads + cache writes). Distinct from `inputTokens + cacheRead + cacheCreate`,
+   * which sums across every API call and dramatically overstates context for
+   * tool-heavy multi-call turns. Undefined for turns recorded before the per-
+   * iteration breakdown was wired up — callers fall back to the sum.
+   */
+  contextTokens?: number;
 }
 
 /**
@@ -37,15 +45,30 @@ export interface TurnUsage {
   model?: string;
   /** ISO timestamp recorded when the turn finished. */
   timestamp: string;
+  /**
+   * Real context-window occupancy at turn end (= last API call's input +
+   * cache_read + cache_create from `result.usage.iterations[]`). The fields
+   * above are turn-wide SUMS across every API call, so for a tool-heavy turn
+   * with N iterations they over-count context by ~N×. This field is the
+   * authoritative "current context size" reading. Undefined for turns
+   * recorded before the per-iteration plumbing landed — callers fall back
+   * to `turnContextTokens()`.
+   */
+  contextTokens?: number;
 }
 
 /**
- * The real context-window occupancy for a turn: uncached input + cache reads +
- * cache writes. This is the number that should drive the context dial, the
- * status-bar meter, and the usage modal's "Context" reading — `inputTokens`
- * alone undercounts massively when prompt caching is active.
+ * The real context-window occupancy for a turn. Prefers the explicit
+ * `contextTokens` field (last API call's input + cache) when present —
+ * that's the only correct value for tool-heavy multi-call turns. Falls
+ * back to `inputTokens + cacheRead + cacheCreate` for turns recorded
+ * before the per-iteration breakdown was wired up; that sum is correct
+ * for single-call turns but over-counts N× for N-iteration turns.
  */
-export function turnContextTokens(turn: Pick<TurnUsage, "inputTokens" | "cacheRead" | "cacheCreate">): number {
+export function turnContextTokens(
+  turn: Pick<TurnUsage, "inputTokens" | "cacheRead" | "cacheCreate" | "contextTokens">,
+): number {
+  if (turn.contextTokens !== undefined) return turn.contextTokens;
   return turn.inputTokens + (turn.cacheRead ?? 0) + (turn.cacheCreate ?? 0);
 }
 

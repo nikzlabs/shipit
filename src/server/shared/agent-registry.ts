@@ -94,16 +94,26 @@ export const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
  * names, then by substring (so e.g. "claude-sonnet-4-20250514" matches
  * "sonnet"). Models not listed fall back to `DEFAULT_CONTEXT_WINDOW_TOKENS`.
  *
+ * This is the STATIC fallback. The Claude CLI itself reports the authoritative
+ * window in `result.modelUsage.<model>.contextWindow`; the adapter plumbs that
+ * through `AgentResultEvent.contextWindow`, and `agent-listeners.ts` re-emits
+ * `model_info` with that value so the dial updates dynamically. The static
+ * map is only consulted before the first turn completes (when only the model
+ * name is known) or for adapters that can't surface the field.
+ *
  * Add entries here when a model with a different context window is added to
- * the agent registry. Values come from each provider's published model
- * specifications.
+ * the agent registry, OR when ShipIt needs to show the correct window on the
+ * first frame (before the first `result` event arrives).
  */
 export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  // Claude (200K standard; Opus 4.6 in 1M-mode is opt-in via model alias)
+  // Claude — 200K is the default. Specific 4.7 keys override the substring
+  // fallback so "claude-opus-4-7" resolves to its real 1M window even before
+  // the first `result` event populates `modelUsage.contextWindow`.
   "sonnet": 200_000,
   "claude-sonnet": 200_000,
   "opus": 200_000,
   "claude-opus": 200_000,
+  "claude-opus-4-7": 1_000_000,
   "haiku": 200_000,
   "claude-haiku": 200_000,
   "opus-1m": 1_000_000,
