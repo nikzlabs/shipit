@@ -116,21 +116,31 @@ export class ClaudeProcess extends EventEmitter {
 
     console.log("[claude] spawning:", "claude", args.join(" ").slice(0, 200), "| cwd:", cwd);
 
+    // Build the spawn env. We start from `process.env` (so the CLI inherits
+    // PATH, NODE-related vars, etc.) but explicitly normalize the
+    // `SHIPIT_AUTO_CREATE_PR` gate: the managed-settings.json Stop hook
+    // self-gates on it (docs/130), so if it leaks in from the parent process
+    // (e.g. when this orchestrator is itself dogfooded under an outer ShipIt
+    // that has the var set) the hook would activate even when `autoCreatePr`
+    // is false. Always overwrite with the value derived from this call.
+    const spawnEnv: Record<string, string> = {
+      ...process.env,
+      HOME: "/root",
+      NODE_ENV: "development",
+    } as Record<string, string>;
+    if (autoCreatePr) {
+      spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
+    } else {
+      delete spawnEnv.SHIPIT_AUTO_CREATE_PR;
+    }
+
     try {
       this.proc = pty.spawn("claude", args, {
         name: "xterm-256color",
         cols: 200,
         rows: 24,
         cwd,
-        env: {
-          ...process.env,
-          HOME: "/root",
-          NODE_ENV: "development",
-          // Consumed by the managed-settings.json Stop hook to decide whether
-          // to enforce PR creation. The hook is always registered; this gates
-          // it. See docs/130-block-branch-ops/plan.md.
-          ...(autoCreatePr ? { SHIPIT_AUTO_CREATE_PR: "1" } : {}),
-        } as Record<string, string>,
+        env: spawnEnv,
       });
     } catch (err) {
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
