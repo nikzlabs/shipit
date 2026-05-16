@@ -1,9 +1,30 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 ---
 
 # 117 — Agent-Spawned ShipIt Sessions
+
+## Phase 1 ship notes
+
+Phase 1 is live as of this revision. What works today:
+
+- `shipit session create -p "PROMPT" [...]` spawns a sibling session with
+  parent linkage persisted; the orchestrator clones the workspace, cuts a
+  branch off the parent's HEAD, and enqueues the prompt on the new runner.
+- `shipit session list` / `shipit session view <id>` return JSON or plain
+  text. The orchestrator denies `view` for sessions the calling parent
+  didn't spawn (404, no leakage of "wrong parent" vs "not found").
+- Per-turn (`spawnedByTurn`) and per-parent (active children) quotas are
+  enforced fail-closed; both surface as HTTP 429.
+
+What is **not** in Phase 1 (see the table below for tracking):
+
+- No agent-prompt nudge — Claude/Codex still need to be told to use it.
+- No `SpawnedSessionCard` in the parent chat and no sidebar grouping; the
+  child shows up as a normal session in the user's sidebar via the existing
+  `session_list` SSE broadcast.
+- No `wait` / `message` / `archive` subcommands (Phase 3).
 
 ## Summary
 
@@ -293,12 +314,12 @@ The existing idle-container cleanup (doc 063) applies normally — spawned sessi
 
 ## Phasing
 
-| Phase | Scope |
-|---|---|
-| **1** | Build the shim + worker `/agent-ops/session/*` routes + `POST /api/sessions/:parentId/spawn` + `parentSessionId` field. Update `shipit-docs/sessions.md`. **No agent prompt changes.** Sidebar grouping shipped behind a feature flag so we can iterate visually. |
-| **2** | Update `agent-instructions.ts` to teach the agent when to reach for `shipit session create` vs `Task`. Sidebar grouping enabled. SpawnedSessionCard rendered in parent chats. |
-| **3** | Add `wait`, `archive`, and follow-up `message` flows once telemetry shows the agent uses Phase 1 reliably. |
-| **4** *(optional)* | Cross-repo spawns (different `--repo`) for advanced workflows. Probably gated by a per-account setting. |
+| Phase | Scope | Status |
+|---|---|---|
+| **1** | Build the shim + worker `/agent-ops/session/*` routes + `POST /api/sessions/:parentId/spawn` + `parentSessionId` field. Update `shipit-docs/sessions.md`. **No agent prompt changes.** Sidebar grouping is *not* shipped in Phase 1 (deferred to Phase 2 alongside the SpawnedSessionCard rendering). | done |
+| **2** | Update `agent-instructions.ts` to teach the agent when to reach for `shipit session create` vs `Task`. Sidebar grouping enabled. SpawnedSessionCard rendered in parent chats. | planned |
+| **3** | Add `wait`, `archive`, and follow-up `message` flows once telemetry shows the agent uses Phase 1 reliably. | planned |
+| **4** *(optional)* | Cross-repo spawns (different `--repo`) for advanced workflows. Probably gated by a per-account setting. | planned |
 
 Phase 1 is fully backwards-compatible: nothing nudges the agent to use the new tool; the user can still spawn sessions manually. Phase 2 is when it starts paying for itself.
 
@@ -321,27 +342,29 @@ In addition to the per-threat table above, two systemic notes:
 
 ## Key files
 
-| File | Change |
-|---|---|
-| `src/server/session/agent-shim/shipit.ts` | **New.** The shim entry point. Mirrors `gh.ts` from doc 116. |
-| `src/server/session/agent-shim/shipit.test.ts` | **New.** Unit tests for argument parsing and output. |
-| `src/server/session/agent-ops-routes.ts` | Add `/agent-ops/session/*` handlers (existing file from doc 116). |
-| `src/server/session/orchestrator-client.ts` | Add session-spawn methods (existing client from doc 116). |
-| `src/server/orchestrator/api-routes-session.ts` | Add `POST /api/sessions/:parentId/spawn`, `GET /api/sessions/:parentId/children`, `GET /api/sessions/:parentId/children/:id`, `POST /api/sessions/:parentId/children/:id/message`, `POST /api/sessions/:parentId/children/:id/archive`. |
-| `src/server/orchestrator/services/session.ts` | New `spawnChildSession()`. Reuses claim-session + branch-creation primitives. |
-| `src/server/orchestrator/sessions.ts` | Add `parentSessionId` / `spawnedByTurn` columns + accessors; new `findChildren(parentId)` query. |
-| `src/server/shared/types/domain-types.ts` | Add `parentSessionId` and `spawnedByTurn` to `SessionInfo`. |
-| `src/server/shared/types/ws-server-messages.ts` | Add `session_spawned` event. |
-| `src/server/orchestrator/ws-handlers/agent-listeners.ts` | Forward `session_spawned` events to the parent's WS clients. |
-| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* Append agent-specific guidance: Claude branch gets the "Task vs shipit session create" rule; Codex branch gets the "only spawn when the user asked" rule. |
-| `src/server/shipit-docs/sessions.md` | **New.** Document the shim, the supported subcommands, and the `Task` vs `shipit session create` decision rule. |
-| `src/server/shipit-docs/README.md` | Add the new file to the index. |
-| `docker/Dockerfile.session-worker.{dev,prod,docker}` | Compile and install the shim at `/usr/local/bin/shipit`, owned by root, mode 0755. |
-| `src/client/components/SessionList.tsx` | Render spawned children indented under their parent. |
-| `src/client/components/SpawnedSessionCard.tsx` | **New.** In-chat card showing a spawned child's status. |
-| `src/client/components/MessageList.tsx` | Render `SpawnedSessionCard` when a `session_spawned` event appears in the message group. |
-| `src/client/stores/session-store.ts` | Surface `parentSessionId` and a `getChildren(parentId)` selector. |
-| `src/server/orchestrator/integration_tests/agent-spawned-session.test.ts` | **New.** End-to-end test for the spawn happy path + quotas + linkage. |
+| File | Change | Status |
+|---|---|---|
+| `src/server/session/agent-shim/shipit.ts` | **New.** The shim entry point. Mirrors `gh.ts` from doc 116. Parses `shipit session create/list/view`, brokers via the worker. | done |
+| `src/server/session/agent-shim/shipit.test.ts` | **New.** Unit tests — argument parsing, allowlist (every rejected subcommand), happy paths for create/list/view, quota 429 + 400 error formatting, JSON output. 38 cases. | done |
+| `src/server/session/agent-ops-routes.ts` | Added `/agent-ops/session/create`, `/agent-ops/session/list`, `/agent-ops/session/view/:childId`. | done |
+| `src/server/session/agent-ops-routes.test.ts` | Added 6 cases covering the new `/agent-ops/session/*` relay routes and 404/429 status pass-through. | done |
+| `src/server/session/orchestrator-client.ts` | No change — the existing client already covers session-scoped routes. | done |
+| `src/server/orchestrator/api-routes-session.ts` | Added `POST /api/sessions/:parentId/spawn`, `GET /api/sessions/:parentId/children`, `GET /api/sessions/:parentId/children/:childId`. *(Phase 3: `/message`, `/archive`.)* | done (Phase 1 subset) |
+| `src/server/orchestrator/services/session.ts` | New `spawnChildSession()` composes existing primitives (`fetchCache` / `cloneFromCache` / `git checkout -b` / `runner.sendSystemMessage`). New read helpers `listSpawnedChildren()`, `getSpawnedChild()`. Quota constants exported for tests. | done |
+| `src/server/orchestrator/sessions.ts` | Added `parent_session_id` and `spawned_by_turn` columns to the SQL row mapping; new `setParentSession()` and `findChildren()` query. | done |
+| `src/server/shared/database.ts` | Migration 11 — adds `parent_session_id`, `spawned_by_turn` columns + `idx_sessions_parent` index. | done |
+| `src/server/shared/types/domain-types.ts` | Added `parentSessionId` and `spawnedByTurn` to `SessionInfo`. | done |
+| `src/server/shared/types/ws-server-messages.ts` | *(Phase 2.)* Add `session_spawned` event — deferred until Phase 2 ships the parent-chat `SpawnedSessionCard`. | planned |
+| `src/server/orchestrator/ws-handlers/agent-listeners.ts` | *(Phase 2.)* Forward `session_spawned` events to the parent's WS clients. | planned |
+| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* Append agent-specific guidance: Claude branch gets the "Task vs shipit session create" rule; Codex branch gets the "only spawn when the user asked" rule. | planned |
+| `src/server/shipit-docs/sessions.md` | **New.** Documents the shim, the supported subcommands, the rejected ones, and the `Task` vs `shipit session create` decision rule (per-agent). | done |
+| `src/server/shipit-docs/README.md` | Added `sessions.md` to the index. | done |
+| `docker/Dockerfile.session-worker.{dev,prod,dogfood}` | Install the shim at `/usr/local/bin/shipit`, owned by root, mode 0755. (`.docker` inherits via `BASE_IMAGE`.) | done |
+| `src/client/components/SessionList.tsx` | *(Phase 2.)* Render spawned children indented under their parent. | planned |
+| `src/client/components/SpawnedSessionCard.tsx` | *(Phase 2.)* **New.** In-chat card showing a spawned child's status. | planned |
+| `src/client/components/MessageList.tsx` | *(Phase 2.)* Render `SpawnedSessionCard` when a `session_spawned` event appears in the message group. | planned |
+| `src/client/stores/session-store.ts` | *(Phase 2.)* Surface `parentSessionId` and a `getChildren(parentId)` selector. | planned |
+| `src/server/orchestrator/integration_tests/agent-spawned-session.test.ts` | **New.** End-to-end coverage of the spawn happy path, parent-linkage persistence, per-turn quota 429, list ordering, and cross-tenancy 404 on `view`. 7 cases. | done |
 
 ## Open questions
 

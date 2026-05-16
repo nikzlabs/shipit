@@ -140,4 +140,46 @@ export function registerAgentOpsRoutes(
     async (request, reply) =>
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/reopen`, {}, reply),
   );
+
+  // ---------------------------------------------------------------------------
+  // Agent-spawned sibling sessions (docs/117)
+  //
+  // These routes back the `shipit session create|list|view` shim subcommands.
+  // The worker's `OrchestratorClient` injects this container's session id as
+  // the parent — the agent cannot ask for spawns under a different parent.
+  // The orchestrator additionally enforces "child must be a direct descendant
+  // of parent" on every read; the worker just narrows the surface.
+  // ---------------------------------------------------------------------------
+
+  // POST /agent-ops/session/create — create a new spawned child session
+  app.post<{
+    Body: {
+      prompt?: string;
+      title?: string;
+      branch?: string;
+      base?: string;
+      agent?: string;
+      model?: string;
+    };
+  }>(
+    "/agent-ops/session/create",
+    async (request, reply) => relay("POST", "/spawn", request.body ?? {}, reply),
+  );
+
+  // GET /agent-ops/session/list — list children spawned by this parent
+  app.get<{ Querystring: { turn?: string } }>(
+    "/agent-ops/session/list",
+    async (request, reply) => {
+      const turn = request.query.turn;
+      const qs = turn ? `?turn=${encodeURIComponent(turn)}` : "";
+      return relay("GET", `/children${qs}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/session/view/:childId — view a single child session
+  app.get<{ Params: { childId: string } }>(
+    "/agent-ops/session/view/:childId",
+    async (request, reply) =>
+      relay("GET", `/children/${encodeURIComponent(request.params.childId)}`, undefined, reply),
+  );
 }

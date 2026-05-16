@@ -19,6 +19,10 @@ interface SessionRow {
   merged_at: string | null;
   model: string | null;
   pr_status: string | null;
+  /** docs/117 — set when the session was spawned by another via `shipit session create`. */
+  parent_session_id: string | null;
+  /** docs/117 — message-group id of the parent turn that spawned this session. */
+  spawned_by_turn: string | null;
 }
 
 export class SessionManager {
@@ -45,6 +49,8 @@ export class SessionManager {
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
     if (row.model) info.model = row.model;
+    if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
+    if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
     return info;
   }
 
@@ -257,6 +263,36 @@ export class SessionManager {
   /** Store the selected model for a session. */
   setModel(id: string, model: string): void {
     this.db.prepare("UPDATE sessions SET model = ? WHERE id = ?").run(model, id);
+  }
+
+  /**
+   * docs/117 — record that this session was spawned by another session.
+   * `spawnedByTurn` is optional context for "list children spawned in the
+   * current turn" sorting; pass `undefined` if the caller doesn't have a
+   * turn id handy.
+   */
+  setParentSession(id: string, parentSessionId: string, spawnedByTurn?: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET parent_session_id = ?, spawned_by_turn = ? WHERE id = ?",
+    ).run(parentSessionId, spawnedByTurn ?? null, id);
+  }
+
+  /**
+   * docs/117 — return every non-archived session whose `parent_session_id`
+   * matches the given parent. Sorted most-recently-spawned first so the
+   * sidebar's "spawned in this turn" group naturally bubbles to the top.
+   *
+   * Used by:
+   *   - the `shipit session list` shim subcommand (scopes by the calling
+   *     worker's session id so a parent agent only ever sees children it
+   *     actually spawned),
+   *   - the sidebar's "spawned by parent" grouping rendering.
+   */
+  findChildren(parentSessionId: string): SessionInfo[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM sessions WHERE parent_session_id = ? AND archived = 0 ORDER BY last_used_at DESC, rowid DESC",
+    ).all(parentSessionId) as SessionRow[];
+    return rows.map((r) => this.fromRow(r));
   }
 
   /**

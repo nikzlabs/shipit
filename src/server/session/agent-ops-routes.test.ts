@@ -158,6 +158,79 @@ describe("agent-ops routes", () => {
     expect(res.json()).toMatchObject({ error: "Not authenticated" });
   });
 
+  // ---- Agent-spawned sessions (docs/117) ----
+
+  it("POST /agent-ops/session/create forwards to /spawn with body", async () => {
+    client.setResponse("POST", "/spawn", {
+      ok: true, status: 200,
+      body: { sessionId: "ses_abc", branch: "port-api-ts", status: "running" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/session/create",
+      payload: { prompt: "Port API to TS", branch: "port-api-ts" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ sessionId: "ses_abc", branch: "port-api-ts" });
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0].method).toBe("POST");
+    expect(client.calls[0].path).toBe("/spawn");
+    expect(client.calls[0].body).toMatchObject({ prompt: "Port API to TS", branch: "port-api-ts" });
+  });
+
+  it("POST /agent-ops/session/create surfaces a 429 quota error", async () => {
+    client.setResponse("POST", "/spawn", {
+      ok: false, status: 429,
+      body: { error: "Per-turn spawn limit reached" },
+    });
+    const res = await app.inject({
+      method: "POST", url: "/agent-ops/session/create", payload: { prompt: "x" },
+    });
+    expect(res.statusCode).toBe(429);
+    expect(res.json().error).toContain("Per-turn spawn limit");
+  });
+
+  it("GET /agent-ops/session/list forwards to /children", async () => {
+    client.setResponse("GET", "/children", {
+      ok: true, status: 200,
+      body: { children: [{ id: "ses_a", title: "A", status: "running" }] },
+    });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/session/list" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/children");
+    expect((res.json() as { children: unknown[] }).children).toHaveLength(1);
+  });
+
+  it("GET /agent-ops/session/list forwards ?turn=", async () => {
+    client.setResponse("GET", "/children", {
+      ok: true, status: 200, body: { children: [] },
+    });
+    await app.inject({ method: "GET", url: "/agent-ops/session/list?turn=turn-xyz" });
+    expect(client.calls[0].path).toContain("/children?turn=turn-xyz");
+  });
+
+  it("GET /agent-ops/session/view/:childId forwards to /children/:childId", async () => {
+    client.setResponse("GET", "/children/ses_x", {
+      ok: true, status: 200,
+      body: { child: { id: "ses_x", title: "T", status: "idle" } },
+    });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/session/view/ses_x" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/children/ses_x");
+    expect((res.json() as { child: { id: string } }).child.id).toBe("ses_x");
+  });
+
+  it("GET /agent-ops/session/view/:childId surfaces a 404 verbatim", async () => {
+    client.setResponse("GET", "/children/ses_other", {
+      ok: false, status: 404, body: { error: "Spawned session not found" },
+    });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/session/view/ses_other" });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe("Spawned session not found");
+  });
+
   it("returns a 500 with a clear message when the orchestrator client cannot be constructed", async () => {
     const errApp = Fastify({ logger: false });
     registerAgentOpsRoutes(errApp, {
