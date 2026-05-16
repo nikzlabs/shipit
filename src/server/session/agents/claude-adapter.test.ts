@@ -148,8 +148,61 @@ describe("ClaudeAdapter", () => {
       sessionId: "sess-123",
       cost: { totalUsd: 0.05 },
       tokens: { input: 100, output: 50, cacheRead: 10, cacheWrite: 5 },
+      contextTokens: undefined,
+      contextWindow: undefined,
       durationMs: 1200,
       error: undefined,
+    });
+  });
+
+  it("extracts per-turn context from the last iteration, not the sum", () => {
+    // Multi-call turn: the CLI's top-level usage fields are sums across all
+    // API calls in the turn. The dial would over-count by 3× here if we
+    // used them as "current context size". The last iteration's
+    // input + cache_read + cache_create is the real occupancy.
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "sess-multi",
+      total_cost_usd: 0.10,
+      duration_ms: 5000,
+      usage: {
+        // Sums across 3 iterations — would read as 300K of context if used.
+        input_tokens: 30,
+        output_tokens: 600,
+        cache_read_input_tokens: 270_000,
+        cache_creation_input_tokens: 30_000,
+        iterations: [
+          { input_tokens: 10, cache_read_input_tokens: 80_000, cache_creation_input_tokens: 10_000 },
+          { input_tokens: 10, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 10_000 },
+          // Real per-turn context = 10 + 100_000 + 10_000 = 110_010
+          { input_tokens: 10, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 10_000 },
+        ],
+      },
+      modelUsage: {
+        "claude-opus-4-7": {
+          inputTokens: 30,
+          outputTokens: 600,
+          costUSD: 0.10,
+          contextWindow: 1_000_000,
+        },
+      },
+    } satisfies ClaudeEvent);
+
+    expect(events).toHaveLength(1);
+    expect((events[0] as any).contextTokens).toBe(110_010);
+    expect((events[0] as any).contextWindow).toBe(1_000_000);
+    // Turn-wide totals stay untouched — they're the right number for billing.
+    expect((events[0] as any).tokens).toEqual({
+      input: 30,
+      output: 600,
+      cacheRead: 270_000,
+      cacheWrite: 30_000,
     });
   });
 

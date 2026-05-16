@@ -123,6 +123,29 @@ Fix: a shared `turnContextTokens(turn)` helper in `usage-types.ts` returns `inpu
 
 `inputTokens` alone is still used where it's genuinely wanted (the popover's "Input tokens" total, the usage modal's "Token totals" → Input row).
 
+## Multi-call turns: use the last iteration, not the sum
+
+The naive `inputTokens + cacheRead + cacheCreate` sum was correct for single-call turns, but wrong by an N× factor for **multi-call (tool-use) turns**. The Claude CLI's top-level `result.usage.cache_read_input_tokens` is the SUM across every API round-trip in the turn, so a turn with 10 tool calls reports ~10× the actual context — surfaced in the wild as "Context: 573.4K / 200K" for a single tool-heavy turn.
+
+The CLI exposes the per-iteration breakdown in `result.usage.iterations[]` (added to `ClaudeResultEvent` in `claude-types.ts`). The LAST iteration's `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` is the true context-window occupancy at turn end.
+
+Plumbed end-to-end:
+
+- `claude-adapter.ts` extracts `contextTokens` from the last entry of `usage.iterations` and emits it on `AgentResultEvent.contextTokens`.
+- `agent-listeners.ts` passes `contextTokens` into `UsageManager.record()` and the `turn_usage_update` payload.
+- New `context_tokens` column on `usage_turns` (migration 12) so the value is persisted and rehydrated by `/api/sessions/:id/history`.
+- `turnContextTokens()` prefers the explicit `turn.contextTokens` when present and falls back to the cache-sum for legacy rows. All call sites (`ContextDial`, `useMessageHandler`, `session-data`) inherit the fix transparently.
+- `tokens.cacheRead` / `tokens.cacheWrite` on `AgentResultEvent` keep their existing meaning (turn-wide sums) and continue to drive cost/billing rollups — only the dial's "current context size" reading switched to the last-iteration value.
+
+## Authoritative context window from `result.modelUsage.contextWindow`
+
+The original implementation derived the context window from a static `MODEL_CONTEXT_WINDOWS` map keyed by substring. That's brittle: Claude Opus 4.7 ships with a 1M window, but the map's `"opus": 200_000` entry beat any future-model substring and pinned the dial at 200K. The Claude CLI already reports the real window in `result.modelUsage.<model>.contextWindow` — that's now the source of truth.
+
+- `ClaudeResultEvent.modelUsage` and `ClaudeModelUsage` types added to `claude-types.ts`.
+- `claude-adapter.ts` extracts the largest `contextWindow` reported across models in the turn (handles mid-turn model switches by keeping the more permissive value).
+- `agent-listeners.ts` re-emits `model_info` with the authoritative `contextWindowTokens` from the result event, overriding whatever the static map produced on `agent_init`.
+- The static map is still used (a) for the first frame before `result` arrives, and (b) for adapters that can't surface the field. `"claude-opus-4-7": 1_000_000` was added so even the first-frame fallback is correct.
+
 ## Future extensions
 
 - **Auto-compact** — a setting that, on reaching 90%, has the agent itself proactively run a compaction during its next turn (agent-driven, not a UI button).

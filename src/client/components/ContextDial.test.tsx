@@ -151,4 +151,27 @@ describe("ContextDial", () => {
     // 4 + 120K + 50K = ~170K of a 200K window → orange.
     expect(dial.getAttribute("data-level")).toBe("orange");
   });
+
+  it("prefers explicit contextTokens over the cache-sum for tool-heavy turns", () => {
+    // Regression for the "573K / 200K" bug: a multi-call turn's
+    // cacheRead/cacheCreate are SUMS across every API call in the turn,
+    // so summing them over-counts by N×. The adapter now extracts the
+    // last iteration's input + cache into `contextTokens`. The dial must
+    // honor it instead of re-summing.
+    render(
+      <ContextDial
+        modelInfo={window200k}
+        turnUsage={[
+          makeTurn(30, {
+            cacheRead: 540_000, // sum across many iterations
+            cacheCreate: 36_000,
+            contextTokens: 50_000, // real per-turn occupancy
+          }),
+        ]}
+      />,
+    );
+    const dial = screen.getByTestId("context-dial");
+    // 50K of 200K = 25% → green (would be red if we summed cache fields).
+    expect(dial.getAttribute("data-level")).toBe("green");
+  });
 });

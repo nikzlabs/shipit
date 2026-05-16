@@ -11,6 +11,7 @@ interface UsageRow {
   cache_read_tokens: number | null;
   cache_create_tokens: number | null;
   model: string | null;
+  context_tokens: number | null;
   created_at: string;
 }
 
@@ -23,6 +24,12 @@ export interface RecordedTurn {
   cacheRead?: number;
   cacheCreate?: number;
   model?: string;
+  /**
+   * Real context occupancy at turn end (last API iteration's input + cache).
+   * Distinct from the turn-wide cache sums, which over-count for multi-call
+   * tool-use turns. See `TurnUsage.contextTokens` doc.
+   */
+  contextTokens?: number;
 }
 
 export class UsageManager {
@@ -39,9 +46,9 @@ export class UsageManager {
       INSERT INTO usage_turns (
         session_id, cost_usd, duration_ms,
         input_tokens, output_tokens,
-        cache_read_tokens, cache_create_tokens, model
+        cache_read_tokens, cache_create_tokens, model, context_tokens
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.stmtSessionUsage = this.db.prepare(`
       SELECT SUM(cost_usd) as total_cost, SUM(duration_ms) as total_duration, COUNT(*) as turn_count
@@ -74,7 +81,7 @@ export class UsageManager {
     durationMs: number,
     inputTokens?: number,
     outputTokens?: number,
-    extra?: { cacheRead?: number; cacheCreate?: number; model?: string },
+    extra?: { cacheRead?: number; cacheCreate?: number; model?: string; contextTokens?: number },
   ): void {
     this.stmtInsert.run(
       sessionId,
@@ -85,6 +92,7 @@ export class UsageManager {
       extra?.cacheRead ?? null,
       extra?.cacheCreate ?? null,
       extra?.model ?? null,
+      extra?.contextTokens ?? null,
     );
   }
 
@@ -142,6 +150,7 @@ export class UsageManager {
       if (r.cache_read_tokens !== null) turn.cacheRead = r.cache_read_tokens;
       if (r.cache_create_tokens !== null) turn.cacheCreate = r.cache_create_tokens;
       if (r.model !== null) turn.model = r.model;
+      if (r.context_tokens !== null) turn.contextTokens = r.context_tokens;
       out.push(turn);
     }
     return out;
@@ -195,6 +204,7 @@ export class UsageManager {
     if (row.cache_read_tokens !== null) turn.cacheRead = row.cache_read_tokens;
     if (row.cache_create_tokens !== null) turn.cacheCreate = row.cache_create_tokens;
     if (row.model !== null) turn.model = row.model;
+    if (row.context_tokens !== null) turn.contextTokens = row.context_tokens;
     return turn;
   }
 }
