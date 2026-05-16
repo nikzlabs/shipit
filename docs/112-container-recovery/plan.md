@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # Container recovery — debug visibility + escalation actions
