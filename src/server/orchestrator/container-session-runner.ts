@@ -6,8 +6,22 @@
  * From the perspective of HandlerContext, WebSocket handlers, and the registry,
  * this is indistinguishable from a direct runner.
  *
- * Phase 1: agent start/stop/interrupt + SSE event forwarding.
- * Phase 3: terminal, preview, file watcher proxy.
+ * Internally the class is composed of three collaborators that own narrow
+ * slices of state:
+ *  - `SseConnectionManager` — the worker `/events` stream, reconnect backoff,
+ *    keepalive, and the activity gauge.
+ *  - `TurnAccumulator` — message queue, accumulated assistant text/tool-use,
+ *    chat-message-group log, and the turn-event replay buffer used by
+ *    reconnecting viewers.
+ *  - `TerminalBufferManager` — server-side terminal output buffer and the
+ *    terminal-running flag.
+ *
+ * The runner itself owns lifecycle (viewer counts, dispose, reconcile timer),
+ * agent-proxy coordination (since `ProxyAgentProcess` holds a `ProxyAgentRunner`
+ * back-reference to it and tests exercise `_startAgentViaProxy` directly),
+ * service-manager wiring, and the install-state machine — these are
+ * inseparable from the runner's role as the session orchestrator's worker
+ * facade.
  */
 
 import { EventEmitter } from "node:events";
@@ -15,13 +29,14 @@ import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup } from "./session-runner.js";
 import { runSystemTurn } from "./session-runner.js";
-import { connectSSE } from "./sse-client.js";
 import type { SSEEvent } from "./sse-client.js";
 import { workerPost, workerGet, workerInstall, workerPushAgentSecrets } from "./worker-http.js";
-import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } from "./service-manager.js";
+import { SseConnectionManager } from "./sse-connection-manager.js";
+import { TurnAccumulator } from "./turn-accumulator.js";
+import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 
 // ---------------------------------------------------------------------------
 // Barrel re-exports for backwards compatibility
@@ -46,66 +61,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private workerUrl: string;
   private _workerReady: Promise<void>;
   private _resolveWorkerReady!: () => void;
-  private sseConnection: { close: () => void } | null = null;
-  private sseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private sseReconnectAttempts = 0;
-  private static readonly MAX_RECONNECT_DELAY_MS = 10_000;
-  /**
-   * Idle timeout for the SSE stream. The worker sends a keepalive
-   * comment every 15s (`session-worker.ts`); we treat ≥3 missed
-   * keepalives (45s) as a silently-dead connection and force a
-   * reconnect. Without this, half-open TCP sockets (NAT idle drops,
-   * frozen worker processes) appear "connected" indefinitely and the
-   * agent / terminal / preview surfaces freeze with no recovery.
-   */
-  private static readonly SSE_IDLE_TIMEOUT_MS = 45_000;
-  private _sseConnected: Promise<void> | null = null;
-  private _resolveSseConnected: (() => void) | null = null;
 
-  // Agent state (mirrored locally for synchronous access by HandlerContext)
+  // Collaborators (own narrow slices of state — see file header).
+  private sse: SseConnectionManager;
+  private turn = new TurnAccumulator();
+  private termBuf = new TerminalBufferManager();
+
+  // Agent state (mirrored locally for synchronous access by HandlerContext).
+  // Kept on the runner itself because `ProxyAgentProcess` holds a back-reference
+  // to the runner via the `ProxyAgentRunner` contract and tests invoke the
+  // delegation methods directly.
   private _agent: ProxyAgentProcess | null = null;
   private _agentId: AgentId;
   private _isRunning = false;
   private _wasInterrupted = false;
-  private _accumulatedText = "";
-  private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
-  private _turnSummary = "";
-  private _chatMessageGroups: ChatMessageGroup[] = [];
-  private _needsNewMessageGroup = true;
-
-  // Message queue
-  private _messageQueue: QueuedMessage[] = [];
-  private static readonly MAX_QUEUE_SIZE = 50;
 
   // Terminal (remote — runs inside container)
   private _terminal: TerminalProcess | null = null;
-  private _terminalOutputBuffer = "";
-  /**
-   * Maximum size of the server-side terminal output buffer in bytes.
-   * Sized at ~80KB to approximate the client's 1000-line xterm.js scrollback
-   * buffer (assuming ~80 chars/line average). This ensures that replayed
-   * output on reconnect covers roughly the same window the user could scroll
-   * through on the client.
-   *
-   * The client-side xterm.js scrollback (1000 lines) and this server-side
-   * byte buffer serve different purposes: the server buffer enables replay
-   * after SSE reconnection, while the client buffer provides local scroll.
-   * They may drift — the server may hold data that doesn't fit in client
-   * scrollback, or vice versa — which is acceptable since server-side replay
-   * is "best effort" to restore visual context after a reconnect.
-   */
-  private static readonly MAX_TERMINAL_BUFFER = 80_000;
-  private _remoteTerminalRunning = false;
-  /** Maximum SSE reconnection attempts for terminal recovery. */
-  private static readonly MAX_TERMINAL_RECONNECT_ATTEMPTS = 3;
 
   // Auto-push timer
   private _pushTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // Turn event buffer
-  private _turnEventBuffer: WsServerMessage[] = [];
-  private static readonly MAX_TURN_BUFFER = 1000;
-  lastPersistedBufferIndex = 0;
 
   // Viewer tracking
   private _viewerCount = 0;
@@ -125,14 +100,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // Per-session detected ports
   private _detectedPorts: number[] = [];
-
-  /**
-   * Timestamp (Date.now()) of the most recent SSE event from the worker.
-   * Used by the container health endpoint to surface "last event 47s ago"
-   * so the user can tell when the SSE stream has stalled even if the
-   * container itself is still running.
-   */
-  private _lastSseEventAt = 0;
 
   // Compose service management
   private _serviceManager: ServiceManager | null = null;
@@ -181,6 +148,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   ]);
 
   private _disposed = false;
+  private _workerResourcesStarted = false;
 
   constructor(opts: {
     sessionId: string;
@@ -200,6 +168,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._workerReady = Promise.resolve();
       this._resolveWorkerReady = () => {};
     }
+
+    this.sse = new SseConnectionManager({
+      logLabel: `container-runner:${this.sessionId}`,
+      getWorkerUrl: () => this.workerUrl,
+      workerReady: () => this._workerReady,
+      onEvent: (event) => this.handleSSEEvent(event),
+      onOpen: (isReconnect) => this.onSseOpen(isReconnect),
+      onDisconnect: (attempt) => this.onSseDisconnect(attempt),
+      isDisposed: () => this._disposed,
+      resourcesStarted: () => this._workerResourcesStarted,
+    });
   }
 
   /** Update the worker URL once the container is ready. */
@@ -230,20 +209,20 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
 
-  get accumulatedText(): string { return this._accumulatedText; }
-  set accumulatedText(s: string) { this._accumulatedText = s; }
+  get accumulatedText(): string { return this.turn.accumulatedText; }
+  set accumulatedText(s: string) { this.turn.accumulatedText = s; }
 
-  get accumulatedToolUse(): ClaudeContentBlockToolUse[] { return this._accumulatedToolUse; }
-  set accumulatedToolUse(blocks: ClaudeContentBlockToolUse[]) { this._accumulatedToolUse = blocks; }
+  get accumulatedToolUse(): ClaudeContentBlockToolUse[] { return this.turn.accumulatedToolUse; }
+  set accumulatedToolUse(blocks: ClaudeContentBlockToolUse[]) { this.turn.accumulatedToolUse = blocks; }
 
-  get turnSummary(): string { return this._turnSummary; }
-  set turnSummary(s: string) { this._turnSummary = s; }
+  get turnSummary(): string { return this.turn.turnSummary; }
+  set turnSummary(s: string) { this.turn.turnSummary = s; }
 
-  get chatMessageGroups(): ChatMessageGroup[] { return this._chatMessageGroups; }
-  set chatMessageGroups(groups: ChatMessageGroup[]) { this._chatMessageGroups = groups; }
+  get chatMessageGroups(): ChatMessageGroup[] { return this.turn.chatMessageGroups; }
+  set chatMessageGroups(groups: ChatMessageGroup[]) { this.turn.chatMessageGroups = groups; }
 
-  get needsNewMessageGroup(): boolean { return this._needsNewMessageGroup; }
-  set needsNewMessageGroup(v: boolean) { this._needsNewMessageGroup = v; }
+  get needsNewMessageGroup(): boolean { return this.turn.needsNewMessageGroup; }
+  set needsNewMessageGroup(v: boolean) { this.turn.needsNewMessageGroup = v; }
 
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
@@ -258,28 +237,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // --- Message queue ---
 
-  get messageQueue(): QueuedMessage[] { return this._messageQueue; }
-  get queueLength(): number { return this._messageQueue.length; }
-
-  enqueue(msg: QueuedMessage): number {
-    if (this._messageQueue.length >= ContainerSessionRunner.MAX_QUEUE_SIZE) {
-      throw new Error(`Message queue is full (max ${ContainerSessionRunner.MAX_QUEUE_SIZE})`);
-    }
-    this._messageQueue.push(msg);
-    return this._messageQueue.length;
-  }
-
-  dequeue(): QueuedMessage | undefined {
-    return this._messageQueue.shift();
-  }
-
-  clearQueue(): void {
-    this._messageQueue.length = 0;
-  }
-
-  getQueueSnapshot(): { text: string; position: number }[] {
-    return this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 }));
-  }
+  get messageQueue(): QueuedMessage[] { return this.turn.messageQueue; }
+  get queueLength(): number { return this.turn.queueLength; }
+  enqueue(msg: QueuedMessage): number { return this.turn.enqueue(msg); }
+  dequeue(): QueuedMessage | undefined { return this.turn.dequeue(); }
+  clearQueue(): void { this.turn.clearQueue(); }
+  getQueueSnapshot(): { text: string; position: number }[] { return this.turn.getQueueSnapshot(); }
 
   // --- Terminal ---
 
@@ -287,20 +250,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   setTerminal(t: TerminalProcess | null): void { this._terminal = t; }
 
   /** Whether the remote terminal inside the container is running. */
-  get remoteTerminalRunning(): boolean { return this._remoteTerminalRunning; }
+  get remoteTerminalRunning(): boolean { return this.termBuf.running; }
 
-  appendTerminalOutput(data: string): void {
-    this._terminalOutputBuffer += data;
-    if (this._terminalOutputBuffer.length > ContainerSessionRunner.MAX_TERMINAL_BUFFER) {
-      this._terminalOutputBuffer = truncateTerminalBuffer(
-        this._terminalOutputBuffer,
-        ContainerSessionRunner.MAX_TERMINAL_BUFFER,
-      );
-    }
-  }
-
-  getTerminalOutputBuffer(): string { return this._terminalOutputBuffer; }
-  clearTerminalOutputBuffer(): void { this._terminalOutputBuffer = ""; }
+  appendTerminalOutput(data: string): void { this.termBuf.append(data); }
+  getTerminalOutputBuffer(): string { return this.termBuf.buffer; }
+  clearTerminalOutputBuffer(): void { this.termBuf.clear(); }
 
   // --- Auto-push timer ---
 
@@ -316,21 +270,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // --- Turn event buffer ---
 
-  getTurnEventBuffer(): WsServerMessage[] { return [...this._turnEventBuffer]; }
-  clearTurnEventBuffer(): void { this._turnEventBuffer = []; this.lastPersistedBufferIndex = 0; }
+  getTurnEventBuffer(): WsServerMessage[] { return this.turn.getTurnEventBuffer(); }
+  clearTurnEventBuffer(): void { this.turn.clearTurnEventBuffer(); }
+
+  get lastPersistedBufferIndex(): number { return this.turn.lastPersistedBufferIndex; }
+  set lastPersistedBufferIndex(v: number) { this.turn.lastPersistedBufferIndex = v; }
 
   emitMessage(msg: WsServerMessage): void {
-    if (this._turnEventBuffer.length < ContainerSessionRunner.MAX_TURN_BUFFER) {
-      this._turnEventBuffer.push(msg);
-    } else if (this._turnEventBuffer.length === ContainerSessionRunner.MAX_TURN_BUFFER) {
-      const keep = 10;
-      const recent = this._turnEventBuffer.length - keep;
-      this._turnEventBuffer = [
-        ...this._turnEventBuffer.slice(0, keep),
-        ...this._turnEventBuffer.slice(recent),
-        msg,
-      ];
-    }
+    this.turn.pushTurnEvent(msg);
     this.emit("message", msg);
   }
 
@@ -340,7 +287,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   set detectedPorts(ports: number[]) { this._detectedPorts = ports; }
 
   /** Timestamp of the most recent SSE event from the worker, or 0 if none yet. */
-  get lastSseEventAt(): number { return this._lastSseEventAt; }
+  get lastSseEventAt(): number { return this.sse.lastActivityAt; }
 
   /** Worker URL (read-only — used by the container health endpoint). */
   getWorkerUrl(): string { return this.workerUrl; }
@@ -488,8 +435,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get viewerCount(): number { return this._viewerCount; }
   get lastViewerDetachAt(): number { return this._lastViewerDetachAt; }
-
-  private _workerResourcesStarted = false;
 
   attachViewer(): void {
     this._viewerCount++;
@@ -664,7 +609,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         throw err;
       }
     }
-    if (!this.sseConnection) {
+    if (!this.sse.isConnected) {
       await this.connectEventStream();
     }
   }
@@ -682,7 +627,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
 
     // Ensure SSE is connected to receive events
-    if (!this.sseConnection) {
+    if (!this.sse.isConnected) {
       await this.connectEventStream();
     }
 
@@ -734,7 +679,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Start a terminal PTY inside the container. */
   async startTerminalOnWorker(cols?: number, rows?: number): Promise<void> {
     await workerPost(this.workerUrl, "/terminal/start", { cols, rows });
-    this._remoteTerminalRunning = true;
+    this.termBuf.running = true;
   }
 
   /** Write data to the terminal inside the container. */
@@ -994,136 +939,58 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   /** Connect to the worker SSE stream. Returns a promise that resolves once the connection is open. */
   private connectEventStream(): Promise<void> {
-    if (this.sseConnection || this._disposed) {
-      return this._sseConnected ?? Promise.resolve();
-    }
-
-    this._sseConnected = new Promise<void>((resolve) => {
-      this._resolveSseConnected = resolve;
-    });
-
-    // Wait for the container to be ready before connecting
-    // eslint-disable-next-line no-restricted-syntax -- waits for container readiness in sync context
-    void this._workerReady.then(() => {
-      if (this.sseConnection || this._disposed) return;
-      this._connectEventStreamNow();
-    });
-
-    return this._sseConnected;
-  }
-
-  private _connectEventStreamNow(): void {
-    const isReconnect = this.sseReconnectAttempts > 0;
-    this.sseConnection = connectSSE(
-      `${this.workerUrl}/events`,
-      (event) => this.handleSSEEvent(event),
-      (err) => {
-        console.error(`[container-runner:${this.sessionId}] SSE error:`, err.message);
-        this.sseConnection = null;
-        this.handleSSEDisconnect();
-      },
-      () => {
-        this.sseConnection = null;
-        if (this._workerResourcesStarted && !this._disposed) {
-          this.handleSSEDisconnect();
-        }
-      },
-      () => {
-        // onOpen — SSE connection established
-        // Reset reconnect counter only on successful connection
-        this.sseReconnectAttempts = 0;
-        if (this._resolveSseConnected) {
-          this._resolveSseConnected();
-          this._resolveSseConnected = null;
-        }
-        // On reconnect with a running terminal, replay buffered output
-        // prefixed with a terminal reset sequence so xterm.js starts
-        // from a known-good state (avoids corrupted rendering from
-        // output that was truncated mid-escape-sequence).
-        if (isReconnect && this._remoteTerminalRunning) {
-          const buffered = this.getTerminalOutputBuffer();
-          if (buffered) {
-            this.emitMessage({ type: "terminal_output", data: `\x1bc${  buffered}` });
-          }
-        }
-        // On reconnect with an in-flight install, re-poll worker for the
-        // current install state — if the worker fired install_done while
-        // SSE was disconnected, that event was lost and the orchestrator's
-        // install promise would hang forever otherwise.
-        if (isReconnect && this._installInFlight) {
-          void this.resyncInstallStateAfterReconnect();
-        }
-      },
-      {
-        idleTimeoutMs: ContainerSessionRunner.SSE_IDLE_TIMEOUT_MS,
-        // Advance the liveness gauge on every byte from the worker,
-        // including keepalive comments. `handleSSEEvent` updates this
-        // too; keeping both write paths means the gauge reflects
-        // connection health (not just "agent emitted something").
-        onActivity: () => { this._lastSseEventAt = Date.now(); },
-      },
-    );
+    return this.sse.connect();
   }
 
   /**
-   * Handle SSE disconnection: notify client if terminal is running and
-   * schedule a reconnection attempt (up to MAX_TERMINAL_RECONNECT_ATTEMPTS
-   * when the terminal is active).
+   * Called by the SSE manager when a fresh stream opens. On reconnect with
+   * a running terminal we replay buffered output prefixed with a terminal
+   * reset sequence so xterm.js starts from a known-good state; on reconnect
+   * with an in-flight install we re-poll the worker so we don't hang
+   * forever waiting for an `install_done` event that was lost.
    */
-  private handleSSEDisconnect(): void {
-    if (this._remoteTerminalRunning) {
-      // Notify the client that terminal connectivity was lost
-      const attempt = this.sseReconnectAttempts + 1;
+  private onSseOpen(isReconnect: boolean): void {
+    if (isReconnect && this.termBuf.running) {
+      const buffered = this.termBuf.buffer;
+      if (buffered) {
+        this.emitMessage({ type: "terminal_output", data: `\x1bc${  buffered}` });
+      }
+    }
+    if (isReconnect && this._installInFlight) {
+      void this.resyncInstallStateAfterReconnect();
+    }
+  }
+
+  /**
+   * Called by the SSE manager when the stream errors or closes. If the
+   * remote terminal is running, emits `terminal_reconnecting` so the
+   * client can render a banner, and bumps the terminal-only reconnect
+   * counter. Returning `false` aborts the manager's auto-reconnect when
+   * we've exceeded the terminal-only cap.
+   */
+  private onSseDisconnect(attempt: number): boolean | undefined {
+    if (this.termBuf.running) {
       this.emitMessage({
         type: "terminal_reconnecting",
         attempt,
-        maxAttempts: ContainerSessionRunner.MAX_TERMINAL_RECONNECT_ATTEMPTS,
+        maxAttempts: TerminalBufferManager.MAX_RECONNECT_ATTEMPTS,
       });
-
-      if (attempt > ContainerSessionRunner.MAX_TERMINAL_RECONNECT_ATTEMPTS) {
-        // Exceeded max terminal reconnect attempts — mark terminal as dead
+      if (attempt > TerminalBufferManager.MAX_RECONNECT_ATTEMPTS) {
         console.error(
-          `[container-runner:${this.sessionId}] Terminal SSE reconnect failed after ${ContainerSessionRunner.MAX_TERMINAL_RECONNECT_ATTEMPTS} attempts`,
+          `[container-runner:${this.sessionId}] Terminal SSE reconnect failed after ${TerminalBufferManager.MAX_RECONNECT_ATTEMPTS} attempts`,
         );
-        this._remoteTerminalRunning = false;
+        this.termBuf.running = false;
         this.emitMessage({ type: "terminal_exit", exitCode: null });
-        return;
+        return false;
       }
     }
-    this.scheduleReconnect();
-  }
-
-  private disconnectEventStream(): void {
-    if (this.sseConnection) {
-      this.sseConnection.close();
-      this.sseConnection = null;
-    }
-    if (this.sseReconnectTimer) {
-      clearTimeout(this.sseReconnectTimer);
-      this.sseReconnectTimer = null;
-    }
-  }
-
-  private scheduleReconnect(): void {
-    if (this._disposed || this.sseReconnectTimer) return;
-
-    // Exponential backoff: 1s, 2s, 4s, 8s, 10s (capped)
-    const delay = Math.min(
-      1000 * Math.pow(2, this.sseReconnectAttempts),
-      ContainerSessionRunner.MAX_RECONNECT_DELAY_MS,
-    );
-    this.sseReconnectAttempts++;
-
-    this.sseReconnectTimer = setTimeout(() => {
-      this.sseReconnectTimer = null;
-      void this.connectEventStream();
-    }, delay);
+    return true;
   }
 
   private handleSSEEvent(event: SSEEvent): void {
     try {
       const data = JSON.parse(event.data) as Record<string, unknown>;
-      this._lastSseEventAt = Date.now();
+      this.sse.markActivity();
 
       switch (event.type) {
         // --- Agent events ---
@@ -1166,7 +1033,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "terminal_exit":
-          this._remoteTerminalRunning = false;
+          this.termBuf.running = false;
           this.emitMessage({ type: "terminal_exit", exitCode: data.exitCode as number | null });
           break;
 
@@ -1354,7 +1221,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // --- Lifecycle ---
 
   onAgentFinished(): void {
-    if (!this._isRunning && this._messageQueue.length === 0) {
+    if (!this._isRunning && this.turn.queueLength === 0) {
       this.emit("idle");
     }
   }
@@ -1434,7 +1301,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     this.stopReconcileTimer();
     this.clearServiceManager();
-    this.disconnectEventStream();
+    this.sse.disconnect();
     this.clearPushTimer();
     // Resolve any awaiters of in-flight install so they don't leak.
     this.signalInstallComplete();
@@ -1445,18 +1312,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // its callers (e.g. `adoptExistingServiceManager`'s connectToNetwork)
     // will hit "No container found" and the `.catch` handles it.
     this._resolveWorkerReady();
-    // Same defense for `_sseConnected`: if dispose runs before the SSE
-    // stream actually opens, any `connectEventStream()` awaiter would
-    // otherwise hang forever. Resolving here is safe — awaiters that
-    // proceed past it check `this._disposed` and bail.
-    if (this._resolveSseConnected) {
-      this._resolveSseConnected();
-      this._resolveSseConnected = null;
-    }
-    this._messageQueue.length = 0;
-    this._turnEventBuffer = [];
+    // Same defense for the SSE-connect awaiter: if dispose runs before
+    // the SSE stream actually opens, any `connectEventStream()` awaiter
+    // would otherwise hang forever. Resolving here is safe — awaiters
+    // that proceed past it check `this._disposed` and bail.
+    this.sse.resolvePendingConnect();
+    this.turn.reset();
     this._isRunning = false;
-    this._remoteTerminalRunning = false;
+    this.termBuf.reset();
     this.emit("disposed");
     this.removeAllListeners();
   }

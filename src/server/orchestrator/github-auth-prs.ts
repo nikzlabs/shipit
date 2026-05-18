@@ -4,12 +4,7 @@
  */
 
 import { getErrorMessage } from "../shared/utils.js";
-
-const GITHUB_HEADERS = (token: string) => ({
-  Authorization: `Bearer ${token}`,
-  Accept: "application/vnd.github+json",
-  "User-Agent": "ShipIt",
-});
+import { fetchGitHub, fetchGitHubGraphQL, parseGitHubError } from "./github-api.js";
 
 /**
  * Create a pull request on GitHub.
@@ -28,14 +23,12 @@ export async function createPullRequest(
   },
 ): Promise<{ success: boolean; url?: string; number?: number; message?: string }> {
   try {
-    const res = await fetch(
+    const res = await fetchGitHub(
       `https://api.github.com/repos/${options.owner}/${options.repo}/pulls`,
+      token,
       {
         method: "POST",
-        headers: {
-          ...GITHUB_HEADERS(token),
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: options.title,
           body: options.body,
@@ -47,8 +40,7 @@ export async function createPullRequest(
     );
 
     if (!res.ok) {
-      const err = (await res.json()) as { message?: string };
-      return { success: false, message: err.message || `GitHub API returned ${res.status}` };
+      return { success: false, message: await parseGitHubError(res) };
     }
 
     const data = (await res.json()) as { html_url: string; number: number };
@@ -75,9 +67,9 @@ export async function findPullRequest(
   repo: string,
   head: string,
 ): Promise<{ url: string; number: number; base: string; title: string; body: string } | null> {
-  const res = await fetch(
+  const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=open`,
-    { headers: GITHUB_HEADERS(token) },
+    token,
   );
 
   if (!res.ok) return null;
@@ -108,9 +100,9 @@ export async function findPullRequestAnyState(
   state: "open" | "closed"; merged_at: string | null;
   additions: number; deletions: number;
 } | null> {
-  const res = await fetch(
+  const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=all&sort=updated&direction=desc&per_page=1`,
-    { headers: GITHUB_HEADERS(token) },
+    token,
   );
 
   if (!res.ok) return null;
@@ -128,9 +120,9 @@ export async function findPullRequestAnyState(
   let deletions = pr.deletions ?? 0;
   if (!additions && !deletions) {
     try {
-      const detailRes = await fetch(
+      const detailRes = await fetchGitHub(
         `https://api.github.com/repos/${owner}/${repo}/pulls/${pr.number}`,
-        { headers: GITHUB_HEADERS(token) },
+        token,
       );
       if (detailRes.ok) {
         const detail = (await detailRes.json()) as { additions: number; deletions: number };
@@ -177,14 +169,12 @@ export async function mergePullRequest(
   if (typeof commitTitle === "string") body.commit_title = commitTitle;
   if (typeof commitMessage === "string") body.commit_message = commitMessage;
 
-  const res = await fetch(
+  const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
+    token,
     {
       method: "PUT",
-      headers: {
-        ...GITHUB_HEADERS(token),
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     },
   );
@@ -218,9 +208,9 @@ export async function enableAutoMerge(
   method: "MERGE" | "SQUASH" | "REBASE" = "MERGE",
 ): Promise<{ success: boolean; message: string }> {
   // First, get the PR's node ID + title + body (needed for GraphQL)
-  const prRes = await fetch(
+  const prRes = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
-    { headers: GITHUB_HEADERS(token) },
+    token,
   );
 
   if (!prRes.ok) return { success: false, message: "Failed to fetch PR details" };
@@ -237,32 +227,25 @@ export async function enableAutoMerge(
   // eventual squash commit uses the PR title/body rather than the repo's
   // "Default commit message" setting (which on older repos concatenates
   // every original commit message).
-  const graphqlRes = await fetch("https://api.github.com/graphql", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "User-Agent": "ShipIt",
-    },
-    body: JSON.stringify({
-      query: `mutation EnableAutoMerge(
-        $prId: ID!,
-        $method: PullRequestMergeMethod!,
-        $commitHeadline: String,
-        $commitBody: String,
-      ) {
-        enablePullRequestAutoMerge(input: {
-          pullRequestId: $prId,
-          mergeMethod: $method,
-          commitHeadline: $commitHeadline,
-          commitBody: $commitBody,
-        }) {
-          pullRequest { autoMergeRequest { enabledAt } }
-        }
-      }`,
-      variables: { prId: nodeId, method, commitHeadline, commitBody },
-    }),
-  });
+  const graphqlRes = await fetchGitHubGraphQL(
+    token,
+    `mutation EnableAutoMerge(
+      $prId: ID!,
+      $method: PullRequestMergeMethod!,
+      $commitHeadline: String,
+      $commitBody: String,
+    ) {
+      enablePullRequestAutoMerge(input: {
+        pullRequestId: $prId,
+        mergeMethod: $method,
+        commitHeadline: $commitHeadline,
+        commitBody: $commitBody,
+      }) {
+        pullRequest { autoMergeRequest { enabledAt } }
+      }
+    }`,
+    { prId: nodeId, method, commitHeadline, commitBody },
+  );
 
   if (!graphqlRes.ok) return { success: false, message: "Failed to enable auto-merge" };
   const graphqlData = (await graphqlRes.json()) as { errors?: { message: string }[] };
@@ -298,21 +281,18 @@ export async function updatePullRequest(
       return { success: false, message: "No fields to update" };
     }
 
-    const res = await fetch(
+    const res = await fetchGitHub(
       `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      token,
       {
         method: "PATCH",
-        headers: {
-          ...GITHUB_HEADERS(token),
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       },
     );
 
     if (!res.ok) {
-      const err = (await res.json()) as { message?: string };
-      return { success: false, message: err.message || `GitHub API returned ${res.status}` };
+      return { success: false, message: await parseGitHubError(res) };
     }
 
     const data = (await res.json()) as { html_url: string; number: number };
@@ -334,21 +314,18 @@ export async function addPullRequestComment(
   body: string,
 ): Promise<{ success: boolean; url?: string; message?: string }> {
   try {
-    const res = await fetch(
+    const res = await fetchGitHub(
       `https://api.github.com/repos/${owner}/${repo}/issues/${pullNumber}/comments`,
+      token,
       {
         method: "POST",
-        headers: {
-          ...GITHUB_HEADERS(token),
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body }),
       },
     );
 
     if (!res.ok) {
-      const err = (await res.json()) as { message?: string };
-      return { success: false, message: err.message || `GitHub API returned ${res.status}` };
+      return { success: false, message: await parseGitHubError(res) };
     }
 
     const data = (await res.json()) as { html_url: string };
@@ -369,30 +346,23 @@ export async function markPullRequestReady(
   pullNumber: number,
 ): Promise<{ success: boolean; message: string }> {
   // Get the PR's node ID
-  const prRes = await fetch(
+  const prRes = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
-    { headers: GITHUB_HEADERS(token) },
+    token,
   );
   if (!prRes.ok) return { success: false, message: "Failed to fetch PR details" };
   const prData = (await prRes.json()) as { node_id: string };
   const nodeId = prData.node_id;
 
-  const graphqlRes = await fetch("https://api.github.com/graphql", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "User-Agent": "ShipIt",
-    },
-    body: JSON.stringify({
-      query: `mutation MarkReady($prId: ID!) {
-        markPullRequestReadyForReview(input: { pullRequestId: $prId }) {
-          pullRequest { isDraft }
-        }
-      }`,
-      variables: { prId: nodeId },
-    }),
-  });
+  const graphqlRes = await fetchGitHubGraphQL(
+    token,
+    `mutation MarkReady($prId: ID!) {
+      markPullRequestReadyForReview(input: { pullRequestId: $prId }) {
+        pullRequest { isDraft }
+      }
+    }`,
+    { prId: nodeId },
+  );
 
   if (!graphqlRes.ok) return { success: false, message: "Failed to mark PR ready" };
   const graphqlData = (await graphqlRes.json()) as { errors?: { message: string }[] };
@@ -412,9 +382,9 @@ export async function listPullRequests(
   repo: string,
   state: "open" | "closed" | "all" = "open",
 ): Promise<{ url: string; number: number; base: string; title: string; state: "open" | "closed"; isDraft: boolean; head: string }[]> {
-  const res = await fetch(
+  const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls?state=${state}&sort=updated&direction=desc&per_page=30`,
-    { headers: GITHUB_HEADERS(token) },
+    token,
   );
   if (!res.ok) return [];
   const prs = (await res.json()) as {
@@ -451,9 +421,9 @@ export async function viewPullRequest(
   state: "open" | "closed"; isDraft: boolean; merged: boolean;
   additions: number; deletions: number;
 } | null> {
-  const res = await fetch(
+  const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
-    { headers: GITHUB_HEADERS(token) },
+    token,
   );
   if (!res.ok) return null;
   const pr = (await res.json()) as {
@@ -489,31 +459,24 @@ export async function disableAutoMerge(
   pullNumber: number,
 ): Promise<{ success: boolean; message: string }> {
   // Get the PR's node ID
-  const prRes = await fetch(
+  const prRes = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
-    { headers: GITHUB_HEADERS(token) },
+    token,
   );
 
   if (!prRes.ok) return { success: false, message: "Failed to fetch PR details" };
   const prData = (await prRes.json()) as { node_id: string };
   const nodeId = prData.node_id;
 
-  const graphqlRes = await fetch("https://api.github.com/graphql", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "User-Agent": "ShipIt",
-    },
-    body: JSON.stringify({
-      query: `mutation DisableAutoMerge($prId: ID!) {
-        disablePullRequestAutoMerge(input: { pullRequestId: $prId }) {
-          pullRequest { autoMergeRequest { enabledAt } }
-        }
-      }`,
-      variables: { prId: nodeId },
-    }),
-  });
+  const graphqlRes = await fetchGitHubGraphQL(
+    token,
+    `mutation DisableAutoMerge($prId: ID!) {
+      disablePullRequestAutoMerge(input: { pullRequestId: $prId }) {
+        pullRequest { autoMergeRequest { enabledAt } }
+      }
+    }`,
+    { prId: nodeId },
+  );
 
   if (!graphqlRes.ok) return { success: false, message: "Failed to disable auto-merge" };
   const graphqlData = (await graphqlRes.json()) as { errors?: { message: string }[] };

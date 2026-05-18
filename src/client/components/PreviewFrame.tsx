@@ -1,5 +1,5 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
-import { useState, useEffect, useRef, useCallback, useLayoutEffect } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: auth-blocked detection + iframe refresh + ResizeObserver wiring (external system sync)
+import { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import {
@@ -16,6 +16,8 @@ import { useUiStore } from "../stores/ui-store.js";
 import { StartupSteps } from "./StartupSteps.js";
 import { ServiceList } from "./ServiceList.js";
 import { DeviceSelector } from "./DeviceSelector.js";
+import { useIframePool } from "../hooks/useIframePool.js";
+import { usePreviewHealthPoller, buildSubdomainUrl } from "../hooks/usePreviewHealthPoller.js";
 
 /** Maps known Docker/Compose error patterns to user-facing remediation hints. */
 function getComposeErrorHint(error: string): string | null {
@@ -99,42 +101,6 @@ function formatErrorForMessage(errors: PreviewError[]): string {
 
 export { formatErrorForMessage };
 
-// ---- Iframe pool types ----
-
-/** Maximum number of retained iframes across all sessions and ports. */
-const MAX_IFRAME_SLOTS = 20;
-
-interface IframeSlot {
-  url: string;
-  containerMode: boolean;
-}
-
-/**
- * Build a subdomain URL for container-mode previews.
- * Pattern: {sessionId}--{port}.{apiHostname}:{apiPort}
- */
-function buildSubdomainUrl(sessionId: string, port: number, apiHost: string): string | null {
-  const [rawHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") as [string, string] : [apiHost, ""];
-  const apiHostname = /^(127\.\d+\.\d+\.\d+|::1)$/.test(rawHostname) ? "localhost" : rawHostname;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) || apiHostname.includes(":")) return null;
-  const portSuffix = apiPort ? `:${apiPort}` : "";
-  return `${window.location.protocol}//${sessionId}--${port}.${apiHostname}${portSuffix}/`;
-}
-
-/**
- * Compute the preview URL for a given session/port/preview status.
- */
-function computePreviewUrl(sessionId: string, port: number, preview: PreviewStatus, apiHost: string): { url: string; containerMode: boolean } | null {
-  if (!preview.running || !port) return null;
-  const isContainer = preview.url?.startsWith("/preview/") ?? false;
-  if (isContainer) {
-    const subdomain = buildSubdomainUrl(sessionId, port, apiHost);
-    const url = subdomain ?? preview.url;
-    return { url, containerMode: true };
-  }
-  return { url: `http://localhost:${port}`, containerMode: false };
-}
-
 export function PreviewFrame({
   preview,
   sessionId,
@@ -176,10 +142,9 @@ export function PreviewFrame({
 
   // ---- Iframe pool: one iframe per (session, port) ----
   // Slots are keyed by "sessionId:port". Only the active slot is visible.
-  // Background slots keep their iframes alive in the DOM.
-  const [slots, setSlots] = useState<Map<string, IframeSlot>>(new Map());
-  const [slotOrder, setSlotOrder] = useState<string[]>([]); // LRU, most recent first
-  const iframeRefs = useRef<Map<string, HTMLIFrameElement | null>>(new Map());
+  // Background slots keep their iframes alive in the DOM. See `useIframePool`
+  // for LRU eviction and `usePreviewHealthPoller` for slot creation.
+  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot } = useIframePool();
 
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
@@ -187,126 +152,25 @@ export function PreviewFrame({
   // Container mode detection for the current preview
   const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
 
-  // Track which slot keys have been created (ref to avoid effect deps on slots state)
-  const createdSlotsRef = useRef<Set<string>>(new Set());
-  // Track which slots are currently being polled (to avoid duplicate polls)
-  const pollingRef = useRef<Set<string>>(new Set());
-
-  // Promote a key to the front of the LRU and evict if over capacity.
-  const promoteSlot = useCallback((key: string) => {
-    setSlotOrder((prev) => {
-      const without = prev.filter((k) => k !== key);
-      const next = [key, ...without];
-      // Evict oldest slots beyond the cap
-      if (next.length > MAX_IFRAME_SLOTS) {
-        const evicted = next.slice(MAX_IFRAME_SLOTS);
-        setSlots((s) => {
-          const updated = new Map(s);
-          for (const k of evicted) {
-            updated.delete(k);
-            iframeRefs.current.delete(k);
-            createdSlotsRef.current.delete(k);
-          }
-          return updated;
-        });
-        return next.slice(0, MAX_IFRAME_SLOTS);
-      }
-      return next;
-    });
-  }, []);
-
   // Compute poll URL for the active slot
   const pollUrl = isContainerMode && sessionId
     ? `/api/preview-health/${sessionId}/${activePort}`
     : (activePort ? `http://localhost:${activePort}` : null);
 
   // Poll and create/update the active slot when session/port changes.
-  //
-  // Cancellation invariant: only the effect that "owns" a `pollingRef` entry
-  // (the one that added it on mount) may remove it. The cleanup function is
-  // that owner. The async `poll()` body must NEVER call `pollingRef.delete()`
-  // on its own — if a re-render cancels poll #1 mid-loop, the cleanup removes
-  // its key; poll #2 then adds the SAME key back; if poll #1 also called
-  // `pollingRef.delete()` after the loop, it would remove poll #2's entry.
-  // The next dep change would then see `pollingRef.has(key) === false` and
-  // start poll #3 alongside the still-running poll #2 — a duplicate-poll
-  // cascade that, in the worst case (a long-running poll like the dogfood
-  // dev-container 15s timeout), can hold the spinner overlay open
-  // indefinitely while the iframe slot is never actually created.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (!activeSlotKey || !activePort || !preview?.running || !pollUrl) return;
-
-    // If slot already exists (previously visited), just promote it
-    if (createdSlotsRef.current.has(activeSlotKey)) {
-      promoteSlot(activeSlotKey);
-      return;
-    }
-
-    // Prevent duplicate polls for the same key
-    if (pollingRef.current.has(activeSlotKey)) return;
-    pollingRef.current.add(activeSlotKey);
-
-    const state = { cancelled: false };
-    const key = activeSlotKey;
-
-    const poll = async () => {
-      // Two bounds matter, and the loop must respect both:
-      //   - per-fetch timeout (AbortSignal.timeout). Without this, a single
-      //     hung `/api/preview-health` response strands the loop on
-      //     `await fetch(...)` — `i < 60` never advances and the post-loop
-      //     slot-creation never fires, so the "Connecting to dev server..."
-      //     spinner stays up forever. Seen in dogfooding when the outer
-      //     orchestrator is slow to respond to the health endpoint.
-      //   - wall-clock deadline. Even with a per-fetch timeout, repeated
-      //     slow fetches would compound: 60 × (2s + 250ms) ≈ 135s worst case
-      //     without a wall-clock cap. The deadline keeps total polling at
-      //     ~15s so the user never waits longer than that before the iframe
-      //     gets created anyway.
-      // The 250ms inter-iteration sleep keeps the loop reactive when the
-      // dev server comes up fast (dogfood Vite "ready in 437ms").
-      const deadline = Date.now() + 15_000;
-      for (let i = 0; i < 60 && !state.cancelled; i++) {
-        if (Date.now() >= deadline) break;
-        try {
-          if (isContainerMode) {
-            const resp = await fetch(pollUrl, { signal: AbortSignal.timeout(2000) });
-            const data = await resp.json() as { ready?: boolean };
-            if (data.ready) break;
-          } else {
-            await fetch(pollUrl, { mode: "no-cors", signal: AbortSignal.timeout(2000) });
-            break;
-          }
-        } catch {
-          // Network error or fetch timeout — retry
-        }
-        await new Promise((r) => setTimeout(r, 250));
-      }
-
-      if (state.cancelled) return;
-      // Successful (non-cancelled) completion: clean up our own polling-ref
-      // entry now that nobody else will (the cleanup function below only
-      // fires on cancellation/unmount).
-      pollingRef.current.delete(key);
-
-      // Compute the URL and add the slot
-      const result = computePreviewUrl(sessionId ?? "_", activePort, preview, apiHost);
-      if (result) {
-        createdSlotsRef.current.add(key);
-        setSlots((prev) => {
-          const updated = new Map(prev);
-          updated.set(key, { url: result.url, containerMode: result.containerMode });
-          return updated;
-        });
-        promoteSlot(key);
-      }
-    };
-    void poll();
-    return () => {
-      state.cancelled = true;
-      pollingRef.current.delete(key);
-    };
-  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, promoteSlot]);
+  usePreviewHealthPoller({
+    activeSlotKey,
+    activePort,
+    sessionId,
+    preview,
+    pollUrl,
+    isContainerMode,
+    apiHost,
+    createdSlotsRef,
+    pollingRef,
+    promoteSlot,
+    setSlot,
+  });
 
   // Derive active slot state for overlay/UI logic
   const activeSlotUrl = activeSlot?.url ?? null;
