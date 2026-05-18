@@ -324,6 +324,77 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
+  // Regression: the worker rejects /agent/start with 409 if `this.agent` is
+  // still set when the new request lands. That happens in a microseconds-wide
+  // race after `agent_done` but before the worker's done handler clears the
+  // slot. _startAgentViaProxy retries once after 150ms — long enough to let
+  // the worker finish its cleanup.
+  it("_startAgentViaProxy retries once on 409 'Agent already running'", async () => {
+    // Pre-occupy the worker's agent slot so the next POST /agent/start gets
+    // 409 — simulates the race where a previous turn's cleanup hasn't run yet.
+    const preStartRes = await fetch(`${workerUrl}/agent/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: "claude", params: { prompt: "occupier" } }),
+    });
+    expect(preStartRes.status).toBe(200);
+    const occupier = lastAgent;
+    expect(occupier).toBeTruthy();
+
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-409-retry",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Within the 150ms retry window, free the slot by emitting `done` on the
+    // occupier — its wireAgentEvents listener sets `worker.this.agent = null`.
+    setTimeout(() => occupier.emit("done", 0), 50);
+
+    // _startAgentViaProxy: first attempt → 409, wait 150ms, retry → success.
+    await runner._startAgentViaProxy("claude", { prompt: "retry-me", cwd: "/workspace" });
+
+    // The retry should have started a NEW agent on the worker for our prompt.
+    await waitFor(
+      () => lastAgent !== occupier && lastAgent.lastParams?.prompt === "retry-me",
+      3000,
+      "retry agent started",
+    );
+    expect(lastAgent.lastParams?.prompt).toBe("retry-me");
+
+    runner.dispose();
+  });
+
+  // The retry is one-shot: if the second attempt also 409s, we re-throw so
+  // the agent's `error` handler runs (which feeds the queue-drain path).
+  it("_startAgentViaProxy gives up after one retry if the slot is still busy", async () => {
+    // Pre-occupy and DON'T release — both attempts should 409.
+    const preStartRes = await fetch(`${workerUrl}/agent/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: "claude", params: { prompt: "stuck" } }),
+    });
+    expect(preStartRes.status).toBe(200);
+
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-409-give-up",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    await expect(
+      runner._startAgentViaProxy("claude", { prompt: "wont-fit", cwd: "/workspace" }),
+    ).rejects.toThrow(/Agent already running/);
+
+    runner.dispose();
+  });
+
   // ---- auth_required ----
 
   it("proxy receives auth_required event via SSE", async () => {

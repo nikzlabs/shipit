@@ -645,7 +645,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
     await this._workerReady;
     await this._waitForInstallBeforeAgent();
-    await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
+    try {
+      await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
+    } catch (err) {
+      // Narrow race: the previous turn's `agent_done` SSE event reaches the
+      // orchestrator and triggers the queue drain → new POST /agent/start —
+      // but the worker hasn't yet executed `this.agent = null` in its own
+      // `agent.on("done")` handler (session-worker.ts wireAgentEvents). The
+      // worker rejects with 409 "Agent already running". The window is
+      // microseconds wide; one short retry clears it. If the second attempt
+      // also 409s, that's a genuine duplicate-start bug — re-throw so the
+      // agent's error handler runs (and the drain-on-error path in
+      // agent-listeners.ts keeps the queue flowing).
+      if (err instanceof Error && err.message === "Agent already running") {
+        await new Promise((r) => setTimeout(r, 150));
+        await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
+      } else {
+        throw err;
+      }
+    }
     if (!this.sseConnection) {
       await this.connectEventStream();
     }
