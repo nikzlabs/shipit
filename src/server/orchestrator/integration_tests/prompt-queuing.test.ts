@@ -264,4 +264,48 @@ describe("Integration: prompt queuing", () => {
 
     client.close();
   });
+
+  // Regression: when a queued message's agent fails to start (e.g. the worker
+  // returns 409 "Agent already running" because the previous turn's cleanup
+  // hadn't completed when /agent/start landed), the rest of the queue used
+  // to be stranded forever. The fix drains the next message from the agent's
+  // `error` handler too, not just from `done`.
+  it("drains the remaining queue when a queued message's agent emits error", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "First" });
+    const firstClaude = await waitForClaude(() => lastClaude);
+    firstClaude.emit("event", { type: "agent_init", sessionId: "s-1", model: "claude-sonnet-4-6", tools: [] });
+
+    // Queue two more messages
+    client.send({ type: "send_message", text: "Second" });
+    client.send({ type: "send_message", text: "Third" });
+
+    // Wait for both message_queued events
+    const queuedMsgs: AnyMsg[] = [];
+    while (queuedMsgs.length < 2) {
+      const msg: AnyMsg = await client.receive(2000);
+      if (msg.type === "message_queued") queuedMsgs.push(msg);
+    }
+    expect(queuedMsgs).toHaveLength(2);
+
+    // First Claude finishes normally → drain shifts "Second"
+    firstClaude.emit("event", { type: "agent_result", status: "success", sessionId: "s-1", durationMs: 10 });
+    firstClaude.emit("done", 0);
+
+    // A second Claude is started for "Second"
+    const secondClaude = await waitForClaude(() => lastClaude, firstClaude);
+    expect(secondClaude.lastPrompt).toBe("Second");
+
+    // Simulate the 409 race: the second agent fails to start.
+    secondClaude.emit("error", new Error("Agent already running"));
+
+    // The third queued message must still be drained — the queue should NOT
+    // be stranded by the transient error.
+    const thirdClaude = await waitForClaude(() => lastClaude, secondClaude);
+    expect(thirdClaude.lastPrompt).toBe("Third");
+
+    client.close();
+  });
 });
