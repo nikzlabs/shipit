@@ -96,6 +96,14 @@ export function wireAgentListeners(
      * for ergonomics in the rare test that wires listeners directly.
      */
     capturedSessionId?: string;
+    /**
+     * Called from the `error` handler after the runner has been cleaned up.
+     * `runAgentWithMessage` uses this to drain the next queued message so a
+     * transient /agent/start failure (e.g. 409 race) doesn't strand the rest
+     * of the queue. Awaited so any recursive turn start is sequenced inside
+     * the error handler.
+     */
+    onError?: () => Promise<void>;
   },
 ): void {
   if (!opts.capturedSessionId) {
@@ -502,7 +510,7 @@ export function wireAgentListeners(
     ctx.authManager.startOAuthFlow();
   });
 
-  agent.on("error", (err: Error) => {
+  agent.on("error", async (err: Error) => {
     console.error("[agent] process error:", err.message);
     ctx.broadcastLog("server", `Agent process error: ${err.message}`);
     emitToViewers({ type: "error", message: `Agent process error: ${err.message}` });
@@ -551,6 +559,18 @@ export function wireAgentListeners(
         });
       }
       runner.onAgentFinished();
+    }
+
+    // Drain the next queued message so a transient /agent/start failure
+    // (e.g. 409 race with the previous turn's worker-side cleanup) doesn't
+    // strand the rest of the queue. The drain helper will set running=true
+    // and start a fresh agent when it shifts a message off.
+    if (opts.onError) {
+      try {
+        await opts.onError();
+      } catch (drainErr) {
+        console.error("[agent] error-path drain failed:", drainErr);
+      }
     }
   });
 }

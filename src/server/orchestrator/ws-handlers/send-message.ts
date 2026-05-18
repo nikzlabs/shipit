@@ -4,7 +4,7 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
 import { generateSessionName } from "../session-namer.js";
 import { wireAgentListeners } from "./agent-listeners.js";
-import { runAgentWithMessage } from "./agent-execution.js";
+import { runAgentWithMessage, drainNextQueuedMessage } from "./agent-execution.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
 
@@ -358,24 +358,23 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     persistUserMessage(capturedSessionId);
   }
 
+  // Shared emit helper — also used by onError below.
+  const emitDone = (msg: WsServerMessage) => {
+    if (answerRunner) answerRunner.emitMessage(msg);
+    else ctx.send(msg);
+  };
+
   wireAgentListeners(ctx, currentAgent, {
     isNewSession: false,
     persistUserMessage,
     fallbackTitle: answerText.slice(0, 80) || "Answer",
     capturedSessionId,
+    onError: () => drainNextQueuedMessage(ctx, answerRunner, capturedSessionId, capturedSessionDir, emitDone),
   });
   currentAgent.on("done", async (code: number | null) => {
     console.log("[agent] process exited with code", code);
     ctx.broadcastLog("server", `Agent process exited with code ${code}`);
     if (answerRunner) answerRunner.setAgent(null);
-
-    // Emit via the runner so all viewers (including future reconnects via
-    // the buffered turn events) see post-turn messages, not just the
-    // originating WS connection.
-    const emitDone = (msg: WsServerMessage) => {
-      if (answerRunner) answerRunner.emitMessage(msg);
-      else ctx.send(msg);
-    };
 
     try {
       if (capturedSessionDir) {

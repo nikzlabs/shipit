@@ -11,6 +11,7 @@ import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { quickCreatePr } from "../services/github.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { CredentialStore } from "../credential-store.js";
 import { collectMcpAgentEnv } from "../secret-resolver.js";
@@ -104,6 +105,95 @@ function stopRunner(runner: { running: boolean } | null): void {
 }
 
 /**
+ * Drain the next message from the runner's queue and start a new agent turn.
+ * Shared between the agent's `done` handler (normal post-turn path) and the
+ * `error` handler (so a transient /agent/start failure — typically a 409
+ * race with the previous turn's worker-side cleanup — doesn't strand the
+ * rest of the queue).
+ *
+ * Callers must have already cleared the runner's `_agent` reference and set
+ * `running = false`. This helper sets `running = true` again when it shifts
+ * a message off, and recursively calls `runAgentWithMessage` to drive the
+ * new turn.
+ */
+export async function drainNextQueuedMessage(
+  ctx: FullCtx,
+  runner: SessionRunnerInterface | null,
+  capturedSessionId: string | undefined,
+  capturedSessionDir: string | null | undefined,
+  emit: (msg: WsServerMessage) => void,
+): Promise<void> {
+  if (!runner) return;
+
+  const messageQueue = runner.messageQueue;
+  if (runner.wasInterrupted) {
+    if (messageQueue.length > 0) {
+      runner.clearQueue();
+      emit({ type: "queue_updated", queue: [] });
+    }
+    return;
+  }
+  if (messageQueue.length === 0) return;
+
+  const next = messageQueue.shift()!;
+  emit({
+    type: "queue_updated",
+    queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
+    dequeued: next.text,
+  });
+  runner.running = true;
+
+  const nextImages = next.images && next.images.length > 0 ? next.images : undefined;
+  const nextFileRefs = next.files && next.files.length > 0 ? next.files : undefined;
+  let nextValidatedFiles: FileAttachment[] = [];
+  if (nextFileRefs) {
+    const dir = capturedSessionDir ?? ctx.workspaceDir;
+    const fileResult = await resolveFileAttachments(nextFileRefs, dir);
+    if (fileResult.error) {
+      emit({ type: "error", message: fileResult.error });
+      runner.running = false;
+      return;
+    }
+    nextValidatedFiles = fileResult.files;
+  }
+  let allNextImages = nextImages;
+  const nextUploadRefs = next.uploads && next.uploads.length > 0 ? next.uploads : undefined;
+  if (nextUploadRefs) {
+    const dir = capturedSessionDir ?? ctx.workspaceDir;
+    const uploadResult = await resolveUploadRefs(nextUploadRefs, dir);
+    if (uploadResult.error) {
+      emit({ type: "error", message: uploadResult.error });
+      runner.running = false;
+      return;
+    }
+    nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
+    if (uploadResult.images.length > 0) {
+      allNextImages = [...(allNextImages ?? []), ...uploadResult.images];
+      // See send-message.ts: originals are kept in place so
+      // `uploadPaths` in chat history matches the actual on-disk path,
+      // which is what makes hydrateUploads work correctly.
+    }
+  }
+  const nextSession = capturedSessionId
+    ? ctx.sessionManager.get(capturedSessionId)
+    : undefined;
+  try {
+    await runAgentWithMessage(ctx, {
+      userText: next.text,
+      images: allNextImages,
+      validatedFiles: nextValidatedFiles,
+      agentSessionId: nextSession?.agentSessionId,
+      permissionMode: next.permissionMode,
+      isNewSession: false,
+      uploadPaths: nextUploadRefs?.map((u) => u.path),
+    });
+  } catch (err) {
+    console.error("[queue] Error processing queued message:", getErrorMessage(err));
+    runner.running = false;
+  }
+}
+
+/**
  * Core agent execution logic. Shared between send_message and
  * home_send_with_repo handlers. Session state (activeAppSessionId,
  * activeSessionDir) must already be set before calling this.
@@ -177,11 +267,21 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     });
   };
 
+  // Helper: emit to all viewers via runner, or fall back to ctx.send
+  const emitDone = (msg: WsServerMessage) => {
+    if (runner) {
+      runner.emitMessage(msg);
+    } else {
+      ctx.send(msg);
+    }
+  };
+
   wireAgentListeners(ctx, currentAgent, {
     isNewSession,
     persistUserMessage,
     fallbackTitle: userText.slice(0, 80) || "New session",
     capturedSessionId,
+    onError: () => drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone),
   });
 
   // Track whether we got a result event
@@ -195,15 +295,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   if (!isNewSession && capturedSessionId) {
     persistUserMessage(capturedSessionId);
   }
-
-  // Helper: emit to all viewers via runner, or fall back to ctx.send
-  const emitDone = (msg: WsServerMessage) => {
-    if (runner) {
-      runner.emitMessage(msg);
-    } else {
-      ctx.send(msg);
-    }
-  };
 
   currentAgent.on("done", async (code: number | null) => {
     console.log("[agent] process exited with code", code);
@@ -223,75 +314,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     // immediately, before the (potentially slow) post-turn git commit work.
     // Use runner directly (not ctx) so this works even after WS disconnect.
     stopRunner(runner);
-    const messageQueue = runner?.messageQueue ?? [];
-    if ((runner?.wasInterrupted ?? false) && messageQueue.length > 0) {
-      if (runner) runner.clearQueue();
-      emitDone({ type: "queue_updated", queue: [] });
-    }
-    if (!(runner?.wasInterrupted ?? false) && messageQueue.length > 0) {
-      const next = messageQueue.shift()!;
-      // Notify the client that the queue is now one shorter
-      emitDone({
-        type: "queue_updated",
-        queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
-        dequeued: next.text,
-      });
-      if (runner) runner.running = true;
-      // Resolve file attachments for the queued message
-      const nextImages = next.images && next.images.length > 0 ? next.images : undefined;
-      const nextFileRefs = next.files && next.files.length > 0 ? next.files : undefined;
-      let nextValidatedFiles: FileAttachment[] = [];
-      if (nextFileRefs) {
-        const dir = capturedSessionDir ?? ctx.workspaceDir;
-        const fileResult = await resolveFileAttachments(nextFileRefs, dir);
-        if (fileResult.error) {
-          emitDone({ type: "error", message: fileResult.error });
-          // Use the captured runner directly — going through ctx routes via
-          // `attachedRunner` which is null after WS disconnect, which would
-          // strand `running=true` and prevent future cleanup.
-          stopRunner(runner);
-          return;
-        }
-        nextValidatedFiles = fileResult.files;
-      }
-      // Resolve upload refs for the queued message — image uploads become ImageAttachments
-      let allNextImages = nextImages;
-      const nextUploadRefs = next.uploads && next.uploads.length > 0 ? next.uploads : undefined;
-      if (nextUploadRefs) {
-        const dir = capturedSessionDir ?? ctx.workspaceDir;
-        const uploadResult = await resolveUploadRefs(nextUploadRefs, dir);
-        if (uploadResult.error) {
-          emitDone({ type: "error", message: uploadResult.error });
-          // Use the captured runner directly — see comment above.
-          stopRunner(runner);
-          return;
-        }
-        nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
-        if (uploadResult.images.length > 0) {
-          allNextImages = [...(allNextImages ?? []), ...uploadResult.images];
-          // See send-message.ts: originals are kept in place so
-          // `uploadPaths` in chat history matches the actual on-disk path,
-          // which is what makes hydrateUploads work correctly.
-        }
-      }
-      const nextSession = capturedSessionId
-        ? ctx.sessionManager.get(capturedSessionId)
-        : undefined;
-      try {
-        await runAgentWithMessage(ctx, {
-          userText: next.text,
-          images: allNextImages,
-          validatedFiles: nextValidatedFiles,
-          agentSessionId: nextSession?.agentSessionId,
-          permissionMode: next.permissionMode,
-          isNewSession: false,
-          uploadPaths: nextUploadRefs?.map((u) => u.path),
-        });
-      } catch (err) {
-        console.error("[queue] Error processing queued message:", getErrorMessage(err));
-        stopRunner(runner);
-      }
-    }
+    await drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone);
 
     // Auto-commit after agent turn using the session dir captured at turn start.
     // Do NOT use ctx.getActiveGitManager() — the user may have switched sessions.
