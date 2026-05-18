@@ -16,6 +16,7 @@ import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { Button } from "./ui/button.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
+import { MarkdownContent } from "./message-markdown.js";
 import {
   GitBranchIcon,
   GitPullRequestIcon,
@@ -81,31 +82,14 @@ function useOpenPrDiff(baseBranch?: string) {
 }
 
 /**
- * Truncate a PR body for tooltip display. PR bodies can be long; the tooltip
- * is a quick-glance affordance, not a reading surface. Caps at ~12 lines /
- * 600 chars with an ellipsis. Returns an empty string if input is blank.
- */
-function truncateBodyForTooltip(body: string, maxLines = 12, maxChars = 600): string {
-  let result = body.trim();
-  if (result.length === 0) return "";
-  const lines = result.split("\n");
-  if (lines.length > maxLines) {
-    result = `${lines.slice(0, maxLines).join("\n")}\n…`;
-  }
-  if (result.length > maxChars) {
-    result = `${result.slice(0, maxChars).trimEnd()}…`;
-  }
-  return result;
-}
-
-/**
  * Displays branch info, or — when a PR exists — the PR title with the PR body
  * surfaced in a rich tooltip. Clicking always copies the head branch name.
  *
  * Rendering rules:
- *   - `prTitle` set       → render `prTitle`; tooltip shows truncated `prBody`
- *                            (or a fallback "Copy branch name: <head>" hint
- *                            when the PR has no description).
+ *   - `prTitle` set       → render `prTitle`; tooltip shows full `prBody`
+ *                            rendered as markdown (or a fallback hint when
+ *                            the PR has no description). The tooltip caps its
+ *                            height and scrolls — content is never truncated.
  *   - `prTitle` unset, non-default base → "base ← head".
  *   - otherwise            → just `headBranch`.
  */
@@ -143,9 +127,9 @@ function BranchLabel({
     );
   }
 
-  // PR-title rendering — tooltip shows the description.
-  const truncatedBody = truncateBodyForTooltip(prBody ?? "");
-  const tooltipBody = truncatedBody.length > 0 ? truncatedBody : "No description";
+  // PR-title rendering — tooltip shows the full description as markdown.
+  // No truncation; the tooltip caps its own height and scrolls instead.
+  const trimmedBody = (prBody ?? "").trim();
 
   return (
     <TooltipProvider>
@@ -161,10 +145,14 @@ function BranchLabel({
         </TooltipTrigger>
         <TooltipContent
           side="top"
-          className="max-w-sm whitespace-pre-line text-left"
+          className="max-w-lg max-h-96 overflow-auto text-left p-3"
         >
-          <div className="text-(--color-text-primary)">{tooltipBody}</div>
-          <div className="mt-1.5 pt-1.5 border-t border-(--color-border-secondary) text-(--color-text-tertiary)">
+          {trimmedBody.length > 0 ? (
+            <MarkdownContent text={trimmedBody} />
+          ) : (
+            <div className="text-(--color-text-primary)">No description</div>
+          )}
+          <div className="mt-2 pt-2 border-t border-(--color-border-secondary) text-(--color-text-tertiary) text-xs sticky bottom-0 bg-(--color-bg-elevated)">
             Click to copy <span className="font-mono">{headBranch}</span>
           </div>
         </TooltipContent>
