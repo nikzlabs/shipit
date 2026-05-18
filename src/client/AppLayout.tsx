@@ -12,6 +12,7 @@ import type { WsStatus } from "./hooks/useWebSocket.js";
 import { LIGHT_THEMES, type Theme } from "./hooks/useTheme.js";
 import type { SessionInfo, RepoInfo, DockerMemoryStats } from "../server/shared/types.js";
 import { DockerMemoryBadge } from "./components/DockerMemoryBadge.js";
+import { UptimeBadge } from "./components/UptimeBadge.js";
 import { MemoryPressureBanner } from "./components/MemoryPressureBanner.js";
 
 interface AppLayoutProps {
@@ -22,6 +23,8 @@ interface AppLayoutProps {
   hasSystemPrompt: boolean;
   githubAuthenticated: boolean;
   dockerMemory: DockerMemoryStats | null;
+  /** Epoch ms when the orchestrator process started. null until SSE handshake completes. */
+  processStartedAt: number | null;
   onNavigateHome: () => void;
   onOpenSessions: () => void;
 
@@ -75,6 +78,7 @@ export function AppLayout({
   hasSystemPrompt,
   githubAuthenticated,
   dockerMemory,
+  processStartedAt,
   onNavigateHome,
   onOpenSessions,
   showConnectionBanner,
@@ -133,6 +137,7 @@ export function AppLayout({
           </div>
         )}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {processStartedAt !== null && <UptimeBadge processStartedAt={processStartedAt} />}
           {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
           <WithTooltip label="Settings">
           <button onClick={onSettingsOpen} className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubAuthenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} aria-label="Settings">
