@@ -105,6 +105,11 @@ export type {
  * to the app without spawning real child processes.
  */
 export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
+  // Captured once at process startup so the client can render a live
+  // uptime badge. This is the user's only signal that "Just Restart"
+  // actually bounced the orchestrator — without it, a restart that
+  // takes < 5s is invisible.
+  const processStartedAt = Date.now();
   // ---- DI: instantiate all managers ----
   const mgrs = await initializeManagers(deps);
   const {
@@ -369,6 +374,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       supportsReview: a.capabilities.supportsReview,
     }));
     client.write(`event: agent_list\ndata: ${JSON.stringify({ agents, defaultAgentId })}\n\n`);
+
+    // Process metadata — the client uses processStartedAt to render a
+    // live-ticking uptime badge next to the Docker memory badge so the
+    // user can confirm that a restart actually happened. Sent once per
+    // connect since the value is static for the process lifetime.
+    client.write(`event: system_info\ndata: ${JSON.stringify({ processStartedAt })}\n\n`);
 
     // Send current Docker memory stats on connect
     if (dockerForStats) {

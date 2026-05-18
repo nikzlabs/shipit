@@ -287,6 +287,19 @@ export interface DockerMemoryStats {
   totalBytes: number;
 }
 
+// ---- System info ----
+
+/**
+ * Static per-process metadata about the orchestrator. Sent once on SSE
+ * connect; the client uses `processStartedAt` to render a live-ticking
+ * uptime badge so the user can confirm a restart actually bounced the
+ * orchestrator (the value will reset on a fresh process).
+ */
+export interface SystemInfo {
+  /** Epoch milliseconds when the orchestrator process started. */
+  processStartedAt: number;
+}
+
 // ---- Chat history message (shared data type) ----
 
 /**

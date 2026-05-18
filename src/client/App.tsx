@@ -177,6 +177,7 @@ export default function App() {
   const mobileSidebarOpen = useUiStore((s) => s.mobileSidebarOpen);
   const toast = useUiStore((s) => s.toast);
   const dockerMemory = useUiStore((s) => s.dockerMemory);
+  const processStartedAt = useUiStore((s) => s.processStartedAt);
 
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
 
@@ -881,6 +882,7 @@ export default function App() {
         hasSystemPrompt={hasSystemPrompt}
         githubAuthenticated={githubStatus.authenticated}
         dockerMemory={dockerMemory}
+        processStartedAt={processStartedAt}
         onNavigateHome={() => navigate("/")}
         onOpenSessions={() => useUiStore.getState().setMobileSidebarOpen(true)}
         showConnectionBanner={!showNewSessionView && !!wsSessionId}

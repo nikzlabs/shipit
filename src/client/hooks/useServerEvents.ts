@@ -6,7 +6,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo } from "../../server/shared/types.js";
 
 /**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
@@ -173,6 +173,14 @@ export function useServerEvents(): void {
     es.addEventListener("docker_memory", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as DockerMemoryStats;
       useUiStore.getState().setDockerMemory(data);
+    });
+
+    // Static process metadata — sent once per SSE connect. The orchestrator's
+    // start timestamp powers the UptimeBadge in the header so a "Just Restart"
+    // is visible (the value resets when the orchestrator process bounces).
+    es.addEventListener("system_info", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as SystemInfo;
+      useUiStore.getState().setProcessStartedAt(data.processStartedAt);
     });
 
     /**

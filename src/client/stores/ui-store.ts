@@ -77,6 +77,13 @@ interface UiState {
   toast: ToastData | null;
   bootstrapLoaded: boolean;
   dockerMemory: DockerMemoryStats | null;
+  /**
+   * Epoch milliseconds when the orchestrator process started. Set from
+   * the `system_info` SSE event on connect. The UptimeBadge ticks live
+   * from this value so the user can confirm a restart actually bounced
+   * the orchestrator. `null` until the SSE handshake completes.
+   */
+  processStartedAt: number | null;
 
   // Actions
   setRightTab: (tab: RightTab) => void;
@@ -97,6 +104,7 @@ interface UiState {
   setMobileSidebarOpen: (open: boolean) => void;
   setToast: (toast: ToastData | null) => void;
   setDockerMemory: (stats: DockerMemoryStats | null) => void;
+  setProcessStartedAt: (epochMs: number | null) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
   reset: () => void;
 
@@ -125,6 +133,7 @@ const initialState = {
   toast: null as ToastData | null,
   bootstrapLoaded: false,
   dockerMemory: null as DockerMemoryStats | null,
+  processStartedAt: null as number | null,
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -176,6 +185,8 @@ export const useUiStore = create<UiState>((set) => ({
   setToast: (toast) => set({ toast }),
 
   setDockerMemory: (dockerMemory) => set({ dockerMemory }),
+
+  setProcessStartedAt: (processStartedAt) => set({ processStartedAt }),
 
   setBootstrapLoaded: (bootstrapLoaded) => set({ bootstrapLoaded }),
 
