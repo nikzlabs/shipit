@@ -322,6 +322,35 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Squash and merge")).toBeNull();
   });
 
+  it("disables merge button when the agent is mid-turn", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+    useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    const button = screen.getByText("Squash and merge");
+    expect(button).toBeDisabled();
+    // The tooltip explains why so the disabled state isn't a mystery.
+    expect(button.getAttribute("title")).toContain("Agent is still working");
+  });
+
+  it("re-enables merge button when the agent finishes mid-render", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+    useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
+    const { rerender } = render(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.getByText("Squash and merge")).toBeDisabled();
+
+    useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
+    rerender(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.getByText("Squash and merge")).not.toBeDisabled();
+  });
+
   it("renders merge button with selected method label", () => {
     setCard("s1", {
       ...openPrCard,

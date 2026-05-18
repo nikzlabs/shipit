@@ -606,6 +606,24 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         };
       },
     );
+
+    // Test-only: ensure a runner exists and force its `running` flag. Lets
+    // tests assert guards that depend on agent-in-progress state (e.g. the
+    // merge endpoint's 409) without driving a full WS turn.
+    app.post<{ Params: { sessionId: string }; Body: { running?: unknown } }>(
+      "/api/_test/runner/:sessionId/running",
+      async (request, reply) => {
+        const { sessionId } = request.params;
+        const session = sessionManager.get(sessionId);
+        if (!session?.workspaceDir) {
+          reply.code(404);
+          return { error: "Session not found or has no workspaceDir" };
+        }
+        const runner = runnerRegistry.getOrCreate(sessionId, session.workspaceDir, defaultAgentId);
+        runner.running = request.body?.running === true;
+        return { ok: true, running: runner.running };
+      },
+    );
   }
 
   // Serve the built client files from dist/client/
