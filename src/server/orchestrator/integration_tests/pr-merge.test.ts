@@ -141,6 +141,131 @@ describe("POST /api/sessions/:id/pr/auto-merge", () => {
 
 // ---- POST /api/sessions/:id/pr/merge ----
 
+describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
+  beforeEach(async () => {
+    sessionManager.setBranch(sessionId, "shipit/test-feature");
+    sessionManager.setRemoteUrl(sessionId, "https://github.com/test-user/test-repo.git");
+    await githubAuth.setToken("test-token");
+  });
+
+  it("returns 409 when the session's runner is mid-turn", async () => {
+    // Seed PR status so the request would otherwise sail past the CI-not-ready
+    // guard — we want to assert that the running-runner gate fires first.
+    githubAuth.setGraphqlResult({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [{
+              number: 42,
+              title: "Test PR",
+              url: "https://github.com/test-user/test-repo/pull/42",
+              state: "OPEN",
+              mergeable: "MERGEABLE",
+              autoMergeRequest: null,
+              headRefName: "shipit/test-feature",
+              baseRefName: "main",
+              additions: 10,
+              deletions: 5,
+              commits: {
+                nodes: [{
+                  commit: {
+                    oid: "abc123",
+                    statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [] } },
+                  },
+                }],
+              },
+            }],
+          },
+        },
+      },
+    });
+    prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Flip the runner into the running state via the test-only endpoint.
+    const setRunning = await app.inject({
+      method: "POST",
+      url: `/api/_test/runner/${sessionId}/running`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ running: true }),
+    });
+    expect(setRunning.statusCode).toBe(200);
+    expect(setRunning.json()).toMatchObject({ ok: true, running: true });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/merge`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ method: "squash" }),
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({
+      error: expect.stringContaining("Agent turn in progress"),
+    });
+  });
+
+  it("allows merge after the runner finishes the turn", async () => {
+    // Seed a successful-CI PR like above.
+    githubAuth.setGraphqlResult({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [{
+              number: 42,
+              title: "Test PR",
+              url: "https://github.com/test-user/test-repo/pull/42",
+              state: "OPEN",
+              mergeable: "MERGEABLE",
+              autoMergeRequest: null,
+              headRefName: "shipit/test-feature",
+              baseRefName: "main",
+              additions: 10,
+              deletions: 5,
+              commits: {
+                nodes: [{
+                  commit: {
+                    oid: "abc123",
+                    statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [] } },
+                  },
+                }],
+              },
+            }],
+          },
+        },
+      },
+    });
+    prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Briefly running, then idle — the gate should release.
+    await app.inject({
+      method: "POST",
+      url: `/api/_test/runner/${sessionId}/running`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ running: true }),
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/_test/runner/${sessionId}/running`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ running: false }),
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/merge`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ method: "squash" }),
+    });
+
+    // Should NOT be 409 — the running-flag guard is clear. The actual merge
+    // call may still fail in the stub (no real GitHub), but the status code
+    // proves the running-runner gate didn't fire.
+    expect(res.statusCode).not.toBe(409);
+  });
+});
+
 describe("POST /api/sessions/:id/pr/merge — CI-not-ready guard", () => {
   beforeEach(async () => {
     sessionManager.setBranch(sessionId, "shipit/test-feature");

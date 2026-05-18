@@ -392,6 +392,17 @@ export async function registerGitHubRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
+        // Block merge while the agent is mid-turn. Auto-commit fires after
+        // the turn ends (see post-turn.ts), so merging now could ship a PR
+        // whose later commits land on a branch with a closed PR — orphaned
+        // work. The client also disables the button, but a stale tab or
+        // race could still POST here, so enforce on the server too.
+        const runner = deps.runnerRegistry.get(request.params.id);
+        if (runner?.running) {
+          reply.code(409).send({ error: "Agent turn in progress — wait for it to finish before merging" });
+          return;
+        }
+
         // Block merge if CI checks haven't registered yet. Two cases:
         //   (a) workflow files exist but no checks reported yet — poller has
         //       mutated state to "pending" with total === 0

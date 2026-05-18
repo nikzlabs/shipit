@@ -390,13 +390,23 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
   const merge = usePrStore((s) => s.merge);
   const setMergeMethod = usePrStore((s) => s.setMergeMethod);
   const setToast = useUiStore((s) => s.setToast);
+  // Block merge while the agent is mid-turn — auto-commit fires after the
+  // turn ends, so a click now could ship a PR whose later commits land on
+  // a closed branch. The server enforces the same guard (POST /pr/merge
+  // returns 409) but disabling client-side is what the user actually sees.
+  const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [merging, setMerging] = useState(false);
 
   const method = autoMerge?.mergeMethod ?? "squash";
   const label = MERGE_METHOD_LABELS[method] ?? "Squash and merge";
+  const disabled = merging || isAgentRunning;
+  const title = isAgentRunning
+    ? "Agent is still working — merge will be available when the turn finishes"
+    : undefined;
 
   const handleMerge = async () => {
+    if (disabled) return;
     setMerging(true);
     const error = await merge(sessionId, method);
     if (error) {
@@ -411,14 +421,16 @@ function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: 
     <div className="relative inline-flex">
       <button
         onClick={handleMerge}
-        disabled={merging}
+        disabled={disabled}
+        title={title}
         className="h-6 px-2 text-xs font-medium whitespace-nowrap bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-l transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {merging ? "Merging..." : label}
       </button>
       <button
         onClick={() => setDropdownOpen(!dropdownOpen)}
-        disabled={merging}
+        disabled={disabled}
+        title={title}
         className="h-6 px-1 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         aria-label="Select merge method"
       >
