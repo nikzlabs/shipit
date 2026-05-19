@@ -35,6 +35,14 @@ export function useConnectionSync(params: {
     if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
       historyLoadedRef.current = true;
       const sessionId = useSessionStore.getState().sessionId!;
+      // Sync the UI's active agent to whichever provider the session is
+      // actually persisted with — otherwise the localStorage default (used
+      // to seed the WS URL) would mislabel a session whose server-side
+      // agentId was locked in to something else.
+      const session = useSessionStore.getState().sessions.find((s) => s.id === sessionId);
+      if (session?.agentId && session.agentId !== useUiStore.getState().activeAgentId) {
+        useUiStore.getState().setActiveAgentId(session.agentId);
+      }
       void (async () => {
         try {
           await loadSessionHistory(sessionId);

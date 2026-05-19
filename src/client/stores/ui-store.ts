@@ -10,7 +10,6 @@ import type { ToastData } from "../components/Toast.js";
 import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap } from "../../server/shared/types.js";
 import {
   getSavedAgentId,
-  saveAgentId,
   getSavedSidebarCollapsed,
   saveSidebarCollapsed,
   getSavedRightTab,
@@ -163,7 +162,10 @@ export const useUiStore = create<UiState>((set) => ({
   setAgentList: (agentList) => set({ agentList }),
 
   setActiveAgentId: (id) => {
-    saveAgentId(id);
+    // localStorage write happens at the UI call site (App.tsx
+    // `handleAgentChange`) so internal syncs — e.g. mirroring a session's
+    // persisted agent into the UI on load — don't propagate that session's
+    // pick into the global "new session default" key.
     set({ activeAgentId: id });
   },
 

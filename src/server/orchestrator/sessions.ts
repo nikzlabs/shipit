@@ -1,6 +1,7 @@
 import type { SessionInfo } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
+import type { AgentId } from "../shared/types/agent-types.js";
 
 interface SessionRow {
   id: string;
@@ -18,6 +19,7 @@ interface SessionRow {
   branch_renamed: number;
   merged_at: string | null;
   model: string | null;
+  agent_id: string | null;
   pr_status: string | null;
   /** docs/117 — set when the session was spawned by another via `shipit session create`. */
   parent_session_id: string | null;
@@ -49,6 +51,7 @@ export class SessionManager {
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
     if (row.model) info.model = row.model;
+    if (row.agent_id === "claude" || row.agent_id === "codex") info.agentId = row.agent_id;
     if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
     return info;
@@ -263,6 +266,11 @@ export class SessionManager {
   /** Store the selected model for a session. */
   setModel(id: string, model: string): void {
     this.db.prepare("UPDATE sessions SET model = ? WHERE id = ?").run(model, id);
+  }
+
+  /** Store the selected agent (provider) for a session. */
+  setAgentId(id: string, agentId: AgentId): void {
+    this.db.prepare("UPDATE sessions SET agent_id = ? WHERE id = ?").run(agentId, id);
   }
 
   /**

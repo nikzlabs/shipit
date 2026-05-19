@@ -743,8 +743,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       let activeSessionDir: string | null = session.workspaceDir ?? null;
       const requestedAgent = request.query.agent as AgentId | undefined;
       const requestedModel = request.query.model;
-      let perConnectionAgentId: AgentId = requestedAgent ?? defaultAgentId;
+      // Prefer the session's own persisted choices over the URL params (which
+      // come from the client's global localStorage and would otherwise let a
+      // model/agent pick in one session leak into others on reconnect).
+      let perConnectionAgentId: AgentId = session.agentId ?? requestedAgent ?? defaultAgentId;
       let selectedModel: string | undefined = session.model ?? requestedModel;
+      // Lock in the choices on first connect so future reconnects ignore the
+      // global localStorage values. After this, `session.agent_id` /
+      // `session.model` are the only source of truth.
+      if (!session.agentId) {
+        try { sessionManager.setAgentId(sessionId, perConnectionAgentId); } catch { /* ignore */ }
+      }
+      if (!session.model && requestedModel) {
+        try { sessionManager.setModel(sessionId, requestedModel); } catch { /* ignore */ }
+      }
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
       let previewRetryListener: ((msg: WsServerMessage) => void) | null = null;
@@ -1077,6 +1089,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               return;
             }
             ctx.setActiveAgentId(agentId);
+            // Persist per-session so reconnects don't pick up the global
+            // localStorage agent from another session.
+            if (activeAppSessionId) {
+              sessionManager.setAgentId(activeAppSessionId, agentId);
+            }
             return;
           }
           case "set_model": {
