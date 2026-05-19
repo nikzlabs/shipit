@@ -327,7 +327,9 @@ function RepoGroup({
             }`}
             aria-current={isNewSessionSelected ? "page" : undefined}
           >
-            <PlusIcon size={ICON_SIZE.SM} className="shrink-0" />
+            <span className="w-5 h-5 flex items-center justify-center shrink-0 opacity-70">
+              <PlusIcon size={ICON_SIZE.MD} weight="bold" />
+            </span>
             <span className="truncate leading-snug">New session</span>
           </button>
           {sessions.length === 0 ? (
