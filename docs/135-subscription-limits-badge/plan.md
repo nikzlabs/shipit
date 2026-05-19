@@ -335,16 +335,19 @@ plan.
 
 A new `LimitsPoller` lives next to `pr-status-poller.ts`:
 
-- **Cadence:** 60 seconds per provider, matching the user-visible
-  "refresh every minute" requirement.
+- **Cadence:** 5 minutes per provider. Originally 60s, but usage
+  numbers move slowly on the human scale and the upstream limits
+  are tight — per-minute polling burned headroom for no perceptible
+  gain. The poller still fires one *immediate* tick on `start()` so
+  the first SSE snapshot doesn't wait for the interval to elapse.
 - **Trigger:** runs whenever there is at least one connected SSE
   client AND at least one registered provider returns
   `canFetch() === true`. Notably: an *active runner* is **not**
   required — gating on an active runner would leave the badges blank
-  on the home screen and for the first ~60s after a session opens.
-  Cost: one HTTP call per minute *per fetchable provider* while the
-  user has the tab open. With both Claude and Codex subscriptions
-  authenticated, that's 2 calls/min, issued in parallel.
+  on the home screen and for the first ~5min after a session opens.
+  Cost: one HTTP call every 5 minutes *per fetchable provider* while
+  the user has the tab open. With both Claude and Codex subscriptions
+  authenticated, that's 2 calls per 5 minutes, issued in parallel.
 - **Caching:** snapshots are held in a `Map<AgentId, SubscriptionLimits>`.
   Every fetchable provider gets its own entry; providers with
   `canFetch() === false` are omitted entirely from the map (not
@@ -374,27 +377,37 @@ A new `LimitsPoller` lives next to `pr-status-poller.ts`:
   attributed to an account they're no longer signed into. The next
   broadcast omits that key and the client drops the corresponding
   pill.
-- **Failure handling (per provider, independent):** errors are cached
-  too (with `error` populated) so the UI shows the failure state
-  instead of flashing the previous good value. Each provider has its
-  own backoff counter — Claude failing doesn't slow Codex down. Three
-  distinct cases per provider:
+- **Failure handling (per provider, independent):** when a refresh
+  fails for a provider that already has a cached successful snapshot,
+  the poller **preserves the prior data fields** (`session`,
+  `weekly`, `weeklyOpus`, `plan`, `fetchedAt`) and merges only the
+  fresh `error` reason on top. The UI then renders the meters dimmed
+  and surfaces the failure in the tooltip rather than collapsing to
+  a "—". When there's never been a successful snapshot (cold start
+  with an error), the error-only form is stored as today and the UI
+  renders the em-dash. A subsequent successful fetch replaces the
+  snapshot wholesale, clearing both the staleness and the error.
+  Each provider has its own backoff counter — Claude failing doesn't
+  slow Codex down. Three distinct cases per provider:
   - **401 / 403 (auth):** mark `error: "auth expired"`, stop polling
     *that provider* until its auth manager re-emits `auth_complete`.
     Other providers keep polling normally. Don't back off; re-auth
     is the only fix.
   - **429 (rate-limited by the usage endpoint itself):** respect
-    `Retry-After` if present; otherwise back off to 15 minutes *for
-    that provider*. Do not increment the generic consecutive-failure
-    counter — a 429 isn't an outage, it's a signal to slow down.
+    `Retry-After` if present; otherwise back off to **30 minutes**
+    *for that provider* — visibly longer than the normal 5-minute
+    cadence so a rate-limit response actually slows polling rather
+    than nudging it. Do not increment the generic
+    consecutive-failure counter — a 429 isn't an outage, it's a
+    signal to slow down.
   - **5xx / network / unexpected schema:** consecutive-failure
-    exponential backoff (60s → 5m cap), generic `error: "limits
+    exponential backoff (5min → 30min cap), generic `error: "limits
     unavailable"`. Per-provider counter.
 
 This mirrors the existing `docker_memory` flow in `index.ts:406–423` in
 shape (cache + SSE broadcast + initial-connect snapshot) but with a
-map-valued cache and a 60s cadence rather than the unconditional 10s
-timer — the upstream cost matters here, the cost of `docker stats`
+map-valued cache and a 5-minute cadence rather than the unconditional
+10s timer — the upstream cost matters here, the cost of `docker stats`
 locally does not.
 
 ### Multi-provider display
@@ -448,38 +461,41 @@ Stable rendering rules:
   symmetry with the memory badge. New header order, left-to-right
   within the right-hand cluster:
   `SubscriptionLimitsBadge → UptimeBadge → DockerMemoryBadge → Settings → ThemePicker`.
-- **Rendering rules (per pill):**
+- **Rendering rules (per row):**
 
   ```
-  When that agent has no map entry   →  pill not rendered
+  When that agent has no map entry   →  row not rendered
   When entry.error is set            →  "Claude —" pill, neutral
                                         color, error string in
                                         tooltip
-  Otherwise                          →  Label: "Claude 5h 96% · 7d 22%"
-                                        (≤22 chars). Both numbers
-                                        shown always; color is driven
-                                        by the weekly value when it's
-                                        non-trivial (≥10%), else by
-                                        the session value. Rationale:
-                                        a 100%/20% state is not a red
-                                        situation — the 5h window
-                                        resets in minutes, the weekly
-                                        is what actually matters for
-                                        "can I keep working today?"
-                                        Tooltip: full breakdown,
-                                        reset times, plan name ("Pro"
-                                        / "Max 20x" / "Plus"). No
-                                        link out — the number on the
-                                        badge is the surface. (§1)
+  Otherwise                          →  Label "Claude" followed by
+                                        up to two mini *meter pills*:
+                                        "[5h NN%]" and "[7d NN%]".
+                                        Each meter pill has a
+                                        translucent fill bar whose
+                                        width is `pct%` of the pill;
+                                        the percentage sits on top.
+                                        Both width and color signal
+                                        urgency. Tooltip: full
+                                        breakdown, reset times, plan
+                                        name ("Pro" / "Max 20x" /
+                                        "Plus"). No link out — the
+                                        number on the badge is the
+                                        surface. (§1)
   ```
 
-- **Color tiers** apply per pill, to the *color-driving* value
-  selected by the rule above. One pill being red does not affect the
-  other pill's color.
-  - ≥90% used → `text-red-400`
-  - ≥75% → `text-orange-400`
-  - ≥60% → `text-yellow-400`
-  - otherwise → `text-(--color-text-secondary)`
+- **Color tiers** apply per *meter pill*, independently — the 5h
+  meter and the 7d meter color from their own percentages, so a
+  100%/22% state shows a red 5h pill next to a neutral 7d pill (an
+  honest read of "session window full, weekly is fine"). The tier
+  drives both the text color and the fill bar:
+  - ≥90% used → `text-(--color-context-full)` + 40% fill
+  - ≥75% → `text-(--color-context-high)` + 35% fill
+  - ≥60% → `text-(--color-context-mid)` + 30% fill
+  - otherwise → `text-(--color-text-secondary)` + 15% fill
+
+  The `--color-context-*` tokens are shared with `ContextDial`, so
+  meter styling stays consistent across themes.
 
 ### File layout
 

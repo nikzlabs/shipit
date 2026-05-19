@@ -7,12 +7,6 @@ import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap } from "../../s
  */
 const PILL_ORDER: AgentId[] = ["claude", "codex"];
 
-/**
- * Display labels for each agent. The pill format is
- * `"<Label> 5h <session>% · 7d <weekly>%"` so two side-by-side pills
- * are distinguishable even without provider-brand iconography (see
- * "Open question 4" in doc 135).
- */
 const AGENT_LABEL: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
@@ -23,10 +17,10 @@ interface SubscriptionLimitsBadgeProps {
 }
 
 /**
- * Header badge group rendering one pill per fetchable provider.
- * Iterates a fixed ordering so the layout is stable across reloads
- * and across users. Empty map → empty group → header collapses to
- * its previous shape (no spacing artifacts).
+ * Header badge group rendering one row per fetchable provider.
+ * Each row is `<Label> [5h ▓▓░ NN%] [7d ▓░░ NN%]` — the percentages
+ * sit on top of mini pills whose background fill is proportional
+ * to the percentage, so urgency is conveyed by both width and color.
  *
  * See docs/135-subscription-limits-badge/plan.md.
  */
@@ -56,21 +50,17 @@ interface SubscriptionLimitPillProps {
   snapshot: SubscriptionLimits;
 }
 
-/**
- * A single provider's pill. Renders either the numeric breakdown
- * (`"<Label> 5h 96% · 7d 22%"`) or, on failure, a neutral
- * `"<Label> —"` with the error string in the tooltip.
- *
- * Color is driven by the weekly value when it's non-trivial (≥10%),
- * otherwise by the session value. Rationale (doc 135): a 100%/20%
- * state is *not* a red situation — the 5h window resets in minutes,
- * the weekly is what actually matters for "can I keep working today?"
- */
 export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPillProps) {
-  if (snapshot.error) {
+  const sessionPct = snapshot.session?.usedPct ?? null;
+  const weeklyPct = snapshot.weekly?.usedPct ?? null;
+  const hasData = sessionPct !== null || weeklyPct !== null;
+
+  // No data ever (or sign-out / never-fetched) → keep the neutral
+  // em-dash form. The error reason lives in the tooltip.
+  if (snapshot.error && !hasData) {
     return (
       <span
-        className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) text-(--color-text-secondary) font-medium tabular-nums"
+        className="hidden sm:inline-flex items-center text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) text-(--color-text-secondary) font-medium tabular-nums"
         title={buildErrorTooltip(label, snapshot)}
       >
         {label} —
@@ -78,46 +68,74 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
     );
   }
 
-  const sessionPct = snapshot.session?.usedPct ?? null;
-  const weeklyPct = snapshot.weekly?.usedPct ?? null;
-
-  // Color-driving value: weekly when it's high enough to matter,
-  // otherwise session. See doc 135's rationale.
-  const colorPct =
-    weeklyPct !== null && weeklyPct >= 10 ? weeklyPct : sessionPct ?? weeklyPct ?? 0;
-  const colorClass = colorClassFor(colorPct);
-
-  const pieces: string[] = [label];
-  if (sessionPct !== null) pieces.push(`5h ${formatPct(sessionPct)}`);
-  if (weeklyPct !== null) {
-    // Use `·` separator only when both numbers are present.
-    pieces.push(sessionPct !== null ? `· 7d ${formatPct(weeklyPct)}` : `7d ${formatPct(weeklyPct)}`);
-  }
-  // Fallback: if neither number is present (parser produced an empty
-  // snapshot somehow), show a placeholder rather than just the label.
-  if (sessionPct === null && weeklyPct === null) pieces.push("—");
-
-  const text = pieces.join(" ");
+  // Stale = we have data but the most recent refresh failed. We
+  // keep the visual presentation identical (per user request) and
+  // surface the staleness in the tooltip only.
+  const isStale = !!snapshot.error && hasData;
 
   return (
     <span
-      className={`hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) ${colorClass} font-medium tabular-nums`}
+      className="hidden sm:inline-flex items-center gap-1.5 text-xs font-medium tabular-nums text-(--color-text-secondary)"
       title={buildTooltip(label, snapshot)}
+      data-stale={isStale ? "true" : undefined}
     >
-      {text}
+      <span>{label}</span>
+      {sessionPct !== null && <MeterPill shortLabel="5h" pct={sessionPct} />}
+      {weeklyPct !== null && <MeterPill shortLabel="7d" pct={weeklyPct} />}
+      {!hasData && <span>—</span>}
     </span>
   );
 }
 
+interface MeterPillProps {
+  shortLabel: string;
+  pct: number;
+}
+
 /**
- * Tier color thresholds match `DockerMemoryBadge`: green/secondary →
- * yellow → orange → red. Exported for unit tests.
+ * A single 5h / 7d meter pill: the percentage text sits on top of
+ * a background bar that fills `pct%` of the pill's width. The bar
+ * carries the urgency signal via both width and color; the text
+ * itself stays at `--color-text-primary` so contrast is guaranteed
+ * on both dark and light themes (colored text on a lightly-tinted
+ * fill collapsed in light themes — see the earlier iteration).
  */
-export function colorClassFor(pct: number): string {
-  if (pct >= 90) return "text-red-400";
-  if (pct >= 75) return "text-orange-400";
-  if (pct >= 60) return "text-yellow-400";
-  return "text-(--color-text-secondary)";
+function MeterPill({ shortLabel, pct }: MeterPillProps) {
+  const fillWidth = `${Math.max(0, Math.min(100, pct))}%`;
+  const tier = tierFor(pct);
+  return (
+    <span
+      className="relative inline-flex items-center rounded-full bg-(--color-bg-hover) px-1.5 py-0.5 overflow-hidden text-(--color-text-primary)"
+      data-meter-pct={Math.round(pct)}
+    >
+      <span
+        aria-hidden
+        className={`absolute inset-y-0 left-0 ${tier.fill}`}
+        style={{ width: fillWidth }}
+      />
+      <span className="relative">
+        {shortLabel} {formatPct(pct)}
+      </span>
+    </span>
+  );
+}
+
+interface Tier {
+  fill: string;
+}
+
+/**
+ * Tier thresholds: neutral → amber → orange → red at 60 / 75 / 90
+ * percent. Fill colors use saturated Tailwind palette values at
+ * elevated opacity so the bar reads clearly against both the dark
+ * `bg-hover` (rgba white 5%) and the light `bg-hover` (rgba black
+ * 4%). Text color is decoupled from the tier — see `MeterPill`.
+ */
+export function tierFor(pct: number): Tier {
+  if (pct >= 90) return { fill: "bg-red-500/55" };
+  if (pct >= 75) return { fill: "bg-orange-500/55" };
+  if (pct >= 60) return { fill: "bg-amber-500/55" };
+  return { fill: "bg-(--color-text-secondary)/25" };
 }
 
 /** Format 0–100 → `"96%"`, rounded to whole-number percent. */
@@ -137,7 +155,21 @@ function buildTooltip(label: string, snap: SubscriptionLimits): string {
   if (snap.weeklyOpus) {
     lines.push(`Weekly Opus: ${formatPct(snap.weeklyOpus.usedPct)} used (resets ${formatReset(snap.weeklyOpus.resetAt)})`);
   }
+  if (snap.error && (snap.session || snap.weekly || snap.weeklyOpus)) {
+    lines.push(`Last refresh failed (${snap.error}) — showing data from ${formatRelative(snap.fetchedAt)}.`);
+  }
   return lines.join("\n");
+}
+
+function formatRelative(epochMs: number): string {
+  const diffMs = Date.now() - epochMs;
+  if (!Number.isFinite(diffMs) || diffMs < 0) return "just now";
+  const sec = Math.round(diffMs / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.round(min / 60);
+  return `${hr}h ago`;
 }
 
 function buildErrorTooltip(label: string, snap: SubscriptionLimits): string {

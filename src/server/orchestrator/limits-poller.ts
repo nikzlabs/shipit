@@ -55,18 +55,21 @@ export interface LimitsPollerOptions {
   /** Broadcast helper, typically `sseBroadcast` from index.ts. */
   sseBroadcast: (event: string, data: unknown) => void;
   /**
-   * Cadence for the main loop. Defaults to 60_000 ms — the
-   * user-visible "refresh every minute" requirement.
+   * Cadence for the main loop. Defaults to 5 minutes — usage
+   * numbers move slowly and the upstream rate limits are tight,
+   * so per-minute polling burned headroom for no perceptible gain.
    */
   intervalMs?: number;
   /**
    * Maximum backoff applied to a single provider after consecutive
-   * 5xx / schema / network failures. Defaults to 5 minutes.
+   * 5xx / schema / network failures. Defaults to 30 minutes.
    */
   maxBackoffMs?: number;
   /**
    * Default backoff when a provider returns 429 without a
-   * Retry-After header. Defaults to 15 minutes.
+   * Retry-After header. Defaults to 30 minutes — meaningfully
+   * longer than the normal 5-minute cadence so a rate-limit
+   * response visibly slows polling down rather than nudging it.
    */
   default429BackoffMs?: number;
 }
@@ -105,9 +108,9 @@ export class LimitsPoller {
   constructor(opts: LimitsPollerOptions) {
     this.providers = opts.providers;
     this.sseBroadcast = opts.sseBroadcast;
-    this.intervalMs = opts.intervalMs ?? 60_000;
-    this.maxBackoffMs = opts.maxBackoffMs ?? 5 * 60_000;
-    this.default429BackoffMs = opts.default429BackoffMs ?? 15 * 60_000;
+    this.intervalMs = opts.intervalMs ?? 5 * 60_000;
+    this.maxBackoffMs = opts.maxBackoffMs ?? 30 * 60_000;
+    this.default429BackoffMs = opts.default429BackoffMs ?? 30 * 60_000;
     for (const id of this.providers.keys()) {
       this.state.set(id, {
         consecutiveFailures: 0,
@@ -279,6 +282,14 @@ export class LimitsPoller {
    * Merge a fresh snapshot into the cache and update the
    * per-provider state. Returns `true` if the cache changed in a
    * way that should trigger a broadcast.
+   *
+   * Stale-data preservation: when a fresh fetch fails (`error` set)
+   * but we have a prior successful snapshot for this provider, we
+   * keep the prior data fields and attach only the new error reason.
+   * The cached `fetchedAt` stays pinned to when the data was
+   * actually fresh, so the UI can compute "last refreshed N min
+   * ago." A subsequent successful fetch replaces the snapshot
+   * wholesale, clearing the staleness.
    */
   private applySnapshot(agentId: AgentId, snapshot: SubscriptionLimits | null): boolean {
     const state = this.ensureState(agentId);
@@ -291,8 +302,8 @@ export class LimitsPoller {
       return had;
     }
 
-    // Apply backoff classification before storing — but always store
-    // the snapshot itself so the UI shows the failure state.
+    // Apply backoff classification on the *fresh* error, regardless
+    // of whether we end up merging or replacing below.
     if (snapshot.error === "auth expired") {
       state.authStalled = true;
       state.consecutiveFailures = 0;
@@ -313,17 +324,30 @@ export class LimitsPoller {
       state.pollNotBefore = 0;
     }
 
+    // Decide what to store: merge stale-but-present data with the
+    // fresh error, or take the fresh snapshot as-is.
     const prev = state.lastSnapshot;
+    const effective: SubscriptionLimits =
+      snapshot.error && prev && hasData(prev)
+        ? {
+            ...prev,
+            error: snapshot.error,
+            // Preserve prev.fetchedAt — that's when the *data* was
+            // fresh; the failed refresh attempt at `snapshot.fetchedAt`
+            // is information we discard.
+          }
+        : snapshot;
+
     const isChange =
       !prev ||
-      prev.error !== snapshot.error ||
-      prev.plan !== snapshot.plan ||
-      !windowEqual(prev.session, snapshot.session) ||
-      !windowEqual(prev.weekly, snapshot.weekly) ||
-      !windowEqual(prev.weeklyOpus ?? null, snapshot.weeklyOpus ?? null);
+      prev.error !== effective.error ||
+      prev.plan !== effective.plan ||
+      !windowEqual(prev.session, effective.session) ||
+      !windowEqual(prev.weekly, effective.weekly) ||
+      !windowEqual(prev.weeklyOpus ?? null, effective.weeklyOpus ?? null);
 
-    this.cache.set(agentId, snapshot);
-    state.lastSnapshot = snapshot;
+    this.cache.set(agentId, effective);
+    state.lastSnapshot = effective;
     return isChange;
   }
 
@@ -369,4 +393,8 @@ function windowEqual(
   if (a === null && b === null) return true;
   if (a === null || b === null) return false;
   return a.usedPct === b.usedPct && a.resetAt === b.resetAt;
+}
+
+function hasData(s: SubscriptionLimits): boolean {
+  return s.session !== null || s.weekly !== null || (s.weeklyOpus ?? null) !== null;
 }

@@ -37,9 +37,13 @@ export interface SubscriptionLimits {
   /** Epoch ms when this snapshot was fetched. */
   fetchedAt: number;
   /**
-   * Populated when the fetch failed (auth expired, 5xx, schema
-   * mismatch, ...). The UI renders a neutral "—" pill with this
-   * string as the tooltip rather than the numeric breakdown.
+   * Populated when the *most recent* fetch failed (auth expired,
+   * 5xx, schema mismatch, rate limit, ...). When `session` / `weekly`
+   * are still populated alongside `error`, the orchestrator is
+   * preserving the last successful snapshot — the data is stale and
+   * the UI dims the meters + surfaces the reason in the tooltip
+   * rather than collapsing to a "—". When the data fields are null
+   * we never had a successful fetch and the UI falls back to "—".
    */
   error?: string;
 }
