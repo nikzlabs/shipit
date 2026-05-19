@@ -282,10 +282,21 @@ export function extractFailedCheckRuns(node: GraphQLPrNode): {
   return failed;
 }
 
-/** Shallow comparison of two PrStatusSummary objects. */
+/**
+ * Shallow comparison of two PrStatusSummary objects.
+ *
+ * Title and body are included because the PR card renders them inline — when
+ * the user (or the agent, or a teammate on github.com) edits the PR
+ * description, the poller picks up the new value and we need to broadcast it
+ * so the card refreshes without a reload. Without these checks, the
+ * change-detection gate would swallow the update and the card would keep
+ * showing the stale title/description until the next CI/state event.
+ */
 export function prStatusEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
   return (
     a.prState === b.prState &&
+    a.prTitle === b.prTitle &&
+    a.prBody === b.prBody &&
     a.checks.state === b.checks.state &&
     a.checks.total === b.checks.total &&
     a.checks.passed === b.checks.passed &&
