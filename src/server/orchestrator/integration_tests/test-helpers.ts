@@ -223,6 +223,18 @@ export class StubGitHubAuthManager extends EventEmitter {
     this._authenticated = false;
     this._username = null;
   }
+  /**
+   * Mirrors `GitHubAuthManager.markTokenInvalid` — called by the
+   * orchestrator when a git push/fetch surfaces "Authentication failed".
+   * No-op when no token is configured (matches the real implementation's
+   * guard so tests running without auth don't trip an unexpected emit).
+   */
+  markTokenInvalid(reason: string): boolean {
+    if (!this._authenticated) return false;
+    this.clearCredentials();
+    this.emit("token_invalid", { reason });
+    return true;
+  }
   configureGitCredentials() { /* no-op */ }
   getAuthenticatedCloneUrl(url: string) { return url; }
   async loadUserInfo() { /* no-op */ }

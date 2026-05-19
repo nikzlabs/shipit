@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { fetchAndResolveDefaultBranch } from "./git-utils.js";
+import { fetchAndResolveDefaultBranch, isGitAuthError } from "./git-utils.js";
 
 function git(cwd: string, args: string): string {
   return execSync(`git ${args}`, { cwd, stdio: ["ignore", "pipe", "ignore"] })
@@ -78,11 +78,36 @@ describe("fetchAndResolveDefaultBranch", () => {
     // never throw.
     git(cloneDir, `remote set-url origin "${path.join(tmpDir, "does-not-exist")}"`);
 
-    const { resetTarget, fetched } = await fetchAndResolveDefaultBranch(cloneDir);
+    const { resetTarget, fetched, authError } = await fetchAndResolveDefaultBranch(cloneDir);
 
     expect(fetched).toBe(false);
+    expect(authError).toBe(false); // unreachable != auth error
     // Still resolves — to the snapshot's commit (c1), the pre-W2 behavior.
     expect(resetTarget).toBeDefined();
     expect(git(cloneDir, `rev-parse ${resetTarget}`)).toBe(c1);
+  });
+});
+
+describe("isGitAuthError", () => {
+  it("recognizes the standard GitHub credential-failure strings", () => {
+    // The exact stderr the user reported in the bug.
+    expect(isGitAuthError(new Error(
+      "remote: Invalid username or token. Password authentication is not supported for Git operations.\n" +
+      "fatal: Authentication failed for 'https://github.com/foo/bar.git/'",
+    ))).toBe(true);
+
+    // Other shapes that surface from `git push`/`git fetch` against
+    // expired/revoked credentials.
+    expect(isGitAuthError(new Error("could not read Username for 'https://github.com'"))).toBe(true);
+    expect(isGitAuthError(new Error("terminal prompts disabled"))).toBe(true);
+    expect(isGitAuthError(new Error("Bad credentials"))).toBe(true);
+    expect(isGitAuthError(new Error("HTTP/1.1 401 Unauthorized"))).toBe(true);
+  });
+
+  it("does not match unrelated git errors", () => {
+    expect(isGitAuthError(new Error("Could not resolve host: github.com"))).toBe(false);
+    expect(isGitAuthError(new Error("non-fast-forward update"))).toBe(false);
+    expect(isGitAuthError(new Error("merge conflict in foo.ts"))).toBe(false);
+    expect(isGitAuthError(undefined)).toBe(false);
   });
 });

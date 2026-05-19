@@ -188,6 +188,34 @@ describe("GitHubAuthManager", () => {
       expect(() => mgr.clearCredentials()).not.toThrow();
     });
   });
+
+  describe("markTokenInvalid", () => {
+    it("clears credentials and emits token_invalid with the reason", () => {
+      credentialStore.setGithubToken("ghp_testtoken");
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      mgr.checkCredentials();
+      expect(mgr.authenticated).toBe(true);
+
+      const events: { reason: string }[] = [];
+      mgr.on("token_invalid", (ev) => events.push(ev as { reason: string }));
+
+      const did = mgr.markTokenInvalid("auto-push failed: Authentication failed");
+      expect(did).toBe(true);
+      expect(mgr.authenticated).toBe(false);
+      expect(credentialStore.getGithubToken()).toBeNull();
+      expect(events).toEqual([{ reason: "auto-push failed: Authentication failed" }]);
+    });
+
+    it("is a no-op when no token is configured (no event, returns false)", () => {
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      const events: unknown[] = [];
+      mgr.on("token_invalid", (ev) => events.push(ev));
+
+      const did = mgr.markTokenInvalid("nothing to invalidate");
+      expect(did).toBe(false);
+      expect(events).toEqual([]);
+    });
+  });
 });
 
 /** Narrow fetch's `url` argument to a string. The auth manager only ever

@@ -51,6 +51,14 @@ export interface WsGitHubStatus {
   authenticated: boolean;
   username?: string;
   avatarUrl?: string;
+  /**
+   * Set when the orchestrator just detected that the stored GitHub token
+   * is invalid (expired/revoked) from a git operation that returned
+   * "Authentication failed". Present alongside `authenticated: false` and
+   * triggers a user-visible toast pointing back to Settings → GitHub.
+   * Unset on a normal logout. See `GitHubAuthManager.markTokenInvalid`.
+   */
+  tokenInvalidReason?: string;
 }
 
 export interface WsGitHubPushResult {

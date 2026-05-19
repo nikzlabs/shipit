@@ -42,6 +42,32 @@ export async function pushToOrigin(git: GitManager): Promise<string | null> {
 const FETCH_STALL_TIMEOUT_MS = 30_000;
 
 /**
+ * Check if a git operation failed because the supplied credential is
+ * invalid/expired/revoked. GitHub (and other HTTPS remotes) surface this
+ * on stderr from `git push`, `git fetch`, and `git pull` with one of a
+ * handful of well-known strings — match all of them so we catch the
+ * failure regardless of which command emitted it.
+ *
+ * Centralizing the detection lets the orchestrator surface a "your GitHub
+ * token is invalid — please re-authenticate" signal to the UI rather
+ * than swallowing the error in server logs, which is the W3 problem
+ * reported on `fetchAndResolveDefaultBranch`. See `GitHubAuthManager.markTokenInvalid`.
+ */
+export function isGitAuthError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes("Authentication failed") ||
+    msg.includes("Invalid username or token") ||
+    msg.includes("Password authentication is not supported") ||
+    msg.includes("could not read Username") ||
+    msg.includes("terminal prompts disabled") ||
+    msg.includes("Bad credentials") ||
+    msg.includes("401 Unauthorized") ||
+    /\b(403|401)\b.*(Forbidden|Unauthorized)/i.test(msg)
+  );
+}
+
+/**
  * Fetch `origin` in a session/workspace clone and resolve the current
  * default-branch ref.
  *
@@ -72,14 +98,22 @@ const FETCH_STALL_TIMEOUT_MS = 30_000;
  * because this runs on the per-repo-serialized claim slow-path, where a
  * hang would wedge every claim for that repo.
  *
+ * @param onAuthError — called when the fetch failure is recognized as a
+ *   credential error (expired/revoked token). Useful so callers can mark
+ *   the stored GitHub token invalid; not used for any other failure
+ *   mode. See `isGitAuthError`.
+ *
  * @returns the resolved ref (a SHA from `origin/HEAD`, or the
  *   `origin/main` / `origin/master` ref name), or `undefined` if none
  *   resolved; `fetched` is whether the network fetch actually succeeded;
- *   plus the fetch duration for telemetry.
+ *   `authError` is `true` when the fetch failure was an auth error
+ *   (token expired/revoked), `false` otherwise — including when the
+ *   fetch succeeded; plus the fetch duration for telemetry.
  */
 export async function fetchAndResolveDefaultBranch(
   workspaceDir: string,
-): Promise<{ resetTarget: string | undefined; fetched: boolean; fetchDurationMs: number }> {
+  onAuthError?: (err: Error) => void,
+): Promise<{ resetTarget: string | undefined; fetched: boolean; fetchDurationMs: number; authError: boolean }> {
   const t0 = Date.now();
   // `GIT_TERMINAL_PROMPT=0` makes git fail fast instead of prompting on the
   // controlling terminal; the `timeout.block` plugin kills the child if it
@@ -88,6 +122,7 @@ export async function fetchAndResolveDefaultBranch(
   const sg = simpleGit(workspaceDir, { timeout: { block: FETCH_STALL_TIMEOUT_MS } })
     .env({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
   let fetched = false;
+  let authError = false;
   try {
     await sg.fetch("origin");
     fetched = true;
@@ -97,6 +132,14 @@ export async function fetchAndResolveDefaultBranch(
       `[git] fetchAndResolveDefaultBranch: origin fetch failed for ${workspaceDir} ` +
         `(resolving from local refs instead): ${err instanceof Error ? err.message : String(err)}`,
     );
+    if (isGitAuthError(err)) {
+      authError = true;
+      // Surface the credential failure to the caller so it can mark the
+      // GitHub token as invalid — otherwise the next push/fetch fails
+      // the same silent way and the user never learns their token
+      // expired. See `GitHubAuthManager.markTokenInvalid`.
+      onAuthError?.(err instanceof Error ? err : new Error(String(err)));
+    }
   }
   // Try origin/HEAD first, then fall back to common default branch names.
   // Avoid `git remote set-head --auto` — it hits the network and can hang
@@ -112,7 +155,7 @@ export async function fetchAndResolveDefaultBranch(
       } catch { /* try next */ }
     }
   }
-  return { resetTarget, fetched, fetchDurationMs: Date.now() - t0 };
+  return { resetTarget, fetched, fetchDurationMs: Date.now() - t0, authError };
 }
 
 /** Parse owner/repo from a GitHub remote URL. */

@@ -10,7 +10,7 @@ import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/typ
 import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
-import { pushToOrigin } from "./git-utils.js";
+import { pushToOrigin, isGitAuthError } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
@@ -282,7 +282,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Event wiring (deployment + auth) ----
   wireEventHandlers({
-    authManager, codexAuthManager, agentRegistry,
+    authManager, codexAuthManager, githubAuthManager, agentRegistry,
     defaultAgentId, sseBroadcast,
   });
 
@@ -808,6 +808,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               return;
             }
             const errMsg = getErrorMessage(err);
+            // Token expired/revoked — mark the stored credential invalid so
+            // the SSE broadcast clears the GitHub auth state on every
+            // connected client and surfaces a toast pointing back to
+            // Settings → GitHub. Without this the failure would only be
+            // visible as a "log_entry" in the session's Logs panel — the
+            // same swallow-in-the-logs path the user complained about.
+            if (isGitAuthError(err)) {
+              githubAuthManager.markTokenInvalid(`auto-push failed: ${errMsg}`);
+              const text = "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → GitHub.";
+              broadcastLog(runner.sessionId, "server", text);
+              runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
+              return;
+            }
             const text = errMsg.includes("workflow")
               ? "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
               : `Auto-push failed: ${errMsg}`;
