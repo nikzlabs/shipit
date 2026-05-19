@@ -698,13 +698,21 @@ function RichErrorText({ text }: { text: string }) {
 
 function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
   const quickCreate = usePrStore((s) => s.quickCreate);
+  const setSettingsTab = useUiStore((s) => s.setSettingsTab);
+  const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
   const [retrying, setRetrying] = useState(false);
   const lines = card.errorMessage?.split("\n") ?? [];
+  const isAuthError = card.errorKind === "auth";
 
   const handleRetry = async () => {
     setRetrying(true);
     await quickCreate(sessionId);
     setRetrying(false);
+  };
+
+  const handleSignIn = () => {
+    setSettingsTab("github");
+    setSettingsOpen(true);
   };
 
   return (
@@ -718,7 +726,23 @@ function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
             <RichErrorText text={line} />
           </span>
         ))}
+        {isAuthError && (
+          <>
+            <br />
+            Your GitHub token is missing or expired — reconnect to keep pushing.
+          </>
+        )}
       </span>
+      {isAuthError && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleSignIn}
+          className="shrink-0"
+        >
+          Sign in to GitHub
+        </Button>
+      )}
       <Button
         variant="ghost"
         size="sm"
