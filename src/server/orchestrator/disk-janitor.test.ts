@@ -450,4 +450,306 @@ describe("runDiskJanitor", () => {
     expect(result.orphanVolumesRemoved).toBe(0);
     expect(result.workspacesRemoved).toBe(1);
   });
+
+  // ---- Orphan merged-PR branch sweep ----
+
+  /**
+   * Build a stub GitHubAuthManager-shaped object good enough for the sweep.
+   * `branches` is a per-repo lookup keyed by `owner/repo` returning the
+   * synthetic GraphQL response. The sweep only touches `authenticated`,
+   * `graphqlQuery`, and `getAuthenticatedCloneUrl`.
+   */
+  function buildGitHubStub(
+    branches: Record<string, { name: string; states: string[] }[]>,
+    opts: { authenticated?: boolean } = {},
+  ) {
+    return {
+      authenticated: opts.authenticated ?? true,
+       
+      async graphqlQuery(_query: string, vars?: Record<string, unknown>) {
+        const owner = vars?.owner as string;
+        const repo = vars?.repo as string;
+        const key = `${owner}/${repo}`;
+        const nodes = branches[key] ?? [];
+        return {
+          data: {
+            repository: {
+              refs: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: nodes.map((b) => ({
+                  name: b.name,
+                  associatedPullRequests: {
+                    nodes: b.states.map((state) => ({ state })),
+                  },
+                })),
+              },
+            },
+          },
+        };
+      },
+      getAuthenticatedCloneUrl(url: string) { return url; },
+    } as unknown as Parameters<typeof runDiskJanitor>[0]["githubAuthManager"];
+  }
+
+  /**
+   * Build a stub RepoGit factory that captures `setRemoteUrl` + `deleteBranch`
+   * calls for assertions. Each created instance shares the underlying `calls`
+   * array so we can see what happened across the whole sweep.
+   */
+  function buildRepoGitFactory(opts: { deleteFails?: boolean } = {}) {
+    const deleted: string[] = [];
+    const setRemoteUrlCalls: string[] = [];
+    const factory = (_dir: string) => ({
+      deleteBranch: (branch: string) => {
+        if (opts.deleteFails) return Promise.reject(new Error("push denied"));
+        deleted.push(branch);
+        return Promise.resolve();
+      },
+      setRemoteUrl: (url: string) => {
+        setRemoteUrlCalls.push(url);
+        return Promise.resolve();
+      },
+    } as unknown as ReturnType<NonNullable<Parameters<typeof runDiskJanitor>[0]["createRepoGit"]>>);
+    return { factory, deleted, setRemoteUrlCalls };
+  }
+
+  it("deletes merged-PR branches that no live session points at", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+
+    // One live session pointing at shipit/active-feature — must be preserved
+    // even though its PR is merged (defensive: a session might intentionally
+    // re-push to the same branch).
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, branch, archived) VALUES (?, ?, ?, ?, ?, ?, 0)",
+    ).run(
+      "11111111-1111-1111-1111-111111111111", "Live", "2026-05-12", "2026-05-12",
+      repoUrl, "shipit/active-feature",
+    );
+
+    // Bare cache exists on disk so `sweepOrphanMergedBranches` doesn't bail.
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    const githubAuthManager = buildGitHubStub({
+      "example/repo": [
+        { name: "active-feature", states: ["MERGED"] },  // PRESERVED — live session
+        { name: "old-merged", states: ["MERGED"] },      // DELETE
+        { name: "still-open", states: ["OPEN"] },        // PRESERVED — open PR
+        { name: "open-and-merged", states: ["OPEN", "MERGED"] }, // PRESERVED — open wins
+        { name: "closed-no-merge", states: ["CLOSED"] }, // PRESERVED — closed != merged
+        { name: "no-pr", states: [] },                   // PRESERVED — no PR at all
+      ],
+    });
+
+    const { factory, deleted, setRemoteUrlCalls } = buildRepoGitFactory();
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(deleted).toEqual(["shipit/old-merged"]);
+    expect(result.orphanBranchesRemoved).toBe(1);
+    // Credentials refreshed exactly once for this repo (lazy: only when we
+    // actually have a deletion to perform).
+    expect(setRemoteUrlCalls).toEqual([repoUrl]);
+  });
+
+  it("no-ops when GitHub auth is unauthenticated", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    repoStore.add("https://github.com/example/repo.git");
+
+    const githubAuthManager = buildGitHubStub(
+      { "example/repo": [{ name: "old-merged", states: ["MERGED"] }] },
+      { authenticated: false },
+    );
+    const { factory, deleted } = buildRepoGitFactory();
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(deleted).toEqual([]);
+    expect(result.orphanBranchesRemoved).toBe(0);
+  });
+
+  it("skips repos whose bare cache directory does not exist", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/missing-cache.git";
+    repoStore.add(repoUrl);
+    // Intentionally do NOT create the cache directory.
+
+    const githubAuthManager = buildGitHubStub({
+      "example/missing-cache": [
+        { name: "old-merged-1", states: ["MERGED"] },
+        { name: "old-merged-2", states: ["MERGED"] },
+      ],
+    });
+    const { factory, deleted } = buildRepoGitFactory();
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(deleted).toEqual([]);
+    expect(result.orphanBranchesRemoved).toBe(0);
+  });
+
+  it("skips non-GitHub repo URLs", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://gitlab.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    let queries = 0;
+    const githubAuthManager = {
+      authenticated: true,
+      async graphqlQuery() { queries += 1; return null; },
+      getAuthenticatedCloneUrl(url: string) { return url; },
+    } as unknown as Parameters<typeof runDiskJanitor>[0]["githubAuthManager"];
+
+    const { factory, deleted } = buildRepoGitFactory();
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(queries).toBe(0);
+    expect(deleted).toEqual([]);
+    expect(result.orphanBranchesRemoved).toBe(0);
+  });
+
+  it("disabled when sweepOrphanBranches is false", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    const githubAuthManager = buildGitHubStub({
+      "example/repo": [{ name: "old-merged", states: ["MERGED"] }],
+    });
+    const { factory, deleted } = buildRepoGitFactory();
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+      sweepOrphanBranches: false,
+    });
+
+    expect(deleted).toEqual([]);
+    expect(result.orphanBranchesRemoved).toBe(0);
+  });
+
+  it("swallows per-branch delete failures and continues with the next branch", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    const githubAuthManager = buildGitHubStub({
+      "example/repo": [
+        { name: "merged-1", states: ["MERGED"] },
+        { name: "merged-2", states: ["MERGED"] },
+      ],
+    });
+    const { factory } = buildRepoGitFactory({ deleteFails: true });
+
+    // Should not throw. Result count is 0 because every delete failed.
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(result.orphanBranchesRemoved).toBe(0);
+  });
+
+  it("excludes archived sessions from the live-branch set (unarchive regenerates branch)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    // Archived session that USED to point at shipit/orphan-branch. Its old
+    // branch is now orphaned — unarchiveSession would generate a fresh branch
+    // anyway, so deletion is safe.
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, branch, archived) VALUES (?, ?, ?, ?, ?, ?, 1)",
+    ).run(
+      "22222222-2222-2222-2222-222222222222", "Archived", "2026-05-12", "2026-05-12",
+      repoUrl, "shipit/orphan-branch",
+    );
+
+    const githubAuthManager = buildGitHubStub({
+      "example/repo": [{ name: "orphan-branch", states: ["MERGED"] }],
+    });
+    const { factory, deleted } = buildRepoGitFactory();
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(deleted).toEqual(["shipit/orphan-branch"]);
+    expect(result.orphanBranchesRemoved).toBe(1);
+  });
 });

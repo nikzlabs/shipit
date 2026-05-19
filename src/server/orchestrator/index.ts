@@ -510,6 +510,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       stateDir,
       archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
       cacheDays: Number.isFinite(cacheDays) ? cacheDays : 30,
+      githubAuthManager,
+      createRepoGit,
+      getBareCacheDir,
+      sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
     });
   }
 
