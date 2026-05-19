@@ -176,6 +176,106 @@ describe("LimitsPoller", () => {
     expect(claude.fetchCallCount).toBe(1);
   });
 
+  it("preserves prior data when a refresh errors after a successful fetch", async () => {
+    const claude = new StubLimitsProvider("claude")
+      .enqueue(makeSnapshot({ agentId: "claude", fetchedAt: 1_000 }))
+      .enqueue(
+        makeSnapshot({
+          agentId: "claude",
+          fetchedAt: 2_000,
+          error: "rate limited",
+          session: null,
+          weekly: null,
+          weeklyOpus: null,
+        }),
+      );
+    const spy = makeBroadcastSpy();
+
+    const poller = new LimitsPoller({
+      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      sseBroadcast: spy.broadcast,
+      intervalMs: 1000,
+      default429BackoffMs: 60_000,
+    });
+    await poller.tick();
+    await poller.tick();
+
+    const last = spy.calls[spy.calls.length - 1].data as {
+      limits: Record<string, SubscriptionLimits>;
+    };
+    // Data fields are preserved from the first successful fetch…
+    expect(last.limits.claude.session?.usedPct).toBe(30);
+    expect(last.limits.claude.weekly?.usedPct).toBe(40);
+    // …fetchedAt stays pinned to when the data was fresh…
+    expect(last.limits.claude.fetchedAt).toBe(1_000);
+    // …and the fresh error reason rides along so the UI can surface it.
+    expect(last.limits.claude.error).toBe("rate limited");
+  });
+
+  it("falls back to the error-only snapshot when no prior data exists", async () => {
+    const claude = new StubLimitsProvider("claude").enqueue(
+      makeSnapshot({
+        agentId: "claude",
+        error: "limits unavailable",
+        session: null,
+        weekly: null,
+        weeklyOpus: null,
+      }),
+    );
+    const spy = makeBroadcastSpy();
+
+    const poller = new LimitsPoller({
+      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      sseBroadcast: spy.broadcast,
+    });
+    await poller.tick();
+
+    const payload = spy.calls[0].data as { limits: Record<string, SubscriptionLimits> };
+    expect(payload.limits.claude.error).toBe("limits unavailable");
+    expect(payload.limits.claude.session).toBeNull();
+    expect(payload.limits.claude.weekly).toBeNull();
+  });
+
+  it("clears the staleness when a later refresh succeeds", async () => {
+    const claude = new StubLimitsProvider("claude")
+      .enqueue(makeSnapshot({ agentId: "claude", fetchedAt: 1_000 }))
+      .enqueue(
+        makeSnapshot({
+          agentId: "claude",
+          fetchedAt: 2_000,
+          error: "rate limited",
+          session: null,
+          weekly: null,
+          weeklyOpus: null,
+        }),
+      )
+      .enqueue(
+        makeSnapshot({
+          agentId: "claude",
+          fetchedAt: 3_000,
+          weekly: { usedPct: 55, resetAt: "z" },
+        }),
+      );
+    const spy = makeBroadcastSpy();
+
+    const poller = new LimitsPoller({
+      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      sseBroadcast: spy.broadcast,
+      intervalMs: 1000,
+      default429BackoffMs: 0, // allow third tick to actually fetch
+    });
+    await poller.tick();
+    await poller.tick();
+    await poller.tick();
+
+    const last = spy.calls[spy.calls.length - 1].data as {
+      limits: Record<string, SubscriptionLimits>;
+    };
+    expect(last.limits.claude.error).toBeUndefined();
+    expect(last.limits.claude.fetchedAt).toBe(3_000);
+    expect(last.limits.claude.weekly?.usedPct).toBe(55);
+  });
+
   it("markSignedOut drops a cached entry and broadcasts the removal", async () => {
     const claude = new StubLimitsProvider("claude").enqueue(makeSnapshot({ agentId: "claude" }));
     const spy = makeBroadcastSpy();
