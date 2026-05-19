@@ -747,7 +747,7 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
       {card.phase === "merged" && (
         <TerminalPhase card={card} sessionId={sessionId}
-          text={`PR #${card.pr?.number} merged${card.pr?.baseBranch && !isDefaultBranch(card.pr.baseBranch) ? ` into ${card.pr.baseBranch}` : ""}`}
+          text={`Merged: ${card.pr?.title ?? `PR #${card.pr?.number}`}${card.pr?.baseBranch && !isDefaultBranch(card.pr.baseBranch) ? ` into ${card.pr.baseBranch}` : ""}`}
         />
       )}
       {card.phase === "closed" && (
