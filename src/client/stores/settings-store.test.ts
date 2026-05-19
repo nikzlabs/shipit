@@ -45,3 +45,25 @@ describe("settings-store permission mode", () => {
     expect(localStorage.getItem("vibe-permission-mode")).toBeNull();
   });
 });
+
+describe("settings-store GitHub rate-limit state", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ githubRateLimit: null });
+  });
+
+  it("setGithubRateLimit stores the resetAt timestamp", () => {
+    useSettingsStore.getState().setGithubRateLimit({ resetAt: 1747843200000 });
+    expect(useSettingsStore.getState().githubRateLimit).toEqual({ resetAt: 1747843200000 });
+  });
+
+  it("setGithubRateLimit(null) clears the rate-limit state", () => {
+    useSettingsStore.getState().setGithubRateLimit({ resetAt: 1747843200000 });
+    useSettingsStore.getState().setGithubRateLimit(null);
+    expect(useSettingsStore.getState().githubRateLimit).toBeNull();
+  });
+
+  it("accepts null resetAt (limit active but no reset known)", () => {
+    useSettingsStore.getState().setGithubRateLimit({ resetAt: null });
+    expect(useSettingsStore.getState().githubRateLimit).toEqual({ resetAt: null });
+  });
+});

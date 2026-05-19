@@ -14,6 +14,7 @@ import type { SessionInfo, RepoInfo, DockerMemoryStats } from "../server/shared/
 import { DockerMemoryBadge } from "./components/DockerMemoryBadge.js";
 import { UptimeBadge } from "./components/UptimeBadge.js";
 import { MemoryPressureBanner } from "./components/MemoryPressureBanner.js";
+import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
 
 interface AppLayoutProps {
   // Header
@@ -118,6 +119,7 @@ export function AppLayout({
   return (
     <>
       <MemoryPressureBanner stats={dockerMemory} />
+      <GitHubRateLimitBanner />
       <header className="relative flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
           {isMobile && (
