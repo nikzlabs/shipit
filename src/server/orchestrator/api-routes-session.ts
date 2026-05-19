@@ -52,10 +52,11 @@ import { resolveAgentDockerLimits } from "./session-container.js";
 async function refreshCloneToLatestMain(
   sessionDir: string,
   createGitManager: ApiDeps["createGitManager"],
+  onAuthError?: (err: Error) => void,
 ): Promise<{ headChanged: boolean; fetched: boolean; fetchDurationMs: number }> {
   const sessionGit = createGitManager(sessionDir);
   const headBefore = await sessionGit.getHeadHash();
-  const { resetTarget, fetched, fetchDurationMs } = await fetchAndResolveDefaultBranch(sessionDir);
+  const { resetTarget, fetched, fetchDurationMs } = await fetchAndResolveDefaultBranch(sessionDir, onAuthError);
   if (resetTarget) {
     await sessionGit.rollback(resetTarget);
   }
@@ -623,7 +624,11 @@ export async function registerSessionRoutes(
           if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
             let fetchDurationMs = 0;
             try {
-              const result = await refreshCloneToLatestMain(reusable.workspaceDir, createGitManager);
+              const result = await refreshCloneToLatestMain(
+                reusable.workspaceDir,
+                createGitManager,
+                (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
+              );
               fetchDurationMs = result.fetchDurationMs;
               warnIfStaleClaimFetch(result.fetched, url);
               if (result.headChanged) {
@@ -648,7 +653,11 @@ export async function registerSessionRoutes(
               deps.repoStore.setWarmSessionId(url, undefined);
               let fetchDurationMs = 0;
               try {
-                const result = await refreshCloneToLatestMain(warmSession.workspaceDir, createGitManager);
+                const result = await refreshCloneToLatestMain(
+                  warmSession.workspaceDir,
+                  createGitManager,
+                  (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
+                );
                 fetchDurationMs = result.fetchDurationMs;
                 warnIfStaleClaimFetch(result.fetched, url);
                 if (result.headChanged) {
@@ -676,7 +685,11 @@ export async function registerSessionRoutes(
                 deps.repoStore.setWarmSessionId(url, undefined);
                 let fetchDurationMs = 0;
                 try {
-                  const result = await refreshCloneToLatestMain(warmSession.workspaceDir, createGitManager);
+                  const result = await refreshCloneToLatestMain(
+                    warmSession.workspaceDir,
+                    createGitManager,
+                    (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
+                  );
                   fetchDurationMs = result.fetchDurationMs;
                   warnIfStaleClaimFetch(result.fetched, url);
                   if (result.headChanged) {
@@ -737,11 +750,16 @@ export async function registerSessionRoutes(
           // workspace clone so the branch is cut from the genuine latest
           // commit — otherwise the container's memory limit is derived from
           // a frozen `shipit.yaml`.
-          const { resetTarget, fetched, fetchDurationMs } = await fetchAndResolveDefaultBranch(workspaceDir);
-          if (!fetched) {
+          const { resetTarget, fetched, fetchDurationMs, authError } = await fetchAndResolveDefaultBranch(
+            workspaceDir,
+            (err) => deps.githubAuthManager.markTokenInvalid(`claim-session fetch failed for ${url}: ${err.message}`),
+          );
+          if (!fetched && !authError) {
             // Workspace-clone fetch failed — the branch is being cut from
             // the (possibly stale) bare-cache snapshot. Surface it: a silent
             // no-op fetch here is the W2 root cause.
+            // Auth errors get their own dedicated `github_status` SSE
+            // broadcast (via `markTokenInvalid`), so don't double up here.
             console.warn(`[claim-session] Workspace fetch failed for ${url} — branching from the bare-cache snapshot, which may be stale`);
             deps.sseBroadcast("error", {
               message: `Claimed session for ${url} may be based on stale code — could not fetch the latest commits.`,
