@@ -23,35 +23,20 @@ import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { scanFileTree } from "../shared/file-tree.js";
-import type { ServerResponse } from "node:http";
 import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./claude.js";
 import { ClaudeAdapter } from "./agents/claude-adapter.js";
 import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
+import { ServiceRequestQueue } from "./service-request-queue.js";
+import { SseBroadcaster } from "./sse-broadcaster.js";
+import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
+
+export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-/** Event types sent over the SSE stream to the orchestrator. */
-export interface WorkerSSEEvent {
-  type:
-    | "agent_event" | "agent_done" | "agent_error" | "agent_auth_required" | "agent_log"
-    | "terminal_data" | "terminal_exit"
-    | "file_changes"
-    | "service_request"
-    | "install_log" | "install_done" | "install_error"
-    | "mcp_server_status";
-  data: unknown;
-}
-
-/** Pending service request awaiting orchestrator callback. */
-interface PendingServiceRequest {
-  resolve: (result: unknown) => void;
-  reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
 
 /** Factory function that creates an AgentProcess from an agent ID. */
 export type WorkerAgentFactory = (agentId: AgentId) => AgentProcess;
@@ -86,8 +71,7 @@ export class SessionWorker extends EventEmitter {
   private app: FastifyInstance;
   private agent: AgentProcess | null = null;
   private agentFactory: WorkerAgentFactory;
-  private sseClients = new Set<(event: WorkerSSEEvent) => void>();
-  private sseRawResponses = new Set<ServerResponse>();
+  private readonly sse: SseBroadcaster;
   private port: number;
   private host: string;
   private workspaceDir: string;
@@ -98,10 +82,9 @@ export class SessionWorker extends EventEmitter {
   private _createTerminal: () => TerminalProcess;
   private _createOrchestratorClient?: () => OrchestratorClient;
 
-  // Service request/callback state
-  private _pendingServiceRequests = new Map<string, PendingServiceRequest>();
-  private _serviceRequestCounter = 0;
-  private static readonly SERVICE_REQUEST_TIMEOUT_MS = 60_000;
+  // Service request/callback state — outgoing requests to the orchestrator
+  // over SSE wait here for the orchestrator's /services/_callback POST.
+  private readonly serviceRequests = new ServiceRequestQueue();
 
   // Phase 3 (087): names of secrets currently injected into process.env by
   // the orchestrator. Tracked so we can `delete process.env[name]` for keys
@@ -121,8 +104,10 @@ export class SessionWorker extends EventEmitter {
    */
   private _lastInstallResult: { ok: boolean; command?: string; message?: string } | null = null;
 
-  // Terminal backpressure state
-  private _sseBackpressured = new Set<ServerResponse>();
+  // Terminal backpressure state. The SseBroadcaster owns the per-client set
+  // of backpressured responses and invokes our `onBackpressureChange`
+  // callback when the aggregate state flips; `_terminalPaused` then mirrors
+  // whether we've actually paused the PTY.
   private _terminalPaused = false;
 
   // docs/088 — MCP npm install state. Per-package mutex coalesces concurrent
@@ -141,6 +126,9 @@ export class SessionWorker extends EventEmitter {
     this._createFileWatcher = deps.createFileWatcher ?? (() => new FileWatcher());
     this._createTerminal = deps.createTerminal ?? (() => new TerminalProcess());
     this._createOrchestratorClient = deps.createOrchestratorClient;
+    this.sse = new SseBroadcaster({
+      onBackpressureChange: () => this.applyTerminalBackpressure(),
+    });
     this.app = this.buildApp();
   }
 
@@ -395,16 +383,11 @@ export class SessionWorker extends EventEmitter {
       if (typeof requestId !== "string") {
         return reply.code(400).send({ error: "requestId is required" });
       }
-      const pending = this._pendingServiceRequests.get(requestId);
-      if (!pending) {
+      const settled = error
+        ? this.serviceRequests.reject(requestId, new Error(error))
+        : this.serviceRequests.resolve(requestId, result ?? { ok: true });
+      if (!settled) {
         return reply.code(404).send({ error: "Unknown or expired request" });
-      }
-      this._pendingServiceRequests.delete(requestId);
-      clearTimeout(pending.timer);
-      if (error) {
-        pending.reject(new Error(error));
-      } else {
-        pending.resolve(result ?? { ok: true });
       }
       return { received: true };
     });
@@ -763,21 +746,12 @@ export class SessionWorker extends EventEmitter {
    * ServiceManager and POSTs the result back to /services/_callback.
    */
   private sendServiceRequest(action: string, name?: string): Promise<unknown> {
-    const requestId = `svc-${++this._serviceRequestCounter}-${Date.now()}`;
-
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this._pendingServiceRequests.delete(requestId);
-        reject(new Error(`Service ${action} request timed out`));
-      }, SessionWorker.SERVICE_REQUEST_TIMEOUT_MS);
-
-      this._pendingServiceRequests.set(requestId, { resolve, reject, timer });
-
-      this.broadcastSSE({
-        type: "service_request",
-        data: { requestId, action, name },
-      });
+    const { requestId, promise } = this.serviceRequests.enqueue(action);
+    this.broadcastSSE({
+      type: "service_request",
+      data: { requestId, action, name },
     });
+    return promise;
   }
 
   // --- SSE event stream ---
@@ -794,30 +768,11 @@ export class SessionWorker extends EventEmitter {
 
       reply.raw.write(": connected\n\n");
 
-      const sendEvent = (event: WorkerSSEEvent) => {
-        try {
-          const chunk = `event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`;
-          const ok = reply.raw.write(chunk);
-          if (!ok && event.type === "terminal_data" && !this._sseBackpressured.has(reply.raw)) {
-            this._sseBackpressured.add(reply.raw);
-            this.applyTerminalBackpressure();
-            reply.raw.once("drain", () => {
-              this._sseBackpressured.delete(reply.raw);
-              this.applyTerminalBackpressure();
-            });
-          }
-        } catch {
-          this.sseClients.delete(sendEvent);
-          this._sseBackpressured.delete(reply.raw);
-        }
-      };
-
-      this.sseClients.add(sendEvent);
-      this.sseRawResponses.add(reply.raw);
+      const client: SseClient = this.sse.attach({ raw: reply.raw });
 
       // Replay current state so late-connecting clients don't miss events
       if (this.terminal) {
-        sendEvent({ type: "terminal_data", data: { data: "" } });
+        this.sse.sendTo(client, { type: "terminal_data", data: { data: "" } });
       }
       // Replay last install result so an orchestrator that reconnects after
       // missing the original install_done/install_error still sees the
@@ -826,9 +781,9 @@ export class SessionWorker extends EventEmitter {
       // the original event already arrived.
       if (this._lastInstallResult && !this._installRunning) {
         if (this._lastInstallResult.ok) {
-          sendEvent({ type: "install_done", data: {} });
+          this.sse.sendTo(client, { type: "install_done", data: {} });
         } else {
-          sendEvent({
+          this.sse.sendTo(client, {
             type: "install_error",
             data: {
               command: this._lastInstallResult.command,
@@ -843,17 +798,13 @@ export class SessionWorker extends EventEmitter {
           reply.raw.write(": keepalive\n\n");
         } catch {
           clearInterval(keepalive);
-          this.sseClients.delete(sendEvent);
+          this.sse.detach(client);
         }
       }, 15_000);
 
       request.raw.on("close", () => {
         clearInterval(keepalive);
-        this.sseClients.delete(sendEvent);
-        this.sseRawResponses.delete(reply.raw);
-        if (this._sseBackpressured.delete(reply.raw)) {
-          this.applyTerminalBackpressure();
-        }
+        this.sse.detach(client);
       });
     });
   }
@@ -920,16 +871,16 @@ export class SessionWorker extends EventEmitter {
 
   /** Send an SSE event to all connected clients. */
   private broadcastSSE(event: WorkerSSEEvent): void {
-    for (const send of this.sseClients) {
-      send(event);
-    }
+    this.sse.broadcast(event);
   }
 
   /**
    * Pause or resume the terminal PTY based on SSE backpressure state.
+   * Invoked by the SseBroadcaster's onBackpressureChange callback whenever
+   * the aggregate "any client backpressured" state flips.
    */
   private applyTerminalBackpressure(): void {
-    if (this._sseBackpressured.size > 0) {
+    if (this.sse.hasBackpressure()) {
       if (!this._terminalPaused && this.terminal) {
         this.terminal.pause();
         this._terminalPaused = true;
@@ -969,16 +920,11 @@ export class SessionWorker extends EventEmitter {
       this.fileWatcher.removeAllListeners();
       this.fileWatcher = null;
     }
-    for (const [id, pending] of this._pendingServiceRequests) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error("Worker shutting down"));
-      this._pendingServiceRequests.delete(id);
-    }
-    for (const raw of this.sseRawResponses) {
+    this.serviceRequests.cancelAll("Worker shutting down");
+    for (const raw of this.sse.rawResponses()) {
       try { raw.end(); } catch { /* already closed */ }
     }
-    this.sseRawResponses.clear();
-    this.sseClients.clear();
+    this.sse.clear();
     await this.app.close();
   }
 

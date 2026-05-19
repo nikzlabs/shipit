@@ -2,7 +2,7 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import type { DiffOnMount } from "@monaco-editor/react";
-import { XIcon, PaperPlaneTiltIcon, CaretRightIcon, CaretDownIcon, FolderIcon, FolderOpenIcon, FileIcon } from "@phosphor-icons/react";
+import { XIcon, PaperPlaneTiltIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { useCommentStore } from "../stores/comment-store.js";
@@ -10,6 +10,8 @@ import { useSessionStore } from "../stores/session-store.js";
 import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
 import type { CommentWidgetManager } from "./MonacoCommentWidgets.js";
 import type { FileDiff } from "../../server/shared/types.js";
+import { buildFileTree, type FileTreeNode } from "./diff-utils.js";
+import { DiffTreeNode } from "./DiffTreeNode.js";
 
 /** Map file extensions to Monaco language IDs. */
 function getLanguageFromPath(filePath: string): string {
@@ -40,189 +42,6 @@ function getLanguageFromPath(filePath: string): string {
   if (name === "dockerfile") return "dockerfile";
   if (name === "makefile") return "makefile";
   return map[ext] ?? "plaintext";
-}
-
-function statusIcon(status: FileDiff["status"]): string {
-  switch (status) {
-    case "added": return "A";
-    case "modified": return "M";
-    case "deleted": return "D";
-    case "renamed": return "R";
-  }
-}
-
-function statusColor(status: FileDiff["status"]): string {
-  switch (status) {
-    case "added": return "text-(--color-success)";
-    case "modified": return "text-(--color-warning)";
-    case "deleted": return "text-(--color-error)";
-    case "renamed": return "text-(--color-text-link)";
-  }
-}
-
-/** Tree node for the file tree sidebar. */
-interface FileTreeNode {
-  name: string;
-  /** Full path for leaf (file) nodes. */
-  path?: string;
-  /** Index into diff.files for leaf nodes. */
-  fileIndex?: number;
-  /** Child nodes for directory nodes. */
-  children?: FileTreeNode[];
-  /** Aggregated stats for directories. */
-  insertions: number;
-  deletions: number;
-  /** File status for leaf nodes. */
-  status?: FileDiff["status"];
-}
-
-/** Build a nested tree from a flat list of FileDiff entries. */
-function buildFileTree(files: FileDiff[]): FileTreeNode[] {
-  const root: FileTreeNode = { name: "", children: [], insertions: 0, deletions: 0 };
-
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const parts = file.path.split("/");
-    let current = root;
-
-    for (let j = 0; j < parts.length; j++) {
-      const part = parts[j];
-      const isFile = j === parts.length - 1;
-
-      if (isFile) {
-        current.children!.push({
-          name: part,
-          path: file.path,
-          fileIndex: i,
-          insertions: file.insertions,
-          deletions: file.deletions,
-          status: file.status,
-        });
-      } else {
-        let dir = current.children!.find((c) => c.children && c.name === part);
-        if (!dir) {
-          dir = { name: part, children: [], insertions: 0, deletions: 0 };
-          current.children!.push(dir);
-        }
-        current = dir;
-      }
-    }
-  }
-
-  // Propagate stats up
-  function sumStats(node: FileTreeNode): void {
-    if (!node.children) return;
-    node.insertions = 0;
-    node.deletions = 0;
-    for (const child of node.children) {
-      sumStats(child);
-      node.insertions += child.insertions;
-      node.deletions += child.deletions;
-    }
-  }
-  sumStats(root);
-
-  // Collapse single-child directories (src/client → src/client)
-  function collapse(nodes: FileTreeNode[]): FileTreeNode[] {
-    return nodes.map((node) => {
-      if (node.children) {
-        node.children = collapse(node.children);
-        if (node.children.length === 1 && node.children[0].children) {
-          const child = node.children[0];
-          return { ...child, name: `${node.name}/${child.name}` };
-        }
-      }
-      return node;
-    });
-  }
-
-  return collapse(root.children!);
-}
-
-/** Renders a single node in the diff file tree. */
-function DiffTreeNode({
-  node,
-  depth,
-  selectedFileIndex,
-  onSelect,
-  expandedDirs,
-  onToggleDir,
-}: {
-  node: FileTreeNode;
-  depth: number;
-  selectedFileIndex: number;
-  onSelect: (idx: number) => void;
-  expandedDirs: Set<string>;
-  onToggleDir: (path: string) => void;
-}) {
-  const isDir = !!node.children;
-
-  if (isDir) {
-    // Build a stable key from the dir name path
-    const fullDirKey = `dir:${depth}:${node.name}`;
-    const expanded = expandedDirs.has(fullDirKey);
-
-    return (
-      <>
-        <div
-          className="flex items-center gap-1 px-2 py-0.5 text-xs cursor-pointer text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
-          style={{ paddingLeft: `${depth * 12 + 8}px` }}
-          onClick={() => onToggleDir(fullDirKey)}
-        >
-          {expanded
-            ? <CaretDownIcon size={10} className="shrink-0" />
-            : <CaretRightIcon size={10} className="shrink-0" />
-          }
-          {expanded
-            ? <FolderOpenIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
-            : <FolderIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
-          }
-          <span className="truncate">{node.name}</span>
-          <span className="ml-auto shrink-0 flex gap-1 text-[10px]">
-            {node.insertions > 0 && <span className="text-(--color-success)">+{node.insertions}</span>}
-            {node.deletions > 0 && <span className="text-(--color-error)">-{node.deletions}</span>}
-          </span>
-        </div>
-        {expanded && node.children!.map((child, i) => (
-          <DiffTreeNode
-            key={child.path ?? `${child.name}-${i}`}
-            node={child}
-            depth={depth + 1}
-            selectedFileIndex={selectedFileIndex}
-            onSelect={onSelect}
-            expandedDirs={expandedDirs}
-            onToggleDir={onToggleDir}
-          />
-        ))}
-      </>
-    );
-  }
-
-  // File leaf
-  const isSelected = node.fileIndex === selectedFileIndex;
-  return (
-    <div
-      className={`flex items-center gap-1.5 px-2 py-0.5 text-xs cursor-pointer transition-colors ${
-        isSelected
-          ? "bg-(--color-accent-subtle) text-(--color-text-primary)"
-          : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
-      }`}
-      style={{ paddingLeft: `${depth * 12 + 8}px` }}
-      onClick={() => onSelect(node.fileIndex!)}
-    >
-      <span className={`shrink-0 font-mono text-[10px] font-bold ${statusColor(node.status!)}`}>
-        {statusIcon(node.status!)}
-      </span>
-      <FileIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
-      <span className="truncate" title={node.path}>
-        {node.name}
-      </span>
-      <span className="ml-auto shrink-0 flex gap-1 text-[10px]">
-        {node.insertions > 0 && <span className="text-(--color-success)">+{node.insertions}</span>}
-        {node.deletions > 0 && <span className="text-(--color-error)">-{node.deletions}</span>}
-      </span>
-    </div>
-  );
 }
 
 export interface TurnDiffData {
