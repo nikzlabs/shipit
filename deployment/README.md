@@ -28,7 +28,7 @@ ssh root@<server-ip>
 
 apt-get update -qq && apt-get install -y -qq git
 git clone https://github.com/nicholasalt/shipit.git /opt/shipit
-bash /opt/shipit/deployment/hetzner/setup.sh
+bash /opt/shipit/deployment/vps/setup.sh
 ```
 
 The script will prompt for your domain, then automatically:
@@ -64,14 +64,14 @@ To update or restart manually via SSH:
 ```bash
 ssh root@<server-ip>
 cd /opt/shipit && git pull origin main
-bash deployment/hetzner/deploy.sh
+bash deployment/vps/deploy.sh
 ```
 
 ## Troubleshooting
 
 **Check orchestrator logs:**
 ```bash
-docker compose -f deployment/hetzner/docker-compose.yml logs -f shipit
+docker compose -f deployment/vps/docker-compose.yml logs -f shipit
 ```
 
 **Check tunnel logs:**
@@ -86,7 +86,7 @@ journalctl -u shipit-updater -f
 
 **Rebuild and restart:**
 ```bash
-bash /opt/shipit/deployment/hetzner/deploy.sh
+bash /opt/shipit/deployment/vps/deploy.sh
 systemctl restart cloudflared
 ```
 

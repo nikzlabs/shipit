@@ -4,6 +4,6 @@ After=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/shipit/deployment/hetzner/update.sh
+ExecStart=/opt/shipit/deployment/vps/update.sh
 StandardOutput=journal
 StandardError=journal

@@ -18,6 +18,6 @@ git fetch origin main
 git reset --hard origin/main
 
 # Build and restart
-bash "$SHIPIT_DIR/deployment/hetzner/deploy.sh"
+bash "$SHIPIT_DIR/deployment/vps/deploy.sh"
 
 echo "$(date -Iseconds) ShipIt update complete."
