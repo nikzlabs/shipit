@@ -1,0 +1,33 @@
+{
+  "_meta": "Captured 2026-05-19 against api.anthropic.com/api/oauth/usage with a real Max-20x OAuth token. See docs/135-subscription-limits-badge/plan.md Phase 0.",
+  "five_hour": {
+    "utilization": 54,
+    "resets_at": "2026-05-19T16:19:59.805060+00:00"
+  },
+  "seven_day": {
+    "utilization": 16,
+    "resets_at": "2026-05-24T17:00:00.805087+00:00"
+  },
+  "seven_day_oauth_apps": null,
+  "seven_day_opus": null,
+  "seven_day_sonnet": {
+    "utilization": 0,
+    "resets_at": "2026-05-24T17:00:00.805099+00:00"
+  },
+  "seven_day_cowork": null,
+  "seven_day_omelette": {
+    "utilization": 0,
+    "resets_at": null
+  },
+  "tangelo": null,
+  "iguana_necktie": null,
+  "omelette_promotional": null,
+  "extra_usage": {
+    "is_enabled": true,
+    "monthly_limit": 2000,
+    "used_credits": 1754,
+    "utilization": 87.7,
+    "currency": "USD",
+    "disabled_reason": null
+  }
+}

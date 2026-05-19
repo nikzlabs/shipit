@@ -120,6 +120,58 @@ function pickString(obj: Record<string, unknown>, key: string): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 
+/**
+ * Derive a human-readable subscription label ("Pro", "Max 20x",
+ * "Max 5x") from a parsed Claude credentials file. The `/api/oauth/usage`
+ * endpoint doesn't return a plan field, so we fall back to the
+ * `claudeAiOauth.subscriptionType` + `rateLimitTier` pair the CLI
+ * persists in `.credentials.json`. Verified shape (Phase 0 capture, doc
+ * 135):
+ *
+ *   "claudeAiOauth": {
+ *     ...
+ *     "subscriptionType": "max",
+ *     "rateLimitTier": "default_claude_max_20x"
+ *   }
+ *
+ * Returns null when the file doesn't carry this metadata (older CLI
+ * versions, env-only auth, etc.).
+ *
+ * Exported for unit tests.
+ */
+export function extractPlanLabel(obj: Record<string, unknown>): string | null {
+  const oauth = obj.claudeAiOauth;
+  if (!oauth || typeof oauth !== "object") return null;
+  const o = oauth as Record<string, unknown>;
+  const subscriptionType = pickString(o, "subscriptionType");
+  const rateLimitTier = pickString(o, "rateLimitTier");
+
+  // The "Max 20x" / "Max 5x" multiplier lives in the rate-limit tier
+  // string ("default_claude_max_20x"). Parse it out so users see the
+  // exact tier the CLI advertises in its `/usage` screen.
+  if (rateLimitTier) {
+    const maxMatch = /claude_max_(\d+x)/i.exec(rateLimitTier);
+    if (maxMatch) return `Max ${maxMatch[1]}`;
+    const proMatch = /claude_pro/i.exec(rateLimitTier);
+    if (proMatch) return "Pro";
+  }
+
+  if (subscriptionType) {
+    switch (subscriptionType.toLowerCase()) {
+      case "max": return "Max";
+      case "pro": return "Pro";
+      case "free": return "Free";
+      // Unknown subscription string — surface it verbatim with a
+      // capitalized initial so the user has *something* to see, rather
+      // than null.
+      default:
+        return subscriptionType.charAt(0).toUpperCase() + subscriptionType.slice(1);
+    }
+  }
+
+  return null;
+}
+
 /** Path where Claude CLI stores credentials. */
 const CLAUDE_CONFIG_DIR = "/root/.claude";
 
@@ -224,12 +276,14 @@ export class AuthManager extends EventEmitter {
    *   strictly — a stale token is detected at fetch time via 401.
    */
   async getAccessToken(): Promise<
-    | { token: string; source: "file" | "env"; expiresAt: number | null }
+    | { token: string; source: "file" | "env"; expiresAt: number | null; plan: string | null }
     | { token: null; reason: "api-key" | "not-authenticated" }
   > {
     const envToken = process.env.ANTHROPIC_AUTH_TOKEN?.trim();
     if (envToken) {
-      return { token: envToken, source: "env", expiresAt: null };
+      // Env-token path (dogfooding) doesn't carry plan metadata; the
+      // outer orchestrator's token is the canonical source.
+      return { token: envToken, source: "env", expiresAt: null, plan: null };
     }
 
     const credentialFiles = [".credentials.json", "credentials.json", "auth.json"];
@@ -241,7 +295,12 @@ export class AuthManager extends EventEmitter {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         const token = extractAccessToken(parsed);
         if (token) {
-          return { token, source: "file", expiresAt: extractExpiresAt(parsed) };
+          return {
+            token,
+            source: "file",
+            expiresAt: extractExpiresAt(parsed),
+            plan: extractPlanLabel(parsed),
+          };
         }
       } catch (err) {
         // Malformed JSON or unexpected shape — try the next candidate

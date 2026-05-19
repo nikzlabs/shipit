@@ -2,28 +2,33 @@
 
 ## Phase 0 — Spike (blocking prereqs)
 
-- [ ] Capture the Claude `/api/oauth/usage` endpoint against a real
-      Pro/Max account behind `mitmproxy`. Confirm URL, headers, OAuth
-      scope behavior, and the response JSON shape. Save the captured
-      response as a test fixture. The provider's `parseClaudeUsage`
-      tolerates several name variants (`five_hour`, `session`,
-      `utilization`, `used_pct`, fractional vs 0–100) but the
-      empirical schema may differ further — adjust the parser to
-      match.
+- [x] **Capture the Claude `/api/oauth/usage` endpoint.** Done
+      2026-05-19 via direct fetch with the credentials file's OAuth
+      bearer (no mitmproxy needed). URL:
+      `https://api.anthropic.com/api/oauth/usage`. Headers: plain
+      `Authorization: Bearer`. Real body captured at
+      `src/server/orchestrator/limits/__fixtures__/claude-usage-max-20x.json`
+      and locked in via parser tests. Key finding: the response
+      doesn't carry a plan field — derived from
+      `claudeAiOauth.subscriptionType` + `rateLimitTier` in the
+      credentials file instead.
 - [ ] Capture the Codex `/codex/usage` (or whatever the real path
       turns out to be) against a ChatGPT-plan-authenticated `codex`
       CLI. Update `CODEX_USAGE_URL` and `parseCodexUsage` field
       lists to match the captured shape.
-- [ ] Confirm Claude OAuth scope. If the captured request uses a
-      scope the persisted ShipIt token doesn't have, the feature is
-      not buildable without re-auth — set `status: paused` and stop.
-- [ ] Confirm refresh behavior: running the Claude CLI refreshes
-      `.credentials.json` in place so the orchestrator never has to
-      drive its own refresh-token call.
+- [x] **Confirm Claude OAuth scope.** Done 2026-05-19. The CLI's
+      existing scopes (`user:file_upload, user:inference,
+      user:mcp_servers, user:profile, user:sessions:claude_code`)
+      grant access to `/api/oauth/usage` — no extra scope needed.
+- [x] **Confirm refresh behavior.** Done 2026-05-19. The CLI
+      rotates `.credentials.json` in place when the access token
+      nears expiry; the orchestrator re-reads the file on every
+      `getAccessToken()` call so refreshes propagate automatically.
 
-## Phase 1 — Claude (in-progress)
+## Phase 1 — Claude (verified end-to-end)
 
-Implementation landed; depends on Phase 0 to flip on confidently.
+Implementation landed and Phase 0 confirmed the endpoint, scope,
+and refresh behavior. Ready to ship.
 
 - [x] `SubscriptionLimits` / `SubscriptionLimitsMap` shared types
       (`src/server/shared/types/usage-limits-types.ts`).
@@ -33,7 +38,9 @@ Implementation landed; depends on Phase 0 to flip on confidently.
 - [x] `AuthManager.getAccessToken()` reading
       `~/.claude/.credentials.json` (file) and
       `ANTHROPIC_AUTH_TOKEN` (env / dogfooding path), explicitly
-      excluding `ANTHROPIC_API_KEY`.
+      excluding `ANTHROPIC_API_KEY`. Also returns the plan label
+      derived from `subscriptionType` + `rateLimitTier` so the
+      provider doesn't need its own credentials read.
 - [x] `LimitsPoller` — 60s cadence, per-provider failure tracking
       (auth-stall / 429 backoff / exp-backoff for 5xx + schema /
       network), `markAuthRefreshed()` for auth-complete hooks.

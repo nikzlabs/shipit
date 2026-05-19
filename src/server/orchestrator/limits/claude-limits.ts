@@ -22,16 +22,42 @@ import type { LimitsProvider } from "./types.js";
 import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../shared/types.js";
 
 /**
- * Community-reported OAuth usage endpoint that backs Claude Code's
- * `/usage` slash command. Treat as unstable — see plan.md "Blocking
- * prereqs" for the verification dance.
+ * OAuth usage endpoint that backs Claude Code's `/usage` slash command.
+ *
+ * Verified empirically against `api.anthropic.com` with a Max-tier
+ * OAuth token on 2026-05-19 (doc 135 Phase 0). Endpoint accepts a
+ * plain `Authorization: Bearer ...` and the user-side scopes the CLI
+ * is already minted with (`user:profile` / `user:sessions:claude_code`
+ * are sufficient — no extra scope, no extra header). The
+ * `anthropic-beta: oauth-2025-04-20` header is a no-op here but is
+ * harmless if sent.
+ *
+ * Response shape (verified):
+ *
+ *   {
+ *     "five_hour":            { "utilization": 0..100, "resets_at": ISO },
+ *     "seven_day":            { "utilization": 0..100, "resets_at": ISO },
+ *     "seven_day_opus":       null | { utilization, resets_at },
+ *     "seven_day_sonnet":     null | { utilization, resets_at },
+ *     "seven_day_oauth_apps": null | { utilization, resets_at },
+ *     "extra_usage":          { is_enabled, monthly_limit, used_credits,
+ *                               utilization, currency, disabled_reason },
+ *     ...internal-codename keys that are always null for end users
+ *   }
+ *
+ *   Note: the response does NOT include a plan/subscription field.
+ *   The provider derives the plan label from
+ *   `AuthManager.getAccessToken().plan` instead, which the auth
+ *   manager pulls from `~/.claude/.credentials.json` (Phase 0:
+ *   `claudeAiOauth.subscriptionType` + `rateLimitTier`).
  */
 export const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 
 /**
- * Header Claude Code sends to identify itself to the OAuth APIs.
- * Mirroring the CLI's identification reduces the chance of a
- * tightening server-side check rejecting us.
+ * Beta header Claude Code sends to identify itself to the OAuth APIs.
+ * Per Phase 0 capture this is a no-op for the usage endpoint, but the
+ * CLI sends it on every OAuth call so we mirror that for parity in
+ * case Anthropic later tightens a server-side filter.
  */
 export const CLAUDE_CLIENT_BETA_HEADER = "oauth-2025-04-20";
 
@@ -91,6 +117,12 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       return null;
     }
     this.lastKnownFetchable = true;
+    // Plan label is derived from the credentials file (the /usage
+    // response doesn't include one — Phase 0 finding). When the token
+    // came from ANTHROPIC_AUTH_TOKEN (env, dogfooding) there's no
+    // credentials file to inspect; `plan` is null and the tooltip
+    // just shows the agent name without a tier.
+    const authPlan = tokenResult.plan;
 
     const fetchedAt = this.now();
     let response: Response;
@@ -107,23 +139,25 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     } catch (err) {
       return this.errorSnapshot(
         fetchedAt,
+        authPlan,
         "limits unavailable",
         `network error: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
     if (response.status === 401 || response.status === 403) {
-      return this.errorSnapshot(fetchedAt, "auth expired", `HTTP ${response.status}`);
+      return this.errorSnapshot(fetchedAt, authPlan, "auth expired", `HTTP ${response.status}`);
     }
     if (response.status === 429) {
       // The poller honors a separate rate-limit backoff branch — we
       // still return an error snapshot so the UI shows the failure
       // state instead of stale numbers.
-      return this.errorSnapshot(fetchedAt, "rate limited", "HTTP 429");
+      return this.errorSnapshot(fetchedAt, authPlan, "rate limited", "HTTP 429");
     }
     if (!response.ok) {
       return this.errorSnapshot(
         fetchedAt,
+        authPlan,
         "limits unavailable",
         `HTTP ${response.status}`,
       );
@@ -135,6 +169,7 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     } catch (err) {
       return this.errorSnapshot(
         fetchedAt,
+        authPlan,
         "limits unavailable",
         `non-JSON body: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -148,22 +183,28 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       console.warn("[claude-limits] Unexpected /usage payload shape:", preview);
       return this.errorSnapshot(
         fetchedAt,
+        authPlan,
         "limits unavailable",
         "unexpected payload shape",
       );
     }
-    return parsed;
+    // Prefer the auth-derived plan over whatever the parser may have
+    // pulled out of the body (today the body has no plan field, so
+    // `parsed.plan` is always null — but we keep the union for
+    // forward compatibility if Anthropic adds the field later).
+    return { ...parsed, plan: authPlan ?? parsed.plan };
   }
 
   private errorSnapshot(
     fetchedAt: number,
+    plan: string | null,
     userFacing: string,
     detail: string,
   ): SubscriptionLimits {
     console.warn(`[claude-limits] fetch failed: ${userFacing} (${detail})`);
     return {
       agentId: "claude",
-      plan: null,
+      plan,
       session: null,
       weekly: null,
       weeklyOpus: null,

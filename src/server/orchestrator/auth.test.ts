@@ -5,6 +5,7 @@ import {
   extractAccessToken,
   extractAuthUrl,
   extractExpiresAt,
+  extractPlanLabel,
   extractUrlFromBuffer,
 } from "./auth.js";
 
@@ -277,5 +278,50 @@ describe("extractExpiresAt", () => {
   it("returns null when nothing parses", () => {
     expect(extractExpiresAt({ expiresAt: "soon" })).toBeNull();
     expect(extractExpiresAt({})).toBeNull();
+  });
+});
+
+describe("extractPlanLabel", () => {
+  // Mirrors the exact shape captured during doc 135 Phase 0 against a
+  // real Anthropic Max-20x credentials file.
+  it("renders 'Max 20x' from rateLimitTier=default_claude_max_20x", () => {
+    expect(extractPlanLabel({
+      claudeAiOauth: {
+        subscriptionType: "max",
+        rateLimitTier: "default_claude_max_20x",
+      },
+    })).toBe("Max 20x");
+  });
+
+  it("renders 'Max 5x' from rateLimitTier=default_claude_max_5x", () => {
+    expect(extractPlanLabel({
+      claudeAiOauth: {
+        subscriptionType: "max",
+        rateLimitTier: "default_claude_max_5x",
+      },
+    })).toBe("Max 5x");
+  });
+
+  it("renders 'Pro' from a Pro-shaped rateLimitTier", () => {
+    expect(extractPlanLabel({
+      claudeAiOauth: { subscriptionType: "pro", rateLimitTier: "default_claude_pro" },
+    })).toBe("Pro");
+  });
+
+  it("falls back to subscriptionType when rateLimitTier is unrecognized", () => {
+    expect(extractPlanLabel({
+      claudeAiOauth: { subscriptionType: "pro", rateLimitTier: "future_tier_we_dont_know_yet" },
+    })).toBe("Pro");
+  });
+
+  it("titlecases an unknown subscriptionType so we have *something* to render", () => {
+    expect(extractPlanLabel({
+      claudeAiOauth: { subscriptionType: "enterprise" },
+    })).toBe("Enterprise");
+  });
+
+  it("returns null when the file has no oauth metadata", () => {
+    expect(extractPlanLabel({})).toBeNull();
+    expect(extractPlanLabel({ claudeAiOauth: {} })).toBeNull();
   });
 });
