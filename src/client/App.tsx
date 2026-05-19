@@ -903,6 +903,7 @@ export default function App() {
         containerRef={containerRef}
         sessions={sessions}
         currentSessionId={sessionId}
+        activeNewSessionRepoUrl={showNewSessionView ? newSessionRepoUrl : undefined}
         sidebarCollapsed={sidebarCollapsed}
         mobileSidebarOpen={mobileSidebarOpen}
         onCloseMobileSidebar={() => useUiStore.getState().setMobileSidebarOpen(false)}

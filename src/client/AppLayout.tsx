@@ -53,6 +53,8 @@ interface AppLayoutProps {
   // Sidebar
   sessions: SessionInfo[];
   currentSessionId: string | undefined;
+  /** Repo URL whose "New session" slot should render as selected (user is on /{slug}/new). */
+  activeNewSessionRepoUrl: string | undefined;
   sidebarCollapsed: boolean;
   mobileSidebarOpen: boolean;
   onCloseMobileSidebar: () => void;
@@ -99,6 +101,7 @@ export function AppLayout({
   containerRef,
   sessions,
   currentSessionId,
+  activeNewSessionRepoUrl,
   sidebarCollapsed,
   mobileSidebarOpen,
   onCloseMobileSidebar,
@@ -168,6 +171,7 @@ export function AppLayout({
                 <SessionSidebar
                   sessions={sessions}
                   currentSessionId={currentSessionId}
+                  activeNewSessionRepoUrl={activeNewSessionRepoUrl}
                   onResume={(sid) => { onResumeSession(sid); onCloseMobileSidebar(); }}
                   onArchive={onArchiveSession}
                   onNewSessionForRepo={(url) => { onNewSessionForRepo(url); onCloseMobileSidebar(); }}
@@ -188,6 +192,7 @@ export function AppLayout({
           <SessionSidebar
             sessions={sessions}
             currentSessionId={currentSessionId}
+            activeNewSessionRepoUrl={activeNewSessionRepoUrl}
             onResume={onResumeSession}
             onArchive={onArchiveSession}
             onNewSessionForRepo={onNewSessionForRepo}
