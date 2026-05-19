@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { usePrStore } from "./pr-store.js";
 import type { PrCardState } from "./pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
@@ -106,6 +106,42 @@ describe("pr-store", () => {
         ["s1"],
       );
       expect(usePrStore.getState().statusBySession.s1?.prNumber).toBe(2);
+    });
+  });
+
+  describe("quickCreate error classification", () => {
+    const originalFetch = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it("tags HTTP 401 as an auth error so the card can offer Sign in", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: async () => ({ error: "Not authenticated with GitHub" }),
+      }) as typeof fetch;
+
+      await usePrStore.getState().quickCreate("s1");
+
+      const card = usePrStore.getState().cardBySession.s1;
+      expect(card?.phase).toBe("error");
+      expect(card?.errorKind).toBe("auth");
+      expect(card?.errorMessage).toBe("Not authenticated with GitHub");
+    });
+
+    it("tags non-401 failures as generic errors", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: "Push failed: connection refused" }),
+      }) as typeof fetch;
+
+      await usePrStore.getState().quickCreate("s1");
+
+      const card = usePrStore.getState().cardBySession.s1;
+      expect(card?.phase).toBe("error");
+      expect(card?.errorKind).toBe("generic");
     });
   });
 });

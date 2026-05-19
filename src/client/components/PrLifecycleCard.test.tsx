@@ -510,6 +510,24 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText(/Failed to create PR/)).toBeInTheDocument();
     expect(screen.getByText(/Branch has no commits/)).toBeInTheDocument();
     expect(screen.getByText("Retry")).toBeInTheDocument();
+    // Generic errors do NOT show the "Sign in" action — that's reserved
+    // for auth-classified errors so it stays meaningful when surfaced.
+    expect(screen.queryByText("Sign in to GitHub")).toBeNull();
+  });
+
+  it("surfaces a Sign in to GitHub action when the error is auth-classified", () => {
+    setCard("s1", {
+      cardId: "c1",
+      phase: "error",
+      errorMessage: "Not authenticated with GitHub",
+      errorKind: "auth",
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText(/Not authenticated with GitHub/)).toBeInTheDocument();
+    expect(screen.getByText(/reconnect to keep pushing/)).toBeInTheDocument();
+    expect(screen.getByText("Sign in to GitHub")).toBeInTheDocument();
   });
 
   // ---- 113: Inline merge-conflict UI ----

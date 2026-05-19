@@ -62,6 +62,13 @@ export interface PrCardState {
   };
   /** Error message (error phase). */
   errorMessage?: string;
+  /**
+   * Classification of the error (error phase). "auth" means the GitHub token
+   * is missing/expired and the user should reconnect — the card surfaces a
+   * "Sign in to GitHub" action alongside Retry. Defaults to a generic error
+   * with only Retry.
+   */
+  errorKind?: "auth" | "generic";
 }
 
 interface PrState {
@@ -88,7 +95,7 @@ interface PrState {
   /** Set card to "open" phase from quick-create response. */
   setCardOpen: (sessionId: string, pr: PrCardState["pr"]) => void;
   /** Set card to "error" phase. */
-  setCardError: (sessionId: string, message: string) => void;
+  setCardError: (sessionId: string, message: string, kind?: "auth" | "generic") => void;
 
   // Quick PR creation
   quickCreate: (sessionId: string) => Promise<void>;
@@ -226,7 +233,7 @@ export const usePrStore = create<PrState>((set, get) => ({
     }));
   },
 
-  setCardError: (sessionId, message) => {
+  setCardError: (sessionId, message, kind = "generic") => {
     set((state) => {
       const existing = state.cardBySession[sessionId];
       return {
@@ -237,6 +244,7 @@ export const usePrStore = create<PrState>((set, get) => ({
             cardId: existing?.cardId ?? `pr-card-${sessionId}`,
             phase: "error" as const,
             errorMessage: message,
+            errorKind: kind,
           },
         },
       };
@@ -252,7 +260,12 @@ export const usePrStore = create<PrState>((set, get) => ({
       });
       if (!res.ok) {
         const data = await res.json() as { error?: string };
-        get().setCardError(sessionId, data.error || "Failed to create pull request");
+        // HTTP 401 from the PR routes means the GitHub token is missing or
+        // expired. Tag the card so it can surface a "Sign in to GitHub"
+        // action alongside Retry — otherwise the user only sees the raw
+        // "Not authenticated with GitHub" string with no path forward.
+        const kind = res.status === 401 ? "auth" : "generic";
+        get().setCardError(sessionId, data.error || "Failed to create pull request", kind);
         return;
       }
       const data = await res.json() as { number: number; title: string; body?: string; url: string; baseBranch: string; headBranch: string; insertions: number; deletions: number };
