@@ -64,8 +64,12 @@ there.
 - **No automation off this signal.** We don't pause sessions, queue
   prompts, or hide the composer when the user is near a cap — that
   would be ShipIt deciding for the user. We just surface the number.
-- **No badge for API-key auth.** Pay-as-you-go has no quota to render;
-  the badge is hidden and the slot collapses.
+- **No badge for API-key auth.** Pay-as-you-go (`ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`) has no quota to render; the badge is hidden and the
+  slot collapses. *Note:* `ANTHROPIC_AUTH_TOKEN` (OAuth-style bearer,
+  used by ShipIt-in-ShipIt dogfooding — see `auth.ts:151–158`) **does**
+  have a subscription quota and is treated as an OAuth path, not an
+  API-key path.
 - **Other agents (future).** When a third agent backend is added, this
   same provider interface is the integration point — no UI changes
   needed.
@@ -89,25 +93,44 @@ endpoints.
 | **`GET https://api.anthropic.com/api/oauth/usage`** | **Undocumented** OAuth-scoped endpoint Claude Code calls to populate `/usage`. Returns session %, weekly %, weekly-Opus-only %, reset times. Auth: the OAuth bearer token already stored in `/root/.claude/.credentials.json`. This is the canonical source. |
 | Anthropic Admin API `GET /v1/organizations/usage_report/claude_code` | Org/Team/Enterprise only, requires admin API key (`sk-ant-admin-…`). Not viable for individual Pro/Max subscribers, which is most ShipIt users. |
 
-**Chosen primary source:** `GET /api/oauth/usage` on `api.anthropic.com`,
-authenticated with the OAuth access token the existing `AuthManager`
-already manages. This is the same call the Claude CLI makes when the user
-types `/usage` — same response shape, same auth.
+**Candidate primary source:** `GET /api/oauth/usage` on `api.anthropic.com`
+(community-reported path), authenticated with the OAuth access token
+the existing `AuthManager` persists. This appears to be the same call
+the Claude CLI makes when the user types `/usage`.
 
-**Fallback when the endpoint fails or returns unexpected shape:** parse
-the `anthropic-ratelimit-unified-status` / `…-reset` headers we already
-see on the last-completed-turn API responses. The Claude CLI does this
-internally already; we'd need to add header capture to the worker's HTTP
-proxy of the agent's API calls. *Optional Phase 2* — Phase 1 ships
-endpoint-only and shows a neutral "—" if the endpoint is down.
+**Important: this URL is not verified.** It comes from community
+reverse-engineering of the CLI, not from Anthropic documentation. The
+exact path, request shape, and response schema must be captured
+empirically before any code is written — see
+[Blocking prereqs](#blocking-prereqs).
 
-**Risk: the endpoint is undocumented.** Anthropic could change or remove
-it without notice. Mitigation: the provider interface (see
-[Architecture](#architecture)) isolates the call to one function. If the
-endpoint changes, that's the only file that moves. Also: the same risk
-applies to `/usage` in the CLI itself — both surfaces depend on this
-endpoint, so if Anthropic breaks it, the CLI breaks too, and the user
-already knows. We are not adding a new dependency.
+**Fallback when the endpoint fails or returns unexpected shape:**
+shipping nothing in Phase 1. The badge shows "—" with a tooltip "limits
+unavailable." We do **not** plan to MITM the agent's outbound HTTPS to
+sniff `anthropic-ratelimit-unified-*` response headers — that's
+significantly more invasive than this doc presented in earlier drafts
+(the Claude CLI talks directly to `api.anthropic.com` from inside the
+session container; capturing headers requires either a proxy injected
+between the CLI and the network, or a CLI change to write them
+somewhere accessible). See [Phase 3](#phasing) for why we treat this
+as a separate, optional follow-up rather than a Phase-1 fallback.
+
+**Risk: the endpoint is undocumented.** Anthropic could change or
+remove it without notice. Mitigation: the provider interface (see
+[Architecture](#architecture)) isolates the call to one function — if
+the endpoint changes, that's the only file that moves. And: the same
+risk applies to `/usage` in the CLI itself — both surfaces depend on
+this endpoint, so if Anthropic breaks it, the CLI breaks too and the
+user already knows.
+
+**Risk: OAuth scope.** The Claude OAuth token ShipIt holds was minted
+for the CLI's scope. If that scope does **not** include the read needed
+for `/api/oauth/usage`, the entire Claude provider is unbuildable
+without forcing the user through a re-auth flow asking for additional
+scope — and we are not asking the user to re-authenticate just for a
+badge. Empirically the CLI uses the same token to call `/usage`, so the
+answer is almost certainly "scope is included," but this is a go/no-go
+question, not an open one. See [Blocking prereqs](#blocking-prereqs).
 
 ### Codex (OpenAI)
 
@@ -119,15 +142,24 @@ already knows. We are not adding a new dependency.
 | `~/.codex/auth.json` | OAuth-bearer credentials. Same token the CLI uses to call the usage endpoint. Already mounted into the credentials volume by doc 119 (`CodexAuthManager`). |
 | Response headers on `codex app-server` API calls | OpenAI's API returns the usual `x-ratelimit-*` headers, but for ChatGPT-subscription auth those numbers don't map onto the 5h / weekly windows the user actually cares about. Header path is **not** a viable fallback for Codex. |
 
-**Chosen primary source:** `GET /api/codex/usage` (or whichever final URL
-the Codex CLI v0.21+ uses — confirm at implementation time by snooping
-the CLI's own network traffic in dev). Authenticated with the access
-token from `~/.codex/auth.json`.
+**Candidate primary source:** `GET /api/codex/usage` (community-reported
+path the Codex CLI uses internally to populate `/status`).
+Authenticated with the access token persisted under
+`/credentials/.codex/auth.json` (symlinked to `/root/.codex/auth.json`
+inside the orchestrator container) — same file `CodexAuthManager`
+writes.
 
-**Fallback:** none for Phase 1 — if the endpoint fails, the badge shows
-"—" with a tooltip pointing at the upstream billing page. We can't
-synthesize the numbers from local data because, unlike Claude, the
-Codex CLI does not write per-turn rate-limit headers anywhere useful.
+**Same caveat as Claude:** the URL is not verified, and OpenAI shipped
+two rate-limit fixes in the Codex CLI ~v0.21 (per Embirico's
+announcement; exact date unverified) that may have shifted the path.
+Capture the real URL + response schema before implementation begins —
+see [Blocking prereqs](#blocking-prereqs).
+
+**Fallback:** none. If the endpoint fails, the badge shows "—" with a
+tooltip "limits unavailable." Unlike Claude there is no useful
+secondary source — Codex CLI doesn't write per-turn rate-limit data
+anywhere accessible, and OpenAI's response headers don't map onto the
+5h / weekly windows the user cares about.
 
 ### Why not just spawn `claude` / `codex` and scrape the REPL?
 
@@ -149,10 +181,16 @@ community tools do. Rejected:
 
 ### Provider interface
 
-A small agent-agnostic interface lives in `src/server/shared/`:
+The shared *type* describing one snapshot lives in
+`src/server/shared/types/usage-limits-types.ts` (so the client can
+import it). The *interface* and implementations are
+orchestrator-only — they do HTTP fetches against Anthropic / OpenAI
+and must not be reachable from client code.
 
 ```ts
-// src/server/shared/types/usage-limits-types.ts
+// src/server/shared/types/usage-limits-types.ts  (client-importable)
+import type { AgentId } from "./agent-types.js";
+
 export interface SubscriptionLimits {
   /** Which agent these numbers belong to. */
   agentId: AgentId;
@@ -170,7 +208,7 @@ export interface SubscriptionLimits {
   error?: string;
 }
 
-// src/server/shared/types/usage-limits.ts
+// src/server/orchestrator/limits/types.ts  (orchestrator-only)
 export interface LimitsProvider {
   agentId: AgentId;
   /** True if there's enough info (auth, plan) to even try a fetch. */
@@ -182,19 +220,77 @@ export interface LimitsProvider {
 
 Each agent backend ships a provider:
 
-- `src/server/orchestrator/limits/claude-limits.ts` — calls
-  `GET https://api.anthropic.com/api/oauth/usage` with the bearer token
-  from `AuthManager.getAccessToken()`. Refreshes the OAuth token first
-  if it's within 60s of expiry, reusing whatever refresh path
-  `AuthManager` exposes today.
-- `src/server/orchestrator/limits/codex-limits.ts` — reads
-  `~/.codex/auth.json`, calls `GET /api/codex/usage` on the ChatGPT
-  backend, parses the response.
+- `src/server/orchestrator/limits/claude-limits.ts` — calls the
+  candidate Anthropic endpoint with the bearer token read out of
+  `AuthManager`'s persisted credentials (see "AuthManager surface to
+  add" below).
+- `src/server/orchestrator/limits/codex-limits.ts` — calls the
+  candidate Codex endpoint with the access token read out of
+  `CodexAuthManager`'s persisted `auth.json` (see "CodexAuthManager
+  surface to add" below).
 
-The registry in `src/server/shared/agent-registry.ts` gets a new
-optional capability: `limitsProvider?: LimitsProvider`. Agents without
-a provider (or with `canFetch() === false`) simply don't surface a
-badge — UI-side this collapses to nothing.
+Providers are registered in the orchestrator's DI layer (`app-di.ts`)
+in a `Map<AgentId, LimitsProvider>` and injected into the
+`LimitsPoller`. They do **not** live on `AgentRegistry` /
+`agent-registry.ts` — that registry describes *static* agent metadata
+(name, models, capabilities) and is imported by client code via
+`AGENT_REGISTRY` exports; hanging a server-only HTTP fetcher off it
+would either leak HTTP code into the client bundle or force a split
+that doesn't pay for itself. The existing precedent in
+`agent-registry.ts` is *constructor-injected callbacks*
+(`checkClaudeAuth`, `checkCodexAuth`) — those are simple booleans;
+this needs a richer interface and a separate home.
+
+Agents whose provider returns `canFetch() === false` (or that have no
+provider) simply don't surface a badge — UI-side this collapses to
+nothing.
+
+### AuthManager / CodexAuthManager surface to add
+
+The current `AuthManager` (Claude OAuth) and `CodexAuthManager` only
+expose **liveness** (`checkCredentials(): boolean`) and the login
+flow — neither exposes the access token. The Claude path is more
+involved than Codex because there are three possible sources:
+
+1. `/root/.claude/.credentials.json` (or `credentials.json` /
+   `auth.json` — the CLI varies across versions; `auth.ts:163` already
+   probes all three).
+2. `ANTHROPIC_AUTH_TOKEN` env var — OAuth-style bearer used in
+   ShipIt-in-ShipIt dogfooding (see `auth.ts:151–158`).
+3. `ANTHROPIC_API_KEY` env var — pay-as-you-go, **not** a
+   subscription. `canFetch()` returns false here.
+
+We add to each manager:
+
+```ts
+// AuthManager (Claude)
+async getAccessToken(): Promise<
+  | { token: string; source: "file" | "env"; expiresAt: number | null }
+  | { token: null; reason: "api-key" | "not-authenticated" }
+>;
+```
+
+The Claude credentials file is JSON: ShipIt has not parsed it before,
+so we ship a small parser (read → JSON → extract `accessToken` /
+`access_token`, `refreshToken`, `expiresAt`). On expiry, the file is
+re-read on the next call — the Claude CLI refreshes the file in place
+when it makes its own API calls, so we don't need to drive a refresh
+ourselves *as long as* the CLI runs at least once between OAuth-token
+expirations (default ~1 hour). If the file has been stale longer than
+that and the user hasn't run the agent, the next `fetch()` will 401;
+we treat that as `error: "auth expired"` and surface the existing
+re-auth UI rather than driving our own refresh-token call. This is a
+deliberate trade-off — refresh-token handling is non-trivial and
+duplicates work the CLI already does.
+
+`CodexAuthManager.getAccessToken()` mirrors this, reading
+`/root/.codex/auth.json` (the file `codex login --device-auth` writes;
+already symlinked into `/credentials/.codex/auth.json` in production
+per `codex-auth.ts:64–67`).
+
+Both `getAccessToken()` methods are added as *new* code — neither
+currently exists. This is explicitly *not* a "reuse what's there"
+plan.
 
 ### Polling on the orchestrator
 
@@ -202,40 +298,81 @@ A new `LimitsPoller` lives next to `pr-status-poller.ts`:
 
 - **Cadence:** 60 seconds, matching the user-visible "refresh every
   minute" requirement.
-- **Trigger:** runs only when there is at least one connected SSE
-  client AND there is an active runner whose `agentId` has a
-  `LimitsProvider` with `canFetch() === true`. Idle orchestrators
-  don't burn quota-check requests.
-- **Caching:** the latest snapshot per `agentId` is held in a
-  `Map<AgentId, SubscriptionLimits>`. Reads are O(1).
-- **Broadcast:** on every successful fetch (or on transition to
-  `error`), emit a new SSE event `subscription_limits` with the
-  snapshot. Initial-connect snapshot is included in the existing
+- **Trigger:** runs whenever there is at least one connected SSE
+  client AND a provider exists for the active agent with
+  `canFetch() === true`. Notably: an *active runner* is **not**
+  required — gating on an active runner would leave the badge blank
+  on the home screen and for the first ~60s after a session opens.
+  One HTTP call per minute while the user has the tab open is the
+  intended cost.
+- **Caching:** the latest snapshot for the active agent is held in a
+  single `SubscriptionLimits | null` (one value, like
+  `latestMemoryStats` at `index.ts:212`). The orchestrator does not
+  maintain a per-agent map — the client only ever shows one badge,
+  for the currently active agent, so anything beyond that is dead
+  state.
+- **Active-agent selection:** the orchestrator knows which agent the
+  currently focused session uses (from `shipit.yaml` resolution at
+  session boot). The poller subscribes to "active-session-changed"
+  events and re-fetches when the active agent flips. If the user has
+  multiple sessions across two agents, the *focused* one wins —
+  matching the global-scope shape of every other header element.
+- **Broadcast:** on every successful fetch (or on transition into the
+  `error` state), emit a new SSE event `subscription_limits` with the
+  snapshot. The initial-connect snapshot is included in the existing
   burst sent at `/api/events` connect time, alongside `docker_memory`.
+- **Authenticate-then-refresh:** after a successful Claude or Codex
+  login the auth managers already emit `auth_complete` /
+  `codex_auth_complete`. The poller listens for these and triggers an
+  immediate refresh so the badge doesn't sit blank for up to 60s
+  after first sign-in. After sign-out (or a forced credential clear),
+  the cached snapshot is *deleted* — not retained — so the user
+  doesn't see stale numbers attributed to an account they're no
+  longer signed into.
 - **Failure handling:** errors are cached too (with `error` populated)
   so the UI shows the failure state instead of flashing the previous
-  good value. Exponential backoff on consecutive failures (60s → 5m
-  cap) to avoid hammering the upstream when it's down.
+  good value. Three distinct cases:
+  - **401 / 403 (auth):** mark `error: "auth expired"`, stop polling
+    until the auth manager re-emits `auth_complete`. Don't back off;
+    re-auth is the only fix.
+  - **429 (rate-limited by the usage endpoint itself):** respect
+    `Retry-After` if present; otherwise back off to 15 minutes.
+    Do not increment the generic consecutive-failure counter — a 429
+    isn't an outage, it's a signal to slow down.
+  - **5xx / network / unexpected schema:** consecutive-failure
+    exponential backoff (60s → 5m cap), generic `error: "limits
+    unavailable"`.
 
-This mirrors the existing `docker_memory` flow in `index.ts:406–423`
-almost exactly — the cadence is different but the shape is identical.
+This mirrors the existing `docker_memory` flow in `index.ts:406–423` in
+shape (single-value cache + SSE broadcast + initial-connect snapshot)
+but is intentionally **not** the unconditional 10s timer that file
+uses — the upstream cost matters here, the cost of `docker stats`
+locally does not.
 
 ### Wiring into the active agent
 
-The badge always reflects the **current session's agent**. Most users
-run one agent backend, so this is a no-op, but a session can override
-the default via `agent` in `shipit.yaml`. The orchestrator sends the
-limits map keyed by `agentId`; the client picks the entry matching the
-*current session's* `agentId`, which it already tracks in
-`session-store.ts`.
+The badge always reflects the **currently focused session's agent**.
+Most users run one agent backend, so this is a no-op, but a session
+can override the default via `agent` in `shipit.yaml`. The
+orchestrator does the active-agent selection server-side (see
+"Active-agent selection" above) and broadcasts a single
+`SubscriptionLimits` snapshot — the client does not need to know
+about the agent mapping. Critically, this avoids needing to plumb
+`agentId` through `session-store.ts` (it isn't tracked there today)
+or fan it out across stores.
 
-Multi-agent UX edge cases:
+Multi-agent edge cases:
 
-- **No active session yet (home screen):** show the default agent's
-  limits. Same agent the next-new-session will use.
-- **User switches sessions across agents:** the badge re-renders
-  immediately from the cached map; the next 60s poll refreshes both
-  providers if they're both `canFetch()`-able.
+- **No active session yet (home screen):** the orchestrator picks the
+  default agent (the one shipit-yaml-less new sessions use) and
+  fetches that. Same agent the next new session will use, so the
+  badge is already correct when the user clicks "New session."
+- **User switches sessions across agents:** on focus-change, the
+  orchestrator notices the agent flipped, immediately refreshes with
+  the new agent's provider, and broadcasts. The badge changes in one
+  hop, not two.
+- **Provider exists but `canFetch() === false`:** badge hidden. The
+  user is on API-key auth (no quota) or not signed in.
 
 ### Client
 
@@ -256,15 +393,22 @@ Multi-agent UX edge cases:
   ```
   When canFetch === false  →  badge hidden entirely
   When error is set        →  "—" pill, neutral color, error in tooltip
-  Otherwise                →  Dominant number is whichever of
-                              session% / weekly% is higher.
-                              Label: "5h 96% · 7d 22%"  (max 14 chars).
-                              Tooltip: full breakdown + reset times +
-                              "Pro" / "Max 20x" plan name + link to
-                              upstream billing (overflow-menu style).
+  Otherwise                →  Label: "5h 96% · 7d 22%"  (max 14 chars).
+                              Both numbers shown always; color is
+                              driven by the weekly value when it's
+                              non-trivial (≥10%), else by the session
+                              value. Rationale: a 100%/20% state is
+                              not a red situation — the 5h window
+                              resets in minutes, the weekly is what
+                              actually matters for "can I keep
+                              working today?" Tooltip: full breakdown,
+                              reset times, plan name ("Pro" /
+                              "Max 20x" / "Plus"). No link out — the
+                              number on the badge is the surface. (§1)
   ```
 
-- **Color tiers** mirror the memory badge:
+- **Color tiers** apply to the *color-driving* value selected by the
+  rule above:
   - ≥90% used → `text-red-400`
   - ≥75% → `text-orange-400`
   - ≥60% → `text-yellow-400`
@@ -272,10 +416,12 @@ Multi-agent UX edge cases:
 
 ### File layout
 
+New files:
+
 ```
-src/server/shared/types/usage-limits-types.ts       — types
+src/server/shared/types/usage-limits-types.ts       — SubscriptionLimits (client-importable)
+src/server/orchestrator/limits/types.ts             — LimitsProvider (orch-only)
 src/server/orchestrator/limits/index.ts             — barrel
-src/server/orchestrator/limits/types.ts             — LimitsProvider interface
 src/server/orchestrator/limits/claude-limits.ts     — Claude provider
 src/server/orchestrator/limits/codex-limits.ts      — Codex provider
 src/server/orchestrator/limits-poller.ts            — 60s loop, cache, broadcast
@@ -284,53 +430,129 @@ src/client/components/SubscriptionLimitsBadge.tsx   — UI
 src/client/components/SubscriptionLimitsBadge.test.tsx
 ```
 
-Touches: `AppLayout.tsx` (placement), `useServerEvents.ts` (SSE
-handler), `ui-store.ts` (state), `index.ts` (poller wire-up, SSE
-initial-state burst), `ws-server-messages.ts` (SSE event type).
+Touches:
+
+- `src/server/orchestrator/auth.ts` — add `getAccessToken()`.
+- `src/server/orchestrator/codex-auth.ts` — add `getAccessToken()`.
+- `src/server/orchestrator/app-di.ts` — register
+  `Map<AgentId, LimitsProvider>`, wire `LimitsPoller`.
+- `src/server/orchestrator/index.ts` — start the poller, include the
+  snapshot in the `/api/events` initial-state burst, broadcast
+  `subscription_limits` events.
+- `src/server/shared/types/ws-server-messages.ts` — add the
+  `subscription_limits` SSE event type.
+- `src/client/hooks/useServerEvents.ts` — add the `subscription_limits`
+  listener (same shape as the `docker_memory` handler at line 209).
+- `src/client/stores/ui-store.ts` — add
+  `subscriptionLimits: SubscriptionLimits | null` and its setter.
+- `src/client/AppLayout.tsx` — insert the badge after
+  `<DockerMemoryBadge>` at line 141.
+
+## Blocking prereqs
+
+These must be answered **before** Phase 1 implementation starts. Each
+is a small, one-time investigation; bundle them as a single
+spike-style task.
+
+1. **Capture the Claude endpoint.** Run the Claude CLI against a real
+   Pro/Max account behind `mitmproxy` (or similar). Verify the
+   request URL, required headers, OAuth-scope behavior, and the
+   response JSON shape that backs `/usage`. Save the captured
+   response as a fixture for tests.
+2. **Capture the Codex endpoint.** Same exercise against a ChatGPT-
+   plan-authenticated `codex` CLI. Confirm the path (it has shifted
+   across versions) and save the fixture.
+3. **Confirm OAuth scope for Claude.** If the captured `/usage` call
+   uses a scope the stored ShipIt token doesn't have, this feature
+   is **not buildable** in Phase 1 without forcing the user through
+   re-auth (a non-starter). Empirically the Claude CLI uses the same
+   OAuth token, so the expected answer is "scope is fine," but treat
+   this as go/no-go.
+4. **Confirm refresh behavior.** Verify that running the Claude CLI
+   refreshes `.credentials.json` in place so the orchestrator can
+   read it back without driving its own refresh-token call.
+
+If 1–3 land cleanly, Phase 1 proceeds. If 3 fails, this doc gets
+re-scoped or shelved — we are not asking the user to re-authenticate
+just to power a header pill.
+
+## Edge cases
+
+- **First-run / not yet authenticated:** `canFetch()` → false →
+  badge hidden. Once the user signs in, the auth-complete event
+  triggers an immediate refresh (see "Authenticate-then-refresh"
+  above) and the badge appears within seconds, not on the next 60s
+  tick.
+- **`ANTHROPIC_API_KEY` set (pay-as-you-go):** `canFetch()` → false
+  → badge hidden. Pay-as-you-go has no subscription quota.
+- **`ANTHROPIC_AUTH_TOKEN` set (OAuth-via-env, dogfooding path):**
+  `canFetch()` → true. Provider reads the token from
+  `process.env.ANTHROPIC_AUTH_TOKEN` rather than the credentials
+  file. This is the inner-orchestrator path used by
+  ShipIt-in-ShipIt — see `auth.ts:151–158`.
+- **Sign-out:** auth manager clears credentials → cached snapshot
+  deleted → SSE broadcast emits `null` → badge hidden. No stale
+  numbers attributed to a logged-out account.
+- **OAuth token expired (file stale, CLI hasn't run recently):**
+  endpoint returns 401 → cached snapshot becomes `error: "auth
+  expired"` → badge renders "—" with that tooltip → polling halts
+  until the next `auth_complete` event.
+- **Endpoint returns 200 with unexpected schema:** provider falls
+  through schema validation, returns `error: "limits unavailable"`,
+  logs the unexpected payload (no PII expected, but capped at
+  ~1 KB). Same backoff as 5xx.
+- **Agent that's neither Claude nor Codex:** no provider registered
+  for that `AgentId` → poller treats it as `canFetch() === false`
+  → badge hidden. No UI changes needed when a new backend lands;
+  adding a provider is sufficient.
+- **Orchestrator container without `/credentials/.codex/auth.json`
+  mounted:** Codex provider's `canFetch()` returns false (no
+  credentials path → no token) → badge hidden. Same path used by
+  `CodexAuthManager.checkCredentials()` so the behavior matches the
+  existing auth-status UI.
 
 ## Open questions
 
-1. **Exact Claude endpoint response shape.** We have community
-   reverse-engineered evidence that `/api/oauth/usage` exists and
-   returns the `/usage` data, but no public schema. We'll need a
-   one-time capture (e.g. `mitmproxy` against the Claude CLI in a dev
-   container) to lock down the field names. The provider abstraction
-   means this is one file's worth of work.
-
-2. **Codex endpoint stability.** OpenAI shipped two `codex` rate-limit
-   fixes in v0.21 (Aug 2026) — the endpoint may shift again. Plan to
-   re-verify at implementation time and pin to a snapshot.
-
-3. **What about the OAuth `usage` endpoint scope?** The Claude OAuth
-   token ShipIt holds was minted for the CLI's scope. Need to confirm
-   that scope includes the `/usage` read. Empirically the CLI uses the
-   same token, so the answer is almost certainly yes, but we should
-   verify before shipping.
-
-4. **Should the tooltip's link to the billing page count as a
-   link-out exception?** Per §3, billing is one of the legitimate
-   tabs. The badge tooltip would say `View on claude.ai →` /
-   `View on chatgpt.com →` as an overflow-style escape hatch, not
-   the primary affordance. Primary surface = the inline number.
-
-5. **Test mode.** The poller hits live HTTP. Integration tests should
-   inject a `StubLimitsProvider` (mirrors `StubGitHubAuthManager`)
-   that returns deterministic numbers — same pattern that
-   `pr-status-poller.test.ts` already uses.
+1. **Tooltip prose.** Exact wording for the breakdown, the
+   "—" / unavailable state, and the failure modes. Cosmetic; pick
+   during implementation.
+2. **Test mode.** Integration tests should inject a
+   `StubLimitsProvider` (mirrors `StubGitHubAuthManager`) that
+   returns deterministic numbers — same pattern
+   `pr-status-poller.test.ts` already uses. No design decision left
+   here, just an implementation note.
+3. **Snapshot persistence across orchestrator restarts.** Worth it
+   to checkpoint the latest snapshot so the badge isn't blank for
+   ~60s after every restart? Probably not — the upstream cost of a
+   fresh fetch on boot is one HTTP call, and the badge being blank
+   for 60s right after a restart is acceptable. Default: do not
+   persist.
 
 ## Phasing
 
-**Phase 1 — Claude only.** Provider + poller + SSE + badge. Codex
-provider stubbed to `canFetch() = false` until phase 2.
+**Phase 0 — Spike.** Complete the four [blocking
+prereqs](#blocking-prereqs). Output: two captured fixtures (one
+Claude, one Codex), one go/no-go on Claude's OAuth scope.
+
+**Phase 1 — Claude only.** Provider + `AuthManager.getAccessToken()`
++ poller + SSE + badge. Codex provider stubbed to
+`canFetch() === false`. Ships independently of doc 119.
 
 **Phase 2 — Codex.** Add the Codex provider once doc 119
-(`CodexAuthManager`) is fully shipped — the badge needs the OAuth token
-that flow persists. (119 is `in-progress`, so this phasing is real.)
+(`CodexAuthManager`) is fully shipped — the badge needs the OAuth
+token that flow persists. (119 is `in-progress`, so this phasing is
+real.)
 
-**Phase 3 (optional) — Header-fallback for Claude.** Capture
-`anthropic-ratelimit-unified-*` headers from completed turns and fold
-them in as a secondary signal so the badge stays warm even if the OAuth
-usage endpoint goes down.
+**Phase 3 (optional, separate doc) — Header-fallback for Claude.**
+Capture `anthropic-ratelimit-unified-*` headers from completed turns.
+This is *significantly* more invasive than it sounds: the Claude CLI
+talks directly to `api.anthropic.com` from inside the session
+container, so capturing those headers requires either (a) injecting an
+egress proxy between the CLI and the network, or (b) waiting for a
+CLI change that writes them to disk. Both are larger than this whole
+doc. If Phase 1 ships and proves reliable, Phase 3 is probably not
+worth doing — call it out for completeness rather than as a planned
+follow-up.
 
 ## Key files (to read before implementing)
 
@@ -346,8 +568,11 @@ usage endpoint goes down.
   doc 119).
 - `src/server/orchestrator/pr-status-poller.ts` — closest existing
   precedent for a polled-external-API service in the orchestrator.
-- `src/server/shared/agent-registry.ts` — where to hang the new
-  optional `limitsProvider` capability.
+- `src/server/shared/agent-registry.ts` — read for the
+  *constructor-injected-callbacks* pattern (`checkClaudeAuth`,
+  `checkCodexAuth`) so the new DI registration follows house style.
+  Note: providers do **not** live on this registry; see
+  [Architecture](#architecture).
 - `docs/119-codex-subscription-auth/plan.md` — explicitly lists this
   feature as a follow-up non-goal. Read its "Background" section for
   how Codex auth tokens are persisted.
@@ -369,5 +594,5 @@ External research that informed the API choices above:
 - GitHub — [ryoppippi/ccusage](https://github.com/ryoppippi/ccusage) (community tool; same local-JSONL constraint)
 - OpenAI — [Using Codex with your ChatGPT plan](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan)
 - OpenAI — [Codex pricing](https://developers.openai.com/codex/pricing)
-- GitHub — [openai/codex#15281 — expose full usage/limits data in CLI `/status`](https://github.com/openai/codex/issues/15281) (confirms `/status` is REPL-only and that the CLI internally calls `GET /api/codex/usage`)
+- GitHub — [openai/codex#15281 — expose full usage/limits data in CLI `/status`](https://github.com/openai/codex/issues/15281) (confirms `/status` is REPL-only and that the CLI internally calls a usage endpoint — community-reported path `GET /api/codex/usage`, to be verified per [Blocking prereqs](#blocking-prereqs))
 - GitHub — [openai/codex-plugin-cc#102 — add `/codex:usage` command](https://github.com/openai/codex-plugin-cc/issues/102)
