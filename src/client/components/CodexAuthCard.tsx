@@ -1,4 +1,5 @@
-import { useState } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect needed to clear the local "starting device auth" pending flag once SSE delivers deviceAuth/deviceAuthError
+import { useEffect, useState } from "react";
 import type { AgentOption } from "./AgentPicker.js";
 
 /**
@@ -28,7 +29,7 @@ export interface CodexAuthCardProps {
   /** Cancel an in-flight device-auth flow. */
   onCancelDeviceAuth?: () => void;
   /** Sign out (delete `~/.codex/auth.json`). */
-  onSignOut?: () => void;
+  onSignOut?: () => Promise<void> | void;
   /** Save an `OPENAI_API_KEY` (the fallback / Platform-API path). */
   onApiKeySubmit: (key: string) => Promise<boolean | undefined>;
   /**
@@ -72,6 +73,21 @@ export function CodexAuthCard({
   const [codexKeyLoading, setCodexKeyLoading] = useState(false);
   const [showApiKeyPanel, setShowApiKeyPanel] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
+  // Tracks the gap between clicking "Sign in" and the SSE-delivered
+  // `codex_auth_pending` event arriving (or a failure). Without this guard
+  // the button is clickable for ~hundreds of ms, letting fast double-clicks
+  // spawn duplicate `codex login --device-auth` flows on the orchestrator.
+  const [startingDeviceAuth, setStartingDeviceAuth] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+
+  // Once the device-auth flow has either produced a verification URL or
+  // surfaced an error, the local "starting" flag is no longer needed —
+  // either we'll render the pending panel (button is hidden) or we'll let
+  // the user retry.
+  // eslint-disable-next-line no-restricted-syntax -- reacts to async SSE state transitions (deviceAuth / deviceAuthError) that flip the local pending flag
+  useEffect(() => {
+    if (deviceAuth || deviceAuthError) setStartingDeviceAuth(false);
+  }, [deviceAuth, deviceAuthError]);
 
   if (!agent) return null;
 
@@ -141,11 +157,20 @@ export function CodexAuthCard({
         </div>
         {agent.installed && agent.authConfigured && onSignOut && (
           <button
-            onClick={onSignOut}
-            className="shrink-0 text-xs px-2 py-1 rounded-md text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+            onClick={async () => {
+              if (signingOut) return;
+              setSigningOut(true);
+              try {
+                await onSignOut();
+              } finally {
+                setSigningOut(false);
+              }
+            }}
+            disabled={signingOut}
+            className="shrink-0 text-xs px-2 py-1 rounded-md text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             data-testid="codex-sign-out"
           >
-            Sign out
+            {signingOut ? "Signing out..." : "Sign out"}
           </button>
         )}
       </div>
@@ -229,12 +254,16 @@ export function CodexAuthCard({
                 Uses your existing ChatGPT plan or Codex credits — recommended.
               </p>
               <button
-                onClick={onStartDeviceAuth}
-                disabled={!onStartDeviceAuth}
+                onClick={() => {
+                  if (!onStartDeviceAuth || startingDeviceAuth) return;
+                  setStartingDeviceAuth(true);
+                  onStartDeviceAuth();
+                }}
+                disabled={!onStartDeviceAuth || startingDeviceAuth}
                 className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 data-testid="codex-start-device-auth"
               >
-                Sign in
+                {startingDeviceAuth ? "Starting..." : "Sign in"}
               </button>
               {deviceAuthError && (
                 <p
