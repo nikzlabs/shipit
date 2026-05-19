@@ -106,7 +106,18 @@ export class CodexAdapter
     supportsPermissionModes: false,
     supportedPermissionModes: [],
     toolNames: ["shell", "file_write", "file_read", "file_edit"],
-    models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+    // Mirror of agent-registry.ts. Verified against the ChatGPT
+    // `/backend-api/codex/models` endpoint — every entry returned for a
+    // Plus plan with `visibility: list` and `supported_in_api: true`,
+    // including the codex-specialized `gpt-5.3-codex` variant. Keep in
+    // sync with the registry; both feed the same picker in the UI.
+    models: [
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.2",
+    ],
     // Codex has neither a subagent primitive nor a hook for registering
     // custom tools. 125 requires both, so the chat-native review flow is
     // gated off on Codex sessions.

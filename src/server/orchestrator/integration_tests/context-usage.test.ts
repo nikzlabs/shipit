@@ -344,7 +344,7 @@ describe("Integration: Context window usage (105)", () => {
     expect(getContextWindowForModel("opus-1m")).toBe(1_000_000);
     // Substring match (real CLI model identifiers contain dates/versions)
     expect(getContextWindowForModel("claude-sonnet-4-20250514")).toBe(200_000);
-    expect(getContextWindowForModel("gpt-5.4-mini-2025")).toBe(256_000);
+    expect(getContextWindowForModel("gpt-5.4-mini-2025")).toBe(272_000);
     // Opus 4.7 has a 1M window — the longest substring "claude-opus-4-7"
     // beats the shorter "opus" fallback (200K). This is the static fallback
     // for the first frame; the authoritative window comes from the CLI's

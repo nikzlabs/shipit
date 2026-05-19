@@ -4,11 +4,13 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
   sonnet: "Sonnet 4.7",
   opus: "Opus 4.7",
   haiku: "Haiku 4.5",
-  // Codex model IDs
+  // Codex model IDs. Display names normalize the ChatGPT backend's
+  // inconsistent casing (e.g. "gpt-5.4" → "GPT-5.4").
   "gpt-5.5": "GPT-5.5",
   "gpt-5.4": "GPT-5.4",
   "gpt-5.4-mini": "GPT-5.4 Mini",
   "gpt-5.3-codex": "GPT-5.3 Codex",
+  "gpt-5.2": "GPT-5.2",
 };
 
 /** Known Claude model families that map to CLI aliases. */

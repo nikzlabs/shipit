@@ -49,7 +49,19 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsPermissionModes: false,
       supportedPermissionModes: [],
       toolNames: ["shell", "file_write", "file_read", "file_edit"],
-      models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+      // Verified against the ChatGPT backend's `/backend-api/codex/models`
+      // endpoint (ChatGPT Plus plan, codex CLI 0.131.0): these are every
+      // model with `visibility: list` and `supported_in_api: true`. Ordering
+      // matches the backend listing — gpt-5.5 first (current frontier /
+      // default), with the codex-specialized gpt-5.3-codex preserved as its
+      // own entry. Update the list when codex publishes new models.
+      models: [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2",
+      ],
       supportsReview: false,
     },
   },
