@@ -5,12 +5,7 @@
 
 import type { GitHubRepoResult } from "./github-auth.js";
 import { getErrorMessage } from "../shared/utils.js";
-
-const GITHUB_HEADERS = (token: string) => ({
-  Authorization: `Bearer ${token}`,
-  Accept: "application/vnd.github+json",
-  "User-Agent": "ShipIt",
-});
+import { fetchGitHub, parseGitHubError } from "./github-api.js";
 
 /**
  * Create a new GitHub repository via the API.
@@ -22,12 +17,9 @@ export async function createRepo(
   options: { description?: string; isPrivate?: boolean } = {},
 ): Promise<GitHubRepoResult> {
   try {
-    const res = await fetch("https://api.github.com/user/repos", {
+    const res = await fetchGitHub("https://api.github.com/user/repos", token, {
       method: "POST",
-      headers: {
-        ...GITHUB_HEADERS(token),
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name,
         description: options.description || "",
@@ -37,10 +29,9 @@ export async function createRepo(
     });
 
     if (!res.ok) {
-      const err = (await res.json()) as { message?: string };
       return {
         success: false,
-        message: err.message || `GitHub API returned ${res.status}`,
+        message: await parseGitHubError(res),
       };
     }
 
@@ -77,9 +68,9 @@ export async function listUserRepos(token: string): Promise<{
   cloneUrl: string;
 }[]> {
   try {
-    const res = await fetch(
+    const res = await fetchGitHub(
       "https://api.github.com/user/repos?sort=pushed&per_page=15&affiliation=owner,collaborator",
-      { headers: GITHUB_HEADERS(token) },
+      token,
     );
 
     if (!res.ok) return [];
@@ -107,9 +98,9 @@ export async function searchRepos(token: string, query: string): Promise<{
   defaultBranch: string;
   cloneUrl: string;
 }[]> {
-  const res = await fetch(
+  const res = await fetchGitHub(
     `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+in:name&sort=updated&per_page=10`,
-    { headers: GITHUB_HEADERS(token) },
+    token,
   );
 
   if (!res.ok) return [];

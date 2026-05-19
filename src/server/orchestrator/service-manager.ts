@@ -5,12 +5,23 @@
  * direct `docker compose` CLI invocations from the orchestrator. Each session
  * gets its own compose stack with an override file for ShipIt integration.
  *
- * Responsibilities:
- * - Start/stop compose stack
- * - Start/stop individual services
- * - Service status polling
- * - Log streaming via `docker compose logs -f`
- * - Config change detection and stack reconciliation
+ * Responsibilities (kept here):
+ *   - Start/stop/reconcile compose stack
+ *   - Start/stop/restart individual services
+ *   - Log streaming via `docker compose logs -f`
+ *   - Compose CLI invocation (with conflict recovery)
+ *
+ * Three collaborators handle the more cohesive sub-concerns:
+ *   - `ServiceSecretsResolver` — resolves declared secrets, writes env
+ *     files / Docker-secrets files, publishes snapshot updates.
+ *   - `ServicePoller` — runs the `docker compose ps` poll loop, resolves
+ *     container IPs via `docker inspect`, fires state-transition hooks.
+ *   - `ServiceRetryManager` — owns install-window retry timers and the
+ *     OOM auto-retry budget.
+ *
+ * Each collaborator is callback-driven and never imports back from this
+ * file at runtime (only types). The manager passes the hooks they need
+ * via constructor options.
  */
 
 import { EventEmitter } from "node:events";
@@ -27,17 +38,27 @@ import {
   type ComposeOverrideOptions,
   type ComposeService,
 } from "./compose-generator.js";
-import fs from "node:fs";
-import {
-  resolveSecrets,
-  renderAgentEnvBody,
-  writePerServiceEnvFiles,
-  writeAgentEnvFile,
-  writeIsolatedSecretFiles,
-  composeSecretFilePath,
-  type DeclaredSecret,
-} from "./secret-resolver.js";
 import type { PlatformCredentialProvider } from "./platform-credentials.js";
+import {
+  ServiceSecretsResolver,
+  type SecretsStatusInternalSnapshot,
+  type DockerSecretsConfig,
+} from "./service-secrets-resolver.js";
+import { ServicePoller } from "./service-poller.js";
+import { ServiceRetryManager } from "./service-retry-manager.js";
+
+// ---------------------------------------------------------------------------
+// Re-exports — preserve the public surface tests / consumers import from
+// here. `SecretsStatusInternalSnapshot` is consumed by ContainerSessionRunner
+// and the test file via this module; the simpler `SecretsStatusSnapshot`
+// type stays exported for external consumers that only need the public
+// shape (no agent values).
+// ---------------------------------------------------------------------------
+
+export type {
+  SecretsStatusSnapshot,
+  SecretsStatusInternalSnapshot,
+} from "./service-secrets-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,11 +115,11 @@ export interface ServiceManagerOptions {
   secretsLoader?: () => Promise<Record<string, string>>;
   /**
    * Collects account-level MCP secret values (`mcp__*` keys from
-   * `CredentialStore.agentEnv`) — docs/088. Called inside `syncSecrets()`
-   * after `resolveSecrets()` runs; the result is merged into the resolved
-   * `agentValues` map (compose-declared entries win on key collision) before
-   * `.shipit/.env.agent` is written and pushed to the worker. Synchronous —
-   * `CredentialStore` is an in-memory JSON store.
+   * `CredentialStore.agentEnv`) — docs/088. Called inside the secret-sync
+   * pass after `resolveSecrets()` runs; the result is merged into the
+   * resolved `agentValues` map (compose-declared entries win on key
+   * collision) before `.shipit/.env.agent` is written and pushed to the
+   * worker. Synchronous — `CredentialStore` is an in-memory JSON store.
    */
   mcpAgentEnvLoader?: () => Record<string, string>;
   /**
@@ -130,46 +151,12 @@ export interface ServiceManagerOptions {
    * When omitted, the manager falls back to the env-file mode (Phase 1
    * baseline).
    */
-  dockerSecretsConfig?: {
-    internalDir: string;
-    hostDir?: string;
-    entrypointSourcePath: string;
-  };
+  dockerSecretsConfig?: DockerSecretsConfig;
 }
 
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
-
-export interface SecretsStatusSnapshot {
-  /** All declared secrets across all services, de-duplicated by name. */
-  declared: DeclaredSecret[];
-  /** Service-name → list of declared secrets that have no value (required + optional). */
-  missingByService: Record<string, string[]>;
-  /** Names of required secrets that have no value, de-duplicated. */
-  missingRequired: string[];
-  /**
-   * Names of secrets marked `agent: true` that have a resolved value.
-   * Used by the runner to push them into the agent container's process.env.
-   * Values themselves are exposed via {@link agentValues} on the snapshot
-   * the runner consumes — kept off this public type to avoid leaking
-   * secret values into telemetry / logs.
-   */
-  agentNames: string[];
-}
-
-/**
- * Internal snapshot variant carried over the EventEmitter — same as
- * {@link SecretsStatusSnapshot} plus the resolved `agent: true` values that
- * subscribers (the runner) need to push into the agent container.
- *
- * Kept as a separate type so the public-facing snapshot doesn't include
- * raw secret values.
- */
-export interface SecretsStatusInternalSnapshot extends SecretsStatusSnapshot {
-  /** Resolved key-value pairs for `agent: true` entries. */
-  agentValues: Record<string, string>;
-}
 
 export interface ServiceManagerEvents {
   service_status: (service: ManagedService) => void;
@@ -202,43 +189,16 @@ export class ServiceManager extends EventEmitter {
   private _started = false;
   private readonly composeRunner: ComposeRunner;
   private readonly composeQuery: ComposeQuery;
-  private readonly pollIntervalMs: number;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
   private readonly workspaceVolume?: string;
   private readonly workspaceSubpath?: string;
   private readonly stackName?: string;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
-  private secretsLoader?: () => Promise<Record<string, string>>;
-  private mcpAgentEnvLoader?: () => Record<string, string>;
-  private platformCredentials?: PlatformCredentialProvider;
-  private dockerSecretsConfig?: {
-    internalDir: string;
-    hostDir?: string;
-    entrypointSourcePath: string;
-  };
-  /**
-   * Per-secret file references for the most recent compose override. Built
-   * inside `syncSecrets()` and consumed by `generateComposeOverride()`.
-   * Only set when Docker-secrets mode is active.
-   */
-  private dockerSecretsBuild?: {
-    secretNames: string[];
-    perService: Record<string, string[]>;
-    filePathFor: (name: string) => string;
-    entrypointWorkspacePath: string;
-  };
-  /** Names of secrets declared in `x-shipit-secrets` across all services. */
-  private declaredSecretNames: string[] = [];
-  /** Service-name → list of declared secrets that have no user-saved value. */
-  private missingSecretsByService: Record<string, string[]> = {};
-  /** Latest secrets snapshot emitted via `secrets_status`. */
-  private secretsSnapshot: SecretsStatusInternalSnapshot = {
-    declared: [],
-    missingByService: {},
-    missingRequired: [],
-    agentNames: [],
-    agentValues: {},
-  };
+
+  // Collaborators — see the module docstring.
+  private readonly secrets: ServiceSecretsResolver;
+  private readonly poller: ServicePoller;
+  private readonly retry: ServiceRetryManager;
+
   private _startupComplete = false;
   /** Error message if the compose stack failed to start. */
   startError: string | null = null;
@@ -249,7 +209,6 @@ export class ServiceManager extends EventEmitter {
    */
   private _disposed = false;
 
-  // --- Install-running retry gate ---
   /**
    * While `true`, services that exit non-zero are restarted with backoff
    * instead of being marked `error`. Set by the orchestrator around the
@@ -258,50 +217,6 @@ export class ServiceManager extends EventEmitter {
    * `error`. See `setInstallRunning`.
    */
   private _installRunning = false;
-  /** Per-service backoff timer for retry-while-installing. */
-  private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** Per-service retry attempt counter (drives exponential backoff). */
-  private retryAttempts = new Map<string, number>();
-  /** Backoff schedule: 1s, 2s, 4s, 8s, capped at 10s. */
-  private static readonly RETRY_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
-
-  // --- OOM auto-retry ---
-  /**
-   * Per-service OOM attempt counter — separate from `retryAttempts` (which
-   * tracks install-window retries). Counts consecutive OOM-killed exits
-   * (code 137) for a `preview: auto` service. Reset when:
-   *   - The service runs for `OOM_STABLE_RESET_MS` without OOMing again
-   *     (the typical "one-off pressure spike" case).
-   *   - The service is explicitly stopped or restarted by the user.
-   *   - The manager is reconciled / disposed.
-   * NOT reset on every momentary `running` poll — a service that flaps in
-   * and out of `running` while OOMing every few seconds must NOT loop
-   * forever; the cap forces the user to intervene after MAX retries.
-   */
-  private oomRetryAttempts = new Map<string, number>();
-  /**
-   * Per-service stable-uptime timers. When a service comes up `running`
-   * after at least one OOM-retry, we arm a timer to clear the OOM counter
-   * if it stays running long enough. The timer is cancelled if the
-   * service leaves `running` before it fires.
-   */
-  private oomStableTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  /**
-   * Hard cap on consecutive OOM-retries before we latch to `error`. After
-   * this many retries in a row (without `OOM_STABLE_RESET_MS` of stable
-   * uptime between them) the service is left in `error` so the user can
-   * investigate — repeatedly restarting a service that keeps OOMing just
-   * burns CPU and masks the real problem (memory cap too low, runaway
-   * process, host pressure).
-   */
-  private static readonly MAX_OOM_AUTO_RETRIES = 3;
-  /**
-   * How long a service must run continuously before its OOM counter is
-   * cleared. A short flap (run for 2s, OOM, run for 2s, OOM…) shouldn't
-   * reset the counter; a service that comes up properly and runs for
-   * a full minute should.
-   */
-  private static readonly OOM_STABLE_RESET_MS = 60_000;
 
   constructor(opts: ServiceManagerOptions) {
     super();
@@ -310,15 +225,106 @@ export class ServiceManager extends EventEmitter {
     this.composeConfig = opts.composeConfig;
     this.composeRunner = opts.composeRunner ?? defaultComposeRunner;
     this.composeQuery = opts.composeQuery ?? defaultComposeQuery;
-    this.pollIntervalMs = opts.pollIntervalMs ?? 5_000;
     this.workspaceVolume = opts.workspaceVolume;
     this.workspaceSubpath = opts.workspaceSubpath;
     this.stackName = opts.stackName;
     this.networkJoinFn = opts.networkJoinFn;
-    this.secretsLoader = opts.secretsLoader;
-    this.mcpAgentEnvLoader = opts.mcpAgentEnvLoader;
-    this.platformCredentials = opts.platformCredentials;
-    this.dockerSecretsConfig = opts.dockerSecretsConfig;
+
+    this.secrets = new ServiceSecretsResolver({
+      sessionId: opts.sessionId,
+      workspaceDir: opts.workspaceDir,
+      ...(opts.secretsLoader ? { secretsLoader: opts.secretsLoader } : {}),
+      ...(opts.mcpAgentEnvLoader ? { mcpAgentEnvLoader: opts.mcpAgentEnvLoader } : {}),
+      ...(opts.platformCredentials ? { platformCredentials: opts.platformCredentials } : {}),
+      ...(opts.dockerSecretsConfig ? { dockerSecretsConfig: opts.dockerSecretsConfig } : {}),
+      onSnapshot: (snapshot) => this.emit("secrets_status", snapshot),
+    });
+
+    this.retry = new ServiceRetryManager({
+      sessionId: opts.sessionId,
+      isDisposed: () => this._disposed,
+      updateServiceStatus: (name, status, error) =>
+        this.updateServiceStatus(name, status, error),
+      runRetryNow: (name) => this.runRetryNow(name),
+    });
+
+    this.poller = new ServicePoller({
+      sessionId: opts.sessionId,
+      workspaceDir: opts.workspaceDir,
+      composeQuery: this.composeQuery,
+      pollIntervalMs: opts.pollIntervalMs ?? 5_000,
+      composeArgs: (...extra) => this.composeArgs(...extra),
+      getService: (name) => this.services.get(name),
+      setContainerIp: (name, ip) => {
+        const svc = this.services.get(name);
+        if (svc) svc.containerIp = ip;
+      },
+      updateServiceStatus: (name, status, error) =>
+        this.updateServiceStatus(name, status, error),
+      onRunning: (name) => {
+        // Service recovered — clear any pending install-window retry state.
+        this.retry.clearRetryState(name);
+        // If a previous OOM kicked off auto-retries, arm a stable-uptime
+        // timer that clears the OOM counter once the service has been
+        // healthy long enough. We don't clear the counter eagerly: a
+        // service that flaps in and out of `running` while OOMing must
+        // still hit the cap, otherwise we loop forever.
+        this.retry.armOomStableResetIfNeeded(name);
+      },
+      onLeftRunning: (name) => {
+        this.retry.cancelOomStableTimer(name);
+      },
+      onExitedCleanly: (name) => {
+        this.retry.clearRetryState(name);
+        this.retry.clearOomBudget(name);
+      },
+      onExitedWithError: (name, exitCode) => {
+        this.handleNonZeroExit(name, exitCode);
+      },
+    });
+  }
+
+  /**
+   * Branching for a non-zero exit. See the original inline pollStatus for
+   * the rationale on each branch — preserved verbatim here so the retry
+   * paths behave identically.
+   */
+  private handleNonZeroExit(name: string, exitCode: number): void {
+    const svc = this.services.get(name);
+    if (!svc) return;
+
+    if (this._installRunning && svc.preview === "auto") {
+      // Install is still extracting deps into the bind-mounted workspace.
+      // Don't latch to `error` — schedule a retry with backoff so the
+      // service can come up once install finishes. Manual services are
+      // user-initiated and not retried automatically.
+      this.retry.scheduleRetryWhileInstalling(name, exitCode);
+      return;
+    }
+
+    if (exitCode === 137 && svc.preview === "auto") {
+      // 137 = SIGKILL, the most common cause of which inside a
+      // memory-limited container is the OOM killer. The authoritative
+      // signal comes from the Docker event subscriber in
+      // container-health.ts (which checks State.OOMKilled), but if that
+      // event was missed we still want to handle it correctly here.
+      //
+      // We auto-retry up to MAX_OOM_AUTO_RETRIES times with the same
+      // backoff schedule the install-window path uses. Without this,
+      // the service latches to `error` and the user clicks Rescue
+      // session — which destroys+recreates the agent container, kicks
+      // off a fresh compose stack, and immediately hits the same OOM
+      // condition. The user perceives "Rescue does nothing." This path
+      // lets transient pressure spikes self-heal without the user
+      // needing to intervene at all.
+      this.retry.scheduleOomRetry(name);
+      return;
+    }
+
+    const message = exitCode === 137
+      ? "Exited with code 137 (likely OOMKilled)"
+      : `Exited with code ${exitCode}`;
+    this.updateServiceStatus(name, "error", message);
   }
 
   /**
@@ -327,7 +333,7 @@ export class ServiceManager extends EventEmitter {
    * the right slice of SecretStore.
    */
   setSecretsLoader(loader: () => Promise<Record<string, string>>): void {
-    this.secretsLoader = loader;
+    this.secrets.setSecretsLoader(loader);
   }
 
   /**
@@ -359,12 +365,12 @@ export class ServiceManager extends EventEmitter {
 
   /** Names of secrets declared in `x-shipit-secrets` across all services. */
   getDeclaredSecretNames(): string[] {
-    return [...this.declaredSecretNames];
+    return this.secrets.getDeclaredNames();
   }
 
   /** Missing secrets (required + optional) by service. */
   getMissingSecretsByService(): Record<string, string[]> {
-    return { ...this.missingSecretsByService };
+    return this.secrets.getMissingByService();
   }
 
   /**
@@ -373,15 +379,7 @@ export class ServiceManager extends EventEmitter {
    * Returned as a defensive copy so callers can't mutate manager state.
    */
   getSecretsSnapshot(): SecretsStatusInternalSnapshot {
-    return {
-      declared: this.secretsSnapshot.declared.map((d) => ({ ...d, services: [...d.services] })),
-      missingByService: Object.fromEntries(
-        Object.entries(this.secretsSnapshot.missingByService).map(([k, v]) => [k, [...v]]),
-      ),
-      missingRequired: [...this.secretsSnapshot.missingRequired],
-      agentNames: [...this.secretsSnapshot.agentNames],
-      agentValues: { ...this.secretsSnapshot.agentValues },
-    };
+    return this.secrets.getSnapshot();
   }
 
   /** Whether the compose stack has been started. */
@@ -451,10 +449,11 @@ export class ServiceManager extends EventEmitter {
     // per-service env files via `env_file:` and compose detects the file at
     // `up` time. We always sync the env files (even when no secrets are
     // declared) so stale files from a previous compose definition are cleared.
-    await this.syncSecrets(parsedServices);
+    await this.secrets.sync(parsedServices);
 
     // Generate override
     const userNamedVolumes = parseUserNamedVolumes(composePath);
+    const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
     const overrideOpts: ComposeOverrideOptions = {
       sessionId: this.sessionId,
       composeConfig: this.composeConfig,
@@ -462,7 +461,7 @@ export class ServiceManager extends EventEmitter {
       workspaceSubpath: this.workspaceSubpath,
       stackName: this.stackName,
       userNamedVolumes,
-      ...(this.dockerSecretsBuild ? { dockerSecrets: this.dockerSecretsBuild } : {}),
+      ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
     writeComposeOverride(this.workspaceDir, overrideContent);
@@ -499,7 +498,7 @@ export class ServiceManager extends EventEmitter {
       await this.joinSessionNetwork();
 
       // 3. Resolve container IPs and actual statuses
-      await this.pollStatus();
+      await this.poller.pollOnce();
 
       // 4. Startup complete — flush all service statuses to listeners at once
       this._startupComplete = true;
@@ -513,7 +512,7 @@ export class ServiceManager extends EventEmitter {
       }
 
       // 6. Begin periodic polling to detect crashes
-      this.startPolling();
+      this.poller.start();
 
       this.emit("stack_ready");
     } catch (err) {
@@ -536,8 +535,7 @@ export class ServiceManager extends EventEmitter {
     // User-initiated start — clear any OOM auto-retry budget so the
     // service gets a fresh chance. If the user explicitly hits "start"
     // after we gave up on retries, they're saying "try again."
-    this.cancelOomStableTimer(name);
-    this.oomRetryAttempts.delete(name);
+    this.retry.resetOomBudget(name);
     this.updateServiceStatus(name, "starting");
     try {
       await this.composeUpService(name);
@@ -549,7 +547,7 @@ export class ServiceManager extends EventEmitter {
       // still need to be attached or the preview proxy can't reach the
       // freshly-started container by IP. Idempotent on subsequent starts.
       await this.joinSessionNetwork();
-      await this.pollStatus();
+      await this.poller.pollOnce();
       this.streamLogs(name);
     } catch (err) {
       this.updateServiceStatus(name, "error", (err as Error).message);
@@ -565,8 +563,7 @@ export class ServiceManager extends EventEmitter {
     if (!svc) throw new Error(`Unknown service: ${name}`);
 
     // Same as startService — explicit user action resets the OOM budget.
-    this.cancelOomStableTimer(name);
-    this.oomRetryAttempts.delete(name);
+    this.retry.resetOomBudget(name);
     this.updateServiceStatus(name, "starting");
     try {
       await this.composeStop(name);
@@ -575,7 +572,7 @@ export class ServiceManager extends EventEmitter {
       // join (see startService comment), the first restartService after
       // adoption could be the first time the orchestrator gets attached.
       await this.joinSessionNetwork();
-      await this.pollStatus();
+      await this.poller.pollOnce();
       // Restart log streaming to pick up new container output
       this.streamLogs(name);
     } catch (err) {
@@ -652,8 +649,8 @@ export class ServiceManager extends EventEmitter {
     // renamed or removed, start() won't find its old process to clean up.
     for (const [, proc] of this.logProcesses) proc.kill();
     this.logProcesses.clear();
-    this.stopPolling();
-    this.cancelAllRetries();
+    this.poller.stop();
+    this.retry.cancelAll();
 
     this.services.clear();
     this.logBuffers.clear();
@@ -673,8 +670,8 @@ export class ServiceManager extends EventEmitter {
    */
   async stop(opts: { removeVolumes?: boolean } = {}): Promise<void> {
     this._disposed = true;
-    this.stopPolling();
-    this.cancelAllRetries();
+    this.poller.stop();
+    this.retry.cancelAll();
 
     // Kill all log streaming processes
     for (const [name, proc] of this.logProcesses) {
@@ -715,7 +712,7 @@ export class ServiceManager extends EventEmitter {
       // Compose file missing or invalid — there's nothing to apply secrets to.
       return;
     }
-    await this.syncSecrets(parsedServices);
+    await this.secrets.sync(parsedServices);
 
     // In Docker-secrets mode the override file references which secrets each
     // service consumes — so a change to the set of declared secrets (or to
@@ -723,7 +720,8 @@ export class ServiceManager extends EventEmitter {
     // mode, the override only references the env file PATH, so the file
     // content can change without regenerating. We always regenerate when
     // Docker-secrets mode is active to be safe.
-    if (this.dockerSecretsBuild) {
+    const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
+    if (dockerSecretsBuild) {
       const composePath = path.join(this.workspaceDir, this.composeConfig.file);
       const userNamedVolumes = parseUserNamedVolumes(composePath);
       const overrideOpts: ComposeOverrideOptions = {
@@ -733,7 +731,7 @@ export class ServiceManager extends EventEmitter {
         ...(this.workspaceVolume ? { workspaceVolume: this.workspaceVolume } : {}),
         ...(this.workspaceSubpath ? { workspaceSubpath: this.workspaceSubpath } : {}),
         ...(this.stackName ? { stackName: this.stackName } : {}),
-        dockerSecrets: this.dockerSecretsBuild,
+        dockerSecrets: dockerSecretsBuild,
       };
       const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
       writeComposeOverride(this.workspaceDir, overrideContent);
@@ -748,7 +746,7 @@ export class ServiceManager extends EventEmitter {
       .map(s => s.name);
     try {
       await this.composeUp(autoNames);
-      await this.pollStatus();
+      await this.poller.pollOnce();
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
     }
@@ -757,307 +755,6 @@ export class ServiceManager extends EventEmitter {
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
-
-  /**
-   * Resolve secrets and write per-service env files. Always runs (even when
-   * no secrets are declared) so stale `.env.<svc>` files are swept.
-   *
-   * Also publishes the latest snapshot via `secrets_status` so subscribers
-   * (the runner → WS → client) can render the secrets banner / panel without
-   * polling. Emitted on every call regardless of whether the snapshot
-   * changed — listeners are cheap, debouncing is the consumer's concern.
-   */
-  private async syncSecrets(parsedServices: ComposeService[]): Promise<void> {
-    let userSecrets: Record<string, string> = {};
-    if (this.secretsLoader) {
-      try {
-        userSecrets = await this.secretsLoader();
-      } catch (err) {
-        console.warn(`[compose:${this.sessionId}] secretsLoader failed:`, (err as Error).message);
-      }
-    }
-    const resolution = resolveSecrets({
-      services: parsedServices,
-      userSecrets,
-      platformCredentials: this.platformCredentials,
-    });
-    this.declaredSecretNames = resolution.declaredNames;
-    this.missingSecretsByService = resolution.missingByService;
-
-    // docs/088: merge account-level MCP secrets (`mcp__*` keys) into the
-    // resolved agent-env set. This runs AFTER `resolveSecrets()` — MCP
-    // secrets are account-level and never declared in compose, so they take
-    // a separate path. Compose-declared entries win on key collision (they
-    // are explicit per-repo overrides).
-    let mergedAgentValues = resolution.agentValues;
-    if (this.mcpAgentEnvLoader) {
-      let mcpEnv: Record<string, string> = {};
-      try {
-        mcpEnv = this.mcpAgentEnvLoader();
-      } catch (err) {
-        console.warn(`[compose:${this.sessionId}] mcpAgentEnvLoader failed:`, (err as Error).message);
-      }
-      mergedAgentValues = { ...mcpEnv, ...resolution.agentValues };
-    }
-
-    // De-duplicate required-and-missing across services. Same secret name
-    // declared `required: true` by multiple services collapses to one entry
-    // in the banner — duplicate entries would produce duplicate UI rows.
-    const missingRequired = [
-      ...new Set(Object.values(resolution.missingRequiredByService).flat()),
-    ].sort();
-    this.secretsSnapshot = {
-      declared: resolution.declared,
-      missingByService: resolution.missingByService,
-      missingRequired,
-      agentNames: Object.keys(mergedAgentValues).sort(),
-      agentValues: mergedAgentValues,
-    };
-    this.emit("secrets_status", this.getSecretsSnapshot());
-
-    if (this.dockerSecretsConfig) {
-      // Phase 1 follow-up: Docker-secrets mode. Write per-secret files to
-      // the orchestrator-private directory and build the override metadata.
-      // Sweep any leftover .env.<svc> files so the agent can't read stale
-      // values from a previous reconcile.
-      this.applyDockerSecretsMode(resolution);
-    } else {
-      writePerServiceEnvFiles({
-        workspaceDir: this.workspaceDir,
-        perServiceEnv: resolution.perServiceEnv,
-      });
-    }
-
-    // Phase 3 (087) + docs/088: write the agent env file from the merged
-    // set (compose `agent: true` values + account-level `mcp__*` secrets).
-    // Empty body removes the file.
-    writeAgentEnvFile({
-      workspaceDir: this.workspaceDir,
-      body: renderAgentEnvBody(mergedAgentValues),
-    });
-  }
-
-  /**
-   * Phase 1 follow-up: write per-secret files outside the workspace and
-   * stage compose-override metadata.
-   *
-   * Steps:
-   *   1. De-duplicate values across services (one file per unique name).
-   *   2. Write to `dockerSecretsConfig.internalDir/<sessionId>/<NAME>`.
-   *   3. Build per-service references (each service only references the
-   *      secrets it declared — scoping is preserved at the compose layer).
-   *   4. Copy the entrypoint wrapper into `.shipit/secrets-entrypoint.sh`
-   *      so compose can mount it into service containers.
-   *   5. Sweep any stale `.shipit/.env.<svc>` files from a prior
-   *      env-file-mode run.
-   */
-  private applyDockerSecretsMode(resolution: ReturnType<typeof resolveSecrets>): void {
-    const cfg = this.dockerSecretsConfig;
-    if (!cfg) return;
-
-    // Collapse per-service values to a single name → value map. The same
-    // name appearing under multiple services has the same value (it's the
-    // same user-saved secret), so this is safe.
-    const collapsed: Record<string, string> = {};
-    for (const map of Object.values(resolution.perServiceValues)) {
-      for (const [name, value] of Object.entries(map)) {
-        collapsed[name] = value;
-      }
-    }
-
-    const { written } = writeIsolatedSecretFiles({
-      rootDir: cfg.internalDir,
-      sessionId: this.sessionId,
-      values: collapsed,
-    });
-
-    // Stage compose override metadata.
-    const perService: Record<string, string[]> = {};
-    for (const [svcName, values] of Object.entries(resolution.perServiceValues)) {
-      const names = Object.keys(values);
-      if (names.length > 0) perService[svcName] = names;
-    }
-
-    // Copy the entrypoint wrapper into the workspace `.shipit/` directory
-    // so it's visible from the workspace volume that compose mounts into
-    // service containers. We refresh on every reconcile in case the
-    // baked-in script changed.
-    const shipitDir = path.join(this.workspaceDir, ".shipit");
-    fs.mkdirSync(shipitDir, { recursive: true });
-    const wrapperDest = path.join(shipitDir, "secrets-entrypoint.sh");
-    try {
-      fs.copyFileSync(cfg.entrypointSourcePath, wrapperDest);
-      fs.chmodSync(wrapperDest, 0o755);
-    } catch (err) {
-      console.warn(
-        `[compose:${this.sessionId}] failed to copy entrypoint wrapper:`,
-        (err as Error).message,
-      );
-    }
-
-    this.dockerSecretsBuild = {
-      secretNames: written,
-      perService,
-      filePathFor: (name) => composeSecretFilePath({
-        rootDir: cfg.internalDir,
-        ...(cfg.hostDir ? { hostDir: cfg.hostDir } : {}),
-        sessionId: this.sessionId,
-        name,
-      }),
-      entrypointWorkspacePath: ".shipit/secrets-entrypoint.sh",
-    };
-
-    // Sweep any leftover env-file-mode `.shipit/.env.<svc>` files so the
-    // agent can't read stale plaintext values.
-    let existing: string[] = [];
-    try {
-      existing = fs.readdirSync(shipitDir);
-    } catch {
-      existing = [];
-    }
-    for (const entry of existing) {
-      if (!entry.startsWith(".env.") || entry === ".env.agent") continue;
-      try {
-        fs.unlinkSync(path.join(shipitDir, entry));
-      } catch {
-        // best-effort
-      }
-    }
-  }
-
-  /**
-   * Query `docker compose ps --format json` and update service statuses
-   * based on actual container state.
-   */
-  private async pollStatus(): Promise<void> {
-    const args = this.composeArgs("ps", "--format", "json", "-a");
-    let stdout: string;
-    try {
-      stdout = await this.composeQuery(args, this.workspaceDir);
-    } catch (err) {
-      console.warn(`[compose:${this.sessionId}] pollStatus failed:`, (err as Error).message);
-      return;
-    }
-
-    // Parse container info and collect names for IP resolution
-    const containerNames = new Map<string, string>();
-    const statusUpdates: { name: string; state: string; exitCode: number }[] = [];
-
-    for (const line of stdout.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let entry: { Service?: string; ID?: string; Name?: string; State?: string; ExitCode?: number };
-      try {
-        entry = JSON.parse(trimmed) as typeof entry;
-      } catch {
-        continue;
-      }
-      const svc = entry.Service ? this.services.get(entry.Service) : undefined;
-      if (!svc) continue;
-
-      // Use container ID for inspect (more reliable than name)
-      const containerRef = entry.ID ?? entry.Name;
-      if (containerRef) containerNames.set(containerRef, svc.name);
-      statusUpdates.push({
-        name: svc.name,
-        state: entry.State ?? "",
-        exitCode: entry.ExitCode ?? 1,
-      });
-    }
-
-    // Resolve container IPs *before* emitting status events so the preview
-    // proxy can route requests as soon as the client learns a service is running.
-    if (containerNames.size > 0) {
-      await this.resolveContainerIps(containerNames);
-    }
-
-    // Now emit status updates
-    for (const { name, state, exitCode } of statusUpdates) {
-      const svc = this.services.get(name);
-      if (!svc) continue;
-      const prev = svc.status;
-      if (state === "running") {
-        // Service recovered — clear any pending install-window retry state.
-        this.clearRetryState(name);
-        // If a previous OOM kicked off auto-retries, arm a stable-uptime
-        // timer that clears the OOM counter once the service has been
-        // healthy long enough. We don't clear the counter eagerly: a
-        // service that flaps in and out of `running` while OOMing must
-        // still hit the cap, otherwise we loop forever.
-        this.armOomStableResetIfNeeded(name);
-        if (prev !== "running") this.updateServiceStatus(name, "running");
-      } else if (state === "exited" || state === "dead") {
-        // Whatever happens below, the service is no longer running — cancel
-        // any pending stable-uptime timer so a fresh `running` poll has to
-        // re-arm it.
-        this.cancelOomStableTimer(name);
-        if (exitCode === 0) {
-          this.clearRetryState(name);
-          this.oomRetryAttempts.delete(name);
-          if (prev !== "stopped") this.updateServiceStatus(name, "stopped");
-        } else if (this._installRunning && svc.preview === "auto") {
-          // Install is still extracting deps into the bind-mounted workspace.
-          // Don't latch to `error` — schedule a retry with backoff so the
-          // service can come up once install finishes. Manual services are
-          // user-initiated and not retried automatically.
-          this.scheduleRetryWhileInstalling(name, exitCode);
-        } else if (exitCode === 137 && svc.preview === "auto") {
-          // 137 = SIGKILL, the most common cause of which inside a
-          // memory-limited container is the OOM killer. The authoritative
-          // signal comes from the Docker event subscriber in
-          // container-health.ts (which checks State.OOMKilled), but if that
-          // event was missed we still want to handle it correctly here.
-          //
-          // We auto-retry up to MAX_OOM_AUTO_RETRIES times with the same
-          // backoff schedule the install-window path uses. Without this,
-          // the service latches to `error` and the user clicks Rescue
-          // session — which destroys+recreates the agent container, kicks
-          // off a fresh compose stack, and immediately hits the same OOM
-          // condition. The user perceives "Rescue does nothing." This path
-          // lets transient pressure spikes self-heal without the user
-          // needing to intervene at all.
-          this.scheduleOomRetry(name);
-        } else {
-          const message = exitCode === 137
-            ? "Exited with code 137 (likely OOMKilled)"
-            : `Exited with code ${exitCode}`;
-          this.updateServiceStatus(name, "error", message);
-        }
-      } else if (state === "restarting") {
-        if (prev !== "starting") this.updateServiceStatus(name, "starting");
-      }
-    }
-  }
-
-  /**
-   * Schedule a retry for a service that exited non-zero while
-   * `agent.install` is still in flight. Uses exponential backoff capped at
-   * 10s. The service is held in `starting` state (not `error`) so the user
-   * sees a benign "still coming up" rather than a failure.
-   */
-  private scheduleRetryWhileInstalling(name: string, exitCode: number): void {
-    if (this._disposed) return;
-    // If a retry is already pending, leave it in place.
-    if (this.retryTimers.has(name)) return;
-
-    const attempt = (this.retryAttempts.get(name) ?? 0);
-    const delayIdx = Math.min(attempt, ServiceManager.RETRY_BACKOFF_MS.length - 1);
-    const delay = ServiceManager.RETRY_BACKOFF_MS[delayIdx];
-    this.retryAttempts.set(name, attempt + 1);
-
-    console.log(
-      `[compose:${this.sessionId}] ${name} exited ${exitCode} while install in progress — retry #${attempt + 1} in ${delay}ms`,
-    );
-
-    // Reflect "still coming up" to the UI rather than `error`.
-    this.updateServiceStatus(name, "starting");
-
-    const timer = setTimeout(() => {
-      this.retryTimers.delete(name);
-      void this.runRetryNow(name);
-    }, delay);
-    this.retryTimers.set(name, timer);
-  }
 
   /** Run a single restart attempt for a service in retry-backoff. */
   private async runRetryNow(name: string): Promise<void> {
@@ -1073,13 +770,13 @@ export class ServiceManager extends EventEmitter {
       // Status is updated by the next pollStatus pass (periodic poller).
       // Trigger a poll now so we don't wait up to pollIntervalMs to learn
       // whether the retry succeeded.
-      await this.pollStatus();
+      await this.poller.pollOnce();
     } catch (err) {
       // Compose itself failed — treat as a normal exit and schedule another
       // retry if install is still running.
       const msg = (err as Error).message;
       if (this._installRunning) {
-        this.scheduleRetryWhileInstalling(name, -1);
+        this.retry.scheduleRetryWhileInstalling(name, -1);
       } else {
         this.updateServiceStatus(name, "error", msg);
       }
@@ -1095,22 +792,15 @@ export class ServiceManager extends EventEmitter {
   private flushPostInstallRetries(): void {
     if (this._disposed) return;
 
-    const targets = new Set<string>();
-
-    // Cancel pending backoff timers — we'll restart immediately.
-    for (const [name, timer] of this.retryTimers) {
-      clearTimeout(timer);
-      targets.add(name);
-    }
-    this.retryTimers.clear();
-
-    // Also cover services that latched to `error` before install started OR
-    // before the retry path was reached (e.g. stack-level start failure).
+    // Collect error-state services and let the retry manager fold in any
+    // pending install-window retry timers (cancelling them as a side effect).
+    const errorServices: string[] = [];
     for (const svc of this.services.values()) {
       if (svc.preview === "auto" && svc.status === "error") {
-        targets.add(svc.name);
+        errorServices.push(svc.name);
       }
     }
+    const targets = this.retry.collectPostInstallRetryTargets(errorServices);
 
     if (targets.size === 0) return;
     console.log(
@@ -1118,107 +808,9 @@ export class ServiceManager extends EventEmitter {
     );
 
     for (const name of targets) {
-      this.retryAttempts.delete(name);
+      this.retry.resetInstallAttempts(name);
       this.updateServiceStatus(name, "starting");
       void this.runRetryNow(name);
-    }
-  }
-
-  /** Clear any retry state for a service that has recovered or stopped cleanly. */
-  private clearRetryState(name: string): void {
-    const timer = this.retryTimers.get(name);
-    if (timer) {
-      clearTimeout(timer);
-      this.retryTimers.delete(name);
-    }
-    this.retryAttempts.delete(name);
-  }
-
-  /** Cancel all pending retries — used during stop()/reconcile(). */
-  private cancelAllRetries(): void {
-    for (const timer of this.retryTimers.values()) clearTimeout(timer);
-    this.retryTimers.clear();
-    this.retryAttempts.clear();
-    for (const timer of this.oomStableTimers.values()) clearTimeout(timer);
-    this.oomStableTimers.clear();
-    this.oomRetryAttempts.clear();
-  }
-
-  /**
-   * Schedule an OOM-recovery retry for a `preview: auto` service that
-   * just exited with code 137. Mirrors `scheduleRetryWhileInstalling` but
-   * is bounded by `MAX_OOM_AUTO_RETRIES` — after that many consecutive
-   * OOMs without a stable-uptime window in between, we latch to `error`
-   * so the user can investigate.
-   */
-  private scheduleOomRetry(name: string): void {
-    if (this._disposed) return;
-    // If a retry is already pending, leave it in place.
-    if (this.retryTimers.has(name)) return;
-
-    const attempt = this.oomRetryAttempts.get(name) ?? 0;
-    if (attempt >= ServiceManager.MAX_OOM_AUTO_RETRIES) {
-      // Exhausted — latch to error with a message that explicitly names
-      // the retry budget so the user knows we already tried (and that
-      // Rescue session won't help here, only fixing the underlying memory
-      // pressure will).
-      //
-      // We intentionally do NOT delete the counter here: the next periodic
-      // pollStatus tick will see the service still in `exited`/`dead` state
-      // and re-enter this method. Leaving the counter at MAX_OOM_AUTO_RETRIES
-      // keeps the gate closed so we don't kick off a fresh retry loop. The
-      // counter is reset only by an explicit user action (startService /
-      // restartService) or by manager-wide cleanup (cancelAllRetries).
-      this.updateServiceStatus(
-        name,
-        "error",
-        `OOMKilled (exit 137) — gave up after ${ServiceManager.MAX_OOM_AUTO_RETRIES} auto-retries; increase the service's memory limit or close other sessions to free host memory`,
-      );
-      return;
-    }
-
-    const delayIdx = Math.min(attempt, ServiceManager.RETRY_BACKOFF_MS.length - 1);
-    const delay = ServiceManager.RETRY_BACKOFF_MS[delayIdx];
-    this.oomRetryAttempts.set(name, attempt + 1);
-
-    console.log(
-      `[compose:${this.sessionId}] ${name} OOMKilled — retry #${attempt + 1}/${ServiceManager.MAX_OOM_AUTO_RETRIES} in ${delay}ms`,
-    );
-
-    // Reflect "still coming up" to the UI rather than `error`. The
-    // PreviewFrame banner / service dot stay yellow during the retry
-    // window instead of going red.
-    this.updateServiceStatus(name, "starting");
-
-    const timer = setTimeout(() => {
-      this.retryTimers.delete(name);
-      void this.runRetryNow(name);
-    }, delay);
-    this.retryTimers.set(name, timer);
-  }
-
-  /**
-   * Arm a stable-uptime timer for a service that has reached `running`
-   * after at least one OOM auto-retry. If the service stays running for
-   * `OOM_STABLE_RESET_MS` the OOM counter resets; if it leaves `running`
-   * first, the timer is cancelled by the next exited-state poll.
-   */
-  private armOomStableResetIfNeeded(name: string): void {
-    if (!this.oomRetryAttempts.has(name)) return;
-    if (this.oomStableTimers.has(name)) return;
-    const timer = setTimeout(() => {
-      this.oomStableTimers.delete(name);
-      this.oomRetryAttempts.delete(name);
-    }, ServiceManager.OOM_STABLE_RESET_MS);
-    this.oomStableTimers.set(name, timer);
-  }
-
-  /** Cancel the stable-uptime timer for a service (when it leaves `running`). */
-  private cancelOomStableTimer(name: string): void {
-    const timer = this.oomStableTimers.get(name);
-    if (timer) {
-      clearTimeout(timer);
-      this.oomStableTimers.delete(name);
     }
   }
 
@@ -1252,81 +844,6 @@ export class ServiceManager extends EventEmitter {
       // Non-fatal — agent may not reach services by DNS but proxy still works.
       // The orchestrator-side join inside `networkJoinFn` has its own
       // try/catch with "already exists" handling (see app-lifecycle.ts).
-    }
-  }
-
-  /**
-   * Resolve container IPs via `docker inspect` on each container.
-   * Prefers the session network IP, falls back to any available IP.
-   */
-  private async resolveContainerIps(
-    containerNames: Map<string, string>,
-  ): Promise<void> {
-    const networkName = `shipit-session-${this.sessionId}`;
-
-    for (const [containerName, serviceName] of containerNames) {
-      try {
-        const stdout = await this.composeQuery(
-          ["inspect", containerName],
-          this.workspaceDir,
-        );
-        const parsed = JSON.parse(stdout) as { NetworkSettings?: { IPAddress?: string; Networks?: Record<string, { IPAddress?: string }> } }[];
-        const netSettings = parsed[0]?.NetworkSettings;
-        let nets = netSettings?.Networks;
-
-        // Docker Compose v5 on some platforms (e.g. WSL2) sets NetworkMode
-        // to the custom network but doesn't actually attach the container.
-        // Fix: explicitly connect the container if it has no networks.
-        if (!nets || Object.keys(nets).length === 0) {
-          try {
-            await this.composeQuery(
-              ["network", "connect", networkName, containerName],
-              this.workspaceDir,
-            );
-            // Re-inspect to get the IP
-            const stdout2 = await this.composeQuery(["inspect", containerName], this.workspaceDir);
-            const parsed2 = JSON.parse(stdout2) as typeof parsed;
-            nets = parsed2[0]?.NetworkSettings?.Networks;
-          } catch {
-            // Non-fatal
-          }
-        }
-
-        if (!nets) continue;
-
-        // Prefer the session network, fall back to any network with an IP
-        let ip = nets[networkName]?.IPAddress;
-        if (!ip) {
-          for (const net of Object.values(nets)) {
-            if (net.IPAddress) { ip = net.IPAddress; break; }
-          }
-        }
-        if (ip) {
-          const svc = this.services.get(serviceName);
-          if (svc) svc.containerIp = ip;
-        }
-      } catch (err) {
-        console.warn(`[compose:${this.sessionId}] docker inspect ${containerName} failed:`, (err as Error).message);
-      }
-    }
-  }
-
-  /** Start periodic status polling. */
-  private startPolling(): void {
-    this.stopPolling();
-    if (this.pollIntervalMs <= 0) return;
-    this.pollTimer = setInterval(() => {
-      this.pollStatus().catch((err: unknown) => {
-        console.warn(`[compose:${this.sessionId}] periodic poll error:`, (err as Error).message);
-      });
-    }, this.pollIntervalMs);
-  }
-
-  /** Stop periodic status polling. */
-  private stopPolling(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
     }
   }
 

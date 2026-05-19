@@ -3,11 +3,7 @@
  * Functions in this module handle check status, annotations, and job logs.
  */
 
-const GITHUB_HEADERS = (token: string) => ({
-  Authorization: `Bearer ${token}`,
-  Accept: "application/vnd.github+json",
-  "User-Agent": "ShipIt",
-});
+import { fetchGitHub } from "./github-api.js";
 
 /**
  * Get CI check status for a PR's head commit.
@@ -22,9 +18,9 @@ export async function getCheckStatus(
 
   // Get combined status (legacy status API)
   try {
-    const statusRes = await fetch(
+    const statusRes = await fetchGitHub(
       `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/status`,
-      { headers: GITHUB_HEADERS(token) },
+      token,
     );
 
     if (statusRes.ok) {
@@ -41,9 +37,9 @@ export async function getCheckStatus(
 
   // Also get check runs (GitHub Actions uses this API)
   try {
-    const checksRes = await fetch(
+    const checksRes = await fetchGitHub(
       `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/check-runs`,
-      { headers: GITHUB_HEADERS(token) },
+      token,
     );
 
     if (checksRes.ok) {
@@ -81,9 +77,9 @@ export async function getCheckRunAnnotations(
   annotationLevel: "failure" | "warning" | "notice";
 }[]> {
   try {
-    const res = await fetch(
+    const res = await fetchGitHub(
       `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRunId}/annotations`,
-      { headers: GITHUB_HEADERS(token) },
+      token,
     );
 
     if (!res.ok) return [];
@@ -119,12 +115,10 @@ export async function getJobLogs(
   jobId: number,
 ): Promise<string> {
   try {
-    const res = await fetch(
+    const res = await fetchGitHub(
       `https://api.github.com/repos/${owner}/${repo}/actions/jobs/${jobId}/logs`,
-      {
-        headers: GITHUB_HEADERS(token),
-        redirect: "follow",
-      },
+      token,
+      { redirect: "follow" },
     );
 
     if (!res.ok) return "";
