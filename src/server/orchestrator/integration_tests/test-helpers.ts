@@ -228,8 +228,12 @@ export class StubGitHubAuthManager extends EventEmitter {
    * orchestrator when a git push/fetch surfaces "Authentication failed".
    * No-op when no token is configured (matches the real implementation's
    * guard so tests running without auth don't trip an unexpected emit).
+   *
+   * Async to match the real signature — the production version verifies
+   * the token against `GET /user` before clearing, so callers must await.
+   * The stub has no network call and resolves synchronously.
    */
-  markTokenInvalid(reason: string): boolean {
+  async markTokenInvalid(reason: string): Promise<boolean> {
     if (!this._authenticated) return false;
     this.clearCredentials();
     this.emit("token_invalid", { reason });

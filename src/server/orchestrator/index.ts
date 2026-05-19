@@ -828,8 +828,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             // visible as a "log_entry" in the session's Logs panel — the
             // same swallow-in-the-logs path the user complained about.
             if (isGitAuthError(err)) {
-              githubAuthManager.markTokenInvalid(`auto-push failed: ${errMsg}`);
-              const text = "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → GitHub.";
+              const invalidated = await githubAuthManager.markTokenInvalid(`auto-push failed: ${errMsg}`);
+              const text = invalidated
+                ? "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → GitHub."
+                : `Auto-push failed: ${errMsg}`;
               broadcastLog(runner.sessionId, "server", text);
               runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
               return;

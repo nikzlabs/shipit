@@ -89,19 +89,26 @@ describe("fetchAndResolveDefaultBranch", () => {
 });
 
 describe("isGitAuthError", () => {
-  it("recognizes the standard GitHub credential-failure strings", () => {
-    // The exact stderr the user reported in the bug.
+  it("recognizes the standard GitHub credential-failure strings (remote rejection only)", () => {
+    // The exact stderr from a `git push`/`git fetch` whose credential was
+    // rejected by the remote — these are the only signals that prove the
+    // server actually rejected what we sent, vs the local repo never sending
+    // anything in the first place.
     expect(isGitAuthError(new Error(
       "remote: Invalid username or token. Password authentication is not supported for Git operations.\n" +
       "fatal: Authentication failed for 'https://github.com/foo/bar.git/'",
     ))).toBe(true);
-
-    // Other shapes that surface from `git push`/`git fetch` against
-    // expired/revoked credentials.
-    expect(isGitAuthError(new Error("could not read Username for 'https://github.com'"))).toBe(true);
-    expect(isGitAuthError(new Error("terminal prompts disabled"))).toBe(true);
     expect(isGitAuthError(new Error("Bad credentials"))).toBe(true);
     expect(isGitAuthError(new Error("HTTP/1.1 401 Unauthorized"))).toBe(true);
+  });
+
+  it("does NOT match 'no credentials sent' errors — those are client-side config problems, not remote rejection", () => {
+    // These mean the local repo had no credential helper (or one that
+    // returned nothing) — git never got a credential to send. A valid
+    // stored token must not be cleared on these; the fix is to (re-)wire
+    // up the credential helper, not to drop the token.
+    expect(isGitAuthError(new Error("could not read Username for 'https://github.com'"))).toBe(false);
+    expect(isGitAuthError(new Error("fatal: could not read Username for 'https://github.com': terminal prompts disabled"))).toBe(false);
   });
 
   it("does not match unrelated git errors", () => {

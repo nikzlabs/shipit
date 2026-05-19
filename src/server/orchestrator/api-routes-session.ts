@@ -48,14 +48,26 @@ import { resolveAgentDockerLimits } from "./session-container.js";
  * Shares `fetchAndResolveDefaultBranch` with the warm pool and the claim
  * slow-path so all three resolve "latest main" against the *real* remote,
  * never against a stale `git clone --local` snapshot of the bare cache.
+ *
+ * Always (re-)configures the workspace's credential helper before fetching.
+ * Reused sessions can be hours/days old and may have either no local
+ * credential helper or one with a now-expired token baked into the shell
+ * one-liner from a previous `configureGitCredentials` call. Overwriting it
+ * with the *current* token on every reuse is the only way to keep the fetch
+ * authenticated through token rotations without confusing a missing-helper
+ * "could not read Username" with a server-rejected credential.
  */
 async function refreshCloneToLatestMain(
   sessionDir: string,
   createGitManager: ApiDeps["createGitManager"],
+  githubAuthManager: ApiDeps["githubAuthManager"],
   onAuthError?: (err: Error) => void,
 ): Promise<{ headChanged: boolean; fetched: boolean; fetchDurationMs: number }> {
   const sessionGit = createGitManager(sessionDir);
   const headBefore = await sessionGit.getHeadHash();
+  if (githubAuthManager.authenticated) {
+    githubAuthManager.configureGitCredentials(sessionDir);
+  }
   const { resetTarget, fetched, fetchDurationMs } = await fetchAndResolveDefaultBranch(sessionDir, onAuthError);
   if (resetTarget) {
     await sessionGit.rollback(resetTarget);
@@ -627,6 +639,7 @@ export async function registerSessionRoutes(
               const result = await refreshCloneToLatestMain(
                 reusable.workspaceDir,
                 createGitManager,
+                deps.githubAuthManager,
                 (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
               );
               fetchDurationMs = result.fetchDurationMs;
@@ -656,6 +669,7 @@ export async function registerSessionRoutes(
                 const result = await refreshCloneToLatestMain(
                   warmSession.workspaceDir,
                   createGitManager,
+                  deps.githubAuthManager,
                   (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
                 );
                 fetchDurationMs = result.fetchDurationMs;
@@ -688,6 +702,7 @@ export async function registerSessionRoutes(
                   const result = await refreshCloneToLatestMain(
                     warmSession.workspaceDir,
                     createGitManager,
+                    deps.githubAuthManager,
                     (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
                   );
                   fetchDurationMs = result.fetchDurationMs;

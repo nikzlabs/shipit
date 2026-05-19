@@ -190,7 +190,10 @@ describe("GitHubAuthManager", () => {
   });
 
   describe("markTokenInvalid", () => {
-    it("clears credentials and emits token_invalid with the reason", () => {
+    it("clears credentials and emits token_invalid when GitHub also rejects the token", async () => {
+      // GET /user fails too → the token really is invalid → clear it.
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Unauthorized", { status: 401 }));
+
       credentialStore.setGithubToken("ghp_testtoken");
       const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       mgr.checkCredentials();
@@ -199,19 +202,45 @@ describe("GitHubAuthManager", () => {
       const events: { reason: string }[] = [];
       mgr.on("token_invalid", (ev) => events.push(ev as { reason: string }));
 
-      const did = mgr.markTokenInvalid("auto-push failed: Authentication failed");
+      const did = await mgr.markTokenInvalid("auto-push failed: Authentication failed");
       expect(did).toBe(true);
       expect(mgr.authenticated).toBe(false);
       expect(credentialStore.getGithubToken()).toBeNull();
       expect(events).toEqual([{ reason: "auto-push failed: Authentication failed" }]);
     });
 
-    it("is a no-op when no token is configured (no event, returns false)", () => {
+    it("preserves a token that still validates against GET /user (repo-specific 401 from a fine-grained PAT)", async () => {
+      // GET /user succeeds → the token is still valid globally; the per-repo
+      // git failure was a scope issue, not an expired credential. The token
+      // must not be cleared and no `token_invalid` event must be emitted.
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({ login: "octocat", avatar_url: "https://example.com/a.png", id: 1, name: null }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+      credentialStore.setGithubToken("ghp_validtoken");
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      mgr.checkCredentials();
+      expect(mgr.authenticated).toBe(true);
+
+      const events: unknown[] = [];
+      mgr.on("token_invalid", (ev) => events.push(ev));
+
+      const did = await mgr.markTokenInvalid("claim-session refresh failed: Invalid username or token");
+      expect(did).toBe(false);
+      expect(mgr.authenticated).toBe(true);
+      expect(credentialStore.getGithubToken()).toBe("ghp_validtoken");
+      expect(events).toEqual([]);
+    });
+
+    it("is a no-op when no token is configured (no event, returns false)", async () => {
       const mgr = new GitHubAuthManager(tmpDir, credentialStore);
       const events: unknown[] = [];
       mgr.on("token_invalid", (ev) => events.push(ev));
 
-      const did = mgr.markTokenInvalid("nothing to invalidate");
+      const did = await mgr.markTokenInvalid("nothing to invalidate");
       expect(did).toBe(false);
       expect(events).toEqual([]);
     });
