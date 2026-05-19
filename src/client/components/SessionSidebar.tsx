@@ -74,6 +74,8 @@ function useSidebarResize() {
 interface SessionSidebarProps {
   sessions: SessionInfo[];
   currentSessionId: string | undefined;
+  /** Repo URL whose "New session" row should render as selected (user is on /{slug}/new). */
+  activeNewSessionRepoUrl?: string;
   onResume: (sessionId: string) => void;
   onArchive: (sessionId: string) => void;
   onNewSessionForRepo: (repoUrl: string) => void;
@@ -258,6 +260,7 @@ function RepoGroup({
   repo,
   sessions,
   currentSessionId,
+  isNewSessionSelected,
   isCollapsed,
   onToggleCollapse,
   onResume,
@@ -268,6 +271,7 @@ function RepoGroup({
   repo: RepoInfo;
   sessions: SessionInfo[];
   currentSessionId: string | undefined;
+  isNewSessionSelected: boolean;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
   onResume: (id: string) => void;
@@ -311,18 +315,21 @@ function RepoGroup({
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
         <div className="flex flex-col gap-0.5">
-          {/* New session button — outlined secondary, centered (not full-width) */}
-          <div className="px-3 py-2 flex justify-center">
-            <Button
-              variant="secondary"
-              onClick={onNewSession}
-              disabled={repo.status === "cloning"}
-              className="gap-2"
-            >
-              <PlusIcon size={ICON_SIZE.SM} />
-              New Session
-            </Button>
-          </div>
+          {/* New session row — matches SessionItem shape so it can render as selected */}
+          <button
+            type="button"
+            onClick={onNewSession}
+            disabled={repo.status === "cloning"}
+            className={`group flex items-center gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 border-x-2 border-x-transparent disabled:opacity-50 disabled:cursor-not-allowed ${
+              isNewSessionSelected
+                ? "bg-(--color-bg-secondary) text-(--color-text-primary)"
+                : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+            }`}
+            aria-current={isNewSessionSelected ? "page" : undefined}
+          >
+            <PlusIcon size={ICON_SIZE.SM} className="shrink-0" />
+            <span className="truncate leading-snug">New session</span>
+          </button>
           {sessions.length === 0 ? (
             <p className="text-[10px] text-(--color-text-tertiary) px-3 py-1 text-center">No sessions</p>
           ) : (
@@ -345,6 +352,7 @@ function RepoGroup({
 export function SessionSidebar({
   sessions,
   currentSessionId,
+  activeNewSessionRepoUrl,
   onResume,
   onArchive,
   onNewSessionForRepo,
@@ -532,6 +540,7 @@ export function SessionSidebar({
               repo={repo}
               sessions={repoSessions}
               currentSessionId={currentSessionId}
+              isNewSessionSelected={activeNewSessionRepoUrl === repo.url}
               isCollapsed={!isSingleRepo && collapsedRepos.has(repo.url)}
               onToggleCollapse={() => toggleRepoCollapsed(repo.url)}
               onResume={onResume}

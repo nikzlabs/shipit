@@ -113,15 +113,15 @@ describe("SessionSidebar", () => {
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
   });
 
-  it("shows inline New Session button per repo group", () => {
+  it("shows inline New Session row per repo group", () => {
     render(<SessionSidebar {...defaultProps} />);
-    expect(screen.getByText("New Session")).toBeTruthy();
+    expect(screen.getByText("New session")).toBeTruthy();
   });
 
-  it("calls onNewSessionForRepo when New Session is clicked", () => {
+  it("calls onNewSessionForRepo when New session row is clicked", () => {
     const onNewSessionForRepo = vi.fn();
     render(<SessionSidebar {...defaultProps} onNewSessionForRepo={onNewSessionForRepo} />);
-    fireEvent.click(screen.getByText("New Session"));
+    fireEvent.click(screen.getByText("New session"));
     expect(onNewSessionForRepo).toHaveBeenCalledWith(repoA.url);
   });
 
