@@ -174,7 +174,18 @@ export function parseComposeFile(
     throw new ComposeValidationError(`Cannot read compose file: ${composePath}`);
   }
 
-  const doc = parseYaml(content) as Record<string, unknown> | null;
+  let doc: Record<string, unknown> | null;
+  try {
+    doc = parseYaml(content) as Record<string, unknown> | null;
+  } catch (err) {
+    // Surface YAML parse errors as ComposeValidationError so callers (which
+    // catch them defensively, e.g. mid-edit / mid-merge reconciles) can log
+    // a clean one-liner instead of a full stack trace. Common trigger: the
+    // user's compose file is briefly invalid while they're typing or while
+    // a merge has left conflict markers in the file.
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new ComposeValidationError(`Compose file is not valid YAML: ${msg}`);
+  }
   if (!doc || typeof doc !== "object") {
     throw new ComposeValidationError("Compose file must be a YAML mapping");
   }

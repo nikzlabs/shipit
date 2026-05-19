@@ -431,6 +431,27 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._serviceManager = null;
   }
 
+  /**
+   * Log a reconcile failure. User-actionable errors (invalid compose file,
+   * malformed YAML — common while the user is mid-edit or while a merge has
+   * left conflict markers in the file) are logged as a single-line warning
+   * with the error message only; the stack trace is suppressed because the
+   * cause is the file content, not a bug in the orchestrator. Unexpected
+   * errors still get a full `console.error` so we don't swallow real bugs.
+   */
+  private logReconcileError(prefix: string, err: unknown): void {
+    const name = err instanceof Error ? err.name : "";
+    const message = err instanceof Error ? err.message : String(err);
+    // ComposeValidationError wraps YAMLParseError (and other user-file
+    // problems) from `parseComposeFile`. Treat both names defensively in
+    // case the wrapping is bypassed in a future code path.
+    if (name === "ComposeValidationError" || name === "YAMLParseError") {
+      console.warn(`[container-runner:${this.sessionId}] ${prefix}: ${message}`);
+      return;
+    }
+    console.error(`[container-runner:${this.sessionId}] ${prefix}:`, err);
+  }
+
   // --- Viewer management ---
 
   get viewerCount(): number { return this._viewerCount; }
@@ -1110,14 +1131,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             if (this._serviceManager?.started) {
               console.log(`[container-runner:${this.sessionId}] Config file changed, reconciling compose stack`);
               this._serviceManager.reconcile().catch((err: unknown) => {
-                console.error(`[container-runner:${this.sessionId}] Compose reconcile failed:`, err);
+                this.logReconcileError("Compose reconcile failed", err);
               });
             } else if (this._serviceManager && !this._serviceManager.started) {
               // ServiceManager exists but start() failed (e.g. compose file
               // was missing when shipit.yaml was written first) — retry
               console.log(`[container-runner:${this.sessionId}] Config file changed, retrying compose start`);
               this._serviceManager.reconcile().catch((err: unknown) => {
-                console.error(`[container-runner:${this.sessionId}] Compose retry failed:`, err);
+                this.logReconcileError("Compose retry failed", err);
               });
             } else if (!this._serviceManager && this.onComposeConfigChanged) {
               // No ServiceManager yet (e.g. old-format config was just migrated)
