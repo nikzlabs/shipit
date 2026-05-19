@@ -14,7 +14,7 @@
 set -euo pipefail
 
 SHIPIT_DIR="/opt/shipit"
-COMPOSE_FILE="$SHIPIT_DIR/deployment/hetzner/docker-compose.yml"
+COMPOSE_FILE="$SHIPIT_DIR/deployment/vps/docker-compose.yml"
 TRIGGER_FILE="$SHIPIT_DIR/.restart-requested"
 
 # Remove trigger file immediately so we don't re-run
