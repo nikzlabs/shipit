@@ -411,6 +411,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }));
     client.write(`event: agent_list\ndata: ${JSON.stringify({ agents, defaultAgentId })}\n\n`);
 
+    // In-flight Codex device-auth flow — replay the pending event so a
+    // client that connected after the original broadcast (e.g. page reload
+    // while waiting for the user to approve the device code) lands back
+    // on the Step 1 / Step 2 view instead of the dead "Sign in" button.
+    // The server's `codex login --device-auth` process keeps polling for
+    // up to 15 min regardless of WS / SSE lifecycle, so the in-flight
+    // state outlives any single browser tab. See feature 119.
+    const codexPending = codexAuthManager.getPendingEvent();
+    if (codexPending) {
+      client.write(`event: codex_auth_pending\ndata: ${JSON.stringify(codexPending)}\n\n`);
+    }
+
     // Process metadata — the client uses processStartedAt to render a
     // live-ticking uptime badge next to the Docker memory badge so the
     // user can confirm that a restart actually happened. Sent once per

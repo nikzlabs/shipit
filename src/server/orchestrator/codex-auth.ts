@@ -191,6 +191,16 @@ export class CodexAuthManager extends EventEmitter {
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private outputBuffer = "";
   private pendingEmitted = false;
+  /**
+   * The last `codex_auth_pending` event the manager emitted, retained until
+   * the flow ends (complete / failed / cancel / sign-out). Replayed to fresh
+   * SSE clients on connect and re-broadcast when `startDeviceFlow()` is
+   * called against an already-running flow — without it, a page reload mid-
+   * flow leaves the UI on the "Sign in" button with no way to recover, since
+   * the server's CLI process is still polling but the client never sees the
+   * URL + code again.
+   */
+  private lastPendingEvent: CodexAuthPendingEvent | null = null;
   private spawnFn: SpawnFn;
   private checkAuthFile: () => boolean;
   private timeoutMs: number;
@@ -264,6 +274,16 @@ export class CodexAuthManager extends EventEmitter {
   }
 
   /**
+   * The last `codex_auth_pending` event emitted, or `null` when no flow is
+   * pending. Surfaced so the SSE `/api/events` snapshot can replay it to a
+   * client that connected after the event was originally broadcast — e.g.
+   * when the user reloads the page mid-flow.
+   */
+  getPendingEvent(): CodexAuthPendingEvent | null {
+    return this.lastPendingEvent;
+  }
+
+  /**
    * Spawn `codex login --device-auth` and emit auth events as the flow
    * progresses. No-op if a device flow is already in flight (mirrors the
    * `if (this.proc) return` guard in `AuthManager.startOAuthFlow`).
@@ -271,12 +291,21 @@ export class CodexAuthManager extends EventEmitter {
   startDeviceFlow(): void {
     if (this.proc) {
       console.log("[codex-auth] startDeviceFlow() skipped — process already running (pid %d)", this.proc.pid);
+      // Re-broadcast the cached pending event so a caller that lost its UI
+      // state (page reload mid-flow, fresh tab) re-renders the URL + code
+      // instead of staring at a dead Sign-in button. Safe to re-emit — the
+      // SSE handler is idempotent on the client (`setCodexDeviceAuth` just
+      // overwrites the slice).
+      if (this.lastPendingEvent) {
+        this.emit("codex_auth_pending", this.lastPendingEvent);
+      }
       return;
     }
 
     console.log("[codex-auth] Starting device-auth flow...");
     this.outputBuffer = "";
     this.pendingEmitted = false;
+    this.lastPendingEvent = null;
 
     // Make sure the dir exists; the CLI creates the file but expects the
     // parent dir to be writable. In Docker this also dereferences the
@@ -315,6 +344,7 @@ export class CodexAuthManager extends EventEmitter {
       console.log("[codex-auth] Process exited with code", code);
       const wasRunning = this.proc === proc;
       this.proc = null;
+      this.lastPendingEvent = null;
       this.clearTimeoutHandle();
 
       if (!wasRunning) {
@@ -363,6 +393,7 @@ export class CodexAuthManager extends EventEmitter {
     // failure event for a cancellation the caller already observed.
     const proc = this.proc;
     this.proc = null;
+    this.lastPendingEvent = null;
     this.clearTimeoutHandle();
     proc.removeAllListeners("close");
     proc.removeAllListeners("error");
@@ -417,11 +448,9 @@ export class CodexAuthManager extends EventEmitter {
 
     console.log("[codex-auth] Detected verification URL + user code");
     this.pendingEmitted = true;
-    this.emit("codex_auth_pending", {
-      verificationUri,
-      userCode,
-      expiresInSec,
-    } satisfies CodexAuthPendingEvent);
+    const ev: CodexAuthPendingEvent = { verificationUri, userCode, expiresInSec };
+    this.lastPendingEvent = ev;
+    this.emit("codex_auth_pending", ev);
   }
 
   private failOnce(reason: CodexAuthFailureReason, message?: string): void {
@@ -432,6 +461,7 @@ export class CodexAuthManager extends EventEmitter {
   private killProc(): void {
     const proc = this.proc;
     this.proc = null;
+    this.lastPendingEvent = null;
     this.clearTimeoutHandle();
     if (!proc) return;
     proc.removeAllListeners("close");
