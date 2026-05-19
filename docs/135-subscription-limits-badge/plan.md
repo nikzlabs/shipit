@@ -7,12 +7,14 @@ priority: medium
 
 ## Summary
 
-Render a header badge that shows the user's **subscription rate-limit usage**
-for the currently active agent (Claude or Codex) — the same numbers the
-agent's own REPL exposes via `/usage` / `/status`: percentage of the 5-hour
-session window consumed, percentage of the weekly cap consumed, and the
-reset clock. The badge sits to the right of the existing `DockerMemoryBadge`
-in the top bar (`AppLayout.tsx:141`) and refreshes once a minute.
+Render header badges that show the user's **subscription rate-limit usage**
+for every configured agent authenticated against a subscription (Claude
+and/or Codex) — the same numbers the agent's own REPL exposes via
+`/usage` / `/status`: percentage of the 5-hour session window consumed,
+percentage of the weekly cap consumed, and the reset clock. One pill per
+provider, rendered side-by-side immediately to the **left** of the
+existing `UptimeBadge` in the top bar (`AppLayout.tsx:145`), refreshed
+once a minute.
 
 This pulls upstream rate-limit data — which today lives **only** behind a
 non-ShipIt surface (`claude /usage` in the Claude TUI, `codex /status` in
@@ -21,11 +23,22 @@ renders it inline. Per §1/§2: if the user needs the data, ShipIt shows
 the data; they don't open another tab or pop a separate REPL to find out
 they're about to be cut off mid-turn.
 
-The badge is **only** shown when the agent is authenticated against a
+A pill is **only** rendered for an agent authenticated against a
 subscription. API-key paths (Anthropic Platform `ANTHROPIC_API_KEY`,
 OpenAI Platform `OPENAI_API_KEY`) have no human-readable subscription
-quota — they bill per token via metered headers — so the badge is hidden
-there.
+quota — they bill per token via metered headers — so no pill is rendered
+for them. With zero subscription-authed agents, the badge group collapses
+to nothing and the header looks exactly as it does today.
+
+**Why account-wide and not focus-driven.** The rest of the header is
+global — `UptimeBadge`, `DockerMemoryBadge`, the settings gear, theme
+picker — none of it changes when the user switches sessions. The badges
+follow the same shape: each pill reflects the *account's* subscription
+state for that provider, not the focused session's. A user with both a
+Claude Max and a ChatGPT Plus subscription always sees both pills,
+regardless of which session is focused or which agent that session uses.
+This avoids inventing the first focus-driven header element solely to
+power a status pill.
 
 ## Motivation
 
@@ -296,119 +309,147 @@ plan.
 
 A new `LimitsPoller` lives next to `pr-status-poller.ts`:
 
-- **Cadence:** 60 seconds, matching the user-visible "refresh every
-  minute" requirement.
+- **Cadence:** 60 seconds per provider, matching the user-visible
+  "refresh every minute" requirement.
 - **Trigger:** runs whenever there is at least one connected SSE
-  client AND a provider exists for the active agent with
+  client AND at least one registered provider returns
   `canFetch() === true`. Notably: an *active runner* is **not**
-  required — gating on an active runner would leave the badge blank
+  required — gating on an active runner would leave the badges blank
   on the home screen and for the first ~60s after a session opens.
-  One HTTP call per minute while the user has the tab open is the
-  intended cost.
-- **Caching:** the latest snapshot for the active agent is held in a
-  single `SubscriptionLimits | null` (one value, like
-  `latestMemoryStats` at `index.ts:212`). The orchestrator does not
-  maintain a per-agent map — the client only ever shows one badge,
-  for the currently active agent, so anything beyond that is dead
-  state.
-- **Active-agent selection:** the orchestrator knows which agent the
-  currently focused session uses (from `shipit.yaml` resolution at
-  session boot). The poller subscribes to "active-session-changed"
-  events and re-fetches when the active agent flips. If the user has
-  multiple sessions across two agents, the *focused* one wins —
-  matching the global-scope shape of every other header element.
-- **Broadcast:** on every successful fetch (or on transition into the
-  `error` state), emit a new SSE event `subscription_limits` with the
-  snapshot. The initial-connect snapshot is included in the existing
-  burst sent at `/api/events` connect time, alongside `docker_memory`.
+  Cost: one HTTP call per minute *per fetchable provider* while the
+  user has the tab open. With both Claude and Codex subscriptions
+  authenticated, that's 2 calls/min, issued in parallel.
+- **Caching:** snapshots are held in a `Map<AgentId, SubscriptionLimits>`.
+  Every fetchable provider gets its own entry; providers with
+  `canFetch() === false` are omitted entirely from the map (not
+  stored as `null`). This is the part that changes from
+  `docker_memory`'s single-value cache — there are now N pills, so
+  there are N cache entries.
+- **No active-agent tracking.** The poller has no notion of "which
+  session is focused." All fetchable providers are polled in parallel
+  on the same 60s cadence; the client renders one pill per map entry
+  in stable order. This is intentional and matches the rest of the
+  header (everything global, nothing focus-driven).
+- **Broadcast:** on every successful fetch (or on transition into an
+  `error` state for any provider), emit a new SSE event
+  `subscription_limits` whose payload is the full
+  `Record<AgentId, SubscriptionLimits>`. The full map is sent on every
+  broadcast — partial deltas are not worth the complexity for an
+  N≤3 collection updated once a minute. The initial-connect snapshot
+  is included in the existing burst sent at `/api/events` connect
+  time, alongside `docker_memory`.
 - **Authenticate-then-refresh:** after a successful Claude or Codex
   login the auth managers already emit `auth_complete` /
   `codex_auth_complete`. The poller listens for these and triggers an
-  immediate refresh so the badge doesn't sit blank for up to 60s
-  after first sign-in. After sign-out (or a forced credential clear),
-  the cached snapshot is *deleted* — not retained — so the user
-  doesn't see stale numbers attributed to an account they're no
-  longer signed into.
-- **Failure handling:** errors are cached too (with `error` populated)
-  so the UI shows the failure state instead of flashing the previous
-  good value. Three distinct cases:
+  immediate refresh of *just that provider* so its pill doesn't sit
+  blank for up to 60s after first sign-in. After sign-out (or a
+  forced credential clear), the provider's entry is *deleted* from
+  the map — not retained — so the user doesn't see stale numbers
+  attributed to an account they're no longer signed into. The next
+  broadcast omits that key and the client drops the corresponding
+  pill.
+- **Failure handling (per provider, independent):** errors are cached
+  too (with `error` populated) so the UI shows the failure state
+  instead of flashing the previous good value. Each provider has its
+  own backoff counter — Claude failing doesn't slow Codex down. Three
+  distinct cases per provider:
   - **401 / 403 (auth):** mark `error: "auth expired"`, stop polling
-    until the auth manager re-emits `auth_complete`. Don't back off;
-    re-auth is the only fix.
+    *that provider* until its auth manager re-emits `auth_complete`.
+    Other providers keep polling normally. Don't back off; re-auth
+    is the only fix.
   - **429 (rate-limited by the usage endpoint itself):** respect
-    `Retry-After` if present; otherwise back off to 15 minutes.
-    Do not increment the generic consecutive-failure counter — a 429
-    isn't an outage, it's a signal to slow down.
+    `Retry-After` if present; otherwise back off to 15 minutes *for
+    that provider*. Do not increment the generic consecutive-failure
+    counter — a 429 isn't an outage, it's a signal to slow down.
   - **5xx / network / unexpected schema:** consecutive-failure
     exponential backoff (60s → 5m cap), generic `error: "limits
-    unavailable"`.
+    unavailable"`. Per-provider counter.
 
 This mirrors the existing `docker_memory` flow in `index.ts:406–423` in
-shape (single-value cache + SSE broadcast + initial-connect snapshot)
-but is intentionally **not** the unconditional 10s timer that file
-uses — the upstream cost matters here, the cost of `docker stats`
+shape (cache + SSE broadcast + initial-connect snapshot) but with a
+map-valued cache and a 60s cadence rather than the unconditional 10s
+timer — the upstream cost matters here, the cost of `docker stats`
 locally does not.
 
-### Wiring into the active agent
+### Multi-provider display
 
-The badge always reflects the **currently focused session's agent**.
-Most users run one agent backend, so this is a no-op, but a session
-can override the default via `agent` in `shipit.yaml`. The
-orchestrator does the active-agent selection server-side (see
-"Active-agent selection" above) and broadcasts a single
-`SubscriptionLimits` snapshot — the client does not need to know
-about the agent mapping. Critically, this avoids needing to plumb
-`agentId` through `session-store.ts` (it isn't tracked there today)
-or fan it out across stores.
+The header renders **one pill per fetchable provider**. No concept of
+an "active" provider is involved. This is deliberate — the rest of
+the header is global (host-wide, account-wide, or app-wide), so the
+limits badges follow that pattern rather than inventing a new
+focus-driven element. A user with both a Claude Max subscription and
+a ChatGPT Plus subscription always sees both pills, regardless of
+which session is focused or which agent that session is configured
+to use. Hitting the cap on one provider doesn't say anything about
+the other; collapsing them into a single value would lose
+information.
 
-Multi-agent edge cases:
+Stable rendering rules:
 
-- **No active session yet (home screen):** the orchestrator picks the
-  default agent (the one shipit-yaml-less new sessions use) and
-  fetches that. Same agent the next new session will use, so the
-  badge is already correct when the user clicks "New session."
-- **User switches sessions across agents:** on focus-change, the
-  orchestrator notices the agent flipped, immediately refreshes with
-  the new agent's provider, and broadcasts. The badge changes in one
-  hop, not two.
-- **Provider exists but `canFetch() === false`:** badge hidden. The
-  user is on API-key auth (no quota) or not signed in.
+- **Order:** matches provider registration order in `app-di.ts`
+  (Claude first, Codex second). This is stable across reloads and
+  across users, so muscle memory works.
+- **Zero fetchable providers** (first-run, all API-key, all logged
+  out): nothing rendered; the header collapses to its prior shape.
+- **One fetchable provider:** one pill.
+- **Multiple fetchable:** N pills in registration order, sharing the
+  same `gap-2 sm:gap-3` spacing the rest of the header uses.
+- **Mobile** (`hidden sm:inline`): the entire badge group hides, same
+  affordance as `DockerMemoryBadge`.
 
 ### Client
 
-- **Store:** add `subscriptionLimits: SubscriptionLimits | null` to
-  `ui-store.ts` (per-agent map, selected by current `agentId`).
+- **Store:** add `subscriptionLimits: Record<AgentId, SubscriptionLimits>`
+  to `ui-store.ts`. The map only contains entries for providers that
+  reported a snapshot (success or error this tick); missing keys mean
+  "not fetchable" and the corresponding pill is not rendered. Each
+  SSE broadcast replaces the map wholesale, so deletions propagate
+  naturally on sign-out.
 - **SSE handler:** `useServerEvents.ts` adds a listener for the
-  `subscription_limits` SSE event, dispatching to the store. Same
-  shape as the existing `docker_memory` handler at
-  `useServerEvents.ts:209`.
+  `subscription_limits` SSE event, dispatching the full record to the
+  store. Same shape as the existing `docker_memory` handler at
+  `useServerEvents.ts:209`, except the payload is a record rather
+  than a single stats object.
 - **Component:** `src/client/components/SubscriptionLimitsBadge.tsx`
-  — same skeleton as `DockerMemoryBadge.tsx`: a small `<span>` pill
-  with `tabular-nums` and color tiers (green → yellow → orange → red).
-- **Placement:** `AppLayout.tsx:141`, immediately after
-  `<DockerMemoryBadge>` and before the settings gear. Hidden on
-  mobile (`hidden sm:inline`) for symmetry with the memory badge.
-- **Rendering rules:**
+  renders **one pill per map entry**, iterating in stable
+  agent-registration order. Visual chrome matches
+  `DockerMemoryBadge.tsx`: small `<span>` pill with `tabular-nums`
+  and color tiers (green → yellow → orange → red). Each pill carries
+  a short provider label so the two are distinguishable when both are
+  shown (see Open question 4 for the exact label form).
+- **Placement:** `AppLayout.tsx:145`, immediately **before** the
+  existing `<UptimeBadge>`. Hidden on mobile (`hidden sm:inline`) for
+  symmetry with the memory badge. New header order, left-to-right
+  within the right-hand cluster:
+  `SubscriptionLimitsBadge → UptimeBadge → DockerMemoryBadge → Settings → ThemePicker`.
+- **Rendering rules (per pill):**
 
   ```
-  When canFetch === false  →  badge hidden entirely
-  When error is set        →  "—" pill, neutral color, error in tooltip
-  Otherwise                →  Label: "5h 96% · 7d 22%"  (max 14 chars).
-                              Both numbers shown always; color is
-                              driven by the weekly value when it's
-                              non-trivial (≥10%), else by the session
-                              value. Rationale: a 100%/20% state is
-                              not a red situation — the 5h window
-                              resets in minutes, the weekly is what
-                              actually matters for "can I keep
-                              working today?" Tooltip: full breakdown,
-                              reset times, plan name ("Pro" /
-                              "Max 20x" / "Plus"). No link out — the
-                              number on the badge is the surface. (§1)
+  When that agent has no map entry   →  pill not rendered
+  When entry.error is set            →  "Claude —" pill, neutral
+                                        color, error string in
+                                        tooltip
+  Otherwise                          →  Label: "Claude 5h 96% · 7d 22%"
+                                        (≤22 chars). Both numbers
+                                        shown always; color is driven
+                                        by the weekly value when it's
+                                        non-trivial (≥10%), else by
+                                        the session value. Rationale:
+                                        a 100%/20% state is not a red
+                                        situation — the 5h window
+                                        resets in minutes, the weekly
+                                        is what actually matters for
+                                        "can I keep working today?"
+                                        Tooltip: full breakdown,
+                                        reset times, plan name ("Pro"
+                                        / "Max 20x" / "Plus"). No
+                                        link out — the number on the
+                                        badge is the surface. (§1)
   ```
 
-- **Color tiers** apply to the *color-driving* value selected by the
-  rule above:
+- **Color tiers** apply per pill, to the *color-driving* value
+  selected by the rule above. One pill being red does not affect the
+  other pill's color.
   - ≥90% used → `text-red-400`
   - ≥75% → `text-orange-400`
   - ≥60% → `text-yellow-400`
@@ -445,8 +486,9 @@ Touches:
   listener (same shape as the `docker_memory` handler at line 209).
 - `src/client/stores/ui-store.ts` — add
   `subscriptionLimits: SubscriptionLimits | null` and its setter.
-- `src/client/AppLayout.tsx` — insert the badge after
-  `<DockerMemoryBadge>` at line 141.
+- `src/client/AppLayout.tsx` — insert the badge component **before**
+  `<UptimeBadge>` at line 145. The component itself iterates the
+  store map and emits 0..N pills.
 
 ## Blocking prereqs
 
@@ -478,36 +520,53 @@ just to power a header pill.
 
 ## Edge cases
 
-- **First-run / not yet authenticated:** `canFetch()` → false →
-  badge hidden. Once the user signs in, the auth-complete event
-  triggers an immediate refresh (see "Authenticate-then-refresh"
-  above) and the badge appears within seconds, not on the next 60s
-  tick.
-- **`ANTHROPIC_API_KEY` set (pay-as-you-go):** `canFetch()` → false
-  → badge hidden. Pay-as-you-go has no subscription quota.
+- **First-run / no providers authenticated:** every provider's
+  `canFetch()` → false → map empty → no pills rendered → header
+  collapses to its current shape. Once the user signs in to any
+  provider, the auth-complete event triggers an immediate refresh of
+  that one (see "Authenticate-then-refresh" above) and its pill
+  appears within seconds, not on the next 60s tick. Other providers'
+  pills remain absent until they're also signed in.
+- **One provider authenticated, the other not:** the unauthenticated
+  one's `canFetch()` → false → omitted from the map → only the
+  authenticated one's pill renders.
+- **`ANTHROPIC_API_KEY` set (pay-as-you-go):** Claude's `canFetch()`
+  → false → no Claude pill. Codex pill still renders if Codex is
+  subscription-authed.
+- **`OPENAI_API_KEY` set (pay-as-you-go):** symmetric — no Codex
+  pill; Claude pill renders if applicable.
 - **`ANTHROPIC_AUTH_TOKEN` set (OAuth-via-env, dogfooding path):**
-  `canFetch()` → true. Provider reads the token from
+  Claude's `canFetch()` → true. Provider reads the token from
   `process.env.ANTHROPIC_AUTH_TOKEN` rather than the credentials
   file. This is the inner-orchestrator path used by
   ShipIt-in-ShipIt — see `auth.ts:151–158`.
-- **Sign-out:** auth manager clears credentials → cached snapshot
-  deleted → SSE broadcast emits `null` → badge hidden. No stale
-  numbers attributed to a logged-out account.
+- **Sign-out from one provider:** that provider's auth manager
+  clears credentials → its map entry deleted → next SSE broadcast
+  omits the key → that one pill disappears. The other pill is
+  unaffected.
 - **OAuth token expired (file stale, CLI hasn't run recently):**
-  endpoint returns 401 → cached snapshot becomes `error: "auth
-  expired"` → badge renders "—" with that tooltip → polling halts
-  until the next `auth_complete` event.
+  endpoint returns 401 → that provider's entry becomes `error:
+  "auth expired"` → its pill renders "Claude —" with the tooltip;
+  polling for that provider halts until the next `auth_complete`
+  event. Other providers' pills continue to update on the normal
+  cadence.
 - **Endpoint returns 200 with unexpected schema:** provider falls
   through schema validation, returns `error: "limits unavailable"`,
   logs the unexpected payload (no PII expected, but capped at
-  ~1 KB). Same backoff as 5xx.
-- **Agent that's neither Claude nor Codex:** no provider registered
-  for that `AgentId` → poller treats it as `canFetch() === false`
-  → badge hidden. No UI changes needed when a new backend lands;
-  adding a provider is sufficient.
+  ~1 KB). Same backoff as 5xx. Per-provider — only that pill
+  flips to the error state.
+- **One provider's endpoint is slow or down, the other is fine:**
+  fetches are parallel; the healthy provider's pill updates on its
+  normal cadence while the unhealthy one's pill stays in its last
+  state (or flips to error after a failed attempt). Neither blocks
+  the other.
+- **Agent registered without a limits provider:** no provider in the
+  DI map for that `AgentId` → no pill ever rendered for it. No UI
+  changes needed when a new backend lands; adding a provider is
+  sufficient.
 - **Orchestrator container without `/credentials/.codex/auth.json`
   mounted:** Codex provider's `canFetch()` returns false (no
-  credentials path → no token) → badge hidden. Same path used by
+  credentials path → no token) → no Codex pill. Same path used by
   `CodexAuthManager.checkCredentials()` so the behavior matches the
   existing auth-status UI.
 
@@ -522,11 +581,26 @@ just to power a header pill.
    `pr-status-poller.test.ts` already uses. No design decision left
    here, just an implementation note.
 3. **Snapshot persistence across orchestrator restarts.** Worth it
-   to checkpoint the latest snapshot so the badge isn't blank for
+   to checkpoint the latest snapshots so the pills aren't blank for
    ~60s after every restart? Probably not — the upstream cost of a
-   fresh fetch on boot is one HTTP call, and the badge being blank
-   for 60s right after a restart is acceptable. Default: do not
-   persist.
+   fresh fetch on boot is N HTTP calls (one per fetchable provider,
+   so ≤2 today), and pills being blank for 60s right after a
+   restart is acceptable. Default: do not persist.
+4. **Per-pill provider label.** Each pill needs to indicate which
+   provider it represents so two side-by-side pills are
+   distinguishable. Candidates:
+   - **Name prefix** (preferred default): `"Claude 5h 96% · 7d 22%"`
+     / `"Codex 5h 30% · 7d 5%"`. Readable, no asset work, ~22 chars.
+   - **Provider icon + numbers:** small Anthropic / OpenAI mark
+     before the numbers. Saves characters but requires brand-icon
+     assets and a per-agent mapping; phosphor-icons doesn't ship
+     these.
+   - **Plan name as prefix:** `"Pro 5h 96% · 7d 22%"` /
+     `"Plus 5h 30% · 7d 5%"`. Carries more information but plan
+     names overlap across providers ("Pro" exists for both
+     Anthropic and OpenAI) and can shift over time.
+   Default to the name prefix and revisit if brand-icon assets land
+   later.
 
 ## Phasing
 
@@ -557,8 +631,9 @@ follow-up.
 ## Key files (to read before implementing)
 
 - `src/client/components/DockerMemoryBadge.tsx` — the visual pattern
-  this badge copies.
-- `src/client/AppLayout.tsx:139–148` — header insertion point.
+  each pill copies.
+- `src/client/AppLayout.tsx:144–153` — header right-hand cluster;
+  insertion point is immediately before `<UptimeBadge>` on line 145.
 - `src/server/orchestrator/docker-memory.ts` — the polling + caching
   pattern this poller copies.
 - `src/server/orchestrator/index.ts:406–423` — the 10s memory-stats
