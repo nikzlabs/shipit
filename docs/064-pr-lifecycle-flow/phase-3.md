@@ -137,18 +137,29 @@ If omitted, uses the stored preference. The endpoint calls the GitHub REST API `
 
 ### `none` vs `pending` for repos that run CI
 
-When the repo has CI signals (workflow files in the local clone, or checks
-observed on any other PR in this repo) but GitHub hasn't reported any check
-for the current head SHA, the poller force-overrides `none` → `pending` to
-suppress the merge button while workflows are still spinning up.
+When the repo has CI signals (workflow files in the bare cache parsed via
+`workflow-loader.ts`, or checks observed on any other PR in this repo) but
+GitHub hasn't reported any check for the current head SHA, the poller
+force-overrides `none` → `pending` to suppress the merge button while
+workflows are still spinning up.
 
-The override is time-boxed by `NO_CHECKS_GRACE_MS` (60s) per session, keyed
-on the current head SHA. After the grace expires without GitHub registering
-anything, we accept that no workflows apply to this PR — common case: a
-docs-only PR in a repo whose workflows have `paths:` filters excluding
-markdown — and let the state revert to genuine `none`, which unblocks the
-merge button. A new push (new head SHA) restarts the grace timer so the
-next commit gets its own fresh window.
+The override exits one of two ways:
+
+1. **Workflow filter short-circuit.** If `workflow-loader.ts` parses each
+   `.github/workflows/*.yml` and finds NONE of them would trigger for the
+   PR's changed-file list (`on.{push,pull_request,pull_request_target}
+   .paths` / `paths-ignore` matched against the GraphQL `files` connection),
+   we exit grace immediately. This is the common case for docs-only PRs in
+   a repo with `paths-ignore: ['**.md']`: pre-fix the user saw a 60s
+   spinner; now the merge button shows on the first poll.
+
+2. **Time-based fallback.** When workflow parsing is unavailable (bare
+   cache not yet fetched, YAML error, external CI like Vercel without
+   local workflow files) we time-box the override at `NO_CHECKS_GRACE_MS`
+   (20s) per session, keyed on the current head SHA. After grace expires
+   without GitHub registering anything, the state reverts to genuine
+   `none` and the merge button appears. A new push (new head SHA)
+   restarts the grace timer so the next commit gets its own fresh window.
 
 ## Auto-merge toggle
 

@@ -1,8 +1,23 @@
-import fs from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PrStatusPoller, parsePrNode, extractHeadSha, extractFailedCheckRuns } from "./pr-status-poller.js";
+import * as workflowLoader from "./workflow-loader.js";
+import type { ParsedWorkflow } from "./workflow-loader.js";
 import type { SessionManager } from "./sessions.js";
 import type { GitHubAuthManager } from "./github-auth.js";
+
+// eslint-disable-next-line no-restricted-syntax -- vi.mock's importOriginal generic needs an inline import() type
+vi.mock("./workflow-loader.js", async (importOriginal: () => Promise<typeof import("./workflow-loader.js")>) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    loadAndParseWorkflows: vi.fn(),
+  };
+});
+
+const mockLoadWorkflows = vi.mocked(workflowLoader.loadAndParseWorkflows);
+
+/** Convenience: a parsed-workflow stub representing "any workflow, no filter." */
+const ALWAYS_APPLIES: ParsedWorkflow = { alwaysApplies: true, events: [] };
 
 // ---- Helpers ----
 
@@ -18,6 +33,7 @@ function makeGraphQLPrNode(overrides: Record<string, unknown> = {}) {
     baseRefName: "main",
     additions: 100,
     deletions: 20,
+    files: { nodes: [] },
     commits: {
       nodes: [{
         commit: {
@@ -1127,6 +1143,10 @@ describe("PrStatusPoller — catch-up probe", () => {
 describe("PrStatusPoller — workflow-aware CI state", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    mockLoadWorkflows.mockReset();
+    // Default: workflow detection fails (no workflows). Individual tests
+    // override this to simulate parsed workflow files.
+    mockLoadWorkflows.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -1147,9 +1167,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    // Mock fs to simulate workflow files existing
-    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
-    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
+    mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -1168,8 +1186,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       })],
     }));
 
-    existsSyncSpy.mockRestore();
-    readdirSyncSpy.mockRestore();
     poller.destroy();
   });
 
@@ -1187,8 +1203,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    // Mock fs to simulate no workflow directory
-    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(false);
+    // mockLoadWorkflows defaults to null (no workflow dir).
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -1207,7 +1222,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       })],
     }));
 
-    existsSyncSpy.mockRestore();
     poller.destroy();
   });
 
@@ -1223,8 +1237,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
-    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
+    mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -1243,8 +1256,98 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       })],
     }));
 
-    existsSyncSpy.mockRestore();
-    readdirSyncSpy.mockRestore();
+    poller.destroy();
+  });
+
+  it("skips grace immediately when no workflow's filters match the PR's changed files (docs-only PR case)", async () => {
+    // Reproduces the bug: workflows exist with `paths-ignore: ['**.md']`,
+    // PR changes only .md files, GitHub never registers a check. Pre-fix,
+    // the user saw a 60-second spinning CI badge. With workflow parsing,
+    // we know upfront that no workflow applies and skip grace entirely.
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
+      files: { nodes: [{ path: "README.md" }, { path: "docs/intro.md" }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    // Workflow with paths-ignore that excludes the PR's changed files.
+    mockLoadWorkflows.mockResolvedValue([
+      {
+        alwaysApplies: false,
+        events: [{ pathsInclude: [], pathsIgnore: ["docs/**", "**.md"] }],
+      },
+    ]);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // No spinner — state should stay "none" and merge button should appear.
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "none" }),
+      })],
+    }));
+
+    poller.destroy();
+  });
+
+  it("still forces pending when at least one workflow's filters match the PR's changed files", async () => {
+    // Same as above but the PR also touches a src file, which matches the
+    // include-list. At least one workflow would run → grace is justified.
+    const noCiNode = makeGraphQLPrNode({
+      commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
+      files: { nodes: [{ path: "README.md" }, { path: "src/index.ts" }] },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [noCiNode] } } },
+    };
+
+    const githubAuth = makeGitHubAuth(graphqlResult);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+
+    mockLoadWorkflows.mockResolvedValue([
+      {
+        alwaysApplies: false,
+        events: [{ pathsInclude: ["src/**"], pathsIgnore: [] }],
+      },
+    ]);
+
+    const poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      getSharedRepoDir: () => "/repos/owner/repo",
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({
+        sessionId: "s1",
+        checks: expect.objectContaining({ state: "pending" }),
+      })],
+    }));
+
     poller.destroy();
   });
 
@@ -1266,9 +1369,8 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    // First poll: workflow dir doesn't exist yet.
-    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(false);
-    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue([] as never);
+    // First load: bare cache has no workflows yet (fetch in progress).
+    mockLoadWorkflows.mockResolvedValueOnce(null);
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -1290,8 +1392,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     // Workflow files appear before the next poll.
     sseBroadcast.mockClear();
-    existsSyncSpy.mockReturnValue(true);
-    readdirSyncSpy.mockReturnValue(["ci.yml"] as never);
+    mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
 
     // Advance to the next poll tick.
     await vi.advanceTimersByTimeAsync(5_000);
@@ -1304,8 +1405,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       })],
     }));
 
-    existsSyncSpy.mockRestore();
-    readdirSyncSpy.mockRestore();
     poller.destroy();
   });
 
@@ -1345,8 +1444,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    // No local workflow files at all.
-    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(false);
+    // No local workflow files — only the external-CI signal matters here.
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -1367,7 +1465,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       })],
     }));
 
-    existsSyncSpy.mockRestore();
     poller.destroy();
   });
 
@@ -1387,7 +1484,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(false);
+    // mockLoadWorkflows defaults to null (no workflows).
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -1406,15 +1503,14 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       })],
     }));
 
-    existsSyncSpy.mockRestore();
     poller.destroy();
   });
 
   it("reverts pending → none after grace window when GitHub never registers checks (paths-filter no-op)", async () => {
-    // Reproduces the docs-only PR case: workflows exist in the repo, but the
-    // PR's changed paths don't match any workflow's `paths:` filter, so
-    // GitHub never registers a check run. Without a timeout, we'd spin the
-    // CI indicator forever and the merge button would never appear.
+    // Reproduces the docs-only PR case from the *workflow-load-failed* path:
+    // workflows couldn't be parsed (bare cache empty, YAML error, etc.) but
+    // some other PR in the repo has observed checks, so we conservatively
+    // force pending. Without a timeout, the spinner would run forever.
     const noCiNode = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { oid: "sha-1", statusCheckRollup: null } }] },
     });
@@ -1428,8 +1524,9 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
-    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
+    // Parsed workflows say "always applies" so the changed-files short-
+    // circuit doesn't fire — we exercise the time-based fallback.
+    mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -1450,10 +1547,10 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
 
     sseBroadcast.mockClear();
 
-    // Advance well past the grace window. GitHub still reports no checks.
-    // The override should drop and we should broadcast the flip to "none",
-    // which unblocks the merge button on the client.
-    await vi.advanceTimersByTimeAsync(65_000);
+    // Advance well past the (20s) grace window. GitHub still reports no
+    // checks. The override should drop and we should broadcast the flip to
+    // "none", which unblocks the merge button on the client.
+    await vi.advanceTimersByTimeAsync(25_000);
 
     const noneCall = sseBroadcast.mock.calls.find(([, payload]) => {
       const updates = (payload as { updates?: { checks?: { state?: string } }[] }).updates;
@@ -1461,8 +1558,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     });
     expect(noneCall, "expected a broadcast flipping state to none after grace").toBeDefined();
 
-    existsSyncSpy.mockRestore();
-    readdirSyncSpy.mockRestore();
     poller.destroy();
   });
 
@@ -1482,8 +1577,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
-    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
+    mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -1493,11 +1587,12 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     });
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // First poll: pending (within grace).
+    // First poll: pending (within grace, observedAt=0).
     await vi.advanceTimersByTimeAsync(0);
 
-    // Just before grace expires, new commit lands.
-    await vi.advanceTimersByTimeAsync(50_000);
+    // 10s in — still within sha-1's 20s grace. Switch the GraphQL response
+    // to return sha-2 so the next poll observes a new head SHA.
+    await vi.advanceTimersByTimeAsync(10_000);
     const sha2Node = makeGraphQLPrNode({
       commits: { nodes: [{ commit: { oid: "sha-2", statusCheckRollup: null } }] },
     });
@@ -1505,15 +1600,15 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       data: { repository: { pullRequests: { nodes: [sha2Node] } } },
     });
 
-    // Trigger a poll on the new SHA (timer + slop for promise resolution).
+    // Trigger a poll on the new SHA — grace resets to observedAt=15s.
     await vi.advanceTimersByTimeAsync(5_000);
 
     sseBroadcast.mockClear();
 
-    // 20s later (~73s since session start, but only ~23s since the SHA
-    // change) — should still be "pending" because the SHA-change reset the
-    // grace timer. This is the regression we want to guard against.
-    await vi.advanceTimersByTimeAsync(20_000);
+    // 10s after the SHA change (~25s wall time, but only 10s into sha-2's
+    // 20s grace) — should still be "pending" because the SHA-change reset
+    // the grace timer. This is the regression we want to guard against.
+    await vi.advanceTimersByTimeAsync(10_000);
 
     const flippedToNone = sseBroadcast.mock.calls.some(([, payload]) => {
       const updates = (payload as { updates?: { checks?: { state?: string } }[] }).updates;
@@ -1521,16 +1616,14 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     });
     expect(flippedToNone, "should not flip to none yet — SHA changed, grace restarted").toBe(false);
 
-    // Advance past the new grace window — now flip should fire.
-    await vi.advanceTimersByTimeAsync(50_000);
+    // Advance past sha-2's grace window — now flip should fire.
+    await vi.advanceTimersByTimeAsync(20_000);
     const flippedNow = sseBroadcast.mock.calls.some(([, payload]) => {
       const updates = (payload as { updates?: { checks?: { state?: string } }[] }).updates;
       return updates?.some((u) => u.checks?.state === "none");
     });
     expect(flippedNow).toBe(true);
 
-    existsSyncSpy.mockRestore();
-    readdirSyncSpy.mockRestore();
     poller.destroy();
   });
 
@@ -1549,8 +1642,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     ]);
     const sseBroadcast = vi.fn();
 
-    const existsSyncSpy = vi.spyOn(fs, "existsSync").mockReturnValue(true);
-    const readdirSyncSpy = vi.spyOn(fs, "readdirSync").mockReturnValue(["ci.yml"] as never);
+    mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
 
     const poller = new PrStatusPoller({
       githubAuth,
@@ -1614,8 +1706,6 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     });
     expect(sawSuccess).toBe(true);
 
-    existsSyncSpy.mockRestore();
-    readdirSyncSpy.mockRestore();
     poller.destroy();
   });
 });
