@@ -517,6 +517,7 @@ describe("PrStatusPoller onMergeDetected callback", () => {
       number: 42,
       base: "main",
       title: "Test PR",
+      body: "",
       state: "closed",
       merged_at: "2026-05-19T12:00:00Z",
       additions: 10,
