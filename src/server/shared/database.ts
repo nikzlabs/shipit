@@ -212,6 +212,14 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE usage_turns ADD COLUMN context_tokens INTEGER");
   },
+  // Migration 13: per-session agent (provider) so the user's model/agent
+  // picks in one session don't bleed into others via the global
+  // `vibe-agent-id` / `vibe-model-id` localStorage keys. The WS handler
+  // locks these in on first connect; after that, only `session.agent_id`
+  // and `session.model` matter.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN agent_id TEXT");
+  },
 ];
 
 export class DatabaseManager {

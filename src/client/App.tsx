@@ -70,7 +70,7 @@ import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
 import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
-import { saveModelId } from "./utils/local-storage.js";
+import { saveAgentId, saveModelId } from "./utils/local-storage.js";
 import { siblingsOf, orderSiblingsForTabs, siblingTabLabel } from "./utils/doc-paths.js";
 
 export default function App() {
@@ -644,6 +644,7 @@ export default function App() {
   }, []);
 
   const handleAgentChange = useCallback((agentId: AgentId) => {
+    saveAgentId(agentId);
     useUiStore.getState().setActiveAgentId(agentId);
     send({ type: "set_agent", agentId });
   }, [send]);
