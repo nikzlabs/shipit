@@ -310,12 +310,20 @@ EOC
   fi
 fi
 
-# --- Self-updater systemd units ---
-echo "==> Installing self-updater service..."
+# --- Self-updater + restarter systemd units ---
+# Both are installed together: the updater handles "Update Now" (git pull +
+# rebuild) and the restarter handles "Just Restart" (force-recreate the
+# orchestrator container without rebuilding). Each is a path unit that
+# watches for a trigger file written by the orchestrator from inside its
+# container.
+echo "==> Installing self-updater and restarter services..."
 cp /opt/shipit/deployment/vps/shipit-updater.service /etc/systemd/system/
 cp /opt/shipit/deployment/vps/shipit-updater.path /etc/systemd/system/
+cp /opt/shipit/deployment/vps/shipit-restarter.service /etc/systemd/system/
+cp /opt/shipit/deployment/vps/shipit-restarter.path /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now shipit-updater.path
+systemctl enable --now shipit-restarter.path
 
 # --- Build and start ShipIt (always run — this is the deploy step) ---
 echo "==> Building and starting ShipIt..."
