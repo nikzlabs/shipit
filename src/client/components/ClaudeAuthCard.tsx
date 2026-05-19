@@ -7,7 +7,7 @@ export interface ClaudeAuthCardProps {
   onStartAuth: () => void;
   onApiKeySubmit: (key: string) => Promise<boolean | undefined>;
   onPasteAuthCode: (code: string) => void;
-  onClearApiKey?: () => void;
+  onClearApiKey?: () => Promise<void> | void;
   showApiKeyWhenAuthed?: boolean;
 }
 
@@ -26,6 +26,7 @@ export function ClaudeAuthCard({
   const [authCode, setAuthCode] = useState("");
   const [authCodeSubmitted, setAuthCodeSubmitted] = useState(false);
   const [authPendingLocal, setAuthPendingLocal] = useState(false);
+  const [clearingApiKey, setClearingApiKey] = useState(false);
 
   // Derive effective authPending: auto-clears when authUrl arrives or agent becomes authenticated
   const authPending = authPendingLocal && authUrl === null && !agent?.authConfigured;
@@ -188,11 +189,20 @@ export function ClaudeAuthCard({
       {/* Clear API key (Settings-only) */}
       {agent.authConfigured && onClearApiKey && (
         <button
-          onClick={onClearApiKey}
-          className="w-full px-3 py-2 text-sm rounded-md border bg-(--color-bg-secondary) border-(--color-border-secondary) text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+          onClick={async () => {
+            if (clearingApiKey) return;
+            setClearingApiKey(true);
+            try {
+              await onClearApiKey();
+            } finally {
+              setClearingApiKey(false);
+            }
+          }}
+          disabled={clearingApiKey}
+          className="w-full px-3 py-2 text-sm rounded-md border bg-(--color-bg-secondary) border-(--color-border-secondary) text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           data-testid="claude-clear-api-key"
         >
-          Clear API Key
+          {clearingApiKey ? "Clearing..." : "Clear API Key"}
         </button>
       )}
     </div>

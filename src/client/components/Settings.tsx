@@ -24,7 +24,7 @@ export interface SettingsProps {
   initialContent: string;
   onSaveInstructions: (content: string) => void;
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
-  onGitHubTokenSubmit: (token: string) => void;
+  onGitHubTokenSubmit: (token: string) => Promise<void> | void;
   onGitHubLogout: () => void;
   authUrl: string | null;
   onApiKey: (key: string) => void;
@@ -490,7 +490,7 @@ export function Settings({
                   <PullRequestSettings />
                 </div>
               ) : (
-                <GitHubTokenForm onSubmit={async (t) => { onGitHubTokenSubmit(t); return undefined; }} />
+                <GitHubTokenForm onSubmit={async (t) => { await onGitHubTokenSubmit(t); return undefined; }} />
               )}
             </div>
           </TabsContent>

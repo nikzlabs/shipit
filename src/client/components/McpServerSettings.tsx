@@ -157,6 +157,13 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
   const [testResults, setTestResults] = useState<Record<string, McpTestResult | "loading">>({});
   /** Source id currently mid-flow (button disabled, label "Connecting…"). */
   const [oauthInFlight, setOauthInFlight] = useState<string | null>(null);
+  /**
+   * Per-server in-flight tracking for the row action buttons (Enable/Disable,
+   * Delete). Prevents fast double-clicks from firing duplicate
+   * updateServer/removeServer requests against the orchestrator.
+   */
+  const [toggleInFlight, setToggleInFlight] = useState<Record<string, boolean>>({});
+  const [deleteInFlight, setDeleteInFlight] = useState<Record<string, boolean>>({});
 
   // eslint-disable-next-line no-restricted-syntax -- one-shot fetch on mount; the MCP server list is account-level external state
   useEffect(() => {
@@ -248,14 +255,22 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
   }
 
   async function toggleEnabled(server: McpServerConfig) {
+    if (toggleInFlight[server.name]) return;
+    setToggleInFlight((r) => ({ ...r, [server.name]: true }));
     try {
       await updateServer(server.name, { ...server, enabled: !server.enabled }, {});
     } catch {
       /* error surfaced via store */
+    } finally {
+      setToggleInFlight((r) => {
+        const { [server.name]: _, ...rest } = r;
+        return rest;
+      });
     }
   }
 
   async function runTest(server: McpServerConfig) {
+    if (testResults[server.name] === "loading") return;
     setTestResults((r) => ({ ...r, [server.name]: "loading" }));
     try {
       const result = await testServer(server.name);
@@ -265,6 +280,21 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
         ...r,
         [server.name]: { ok: false, error: err instanceof Error ? err.message : String(err) },
       }));
+    }
+  }
+
+  async function deleteServer(name: string) {
+    if (deleteInFlight[name]) return;
+    setDeleteInFlight((r) => ({ ...r, [name]: true }));
+    try {
+      await removeServer(name);
+    } catch {
+      /* error surfaced via store */
+    } finally {
+      setDeleteInFlight((r) => {
+        const { [name]: _, ...rest } = r;
+        return rest;
+      });
     }
   }
 
@@ -367,6 +397,9 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
         <ul className="flex flex-col gap-2">
           {servers.map((server) => {
             const result = testResults[server.name];
+            const isTesting = result === "loading";
+            const isToggling = toggleInFlight[server.name];
+            const isDeleting = deleteInFlight[server.name];
             return (
               <li
                 key={server.name}
@@ -385,27 +418,33 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                     <StatusBadge name={server.name} />
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    <Button size="sm" variant="ghost" onClick={() => void toggleEnabled(server)}>
-                      {server.enabled ? "Disable" : "Enable"}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void toggleEnabled(server)}
+                      disabled={isToggling || isDeleting}
+                    >
+                      {isToggling ? "…" : server.enabled ? "Disable" : "Enable"}
                     </Button>
                     <Button
                       size="sm"
                       variant="ghost"
                       onClick={() => void runTest(server)}
-                      disabled={!hasActiveSession}
+                      disabled={!hasActiveSession || isTesting || isDeleting}
                       title={hasActiveSession ? undefined : "Start a session to test"}
                     >
-                      Test
+                      {isTesting ? "Testing…" : "Test"}
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => startEdit(server)}>
+                    <Button size="sm" variant="ghost" onClick={() => startEdit(server)} disabled={isDeleting}>
                       Edit
                     </Button>
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => void removeServer(server.name)}
+                      onClick={() => void deleteServer(server.name)}
+                      disabled={isDeleting}
                     >
-                      Delete
+                      {isDeleting ? "Deleting…" : "Delete"}
                     </Button>
                   </div>
                 </div>
