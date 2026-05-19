@@ -312,14 +312,14 @@ fi
 
 # --- Self-updater systemd units ---
 echo "==> Installing self-updater service..."
-cp /opt/shipit/deployment/hetzner/shipit-updater.service /etc/systemd/system/
-cp /opt/shipit/deployment/hetzner/shipit-updater.path /etc/systemd/system/
+cp /opt/shipit/deployment/vps/shipit-updater.service /etc/systemd/system/
+cp /opt/shipit/deployment/vps/shipit-updater.path /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now shipit-updater.path
 
 # --- Build and start ShipIt (always run — this is the deploy step) ---
 echo "==> Building and starting ShipIt..."
-bash /opt/shipit/deployment/hetzner/deploy.sh
+bash /opt/shipit/deployment/vps/deploy.sh
 
 echo ""
 echo "==========================================="
@@ -356,10 +356,10 @@ echo "    3. ShipIt will prompt you to sign in with your Claude account (OAuth)"
 echo "    4. Start coding!"
 echo ""
 echo "  Useful commands:"
-echo "    View logs:      docker compose -f /opt/shipit/deployment/hetzner/docker-compose.yml logs -f shipit"
+echo "    View logs:      docker compose -f /opt/shipit/deployment/vps/docker-compose.yml logs -f shipit"
 echo "    Tunnel logs:    journalctl -u cloudflared -f"
 echo "    Updater logs:   journalctl -u shipit-updater -f"
-echo "    Restart:        docker compose -f /opt/shipit/deployment/hetzner/docker-compose.yml restart"
+echo "    Restart:        docker compose -f /opt/shipit/deployment/vps/docker-compose.yml restart"
 echo ""
 echo "  Updates: Settings → Advanced → Software Updates (in the ShipIt UI)"
 echo ""

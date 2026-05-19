@@ -1,11 +1,11 @@
 #!/bin/bash
 # Build and (re)start ShipIt in production.
 # Called by setup.sh, update.sh, or manually:
-#   bash /opt/shipit/deployment/hetzner/deploy.sh
+#   bash /opt/shipit/deployment/vps/deploy.sh
 set -euo pipefail
 
 SHIPIT_DIR="/opt/shipit"
-COMPOSE_FILE="$SHIPIT_DIR/deployment/hetzner/docker-compose.yml"
+COMPOSE_FILE="$SHIPIT_DIR/deployment/vps/docker-compose.yml"
 
 cd "$SHIPIT_DIR"
 
