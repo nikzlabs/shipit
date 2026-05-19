@@ -2,6 +2,7 @@ import type { ChatMessage } from "../components/MessageList.js";
 import type { GitCommit } from "../components/GitHistory.js";
 import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
+import { getContextWindowForModel } from "../../server/shared/model-windows.js";
 import type { AgentOption } from "../components/AgentPicker.js";
 import type { TemplateInfo } from "../components/TemplateSelector.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -98,6 +99,19 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
       // Real context occupancy = uncached input + cache reads + cache writes;
       // `inputTokens` alone undercounts massively under prompt caching.
       ui.setContextTokens(turnContextTokens(data.turnUsage[data.turnUsage.length - 1]));
+    }
+    // Seed `modelInfo` from the most recent turn that recorded a model. The
+    // server only emits `model_info` over WS on `agent_init`, so a session
+    // loaded from history (page reload, session switch) where the agent isn't
+    // actively running has no other way to know which model was last used.
+    // Without this seeding the context dial — the surface that also shows the
+    // running session cost — would hide entirely until the next turn fires.
+    const lastWithModel = [...data.turnUsage].reverse().find((t) => t.model);
+    if (lastWithModel?.model) {
+      ui.setModelInfo({
+        model: lastWithModel.model,
+        contextWindowTokens: getContextWindowForModel(lastWithModel.model),
+      });
     }
   }
   if (data.sessionUsage) {
