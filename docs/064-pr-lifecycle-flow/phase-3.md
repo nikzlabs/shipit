@@ -236,14 +236,15 @@ When merge is detected:
 
 ### Session archive
 
-After merge:
+After merge (implemented in `markMergedAndPruneExcess` — `services/session.ts`):
 
-1. Server calls `sessionManager.archive(sessionId)` (existing method)
-2. SSE broadcasts `session_list` update — the session moves to the archived section in the sidebar
-3. The session remains readable (user can scroll chat history) but no new messages can be sent
-4. The worktree is cleaned up on the next idle pass (existing disposal logic)
+1. Server calls `sessionManager.markMerged(sessionId)` — sets `merged_at` so the session shows as merged.
+2. Server deletes the remote head branch via `RepoGit.deleteBranch()` on the bare cache (best-effort; refreshes embedded credentials first, swallows "ref does not exist" and any push failure so housekeeping never blocks the merge flow). Many repos have GitHub's "automatically delete head branches" setting on, in which case this is a harmless no-op.
+3. Excess merged sessions beyond `MAX_MERGED_SESSIONS_PER_REPO = 3` (per repository, oldest first) are archived — `archiveSession` disposes the runner, drops named volumes, and removes the workspace directory.
+4. SSE broadcasts `session_list` update — sessions move to the archived section in the sidebar as they're pruned.
+5. The session remains readable (user can scroll chat history) but no new messages can be sent.
 
-Future work may allow reusing the archived session's context (chat history, file state) when starting a new session on the same repo.
+Future work may allow reusing the archived session's context (chat history, file state) when starting a new session on the same repo. A janitor sweep for historical orphan branches (merged before the deletion hook existed) is also possible — would live alongside `disk-janitor.ts`.
 
 ## SSE broadcast shape
 
