@@ -10,9 +10,10 @@ import { MobileTabBar } from "./components/MobileTabBar.js";
 import { Toast } from "./components/Toast.js";
 import type { WsStatus } from "./hooks/useWebSocket.js";
 import { LIGHT_THEMES, type Theme } from "./hooks/useTheme.js";
-import type { SessionInfo, RepoInfo, DockerMemoryStats } from "../server/shared/types.js";
+import type { SessionInfo, RepoInfo, DockerMemoryStats, SubscriptionLimitsMap } from "../server/shared/types.js";
 import { DockerMemoryBadge } from "./components/DockerMemoryBadge.js";
 import { UptimeBadge } from "./components/UptimeBadge.js";
+import { SubscriptionLimitsBadge } from "./components/SubscriptionLimitsBadge.js";
 import { MemoryPressureBanner } from "./components/MemoryPressureBanner.js";
 import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
 
@@ -26,6 +27,8 @@ interface AppLayoutProps {
   dockerMemory: DockerMemoryStats | null;
   /** Epoch ms when the orchestrator process started. null until SSE handshake completes. */
   processStartedAt: number | null;
+  /** Per-agent subscription rate-limit snapshots driven by the `subscription_limits` SSE broadcast. */
+  subscriptionLimits: SubscriptionLimitsMap;
   onNavigateHome: () => void;
   onOpenSessions: () => void;
 
@@ -82,6 +85,7 @@ export function AppLayout({
   githubAuthenticated,
   dockerMemory,
   processStartedAt,
+  subscriptionLimits,
   onNavigateHome,
   onOpenSessions,
   showConnectionBanner,
@@ -142,6 +146,7 @@ export function AppLayout({
           </div>
         )}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <SubscriptionLimitsBadge limits={subscriptionLimits} />
           {processStartedAt !== null && <UptimeBadge processStartedAt={processStartedAt} />}
           {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
           <WithTooltip label="Settings">

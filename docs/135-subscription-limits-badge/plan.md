@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 ---
 
@@ -106,27 +106,57 @@ endpoints.
 | **`GET https://api.anthropic.com/api/oauth/usage`** | **Undocumented** OAuth-scoped endpoint Claude Code calls to populate `/usage`. Returns session %, weekly %, weekly-Opus-only %, reset times. Auth: the OAuth bearer token already stored in `/root/.claude/.credentials.json`. This is the canonical source. |
 | Anthropic Admin API `GET /v1/organizations/usage_report/claude_code` | Org/Team/Enterprise only, requires admin API key (`sk-ant-admin-…`). Not viable for individual Pro/Max subscribers, which is most ShipIt users. |
 
-**Candidate primary source:** `GET /api/oauth/usage` on `api.anthropic.com`
-(community-reported path), authenticated with the OAuth access token
-the existing `AuthManager` persists. This appears to be the same call
-the Claude CLI makes when the user types `/usage`.
+**Primary source (verified, Phase 0 capture, 2026-05-19):** `GET
+/api/oauth/usage` on `api.anthropic.com`, authenticated with the
+OAuth access token the existing `AuthManager` persists at
+`/root/.claude/.credentials.json` under `claudeAiOauth.accessToken`.
+Plain `Authorization: Bearer <token>` is sufficient — the
+`anthropic-beta: oauth-2025-04-20` header is a no-op for this
+endpoint (200 OK either way), but the provider sends it anyway for
+parity with the CLI's outgoing calls in case Anthropic later
+tightens a server-side filter.
 
-**Important: this URL is not verified.** It comes from community
-reverse-engineering of the CLI, not from Anthropic documentation. The
-exact path, request shape, and response schema must be captured
-empirically before any code is written — see
-[Blocking prereqs](#blocking-prereqs).
+The token's existing scopes are sufficient — no re-auth needed:
+
+    user:file_upload, user:inference, user:mcp_servers,
+    user:profile, user:sessions:claude_code
+
+Response body shape (verified against a Max-20x account; fixture
+checked in at
+`src/server/orchestrator/limits/__fixtures__/claude-usage-max-20x.json`):
+
+```json
+{
+  "five_hour":       { "utilization": 0..100, "resets_at": ISO },
+  "seven_day":       { "utilization": 0..100, "resets_at": ISO },
+  "seven_day_opus":  null | { utilization, resets_at },
+  "seven_day_sonnet":null | { utilization, resets_at },
+  "seven_day_oauth_apps": null | { ... },
+  "extra_usage":     { is_enabled, monthly_limit, used_credits,
+                       utilization, currency, disabled_reason }
+}
+```
+
+**Important finding:** the response does **not** carry a `plan` /
+`subscription` field. The provider derives the plan label from the
+credentials file instead — `claudeAiOauth.subscriptionType` +
+`rateLimitTier` (e.g. `"max"` + `"default_claude_max_20x"` →
+`"Max 20x"`). `AuthManager.getAccessToken()` returns this in its
+result so the provider doesn't need to re-open the file.
 
 **Fallback when the endpoint fails or returns unexpected shape:**
-shipping nothing in Phase 1. The badge shows "—" with a tooltip "limits
-unavailable." We do **not** plan to MITM the agent's outbound HTTPS to
-sniff `anthropic-ratelimit-unified-*` response headers — that's
-significantly more invasive than this doc presented in earlier drafts
-(the Claude CLI talks directly to `api.anthropic.com` from inside the
-session container; capturing headers requires either a proxy injected
-between the CLI and the network, or a CLI change to write them
-somewhere accessible). See [Phase 3](#phasing) for why we treat this
-as a separate, optional follow-up rather than a Phase-1 fallback.
+shipping nothing in Phase 1. The badge shows "Claude —" with the
+plan label still rendered (it's derived from the credentials file,
+not the endpoint — so it stays accurate even when `/usage` is down)
+and the failure reason in the tooltip. We do **not** plan to MITM
+the agent's outbound HTTPS to sniff `anthropic-ratelimit-unified-*`
+response headers — that's significantly more invasive than this doc
+presented in earlier drafts (the Claude CLI talks directly to
+`api.anthropic.com` from inside the session container; capturing
+headers requires either a proxy injected between the CLI and the
+network, or a CLI change to write them somewhere accessible). See
+[Phase 3](#phasing) for why we treat this as a separate, optional
+follow-up rather than a Phase-1 fallback.
 
 **Risk: the endpoint is undocumented.** Anthropic could change or
 remove it without notice. Mitigation: the provider interface (see
@@ -136,14 +166,10 @@ risk applies to `/usage` in the CLI itself — both surfaces depend on
 this endpoint, so if Anthropic breaks it, the CLI breaks too and the
 user already knows.
 
-**Risk: OAuth scope.** The Claude OAuth token ShipIt holds was minted
-for the CLI's scope. If that scope does **not** include the read needed
-for `/api/oauth/usage`, the entire Claude provider is unbuildable
-without forcing the user through a re-auth flow asking for additional
-scope — and we are not asking the user to re-authenticate just for a
-badge. Empirically the CLI uses the same token to call `/usage`, so the
-answer is almost certainly "scope is included," but this is a go/no-go
-question, not an open one. See [Blocking prereqs](#blocking-prereqs).
+**Risk (resolved): OAuth scope.** Phase 0 verified that the CLI's
+existing OAuth scopes are sufficient for `/api/oauth/usage` — the
+endpoint returns 200 with the current token. No re-auth flow is
+needed.
 
 ### Codex (OpenAI)
 
@@ -492,31 +518,34 @@ Touches:
 
 ## Blocking prereqs
 
-These must be answered **before** Phase 1 implementation starts. Each
-is a small, one-time investigation; bundle them as a single
-spike-style task.
+These must be answered before each phase ships. Claude (1, 3, 4) is
+done; Codex (2) is still outstanding.
 
-1. **Capture the Claude endpoint.** Run the Claude CLI against a real
-   Pro/Max account behind `mitmproxy` (or similar). Verify the
-   request URL, required headers, OAuth-scope behavior, and the
-   response JSON shape that backs `/usage`. Save the captured
-   response as a fixture for tests.
-2. **Capture the Codex endpoint.** Same exercise against a ChatGPT-
-   plan-authenticated `codex` CLI. Confirm the path (it has shifted
-   across versions) and save the fixture.
-3. **Confirm OAuth scope for Claude.** If the captured `/usage` call
-   uses a scope the stored ShipIt token doesn't have, this feature
-   is **not buildable** in Phase 1 without forcing the user through
-   re-auth (a non-starter). Empirically the Claude CLI uses the same
-   OAuth token, so the expected answer is "scope is fine," but treat
-   this as go/no-go.
-4. **Confirm refresh behavior.** Verify that running the Claude CLI
-   refreshes `.credentials.json` in place so the orchestrator can
-   read it back without driving its own refresh-token call.
-
-If 1–3 land cleanly, Phase 1 proceeds. If 3 fails, this doc gets
-re-scoped or shelved — we are not asking the user to re-authenticate
-just to power a header pill.
+1. **Capture the Claude endpoint.** ✅ **Done 2026-05-19.** Verified
+   by direct fetch with the credentials file's OAuth bearer. URL:
+   `https://api.anthropic.com/api/oauth/usage`. Headers: plain
+   `Authorization: Bearer`. Body shape captured as a test fixture
+   (`src/server/orchestrator/limits/__fixtures__/claude-usage-max-20x.json`)
+   and locked in via `parseClaudeUsage` tests. No mitmproxy needed
+   in the end — the credentials file already contains the same
+   OAuth token the CLI sends, so a direct HTTP call from the
+   orchestrator is the cleanest capture.
+2. **Capture the Codex endpoint.** Still outstanding. Same exercise
+   against a ChatGPT-plan-authenticated `codex` CLI. Confirm the
+   path (it has shifted across versions) and save the fixture. See
+   `checklist.md`.
+3. **Confirm OAuth scope for Claude.** ✅ **Done 2026-05-19.** The
+   CLI's existing scopes (`user:file_upload, user:inference,
+   user:mcp_servers, user:profile, user:sessions:claude_code`) are
+   sufficient — the endpoint returns 200 OK with the current token,
+   no extra scope needed.
+4. **Confirm refresh behavior for Claude.** ✅ **Done 2026-05-19.**
+   The CLI persists access token, refresh token, and expiresAt under
+   `claudeAiOauth` in `.credentials.json` and rotates the file in
+   place when the access token nears expiry. The orchestrator
+   reads the same file on every `getAccessToken()` call, so the
+   refreshed token propagates automatically. No orchestrator-side
+   refresh-token handling is needed.
 
 ## Edge cases
 
@@ -604,18 +633,25 @@ just to power a header pill.
 
 ## Phasing
 
-**Phase 0 — Spike.** Complete the four [blocking
-prereqs](#blocking-prereqs). Output: two captured fixtures (one
-Claude, one Codex), one go/no-go on Claude's OAuth scope.
+**Phase 0 — Spike.** ✅ **Claude side complete (2026-05-19).** URL
+verified, scope verified, refresh behavior verified, body fixture
+checked in. Codex side still outstanding — needs a real
+ChatGPT-plan login to capture against. Until then the Codex
+provider's URL/parser are best-effort.
 
-**Phase 1 — Claude only.** Provider + `AuthManager.getAccessToken()`
-+ poller + SSE + badge. Codex provider stubbed to
-`canFetch() === false`. Ships independently of doc 119.
+**Phase 1 — Claude.** ✅ **Implementation complete and verified
+end-to-end against the real endpoint.** Provider +
+`AuthManager.getAccessToken()` + poller + SSE + badge all wired and
+parsing the real Anthropic response shape. Plan label
+(`"Max 20x"` / `"Pro"` / ...) is derived from the credentials file
+because `/usage` doesn't return one.
 
-**Phase 2 — Codex.** Add the Codex provider once doc 119
-(`CodexAuthManager`) is fully shipped — the badge needs the OAuth
-token that flow persists. (119 is `in-progress`, so this phasing is
-real.)
+**Phase 2 — Codex.** Provider code landed in the same change to
+keep the architecture symmetric, but the URL + response shape are
+still community-reported, not yet verified empirically. Repeat the
+Phase 0 procedure for Codex (load the auth token, hit candidate
+URLs, save a fixture, reconcile the parser) before announcing the
+badge for Codex users.
 
 **Phase 3 (optional, separate doc) — Header-fallback for Claude.**
 Capture `anthropic-ratelimit-unified-*` headers from completed turns.

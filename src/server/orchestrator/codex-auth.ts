@@ -36,6 +36,7 @@ import type { ChildProcess } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
   readlinkSync,
   rmSync,
   statSync,
@@ -109,6 +110,50 @@ function ensureCodexDir(): void {
   }
 }
 
+/**
+ * Extract the ChatGPT access token from a parsed `auth.json`. The
+ * Codex CLI writes a structure with `tokens.access_token` for
+ * device-auth flows; older shapes carried it at the top level. We
+ * probe both. Exported for unit tests.
+ */
+export function extractCodexAccessToken(obj: Record<string, unknown>): string | null {
+  const direct = pickStringVal(obj, "access_token") ?? pickStringVal(obj, "accessToken");
+  if (direct) return direct;
+  const tokens = obj.tokens;
+  if (tokens && typeof tokens === "object") {
+    const candidate =
+      pickStringVal(tokens as Record<string, unknown>, "access_token") ??
+      pickStringVal(tokens as Record<string, unknown>, "accessToken");
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Extract the access token's expiry (epoch ms) from a parsed
+ * `auth.json`. Tolerant of seconds vs ms timestamps. Exported for
+ * unit tests.
+ */
+export function extractCodexExpiresAt(obj: Record<string, unknown>): number | null {
+  const candidates: unknown[] = [
+    obj.expires_at,
+    obj.expiresAt,
+    (obj.tokens as Record<string, unknown> | undefined)?.expires_at,
+    (obj.tokens as Record<string, unknown> | undefined)?.expiresAt,
+  ];
+  for (const raw of candidates) {
+    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+      return raw < 10_000_000_000 ? raw * 1000 : raw;
+    }
+  }
+  return null;
+}
+
+function pickStringVal(obj: Record<string, unknown>, key: string): string | null {
+  const v = obj[key];
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
 /** True iff `auth.json` exists and has non-zero size. */
 function authFileExists(): boolean {
   try {
@@ -166,6 +211,48 @@ export class CodexAuthManager extends EventEmitter {
    */
   checkCredentials(): boolean {
     return this.checkAuthFile();
+  }
+
+  /**
+   * Resolve the ChatGPT-subscription access token persisted by
+   * `codex login --device-auth`, for use by the subscription-limits
+   * provider (see docs/135-subscription-limits-badge/plan.md).
+   *
+   *   - `source: "file"` — read from `/root/.codex/auth.json` (in
+   *     production a symlink into `/credentials/.codex/auth.json`).
+   *     The Codex CLI refreshes the file in place as it runs, so the
+   *     value is fresh as long as an agent turn has happened within
+   *     the token's TTL.
+   *
+   *   Returns `{ token: null, reason: "api-key" }` when only
+   *   `OPENAI_API_KEY` is set (pay-as-you-go path — no subscription
+   *   quota to surface), and `{ token: null, reason:
+   *   "not-authenticated" }` when nothing usable is present.
+   */
+  async getAccessToken(): Promise<
+    | { token: string; source: "file"; expiresAt: number | null }
+    | { token: null; reason: "api-key" | "not-authenticated" }
+  > {
+    if (this.checkAuthFile()) {
+      try {
+        const raw = readFileSync(CODEX_AUTH_FILE, "utf-8");
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const token = extractCodexAccessToken(parsed);
+        if (token) {
+          return { token, source: "file", expiresAt: extractCodexExpiresAt(parsed) };
+        }
+      } catch (err) {
+        console.warn(
+          "[codex-auth] Failed to parse auth.json:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    if (process.env.OPENAI_API_KEY?.trim()) {
+      return { token: null, reason: "api-key" };
+    }
+    return { token: null, reason: "not-authenticated" };
   }
 
   /**

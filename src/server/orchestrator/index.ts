@@ -31,6 +31,9 @@ import type { GitManager } from "../shared/git.js";
 import type { AppDeps } from "./app-di.js";
 import { initializeManagers } from "./app-di.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
+import { ClaudeLimitsProvider, CodexLimitsProvider } from "./limits/index.js";
+import type { LimitsProvider } from "./limits/types.js";
+import { LimitsPoller } from "./limits-poller.js";
 import {
   setupContainerManager,
   buildRunnerFactory,
@@ -286,6 +289,30 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     defaultAgentId, sseBroadcast,
   });
 
+  // ---- Subscription-limits poller ----
+  // One pill per fetchable provider in the header (see
+  // docs/135-subscription-limits-badge). Polls every 60s; refreshes a
+  // specific provider on its auth-complete event so the pill appears
+  // within seconds of sign-in instead of waiting a full tick. Skipped in
+  // test mode to keep integration tests deterministic — the providers
+  // would otherwise read credential files / fire fetches against
+  // api.anthropic.com / chatgpt.com.
+  const limitsProviders = new Map<AgentId, LimitsProvider>();
+  limitsProviders.set("claude", new ClaudeLimitsProvider({ authManager }));
+  limitsProviders.set("codex", new CodexLimitsProvider({ codexAuthManager }));
+  const limitsPoller = !isTestMode
+    ? new LimitsPoller({ providers: limitsProviders, sseBroadcast })
+    : null;
+  if (limitsPoller) {
+    authManager.on("auth_complete", () => {
+      limitsPoller.markAuthRefreshed("claude");
+    });
+    codexAuthManager.on("codex_auth_complete", () => {
+      limitsPoller.markAuthRefreshed("codex");
+    });
+    limitsPoller.start();
+  }
+
   // ---- Session directory creation ----
   const createSessionDir = createSessionDirFactory({
     sessionsRoot, sessionManager,
@@ -398,6 +425,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           client.write(`event: docker_memory\ndata: ${JSON.stringify(stats)}\n\n`);
         }
       })();
+    }
+
+    // Subscription-limits snapshot — one pill per fetchable provider in
+    // the header. May be empty on the very first connect after a
+    // restart (the poller's initial tick races SSE connect); the next
+    // 60s tick will broadcast a fresh map. See doc 135.
+    if (limitsPoller) {
+      const snapshot = limitsPoller.getSnapshot();
+      if (Object.keys(snapshot).length > 0) {
+        client.write(`event: subscription_limits\ndata: ${JSON.stringify({ limits: snapshot })}\n\n`);
+      }
     }
 
     request.raw.on("close", () => {
@@ -1115,6 +1153,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
   app.addHook("onClose", async () => {
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
+    if (limitsPoller) limitsPoller.stop();
   });
   registerShutdownHook(app, {
     startupTimer, authManager, codexAuthManager, runnerRegistry,

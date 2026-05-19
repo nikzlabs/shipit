@@ -67,6 +67,111 @@ export function extractUrlFromBuffer(buffer: string): string | null {
   return url.length > 20 ? url : null;
 }
 
+/**
+ * Extract the OAuth access token from a parsed Claude credentials
+ * file. The schema has varied across CLI versions — sometimes the
+ * token is at the top level under `accessToken`/`access_token`,
+ * sometimes nested inside a `claudeAiOauth` object. We probe both
+ * shapes and return the first non-empty string we find.
+ *
+ * Exported for unit tests.
+ */
+export function extractAccessToken(obj: Record<string, unknown>): string | null {
+  const direct =
+    pickString(obj, "accessToken") ?? pickString(obj, "access_token");
+  if (direct) return direct;
+  const nested = obj.claudeAiOauth;
+  if (nested && typeof nested === "object") {
+    const candidate =
+      pickString(nested as Record<string, unknown>, "accessToken") ??
+      pickString(nested as Record<string, unknown>, "access_token");
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Extract the OAuth token's expiry timestamp (epoch ms) from a
+ * parsed credentials file. Tolerant of `expiresAt` (epoch ms) and
+ * `expires_at` (epoch seconds — what some refresh-token responses
+ * return). Returns null when nothing parses.
+ *
+ * Exported for unit tests.
+ */
+export function extractExpiresAt(obj: Record<string, unknown>): number | null {
+  const candidates: unknown[] = [
+    obj.expiresAt,
+    obj.expires_at,
+    (obj.claudeAiOauth as Record<string, unknown> | undefined)?.expiresAt,
+    (obj.claudeAiOauth as Record<string, unknown> | undefined)?.expires_at,
+  ];
+  for (const raw of candidates) {
+    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+      // Heuristic: epoch seconds rather than ms if the value looks
+      // too small to be a millisecond timestamp from the last decade.
+      return raw < 10_000_000_000 ? raw * 1000 : raw;
+    }
+  }
+  return null;
+}
+
+function pickString(obj: Record<string, unknown>, key: string): string | null {
+  const v = obj[key];
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/**
+ * Derive a human-readable subscription label ("Pro", "Max 20x",
+ * "Max 5x") from a parsed Claude credentials file. The `/api/oauth/usage`
+ * endpoint doesn't return a plan field, so we fall back to the
+ * `claudeAiOauth.subscriptionType` + `rateLimitTier` pair the CLI
+ * persists in `.credentials.json`. Verified shape (Phase 0 capture, doc
+ * 135):
+ *
+ *   "claudeAiOauth": {
+ *     ...
+ *     "subscriptionType": "max",
+ *     "rateLimitTier": "default_claude_max_20x"
+ *   }
+ *
+ * Returns null when the file doesn't carry this metadata (older CLI
+ * versions, env-only auth, etc.).
+ *
+ * Exported for unit tests.
+ */
+export function extractPlanLabel(obj: Record<string, unknown>): string | null {
+  const oauth = obj.claudeAiOauth;
+  if (!oauth || typeof oauth !== "object") return null;
+  const o = oauth as Record<string, unknown>;
+  const subscriptionType = pickString(o, "subscriptionType");
+  const rateLimitTier = pickString(o, "rateLimitTier");
+
+  // The "Max 20x" / "Max 5x" multiplier lives in the rate-limit tier
+  // string ("default_claude_max_20x"). Parse it out so users see the
+  // exact tier the CLI advertises in its `/usage` screen.
+  if (rateLimitTier) {
+    const maxMatch = /claude_max_(\d+x)/i.exec(rateLimitTier);
+    if (maxMatch) return `Max ${maxMatch[1]}`;
+    const proMatch = /claude_pro/i.exec(rateLimitTier);
+    if (proMatch) return "Pro";
+  }
+
+  if (subscriptionType) {
+    switch (subscriptionType.toLowerCase()) {
+      case "max": return "Max";
+      case "pro": return "Pro";
+      case "free": return "Free";
+      // Unknown subscription string — surface it verbatim with a
+      // capitalized initial so the user has *something* to see, rather
+      // than null.
+      default:
+        return subscriptionType.charAt(0).toUpperCase() + subscriptionType.slice(1);
+    }
+  }
+
+  return null;
+}
+
 /** Path where Claude CLI stores credentials. */
 const CLAUDE_CONFIG_DIR = "/root/.claude";
 
@@ -142,6 +247,73 @@ export class AuthManager extends EventEmitter {
 
   get authenticated(): boolean {
     return this._authenticated;
+  }
+
+  /**
+   * Resolve the OAuth access token Claude Code uses to call
+   * `api.anthropic.com`, for use by the subscription-limits provider
+   * (see docs/135-subscription-limits-badge/plan.md). Returns the
+   * token with its source so callers can decide policy:
+   *
+   *   - `source: "env"` — `ANTHROPIC_AUTH_TOKEN` was set. Used in
+   *     ShipIt-in-ShipIt dogfooding and any setup where the outer
+   *     orchestrator forwards an OAuth bearer to the inner.
+   *   - `source: "file"` — read from one of the credential files the
+   *     CLI persists (`.credentials.json` / `credentials.json` /
+   *     `auth.json` in `/root/.claude`). The CLI refreshes that file
+   *     in place on each turn, so as long as the agent has run
+   *     within the OAuth token's TTL (~1 hour) the value is fresh.
+   *
+   *   Returns `{ token: null, reason: "api-key" }` when only
+   *   `ANTHROPIC_API_KEY` is set (pay-as-you-go path — no
+   *   subscription quota to surface), and
+   *   `{ token: null, reason: "not-authenticated" }` when nothing
+   *   resembling an OAuth bearer is present.
+   *
+   *   `expiresAt` is best-effort: the credentials file usually
+   *   contains an `expiresAt` field but the schema has varied
+   *   across CLI versions. The provider doesn't trust it
+   *   strictly — a stale token is detected at fetch time via 401.
+   */
+  async getAccessToken(): Promise<
+    | { token: string; source: "file" | "env"; expiresAt: number | null; plan: string | null }
+    | { token: null; reason: "api-key" | "not-authenticated" }
+  > {
+    const envToken = process.env.ANTHROPIC_AUTH_TOKEN?.trim();
+    if (envToken) {
+      // Env-token path (dogfooding) doesn't carry plan metadata; the
+      // outer orchestrator's token is the canonical source.
+      return { token: envToken, source: "env", expiresAt: null, plan: null };
+    }
+
+    const credentialFiles = [".credentials.json", "credentials.json", "auth.json"];
+    for (const fileName of credentialFiles) {
+      const fullPath = path.join(CLAUDE_CONFIG_DIR, fileName);
+      if (!existsSync(fullPath)) continue;
+      try {
+        const raw = readFileSync(fullPath, "utf-8");
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const token = extractAccessToken(parsed);
+        if (token) {
+          return {
+            token,
+            source: "file",
+            expiresAt: extractExpiresAt(parsed),
+            plan: extractPlanLabel(parsed),
+          };
+        }
+      } catch (err) {
+        // Malformed JSON or unexpected shape — try the next candidate
+        // file; if none have a token, fall through to the "API key
+        // or not authenticated" branch below.
+        console.warn(`[auth] Failed to parse ${fullPath}:`, err instanceof Error ? err.message : err);
+      }
+    }
+
+    if (process.env.ANTHROPIC_API_KEY?.trim()) {
+      return { token: null, reason: "api-key" };
+    }
+    return { token: null, reason: "not-authenticated" };
   }
 
   /**
