@@ -575,11 +575,14 @@ async function sweepOrphanMergedBranches(
       }
       const gitInstance = createRepoGit(cacheDir);
       try {
-        const freshUrl = githubAuthManager.getAuthenticatedCloneUrl(repo.url);
-        await gitInstance.setRemoteUrl(freshUrl);
+        // Normalize the cache's origin URL to the plain form. Credentials
+        // come from the global git credential helper, not the URL.
+        // Overwriting here also strips any token a previous code path baked
+        // into the URL, so push errors below cannot leak the token.
+        await gitInstance.setRemoteUrl(repo.url);
       } catch (err) {
         console.warn(
-          `[disk-janitor] failed to refresh remote URL for ${cacheDir}:`,
+          `[disk-janitor] failed to normalize remote URL for ${cacheDir}:`,
           getMessage(err),
         );
         return null;

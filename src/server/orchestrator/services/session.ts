@@ -135,19 +135,22 @@ export async function unarchiveSession(
     const cacheExists = await fs.stat(cacheDir).then(() => true, () => false);
     if (!cacheExists) {
       await fs.mkdir(cacheDir, { recursive: true });
-      const cloneUrl = githubAuthManager.getAuthenticatedCloneUrl(session.remoteUrl);
       const cacheGit = createRepoGit(cacheDir);
-      await cacheGit.cloneBare(cloneUrl);
+      // Plain URL — the global credential helper provides the token.
+      await cacheGit.cloneBare(session.remoteUrl);
       repoStore.add(session.remoteUrl);
       repoStore.setReady(session.remoteUrl);
     }
 
     const cacheGit = createRepoGit(cacheDir);
 
-    // Refresh remote URL with current token before fetching
+    // Normalize the cache's origin URL to the plain form. Caches cloned by
+    // earlier code paths may have a token embedded in their origin URL —
+    // overwriting it here means any subsequent error message (including the
+    // bare cache's own config dump) cannot leak the token. Credential
+    // resolution happens via the global helper, not the URL.
     if (githubAuthManager.authenticated) {
-      const freshUrl = githubAuthManager.getAuthenticatedCloneUrl(session.remoteUrl);
-      await cacheGit.setRemoteUrl(freshUrl);
+      await cacheGit.setRemoteUrl(session.remoteUrl);
     }
 
     // Remove stale remnants
@@ -340,9 +343,11 @@ export async function markMergedAndPruneExcess(
     try {
       const cacheDir = getBareCacheDir(session.remoteUrl);
       const cacheGit = createRepoGit(cacheDir);
+      // Normalize origin URL to the plain form (no embedded token). The
+      // global credential helper supplies the token on push; an embedded
+      // URL would leak it if the delete-branch push errors out.
       if (githubAuthManager?.authenticated) {
-        const freshUrl = githubAuthManager.getAuthenticatedCloneUrl(session.remoteUrl);
-        await cacheGit.setRemoteUrl(freshUrl);
+        await cacheGit.setRemoteUrl(session.remoteUrl);
       }
       await cacheGit.deleteBranch(session.branch);
     } catch (err) {

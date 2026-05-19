@@ -515,9 +515,12 @@ export async function registerSessionRoutes(
               const exists = await stat(cacheDir).then(() => true, () => false);
               if (!exists) {
                 await mkdir(cacheDir, { recursive: true });
-                const cloneUrl = deps.githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
                 const cacheGit = createRepoGit(cacheDir);
-                await cacheGit.cloneBare(cloneUrl);
+                // Plain URL — the global git credential helper installed by
+                // GitHubAuthManager provides the token at fetch/clone time.
+                // Embedding it in the URL is redundant and leaks the token
+                // into config files, error messages, and process listings.
+                await cacheGit.cloneBare(repoUrl);
                 console.log("[repos] Cloned bare cache:", cacheDir);
               }
               deps.repoStore.setReady(repoUrl);
@@ -732,10 +735,12 @@ export async function registerSessionRoutes(
 
           const cacheGit = createRepoGit(cacheDir);
 
-          // Refresh remote URL with current token before fetching
+          // Normalize the cache's remote.origin.url to the plain URL.
+          // The global credential helper provides the token at fetch time;
+          // an embedded token would leak into config and error messages.
+          // Idempotent — repeated calls just overwrite with the same value.
           if (deps.githubAuthManager.authenticated) {
-            const freshUrl = deps.githubAuthManager.getAuthenticatedCloneUrl(url);
-            await cacheGit.setRemoteUrl(freshUrl);
+            await cacheGit.setRemoteUrl(url);
           }
 
           try {
