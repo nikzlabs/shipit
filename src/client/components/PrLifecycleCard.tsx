@@ -145,14 +145,16 @@ function BranchLabel({
         </TooltipTrigger>
         <TooltipContent
           side="top"
-          className="max-w-lg max-h-96 overflow-auto text-left p-3"
+          className="max-w-lg max-h-96 flex flex-col overflow-hidden text-left p-0"
         >
-          {trimmedBody.length > 0 ? (
-            <MarkdownContent text={trimmedBody} />
-          ) : (
-            <div className="text-(--color-text-primary)">No description</div>
-          )}
-          <div className="mt-2 pt-2 border-t border-(--color-border-secondary) text-(--color-text-tertiary) text-xs sticky bottom-0 bg-(--color-bg-elevated)">
+          <div className="flex-1 min-h-0 overflow-auto p-3">
+            {trimmedBody.length > 0 ? (
+              <MarkdownContent text={trimmedBody} />
+            ) : (
+              <div className="text-(--color-text-primary)">No description</div>
+            )}
+          </div>
+          <div className="shrink-0 border-t border-(--color-border-secondary) text-(--color-text-tertiary) text-xs px-3 py-2">
             Click to copy <span className="font-mono">{headBranch}</span>
           </div>
         </TooltipContent>
