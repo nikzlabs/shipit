@@ -356,6 +356,36 @@ export class StubGitHubAuthManager extends EventEmitter {
   setGraphqlResult(result: unknown) {
     this._graphqlResult = result;
   }
+
+  // ---- Rate-limit state (mirrors the real GitHubAuthManager surface) ----
+
+  private _rateLimit: { limited: boolean; resetAt: number | null; remaining: number | null } = {
+    limited: false,
+    resetAt: null,
+    remaining: null,
+  };
+  getRateLimitState() {
+    return { ...this._rateLimit };
+  }
+  /** Set the rate-limit state returned by `getRateLimitState`. */
+  setRateLimitState(state: { limited: boolean; resetAt: number | null; remaining: number | null }) {
+    this._rateLimit = state;
+  }
+
+  // ---- REST verify probe ----
+
+  private _findPrAnyStateResult: {
+    url: string; number: number; base: string; title: string;
+    state: "open" | "closed"; merged_at: string | null;
+    additions: number; deletions: number;
+  } | null = null;
+  async findPullRequestAnyState(_owner: string, _repo: string, _head: string) {
+    return this._findPrAnyStateResult;
+  }
+  /** Set what `findPullRequestAnyState` returns for the poller's REST verify. */
+  setFindPrAnyStateResult(result: typeof this._findPrAnyStateResult) {
+    this._findPrAnyStateResult = result;
+  }
 }
 
 /**

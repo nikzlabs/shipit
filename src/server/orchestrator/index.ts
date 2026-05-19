@@ -364,6 +364,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses })}\n\n`);
     }
 
+    // GitHub rate-limit state — emit the banner immediately so a refreshed
+    // tab knows polling is paused. The poller's normal transition broadcast
+    // only fires when the limited flag flips, so a connecting client would
+    // miss an in-progress limit without this snapshot.
+    const rateLimit = githubAuthManager.getRateLimitState();
+    if (rateLimit.limited && (rateLimit.resetAt === null || rateLimit.resetAt > Date.now())) {
+      client.write(`event: gh_rate_limited\ndata: ${JSON.stringify({ resetAt: rateLimit.resetAt })}\n\n`);
+    }
+
     client.write(`event: session_list\ndata: ${JSON.stringify({ sessions })}\n\n`);
     const repos = repoStore.list();
     client.write(`event: repo_list\ndata: ${JSON.stringify({ repos })}\n\n`);

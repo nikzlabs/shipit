@@ -40,7 +40,14 @@ import { CiGraceTracker } from "./ci-grace-tracker.js";
 // without an import path change.
 export { parsePrNode, extractHeadSha, extractFailedCheckRuns };
 
-const POLL_INTERVAL_MS = 3_000;
+/**
+ * Per-repo polling cadence. Bumped from 3s to 5s as a cost-control measure:
+ * paired with the GraphQL query downsizing in `pr-status-parser.ts`, this
+ * keeps a single actively-watched repo safely inside the 5,000-points/hour
+ * primary rate-limit budget. Idle-pause + per-session REST verifies cover
+ * the rest. See docs/064-pr-lifecycle-flow/plan.md for the budget math.
+ */
+const POLL_INTERVAL_MS = 5_000;
 /** How long after the last client heartbeat before we consider the user idle (ms). */
 const CLIENT_IDLE_TIMEOUT_MS = 30_000;
 
@@ -57,8 +64,22 @@ export class PrStatusPoller {
   private sessionRepos = new Map<string, string>();
   /** Sessions whose PRs have been merged or closed — excluded from future queries. */
   private mergedSessions = new Set<string>();
-  /** Sessions needing a one-time REST probe to check if a PR already exists (post-restart catch-up). */
-  private pendingCatchUp = new Set<string>();
+  /**
+   * Sessions whose REST verify is currently running. Prevents two overlapping
+   * polls (or a verify + the next poll) from both firing the same REST call.
+   */
+  private inFlightVerify = new Set<string>();
+  /**
+   * Sessions whose absence from the bulk GraphQL result has already been
+   * REST-verified during the current "missing" episode. Cleared when the PR
+   * reappears in a GraphQL response. Without this, every poll would re-fire
+   * a REST probe for any session whose PR is past the `first: N` cap or
+   * whose PR's true state didn't match the bulk view (e.g. due to a transient
+   * GraphQL error window).
+   */
+  private verifiedAbsent = new Set<string>();
+  /** Last broadcast-side rate-limit flag — used to detect transitions. */
+  private lastBroadcastLimited = false;
 
   /** Auto-fix state machine. */
   private autoFix: AutoFixManager;
@@ -137,7 +158,7 @@ export class PrStatusPoller {
     const repoKey = `${parsed.owner}/${parsed.repo}`;
     this.sessionRepos.set(sessionId, repoKey);
     this.mergedSessions.delete(sessionId);
-    this.pendingCatchUp.add(sessionId);
+    this.verifiedAbsent.delete(sessionId);
 
     if (!this.repoTimers.has(repoKey)) {
       this.startPolling(repoKey, parsed.owner, parsed.repo);
@@ -152,7 +173,8 @@ export class PrStatusPoller {
     this.autoFix.delete(sessionId);
     this.autoMerge.delete(sessionId);
     this.lastPrNodes.delete(sessionId);
-    this.pendingCatchUp.delete(sessionId);
+    this.inFlightVerify.delete(sessionId);
+    this.verifiedAbsent.delete(sessionId);
     this.graceTracker.untrack(sessionId);
 
     if (repoKey) {
@@ -164,6 +186,14 @@ export class PrStatusPoller {
    * Seed in-memory `lastKnown` from persisted snapshots so archived sessions
    * appear in `getAllStatuses()` immediately after server restart. Called
    * once during app startup, before any clients connect.
+   *
+   * Deliberately does NOT seed `mergedSessions` from persisted merged/closed
+   * snapshots: a previous orchestrator process could have written that state
+   * from a rate-limit-induced false promotion, and trusting it would keep
+   * the session permanently skipped by the poller. The first poll's bulk
+   * GraphQL view + the REST verify fallback will re-confirm the state and
+   * either re-add to `mergedSessions` (real merge) or unstick `lastKnown`
+   * (PR is actually still open).
    */
   loadPersisted(): void {
     const persisted = this.sessionManager.getAllPrStatuses();
@@ -174,9 +204,6 @@ export class PrStatusPoller {
       delete clean.autoFix;
       delete clean.autoMerge;
       this.lastKnown.set(snapshot.sessionId, clean);
-      if (clean.prState === "merged" || clean.prState === "closed") {
-        this.mergedSessions.add(snapshot.sessionId);
-      }
     }
   }
 
@@ -329,6 +356,23 @@ export class PrStatusPoller {
 
   private async pollRepo(repoKey: string, owner: string, repo: string): Promise<void> {
     if (!this.githubAuth.authenticated) return;
+
+    // ---- Rate-limit gate ----
+    // Read once and react to transitions. We never call GraphQL while in
+    // limited state — that would just bounce off another 403 and waste
+    // budget once the window resets.
+    const rateLimit = this.githubAuth.getRateLimitState();
+    const stillLimited = rateLimit.limited && (rateLimit.resetAt === null || rateLimit.resetAt > Date.now());
+
+    if (stillLimited && !this.lastBroadcastLimited) {
+      this.lastBroadcastLimited = true;
+      this.sseBroadcast("gh_rate_limited", { resetAt: rateLimit.resetAt });
+    } else if (!stillLimited && this.lastBroadcastLimited) {
+      this.lastBroadcastLimited = false;
+      this.sseBroadcast("gh_rate_limited_cleared", {});
+    }
+
+    if (stillLimited) return;
     if (this.canSkipPoll()) return;
 
     const result = await this.githubAuth.graphqlQuery<GraphQLResponse>(
@@ -336,7 +380,10 @@ export class PrStatusPoller {
       { owner, name: repo },
     );
 
-    // graphqlQuery returns the full JSON body, so the data is at the top level
+    // graphqlQuery returns the full JSON body, so the data is at the top level.
+    // It already returns `null` on RATE_LIMITED responses (transport or
+    // body-level), so a null result here means "do nothing" — never "all PRs
+    // closed."
     const prNodes = (result as unknown as GraphQLResponse)?.data?.repository?.pullRequests?.nodes;
     if (!prNodes) return;
 
@@ -372,6 +419,9 @@ export class PrStatusPoller {
       const prNode = prByBranch.get(session.branch);
 
       if (prNode) {
+        // PR is back in the bulk view — clear the "verified absent" marker so
+        // a future disappearance triggers a fresh verify.
+        this.verifiedAbsent.delete(session.id);
         // Cache the PR node for extracting check details later
         this.lastPrNodes.set(session.id, prNode);
 
@@ -424,30 +474,26 @@ export class PrStatusPoller {
           updates.push(withAutomation);
         }
       } else {
-        // PR disappeared from OPEN results — it may have been merged
-        const prev = this.lastKnown.get(session.id);
-        if (prev) {
-          const mergedSummary: PrStatusSummary = { ...prev, prState: "merged" };
-          this.lastKnown.set(session.id, mergedSummary);
-          this.sessionManager.setPrStatus(session.id, mergedSummary);
-          this.mergedSessions.add(session.id);
-          this.lastPrNodes.delete(session.id);
-          updates.push(mergedSummary);
-
-          // Trigger post-merge archive
-          if (this.onMergeDetectedCb) {
-            this.onMergeDetectedCb(session.id).catch((err: unknown) => {
-              console.error(`[pr-poller] Post-merge archive error for ${session.id}:`, err);
-            });
-          }
-        } else if (this.pendingCatchUp.has(session.id)) {
-          // First poll with no prior state — fire a one-time REST probe to check
-          // if a PR already exists (e.g., merged before server restart).
-          this.pendingCatchUp.delete(session.id);
-          this.catchUpProbe(session.id, owner, repo, session.branch).catch((err: unknown) => {
-            console.error(`[pr-poller] Catch-up probe error for ${session.id}:`, err);
+        // PR missing from bulk view — could be:
+        //   (a) genuinely merged or closed,
+        //   (b) past the `first: N` pagination cap,
+        //   (c) GraphQL returned a partial response (rate limit, GitHub
+        //       index lag, etc.) that's been classified as success here.
+        //
+        // (b) and (c) used to wrongly promote the session to "merged" on
+        // every poll. We now NEVER promote synchronously — instead route
+        // through a single REST verify per "missing" episode, debounced by
+        // `verifiedAbsent` until the PR reappears in a bulk response.
+        if (this.verifiedAbsent.has(session.id) || this.inFlightVerify.has(session.id)) continue;
+        this.inFlightVerify.add(session.id);
+        this.verifyMissingPr(session.id, owner, repo, session.branch)
+          .catch((err: unknown) => {
+            console.error(`[pr-poller] REST verify error for ${session.id}:`, err);
+          })
+          .finally(() => {
+            this.inFlightVerify.delete(session.id);
+            this.verifiedAbsent.add(session.id);
           });
-        }
       }
     }
 
@@ -458,29 +504,54 @@ export class PrStatusPoller {
   }
 
   /**
-   * One-time REST probe to check if a PR already exists for a session's branch.
-   * Handles the case where a PR was merged/closed before the poller had any prior state
-   * (e.g., after a server restart).
+   * Per-session REST verify of a PR's true state. Fires when a tracked
+   * session's PR is missing from the bulk GraphQL response. The bulk view
+   * can lie in several ways (rate-limit-truncated response, `first: N`
+   * pagination cap, GitHub index lag) — REST gives us a definitive answer
+   * for one PR at a time so we never promote to merged on absence alone.
+   *
+   * Behavior by outcome:
+   *   - No PR found: do nothing. We never had bulk-view confirmation that
+   *     this branch ever had a PR, and we won't fabricate one from REST
+   *     silence either.
+   *   - Open: if `lastKnown` is stuck on merged/closed (recovery from a
+   *     past false promotion), clear the cached state and broadcast a
+   *     removal so the UI drops the bogus PR card. Otherwise: leave state
+   *     alone and wait for the next GraphQL poll to pick the PR back up.
+   *   - Closed or merged: promote, persist, broadcast, and trigger the
+   *     archive callback for merged.
    */
-  private async catchUpProbe(sessionId: string, owner: string, repo: string, branch: string): Promise<void> {
+  private async verifyMissingPr(sessionId: string, owner: string, repo: string, branch: string): Promise<void> {
     const pr = await this.githubAuth.findPullRequestAnyState(owner, repo, branch);
-    if (!pr) return; // No PR found — session stays in "ready" phase
+    if (!pr) return;
 
     const isMerged = pr.merged_at !== null;
     const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
 
-    // If the PR is still open, the next GraphQL poll will pick it up — skip
-    if (prState === "open") return;
+    if (prState === "open") {
+      // Stuck-merged recovery: a previous (likely rate-limit-induced) false
+      // promotion left lastKnown pinned to merged/closed. Clear it so the
+      // UI drops the card; the next successful GraphQL poll will repopulate.
+      const prev = this.lastKnown.get(sessionId);
+      if (prev && (prev.prState === "merged" || prev.prState === "closed")) {
+        this.lastKnown.delete(sessionId);
+        this.mergedSessions.delete(sessionId);
+        this.lastPrNodes.delete(sessionId);
+        this.sessionManager.setPrStatus(sessionId, null);
+        this.sseBroadcast("pr_status", { updates: [], removals: [sessionId] });
+      }
+      return;
+    }
 
+    // Terminal state — merged or closed-without-merge. Build a summary
+    // mirroring the previous catchUpProbe shape (placeholder checks /
+    // mergeable, since REST doesn't give us a rollup and the PR is now
+    // past CI either way).
     const summary: PrStatusSummary = {
       sessionId,
       prNumber: pr.number,
       prUrl: pr.url,
       prTitle: pr.title,
-      // catchUpProbe only fires for merged/closed PRs (returns early for open)
-      // — body isn't shown for terminal states, so we don't pay the extra
-      // REST call to fetch it. The next GraphQL poll would re-populate it
-      // anyway if the PR were re-opened.
       prBody: "",
       prState,
       baseBranch: pr.base,
@@ -488,8 +559,6 @@ export class PrStatusPoller {
       insertions: pr.additions,
       deletions: pr.deletions,
       checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
-      // PR is merged/closed — mergeability is moot. Use "unknown" since we
-      // didn't actually query GraphQL for it.
       mergeable: "unknown",
       autoMergeEnabled: false,
     };
@@ -499,7 +568,6 @@ export class PrStatusPoller {
     this.mergedSessions.add(sessionId);
     this.sseBroadcast("pr_status", { updates: [summary] });
 
-    // Trigger post-merge archive for merged PRs (not for closed-without-merge)
     if (isMerged && this.onMergeDetectedCb) {
       this.onMergeDetectedCb(sessionId).catch((err: unknown) => {
         console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);

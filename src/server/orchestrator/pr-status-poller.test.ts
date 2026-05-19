@@ -58,6 +58,9 @@ function makeGitHubAuth(graphqlResult: unknown = null, restProbeResult: unknown 
     authenticated: true,
     graphqlQuery: vi.fn().mockResolvedValue(graphqlResult),
     findPullRequestAnyState: vi.fn().mockResolvedValue(restProbeResult),
+    // Poller reads this on every tick; default to "not limited" so existing
+    // tests don't need to know about the rate-limit gate.
+    getRateLimitState: vi.fn().mockReturnValue({ limited: false, resetAt: null, remaining: null }),
   } as unknown as GitHubAuthManager;
 }
 
@@ -375,16 +378,29 @@ describe("PrStatusPoller", () => {
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
 
     // Second poll — same data, no broadcast
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
   });
 
-  it("detects merged PR when it disappears from OPEN results", async () => {
-    // First poll: PR exists
+  it("promotes to merged via REST verify when PR disappears from OPEN results", async () => {
+    // First poll: PR exists.
     const withPr = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
     };
-    githubAuth = makeGitHubAuth(withPr);
+    // REST verify mock confirms the PR was actually merged (avoids the false
+    // promotion path where a partial GraphQL response would wrongly mark
+    // every tracked session merged).
+    const mergedRestResult = {
+      url: "https://github.com/owner/repo/pull/42",
+      number: 42,
+      base: "main",
+      title: "Add feature",
+      state: "closed" as const,
+      merged_at: "2026-05-19T12:00:00Z",
+      additions: 100,
+      deletions: 20,
+    };
+    githubAuth = makeGitHubAuth(withPr, mergedRestResult);
     sessionManager = makeSessionManager([
       { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
     ]);
@@ -395,17 +411,164 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
 
-    // Second poll: PR disappeared (merged)
+    // Second poll: PR disappeared from the bulk view. The poller now fires a
+    // REST verify rather than promoting to merged synchronously.
     const withoutPr = {
       data: { repository: { pullRequests: { nodes: [] } } },
     };
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue(withoutPr);
 
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(sseBroadcast).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(5_000);
+    // Flush the REST verify's pending microtasks.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
 
-    const lastCall = sseBroadcast.mock.calls[1] as [string, { updates: { sessionId: string; prState: string }[] }];
-    expect(lastCall[1].updates[0]).toMatchObject({ sessionId: "s1", prState: "merged" });
+    const mergedCall = sseBroadcast.mock.calls.find(([, payload]) => {
+      const updates = (payload as { updates?: { prState?: string }[] }).updates;
+      return updates?.some((u) => u.prState === "merged");
+    });
+    expect(mergedCall).toBeDefined();
+  });
+
+  it("does NOT promote to merged when REST verify reports the PR is still open (rate-limit poisoning)", async () => {
+    // Scenario: GraphQL returns an empty PR list (e.g. due to a rate-limit
+    // response that slipped past header detection, or a transient hiccup).
+    // The bulk view says "no PRs," REST verify says "still open." This is
+    // the corruption case that previously wedged sessions until restart.
+    const withPr = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    };
+    const stillOpenRestResult = {
+      url: "https://github.com/owner/repo/pull/42",
+      number: 42,
+      base: "main",
+      title: "Add feature",
+      state: "open" as const,
+      merged_at: null,
+      additions: 100,
+      deletions: 20,
+    };
+    githubAuth = makeGitHubAuth(withPr, stillOpenRestResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    sseBroadcast.mockClear();
+
+    // PR disappears from bulk view.
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [] } } },
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // REST verify ran but did NOT promote — no merge broadcast at all.
+    expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
+    const promotedToMerged = sseBroadcast.mock.calls.some(([, payload]) => {
+      const updates = (payload as { updates?: { prState?: string }[] }).updates;
+      return updates?.some((u) => u.prState === "merged");
+    });
+    expect(promotedToMerged).toBe(false);
+  });
+
+  it("debounces REST verify: two consecutive missing-PR polls only fire one verify", async () => {
+    const withoutPr = {
+      data: { repository: { pullRequests: { nodes: [] } } },
+    };
+    const stillOpenRestResult = {
+      url: "https://github.com/owner/repo/pull/42",
+      number: 42,
+      base: "main",
+      title: "Add feature",
+      state: "open" as const,
+      merged_at: null,
+      additions: 0,
+      deletions: 0,
+    };
+    githubAuth = makeGitHubAuth(withoutPr, stillOpenRestResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // First poll fires verify (the catch-up case — no prior bulk record).
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
+
+    // Subsequent polls with the PR still missing should NOT re-verify —
+    // `verifiedAbsent` is sticky until the PR reappears in a bulk response.
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
+  });
+
+  it("REST verify unsticks lastKnown when it is stale-merged but the PR is actually open", async () => {
+    // Setup: persisted snapshot says "merged" (the bug we're recovering
+    // from), but REST verify confirms the PR is still open. The poller
+    // should clear the snapshot and broadcast a removal.
+    const persistedMerged = {
+      sessionId: "s1",
+      prNumber: 42,
+      prUrl: "u",
+      prTitle: "t",
+      prBody: "",
+      prState: "merged" as const,
+      baseBranch: "main",
+      headBranch: "shipit/abc-feature",
+      insertions: 0,
+      deletions: 0,
+      checks: { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 },
+      mergeable: "unknown" as const,
+      autoMergeEnabled: false,
+    };
+    const stillOpenRestResult = {
+      url: "https://github.com/owner/repo/pull/42",
+      number: 42,
+      base: "main",
+      title: "Add feature",
+      state: "open" as const,
+      merged_at: null,
+      additions: 0,
+      deletions: 0,
+    };
+    githubAuth = makeGitHubAuth(
+      { data: { repository: { pullRequests: { nodes: [] } } } },
+      stillOpenRestResult,
+    );
+    sessionManager = {
+      list: () => [{
+        id: "s1",
+        title: "Test",
+        createdAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+        branch: "shipit/abc-feature",
+        remoteUrl: "https://github.com/owner/repo",
+      }],
+      get: () => undefined,
+      setPrStatus: vi.fn(),
+      getAllPrStatuses: vi.fn().mockReturnValue([persistedMerged]),
+    } as unknown as SessionManager;
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.loadPersisted();
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sessionManager.setPrStatus).toHaveBeenCalledWith("s1", null);
+    expect(sseBroadcast).toHaveBeenCalledWith(
+      "pr_status",
+      expect.objectContaining({ updates: [], removals: ["s1"] }),
+    );
   });
 
   describe("PR snapshot persistence", () => {
@@ -654,7 +817,7 @@ describe("PrStatusPoller", () => {
     poller.recordClientActivity();
 
     // Next poll tick should fire
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(5_000);
     expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBeforeIdle);
   });
 });
@@ -931,7 +1094,7 @@ describe("PrStatusPoller — catch-up probe", () => {
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
 
     // Second poll — no catch-up (already consumed)
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
 
     poller.destroy();
@@ -1131,7 +1294,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     readdirSyncSpy.mockReturnValue(["ci.yml"] as never);
 
     // Advance to the next poll tick.
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(5_000);
 
     // Now the override should fire — state flips to "pending".
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
@@ -1343,7 +1506,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     });
 
     // Trigger a poll on the new SHA (timer + slop for promise resolution).
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(5_000);
 
     sseBroadcast.mockClear();
 
@@ -1418,7 +1581,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       data: { repository: { pullRequests: { nodes: [pendingNode] } } },
     });
 
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(5_000);
 
     // Then the check succeeds, well past the original grace window. If the
     // tracker hadn't been cleared when checks first arrived, a stale "grace
@@ -1454,5 +1617,152 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     existsSyncSpy.mockRestore();
     readdirSyncSpy.mockRestore();
     poller.destroy();
+  });
+});
+
+describe("PrStatusPoller — GitHub rate-limit handling", () => {
+  let sseBroadcast: ReturnType<typeof vi.fn<(event: string, data: unknown) => void>>;
+  let poller: PrStatusPoller;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    sseBroadcast = vi.fn();
+  });
+
+  afterEach(() => {
+    poller?.destroy();
+    vi.useRealTimers();
+  });
+
+  it("skips polling and emits gh_rate_limited when GitHub reports a limit", async () => {
+    const githubAuth = {
+      authenticated: true,
+      graphqlQuery: vi.fn().mockResolvedValue(null),
+      findPullRequestAnyState: vi.fn(),
+      getRateLimitState: vi.fn().mockReturnValue({
+        limited: true,
+        resetAt: Date.now() + 60_000,
+        remaining: 0,
+      }),
+    } as unknown as GitHubAuthManager;
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // No GraphQL call because the poller saw `limited: true` first.
+    expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
+    // Banner event fired exactly once on entering limited state.
+    const rateLimitedCalls = sseBroadcast.mock.calls.filter(([event]) => event === "gh_rate_limited");
+    expect(rateLimitedCalls).toHaveLength(1);
+    expect(rateLimitedCalls[0][1]).toMatchObject({ resetAt: expect.any(Number) });
+
+    // Subsequent ticks while still limited should NOT re-broadcast (debounce
+    // on entering the state).
+    await vi.advanceTimersByTimeAsync(10_000);
+    const stillOnceRateLimited = sseBroadcast.mock.calls.filter(([event]) => event === "gh_rate_limited");
+    expect(stillOnceRateLimited).toHaveLength(1);
+  });
+
+  it("emits gh_rate_limited_cleared when the limit lifts", async () => {
+    let limited = true;
+    const githubAuth = {
+      authenticated: true,
+      graphqlQuery: vi.fn().mockResolvedValue({
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      }),
+      findPullRequestAnyState: vi.fn(),
+      getRateLimitState: vi.fn().mockImplementation(() => ({
+        limited,
+        resetAt: limited ? Date.now() + 60_000 : null,
+        remaining: limited ? 0 : 4999,
+      })),
+    } as unknown as GitHubAuthManager;
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sseBroadcast.mock.calls.some(([event]) => event === "gh_rate_limited")).toBe(true);
+
+    // Limit lifts — next tick should clear and resume.
+    limited = false;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const clearedCalls = sseBroadcast.mock.calls.filter(([event]) => event === "gh_rate_limited_cleared");
+    expect(clearedCalls).toHaveLength(1);
+    // And a normal pr_status broadcast follows.
+    const prStatusCalls = sseBroadcast.mock.calls.filter(([event]) => event === "pr_status");
+    expect(prStatusCalls.length).toBeGreaterThan(0);
+  });
+
+  it("loadPersisted does NOT seed mergedSessions from a persisted merged snapshot", async () => {
+    // This is the key recovery behavior: if the previous process wrote a
+    // merged status (potentially from a rate-limit-induced false promotion),
+    // we don't trust it. The first poll's REST verify gets the final say.
+    const persistedMerged = {
+      sessionId: "s1",
+      prNumber: 42,
+      prUrl: "u",
+      prTitle: "t",
+      prBody: "",
+      prState: "merged" as const,
+      baseBranch: "main",
+      headBranch: "shipit/abc-feature",
+      insertions: 0,
+      deletions: 0,
+      checks: { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 },
+      mergeable: "unknown" as const,
+      autoMergeEnabled: false,
+    };
+    const stillOpen = {
+      url: "https://github.com/owner/repo/pull/42",
+      number: 42,
+      base: "main",
+      title: "Add feature",
+      state: "open" as const,
+      merged_at: null,
+      additions: 0,
+      deletions: 0,
+    };
+    const githubAuth = {
+      authenticated: true,
+      graphqlQuery: vi.fn().mockResolvedValue({
+        data: { repository: { pullRequests: { nodes: [] } } },
+      }),
+      findPullRequestAnyState: vi.fn().mockResolvedValue(stillOpen),
+      getRateLimitState: vi.fn().mockReturnValue({ limited: false, resetAt: null, remaining: null }),
+    } as unknown as GitHubAuthManager;
+    const sessionManager = {
+      list: () => [{
+        id: "s1",
+        title: "Test",
+        createdAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+        branch: "shipit/abc-feature",
+        remoteUrl: "https://github.com/owner/repo",
+      }],
+      get: () => undefined,
+      setPrStatus: vi.fn(),
+      getAllPrStatuses: vi.fn().mockReturnValue([persistedMerged]),
+    } as unknown as SessionManager;
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.loadPersisted();
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // First poll iterates s1 (not skipped — it's not in mergedSessions anymore),
+    // sees PR missing from bulk, fires verify.
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(githubAuth.findPullRequestAnyState).toHaveBeenCalled();
   });
 });
