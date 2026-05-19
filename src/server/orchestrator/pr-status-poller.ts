@@ -570,7 +570,7 @@ export class PrStatusPoller {
       prNumber: pr.number,
       prUrl: pr.url,
       prTitle: pr.title,
-      prBody: "",
+      prBody: pr.body,
       prState,
       baseBranch: pr.base,
       headBranch: branch,

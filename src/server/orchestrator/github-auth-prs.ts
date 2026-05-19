@@ -96,7 +96,7 @@ export async function findPullRequestAnyState(
   repo: string,
   head: string,
 ): Promise<{
-  url: string; number: number; base: string; title: string;
+  url: string; number: number; base: string; title: string; body: string;
   state: "open" | "closed"; merged_at: string | null;
   additions: number; deletions: number;
 } | null> {
@@ -107,7 +107,7 @@ export async function findPullRequestAnyState(
 
   if (!res.ok) return null;
   const prs = (await res.json()) as {
-    html_url: string; number: number; base: { ref: string }; title: string;
+    html_url: string; number: number; base: { ref: string }; title: string; body: string | null;
     state: "open" | "closed"; merged_at: string | null;
     additions: number; deletions: number;
   }[];
@@ -139,6 +139,7 @@ export async function findPullRequestAnyState(
     number: pr.number,
     base: pr.base.ref,
     title: pr.title,
+    body: pr.body ?? "",
     state: pr.state,
     merged_at: pr.merged_at,
     additions,

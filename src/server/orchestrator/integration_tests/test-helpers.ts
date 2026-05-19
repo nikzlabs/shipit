@@ -378,7 +378,7 @@ export class StubGitHubAuthManager extends EventEmitter {
   // ---- REST verify probe ----
 
   private _findPrAnyStateResult: {
-    url: string; number: number; base: string; title: string;
+    url: string; number: number; base: string; title: string; body: string;
     state: "open" | "closed"; merged_at: string | null;
     additions: number; deletions: number;
   } | null = null;

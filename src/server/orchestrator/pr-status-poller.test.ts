@@ -25,6 +25,7 @@ function makeGraphQLPrNode(overrides: Record<string, unknown> = {}) {
   return {
     number: 42,
     title: "Add feature",
+    body: "Original description",
     url: "https://github.com/owner/repo/pull/42",
     state: "OPEN",
     mergeable: "MERGEABLE",
@@ -398,6 +399,62 @@ describe("PrStatusPoller", () => {
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
   });
 
+  it("broadcasts when the PR title changes (edited on github.com or by the agent)", async () => {
+    githubAuth = makeGitHubAuth({
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ title: "Original title" })] } } },
+    });
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sseBroadcast).toHaveBeenCalledTimes(1);
+
+    // Title edited upstream — equality must NOT swallow the change.
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ title: "Updated title" })] } } },
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sseBroadcast).toHaveBeenCalledTimes(2);
+    expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
+      updates: expect.arrayContaining([
+        expect.objectContaining({ sessionId: "s1", prTitle: "Updated title" }),
+      ]),
+    }));
+  });
+
+  it("broadcasts when the PR body changes (edited on github.com or by the agent)", async () => {
+    githubAuth = makeGitHubAuth({
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ body: "Old description" })] } } },
+    });
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sseBroadcast).toHaveBeenCalledTimes(1);
+
+    // Description edited upstream.
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ body: "New description" })] } } },
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sseBroadcast).toHaveBeenCalledTimes(2);
+    expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
+      updates: expect.arrayContaining([
+        expect.objectContaining({ sessionId: "s1", prBody: "New description" }),
+      ]),
+    }));
+  });
+
   it("promotes to merged via REST verify when PR disappears from OPEN results", async () => {
     // First poll: PR exists.
     const withPr = {
@@ -411,6 +468,7 @@ describe("PrStatusPoller", () => {
       number: 42,
       base: "main",
       title: "Add feature",
+      body: "",
       state: "closed" as const,
       merged_at: "2026-05-19T12:00:00Z",
       additions: 100,
@@ -459,6 +517,7 @@ describe("PrStatusPoller", () => {
       number: 42,
       base: "main",
       title: "Add feature",
+      body: "",
       state: "open" as const,
       merged_at: null,
       additions: 100,
@@ -501,6 +560,7 @@ describe("PrStatusPoller", () => {
       number: 42,
       base: "main",
       title: "Add feature",
+      body: "",
       state: "open" as const,
       merged_at: null,
       additions: 0,
@@ -550,6 +610,7 @@ describe("PrStatusPoller", () => {
       number: 42,
       base: "main",
       title: "Add feature",
+      body: "",
       state: "open" as const,
       merged_at: null,
       additions: 0,
@@ -1025,6 +1086,7 @@ describe("PrStatusPoller — catch-up probe", () => {
       number: 99,
       base: "main",
       title: "Merged feature",
+      body: "",
       state: "closed" as const,
       merged_at: "2024-01-01T00:00:00Z",
       additions: 50,
@@ -1064,6 +1126,7 @@ describe("PrStatusPoller — catch-up probe", () => {
       number: 88,
       base: "main",
       title: "Closed feature",
+      body: "",
       state: "closed" as const,
       merged_at: null,
       additions: 30,
@@ -1817,6 +1880,7 @@ describe("PrStatusPoller — GitHub rate-limit handling", () => {
       number: 42,
       base: "main",
       title: "Add feature",
+      body: "",
       state: "open" as const,
       merged_at: null,
       additions: 0,
