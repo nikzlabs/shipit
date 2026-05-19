@@ -230,11 +230,21 @@ export class GitHubAuthManager extends EventEmitter {
   /**
    * Mark the current token as invalid — the orchestrator just got a
    * "Authentication failed" / "Invalid username or token" back from a git
-   * push, fetch, or pull. Clears credentials and emits `token_invalid` so
-   * the SSE layer (wired in `app-lifecycle.ts`) can push the new auth
-   * state to every connected client and surface a toast. Returns `false`
+   * push, fetch, or pull. Verifies the token against `GET /user` first:
+   * if the token is still globally valid, the failure is repo-specific
+   * (e.g. a fine-grained PAT whose scope doesn't include this repo) and
+   * the stored token is preserved. Only when the verification call also
+   * fails do we clear credentials and emit `token_invalid` so the SSE
+   * layer (wired in `app-lifecycle.ts`) can push the new auth state to
+   * every connected client and surface a toast. Returns `false`
    * (without emitting) when no token is currently stored — that path
    * keeps the call idempotent if multiple git operations fail at once.
+   *
+   * The verification step is what stops a single per-repo 401 from
+   * dropping a working token: the original PR #506 cleared on the first
+   * git auth error, which (combined with the over-broad `isGitAuthError`
+   * match before that was tightened) wiped freshly-added tokens whenever
+   * a stale workspace clone couldn't authenticate.
    *
    * Calling this is preferable to plain `clearCredentials()` because it
    * gives the UI a reason string ("auto-push failed: …") to display, and
@@ -242,8 +252,22 @@ export class GitHubAuthManager extends EventEmitter {
    * client would have to poll `/api/bootstrap` to discover the auth state
    * changed.
    */
-  markTokenInvalid(reason: string): boolean {
-    if (!this._token) return false;
+  async markTokenInvalid(reason: string): Promise<boolean> {
+    const token = this._token;
+    if (!token) return false;
+    // Verify the token against the GitHub API. A successful `GET /user`
+    // proves the token is still valid for the authenticated user even if
+    // a per-repo git operation just failed — most often a fine-grained
+    // PAT whose repository scope doesn't include the failing repo.
+    // Preserve the token in that case.
+    const userInfo = await validateGitHubToken(token);
+    if (userInfo) {
+      console.warn(
+        `[github-auth] Git auth error (${reason}) — but token is still valid for ${userInfo.username}; ` +
+          `treating as repo-specific (e.g. fine-grained PAT scope), not clearing credentials`,
+      );
+      return false;
+    }
     console.warn(`[github-auth] GitHub token invalidated (${reason}) — clearing credentials and notifying clients`);
     this.clearCredentials();
     this.emit("token_invalid", { reason });

@@ -42,11 +42,20 @@ export async function pushToOrigin(git: GitManager): Promise<string | null> {
 const FETCH_STALL_TIMEOUT_MS = 30_000;
 
 /**
- * Check if a git operation failed because the supplied credential is
- * invalid/expired/revoked. GitHub (and other HTTPS remotes) surface this
- * on stderr from `git push`, `git fetch`, and `git pull` with one of a
- * handful of well-known strings — match all of them so we catch the
- * failure regardless of which command emitted it.
+ * Check if a git operation failed because the remote *rejected* the
+ * supplied credential (expired / revoked / wrong). GitHub (and other
+ * HTTPS remotes) surface this on stderr from `git push`, `git fetch`,
+ * and `git pull` with one of a handful of well-known strings — match
+ * all of them so we catch the failure regardless of which command emitted it.
+ *
+ * IMPORTANT: this matches *remote rejection* only. It deliberately does
+ * NOT match "could not read Username" / "terminal prompts disabled" —
+ * those signal a *client-side configuration* problem (no credential
+ * helper, or the helper returned nothing), and a valid stored token
+ * must not be invalidated when the local repo simply isn't wired up to
+ * use it. The fix for that path is to (re-)configure credentials and
+ * retry, not to drop the user's token. See `configureGitCredentials`
+ * and the reuse path in `refreshCloneToLatestMain`.
  *
  * Centralizing the detection lets the orchestrator surface a "your GitHub
  * token is invalid — please re-authenticate" signal to the UI rather
@@ -59,8 +68,6 @@ export function isGitAuthError(err: unknown): boolean {
     msg.includes("Authentication failed") ||
     msg.includes("Invalid username or token") ||
     msg.includes("Password authentication is not supported") ||
-    msg.includes("could not read Username") ||
-    msg.includes("terminal prompts disabled") ||
     msg.includes("Bad credentials") ||
     msg.includes("401 Unauthorized") ||
     /\b(403|401)\b.*(Forbidden|Unauthorized)/i.test(msg)
@@ -112,7 +119,12 @@ export function isGitAuthError(err: unknown): boolean {
  */
 export async function fetchAndResolveDefaultBranch(
   workspaceDir: string,
-  onAuthError?: (err: Error) => void,
+  // Returns `unknown` so callers can pass either a sync `() => void` or an
+  // async `() => Promise<void>` (e.g. `markTokenInvalid`, which verifies the
+  // token against `GET /user` before clearing). The fire-and-forget call
+  // below intentionally does not await the result — the fetch path doesn't
+  // need to block on credential invalidation.
+  onAuthError?: (err: Error) => unknown,
 ): Promise<{ resetTarget: string | undefined; fetched: boolean; fetchDurationMs: number; authError: boolean }> {
   const t0 = Date.now();
   // `GIT_TERMINAL_PROMPT=0` makes git fail fast instead of prompting on the
