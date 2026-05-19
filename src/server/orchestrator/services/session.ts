@@ -299,6 +299,11 @@ const MAX_MERGED_SESSIONS_PER_REPO = 3;
  * per-repository limit. Called when a PR merge is detected — keeps the most
  * recent merged sessions alive.
  *
+ * Also deletes the remote head branch (best-effort) for the just-merged
+ * session so feature branches don't accumulate on GitHub. Many repos enable
+ * "automatically delete head branches" upstream, in which case our delete is
+ * a harmless no-op; for repos without that setting, this is the cleanup.
+ *
  * The limit is applied **per repository**: only merged sessions in the same
  * repo as the just-merged session are considered for archiving. Sessions in
  * other repos are left alone, even if they themselves have many merged
@@ -310,6 +315,8 @@ export async function markMergedAndPruneExcess(
   getBareCacheDir: (url: string) => string,
   sessionId: string,
   pruneVolumes?: (sessionId: string) => Promise<void>,
+  createRepoGit?: (dir: string) => RepoGit,
+  githubAuthManager?: GitHubAuthManager,
 ): Promise<{ sessions: SessionInfo[] }> {
   sessionManager.markMerged(sessionId);
 
@@ -320,6 +327,30 @@ export async function markMergedAndPruneExcess(
   const session = sessionManager.get(sessionId);
   if (!session?.remoteUrl) {
     return { sessions: sessionManager.list() };
+  }
+
+  // Delete the remote head branch for the just-merged session. Best-effort:
+  // - GitHub's "automatically delete head branches" setting may have already
+  //   removed it (RepoGit.deleteBranch swallows "remote ref does not exist").
+  // - Token may have rotated since the bare cache was cloned; refresh the
+  //   embedded credentials before pushing (mirrors `unarchiveSession`).
+  // - Any other failure (network, permissions) is logged and ignored —
+  //   branch cleanup is housekeeping, not a blocker for marking merged.
+  if (createRepoGit && session.branch) {
+    try {
+      const cacheDir = getBareCacheDir(session.remoteUrl);
+      const cacheGit = createRepoGit(cacheDir);
+      if (githubAuthManager?.authenticated) {
+        const freshUrl = githubAuthManager.getAuthenticatedCloneUrl(session.remoteUrl);
+        await cacheGit.setRemoteUrl(freshUrl);
+      }
+      await cacheGit.deleteBranch(session.branch);
+    } catch (err) {
+      console.warn(
+        `[server] Branch cleanup failed for merged session ${sessionId} (branch ${session.branch}):`,
+        String(err),
+      );
+    }
   }
 
   const merged = sessionManager.listMergedNotArchivedByRemoteUrl(session.remoteUrl);
