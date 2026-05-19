@@ -3,6 +3,7 @@ import { CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
 import { getSavedModelId } from "../utils/local-storage.js";
+import { useSessionStore } from "../stores/session-store.js";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -35,12 +36,31 @@ export function ModelAgentSelector({
 }: ModelAgentSelectorProps) {
   const [pendingModel, setPendingModel] = useState<string | undefined>(getSavedModelId);
 
+  // The active session's persisted model (set when the user picked a model for
+  // this session, survives reconnects). This is the authoritative answer for
+  // "what model is this session using" — read from the session store rather
+  // than localStorage, which only remembers the last UI selection across
+  // sessions. Without this, switching from a newly-created session (model X)
+  // to an existing session (model Y) would show X — see the bug fix in this
+  // file's history.
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const sessions = useSessionStore((s) => s.sessions);
+  const currentSession = sessionId ? sessions.find((s) => s.id === sessionId) : undefined;
+  const sessionModel = currentSession?.model;
+
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   // Resolve the CLI's raw model ID (e.g. "claude-sonnet-4-6") to an alias ("sonnet")
   const resolvedModel = modelInfo?.model ? resolveModelAlias(modelInfo.model) : undefined;
-  // The effective model: what the CLI reported, user's pending selection, localStorage, or first in list
+  // The effective model fallback chain:
+  //   1. Live CLI report from this turn (resolvedModel)
+  //   2. Pending UI selection (only meaningful before the session has started)
+  //   3. The session's own persisted model — wins over localStorage so switching
+  //      sessions doesn't bleed the last-selected model into other sessions
+  //   4. localStorage's last selection (used for the new-session view)
+  //   5. First model the active agent supports
   const savedModel = getSavedModelId();
-  const effectiveModel = resolvedModel ?? pendingModel ?? savedModel ?? activeAgent?.models[0];
+  const effectiveModel =
+    resolvedModel ?? pendingModel ?? sessionModel ?? savedModel ?? activeAgent?.models[0];
   const displayName = formatModelName(effectiveModel ?? "");
   // Only allow opening before first message AND not in a loading transition
   const canOpen = !hasActiveSession && !disabled;
