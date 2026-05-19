@@ -213,6 +213,70 @@ describe("CodexAuthManager / startDeviceFlow", () => {
     expect(calls).toHaveLength(1);
   });
 
+  // Regression: page reload mid-flow used to leave the Sign-in button dead
+  // because (a) the server's `proc` was still polling, so a second
+  // `startDeviceFlow()` no-op'd, and (b) the original `codex_auth_pending`
+  // event was already consumed by the previous browser tab. Now the manager
+  // re-emits the cached pending event so a fresh click after reload swaps
+  // the UI back to the Step 1 / Step 2 view.
+  it("re-emits the cached pending event when start is called against a running flow", async () => {
+    const { proc, spawnFn } = makeSpawn();
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
+    const events: CodexAuthPendingEvent[] = [];
+    mgr.on("codex_auth_pending", (ev: CodexAuthPendingEvent) => events.push(ev));
+
+    mgr.startDeviceFlow();
+    emitStdout(
+      proc.stdout,
+      "https://auth.openai.com/codex/device\nK8RE-8MIGC\n",
+    );
+    await new Promise((r) => setImmediate(r));
+    expect(events).toHaveLength(1);
+
+    // Second click — simulates the user hitting "Sign in" after a page
+    // reload. The manager must re-broadcast so the new UI catches up.
+    mgr.startDeviceFlow();
+    expect(events).toHaveLength(2);
+    expect(events[1]).toEqual(events[0]);
+  });
+
+  it("getPendingEvent returns the live event while in-flight and null otherwise", async () => {
+    const { proc, spawnFn } = makeSpawn();
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
+    expect(mgr.getPendingEvent()).toBeNull();
+
+    mgr.startDeviceFlow();
+    // No URL/code yet — still null.
+    expect(mgr.getPendingEvent()).toBeNull();
+
+    emitStdout(proc.stdout, "https://auth.openai.com/codex/device\nK8RE-8MIGC\n");
+    await new Promise((r) => setImmediate(r));
+    const snap = mgr.getPendingEvent();
+    expect(snap).not.toBeNull();
+    expect(snap?.verificationUri).toBe("https://auth.openai.com/codex/device");
+    expect(snap?.userCode).toBe("K8RE-8MIGC");
+
+    mgr.cancel();
+    expect(mgr.getPendingEvent()).toBeNull();
+  });
+
+  it("clears the cached pending event on successful completion", async () => {
+    const { proc, spawnFn } = makeSpawn();
+    let credsOnDisk = false;
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => credsOnDisk });
+    const complete = new Promise<void>((resolve) => mgr.once("codex_auth_complete", () => resolve()));
+
+    mgr.startDeviceFlow();
+    emitStdout(proc.stdout, "https://auth.openai.com/codex/device\nK8RE-8MIGC\n");
+    await new Promise((r) => setImmediate(r));
+    expect(mgr.getPendingEvent()).not.toBeNull();
+
+    credsOnDisk = true;
+    proc.emit("close", 0);
+    await complete;
+    expect(mgr.getPendingEvent()).toBeNull();
+  });
+
   it("emits codex_auth_failed with reason=timeout after the device-code TTL", async () => {
     vi.useFakeTimers();
     const { proc, spawnFn } = makeSpawn();
