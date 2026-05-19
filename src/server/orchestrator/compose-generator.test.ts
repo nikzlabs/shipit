@@ -212,6 +212,27 @@ services:
     const p = writeCompose(dir, "version: '3'\n");
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("must have a `services` section");
   });
+
+  it("wraps YAML parse errors as ComposeValidationError (e.g. mid-merge conflict markers)", () => {
+    const dir = setup();
+    // Simulates a real-world case where the user is mid-merge and the
+    // compose file contains git conflict markers. The orchestrator's
+    // file-change → reconcile path catches this and we want it logged as
+    // a one-line ComposeValidationError, not a YAMLParseError stack.
+    const p = writeCompose(dir, `services:
+  web:
+    image: node:20
+<<<<<<< HEAD
+    ports: ["5173:5173"]
+=======
+    ports: ["3000:3000"]
+>>>>>>> feature
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false }))
+      .toThrow(ComposeValidationError);
+    expect(() => parseComposeFile(p, { dockerSocket: false }))
+      .toThrow(/not valid YAML/);
+  });
 });
 
 describe("generateComposeOverride", () => {
