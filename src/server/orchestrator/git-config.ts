@@ -76,6 +76,42 @@ export function setGitIdentity(name: string, email: string): void {
 }
 
 /**
+ * Install the GitHub token as a *global* git credential helper.
+ *
+ * Single source of truth: the orchestrator and every session container both
+ * point `GIT_CONFIG_GLOBAL` at `/credentials/.gitconfig`, so writing here
+ * means every workspace — already-cloned, warm, freshly-claimed, agent-driven
+ * — inherits the token automatically without a per-workspace backfill. This
+ * is the fix for the W4-class bug: warm sessions created while the token was
+ * (temporarily) cleared had no local credential helper, and the per-session
+ * backfill in `setGitHubToken` skips warm rows (filtered by `list()`),
+ * leaving them permanently broken until the next claim.
+ *
+ * Stored as a shell one-liner that echoes the token on demand — matches the
+ * format `configureGitCredentials` already writes per-workspace, so behavior
+ * is identical at the git layer.
+ */
+export function setGlobalCredentialHelper(token: string): void {
+  // `!f() { echo "password=TOKEN"; echo "username=x-access-token"; }; f` —
+  // git invokes the value as a shell command when the leading char is `!`.
+  const helper = `!f() { echo "password=${token}"; echo "username=x-access-token"; }; f`;
+  execFileSync("git", ["config", "--global", "credential.helper", helper]);
+}
+
+/**
+ * Remove the global credential helper. Called on logout / token-invalidation
+ * so a freshly-rotated PAT (or a "signed out" state) is not silently masked
+ * by a stale helper still echoing the old token.
+ */
+export function clearGlobalCredentialHelper(): void {
+  try {
+    execFileSync("git", ["config", "--global", "--unset", "credential.helper"]);
+  } catch {
+    // Already unset — `git config --unset` exits non-zero in that case.
+  }
+}
+
+/**
  * One-time migration: if the legacy shipit-credentials.json has a git identity
  * but the global git config doesn't, copy it over.
  */

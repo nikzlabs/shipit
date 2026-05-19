@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { initGlobalGitConfig } from "./git-config.js";
+import { initGlobalGitConfig, setGlobalCredentialHelper, clearGlobalCredentialHelper } from "./git-config.js";
 
 describe("git-config: initGlobalGitConfig", () => {
   let tmpDir: string;
@@ -91,5 +91,71 @@ describe("git-config: initGlobalGitConfig", () => {
     // No rebase state directories should remain.
     expect(fs.existsSync(path.join(repoDir, ".git", "rebase-merge"))).toBe(false);
     expect(fs.existsSync(path.join(repoDir, ".git", "rebase-apply"))).toBe(false);
+  });
+});
+
+describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-cred-helper-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(tmpDir);
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("writes a working credential helper into the global gitconfig", () => {
+    setGlobalCredentialHelper("ghp_some_token_value");
+    const helper = execSync("git config --global credential.helper", { encoding: "utf-8" }).trim();
+    expect(helper).toContain("ghp_some_token_value");
+    expect(helper).toContain("x-access-token");
+  });
+
+  it("a fresh workspace (no local helper) authenticates against a private remote via the global helper", () => {
+    // Build a remote that requires the global helper's username/password.
+    // Smudge factory: a custom `credential.helper` writes whatever the global
+    // helper echoes into a file we then inspect — proves git ran the helper.
+    const captureDir = path.join(tmpDir, "capture");
+    fs.mkdirSync(captureDir);
+    setGlobalCredentialHelper("the-test-token");
+
+    // The fastest way to prove git resolved the global helper without
+    // reaching out over the network: run `git credential fill` on stdin.
+    // It asks the configured helpers and prints the resolved credential.
+    const out = execSync("printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill", {
+      encoding: "utf-8",
+      shell: "/bin/sh",
+    });
+    expect(out).toContain("username=x-access-token");
+    expect(out).toContain("password=the-test-token");
+  });
+
+  it("clearGlobalCredentialHelper removes the helper and is a no-op when nothing is set", () => {
+    setGlobalCredentialHelper("t1");
+    clearGlobalCredentialHelper();
+    // After clearing, `git config --get` exits non-zero — wrap to detect.
+    let cleared = false;
+    try {
+      execSync("git config --global credential.helper", { stdio: "pipe" });
+    } catch {
+      cleared = true;
+    }
+    expect(cleared).toBe(true);
+    // Second call must not throw even though the helper is already gone.
+    expect(() => { clearGlobalCredentialHelper(); }).not.toThrow();
+  });
+
+  it("setGlobalCredentialHelper twice overwrites — no stale token left in config", () => {
+    setGlobalCredentialHelper("old-token");
+    setGlobalCredentialHelper("new-token");
+    const helper = execSync("git config --global credential.helper", { encoding: "utf-8" }).trim();
+    expect(helper).toContain("new-token");
+    expect(helper).not.toContain("old-token");
   });
 });

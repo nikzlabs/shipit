@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import type { CredentialStore } from "./credential-store.js";
-import { setGitIdentity } from "./git-config.js";
+import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper } from "./git-config.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl } from "./github-auth-prs.js";
@@ -108,14 +108,28 @@ export class GitHubAuthManager extends EventEmitter {
     const diskToken = this.credentialStore.getGithubToken();
     if (diskToken) {
       this._token = diskToken;
+      // Rewrite the global credential helper on every boot. The orchestrator
+      // process may have started before any session was active, so this is
+      // the only place that guarantees the global helper matches the stored
+      // token after a restart (or after a token-rotate that crashed mid-write).
+      try { setGlobalCredentialHelper(diskToken); } catch (err) {
+        console.error("[github-auth] Failed to install global credential helper on boot:", err);
+      }
       return true;
     }
     const envToken = process.env.GITHUB_TOKEN?.trim();
     if (envToken) {
       this._token = envToken;
+      try { setGlobalCredentialHelper(envToken); } catch (err) {
+        console.error("[github-auth] Failed to install global credential helper on boot (env token):", err);
+      }
       return true;
     }
     this._token = null;
+    // No token — make sure the global helper isn't left over from a previous
+    // boot. Otherwise stale credentials silently authenticate git operations
+    // until they're rejected by the remote.
+    try { clearGlobalCredentialHelper(); } catch { /* nothing to clear */ }
     return false;
   }
 
@@ -142,6 +156,18 @@ export class GitHubAuthManager extends EventEmitter {
 
     // Persist token
     this.credentialStore.setGithubToken(trimmed);
+
+    // Install the credential helper *globally* so every workspace
+    // (orchestrator-side and every session container — both inherit
+    // `GIT_CONFIG_GLOBAL=/credentials/.gitconfig`) picks up the new token
+    // without needing a per-workspace backfill. The legacy per-session
+    // backfill in `setGitHubToken` still runs as defense-in-depth, but
+    // this is the line that fixes warm sessions created while the token
+    // was temporarily cleared — those don't appear in `list()` and so
+    // were never backfilled before.
+    try { setGlobalCredentialHelper(trimmed); } catch (err) {
+      console.error("[github-auth] Failed to install global credential helper:", err);
+    }
 
     // Set global git identity from GitHub profile
     this.setGitIdentityFromGitHub(userInfo);
@@ -225,6 +251,12 @@ export class GitHubAuthManager extends EventEmitter {
     this._username = null;
     this._avatarUrl = null;
     this.credentialStore.clearGithubToken();
+    // Drop the global credential helper too — otherwise the file at
+    // `/credentials/.gitconfig` keeps echoing the now-revoked token to
+    // every git operation in every workspace until a fresh token arrives.
+    try { clearGlobalCredentialHelper(); } catch (err) {
+      console.error("[github-auth] Failed to clear global credential helper:", err);
+    }
   }
 
   /**
