@@ -494,7 +494,7 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText(/PR #42 merged/)).toBeInTheDocument();
+    expect(screen.getByText(/Merged: Add feature/)).toBeInTheDocument();
     expect(screen.getByTitle("PR #42 merged")).toBeInTheDocument();
   });
 
