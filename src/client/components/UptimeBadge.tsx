@@ -7,25 +7,13 @@ interface UptimeBadgeProps {
 }
 
 /**
- * Format an elapsed-millisecond span into a compact human label:
- *   < 60s   → "Ns"
- *   < 1h    → "Mm Ss"
- *   < 1d    → "Hh Mm"
- *   >= 1d   → "Dd Hh"
- *
- * Negative values (clock skew between server and client) clamp to 0.
+ * Format an elapsed-millisecond span as total minutes ("Nm"). Sub-minute
+ * spans render as "0m". Negative values (clock skew between server and
+ * client) clamp to 0.
  */
 export function formatUptime(elapsedMs: number): string {
-  const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
-  const days = Math.floor(totalSec / 86_400);
-  const hours = Math.floor((totalSec % 86_400) / 3600);
-  const minutes = Math.floor((totalSec % 3600) / 60);
-  const seconds = totalSec % 60;
-
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
-  return `${seconds}s`;
+  const totalMin = Math.max(0, Math.floor(elapsedMs / 60_000));
+  return `${totalMin}m`;
 }
 
 /**
