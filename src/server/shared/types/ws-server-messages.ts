@@ -11,6 +11,7 @@ import type {
 } from "./github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogEntry, WsClearLogs } from "./terminal-types.js";
 import type { WsUsageStats, WsUsageUpdate, WsTurnUsageUpdate } from "./usage-types.js";
+import type { SubscriptionLimitsMap } from "./usage-limits-types.js";
 
 export interface WsAgentEvent {
   type: "agent_event";
@@ -226,6 +227,25 @@ export interface WsTurnDiff {
   toCommit: string;
   files: FileDiff[];
   stats: { totalInsertions: number; totalDeletions: number; filesChanged: number };
+}
+
+// ---- Subscription limits ----
+
+/**
+ * Server → Client (SSE only): account-wide subscription rate-limit
+ * snapshots per agent. Sent on `/api/events` initial connect and
+ * whenever any provider's snapshot changes (success → success delta,
+ * success → error transition, sign-out → key removed).
+ *
+ * The payload is a complete map — providers missing from `limits`
+ * have either no provider registered, `canFetch() === false`, or have
+ * been signed out. The client replaces its store map wholesale.
+ *
+ * See docs/135-subscription-limits-badge/plan.md.
+ */
+export interface WsSubscriptionLimits {
+  type: "subscription_limits";
+  limits: SubscriptionLimitsMap;
 }
 
 // ---- Agent registry server messages ----
@@ -738,4 +758,5 @@ export type WsServerMessage =
   | WsRebaseStarted
   | WsRebaseConflicts
   | WsRebaseComplete
-  | WsRebaseAborted;
+  | WsRebaseAborted
+  | WsSubscriptionLimits;

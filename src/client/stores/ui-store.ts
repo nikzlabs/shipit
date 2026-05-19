@@ -7,7 +7,7 @@ import type {
 } from "../components/UsageModal.js";
 import type { ModelInfo } from "../components/StatusBar.js";
 import type { ToastData } from "../components/Toast.js";
-import type { AgentId, DockerMemoryStats } from "../../server/shared/types.js";
+import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap } from "../../server/shared/types.js";
 import {
   getSavedAgentId,
   saveAgentId,
@@ -84,6 +84,14 @@ interface UiState {
    * the orchestrator. `null` until the SSE handshake completes.
    */
   processStartedAt: number | null;
+  /**
+   * Account-wide subscription rate-limit snapshots, keyed by agent id.
+   * Driven by the `subscription_limits` SSE broadcast; the server
+   * replaces the map wholesale on every tick so sign-outs / unfetchable
+   * providers propagate naturally (missing key → no pill).
+   * See docs/135-subscription-limits-badge/plan.md.
+   */
+  subscriptionLimits: SubscriptionLimitsMap;
 
   // Actions
   setRightTab: (tab: RightTab) => void;
@@ -105,6 +113,7 @@ interface UiState {
   setToast: (toast: ToastData | null) => void;
   setDockerMemory: (stats: DockerMemoryStats | null) => void;
   setProcessStartedAt: (epochMs: number | null) => void;
+  setSubscriptionLimits: (limits: SubscriptionLimitsMap) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
   reset: () => void;
 
@@ -134,6 +143,7 @@ const initialState = {
   bootstrapLoaded: false,
   dockerMemory: null as DockerMemoryStats | null,
   processStartedAt: null as number | null,
+  subscriptionLimits: {} as SubscriptionLimitsMap,
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -187,6 +197,8 @@ export const useUiStore = create<UiState>((set) => ({
   setDockerMemory: (dockerMemory) => set({ dockerMemory }),
 
   setProcessStartedAt: (processStartedAt) => set({ processStartedAt }),
+
+  setSubscriptionLimits: (subscriptionLimits) => set({ subscriptionLimits }),
 
   setBootstrapLoaded: (bootstrapLoaded) => set({ bootstrapLoaded }),
 

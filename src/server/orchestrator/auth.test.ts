@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { AUTH_URL_PATTERNS, AuthManager, extractAuthUrl, extractUrlFromBuffer } from "./auth.js";
+import {
+  AUTH_URL_PATTERNS,
+  AuthManager,
+  extractAccessToken,
+  extractAuthUrl,
+  extractExpiresAt,
+  extractPlanLabel,
+  extractUrlFromBuffer,
+} from "./auth.js";
 
 describe("AUTH_URL_PATTERNS", () => {
   it("matches Anthropic console URLs", () => {
@@ -232,5 +240,88 @@ describe("AuthManager.checkCredentials", () => {
     const mgr = new AuthManager();
     expect(mgr.checkCredentials()).toBe(true);
     expect(mgr.authenticated).toBe(true);
+  });
+});
+
+describe("extractAccessToken", () => {
+  it("returns the top-level accessToken when present", () => {
+    expect(extractAccessToken({ accessToken: "tok-1" })).toBe("tok-1");
+  });
+
+  it("falls back to snake_case access_token", () => {
+    expect(extractAccessToken({ access_token: "tok-2" })).toBe("tok-2");
+  });
+
+  it("reads the nested claudeAiOauth shape", () => {
+    expect(extractAccessToken({ claudeAiOauth: { accessToken: "nested" } })).toBe("nested");
+  });
+
+  it("returns null when no token shape is recognized", () => {
+    expect(extractAccessToken({ unrelated: "shape" })).toBeNull();
+    expect(extractAccessToken({ accessToken: "" })).toBeNull();
+  });
+});
+
+describe("extractExpiresAt", () => {
+  it("returns ms-precision timestamps verbatim", () => {
+    expect(extractExpiresAt({ expiresAt: 1_700_000_000_000 })).toBe(1_700_000_000_000);
+  });
+
+  it("upconverts second-precision timestamps", () => {
+    expect(extractExpiresAt({ expires_at: 1_700_000_000 })).toBe(1_700_000_000_000);
+  });
+
+  it("reads nested claudeAiOauth.expiresAt", () => {
+    expect(extractExpiresAt({ claudeAiOauth: { expiresAt: 1_700_000_000_000 } })).toBe(1_700_000_000_000);
+  });
+
+  it("returns null when nothing parses", () => {
+    expect(extractExpiresAt({ expiresAt: "soon" })).toBeNull();
+    expect(extractExpiresAt({})).toBeNull();
+  });
+});
+
+describe("extractPlanLabel", () => {
+  // Mirrors the exact shape captured during doc 135 Phase 0 against a
+  // real Anthropic Max-20x credentials file.
+  it("renders 'Max 20x' from rateLimitTier=default_claude_max_20x", () => {
+    expect(extractPlanLabel({
+      claudeAiOauth: {
+        subscriptionType: "max",
+        rateLimitTier: "default_claude_max_20x",
+      },
+    })).toBe("Max 20x");
+  });
+
+  it("renders 'Max 5x' from rateLimitTier=default_claude_max_5x", () => {
+    expect(extractPlanLabel({
+      claudeAiOauth: {
+        subscriptionType: "max",
+        rateLimitTier: "default_claude_max_5x",
+      },
+    })).toBe("Max 5x");
+  });
+
+  it("renders 'Pro' from a Pro-shaped rateLimitTier", () => {
+    expect(extractPlanLabel({
+      claudeAiOauth: { subscriptionType: "pro", rateLimitTier: "default_claude_pro" },
+    })).toBe("Pro");
+  });
+
+  it("falls back to subscriptionType when rateLimitTier is unrecognized", () => {
+    expect(extractPlanLabel({
+      claudeAiOauth: { subscriptionType: "pro", rateLimitTier: "future_tier_we_dont_know_yet" },
+    })).toBe("Pro");
+  });
+
+  it("titlecases an unknown subscriptionType so we have *something* to render", () => {
+    expect(extractPlanLabel({
+      claudeAiOauth: { subscriptionType: "enterprise" },
+    })).toBe("Enterprise");
+  });
+
+  it("returns null when the file has no oauth metadata", () => {
+    expect(extractPlanLabel({})).toBeNull();
+    expect(extractPlanLabel({ claudeAiOauth: {} })).toBeNull();
   });
 });

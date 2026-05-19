@@ -178,6 +178,7 @@ export default function App() {
   const toast = useUiStore((s) => s.toast);
   const dockerMemory = useUiStore((s) => s.dockerMemory);
   const processStartedAt = useUiStore((s) => s.processStartedAt);
+  const subscriptionLimits = useUiStore((s) => s.subscriptionLimits);
 
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
 
@@ -883,6 +884,7 @@ export default function App() {
         githubAuthenticated={githubStatus.authenticated}
         dockerMemory={dockerMemory}
         processStartedAt={processStartedAt}
+        subscriptionLimits={subscriptionLimits}
         onNavigateHome={() => navigate("/")}
         onOpenSessions={() => useUiStore.getState().setMobileSidebarOpen(true)}
         showConnectionBanner={!showNewSessionView && !!wsSessionId}
