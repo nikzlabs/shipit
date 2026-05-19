@@ -15,6 +15,7 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import type { UsageManager } from "../usage.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
+import { ensureBareCache } from "../repo-git.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo } from "../../shared/types.js";
 import type { RepoStore } from "../repo-store.js";
@@ -130,19 +131,20 @@ export async function unarchiveSession(
   if (session.remoteUrl && session.workspaceDir) {
     const cacheDir = getBareCacheDir(session.remoteUrl);
 
-    // Ensure bare cache exists (re-clone if it was cleaned up)
-    // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
-    const cacheExists = await fs.stat(cacheDir).then(() => true, () => false);
-    if (!cacheExists) {
-      await fs.mkdir(cacheDir, { recursive: true });
-      const cacheGit = createRepoGit(cacheDir);
-      // Plain URL — the global credential helper provides the token.
-      await cacheGit.cloneBare(session.remoteUrl);
+    // Ensure the bare cache exists — re-clones if missing or corrupt.
+    // Shared with the claim-session slow path so behavior stays consistent.
+    const { git: cacheGit, recovered } = await ensureBareCache(
+      cacheDir,
+      session.remoteUrl,
+      createRepoGit,
+    );
+    if (recovered) {
+      // Keep the repo store in sync — the previous code path called these
+      // unconditionally when it ran its own existence check. Idempotent
+      // (`add` is a no-op for an already-known repo, `setReady` is too).
       repoStore.add(session.remoteUrl);
       repoStore.setReady(session.remoteUrl);
     }
-
-    const cacheGit = createRepoGit(cacheDir);
 
     // Normalize the cache's origin URL to the plain form. Caches cloned by
     // earlier code paths may have a token embedded in their origin URL —

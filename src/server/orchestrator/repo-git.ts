@@ -1,6 +1,48 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
+
+/**
+ * Validate a bare cache directory and re-clone it from the remote if it's
+ * missing or corrupt. Returns the (possibly-fresh) RepoGit instance.
+ *
+ * Called by every path that operates on a bare cache (claim-session,
+ * unarchive). A cache can go missing for reasons outside the orchestrator's
+ * control — manual filesystem wipe, an unmount, an interrupted previous
+ * clone — and the database record (status="ready") doesn't notice. Without
+ * recovery, the next claim-session falls into a slow-path that immediately
+ * blows up with "Cannot use simple-git on a directory that does not exist",
+ * leaving the repo unusable until manual re-add. Lazy re-clone restores
+ * the cache transparently on first touch.
+ *
+ * Detection: a healthy bare cache has a `HEAD` file at its top level.
+ * Missing dir, empty dir, or a partial download all fail this check.
+ *
+ * Recovery: rm + mkdir + `cloneBare(repoUrl)`. The repo store record is
+ * left alone — the caller already trusts it. Idempotent (concurrent
+ * callers will both re-clone, but the slow path is already serialized
+ * per-repo by the claim chain in `api-routes-session.ts`).
+ */
+export async function ensureBareCache(
+  cacheDir: string,
+  repoUrl: string,
+  createRepoGit: (dir: string) => RepoGit,
+): Promise<{ git: RepoGit; recovered: boolean }> {
+  const headPath = path.join(cacheDir, "HEAD");
+  // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom (matches the rest of this codebase)
+  const valid = await fsp.stat(headPath).then((s) => s.isFile(), () => false);
+  if (valid) {
+    return { git: createRepoGit(cacheDir), recovered: false };
+  }
+  console.warn(`[repo-git] Bare cache at ${cacheDir} is missing or corrupt — re-cloning from ${repoUrl}`);
+  await fsp.rm(cacheDir, { recursive: true, force: true });
+  await fsp.mkdir(cacheDir, { recursive: true });
+  const git = createRepoGit(cacheDir);
+  await git.cloneBare(repoUrl);
+  console.log(`[repo-git] Recovered bare cache: ${cacheDir}`);
+  return { git, recovered: true };
+}
 
 /**
  * RepoGit — bare cache management and per-session clone lifecycle.

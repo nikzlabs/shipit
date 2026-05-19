@@ -39,6 +39,7 @@ import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
 import { generateBranchPrefix, fetchAndResolveDefaultBranch } from "./git-utils.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
+import { ensureBareCache } from "./repo-git.js";
 
 /**
  * Fetch latest origin refs and hard-reset a warm session clone to the current
@@ -733,7 +734,12 @@ export async function registerSessionRoutes(
 
           await rm(workspaceDir, { recursive: true, force: true });
 
-          const cacheGit = createRepoGit(cacheDir);
+          // Self-heal a missing or corrupt bare cache. The DB record says
+          // "ready" but the on-disk cache can have been removed out-of-band
+          // (manual wipe, interrupted clone, volume issue). Without recovery
+          // the next two lines would blow up with "Cannot use simple-git on
+          // a directory that does not exist" and the repo would be stuck.
+          const { git: cacheGit } = await ensureBareCache(cacheDir, url, createRepoGit);
 
           // Normalize the cache's remote.origin.url to the plain URL.
           // The global credential helper provides the token at fetch time;
