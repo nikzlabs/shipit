@@ -5,6 +5,7 @@ import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
 import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo } from "../../server/shared/types.js";
 
@@ -105,6 +106,41 @@ export function useServerEvents(): void {
 
     es.addEventListener("auth_complete", () => {
       useSessionStore.getState().setAuthUrl(null);
+    });
+
+    // The orchestrator pushes `github_status` whenever the stored GitHub
+    // token's authenticated state changes outside the normal sign-in /
+    // logout HTTP routes — today that's only "token marked invalid by a
+    // failed git push/fetch/pull" (see `GitHubAuthManager.markTokenInvalid`).
+    // Without this listener the UI keeps believing GitHub is authenticated
+    // until the user reloads, and the only signal of the expired token is
+    // a line buried in the per-session Logs panel.
+    es.addEventListener("github_status", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as {
+        authenticated: boolean;
+        username?: string;
+        avatarUrl?: string;
+        tokenInvalidReason?: string;
+      };
+      useSettingsStore.getState().setGithubStatus({
+        authenticated: data.authenticated,
+        ...(data.username ? { username: data.username } : {}),
+        ...(data.avatarUrl ? { avatarUrl: data.avatarUrl } : {}),
+      });
+      if (data.tokenInvalidReason && !data.authenticated) {
+        const toast: ToastData = {
+          message: "Your GitHub token is invalid or expired. Sign in again to keep pushing.",
+          action: {
+            label: "Sign in",
+            onClick: () => {
+              useUiStore.getState().setSettingsTab("github");
+              useUiStore.getState().setSettingsOpen(true);
+            },
+          },
+          duration: 12000,
+        };
+        useUiStore.getState().setToast(toast);
+      }
     });
 
     es.addEventListener("agent_list", (e: MessageEvent) => {

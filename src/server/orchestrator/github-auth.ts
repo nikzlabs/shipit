@@ -204,6 +204,29 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Mark the current token as invalid — the orchestrator just got a
+   * "Authentication failed" / "Invalid username or token" back from a git
+   * push, fetch, or pull. Clears credentials and emits `token_invalid` so
+   * the SSE layer (wired in `app-lifecycle.ts`) can push the new auth
+   * state to every connected client and surface a toast. Returns `false`
+   * (without emitting) when no token is currently stored — that path
+   * keeps the call idempotent if multiple git operations fail at once.
+   *
+   * Calling this is preferable to plain `clearCredentials()` because it
+   * gives the UI a reason string ("auto-push failed: …") to display, and
+   * because the SSE broadcast is gated on the event — without it the
+   * client would have to poll `/api/bootstrap` to discover the auth state
+   * changed.
+   */
+  markTokenInvalid(reason: string): boolean {
+    if (!this._token) return false;
+    console.warn(`[github-auth] GitHub token invalidated (${reason}) — clearing credentials and notifying clients`);
+    this.clearCredentials();
+    this.emit("token_invalid", { reason });
+    return true;
+  }
+
+  /**
    * Create a new GitHub repository via the API.
    * Returns repo details on success, error message on failure.
    */

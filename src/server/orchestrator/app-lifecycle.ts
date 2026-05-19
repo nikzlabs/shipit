@@ -685,6 +685,7 @@ export function createLogBuffer(): {
 export interface EventWiringDeps {
   authManager: AuthManager;
   codexAuthManager: CodexAuthManager;
+  githubAuthManager: GitHubAuthManager;
   agentRegistry: AgentRegistry;
   defaultAgentId: AgentId;
   sseBroadcast: (event: string, data: unknown) => void;
@@ -692,7 +693,7 @@ export interface EventWiringDeps {
 
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { authManager, codexAuthManager, agentRegistry, defaultAgentId, sseBroadcast } = eventDeps;
+  const { authManager, codexAuthManager, githubAuthManager, agentRegistry, defaultAgentId, sseBroadcast } = eventDeps;
 
   /** Snapshot the current agent list in the SSE-friendly shape. */
   const agentListPayload = () => ({
@@ -736,6 +737,22 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   codexAuthManager.on("codex_auth_failed", (ev: CodexAuthFailedEvent) => {
     console.log("[codex-auth] Device flow failed:", ev.reason, ev.message ?? "");
     sseBroadcast("codex_auth_failed", ev);
+  });
+
+  // ---- GitHub auth event handlers ----
+  // The orchestrator marks the stored token invalid (via
+  // `GitHubAuthManager.markTokenInvalid`) when a git push, fetch, or pull
+  // surfaces an "Authentication failed" / "Invalid username or token"
+  // error. Without this SSE broadcast the user only sees the failure as
+  // a line in the server logs — the UI keeps believing GitHub is
+  // authenticated until they reload the page. Push the updated status to
+  // every connected client so the sign-in card reappears and a toast
+  // points them back to Settings → GitHub.
+  githubAuthManager.on("token_invalid", (ev: { reason: string }) => {
+    sseBroadcast("github_status", {
+      authenticated: false,
+      tokenInvalidReason: ev.reason,
+    });
   });
 }
 
