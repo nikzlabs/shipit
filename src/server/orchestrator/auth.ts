@@ -67,6 +67,59 @@ export function extractUrlFromBuffer(buffer: string): string | null {
   return url.length > 20 ? url : null;
 }
 
+/**
+ * Extract the OAuth access token from a parsed Claude credentials
+ * file. The schema has varied across CLI versions — sometimes the
+ * token is at the top level under `accessToken`/`access_token`,
+ * sometimes nested inside a `claudeAiOauth` object. We probe both
+ * shapes and return the first non-empty string we find.
+ *
+ * Exported for unit tests.
+ */
+export function extractAccessToken(obj: Record<string, unknown>): string | null {
+  const direct =
+    pickString(obj, "accessToken") ?? pickString(obj, "access_token");
+  if (direct) return direct;
+  const nested = obj.claudeAiOauth;
+  if (nested && typeof nested === "object") {
+    const candidate =
+      pickString(nested as Record<string, unknown>, "accessToken") ??
+      pickString(nested as Record<string, unknown>, "access_token");
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Extract the OAuth token's expiry timestamp (epoch ms) from a
+ * parsed credentials file. Tolerant of `expiresAt` (epoch ms) and
+ * `expires_at` (epoch seconds — what some refresh-token responses
+ * return). Returns null when nothing parses.
+ *
+ * Exported for unit tests.
+ */
+export function extractExpiresAt(obj: Record<string, unknown>): number | null {
+  const candidates: unknown[] = [
+    obj.expiresAt,
+    obj.expires_at,
+    (obj.claudeAiOauth as Record<string, unknown> | undefined)?.expiresAt,
+    (obj.claudeAiOauth as Record<string, unknown> | undefined)?.expires_at,
+  ];
+  for (const raw of candidates) {
+    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+      // Heuristic: epoch seconds rather than ms if the value looks
+      // too small to be a millisecond timestamp from the last decade.
+      return raw < 10_000_000_000 ? raw * 1000 : raw;
+    }
+  }
+  return null;
+}
+
+function pickString(obj: Record<string, unknown>, key: string): string | null {
+  const v = obj[key];
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
 /** Path where Claude CLI stores credentials. */
 const CLAUDE_CONFIG_DIR = "/root/.claude";
 
@@ -142,6 +195,66 @@ export class AuthManager extends EventEmitter {
 
   get authenticated(): boolean {
     return this._authenticated;
+  }
+
+  /**
+   * Resolve the OAuth access token Claude Code uses to call
+   * `api.anthropic.com`, for use by the subscription-limits provider
+   * (see docs/135-subscription-limits-badge/plan.md). Returns the
+   * token with its source so callers can decide policy:
+   *
+   *   - `source: "env"` — `ANTHROPIC_AUTH_TOKEN` was set. Used in
+   *     ShipIt-in-ShipIt dogfooding and any setup where the outer
+   *     orchestrator forwards an OAuth bearer to the inner.
+   *   - `source: "file"` — read from one of the credential files the
+   *     CLI persists (`.credentials.json` / `credentials.json` /
+   *     `auth.json` in `/root/.claude`). The CLI refreshes that file
+   *     in place on each turn, so as long as the agent has run
+   *     within the OAuth token's TTL (~1 hour) the value is fresh.
+   *
+   *   Returns `{ token: null, reason: "api-key" }` when only
+   *   `ANTHROPIC_API_KEY` is set (pay-as-you-go path — no
+   *   subscription quota to surface), and
+   *   `{ token: null, reason: "not-authenticated" }` when nothing
+   *   resembling an OAuth bearer is present.
+   *
+   *   `expiresAt` is best-effort: the credentials file usually
+   *   contains an `expiresAt` field but the schema has varied
+   *   across CLI versions. The provider doesn't trust it
+   *   strictly — a stale token is detected at fetch time via 401.
+   */
+  async getAccessToken(): Promise<
+    | { token: string; source: "file" | "env"; expiresAt: number | null }
+    | { token: null; reason: "api-key" | "not-authenticated" }
+  > {
+    const envToken = process.env.ANTHROPIC_AUTH_TOKEN?.trim();
+    if (envToken) {
+      return { token: envToken, source: "env", expiresAt: null };
+    }
+
+    const credentialFiles = [".credentials.json", "credentials.json", "auth.json"];
+    for (const fileName of credentialFiles) {
+      const fullPath = path.join(CLAUDE_CONFIG_DIR, fileName);
+      if (!existsSync(fullPath)) continue;
+      try {
+        const raw = readFileSync(fullPath, "utf-8");
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const token = extractAccessToken(parsed);
+        if (token) {
+          return { token, source: "file", expiresAt: extractExpiresAt(parsed) };
+        }
+      } catch (err) {
+        // Malformed JSON or unexpected shape — try the next candidate
+        // file; if none have a token, fall through to the "API key
+        // or not authenticated" branch below.
+        console.warn(`[auth] Failed to parse ${fullPath}:`, err instanceof Error ? err.message : err);
+      }
+    }
+
+    if (process.env.ANTHROPIC_API_KEY?.trim()) {
+      return { token: null, reason: "api-key" };
+    }
+    return { token: null, reason: "not-authenticated" };
   }
 
   /**

@@ -7,7 +7,7 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap } from "../../server/shared/types.js";
 
 /**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
@@ -222,6 +222,15 @@ export function useServerEvents(): void {
     es.addEventListener("docker_memory", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as DockerMemoryStats;
       useUiStore.getState().setDockerMemory(data);
+    });
+
+    // Account-wide subscription rate-limit snapshots, one entry per
+    // fetchable agent backend. The server replaces the map wholesale on
+    // every broadcast so sign-outs / unfetchable providers propagate
+    // naturally (missing key → no pill). See doc 135.
+    es.addEventListener("subscription_limits", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { limits: SubscriptionLimitsMap };
+      useUiStore.getState().setSubscriptionLimits(data.limits);
     });
 
     // Static process metadata — sent once per SSE connect. The orchestrator's

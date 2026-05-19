@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { AUTH_URL_PATTERNS, AuthManager, extractAuthUrl, extractUrlFromBuffer } from "./auth.js";
+import {
+  AUTH_URL_PATTERNS,
+  AuthManager,
+  extractAccessToken,
+  extractAuthUrl,
+  extractExpiresAt,
+  extractUrlFromBuffer,
+} from "./auth.js";
 
 describe("AUTH_URL_PATTERNS", () => {
   it("matches Anthropic console URLs", () => {
@@ -232,5 +239,43 @@ describe("AuthManager.checkCredentials", () => {
     const mgr = new AuthManager();
     expect(mgr.checkCredentials()).toBe(true);
     expect(mgr.authenticated).toBe(true);
+  });
+});
+
+describe("extractAccessToken", () => {
+  it("returns the top-level accessToken when present", () => {
+    expect(extractAccessToken({ accessToken: "tok-1" })).toBe("tok-1");
+  });
+
+  it("falls back to snake_case access_token", () => {
+    expect(extractAccessToken({ access_token: "tok-2" })).toBe("tok-2");
+  });
+
+  it("reads the nested claudeAiOauth shape", () => {
+    expect(extractAccessToken({ claudeAiOauth: { accessToken: "nested" } })).toBe("nested");
+  });
+
+  it("returns null when no token shape is recognized", () => {
+    expect(extractAccessToken({ unrelated: "shape" })).toBeNull();
+    expect(extractAccessToken({ accessToken: "" })).toBeNull();
+  });
+});
+
+describe("extractExpiresAt", () => {
+  it("returns ms-precision timestamps verbatim", () => {
+    expect(extractExpiresAt({ expiresAt: 1_700_000_000_000 })).toBe(1_700_000_000_000);
+  });
+
+  it("upconverts second-precision timestamps", () => {
+    expect(extractExpiresAt({ expires_at: 1_700_000_000 })).toBe(1_700_000_000_000);
+  });
+
+  it("reads nested claudeAiOauth.expiresAt", () => {
+    expect(extractExpiresAt({ claudeAiOauth: { expiresAt: 1_700_000_000_000 } })).toBe(1_700_000_000_000);
+  });
+
+  it("returns null when nothing parses", () => {
+    expect(extractExpiresAt({ expiresAt: "soon" })).toBeNull();
+    expect(extractExpiresAt({})).toBeNull();
   });
 });
