@@ -31,6 +31,13 @@ interface SettingsState {
    */
   permissionModeBySession: Record<string, PermissionMode>;
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
+  /**
+   * GitHub API rate-limit state, pushed by the server via SSE
+   * (`gh_rate_limited` / `gh_rate_limited_cleared`). `resetAt` is epoch ms;
+   * `null` means the limit is active but the server didn't get a reset
+   * timestamp back from GitHub. `null` whole field means "not limited."
+   */
+  githubRateLimit: { resetAt: number | null } | null;
   pendingFiles: FileContextRef[];
   maxIdleContainers: number;
   agentSystemInstructionsEnabled: boolean;
@@ -62,6 +69,7 @@ interface SettingsState {
   /** Resolve the effective permission mode for a session (or the default). */
   getPermissionMode: (sessionId: string | undefined) => PermissionMode;
   setGithubStatus: (status: { authenticated: boolean; username?: string; avatarUrl?: string }) => void;
+  setGithubRateLimit: (state: { resetAt: number | null } | null) => void;
   addPendingFile: (filePath: string) => void;
   removePendingFile: (index: number) => void;
   clearPendingFiles: () => void;
@@ -87,6 +95,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   permissionMode: "auto",
   permissionModeBySession: {},
   githubStatus: { authenticated: false },
+  githubRateLimit: null,
   pendingFiles: [],
   maxIdleContainers: 5,
   agentSystemInstructionsEnabled: true,
@@ -142,6 +151,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   setGithubStatus: (status) => set({ githubStatus: status }),
+  setGithubRateLimit: (state) => set({ githubRateLimit: state }),
 
   addPendingFile: (filePath) =>
     set((state) => {

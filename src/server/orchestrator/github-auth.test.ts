@@ -439,3 +439,130 @@ describe("validateGitHubToken", () => {
     expect(result).toEqual({ username: "octocat", avatarUrl: "https://example.com/avatar.png", id: 12345, displayName: "The Octocat" });
   });
 });
+
+describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
+  let tmpDir: string;
+  let mgr: GitHubAuthManager;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-graphql-rl-"));
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_test");
+    mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns null and flips rate-limit state on HTTP 403", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("rate limited", {
+        status: 403,
+        headers: {
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": "1747843200", // epoch seconds
+        },
+      }),
+    );
+    const result = await mgr.graphqlQuery("query{ viewer{ login } }");
+    expect(result).toBeNull();
+    const state = mgr.getRateLimitState();
+    expect(state.limited).toBe(true);
+    expect(state.resetAt).toBe(1747843200 * 1000);
+    expect(state.remaining).toBe(0);
+  });
+
+  it("treats 200 + errors[].type RATE_LIMITED as a failure and returns null", async () => {
+    // GitHub's nastiest rate-limit shape: 200 OK with empty-looking data and
+    // the rate-limit signal hiding in `errors[]`. Without the body-level
+    // check, the poller would interpret this as "no PRs" and promote every
+    // tracked session to merged.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        data: { repository: { pullRequests: { nodes: [] } } },
+        errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
+      }), { status: 200, headers: { "x-ratelimit-remaining": "0" } }),
+    );
+    const result = await mgr.graphqlQuery("query{ x }");
+    expect(result).toBeNull();
+    expect(mgr.getRateLimitState().limited).toBe(true);
+  });
+
+  it("treats 200 + errors[].type SECONDARY_RATE_LIMITED similarly", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        data: null,
+        errors: [{ type: "SECONDARY_RATE_LIMITED", message: "abuse limit" }],
+      }), { status: 200 }),
+    );
+    const result = await mgr.graphqlQuery("query{ x }");
+    expect(result).toBeNull();
+    expect(mgr.getRateLimitState().limited).toBe(true);
+  });
+
+  it("clears rate-limit state on a clean 200 response", async () => {
+    // First call: limited.
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("", { status: 429, headers: { "retry-after": "60" } }),
+    );
+    await mgr.graphqlQuery("query{ x }");
+    expect(mgr.getRateLimitState().limited).toBe(true);
+
+    // Second call: success.
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: { viewer: { login: "octocat" } } }), {
+        status: 200,
+        headers: { "x-ratelimit-remaining": "4998" },
+      }),
+    );
+    const result = await mgr.graphqlQuery("query{ viewer{ login } }");
+    expect(result).not.toBeNull();
+    const state = mgr.getRateLimitState();
+    expect(state.limited).toBe(false);
+    expect(state.remaining).toBe(4998);
+  });
+
+  it("honors retry-after header for resetAt when present", async () => {
+    const before = Date.now();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("", { status: 403, headers: { "retry-after": "30" } }),
+    );
+    await mgr.graphqlQuery("query{ x }");
+    const state = mgr.getRateLimitState();
+    expect(state.limited).toBe(true);
+    expect(state.resetAt).not.toBeNull();
+    expect(state.resetAt!).toBeGreaterThanOrEqual(before + 29_000);
+    expect(state.resetAt!).toBeLessThanOrEqual(before + 31_000);
+  });
+
+  it("emits rate_limit_changed only on transitions", async () => {
+    const events: unknown[] = [];
+    mgr.on("rate_limit_changed", (e) => events.push(e));
+
+    // Clean success — was already clean, no event.
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: {} }), {
+        status: 200,
+        headers: { "x-ratelimit-remaining": "4999" },
+      }),
+    );
+    await mgr.graphqlQuery("q");
+    expect(events).toHaveLength(0);
+
+    // Now hit a 403 — transition, should fire.
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("", { status: 403, headers: { "retry-after": "60" } }),
+    );
+    await mgr.graphqlQuery("q");
+    expect(events).toHaveLength(1);
+
+    // Another 403 with same shape — limited stays true, resetAt may shift
+    // slightly because retry-after is relative; the implementation only
+    // emits if `limited` or `resetAt` changed, so this can be 1 or 2 events
+    // depending on timing. Just confirm it didn't silently lose state.
+    expect(mgr.getRateLimitState().limited).toBe(true);
+  });
+});

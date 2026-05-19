@@ -13,6 +13,25 @@ export interface GitHubAuthStatus {
   avatarUrl?: string;
 }
 
+/**
+ * Snapshot of GitHub API rate-limit state. Updated after every GraphQL call.
+ * The poller reads this to decide whether to skip its next tick; the UI
+ * surfaces a banner with a countdown to `resetAt` so users understand why
+ * status updates have paused.
+ *
+ * `limited` flips to true on 403/429 responses, on `retry-after` headers,
+ * and on 200 responses that carry `errors[].type === "RATE_LIMITED"` or
+ * `"SECONDARY_RATE_LIMITED"`. It flips back to false on the next successful
+ * call after `resetAt`, or immediately when a clean 200 lands.
+ */
+export interface GitHubRateLimitState {
+  limited: boolean;
+  /** Epoch ms when the limit is expected to clear, or `null` if unknown. */
+  resetAt: number | null;
+  /** Remaining points in the current window, or `null` if unknown. */
+  remaining: number | null;
+}
+
 export interface GitHubRepoResult {
   success: boolean;
   name?: string;
@@ -51,6 +70,11 @@ export class GitHubAuthManager extends EventEmitter {
   private _avatarUrl: string | null = null;
   private credentialStore: CredentialStore;
   private workspaceDir: string;
+  private _rateLimit: GitHubRateLimitState = {
+    limited: false,
+    resetAt: null,
+    remaining: null,
+  };
 
   constructor(workspaceDir: string, credentialStore: CredentialStore) {
     super();
@@ -489,25 +513,119 @@ export class GitHubAuthManager extends EventEmitter {
     return getJobLogsImpl(this._token, owner, repo, jobId);
   }
 
+  /** Snapshot of the most recent rate-limit state seen on the GraphQL API. */
+  getRateLimitState(): GitHubRateLimitState {
+    return { ...this._rateLimit };
+  }
+
   /**
    * Run a GraphQL query against the GitHub API.
    * Returns the parsed JSON response body, or null if not authenticated.
+   *
+   * Rate-limit awareness: parses `x-ratelimit-*` and `retry-after` headers on
+   * every response and updates `_rateLimit`. Treats both transport-level
+   * rate limiting (HTTP 403/429) and GraphQL-level rate limiting (200 OK
+   * with `errors[].type === "RATE_LIMITED" | "SECONDARY_RATE_LIMITED"`) as
+   * failure and returns `null`. Without the body-level check, GitHub's
+   * common 200 OK + `{"data":{"repository":{"pullRequests":{"nodes":[]}}}}`
+   * + RATE_LIMITED errors response would look identical to "no PRs," which
+   * (in the poller's case) wrongly promotes every tracked session to merged.
+   *
+   * Permanently logs non-2xx and 200-with-errors at `warn` so prod logs
+   * surface this class of failure without per-incident instrumentation.
    */
   async graphqlQuery<T = unknown>(query: string, variables?: Record<string, unknown>): Promise<T | null> {
     if (!this._token) return null;
 
-    const res = await fetch("https://api.github.com/graphql", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this._token}`,
-        "Content-Type": "application/json",
-        "User-Agent": "ShipIt",
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    let res: Response;
+    try {
+      res = await fetch("https://api.github.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this._token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "ShipIt",
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+    } catch (err) {
+      console.warn("[github-auth] graphqlQuery network error:", err instanceof Error ? err.message : err);
+      return null;
+    }
 
-    if (!res.ok) return null;
-    return (await res.json()) as T;
+    const requestId = res.headers.get("x-github-request-id") ?? undefined;
+    const remainingHeader = res.headers.get("x-ratelimit-remaining");
+    const resetHeader = res.headers.get("x-ratelimit-reset");
+    const retryAfterHeader = res.headers.get("retry-after");
+
+    const remaining = remainingHeader !== null ? Number.parseInt(remainingHeader, 10) : null;
+    // `x-ratelimit-reset` is a UNIX timestamp in seconds; convert to ms.
+    const resetFromHeader = resetHeader !== null ? Number.parseInt(resetHeader, 10) * 1000 : null;
+    // `retry-after` is either seconds-from-now or an HTTP date; we only
+    // honor the seconds form (what GitHub actually sends for the abuse
+    // limit) and skip the date case rather than carrying a tiny RFC1123
+    // parser.
+    const retryAfterMs = retryAfterHeader !== null && /^\d+$/.test(retryAfterHeader)
+      ? Number.parseInt(retryAfterHeader, 10) * 1000
+      : null;
+
+    const updatePrev = this._rateLimit;
+    const updateState = (next: GitHubRateLimitState): void => {
+      this._rateLimit = next;
+      if (next.limited !== updatePrev.limited || next.resetAt !== updatePrev.resetAt) {
+        this.emit("rate_limit_changed", { ...next });
+      }
+    };
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      const truncated = text.length > 500 ? `${text.slice(0, 500)}…` : text;
+      console.warn(
+        `[github-auth] graphqlQuery non-2xx: status=${res.status} remaining=${remaining ?? "?"} ` +
+        `reset=${resetFromHeader ?? "?"} retryAfter=${retryAfterMs ?? "?"} requestId=${requestId ?? "?"} body=${truncated}`,
+      );
+      // 403 is GitHub's abuse-limit signal; 429 is the formal rate-limit.
+      if (res.status === 403 || res.status === 429) {
+        const resetAt = retryAfterMs !== null ? Date.now() + retryAfterMs : resetFromHeader;
+        updateState({ limited: true, resetAt, remaining });
+      } else {
+        // Other non-2xx responses don't speak to the rate-limit state; only
+        // refresh the remaining/reset trackers if the headers were present.
+        if (remaining !== null || resetFromHeader !== null) {
+          updateState({ limited: this._rateLimit.limited, resetAt: this._rateLimit.resetAt, remaining });
+        }
+      }
+      return null;
+    }
+
+    const body = await res.json().catch(() => null) as { data?: unknown; errors?: { type?: string; message?: string }[] } | null;
+    if (!body) {
+      console.warn("[github-auth] graphqlQuery: 2xx with unparseable JSON");
+      return null;
+    }
+
+    const errors = body.errors ?? [];
+    const rateLimited = errors.some((e) => e.type === "RATE_LIMITED" || e.type === "SECONDARY_RATE_LIMITED");
+    if (rateLimited) {
+      console.warn(
+        `[github-auth] graphqlQuery RATE_LIMITED: remaining=${remaining ?? "?"} reset=${resetFromHeader ?? "?"} ` +
+        `requestId=${requestId ?? "?"} errors=${JSON.stringify(errors)}`,
+      );
+      updateState({ limited: true, resetAt: resetFromHeader, remaining: remaining ?? 0 });
+      return null;
+    }
+
+    if (errors.length > 0) {
+      // Non-rate-limit GraphQL errors — log so prod can see what's failing
+      // without flipping rate-limit state.
+      console.warn(
+        `[github-auth] graphqlQuery 200 with errors: requestId=${requestId ?? "?"} errors=${JSON.stringify(errors)}`,
+      );
+    }
+
+    // Clean response — clear any prior rate-limit state and refresh trackers.
+    updateState({ limited: false, resetAt: null, remaining });
+    return body as T;
   }
 
   /**

@@ -206,6 +206,19 @@ export function useServerEvents(): void {
       usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals);
     });
 
+    // GitHub API rate-limit state. The server pauses GraphQL polling while
+    // limited and pushes these transitions; the UI surfaces a non-error
+    // banner with a live countdown until `resetAt`. See
+    // src/server/orchestrator/pr-status-poller.ts and github-auth.ts.
+    es.addEventListener("gh_rate_limited", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { resetAt: number | null };
+      useSettingsStore.getState().setGithubRateLimit({ resetAt: data.resetAt });
+    });
+
+    es.addEventListener("gh_rate_limited_cleared", () => {
+      useSettingsStore.getState().setGithubRateLimit(null);
+    });
+
     es.addEventListener("docker_memory", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as DockerMemoryStats;
       useUiStore.getState().setDockerMemory(data);

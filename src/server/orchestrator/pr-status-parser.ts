@@ -10,11 +10,22 @@
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { GitHubDeploymentStatus } from "../shared/types/deployment-types.js";
 
-/** GraphQL query: fetch all open PRs for a repo with CI status. */
+/**
+ * GraphQL query: fetch open PRs for a repo with CI status.
+ *
+ * The connection sizes (`first: 30` PRs, `first: 10` contexts, `last: 3`
+ * deployments) are intentionally bounded to keep the query cost down — at
+ * 5s polling, a single actively-watched repo is right at the 5,000 points/hr
+ * primary rate-limit budget. If a session's PR is past the `first: 30` cap
+ * it gets a per-session REST verify instead (see `verifyMissingPr` in the
+ * poller). Status rollups beyond the first 10 contexts are an extreme edge
+ * case; if it bites, increase here rather than dropping back to a
+ * paginated GraphQL.
+ */
 export const PR_STATUS_QUERY = `
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
-    pullRequests(first: 50, states: [OPEN]) {
+    pullRequests(first: 30, states: [OPEN]) {
       nodes {
         number
         title
@@ -33,7 +44,7 @@ query($owner: String!, $name: String!) {
               oid
               statusCheckRollup {
                 state
-                contexts(first: 25) {
+                contexts(first: 10) {
                   nodes {
                     ... on CheckRun {
                       databaseId
@@ -50,7 +61,7 @@ query($owner: String!, $name: String!) {
                   }
                 }
               }
-              deployments(last: 5) {
+              deployments(last: 3) {
                 nodes {
                   environment
                   latestStatus {

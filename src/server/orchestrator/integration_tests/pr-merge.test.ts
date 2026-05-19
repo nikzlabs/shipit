@@ -445,7 +445,7 @@ describe("PrStatusPoller auto-merge state", () => {
 // ---- Post-merge archive callback ----
 
 describe("PrStatusPoller onMergeDetected callback", () => {
-  it("calls callback when PR disappears from OPEN results", async () => {
+  it("calls callback when PR disappears from OPEN results", { timeout: 15_000 }, async () => {
     const onMergeDetected = vi.fn().mockResolvedValue(undefined);
 
     const poller = new PrStatusPoller({
@@ -499,7 +499,9 @@ describe("PrStatusPoller onMergeDetected callback", () => {
     // Verify PR was picked up
     expect(poller.getStatus(sessionId)).toBeDefined();
 
-    // Second poll: PR gone (merged)
+    // Second poll: PR gone from the bulk view, REST verify confirms merged.
+    // Promotion is now async (REST verify before mergedSessions is set) so
+    // the test waits past one poll interval + REST round-trip.
     githubAuth.setGraphqlResult({
       data: {
         repository: {
@@ -509,9 +511,19 @@ describe("PrStatusPoller onMergeDetected callback", () => {
         },
       },
     });
+    githubAuth.setFindPrAnyStateResult({
+      url: "https://github.com/test-user/test-repo/pull/42",
+      number: 42,
+      base: "main",
+      title: "Test PR",
+      state: "closed",
+      merged_at: "2026-05-19T12:00:00Z",
+      additions: 10,
+      deletions: 5,
+    });
 
-    // Wait for next poll cycle
-    await new Promise((r) => setTimeout(r, 3_500));
+    // Wait for next poll cycle (5s interval + a REST hop's worth of slop).
+    await new Promise((r) => setTimeout(r, 5_500));
 
     expect(onMergeDetected).toHaveBeenCalledWith(sessionId);
 
