@@ -456,8 +456,8 @@ describe("runDiskJanitor", () => {
   /**
    * Build a stub GitHubAuthManager-shaped object good enough for the sweep.
    * `branches` is a per-repo lookup keyed by `owner/repo` returning the
-   * synthetic GraphQL response. The sweep only touches `authenticated`,
-   * `graphqlQuery`, and `getAuthenticatedCloneUrl`.
+   * synthetic GraphQL response. The sweep only touches `authenticated` and
+   * `graphqlQuery`.
    */
   function buildGitHubStub(
     branches: Record<string, { name: string; states: string[] }[]>,
@@ -465,7 +465,7 @@ describe("runDiskJanitor", () => {
   ) {
     return {
       authenticated: opts.authenticated ?? true,
-       
+
       async graphqlQuery(_query: string, vars?: Record<string, unknown>) {
         const owner = vars?.owner as string;
         const repo = vars?.repo as string;
@@ -487,7 +487,6 @@ describe("runDiskJanitor", () => {
           },
         };
       },
-      getAuthenticatedCloneUrl(url: string) { return url; },
     } as unknown as Parameters<typeof runDiskJanitor>[0]["githubAuthManager"];
   }
 
@@ -635,7 +634,6 @@ describe("runDiskJanitor", () => {
     const githubAuthManager = {
       authenticated: true,
       async graphqlQuery() { queries += 1; return null; },
-      getAuthenticatedCloneUrl(url: string) { return url; },
     } as unknown as Parameters<typeof runDiskJanitor>[0]["githubAuthManager"];
 
     const { factory, deleted } = buildRepoGitFactory();

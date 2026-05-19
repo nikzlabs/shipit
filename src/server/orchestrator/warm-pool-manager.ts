@@ -87,11 +87,13 @@ export function createWarmPool(
 
         const cacheGit = createRepoGit(cacheDir);
 
-        // Refresh remote URL with current token (the bare cache may have a stale
-        // token embedded from clone time).
+        // Normalize the cache's remote.origin.url to the plain URL. The
+        // global credential helper provides the token at fetch time; embedding
+        // it in the URL is redundant and leaks the token into error messages
+        // and config files. Also overwrites any token a previous code path
+        // baked into this cache's origin URL.
         if (githubAuthManager.authenticated) {
-          const freshUrl = githubAuthManager.getAuthenticatedCloneUrl(repoUrl);
-          await cacheGit.setRemoteUrl(freshUrl);
+          await cacheGit.setRemoteUrl(repoUrl);
         }
 
         // Fetch latest refs in the bare cache (with 60s TTL). Non-fatal —

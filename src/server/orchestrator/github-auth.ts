@@ -226,25 +226,6 @@ export class GitHubAuthManager extends EventEmitter {
     }
   }
 
-  /**
-   * Return a clone URL with embedded credentials for HTTPS GitHub URLs.
-   * Falls back to the original URL if no token or non-GitHub URL.
-   */
-  getAuthenticatedCloneUrl(repoUrl: string): string {
-    if (!this._token) return repoUrl;
-    try {
-      const u = new URL(repoUrl);
-      if (u.hostname === "github.com") {
-        u.username = "x-access-token";
-        u.password = this._token;
-        return u.toString();
-      }
-    } catch {
-      // Not a valid URL — return as-is
-    }
-    return repoUrl;
-  }
-
   /** Clear stored token, git config, and in-memory state. */
   clearCredentials(): void {
     this._token = null;
