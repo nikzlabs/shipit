@@ -220,7 +220,7 @@ describe("CodexAdapter", () => {
       type: "agent_init",
       agentId: "codex",
       sessionId: "thread-abc-123",
-      model: "gpt-5.4",
+      model: "gpt-5.5",
       tools: ["shell", "file_write", "file_read", "file_edit"],
     });
   });

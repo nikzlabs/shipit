@@ -44,6 +44,7 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "opus-1m": 1_000_000,
   // Codex / GPT-5 family (256K)
   "gpt-5": 256_000,
+  "gpt-5.5": 256_000,
   "gpt-5.4": 256_000,
   "gpt-5.4-mini": 256_000,
   "gpt-5.3-codex": 256_000,

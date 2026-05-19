@@ -49,7 +49,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsPermissionModes: false,
       supportedPermissionModes: [],
       toolNames: ["shell", "file_write", "file_read", "file_edit"],
-      models: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+      models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
       supportsReview: false,
     },
   },

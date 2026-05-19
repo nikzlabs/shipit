@@ -106,7 +106,7 @@ export class CodexAdapter
     supportsPermissionModes: false,
     supportedPermissionModes: [],
     toolNames: ["shell", "file_write", "file_read", "file_edit"],
-    models: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+    models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
     // Codex has neither a subagent primitive nor a hook for registering
     // custom tools. 125 requires both, so the chat-native review flow is
     // gated off on Codex sessions.
@@ -530,7 +530,7 @@ export class CodexAdapter
       type: "agent_init",
       agentId: "codex",
       sessionId: this.threadId ?? `codex-${Date.now()}`,
-      model: params.model ?? "gpt-5.4",
+      model: params.model ?? "gpt-5.5",
       tools: this.capabilities.toolNames,
     } as AgentEvent);
 
