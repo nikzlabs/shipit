@@ -38,6 +38,9 @@ query($owner: String!, $name: String!) {
         baseRefName
         additions
         deletions
+        files(first: 300) {
+          nodes { path }
+        }
         commits(last: 1) {
           nodes {
             commit {
@@ -94,6 +97,7 @@ export interface GraphQLPrNode {
   baseRefName: string;
   additions: number;
   deletions: number;
+  files?: { nodes: { path: string }[] } | null;
   commits: {
     nodes: {
       commit: {
@@ -230,6 +234,21 @@ export function parsePrNode(
 /** Extract the head SHA from a GraphQL PR node. */
 export function extractHeadSha(node: GraphQLPrNode): string | undefined {
   return node.commits.nodes[0]?.commit?.oid;
+}
+
+/**
+ * Extract the list of changed file paths from a GraphQL PR node.
+ *
+ * Capped at 300 by the query — see `PR_STATUS_QUERY`. PRs that touch more
+ * than 300 files return a truncated list; callers should treat the result
+ * as "best-effort" rather than authoritative for full-PR diff analysis.
+ * For workflow-applies decisions, truncation is safe: a 300+ file PR is
+ * exceedingly unlikely to be entirely `paths:`-filtered-out.
+ */
+export function extractChangedFiles(node: GraphQLPrNode): string[] {
+  const nodes = node.files?.nodes;
+  if (!nodes) return [];
+  return nodes.map((f) => f.path).filter((p): p is string => typeof p === "string" && p.length > 0);
 }
 
 /** Extract failed check run database IDs from a GraphQL PR node. */

@@ -29,6 +29,7 @@ import {
   parsePrNode,
   extractHeadSha,
   extractFailedCheckRuns,
+  extractChangedFiles,
   prStatusEqual,
 } from "./pr-status-parser.js";
 import { AutoFixManager, MAX_AUTO_FIX_ATTEMPTS, type FetchAndFixCb } from "./auto-fix-manager.js";
@@ -38,7 +39,7 @@ import { CiGraceTracker } from "./ci-grace-tracker.js";
 // Re-export the pure parser helpers so existing callers
 // (`pr-status-poller.test.ts`, `services/github-ci-fix.ts`) keep working
 // without an import path change.
-export { parsePrNode, extractHeadSha, extractFailedCheckRuns };
+export { parsePrNode, extractHeadSha, extractFailedCheckRuns, extractChangedFiles };
 
 /**
  * Per-repo polling cadence. Bumped from 3s to 5s as a cost-control measure:
@@ -159,6 +160,11 @@ export class PrStatusPoller {
     this.sessionRepos.set(sessionId, repoKey);
     this.mergedSessions.delete(sessionId);
     this.verifiedAbsent.delete(sessionId);
+
+    // Kick off workflow parsing in the background so the first poll's
+    // grace-decision has the path filters available. Failures are silent —
+    // the poller retries on every poll until a successful load.
+    this.graceTracker.ensureWorkflowsLoaded(repoKey, repoUrl).catch(() => {});
 
     if (!this.repoTimers.has(repoKey)) {
       this.startPolling(repoKey, parsed.owner, parsed.repo);
@@ -410,6 +416,17 @@ export class PrStatusPoller {
     const updates: PrStatusSummary[] = [];
     const sessions = this.sessionManager.list();
 
+    // Ensure workflows are parsed for this repo before we make grace
+    // decisions below. The first call kicks off the load; subsequent calls
+    // are no-ops once cached. We use the first tracked session's remoteUrl
+    // — all sessions on the same repoKey share the same remote.
+    const trackedSession = sessions.find(
+      (s) => this.sessionRepos.get(s.id) === repoKey && s.remoteUrl,
+    );
+    if (trackedSession?.remoteUrl) {
+      await this.graceTracker.ensureWorkflowsLoaded(repoKey, trackedSession.remoteUrl);
+    }
+
     for (const session of sessions) {
       const sessionRepoKey = this.sessionRepos.get(session.id);
       if (sessionRepoKey !== repoKey) continue;
@@ -446,6 +463,7 @@ export class PrStatusPoller {
             repoKey,
             repoUrl: session.remoteUrl,
             headSha,
+            changedFiles: extractChangedFiles(prNode),
           });
           if (force) summary.checks.state = "pending";
         } else {

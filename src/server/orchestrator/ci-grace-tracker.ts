@@ -2,43 +2,64 @@
  * CiGraceTracker — "no checks reported" grace window extracted from PrStatusPoller.
  *
  * When GitHub initially reports `state: "none"` for a PR but we have signals
- * that the repo runs CI (local `.github/workflows` files, or checks observed
+ * that the repo runs CI (parsed `.github/workflows` files, or checks observed
  * on any other PR in this repo), we want to suppress the merge button for a
  * short grace window so the user doesn't merge before GitHub registers the
  * workflow runs.
  *
- * After `NO_CHECKS_GRACE_MS` elapses without any check being registered for
- * the current head SHA, we accept that no workflows apply (e.g. docs-only
- * PRs against a repo whose CI is scoped with `paths:` filters) and let the
- * state fall back to `"none"`, which the client treats as "CI doesn't apply,
- * mergeable."
+ * Two ways grace exits:
  *
- * This module also caches per-repo workflow detection and the sticky
+ *   1. **Workflow filter short-circuit** (fast path) — if we've parsed the
+ *      repo's workflow files and NONE of them would trigger for the PR's
+ *      changed files (classic `paths-ignore: ['**.md']` + docs-only PR),
+ *      we know upfront that GitHub won't ever register a check. Grace
+ *      doesn't apply; the merge button shows immediately.
+ *
+ *   2. **Time-based fallback** — if workflows haven't been parsed yet, or
+ *      the repo signals CI via external check_runs only (Vercel, etc.),
+ *      we time-box the override at `NO_CHECKS_GRACE_MS`. After that, we
+ *      accept that no workflows apply and let state revert to `"none"`,
+ *      which the client treats as "CI doesn't apply, mergeable."
+ *
+ * This module also caches per-repo workflow parsing and the sticky
  * "observed checks on any PR" signal.
  */
 
-import fs from "node:fs";
-import path from "node:path";
+import {
+  loadAndParseWorkflows,
+  workflowAppliesToFiles,
+  type ParsedWorkflow,
+} from "./workflow-loader.js";
 
 /**
- * Grace window for the "no checks reported but repo runs CI" override.
+ * Grace window for the time-based fallback (when workflow parsing isn't
+ * available or hasn't ruled out applicability).
  *
- * 60s is a balance: long enough that a slow GitHub workflow registration
- * (typically <30s) doesn't get classified as "no CI"; short enough that
- * the user isn't kept waiting.
+ * 20s: most workflows that GitHub will run register a check_run within
+ * 2–10 seconds of the push, so 20s comfortably covers the slow tail. The
+ * remaining tail-of-tail (rare GitHub-side latency >20s) is acceptable —
+ * a transient false "no CI" with a re-spinner once the check arrives is a
+ * better UX than a 60s spinner that turns out to be wrong.
+ *
+ * Pre-fix this was 60s; the bulk of that conservatism is now obviated by
+ * the workflow-filter short-circuit in `shouldForcePending`.
  */
-export const NO_CHECKS_GRACE_MS = 60_000;
+export const NO_CHECKS_GRACE_MS = 20_000;
 
 export class CiGraceTracker {
   /**
-   * repoKey (owner/repo) → whether the repo has .github/workflows files.
-   * Only positive results are cached — a `false` result (no workflow dir found
-   * yet) is rechecked on every poll because the local clone may not have the
-   * workflow files yet (initial fetch, workflow files added on the PR branch,
-   * etc.). Caching a `false` here permanently used to leave the merge button
-   * enabled for repos whose workflows weren't visible on first inspection.
+   * repoKey (owner/repo) → parsed workflow filters. Cached after a
+   * successful load. `null` / absent entries are not cached so retries
+   * pick up newly-fetched workflow files on subsequent polls.
    */
-  private repoHasWorkflows = new Map<string, boolean>();
+  private parsedWorkflows = new Map<string, ParsedWorkflow[]>();
+  /**
+   * Per-repo in-flight workflow load promise. Deduplicates concurrent
+   * `ensureWorkflowsLoaded` calls so we don't fire `git ls-tree` /
+   * `git show` multiple times for the same repo while the first call is
+   * still running.
+   */
+  private loadingPromises = new Map<string, Promise<void>>();
   /**
    * repoKey (owner/repo) → whether we've ever observed any CI checks for any
    * PR in this repo. Sticky flag — once true, stays true for the process
@@ -70,21 +91,75 @@ export class CiGraceTracker {
   }
 
   /**
+   * Async-load and cache the repo's workflow filters. Safe to call every
+   * poll — the first successful load is cached; concurrent calls dedupe
+   * via `loadingPromises`. Failed loads (no workflow dir yet, git error)
+   * are NOT cached so the next poll can retry.
+   */
+  async ensureWorkflowsLoaded(repoKey: string, repoUrl: string | undefined): Promise<void> {
+    if (this.parsedWorkflows.has(repoKey)) return;
+    if (!this.getSharedRepoDir || !repoUrl) return;
+    const existing = this.loadingPromises.get(repoKey);
+    if (existing) {
+      await existing;
+      return;
+    }
+    const promise = (async () => {
+      try {
+        const repoDir = this.getSharedRepoDir!(repoUrl);
+        const parsed = await loadAndParseWorkflows(repoDir);
+        if (parsed && parsed.length > 0) {
+          this.parsedWorkflows.set(repoKey, parsed);
+        }
+      } catch {
+        // Swallow — leave entry unset so we retry next poll.
+      } finally {
+        this.loadingPromises.delete(repoKey);
+      }
+    })();
+    this.loadingPromises.set(repoKey, promise);
+    await promise;
+  }
+
+  /**
+   * Test-only seam to inject parsed workflows directly without going
+   * through `git ls-tree`. Public so unit tests can exercise the
+   * short-circuit logic in isolation.
+   */
+  setParsedWorkflowsForTest(repoKey: string, parsed: ParsedWorkflow[]): void {
+    this.parsedWorkflows.set(repoKey, parsed);
+  }
+
+  /**
    * Decide whether the "force pending" override should apply for this
    * session right now. Returns true when the caller should rewrite a
    * `checks.state === "none"` reading to `"pending"`.
    *
    * Called only when `summary.checks.state === "none"`. Also updates the
    * per-session grace timer as a side effect.
+   *
+   * If `changedFiles` is provided AND we've parsed the repo's workflows,
+   * we short-circuit to `false` when no workflow's filters match — the
+   * grace window doesn't apply because GitHub won't be running anything.
    */
   shouldForcePending(args: {
     sessionId: string;
     repoKey: string;
     repoUrl: string | undefined;
     headSha: string;
+    changedFiles?: string[];
     now?: number;
   }): boolean {
-    if (!this.repoRunsCi(args.repoKey, args.repoUrl)) return false;
+    if (!this.repoRunsCi(args.repoKey)) return false;
+
+    // Fast path: if we have both the parsed workflow filters AND the
+    // changed-file list, and no workflow would trigger, no point waiting.
+    const parsed = this.parsedWorkflows.get(args.repoKey);
+    if (parsed && parsed.length > 0 && args.changedFiles && args.changedFiles.length > 0) {
+      const anyApplies = parsed.some((w) => workflowAppliesToFiles(w, args.changedFiles!));
+      if (!anyApplies) return false;
+    }
+
     const now = args.now ?? Date.now();
     const tracker = this.firstObservedNoChecks.get(args.sessionId);
     if (tracker?.headSha !== args.headSha) {
@@ -108,45 +183,11 @@ export class CiGraceTracker {
 
   /**
    * Returns true when we have ANY signal that this repo runs CI:
-   * either local workflow files OR we've observed checks on at least one PR.
+   * either parsed workflow files OR we've observed checks on at least one PR.
    */
-  private repoRunsCi(repoKey: string, repoUrl: string | undefined): boolean {
+  private repoRunsCi(repoKey: string): boolean {
     if (this.repoHasObservedChecks.get(repoKey)) return true;
-    if (repoUrl && this.checkRepoHasWorkflows(repoKey, repoUrl)) return true;
+    if ((this.parsedWorkflows.get(repoKey)?.length ?? 0) > 0) return true;
     return false;
-  }
-
-  /**
-   * Check whether a repo has GitHub Actions workflow files.
-   * Positive results are cached per repoKey for the process lifetime.
-   * Negative results are NOT cached — we retry on every poll because the
-   * shared clone may not have the workflow files yet (fetch in progress,
-   * workflows added on PR branch only, etc.).
-   */
-  private checkRepoHasWorkflows(repoKey: string, repoUrl: string): boolean {
-    if (this.repoHasWorkflows.get(repoKey) === true) return true;
-
-    if (!this.getSharedRepoDir) {
-      return false;
-    }
-
-    let hasWorkflows = false;
-    try {
-      const repoDir = this.getSharedRepoDir(repoUrl);
-      const workflowDir = path.join(repoDir, ".github", "workflows");
-      if (fs.existsSync(workflowDir)) {
-        const entries = fs.readdirSync(workflowDir);
-        hasWorkflows = entries.some(
-          (f) => f.endsWith(".yml") || f.endsWith(".yaml"),
-        );
-      }
-    } catch {
-      // If we can't read the directory, assume no workflows
-    }
-
-    if (hasWorkflows) {
-      this.repoHasWorkflows.set(repoKey, true);
-    }
-    return hasWorkflows;
   }
 }

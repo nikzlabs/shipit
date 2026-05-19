@@ -332,8 +332,9 @@ describe("POST /api/sessions/:id/pr/merge — CI-not-ready guard", () => {
     await new Promise((r) => setTimeout(r, 100));
 
     // Force-mutate the cached status to simulate "workflows exist but no checks reported".
-    // (The poller's checkRepoHasWorkflows path requires getSharedRepoDir; bypass that
-    // here by asserting on the merge endpoint's "pending && total === 0" branch directly.)
+    // (The poller's workflow-loader path requires a real bare repo with `.github/workflows`
+    // entries reachable via `git ls-tree`; bypass that here by asserting on the merge
+    // endpoint's "pending && total === 0" branch directly.)
     const status = prStatusPoller.getStatus(sessionId);
     if (status) {
       status.checks.state = "pending";
