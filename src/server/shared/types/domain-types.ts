@@ -1,3 +1,5 @@
+import type { AgentId } from "./agent-types.js";
+
 // ---- Git types ----
 
 export interface GitCommitInfo {
@@ -35,6 +37,8 @@ export interface SessionInfo {
   mergedAt?: string;
   /** Model alias or ID selected for this session (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
+  /** Agent (provider) selected for this session. Locked in on first WS connect. */
+  agentId?: AgentId;
   /**
    * If this session was spawned by another session via `shipit session create`
    * (see docs/117-agent-spawned-sessions/), the parent's session ID. Used to
