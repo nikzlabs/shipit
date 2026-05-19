@@ -10,6 +10,13 @@
  *     design (so a warm resume can re-attach), and a naive `docker
  *     volume prune --filter dangling=true` would silently destroy that
  *     state.
+ *   - **Orphan `shipit/*` remote branches** whose PR is merged and which
+ *     no live session points at. Catches the historical backlog from
+ *     before `markMergedAndPruneExcess` started deleting branches at
+ *     merge-detection time. Skipped if GitHub auth or the repo's bare
+ *     cache isn't available. See `sweepOrphanMergedBranches` for the
+ *     safety criteria (must have ≥1 merged PR, no open PR, no live
+ *     session using the branch).
  *   - **Orphan session networks** — both the per-session bridge network
  *     created for Docker-enabled agent containers (`shipit-session-<12-hex>`,
  *     `container-lifecycle.ts`) and the compose network created by
@@ -59,6 +66,9 @@
  *   - DISK_JANITOR_CACHE_DAYS: age in days at which `repo-cache/<hash>`
  *     and `dep-cache/<hash>` directories whose repo has no `repos` row are
  *     deleted. Default `30`.
+ *   - DISK_JANITOR_ORPHAN_BRANCHES: when `"false"`, disables the
+ *     orphan-`shipit/*`-branch sweep. Default enabled (set the env var to
+ *     `"false"` to opt out). The sweep no-ops anyway without GitHub auth.
  */
 
 import path from "node:path";
@@ -66,7 +76,9 @@ import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
-import { repoUrlToHash } from "./git-utils.js";
+import type { GitHubAuthManager } from "./github-auth.js";
+import type { RepoGit } from "./repo-git.js";
+import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
 
 export interface DiskJanitorDeps {
   sessionManager: SessionManager;
@@ -84,6 +96,18 @@ export interface DiskJanitorDeps {
    * line is parsed from this).
    */
   runDocker?: (args: string[]) => Promise<string>;
+  /**
+   * Optional. When all three are provided AND `sweepOrphanBranches !== false`,
+   * the janitor sweeps merged-PR `shipit/*` branches that were left behind
+   * before the per-merge deletion hook (`markMergedAndPruneExcess`) shipped.
+   * Omitted in tests that don't exercise this path; in production all three
+   * are wired in `index.ts`.
+   */
+  githubAuthManager?: GitHubAuthManager;
+  createRepoGit?: (dir: string) => RepoGit;
+  getBareCacheDir?: (repoUrl: string) => string;
+  /** Default true. Set false to disable the branch sweep entirely. */
+  sweepOrphanBranches?: boolean;
 }
 
 export interface DiskJanitorResult {
@@ -93,6 +117,8 @@ export interface DiskJanitorResult {
   orphanNetworksRemoved: number;
   workspacesRemoved: number;
   cachesRemoved: number;
+  /** Remote `shipit/*` branches whose PR is merged and no live session uses them. */
+  orphanBranchesRemoved: number;
 }
 
 const DEFAULT_CACHE_DAYS = 30;
@@ -109,6 +135,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     orphanNetworksRemoved: 0,
     workspacesRemoved: 0,
     cachesRemoved: 0,
+    orphanBranchesRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
 
@@ -144,11 +171,31 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
   }
 
+  if (
+    deps.sweepOrphanBranches !== false
+    && deps.githubAuthManager
+    && deps.createRepoGit
+    && deps.getBareCacheDir
+  ) {
+    try {
+      result.orphanBranchesRemoved = await sweepOrphanMergedBranches(
+        deps.sessionManager,
+        deps.repoStore,
+        deps.githubAuthManager,
+        deps.createRepoGit,
+        deps.getBareCacheDir,
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] orphan-branch sweep failed:", getMessage(err));
+    }
+  }
+
   console.log(
     `[disk-janitor] reclaimed orphan-volumes=${result.orphanVolumesRemoved} `
     + `orphan-networks=${result.orphanNetworksRemoved} `
     + `workspaces=${result.workspacesRemoved} `
-    + `caches=${result.cachesRemoved}`,
+    + `caches=${result.cachesRemoved} `
+    + `orphan-branches=${result.orphanBranchesRemoved}`,
   );
   return result;
 }
@@ -409,6 +456,217 @@ async function sweepOrphanedCaches(
     }
   }
   return removed;
+}
+
+/**
+ * GraphQL response shape for the orphan-branch sweep — declared at module
+ * scope so the type stays close to the query that produces it.
+ */
+interface ShipitBranchRefsConnection {
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  nodes: {
+    name: string;
+    associatedPullRequests: {
+      nodes: { state: "OPEN" | "CLOSED" | "MERGED" }[];
+    };
+  }[];
+}
+
+interface ShipitBranchesQueryResult {
+  data?: {
+    repository?: {
+      refs?: ShipitBranchRefsConnection | null;
+    } | null;
+  };
+}
+
+/**
+ * Sweep orphaned `shipit/*` remote branches whose PR is merged.
+ *
+ * This is the safety-net for branches that leaked before
+ * `markMergedAndPruneExcess` (services/session.ts) started deleting head
+ * branches at merge-detection time. Per-merge deletion handles the
+ * going-forward path; this sweep clears the historical backlog and any
+ * future merges that slipped through (e.g. the orchestrator was down when
+ * the merge happened, the catch-up probe ran while auth was disconnected).
+ *
+ * Safety criteria — a branch is only deleted when ALL hold:
+ *   1. Name starts with `shipit/` (we created it).
+ *   2. At least one associated PR is in state `MERGED`. Bare branches with
+ *      no PRs are left alone (might be local-only work the user pushed).
+ *      Branches whose only PRs are `CLOSED` (closed without merging) are
+ *      also left alone — that closure could mean "user changed their mind
+ *      but wants the commits."
+ *   3. No associated PR is in state `OPEN` (some workflows reuse a head
+ *      branch across multiple PRs; if any are still open, hands off).
+ *   4. No non-archived ShipIt session points at this branch. Archived
+ *      sessions are excluded because `unarchiveSession` generates a fresh
+ *      branch name, so the old one is genuinely orphaned.
+ *
+ * Skip conditions:
+ *   - GitHub auth not present → no-op (returns 0).
+ *   - Repo URL doesn't parse as github.com (SSH/HTTPS/owner/repo
+ *     extraction) → skip that repo.
+ *   - GraphQL query fails or returns no data → skip that repo.
+ *   - Bare cache directory missing → skip that repo's deletions (push
+ *     --delete needs a local git context; the cache is the cheapest one
+ *     we have. A REST DELETE fallback is possible but unnecessary in
+ *     practice — repos without caches were probably already cleaned up
+ *     by `sweepOrphanedCaches`).
+ *
+ * The remote URL on the bare cache is refreshed to embed the current
+ * token before pushing, mirroring `unarchiveSession` — without this, a
+ * rotated PAT would 401 the push.
+ */
+async function sweepOrphanMergedBranches(
+  sessionManager: SessionManager,
+  repoStore: RepoStore,
+  githubAuthManager: GitHubAuthManager,
+  createRepoGit: (dir: string) => RepoGit,
+  getBareCacheDir: (repoUrl: string) => string,
+): Promise<number> {
+  if (!githubAuthManager.authenticated) return 0;
+
+  // Build a remote → live-branches index from non-archived sessions.
+  // Archived sessions' branches are NOT preserved: unarchive generates a
+  // fresh branch (see `unarchiveSession` in services/session.ts), so the
+  // old branch is truly orphaned.
+  const liveByRemote = new Map<string, Set<string>>();
+  for (const s of sessionManager.list()) {
+    if (!s.remoteUrl || !s.branch) continue;
+    let set = liveByRemote.get(s.remoteUrl);
+    if (!set) {
+      set = new Set();
+      liveByRemote.set(s.remoteUrl, set);
+    }
+    set.add(s.branch);
+  }
+
+  let removed = 0;
+  for (const repo of repoStore.list()) {
+    const parsed = parseGitHubRemote(repo.url);
+    if (!parsed) continue;
+
+    let branches: { shortName: string; states: string[] }[];
+    try {
+      branches = await fetchShipitBranchesWithPrStates(
+        githubAuthManager, parsed.owner, parsed.repo,
+      );
+    } catch (err) {
+      console.warn(
+        `[disk-janitor] branch query failed for ${parsed.owner}/${parsed.repo}:`,
+        getMessage(err),
+      );
+      continue;
+    }
+
+    const liveBranches = liveByRemote.get(repo.url) ?? new Set<string>();
+    const cacheDir = getBareCacheDir(repo.url);
+
+    // Lazy: only stat the cache dir / construct RepoGit / refresh creds
+    // when we actually have a deletion to perform for this repo.
+    let cacheGit: RepoGit | null = null;
+    const ensureCacheGit = async (): Promise<RepoGit | null> => {
+      if (cacheGit) return cacheGit;
+      try {
+        await fs.stat(cacheDir);
+      } catch {
+        return null; // No bare cache for this repo — skip.
+      }
+      const gitInstance = createRepoGit(cacheDir);
+      try {
+        const freshUrl = githubAuthManager.getAuthenticatedCloneUrl(repo.url);
+        await gitInstance.setRemoteUrl(freshUrl);
+      } catch (err) {
+        console.warn(
+          `[disk-janitor] failed to refresh remote URL for ${cacheDir}:`,
+          getMessage(err),
+        );
+        return null;
+      }
+      cacheGit = gitInstance;
+      return cacheGit;
+    };
+
+    for (const branch of branches) {
+      const fullName = `shipit/${branch.shortName}`;
+      if (liveBranches.has(fullName)) continue;
+      const hasMerged = branch.states.includes("MERGED");
+      const hasOpen = branch.states.includes("OPEN");
+      if (!hasMerged || hasOpen) continue;
+
+      const git = await ensureCacheGit();
+      if (!git) break; // No cache → skip remaining branches for this repo.
+
+      try {
+        await git.deleteBranch(fullName);
+        removed += 1;
+      } catch (err) {
+        console.warn(
+          `[disk-janitor] failed to delete orphan branch ${fullName}:`,
+          getMessage(err),
+        );
+      }
+    }
+  }
+
+  if (removed > 0) {
+    console.log(`[disk-janitor] removed ${removed} orphan merged-PR branch(es)`);
+  }
+  return removed;
+}
+
+/**
+ * Fetch all `refs/heads/shipit/*` branches for a repo, paginating through
+ * the GraphQL response. Each result includes the state of associated PRs
+ * so the caller can apply the safety criteria.
+ *
+ * The query name-prefix filter (`refPrefix: "refs/heads/shipit/"`) means
+ * non-shipit branches never enter the response at all — bounding the
+ * query cost regardless of repo size.
+ */
+async function fetchShipitBranchesWithPrStates(
+  githubAuthManager: GitHubAuthManager,
+  owner: string,
+  repo: string,
+): Promise<{ shortName: string; states: string[] }[]> {
+  const query = /* GraphQL */ `
+    query ShipitBranches($owner: String!, $repo: String!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        refs(refPrefix: "refs/heads/shipit/", first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            name
+            associatedPullRequests(first: 10) {
+              nodes { state }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const out: { shortName: string; states: string[] }[] = [];
+  let cursor: string | null = null;
+  // Hard cap on pages so a misconfigured repo with thousands of stale
+  // shipit branches can't loop forever.
+  for (let page = 0; page < 50; page += 1) {
+    const result: ShipitBranchesQueryResult | null = await githubAuthManager.graphqlQuery(
+      query, { owner, repo, cursor },
+    );
+    const refs: ShipitBranchRefsConnection | null | undefined = result?.data?.repository?.refs;
+    if (!refs) break;
+    for (const node of refs.nodes) {
+      out.push({
+        shortName: node.name,
+        states: node.associatedPullRequests.nodes.map((p) => p.state),
+      });
+    }
+    if (!refs.pageInfo.hasNextPage) break;
+    cursor = refs.pageInfo.endCursor;
+    if (!cursor) break;
+  }
+  return out;
 }
 
 /**
