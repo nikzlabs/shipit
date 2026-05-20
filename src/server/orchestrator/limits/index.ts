@@ -9,8 +9,4 @@ export {
   parseClaudeUsage,
   CLAUDE_USAGE_URL,
 } from "./claude-limits.js";
-export {
-  CodexLimitsProvider,
-  parseCodexUsage,
-  CODEX_USAGE_URL,
-} from "./codex-limits.js";
+export { CodexLimitsProvider } from "./codex-limits.js";

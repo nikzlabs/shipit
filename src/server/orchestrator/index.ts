@@ -299,7 +299,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // api.anthropic.com / chatgpt.com.
   const limitsProviders = new Map<AgentId, LimitsProvider>();
   limitsProviders.set("claude", new ClaudeLimitsProvider({ authManager }));
-  limitsProviders.set("codex", new CodexLimitsProvider({ codexAuthManager }));
+  // Codex is event-fed, not polled: its numbers arrive as `agent_rate_limits`
+  // events from the app-server stream (see CodexLimitsProvider). We keep a
+  // typed handle so `recordCodexRateLimits` can push into it.
+  const codexLimitsProvider = new CodexLimitsProvider({ codexAuthManager });
+  limitsProviders.set("codex", codexLimitsProvider);
   const limitsPoller = !isTestMode
     ? new LimitsPoller({ providers: limitsProviders, sseBroadcast })
     : null;
@@ -312,6 +316,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
     limitsPoller.start();
   }
+
+  /**
+   * Push a Codex rate-limit snapshot (from an `agent_rate_limits` event) into
+   * the provider and refresh its pill immediately. No-op in test mode (no
+   * poller). See `CodexLimitsProvider` and agent-listeners.ts.
+   */
+  const recordCodexRateLimits: AppCtx["recordCodexRateLimits"] = (session, weekly) => {
+    codexLimitsProvider.setRateLimits(session, weekly);
+    limitsPoller?.markAuthRefreshed("codex");
+  };
 
   // ---- Session directory creation ----
   const createSessionDir = createSessionDirFactory({
@@ -1033,6 +1047,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         repoStore, warmSessionForRepo, generateText,
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
+        recordCodexRateLimits,
         workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
       };

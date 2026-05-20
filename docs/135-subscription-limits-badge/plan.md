@@ -181,24 +181,38 @@ needed.
 | `~/.codex/auth.json` | OAuth-bearer credentials. Same token the CLI uses to call the usage endpoint. Already mounted into the credentials volume by doc 119 (`CodexAuthManager`). |
 | Response headers on `codex app-server` API calls | OpenAI's API returns the usual `x-ratelimit-*` headers, but for ChatGPT-subscription auth those numbers don't map onto the 5h / weekly windows the user actually cares about. Header path is **not** a viable fallback for Codex. |
 
-**Candidate primary source:** `GET /api/codex/usage` (community-reported
-path the Codex CLI uses internally to populate `/status`).
-Authenticated with the access token persisted under
-`/credentials/.codex/auth.json` (symlinked to `/root/.codex/auth.json`
-inside the orchestrator container) — same file `CodexAuthManager`
-writes.
+**Implemented source (event-driven):** the `/api/codex/usage` HTTP path
+turned out unusable — it answers 401/403 even with a valid bearer token
+(it wants a `chatgpt-account-id` header and possibly more), so polling it
+surfaced a permanent "auth expired" on the badge. Instead we read the
+numbers the Codex App Server **pushes** during a turn: it streams an
+`account/rateLimits/updated` JSON-RPC notification carrying the exact data
+it draws its own `/status` line from:
 
-**Same caveat as Claude:** the URL is not verified, and OpenAI shipped
-two rate-limit fixes in the Codex CLI ~v0.21 (per Embirico's
-announcement; exact date unverified) that may have shifted the path.
-Capture the real URL + response schema before implementation begins —
-see [Blocking prereqs](#blocking-prereqs).
+```jsonc
+{ "rateLimits": {
+    "limitId": "codex", "limitName": null,
+    "primary":   { "usedPercent": 5, "windowDurationMins": 300,   "resetsAt": <epoch s> },
+    "secondary": { "usedPercent": 1, "windowDurationMins": 10080, "resetsAt": <epoch s> } } }
+```
 
-**Fallback:** none. If the endpoint fails, the badge shows "—" with a
-tooltip "limits unavailable." Unlike Claude there is no useful
-secondary source — Codex CLI doesn't write per-turn rate-limit data
-anywhere accessible, and OpenAI's response headers don't map onto the
-5h / weekly windows the user cares about.
+`primary` (300 min) → the 5h session window, `secondary` (10080 min) →
+weekly. `CodexAdapter` captures the notification and emits an
+`agent_rate_limits` AgentEvent; it flows through the normal agent event
+stream (worker SSE → `ProxyAgentProcess` → `wireAgentListeners`), where
+the orchestrator calls `recordCodexRateLimits()` to push it into a now
+**event-fed** `CodexLimitsProvider`. The provider no longer does HTTP:
+`fetch()` returns the latest pushed windows enriched with the plan tier
+(read from the `chatgpt_plan_type` JWT claim via
+`CodexAuthManager.extractCodexPlan`, since the payload's `limitName` is
+null). The `LimitsPoller` still polls it on its cadence (cheap — no
+network) and each incoming event triggers `markAuthRefreshed("codex")` so
+the pill updates within seconds.
+
+**Consequence:** the Codex pill is blank until the first turn of a session
+delivers a snapshot — there's no way to query usage out-of-band. That's an
+acceptable trade for using the one source we've *verified* works (it shows
+up in prod session logs) over an unverified endpoint that doesn't.
 
 ### Why not just spawn `claude` / `codex` and scrape the REPL?
 
