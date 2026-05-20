@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug } from "./repo-label.js";
+import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug, shouldAdoptClaimedSession } from "./repo-label.js";
 
 describe("parseRepoLabel", () => {
   it("extracts owner/repo from GitHub HTTPS URL", () => {
@@ -64,5 +64,79 @@ describe("parseNewSessionSlug", () => {
 
   it("decodes URI-encoded slugs", () => {
     expect(parseNewSessionSlug("/repo/owner%2Frepo/new")).toBe("owner/repo");
+  });
+});
+
+describe("shouldAdoptClaimedSession", () => {
+  const repoUrl = "https://github.com/anthropics/shipit.git";
+  const newRoute = "/repo/anthropics/shipit/new";
+
+  it("adopts when claimed, not aborted, and still on the repo's new-session route", () => {
+    expect(
+      shouldAdoptClaimedSession({
+        claimed: true,
+        aborted: false,
+        currentPathname: newRoute,
+        repoUrl,
+      }),
+    ).toBe(true);
+  });
+
+  it("does NOT adopt when the claim failed", () => {
+    expect(
+      shouldAdoptClaimedSession({
+        claimed: false,
+        aborted: false,
+        currentPathname: newRoute,
+        repoUrl,
+      }),
+    ).toBe(false);
+  });
+
+  it("does NOT adopt when the claim was aborted", () => {
+    expect(
+      shouldAdoptClaimedSession({
+        claimed: true,
+        aborted: true,
+        currentPathname: newRoute,
+        repoUrl,
+      }),
+    ).toBe(false);
+  });
+
+  it("does NOT adopt after the user navigated to an existing session (the bug)", () => {
+    // The claim resolves late, but the user already switched to /session/abc.
+    // Adopting here would point the store at a warm session and graduate it
+    // into a brand-new session on the next message.
+    expect(
+      shouldAdoptClaimedSession({
+        claimed: true,
+        aborted: false,
+        currentPathname: "/session/abc-123",
+        repoUrl,
+      }),
+    ).toBe(false);
+  });
+
+  it("does NOT adopt after the user navigated home", () => {
+    expect(
+      shouldAdoptClaimedSession({
+        claimed: true,
+        aborted: false,
+        currentPathname: "/",
+        repoUrl,
+      }),
+    ).toBe(false);
+  });
+
+  it("does NOT adopt when the user moved to a DIFFERENT repo's new-session route", () => {
+    expect(
+      shouldAdoptClaimedSession({
+        claimed: true,
+        aborted: false,
+        currentPathname: "/repo/other/project/new",
+        repoUrl,
+      }),
+    ).toBe(false);
   });
 });

@@ -48,3 +48,28 @@ export function parseNewSessionSlug(pathname: string): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * Decide whether a freshly-claimed warm session should be adopted as the
+ * active session.
+ *
+ * `claimSession` is fired imperatively from "New Session" and resolves
+ * asynchronously. Its AbortController is only aborted by a *subsequent* "New
+ * Session" click — NOT when the user navigates to an existing session while
+ * the claim is in flight. If we adopted such a late-resolving result
+ * unconditionally, the store's `sessionId` would be overwritten with the
+ * warm session, and the user's next message would graduate that warm session
+ * into a brand-new session instead of going to the session they switched to.
+ *
+ * Guard: only adopt the claim when it succeeded, wasn't aborted, AND we're
+ * still sitting on this exact repo's new-session route.
+ */
+export function shouldAdoptClaimedSession(input: {
+  claimed: boolean;
+  aborted: boolean;
+  currentPathname: string;
+  repoUrl: string;
+}): boolean {
+  if (!input.claimed || input.aborted) return false;
+  return parseNewSessionSlug(input.currentPathname) === parseRepoLabel(input.repoUrl);
+}
