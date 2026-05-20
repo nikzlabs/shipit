@@ -1,8 +1,18 @@
 ---
-status: in-progress
+status: done
+description: Connect user MCP servers (Linear, Notion, Sentry, etc.) to the inner agent — API-key/token auth (Phase 1) and native OAuth with dynamic client registration (Phase 2).
 ---
 
 # 088 — User MCP Server Integration
+
+> **Status: done (Phases 1 & 2 landed and verified).** API-key/token auth,
+> stdio + HTTP transports, tool allowlisting, crash detection, and native
+> OAuth (Linear + Notion, with RFC 7591 dynamic client registration via the
+> `docs/139-mcp-dynamic-client-registration/` follow-up) are all shipped and
+> covered by tests. Linear and Notion are confirmed working end-to-end.
+> Remaining work is **Phase 3 — Advanced features** only (server sharing,
+> per-repo config, marketplace, base-image pre-install, multi-instance OAuth);
+> each is separate future scope and will get its own doc when picked up.
 
 > **Implementation note (Phase 1 landed).** The server name regex was tightened
 > from `/^[a-z][a-z0-9-]*$/` to `/^[a-z][a-z0-9]*$/` — hyphens are disallowed
