@@ -8,19 +8,30 @@
  * or has been disabled).
  *
  * Adding a new provider: append a new entry to {@link MCP_OAUTH_PROVIDERS}
- * and document it in `src/server/shipit-docs/mcp.md`. The provider id is
+ * and document it in `src/server/shipit-docs/secrets.md`. The provider id is
  * the user-visible string in `$platform:<id>` placeholders and gets
  * uppercased into the env var name the worker substitutes for the
  * placeholder (`linear_oauth` → `MCP_PLATFORM_LINEAR_OAUTH`).
  *
- * Note: ShipIt does not pre-register OAuth clients with these providers.
- * The first successful auth flow performs RFC 7591 dynamic client
- * registration and caches the resulting `client_id` in
- * `CredentialStore.mcpOAuth[id].clientId`. Operators can short-circuit
- * registration by setting `<ID>_OAUTH_CLIENT_ID` (and optionally
- * `<ID>_OAUTH_CLIENT_SECRET`) on the orchestrator process — useful when a
- * provider has rate limits on dynamic registration or when the operator
- * has gone through the manual application flow.
+ * Endpoints are fallback-only. The live flow drives authorize / token /
+ * registration endpoints from discovery (RFC 8414) starting at `mcpUrl` (see
+ * `services/mcp-oauth-discovery.ts`); the hardcoded `authorizationEndpoint` /
+ * `tokenEndpoint` / `registrationEndpoint` below are used only when discovery
+ * is unavailable. The one place a registry endpoint is load-bearing is the
+ * refresh path (`refreshOAuthTokens`), which exchanges at
+ * `provider.tokenEndpoint` — so it must point at the MCP server's own
+ * authorization server.
+ *
+ * Client id resolution (docs/139): operator env var → cached registered
+ * client → RFC 7591 dynamic client registration. The first successful auth
+ * flow against a provider that publishes a registration endpoint registers a
+ * public PKCE client and caches it in `CredentialStore.mcpOAuthClients[id]`
+ * (a map kept separate from `mcpOAuth` token storage), reused on every
+ * subsequent connect. Operators can short-circuit registration by setting
+ * `<ID>_OAUTH_CLIENT_ID` (and optionally `<ID>_OAUTH_CLIENT_SECRET`) on the
+ * orchestrator process — useful when a provider has rate limits on dynamic
+ * registration, doesn't support it (Linear), or when the operator has gone
+ * through the manual application flow.
  */
 
 import type { McpOAuthProviderConfig } from "../shared/types/mcp-types.js";
@@ -53,8 +64,15 @@ export const MCP_OAUTH_PROVIDERS: readonly McpOAuthProviderConfig[] = [
     label: "Notion",
     description:
       "Connect to your Notion workspace so the agent can search pages, read content, and create/update database items.",
-    authorizationEndpoint: "https://api.notion.com/v1/oauth/authorize",
-    tokenEndpoint: "https://api.notion.com/v1/oauth/token",
+    // Fallback-only — discovery overrides these at runtime. These are the
+    // MCP server's *own* authorization server (mcp.notion.com), NOT Notion's
+    // classic public-integration OAuth (api.notion.com), which is a different
+    // AS that requires a manually pre-created integration. The registration
+    // endpoint lets the flow mint a public PKCE client with zero operator
+    // config (verified against mcp.notion.com on 2026-05-20; see docs/139).
+    authorizationEndpoint: "https://mcp.notion.com/authorize",
+    tokenEndpoint: "https://mcp.notion.com/token",
+    registrationEndpoint: "https://mcp.notion.com/register",
     clientIdEnv: "NOTION_OAUTH_CLIENT_ID",
     clientSecretEnv: "NOTION_OAUTH_CLIENT_SECRET",
     // Notion's MCP server reuses the workspace bearer token issued by the

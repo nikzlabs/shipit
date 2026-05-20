@@ -35,6 +35,10 @@ import {
 } from "../mcp-oauth-providers.js";
 import { ServiceError } from "./types.js";
 import { getErrorMessage } from "../../shared/utils.js";
+import {
+  discoverOAuthMetadata,
+  type DiscoveredOAuthMetadata,
+} from "./mcp-oauth-discovery.js";
 
 // ---------------------------------------------------------------------------
 // In-memory state store for pending OAuth flows
@@ -50,6 +54,15 @@ export interface OAuthFlowState {
   redirectUri: string;
   clientId: string;
   clientSecret?: string;
+  /**
+   * Endpoints resolved at flow start (from discovery, falling back to the
+   * registry). The callback MUST exchange at `tokenEndpoint` rather than
+   * re-deriving the provider's hardcoded endpoint — for Notion the registry's
+   * old value pointed at the wrong (`api.notion.com`) authorization server.
+   * See docs/139-mcp-dynamic-client-registration.
+   */
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
   /** Unix ms when the state record was created (for TTL eviction). */
   createdAt: number;
 }
@@ -138,41 +151,118 @@ export interface OAuthCallbackResult {
 
 /**
  * Begin an OAuth flow for a provider. Generates PKCE verifier/challenge,
- * persists flow state under an opaque `state` value, and returns the
- * authorize URL the UI must open in a browser popup.
+ * resolves the client id (operator override → cached registered client →
+ * RFC 7591 dynamic registration), persists flow state under an opaque
+ * `state` value, and returns the authorize URL the UI must open in a popup.
+ *
+ * Endpoints are driven from discovery (RFC 8414) starting at the provider's
+ * `mcpUrl`, falling back to the (corrected) registry endpoints when discovery
+ * is unavailable. The resolved `authorization_endpoint` / `token_endpoint`
+ * are persisted in the flow state so the callback exchanges at the right
+ * server. See docs/139-mcp-dynamic-client-registration.
+ *
+ * Async because discovery + registration are network calls.
  *
  * Throws `ServiceError(404)` for unknown source ids.
- * Throws `ServiceError(400)` when the provider requires a pre-allocated
- * client_id and the operator hasn't set the env var.
+ * Throws `ServiceError(502)` when discovery / registration fails.
+ * Throws `ServiceError(400)` only when no client id can be obtained at all
+ * (no env var, no cached client, and no registration endpoint anywhere).
  */
-export function startOAuthFlow(opts: {
+export async function startOAuthFlow(opts: {
   source: string;
   stateStore: InMemoryOAuthStateStore;
   /** Absolute redirect URL the provider will navigate back to. */
   redirectUri: string;
+  /** Credential store — reads/writes the cached registered client. */
+  credentialStore: CredentialStore;
   /**
    * Lookup for operator-supplied client credentials. Defaults to
    * `process.env`. Override for tests.
    */
   env?: NodeJS.ProcessEnv;
-}): StartOAuthFlowResult {
+  /** Override for `fetch` used during discovery + registration. Tests inject. */
+  fetchImpl?: typeof fetch;
+}): Promise<StartOAuthFlowResult> {
   const provider = getMcpOAuthProvider(opts.source);
   if (!provider) {
     throw new ServiceError(404, `Unknown MCP OAuth provider: ${opts.source}`);
   }
   const env = opts.env ?? process.env;
-  const clientId = provider.clientIdEnv ? env[provider.clientIdEnv] : undefined;
+  const fetchImpl = opts.fetchImpl;
+
+  // Discover endpoints from the MCP server's own authorization server. This
+  // is best-effort: branches that already have a client id (env override /
+  // cached) can fall back to the registry endpoints if discovery is down.
+  let discovered: DiscoveredOAuthMetadata | undefined;
+  try {
+    discovered = await discoverOAuthMetadata({
+      mcpUrl: provider.mcpUrl,
+      ...(fetchImpl !== undefined ? { fetchImpl } : {}),
+    });
+  } catch (err) {
+    // Best-effort: fall back to the registry endpoints below. A genuine DCR
+    // failure (4xx from /register) surfaces from registerOAuthClient instead.
+    console.warn(
+      `[mcp-oauth] discovery failed for ${provider.id}, falling back to registry endpoints:`,
+      getErrorMessage(err),
+    );
+  }
+
+  const authorizationEndpoint =
+    discovered?.authorizationEndpoint ?? provider.authorizationEndpoint;
+  const tokenEndpoint = discovered?.tokenEndpoint ?? provider.tokenEndpoint;
+  const registrationEndpoint =
+    discovered?.registrationEndpoint ?? provider.registrationEndpoint;
+
+  // Resolve the client id in priority order.
+  let clientId: string | undefined;
+  let clientSecret: string | undefined;
+
+  // 1. Operator override — keeps the escape hatch / rate-limit workaround.
+  const envClientId = provider.clientIdEnv ? env[provider.clientIdEnv] : undefined;
+  if (envClientId) {
+    clientId = envClientId;
+    clientSecret = provider.clientSecretEnv ? env[provider.clientSecretEnv] : undefined;
+  } else {
+    // 2. Cached registered client — reuse so we register once per account.
+    const cached = opts.credentialStore.getMcpOAuthClient(provider.id);
+    if (cached) {
+      clientId = cached.clientId;
+      clientSecret = cached.clientSecret;
+    } else if (registrationEndpoint) {
+      // 3. Dynamic registration (RFC 7591).
+      const registered = await registerOAuthClient({
+        registrationEndpoint,
+        redirectUri: opts.redirectUri,
+        provider,
+        ...(fetchImpl !== undefined ? { fetchImpl } : {}),
+      });
+      opts.credentialStore.setMcpOAuthClient(provider.id, {
+        clientId: registered.clientId,
+        ...(registered.clientSecret !== undefined
+          ? { clientSecret: registered.clientSecret }
+          : {}),
+        registeredAt: Date.now(),
+      });
+      clientId = registered.clientId;
+      clientSecret = registered.clientSecret;
+    }
+    // else: no registration endpoint anywhere → fall through to the
+    // missing-client error below. (A discovery failure is intentionally not
+    // surfaced here: a provider with no registration endpoint can't do DCR
+    // regardless of whether discovery succeeded, so the actionable guidance
+    // is "set the env var", not "discovery failed".)
+  }
+
   if (!clientId) {
-    // Dynamic registration isn't wired up yet (RFC 7591). Until it lands,
-    // operators must set <PROVIDER>_OAUTH_CLIENT_ID. Document the env var
-    // name in the error so the UI can render it verbatim.
+    // No env var, no cached client, and no registration endpoint anywhere.
     throw new ServiceError(
       400,
       `Missing OAuth client id for ${provider.label}. ` +
-        `Set ${provider.clientIdEnv ?? "the client id env var"} on the orchestrator process.`,
+        `${provider.label} doesn't support dynamic client registration; set ` +
+        `${provider.clientIdEnv ?? "the client id env var"} on the orchestrator process.`,
     );
   }
-  const clientSecret = provider.clientSecretEnv ? env[provider.clientSecretEnv] : undefined;
 
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = deriveCodeChallenge(codeVerifier);
@@ -183,11 +273,13 @@ export function startOAuthFlow(opts: {
     codeVerifier,
     redirectUri: opts.redirectUri,
     clientId,
-    clientSecret,
+    ...(clientSecret !== undefined ? { clientSecret } : {}),
+    authorizationEndpoint,
+    tokenEndpoint,
     createdAt: Date.now(),
   });
 
-  const authorizeUrl = new URL(provider.authorizationEndpoint);
+  const authorizeUrl = new URL(authorizationEndpoint);
   authorizeUrl.searchParams.set("response_type", "code");
   authorizeUrl.searchParams.set("client_id", clientId);
   authorizeUrl.searchParams.set("redirect_uri", opts.redirectUri);
@@ -199,6 +291,88 @@ export function startOAuthFlow(opts: {
   }
 
   return { authorizeUrl: authorizeUrl.toString(), state };
+}
+
+/**
+ * Register a public OAuth client with the provider's authorization server
+ * (RFC 7591 dynamic client registration). ShipIt is a PKCE-only public
+ * client, so `token_endpoint_auth_method` is `"none"` and no client secret is
+ * expected (though one is parsed and carried if the provider issues it).
+ *
+ * The `redirectUri` here MUST be byte-identical to the one used in the
+ * authorize URL and the later token exchange — a mismatch is the most common
+ * DCR failure mode.
+ *
+ * Throws `ServiceError(502)` on any non-2xx or malformed response, with a
+ * hint to set the operator env-var fallback (the scenario `clientIdEnv`
+ * exists for — e.g. registration rate limits).
+ */
+export async function registerOAuthClient(opts: {
+  registrationEndpoint: string;
+  redirectUri: string;
+  provider: McpOAuthProviderConfig;
+  fetchImpl?: typeof fetch;
+}): Promise<{
+  clientId: string;
+  clientSecret?: string;
+  registrationClientUri?: string;
+  clientIdIssuedAt?: number;
+}> {
+  const body = {
+    client_name: "ShipIt",
+    redirect_uris: [opts.redirectUri],
+    token_endpoint_auth_method: "none",
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+  };
+  const f = opts.fetchImpl ?? fetch;
+  const fallbackHint = opts.provider.clientIdEnv
+    ? ` As a fallback, set ${opts.provider.clientIdEnv} on the orchestrator process.`
+    : "";
+  let res: Response;
+  try {
+    res = await f(opts.registrationEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw new ServiceError(
+      502,
+      `Dynamic client registration request failed: ${getErrorMessage(err)}.${fallbackHint}`,
+    );
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ServiceError(
+      502,
+      `Dynamic client registration for ${opts.provider.label} returned ${res.status}: ` +
+        `${text.slice(0, 300) || res.statusText}.${fallbackHint}`,
+    );
+  }
+  const parsed: unknown = await res.json().catch(() => null);
+  if (!parsed || typeof parsed !== "object") {
+    throw new ServiceError(502, "Dynamic client registration returned a non-object response");
+  }
+  const r = parsed as Record<string, unknown>;
+  const clientId = typeof r.client_id === "string" ? r.client_id : undefined;
+  if (!clientId) {
+    throw new ServiceError(502, "Dynamic client registration response missing client_id");
+  }
+  const out: {
+    clientId: string;
+    clientSecret?: string;
+    registrationClientUri?: string;
+    clientIdIssuedAt?: number;
+  } = { clientId };
+  if (typeof r.client_secret === "string") out.clientSecret = r.client_secret;
+  if (typeof r.registration_client_uri === "string") {
+    out.registrationClientUri = r.registration_client_uri;
+  }
+  if (typeof r.client_id_issued_at === "number") {
+    out.clientIdIssuedAt = r.client_id_issued_at;
+  }
+  return out;
 }
 
 /**
@@ -226,7 +400,10 @@ export async function handleOAuthCallback(opts: {
     throw new ServiceError(400, `Unknown OAuth provider for state: ${flow.source}`);
   }
   const tokens = await exchangeCodeForTokens({
-    provider,
+    // Exchange at the endpoint resolved during discovery at flow start — NOT
+    // `provider.tokenEndpoint`, which is the (fallback) registry value. See
+    // docs/139-mcp-dynamic-client-registration.
+    tokenEndpoint: flow.tokenEndpoint,
     code: opts.input.code,
     codeVerifier: flow.codeVerifier,
     redirectUri: flow.redirectUri,
@@ -245,7 +422,8 @@ export async function handleOAuthCallback(opts: {
  * propagate.
  */
 async function exchangeCodeForTokens(opts: {
-  provider: McpOAuthProviderConfig;
+  /** The token endpoint resolved at flow start (discovery → registry fallback). */
+  tokenEndpoint: string;
   code: string;
   codeVerifier: string;
   redirectUri: string;
@@ -265,7 +443,7 @@ async function exchangeCodeForTokens(opts: {
   const f = opts.fetchImpl ?? fetch;
   let res: Response;
   try {
-    res = await f(opts.provider.tokenEndpoint, {
+    res = await f(opts.tokenEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
       body: body.toString(),

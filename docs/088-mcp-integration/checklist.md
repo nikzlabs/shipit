@@ -145,8 +145,14 @@
 
 ### Phase 2 — deferred / follow-up
 
-- [ ] **Dynamic client registration (RFC 7591).** → designed in
-  `docs/139-mcp-dynamic-client-registration/plan.md`. Verified 2026-05-20
+- [x] **Dynamic client registration (RFC 7591).** → implemented per
+  `docs/139-mcp-dynamic-client-registration/plan.md` (status: done): metadata
+  discovery (`services/mcp-oauth-discovery.ts`), `registerOAuthClient` +
+  async `startOAuthFlow` client-id resolution (env → cached client →
+  DCR), the separate `CredentialStore.mcpOAuthClients` cache, and the
+  flow-state token-endpoint fix so the code exchange hits the discovered
+  `mcp.notion.com/token`. Notion now connects with zero operator config.
+  Verified 2026-05-20
   that Notion's hosted MCP server (`mcp.notion.com`) **does** support the
   full discovery + DCR chain (issues a public, PKCE-only `client_id` with
   no operator config), so this is no longer blocked. Note: the registry's
