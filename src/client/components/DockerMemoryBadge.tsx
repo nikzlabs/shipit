@@ -15,12 +15,12 @@ export function DockerMemoryBadge({ stats }: DockerMemoryBadgeProps) {
   const hasLimit = totalBytes > 0;
   const pct = hasLimit ? (usedBytes / totalBytes) * 100 : 0;
 
-  // Color tiers: green → yellow → orange → red
+  // Severity tiers use theme-aware semantic tokens so contrast holds on every
+  // theme (hardcoded Tailwind shades like text-yellow-400 wash out on light bg).
   let colorClass = "text-(--color-text-secondary)";
   if (hasLimit) {
-    if (pct >= 90) colorClass = "text-red-400";
-    else if (pct >= 75) colorClass = "text-orange-400";
-    else if (pct >= 60) colorClass = "text-yellow-400";
+    if (pct >= 90) colorClass = "text-(--color-error)";
+    else if (pct >= 60) colorClass = "text-(--color-warning)";
   }
 
   const label = hasLimit
