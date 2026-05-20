@@ -235,7 +235,9 @@ describe("SessionContainerManager", () => {
           HostConfig: expect.objectContaining({
             Binds: expect.arrayContaining([
               "/workspace/sessions/test-session-1:/workspace:rw",
-              "/credentials:/credentials:rw",
+              // docs/138 — the container gets its private per-session credentials
+              // subtree, never the shared root.
+              "/credentials/sessions/test-session-1:/credentials:rw",
             ]),
             Memory: 512 * 1024 * 1024,
             CpuQuota: 50_000,

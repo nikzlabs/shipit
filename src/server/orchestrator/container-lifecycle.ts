@@ -240,7 +240,17 @@ export async function createContainer(
   // mount references it, and seed it with the shared `.gitconfig`. Warm/standby
   // containers hit this too: they carry no agent creds while idle (the agent
   // subtree is only copied in on first turn), satisfying the isolation goal.
-  ensureSessionCredentialsScaffold(config.credentialsDir, config.sessionId);
+  // Best-effort: Docker auto-creates a missing bind/subpath source, and the
+  // first-turn provisioning re-creates the dir + copies `.gitconfig` anyway, so
+  // a non-writable credentials dir (e.g. in unit tests) must not block create.
+  try {
+    ensureSessionCredentialsScaffold(config.credentialsDir, config.sessionId);
+  } catch (err) {
+    console.warn(
+      `[containers] credentials scaffold failed for ${config.sessionId}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 
   const { binds, mounts, workspaceDir } = buildMounts(
     config,
