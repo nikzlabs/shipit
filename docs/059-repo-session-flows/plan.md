@@ -342,3 +342,13 @@ This is a one-time migration that runs at server start.
 | `src/client/components/HomeScreen.tsx` | Simplify to zero-repo state only |
 | `src/client/components/RepoSelector.tsx` | Move into "Add Repository" dialog |
 | `src/client/hooks/useRepoStore.ts` | New — Zustand store for repos |
+
+---
+
+## Fix: late-resolving claim must not clobber the active session
+
+**Symptom:** "Sometimes sending a message in a session creates a NEW session with that message instead." Intermittent.
+
+**Cause:** `App.handleNewSessionForRepo` claims a warm session imperatively and, on resolution, calls `setSessionId(result.sessionId)`. Its `AbortController` (`claimAbortRef`) is only aborted by a *subsequent* "New Session" click — **not** when the user navigates to an existing session (`handleSessionResume`) while the claim is in flight. So a claim that resolved after such a navigation overwrote the store's `sessionId` with the just-claimed warm session. The user's next message then carried the warm session's ID, and `handleSendMessage`'s graduation logic turned it into a brand-new session instead of routing to the session the user had switched to. (The auto-claim effect on the `/{slug}/new` route was already safe — its effect cleanup aborts on navigation.)
+
+**Fix:** Adopt the claim result only when it's still relevant — guarded by `shouldAdoptClaimedSession` (`src/client/utils/repo-label.ts`), which requires the claim to have succeeded, not been aborted, AND the URL to still be *this repo's* new-session route. Covered by `repo-label.test.ts`.

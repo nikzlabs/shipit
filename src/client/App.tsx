@@ -70,7 +70,7 @@ import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
-import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
+import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug, shouldAdoptClaimedSession } from "./utils/repo-label.js";
 import { saveAgentId, saveModelId } from "./utils/local-storage.js";
 import { siblingsOf, orderSiblingsForTabs, siblingTabLabel } from "./utils/doc-paths.js";
 
@@ -482,8 +482,23 @@ export default function App() {
 
       // 3. Claim session in background — sets sessionId, triggers WS connect + preview
       const result = await useRepoStore.getState().claimSession(repoUrl, ac.signal);
-      if (result && !ac.signal.aborted) {
-        useSessionStore.getState().setSessionId(result.sessionId);
+      // Guard against a late-resolving claim clobbering the active session.
+      // `ac` is only aborted by a *subsequent* "New Session" click — NOT by the
+      // user navigating to an existing session (handleSessionResume) while the
+      // claim is in flight. Without the URL check, a claim that resolves after
+      // such a navigation would overwrite the store's sessionId with the
+      // freshly-claimed warm session, and the user's next message would
+      // graduate that warm session into a brand-new session instead of going
+      // to the session they switched to. See shouldAdoptClaimedSession.
+      if (
+        shouldAdoptClaimedSession({
+          claimed: !!result,
+          aborted: ac.signal.aborted,
+          currentPathname: window.location.pathname,
+          repoUrl,
+        })
+      ) {
+        useSessionStore.getState().setSessionId(result!.sessionId);
       }
     },
     [navigate],
