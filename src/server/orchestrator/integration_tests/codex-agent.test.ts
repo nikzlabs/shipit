@@ -222,6 +222,40 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     client.close();
   });
 
+  it("set_model with another agent's model self-heals by switching agent (Codex → Opus)", async () => {
+    // Repro: new session defaults to Codex; user picks Opus from the grouped
+    // model picker. The picker fires set_agent THEN set_model, but if set_agent
+    // is dropped/raced, set_model used to reject ("Model \"opus\" is not
+    // available for Codex") and the model stayed locked to gpt-5.5. The
+    // handler now switches to the agent that owns the model.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Send ONLY set_model — deliberately omit set_agent to prove self-healing.
+    client.send({ type: "set_model", model: "opus" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // A subsequent message must run on Claude (the owner of "opus"), not Codex.
+    client.send({ type: "send_message", text: "Hello" });
+    const claude = await waitForClaude(() => lastClaude);
+    expect(claude.runCalled).toBe(true);
+    expect(lastCodex).toBeNull();
+
+    client.close();
+  });
+
+  it("set_model rejects a model no installed+authed agent supports", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "set_model", model: "totally-made-up-model" });
+
+    const err = await receiveByType(client, "error");
+    expect((err as any).message).toContain("is not available");
+
+    client.close();
+  });
+
   it("Codex agent_event messages are relayed to the client", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
@@ -377,6 +411,7 @@ describe("Integration: Codex agent — validation and default agent", () => {
   let lastCodex: FakeCodexProcess = null as any;
   let savedOpenAIKey: string | undefined;
   let dbManager: DatabaseManager;
+  let sessionManager: SessionManager;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -385,7 +420,7 @@ describe("Integration: Codex agent — validation and default agent", () => {
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-codex-default-"));
 
-    const sessionManager = new SessionManager(dbManager);
+    sessionManager = new SessionManager(dbManager);
     const chatHistoryManager = new ChatHistoryManager(dbManager);
     const registry = await makeRegistry();
 
@@ -442,6 +477,42 @@ describe("Integration: Codex agent — validation and default agent", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().agentId).toBe("codex");
+  });
+
+  it("activation adopts the session's persisted agent over a pre-seeded runner", async () => {
+    // Repro for "issue with the selected model (gpt-5.5)": a runner is seeded
+    // with the global default agent (claude) at creation (warm pool / recovery),
+    // but the session committed agent_id=codex (+ model gpt-5.5). If activation
+    // doesn't reconcile the runner to the session's agent, getActiveAgentId()
+    // returns claude and the turn spawns `claude --model gpt-5.5`.
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/_test/sessions",
+      payload: { title: "codex session" },
+    });
+    const sessionId = created.json().sessionId as string;
+
+    // Session committed to codex + a codex model.
+    sessionManager.setAgentId(sessionId, "codex" as AgentId);
+    sessionManager.setModel(sessionId, "gpt-5.5");
+
+    // Pre-seed a runner as claude (the global default) — mimics the warm pool.
+    await app.inject({
+      method: "POST",
+      url: `/api/_test/runner/${sessionId}/running`,
+      payload: { running: false },
+    });
+
+    // Connect and send — must run on Codex, the session's committed agent.
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+    client.send({ type: "send_message", text: "what model are you?" });
+
+    const codex = await waitForCodex(() => lastCodex);
+    expect(codex.runCalled).toBe(true);
+    expect(lastClaude).toBeNull();
+
+    client.close();
   });
 
   it("default agent is claude when defaultAgentId is not set", async () => {

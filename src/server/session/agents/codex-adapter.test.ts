@@ -202,6 +202,30 @@ describe("CodexAdapter", () => {
     expect((threadResume!.params as any).threadId).toBe("existing-thread-id");
   });
 
+  it("extracts threadId from the 0.132 `thread.id` response shape", async () => {
+    // Regression guard for the reported "issue with the selected model" bug:
+    // CLI 0.132.x moved the id from a top-level `threadId` to a nested
+    // `thread.id`. Reading only `threadId` left it null, so `turn/start` went
+    // out with `threadId: null` and the server rejected the whole turn.
+    adapter = new CodexAdapter();
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+    fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
+    // New nested shape:
+    fakeProc.sendResponse(2, { thread: { id: "thread-nested-456" } });
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(4));
+
+    const turnStart = fakeProc.getRequests().find((r) => r.method === "turn/start");
+    expect(turnStart).toBeDefined();
+    expect((turnStart!.params as any).threadId).toBe("thread-nested-456");
+
+    const initEvent = events.find((e) => e.type === "agent_init");
+    expect((initEvent as any).sessionId).toBe("thread-nested-456");
+  });
+
   it("sends turn/start with user prompt", async () => {
     await createAndInit("Write a hello world script");
 
@@ -242,15 +266,14 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("maps agent message item to agent_assistant event", async () => {
+  it("maps an agentMessage item to agent_assistant text", async () => {
     await createAndInit("Hello");
     events.length = 0; // Clear init events
 
+    // CLI 0.132.x: agentMessage carries a plain `text` string (not a
+    // `role:"assistant"` + `content[]` shape) and is keyed by `id`.
     fakeProc.sendNotification("item/completed", {
-      item: {
-        role: "assistant",
-        content: [{ type: "output_text", text: "Hello! How can I help?" }],
-      },
+      item: { type: "agentMessage", id: "msg-1", text: "Hello! How can I help?" },
     });
 
     await vi.waitFor(() => {
@@ -263,21 +286,52 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("maps function_call item to agent_assistant with tool_use", async () => {
+  it("does not re-emit agentMessage text already streamed via delta", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    // Stream the text incrementally...
+    fakeProc.sendNotification("item/agentMessage/delta", { itemId: "msg-1", delta: "Hi " });
+    fakeProc.sendNotification("item/agentMessage/delta", { itemId: "msg-1", delta: "there" });
+    // ...then the completed item arrives with the full text. The orchestrator
+    // appends each text block, so re-emitting here would double the message.
+    fakeProc.sendNotification("item/completed", {
+      item: { type: "agentMessage", id: "msg-1", text: "Hi there" },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(2);
+    });
+
+    expect(events.map((e) => (e as any).content[0].text)).toEqual(["Hi ", "there"]);
+  });
+
+  it("maps a commandExecution item to tool_use (started) and tool_result (completed)", async () => {
     await createAndInit("Run ls");
     events.length = 0;
 
+    fakeProc.sendNotification("item/started", {
+      item: {
+        type: "commandExecution",
+        id: "call-001",
+        command: "/bin/bash -lc 'ls -la'",
+        cwd: "/workspace",
+        status: "inProgress",
+      },
+    });
     fakeProc.sendNotification("item/completed", {
       item: {
-        type: "function_call",
-        call_id: "call-001",
-        name: "shell",
-        arguments: '{"command":"ls -la"}',
+        type: "commandExecution",
+        id: "call-001",
+        command: "/bin/bash -lc 'ls -la'",
+        status: "completed",
+        exitCode: 0,
+        aggregatedOutput: "file1.txt\nfile2.txt\n",
       },
     });
 
     await vi.waitFor(() => {
-      expect(events.length).toBe(1);
+      expect(events.length).toBe(2);
     });
 
     expect(events[0]).toEqual({
@@ -287,21 +341,27 @@ describe("CodexAdapter", () => {
           type: "tool_use",
           id: "call-001",
           name: "shell",
-          input: { command: "ls -la" },
+          input: { command: "/bin/bash -lc 'ls -la'", cwd: "/workspace" },
         },
       ],
     });
+    expect(events[1]).toEqual({
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "call-001", content: "file1.txt\nfile2.txt\n" }],
+    });
   });
 
-  it("maps function_call_output to agent_tool_result", async () => {
-    await createAndInit("Run ls");
+  it("annotates a failed commandExecution with its exit code", async () => {
+    await createAndInit("Run a failing command");
     events.length = 0;
 
     fakeProc.sendNotification("item/completed", {
       item: {
-        type: "function_call_output",
-        call_id: "call-001",
-        output: "file1.txt\nfile2.txt\n",
+        type: "commandExecution",
+        id: "call-002",
+        status: "failed",
+        exitCode: 1,
+        aggregatedOutput: "boom",
       },
     });
 
@@ -311,25 +371,48 @@ describe("CodexAdapter", () => {
 
     expect(events[0]).toEqual({
       type: "agent_tool_result",
-      content: [
-        {
-          type: "tool_result",
-          tool_use_id: "call-001",
-          content: "file1.txt\nfile2.txt\n",
-        },
-      ],
+      content: [{ type: "tool_result", tool_use_id: "call-002", content: "boom\n[exit code: 1]" }],
     });
   });
 
-  it("maps incremental message delta to agent_assistant", async () => {
+  it("maps a fileChange item to an apply_patch tool call", async () => {
+    await createAndInit("Edit a file");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/completed", {
+      item: {
+        type: "fileChange",
+        id: "fc-1",
+        status: "completed",
+        changes: [
+          { path: "src/a.ts", kind: "update", diff: "@@" },
+          { path: "src/b.ts", kind: "add", diff: "@@" },
+        ],
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(2);
+    });
+
+    expect(events[0]).toEqual({
+      type: "agent_assistant",
+      content: [
+        { type: "tool_use", id: "fc-1", name: "apply_patch", input: { files: ["src/a.ts", "src/b.ts"] } },
+      ],
+    });
+    expect(events[1]).toEqual({
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "fc-1", content: "update src/a.ts\nadd src/b.ts" }],
+    });
+  });
+
+  it("maps incremental message delta (a plain string) to agent_assistant", async () => {
     await createAndInit("Hello");
     events.length = 0;
 
-    fakeProc.sendNotification("item/agentMessage/delta", {
-      delta: {
-        content: [{ type: "output_text", text: "Partial " }],
-      },
-    });
+    // CLI 0.132.x: `delta` is a plain string, not a `{content:[…]}` object.
+    fakeProc.sendNotification("item/agentMessage/delta", { itemId: "msg-1", delta: "Partial " });
 
     await vi.waitFor(() => {
       expect(events.length).toBe(1);
@@ -341,13 +424,21 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("maps turn/completed to agent_result with success", async () => {
+  it("maps turn/completed to agent_result with token usage from thread/tokenUsage/updated", async () => {
     await createAndInit("Hello");
     events.length = 0;
 
+    // Token usage arrives on its own notification (not in turn/completed).
+    fakeProc.sendNotification("thread/tokenUsage/updated", {
+      tokenUsage: {
+        total: { inputTokens: 150, outputTokens: 75, cachedInputTokens: 100 },
+        last: { totalTokens: 130 },
+        modelContextWindow: 272000,
+      },
+    });
+    // v2 nests status under `turn`.
     fakeProc.sendNotification("turn/completed", {
-      status: "completed",
-      usage: { input_tokens: 150, output_tokens: 75 },
+      turn: { id: "turn-001", status: "completed" },
     });
 
     await vi.waitFor(() => {
@@ -359,7 +450,9 @@ describe("CodexAdapter", () => {
       type: "agent_result",
       status: "success",
       sessionId: "thread-abc-123",
-      tokens: { input: 150, output: 75 },
+      tokens: { input: 150, output: 75, cacheRead: 100 },
+      contextTokens: 130,
+      contextWindow: 272000,
     });
     expect((resultEvent as any).error).toBeUndefined();
   });
@@ -369,7 +462,7 @@ describe("CodexAdapter", () => {
     events.length = 0;
 
     fakeProc.sendNotification("turn/completed", {
-      status: "interrupted",
+      turn: { id: "turn-001", status: "interrupted" },
     });
 
     await vi.waitFor(() => {
@@ -406,15 +499,15 @@ describe("CodexAdapter", () => {
     ]);
   });
 
-  it("handles malformed JSON arguments gracefully", async () => {
+  it("handles malformed JSON tool arguments gracefully", async () => {
     await createAndInit("Hello");
     events.length = 0;
 
-    fakeProc.sendNotification("item/completed", {
+    fakeProc.sendNotification("item/started", {
       item: {
-        type: "function_call",
-        call_id: "call-002",
-        name: "shell",
+        type: "mcpToolCall",
+        id: "call-002",
+        tool: "search",
         arguments: "not valid json",
       },
     });
@@ -429,7 +522,7 @@ describe("CodexAdapter", () => {
         {
           type: "tool_use",
           id: "call-002",
-          name: "shell",
+          name: "search",
           input: { raw: "not valid json" },
         },
       ],
@@ -473,46 +566,42 @@ describe("CodexAdapter", () => {
     expect(authRequired).toBe(true);
   });
 
-  it("ignores empty content blocks in message delta", async () => {
+  it("ignores an empty-string message delta", async () => {
     await createAndInit("Hello");
     events.length = 0;
 
-    fakeProc.sendNotification("item/agentMessage/delta", {
-      delta: {
-        content: [{ type: "output_text" }],
-      },
-    });
+    fakeProc.sendNotification("item/agentMessage/delta", { itemId: "msg-1", delta: "" });
 
     // No event should be emitted for empty text
     await new Promise((r) => setTimeout(r, 50));
     expect(events).toHaveLength(0);
   });
 
-  it("handles multiple content blocks in a single item", async () => {
+  it("ignores items with no ShipIt mapping (userMessage, reasoning, plan)", async () => {
     await createAndInit("Hello");
     events.length = 0;
 
     fakeProc.sendNotification("item/completed", {
-      item: {
-        role: "assistant",
-        content: [
-          { type: "output_text", text: "First part. " },
-          { type: "output_text", text: "Second part." },
-        ],
-      },
+      item: { type: "userMessage", id: "u-1", content: [{ type: "text", text: "echo of prompt" }] },
     });
+    fakeProc.sendNotification("item/completed", { item: { type: "reasoning", id: "r-1" } });
+    fakeProc.sendNotification("item/completed", { item: { type: "plan", id: "p-1", text: "a plan" } });
 
-    await vi.waitFor(() => {
-      expect(events.length).toBe(1);
-    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(events).toHaveLength(0);
+  });
 
-    expect(events[0]).toEqual({
-      type: "agent_assistant",
-      content: [
-        { type: "text", text: "First part. " },
-        { type: "text", text: "Second part." },
-      ],
-    });
+  it("sends turn/start with approvalPolicy:never and dangerFullAccess sandbox", async () => {
+    // ShipIt's container IS the sandbox and the agent operates autonomously,
+    // so Codex's own approval gate / bubblewrap sandbox must be disabled —
+    // otherwise shell commands stall on an unanswered approval request and
+    // bubblewrap fails to create a namespace in-container.
+    await createAndInit("Run a command");
+
+    const turnStart = fakeProc.getRequests().find((r) => r.method === "turn/start");
+    expect(turnStart).toBeDefined();
+    expect((turnStart!.params as any).approvalPolicy).toBe("never");
+    expect((turnStart!.params as any).sandboxPolicy).toEqual({ type: "dangerFullAccess" });
   });
 });
 
