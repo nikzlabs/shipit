@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils.js";
-import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
+import type {
+  McpServerConfig,
+  OAuthTokens,
+  McpOAuthRegisteredClient,
+} from "../shared/types/mcp-types.js";
 
 interface CredentialData {
   agentEnv?: Record<string, string>;
@@ -25,6 +29,14 @@ interface CredentialData {
    * (`linear_oauth` → `MCP_PLATFORM_LINEAR_OAUTH`).
    */
   mcpOAuth?: Record<string, OAuthTokens>;
+  /**
+   * Dynamically-registered OAuth clients (RFC 7591, docs/139) keyed by
+   * provider source id. Kept separate from `mcpOAuth` so a registered client
+   * can exist before the first token without falsely reporting "connected"
+   * in `listMcpOAuthProviders`. Reused on every connect so we register once
+   * per account/provider.
+   */
+  mcpOAuthClients?: Record<string, McpOAuthRegisteredClient>;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -187,6 +199,42 @@ export class CredentialStore {
     if (this.data.mcpOAuth && source in this.data.mcpOAuth) {
       // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by provider source id
       delete this.data.mcpOAuth[source];
+      this.save();
+    }
+  }
+
+  // ---- MCP OAuth registered clients (docs/139 — RFC 7591 DCR) ----
+
+  /**
+   * Get the dynamically-registered OAuth client for a provider source id.
+   * Returned as a defensive copy. `undefined` when no client is registered
+   * yet (first connect performs registration).
+   */
+  getMcpOAuthClient(source: string): McpOAuthRegisteredClient | undefined {
+    const c = this.data.mcpOAuthClients?.[source];
+    return c ? { ...c } : undefined;
+  }
+
+  /**
+   * Persist a registered OAuth client for a provider. Called after a
+   * successful RFC 7591 registration so subsequent connects reuse the same
+   * `client_id`.
+   */
+  setMcpOAuthClient(source: string, client: McpOAuthRegisteredClient): void {
+    this.data.mcpOAuthClients ??= {};
+    this.data.mcpOAuthClients[source] = { ...client };
+    this.save();
+  }
+
+  /**
+   * Remove a registered client. Not called on "disconnect" (we keep the
+   * client so reconnect skips re-registration); reserved for a future
+   * "forget this provider entirely" affordance.
+   */
+  deleteMcpOAuthClient(source: string): void {
+    if (this.data.mcpOAuthClients && source in this.data.mcpOAuthClients) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by provider source id
+      delete this.data.mcpOAuthClients[source];
       this.save();
     }
   }

@@ -83,6 +83,13 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
             ? rawBody.toString()
             : "";
       fetchCalls.push({ url, body });
+      // Discovery probes (the unauthenticated `mcpUrl` POST and the
+      // `.well-known` metadata GETs) return 404 so discovery fails fast and
+      // the Linear flow falls back to the registry endpoints. The token
+      // exchange (api.linear.app) is the only call that returns a token body.
+      if (url.includes("/.well-known/") || url.endsWith("/mcp")) {
+        return new Response("not found", { status: 404 });
+      }
       return nextFetchResponse();
     };
 
@@ -199,10 +206,13 @@ describe("Integration: MCP OAuth routes (docs/088 Phase 2)", () => {
     expect(html).toContain('"ok":true');
     expect(html).toContain('"source":"linear_oauth"');
 
-    // Verify the fake fetch saw a code-exchange call
-    expect(fetchCalls).toHaveLength(1);
-    expect(fetchCalls[0].url).toBe("https://api.linear.app/oauth/token");
-    const sent = new URLSearchParams(fetchCalls[0].body);
+    // Verify the fake fetch saw a code-exchange call (discovery probes 404 and
+    // are filtered out — Linear falls back to the registry token endpoint).
+    const tokenCalls = fetchCalls.filter(
+      (c) => c.url === "https://api.linear.app/oauth/token",
+    );
+    expect(tokenCalls).toHaveLength(1);
+    const sent = new URLSearchParams(tokenCalls[0].body);
     expect(sent.get("grant_type")).toBe("authorization_code");
     expect(sent.get("code")).toBe("ac_xxx");
     expect(sent.get("client_id")).toBe("test-client-id");
