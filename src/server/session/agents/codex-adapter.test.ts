@@ -682,6 +682,123 @@ describe("CodexAdapter", () => {
     expect(events).toHaveLength(0);
   });
 
+  it("auto-approves a v2 commandExecution approval request", async () => {
+    // The model can request escalated permissions even under
+    // approvalPolicy:"never", which the app-server delivers as a server→client
+    // REQUEST (id + method). Leaving it unanswered blocks the turn forever
+    // (status → waitingOnApproval, UI stuck on "Thinking…"). The container is
+    // our sandbox, so we auto-approve — exactly like the Claude adapter.
+    await createAndInit("Run a privileged command");
+    fakeProc.stdin.written.length = 0;
+
+    // Simulate a server→client request (has BOTH id and method).
+    const reqLine = `${JSON.stringify({
+      id: 9001,
+      method: "item/commandExecution/requestApproval",
+      params: { command: "sudo apt-get install foo" },
+    })}\n`;
+    fakeProc.stdout.emit("data", Buffer.from(reqLine));
+
+    await vi.waitFor(() => {
+      const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9001);
+      expect(reply).toBeDefined();
+    });
+
+    const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9001) as unknown as {
+      id: number;
+      result: { decision: string };
+    };
+    expect(reply.result).toEqual({ decision: "accept" });
+  });
+
+  it("auto-approves a v2 fileChange approval request", async () => {
+    await createAndInit("Edit a protected file");
+    fakeProc.stdin.written.length = 0;
+
+    const reqLine = `${JSON.stringify({
+      id: 9002,
+      method: "item/fileChange/requestApproval",
+      params: { changes: [{ path: "/etc/hosts" }] },
+    })}\n`;
+    fakeProc.stdout.emit("data", Buffer.from(reqLine));
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9002)).toBeDefined();
+    });
+
+    const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9002) as unknown as {
+      result: { decision: string };
+    };
+    expect(reply.result).toEqual({ decision: "accept" });
+  });
+
+  it("auto-approves a legacy v1 execCommandApproval request with ReviewDecision", async () => {
+    await createAndInit("Run a command (legacy server)");
+    fakeProc.stdin.written.length = 0;
+
+    const reqLine = `${JSON.stringify({
+      id: 9003,
+      method: "execCommandApproval",
+      params: { command: ["ls"] },
+    })}\n`;
+    fakeProc.stdout.emit("data", Buffer.from(reqLine));
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9003)).toBeDefined();
+    });
+
+    const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9003) as unknown as {
+      result: { decision: string };
+    };
+    expect(reply.result).toEqual({ decision: "approved" });
+  });
+
+  it("replies with a JSON-RPC error to an unhandled server request (no hang)", async () => {
+    // We can't satisfy a tool-input/elicitation request autonomously, so we
+    // reply with an error instead of leaving the turn stalled on "Thinking…".
+    await createAndInit("Hello");
+    fakeProc.stdin.written.length = 0;
+
+    const reqLine = `${JSON.stringify({
+      id: 9004,
+      method: "tool/requestUserInput",
+      params: {},
+    })}\n`;
+    fakeProc.stdout.emit("data", Buffer.from(reqLine));
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9004)).toBeDefined();
+    });
+
+    const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9004) as unknown as {
+      error?: { code: number; message: string };
+    };
+    expect(reply.error?.code).toBe(-32601);
+  });
+
+  it("does not treat a server request as a response to a pending call", async () => {
+    // Regression guard: a server→client request shares the id-bearing shape of
+    // a response. If misrouted, the approval is dropped and the turn hangs.
+    // After init, no pending request should be resolved by the approval frame —
+    // the turn proceeds normally afterward.
+    await createAndInit("Hello");
+    events.length = 0;
+
+    const reqLine = `${JSON.stringify({
+      id: 9005,
+      method: "item/commandExecution/requestApproval",
+      params: {},
+    })}\n`;
+    fakeProc.stdout.emit("data", Buffer.from(reqLine));
+
+    // The turn can still complete (proving the adapter wasn't wedged).
+    fakeProc.sendNotification("turn/completed", { turn: { id: "t", status: "completed" } });
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_result")).toBe(true);
+    });
+    expect(events.find((e) => e.type === "agent_result")).toMatchObject({ status: "success" });
+  });
+
   it("sends turn/start with approvalPolicy:never and dangerFullAccess sandbox", async () => {
     // ShipIt's container IS the sandbox and the agent operates autonomously,
     // so Codex's own approval gate / bubblewrap sandbox must be disabled —

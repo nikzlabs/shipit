@@ -48,13 +48,31 @@ interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
-/** Inbound notification (app-server → client). */
+/** Inbound notification (app-server → client, no id). */
 interface JsonRpcServerNotification {
   method: string;
   params?: Record<string, unknown>;
 }
 
-type JsonRpcInbound = JsonRpcResponse | JsonRpcServerNotification;
+/**
+ * Inbound request (app-server → client) — has BOTH an id and a method. The
+ * app-server blocks the turn until we send back a JsonRpcOutboundResponse with
+ * the matching id. Approval prompts arrive this way.
+ */
+interface JsonRpcServerRequest {
+  id: number;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+/** Outbound response (client → app-server) — echoes a server request's id. */
+interface JsonRpcOutboundResponse {
+  id: number;
+  result?: unknown;
+  error?: { code: number; message: string };
+}
+
+type JsonRpcInbound = JsonRpcResponse | JsonRpcServerNotification | JsonRpcServerRequest;
 
 /**
  * Path where the Codex CLI persists ChatGPT subscription credentials after
@@ -346,8 +364,18 @@ export class CodexAdapter
     this.writeJsonRpc(msg);
   }
 
+  /** Reply to a server→client request with a successful result. */
+  private sendResponse(id: number, result: unknown): void {
+    this.writeJsonRpc({ id, result });
+  }
+
+  /** Reply to a server→client request with a JSON-RPC error. */
+  private sendErrorResponse(id: number, code: number, message: string): void {
+    this.writeJsonRpc({ id, error: { code, message } });
+  }
+
   /** Write a JSON-RPC message to the process stdin. */
-  private writeJsonRpc(msg: JsonRpcRequest | JsonRpcNotification): void {
+  private writeJsonRpc(msg: JsonRpcRequest | JsonRpcNotification | JsonRpcOutboundResponse): void {
     if (!this.proc?.stdin?.writable) return;
     const line = `${JSON.stringify(msg)  }\n`;
     this.proc.stdin.write(line);
@@ -379,12 +407,27 @@ export class CodexAdapter
   // ---- Message dispatch ----
 
   private handleMessage(msg: JsonRpcInbound): void {
-    // Response to a pending request
-    if ("id" in msg && msg.id !== null && msg.id !== undefined) {
-      const pending = this.pendingRequests.get(msg.id);
+    const hasId = "id" in msg && msg.id !== null && msg.id !== undefined;
+    const hasMethod =
+      "method" in msg && typeof (msg as { method?: unknown }).method === "string";
+
+    // Server→client REQUEST: carries BOTH an id and a method. The app-server
+    // blocks the turn until we answer it (approval prompts arrive this way).
+    // This MUST be checked before the response branch — a server request also
+    // has an id, and treating it as a response to one of our calls drops it on
+    // the floor, hanging the turn forever (status → waitingOnApproval, UI stuck
+    // on "Thinking…").
+    if (hasId && hasMethod) {
+      this.handleServerRequest(msg);
+      return;
+    }
+
+    // Response to one of OUR pending requests: an id, no method.
+    if (hasId) {
+      const resp = msg as JsonRpcResponse;
+      const pending = this.pendingRequests.get(resp.id);
       if (pending) {
-        this.pendingRequests.delete(msg.id);
-        const resp = msg;
+        this.pendingRequests.delete(resp.id);
         if (resp.error) {
           pending.reject(new Error(`JSON-RPC error ${resp.error.code}: ${resp.error.message}`));
         } else {
@@ -394,9 +437,50 @@ export class CodexAdapter
       return;
     }
 
-    // Server notification
-    const notif = msg as JsonRpcServerNotification;
-    this.handleNotification(notif);
+    // Server notification: a method, no id.
+    this.handleNotification(msg as JsonRpcServerNotification);
+  }
+
+  /**
+   * Answer a server→client request from the app-server.
+   *
+   * ShipIt runs Codex inside its own session container — the container IS the
+   * sandbox and the agent is meant to operate the box autonomously (CLAUDE.md
+   * §5), exactly like the Claude adapter, which auto-approves everything. So we
+   * auto-approve every approval request. `approvalPolicy: "never"` (see
+   * `initializeAndRun`) suppresses MOST prompts, but the model can still
+   * request escalated permissions explicitly, which forces an approval request
+   * regardless of policy. Leaving that unanswered is THE bug behind "Codex
+   * stuck on Thinking…": the turn blocks (status flips to waitingOnApproval)
+   * waiting for a response that never comes.
+   *
+   * Decision enums come straight from the generated v2 schema
+   * (`codex app-server generate-json-schema`): CommandExecution/FileChange
+   * approvals take `"accept"`; the legacy v1 ReviewDecision takes `"approved"`.
+   */
+  private handleServerRequest(req: JsonRpcServerRequest): void {
+    switch (req.method) {
+      // v2 protocol (turn/start) — CommandExecution/FileChange ApprovalDecision.
+      case "item/commandExecution/requestApproval":
+      case "item/fileChange/requestApproval": {
+        this.sendResponse(req.id, { decision: "accept" });
+        return;
+      }
+      // v1 (legacy) protocol — ReviewDecision.
+      case "execCommandApproval":
+      case "applyPatchApproval": {
+        this.sendResponse(req.id, { decision: "approved" });
+        return;
+      }
+      default: {
+        // Any other server→client request (tool input, MCP elicitation, …) we
+        // can't satisfy without a human. Reply with a JSON-RPC error rather
+        // than leaving it hanging — the turn then fails fast and visibly
+        // instead of silently stalling on "Thinking…".
+        this.emit("log", "codex-rpc", `unhandled server request: ${req.method}`);
+        this.sendErrorResponse(req.id, -32601, `Method not handled by ShipIt: ${req.method}`);
+      }
+    }
   }
 
   /** Handle streaming notifications from the Codex App Server. */
@@ -414,6 +498,19 @@ export class CodexAdapter
 
       case "turn/started": {
         // Turn has begun — nothing to emit yet
+        break;
+      }
+
+      case "thread/status/changed": {
+        // Activity/status transitions (e.g. activeFlags: ["waitingOnApproval"]).
+        // We don't surface a distinct "waiting for approval" UI state because
+        // approval requests are auto-answered in handleServerRequest — just
+        // like Claude, the agent never actually blocks on a human here, so the
+        // wait is transient and a separate indicator would only flicker. Log
+        // it for diagnostics.
+        const status = params.status as { activeFlags?: string[] } | undefined;
+        const flags = status?.activeFlags?.join(",") ?? "";
+        this.emit("log", "codex-rpc", `thread/status/changed: ${flags || "active"}`);
         break;
       }
 
