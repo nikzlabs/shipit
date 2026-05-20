@@ -80,7 +80,6 @@ describe("file-review-store", () => {
     useFileReviewStore.setState({
       draftByKey: {},
       historyByKey: {},
-      aiLoadingByKey: {},
       loadingByKey: {},
     });
   });
@@ -198,22 +197,22 @@ describe("file-review-store", () => {
     expect(fake.calls.find((c) => c.url.endsWith("/send"))).toBeUndefined();
   });
 
-  it("aiReview() appends AI comments to the draft", async () => {
-    const draft = makeDraft({ id: "d8" });
-    const fake = new FakeFetch();
-    fake.on("POST", "/api/sessions/s1/file-reviews/draft", () => draft);
-    fake.on("GET", /file-reviews\?filePath/, () => ({ reviews: [] }));
-    fake.on("POST", "/api/sessions/s1/file-reviews/d8/ai-review", () => ({
+  it("applyReviewUpdate() replaces the local draft with the broadcast review (docs/125)", () => {
+    // Seed an existing draft so we can prove the WS update overwrites it.
+    useFileReviewStore.setState({
+      draftByKey: { "s1::plan.md": makeDraft({ id: "d8", comments: [] }) },
+    });
+
+    const updated = makeDraft({
+      id: "d8",
       comments: [
         { id: "ai1", kind: "section", sectionHeading: "## A", sectionIndex: 0, text: "robot says", source: "ai" },
       ],
-    }));
-    fake.install();
+    });
+    useFileReviewStore.getState().applyReviewUpdate(updated);
 
-    await useFileReviewStore.getState().load("s1", "plan.md");
-    const newCs = await useFileReviewStore.getState().aiReview("s1", "plan.md");
-    expect(newCs).toHaveLength(1);
     const draftNow = useFileReviewStore.getState().getDraft("s1", "plan.md");
+    expect(draftNow?.comments).toHaveLength(1);
     expect(draftNow?.comments[0].source).toBe("ai");
   });
 

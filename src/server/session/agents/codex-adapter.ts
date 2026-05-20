@@ -126,6 +126,11 @@ interface CodexItem {
   arguments?: string; // JSON-encoded arguments
   result?: unknown;
   error?: unknown;
+  // collabToolCall — subagent orchestration (spawn_agent, send_input, wait, …)
+  prompt?: string;
+  receiverThreadId?: string;
+  newThreadId?: string;
+  agentStatus?: string;
 }
 
 /**
@@ -176,10 +181,14 @@ export class CodexAdapter
       "gpt-5.3-codex",
       "gpt-5.2",
     ],
-    // Codex has neither a subagent primitive nor a hook for registering
-    // custom tools. 125 requires both, so the chat-native review flow is
-    // gated off on Codex sessions.
-    supportsReview: false,
+    // docs/125 — Codex satisfies both ingredients the chat-native review flow
+    // needs: subagents (model spawns them via the `spawn_agent` collab tool on
+    // explicit instruction — exactly what the composed review prompt asks for)
+    // and custom MCP tools (`[mcp_servers.*]` in config.toml). The worker
+    // writes the `shipit-review` bridge into the Codex config before spawn
+    // (see SessionWorker.ensureCodexReviewMcpConfig), so `submit_review_comments`
+    // is available to the parent and any subagent it spawns.
+    supportsReview: true,
     supportsSteering: true,
   };
 
@@ -631,6 +640,27 @@ export class CodexAdapter
         } else {
           const payload = item.result ?? item.error ?? "";
           this.emitToolResult(id, typeof payload === "string" ? payload : JSON.stringify(payload));
+        }
+        break;
+      }
+
+      case "collabToolCall": {
+        // docs/125 — subagent orchestration (`spawn_agent`, `send_input`,
+        // `wait`, `close_agent`, …). Surface it as a tool call so the review
+        // subagent's lifecycle is visible in chat, mirroring how Claude's
+        // `Task` tool renders. The actual review write-back still arrives via
+        // the `submit_review_comments` MCP tool, mapped above.
+        if (phase === "started") {
+          this.emitAssistant([
+            {
+              type: "tool_use",
+              id,
+              name: item.tool ?? "collab",
+              input: { agent: item.receiverThreadId ?? item.newThreadId, prompt: item.prompt },
+            },
+          ]);
+        } else {
+          this.emitToolResult(id, item.agentStatus ?? item.status ?? "done");
         }
         break;
       }

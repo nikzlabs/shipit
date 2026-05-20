@@ -164,13 +164,12 @@ describe("FilePreviewModal", () => {
     expect(pathEl).toBeInTheDocument();
   });
 
-  // 125 — Phase 1 gating. The AI Review affordance only shows when the
-  // active agent's capability flag says it can run the chat-native review
-  // flow. Today that's Claude only; Codex sessions get no button (not a
-  // disabled one) because the silent prod no-op the existing button
-  // produced is strictly worse than no button at all.
-  describe("AI Review gating on agent capability (125)", () => {
-    it("shows the AI Review button when active agent has supportsReview=true", () => {
+  // 125 — chat-native review. The "Ask agent to review" affordance only shows
+  // when the active agent's capability flag says it can run the flow (Claude
+  // only today). Codex sessions get no button (not a disabled one) because the
+  // silent prod no-op the old button produced is strictly worse than nothing.
+  describe("Ask agent to review gating (125)", () => {
+    it("shows the button when active agent has supportsReview=true", () => {
       setupSessionAndAgents("claude");
       render(
         <FilePreviewModal
@@ -178,12 +177,13 @@ describe("FilePreviewModal", () => {
           content="# Plan"
           fileType="markdown"
           onClose={() => {}}
+          onAskAgentReview={() => {}}
         />,
       );
-      expect(screen.getByRole("button", { name: /ai review/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /ask agent to review/i })).toBeInTheDocument();
     });
 
-    it("hides the AI Review button when active agent has supportsReview=false", () => {
+    it("hides the button when active agent has supportsReview=false", () => {
       setupSessionAndAgents("codex");
       render(
         <FilePreviewModal
@@ -191,14 +191,13 @@ describe("FilePreviewModal", () => {
           content="# Plan"
           fileType="markdown"
           onClose={() => {}}
+          onAskAgentReview={() => {}}
         />,
       );
-      expect(screen.queryByRole("button", { name: /ai review/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /ask agent to review/i })).not.toBeInTheDocument();
     });
 
-    it("hides the AI Review button when there is no agent list yet (boot race)", () => {
-      // Bootstrap hasn't populated the agent list yet — the modal should not
-      // render an affordance whose capability we cannot prove.
+    it("hides the button when there is no agent list yet (boot race)", () => {
       useSessionStore.getState().setSessionId("session-1");
       useUiStore.getState().setAgentList([]);
       render(
@@ -207,9 +206,47 @@ describe("FilePreviewModal", () => {
           content="# Plan"
           fileType="markdown"
           onClose={() => {}}
+          onAskAgentReview={() => {}}
         />,
       );
-      expect(screen.queryByRole("button", { name: /ai review/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /ask agent to review/i })).not.toBeInTheDocument();
+    });
+
+    it("composes a delegation prompt and invokes onAskAgentReview with the file path", async () => {
+      setupSessionAndAgents("claude");
+      const onAskAgentReview = vi.fn();
+      render(
+        <FilePreviewModal
+          filePath="docs/plan.md"
+          content={"# Plan\n\n## Summary\nx"}
+          fileType="markdown"
+          onClose={() => {}}
+          onAskAgentReview={onAskAgentReview}
+        />,
+      );
+      await userEvent.click(screen.getByRole("button", { name: /ask agent to review/i }));
+      expect(onAskAgentReview).toHaveBeenCalledOnce();
+      const [prompt, filePath] = onAskAgentReview.mock.calls[0]!;
+      expect(filePath).toBe("docs/plan.md");
+      // The prompt must instruct delegation to a subagent and name the tool.
+      expect(prompt).toContain("subagent");
+      expect(prompt).toContain("submit_review_comments");
+    });
+
+    it("disables the button while the agent is mid-turn", () => {
+      setupSessionAndAgents("claude");
+      useSessionStore.getState().setIsLoading(true);
+      render(
+        <FilePreviewModal
+          filePath="docs/plan.md"
+          content="# Plan"
+          fileType="markdown"
+          onClose={() => {}}
+          onAskAgentReview={() => {}}
+        />,
+      );
+      expect(screen.getByRole("button", { name: /ask agent to review/i })).toBeDisabled();
+      useSessionStore.getState().setIsLoading(false);
     });
   });
 

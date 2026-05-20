@@ -22,8 +22,10 @@ import {
   deleteDraftReview,
   sendReview,
   generateAiReview,
+  submitAiReviewComments,
   ServiceError,
 } from "./services/index.js";
+import type { AiReviewCommentInput } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 
 type Source = "human" | "ai";
@@ -238,6 +240,64 @@ export async function registerReviewRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to delete review: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ----------------------------------------------------------------
+  // Chat-native AI review write-back (docs/125)
+  //
+  // The session worker relays the agent's `submit_review_comments` tool call
+  // here (worker injects the trusted SESSION_ID). The agent is allow-listed to
+  // exactly the file the current review turn authorized — `runner.
+  // activeReviewFilePath` — so a confused subagent can't draft comments on a
+  // file the user never opened. `source: "ai"` is forced server-side.
+  // ----------------------------------------------------------------
+  app.post<{
+    Params: { sessionId: string };
+    Body: { filePath?: string; comments?: AiReviewCommentInput[] };
+  }>(
+    "/api/sessions/:sessionId/review-submit",
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const filePath = request.body?.filePath;
+      const comments = request.body?.comments;
+      if (!filePath || !Array.isArray(comments)) {
+        reply.code(400).send({ error: "filePath and comments[] are required" });
+        return;
+      }
+
+      // Allow-list: only the file the current review turn authorized.
+      const runner = deps.runnerRegistry.get(sessionId);
+      if (runner?.activeReviewFilePath !== filePath) {
+        reply.code(403).send({
+          error: runner?.activeReviewFilePath
+            ? `submit_review_comments is authorized for "${runner.activeReviewFilePath}", not "${filePath}".`
+            : "No review is in progress for this session — submit_review_comments is only available during a review turn.",
+        });
+        return;
+      }
+
+      const dir = resolveSessionDir(deps.sessionManager, sessionId, reply);
+      if (!dir) return;
+      try {
+        const result = await submitAiReviewComments(
+          deps.reviewStore!,
+          sessionId,
+          filePath,
+          dir,
+          comments,
+        );
+        // Broadcast the updated draft so an open file-preview modal renders the
+        // new AI comments live (and reconnecting viewers replay it).
+        runner.emitMessage({ type: "review_updated", sessionId, filePath, review: result.review });
+        return { ok: true, added: result.added, outdated: result.outdated };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to submit review comments: ${getErrorMessage(err)}` });
       }
     },
   );

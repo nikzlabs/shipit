@@ -15,6 +15,7 @@ import type { FastifyInstance } from "fastify";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, McpServerConfig } from "./agents/agent-process.js";
@@ -182,6 +183,21 @@ export class SessionWorker extends EventEmitter {
       },
     };
 
+    // docs/125 — internal review tool. The bridge is a thin stdio→HTTP shim
+    // (mcp-review-bridge.ts) launched via tsx-by-absolute-path, mirroring the
+    // `gh`/`shipit` shim install in the Dockerfile (bare `tsx` fails to resolve
+    // when the agent's cwd is a user repo without a tsx dep). It reads
+    // WORKER_PORT from the inherited env to reach the worker's
+    // /agent-ops/review/submit broker. Skipped if the bridge file isn't present
+    // (e.g. a stripped-down test image) so agent start never fails on it.
+    const reviewBridge = this.reviewBridgePaths();
+    if (reviewBridge) {
+      mcpServers["shipit-review"] = {
+        command: reviewBridge.tsxBin,
+        args: [reviewBridge.bridgePath],
+      };
+    }
+
     // docs/088: merge user-configured MCP servers. Configs arrive UNRESOLVED
     // — `$secret:` placeholders are substituted here against the worker's own
     // process.env (populated by 087's agent-env pipeline). A server that
@@ -213,6 +229,60 @@ export class SessionWorker extends EventEmitter {
     return configPath;
   }
 
+  /**
+   * Resolve the absolute paths needed to launch the review MCP bridge
+   * (docs/125): the `tsx` binary and `mcp-review-bridge.ts`, both relative to
+   * this module. Returns null if either is missing so a stripped-down or
+   * non-container environment doesn't break agent start. Mirrors the Dockerfile
+   * `gh` shim's tsx-by-absolute-path invocation.
+   */
+  private reviewBridgePaths(): { tsxBin: string; bridgePath: string } | null {
+    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
+    const bridgePath = path.join(sessionDir, "mcp-review-bridge.ts");
+    // <root>/src/server/session → <root>/node_modules/.bin/tsx
+    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
+    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
+    return { tsxBin, bridgePath };
+  }
+
+  /**
+   * docs/125 — register the review bridge for Codex. Unlike Claude (which takes
+   * a per-run `mcpConfigPath` JSON file), the Codex CLI loads MCP servers from
+   * `[mcp_servers.*]` in `config.toml` at app-server startup. We append a
+   * managed `shipit-review` block to the Codex config dir (`CODEX_HOME` or
+   * `/root/.codex`, the same dir that holds `auth.json`) before spawn. The same
+   * bridge serves both backends; it reads `WORKER_PORT` from the inherited env.
+   *
+   * Idempotent (skips if our block is already present) and non-clobbering
+   * (appends — a user's existing config and any docs/088 servers are left
+   * intact). Best-effort: a write failure is logged and never blocks the turn.
+   */
+  private ensureCodexReviewMcpConfig(): void {
+    const bridge = this.reviewBridgePaths();
+    if (!bridge) return;
+    const codexHome = process.env.CODEX_HOME || "/root/.codex";
+    const configPath = path.join(codexHome, "config.toml");
+    try {
+      let existing = "";
+      try {
+        existing = fs.readFileSync(configPath, "utf-8");
+      } catch { /* no config yet */ }
+      if (existing.includes("[mcp_servers.shipit-review]")) return;
+      const block = [
+        "",
+        "# docs/125 — internal review tool bridge (managed by ShipIt; do not edit).",
+        "[mcp_servers.shipit-review]",
+        `command = ${JSON.stringify(bridge.tsxBin)}`,
+        `args = [${JSON.stringify(bridge.bridgePath)}]`,
+        "",
+      ].join("\n");
+      fs.mkdirSync(codexHome, { recursive: true });
+      fs.appendFileSync(configPath, block);
+    } catch (err) {
+      console.warn(`[mcp] failed to register codex review bridge: ${getErrorMessage(err)}`);
+    }
+  }
+
   // --- Session mode endpoints (agent, terminal, file watcher) ---
 
   private registerSessionEndpoints(app: FastifyInstance): void {
@@ -231,6 +301,12 @@ export class SessionWorker extends EventEmitter {
       try {
         // Generate MCP config — built-in Playwright + user-configured servers.
         const mcpConfigPath = this.generateMcpConfig(agentId, params);
+
+        // docs/125 — Codex loads MCP servers from config.toml, not a per-run
+        // path, so register the review bridge there before spawn.
+        if (agentId === "codex") {
+          this.ensureCodexReviewMcpConfig();
+        }
 
         this.agent = this.agentFactory(agentId);
         this.wireAgentEvents(this.agent);

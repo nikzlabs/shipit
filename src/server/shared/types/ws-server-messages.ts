@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { PermissionMode } from "./attachment-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -735,6 +735,21 @@ export interface WsSessionForked {
   sessionName: string;
 }
 
+/**
+ * Server → Client: a file review's comment set changed out-of-band (docs/125).
+ * Emitted when the chat-native review subagent writes anchored comments via the
+ * `submit_review_comments` tool. Carries the full updated draft so the file
+ * preview modal can render the new AI comments live without re-fetching.
+ * Broadcast via `runner.emitMessage()` so every attached viewer sees it and it
+ * lands in the turn-event buffer for reconnecting viewers.
+ */
+export interface WsReviewUpdated {
+  type: "review_updated";
+  sessionId: string;
+  filePath: string;
+  review: FileReview;
+}
+
 export type WsServerMessage =
   | WsAgentEvent
   | WsError
@@ -813,4 +828,5 @@ export type WsServerMessage =
   | WsRebaseConflicts
   | WsRebaseComplete
   | WsRebaseAborted
+  | WsReviewUpdated
   | WsSubscriptionLimits;

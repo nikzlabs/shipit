@@ -149,9 +149,9 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities.toolNames).toContain("file_write");
     expect(adapter.capabilities.models).toContain("gpt-5.4");
     // 125 — chat-native AI review requires a subagent primitive plus custom
-    // MCP tool registration; Codex has neither, so the affordance is hidden
-    // on Codex sessions until the platform grows the missing pieces.
-    expect(adapter.capabilities.supportsReview).toBe(false);
+    // MCP tool registration; Codex ships both (model-invoked `spawn_agent`
+    // collab tool + `[mcp_servers.*]` config), so the affordance is enabled.
+    expect(adapter.capabilities.supportsReview).toBe(true);
   });
 
   it("emits auth_required when OPENAI_API_KEY is not set", () => {

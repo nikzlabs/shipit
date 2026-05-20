@@ -34,6 +34,7 @@ import { handleRebaseAborted } from "./rebase-aborted.js";
 import { handleRebaseComplete } from "./rebase-complete.js";
 import { handleRebaseConflicts } from "./rebase-conflicts.js";
 import { handleRebaseStarted } from "./rebase-started.js";
+import { handleReviewUpdated } from "./review-updated.js";
 import { handleRewindComplete } from "./rewind-complete.js";
 import { handleRollbackComplete } from "./rollback-complete.js";
 import { handleSecretsStatus } from "./secrets-status.js";
@@ -114,6 +115,7 @@ export const messageHandlers: MessageHandlerMap = {
   rebase_complete: handleRebaseComplete,
   rebase_conflicts: handleRebaseConflicts,
   rebase_started: handleRebaseStarted,
+  review_updated: handleReviewUpdated,
   rewind_complete: handleRewindComplete,
   rollback_complete: handleRollbackComplete,
   secrets_status: handleSecretsStatus,
