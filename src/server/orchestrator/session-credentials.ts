@@ -26,6 +26,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
+import { writeContainerGitConfig } from "./git-config.js";
 
 /** Subdirectory under the credentials root that holds per-session subtrees. */
 export const SESSION_CREDENTIALS_SUBDIR = "sessions";
@@ -44,11 +45,28 @@ const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
 };
 
 /**
- * Shared, non-agent-sensitive config copied into every session's credentials
- * dir regardless of agent. `.gitconfig` carries the git identity + the GitHub
- * credential helper, needed for any in-container git operation.
+ * Shared, non-agent-sensitive config copied verbatim into every session's
+ * credentials dir regardless of agent.
+ *
+ * NOTE: `.gitconfig` is deliberately NOT in this list. The orchestrator's own
+ * `.gitconfig` embeds the GitHub PAT inline (see `setGlobalCredentialHelper`),
+ * so copying it into the sandbox would leak the token (docs/088 finding #5).
+ * Instead each session gets a *generated*, token-free gitconfig via
+ * {@link writeSessionGitConfig} that points `credential.helper` at the
+ * brokering `shipit-git-credential` helper.
  */
-const SHARED_CREDENTIAL_PATHS: readonly string[] = [".gitconfig"];
+const SHARED_CREDENTIAL_PATHS: readonly string[] = [];
+
+/**
+ * Write the per-session container gitconfig (identity + brokering credential
+ * helper, no token). Called from both the scaffold and provisioning hooks so
+ * every container — warm/idle or freshly provisioned — has a token-free
+ * gitconfig at `/credentials/.gitconfig`.
+ */
+function writeSessionGitConfig(credentialsRoot: string, sessionId: string): void {
+  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  writeContainerGitConfig(path.join(dir, ".gitconfig"));
+}
 
 /** Absolute host path of a session's private credentials subtree. */
 export function perSessionCredentialsDir(credentialsRoot: string, sessionId: string): string {
@@ -93,6 +111,8 @@ export function ensureSessionCredentialsScaffold(credentialsRoot: string, sessio
   for (const rel of SHARED_CREDENTIAL_PATHS) {
     copyCredentialPath(credentialsRoot, dir, rel);
   }
+  // Generate a token-free gitconfig (identity + brokering credential helper).
+  writeSessionGitConfig(credentialsRoot, sessionId);
 }
 
 /**
@@ -118,6 +138,9 @@ export function provisionAgentCredentials(
   for (const rel of SHARED_CREDENTIAL_PATHS) {
     copyCredentialPath(credentialsRoot, dir, rel);
   }
+  // Regenerate the token-free gitconfig — identity may have been set after the
+  // warm container's scaffold ran (e.g. GitHub connected mid-session).
+  writeSessionGitConfig(credentialsRoot, sessionId);
   for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
     copyCredentialPath(credentialsRoot, dir, rel);
   }

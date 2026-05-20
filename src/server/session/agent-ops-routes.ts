@@ -141,6 +141,16 @@ export function registerAgentOpsRoutes(
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/reopen`, {}, reply),
   );
 
+  // POST /agent-ops/git/credential — broker a git credential for the
+  // in-container `shipit-git-credential` helper (docs/088 finding #5). The
+  // helper POSTs the requested host here; the orchestrator returns the GitHub
+  // token (for github.com only) over this localhost channel so the PAT never
+  // lands in the container's gitconfig, disk, or env.
+  app.post<{ Body: { host?: string; protocol?: string } }>(
+    "/agent-ops/git/credential",
+    async (request, reply) => relay("POST", "/git/credential", request.body ?? {}, reply),
+  );
+
   // ---------------------------------------------------------------------------
   // Agent-spawned sibling sessions (docs/117)
   //

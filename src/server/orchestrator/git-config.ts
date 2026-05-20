@@ -49,6 +49,56 @@ export function initGlobalGitConfig(credentialsDir: string): void {
 }
 
 /**
+ * Absolute path of the brokering git credential helper installed in the
+ * session worker image (see `src/server/session/agent-shim/git-credential.ts`
+ * and the `shipit-git-credential` install in `docker/Dockerfile.session-worker.*`).
+ *
+ * Used as the `credential.helper` value in the *container's* gitconfig. It's an
+ * absolute path so git invokes it directly rather than prepending
+ * `git credential-` (git's rule for bare helper names).
+ */
+export const CONTAINER_CREDENTIAL_HELPER = "/usr/local/bin/shipit-git-credential";
+
+/**
+ * Write a *sanitized* gitconfig for a session container at `destPath`.
+ *
+ * Unlike the orchestrator's own global gitconfig (which embeds the GitHub PAT
+ * inline via {@link setGlobalCredentialHelper}), this file NEVER contains the
+ * token. It carries:
+ *   - the user's git identity (copied from the orchestrator's global config so
+ *     authorship is preserved),
+ *   - `commit.gpgsign = false` (the container has no signing key),
+ *   - `credential.helper = ` the brokering {@link CONTAINER_CREDENTIAL_HELPER},
+ *     which fetches the token from the worker over localhost at git-time.
+ *
+ * This is the fix for docs/088-security-audit finding #5: a prompt-injected
+ * agent that reads `/credentials/.gitconfig` (or runs `git credential fill`)
+ * gets the helper *path*, not the PAT. The token only ever transits the
+ * helper→worker→orchestrator localhost broker.
+ *
+ * The file is written fresh (0o600) on each call — cheap and idempotent — so
+ * an identity rotation on the orchestrator propagates on the next provision.
+ */
+export function writeContainerGitConfig(destPath: string): void {
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  // Start from an empty file so a stale (token-bearing) config from a previous
+  // build can never linger. 0o600 matches the credential-store permissions.
+  fs.writeFileSync(destPath, "", { mode: 0o600 });
+
+  const set = (key: string, value: string): void => {
+    execFileSync("git", ["config", "--file", destPath, key, value]);
+  };
+
+  const id = getGitIdentity();
+  if (id) {
+    set("user.name", id.name);
+    set("user.email", id.email);
+  }
+  set("commit.gpgsign", "false");
+  set("credential.helper", CONTAINER_CREDENTIAL_HELPER);
+}
+
+/**
  * Read git identity from the global config.
  * Returns null if user.name or user.email is not set.
  */
