@@ -259,24 +259,29 @@ export function MessageInput({
     }
   };
 
+  // Codex invokes skills with `$name`, Claude with `/name`. The `/` trigger
+  // that opens the menu stays the same for both backends (doc 138 §5) — only
+  // the inserted token differs.
+  const skillTokenPrefix = activeAgentId === "codex" ? "$" : "/";
+
   const handleSkillSelect = useCallback(
     (skillName: string) => {
       const cursorPos = textareaRef.current?.selectionStart ?? text.length;
-      // The slash token is always at index 0, so replace everything up to the
-      // cursor with `/<name> ` and keep the rest of the message intact.
-      const newText = `/${skillName} ${text.slice(cursorPos)}`;
+      // The token is always at index 0, so replace everything up to the cursor
+      // with `<prefix><name> ` and keep the rest of the message intact.
+      const newText = `${skillTokenPrefix}${skillName} ${text.slice(cursorPos)}`;
       setText(newText);
       setShowSkillMenu(false);
       requestAnimationFrame(() => {
         const ta = textareaRef.current;
         if (ta) {
-          const pos = skillName.length + 2; // "/" + name + " "
+          const pos = skillName.length + 2; // prefix + name + " "
           ta.focus();
           ta.setSelectionRange(pos, pos);
         }
       });
     },
-    [text],
+    [text, skillTokenPrefix],
   );
 
   const handleSkillDismiss = useCallback(() => {
@@ -539,6 +544,7 @@ export function MessageInput({
         <SkillAutoComplete
           query={skillQuery}
           skills={skills}
+          tokenPrefix={skillTokenPrefix}
           onSelect={handleSkillSelect}
           onDismiss={handleSkillDismiss}
         />

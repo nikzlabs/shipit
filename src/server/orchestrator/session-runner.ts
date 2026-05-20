@@ -8,7 +8,7 @@
 
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, TerminalProcess, AgentRunParams } from "../shared/types.js";
-import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse } from "../shared/types.js";
+import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
 import type { ServiceManager } from "./service-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -291,6 +291,14 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
 
   // Agent factory (container mode — returns a proxy that delegates to the worker)
   createAgent?(agentId: AgentId): AgentProcess;
+
+  /**
+   * Fetch Codex's built-in system skills (`~/.codex/skills/**`) from inside the
+   * container. Container-only — in-process runners (tests, local mode) omit
+   * this, and the skills route falls back to project skills alone. See
+   * docs/138-skill-invocation (change #5b).
+   */
+  getCodexBuiltinSkills?(): Promise<SkillInfo[]>;
 
   // Viewer management
   readonly viewerCount: number;

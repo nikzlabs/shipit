@@ -21,8 +21,10 @@ import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, McpServerConfig
 import { resolveMcpServer, substituteMcpPlaceholders } from "./mcp-resolve.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
+import os from "node:os";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { scanFileTree } from "../shared/file-tree.js";
+import { scanSkillsDir } from "../shared/skill-scan.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./claude.js";
 import { ClaudeAdapter } from "./agents/claude-adapter.js";
@@ -345,6 +347,19 @@ export class SessionWorker extends EventEmitter {
     app.get("/files/tree", async () => {
       const tree = await scanFileTree(this.workspaceDir);
       return { tree };
+    });
+
+    // GET /codex/skills — Codex's built-in system skills, scanned from
+    // `~/.codex/skills/<name>/SKILL.md` *inside the container*. CODEX_HOME is
+    // unset in ShipIt containers, so this defaults to ~/.codex (= /root/.codex),
+    // a container-only path the orchestrator cannot read over the HTTP link.
+    // The orchestrator merges these into GET /api/sessions/:id/skills as
+    // `source: "bundled"`. See docs/138-skill-invocation (change #5b).
+    app.get("/codex/skills", async () => {
+      const skillsDir = path.join(os.homedir(), ".codex", "skills");
+      const skills = await scanSkillsDir(skillsDir, "bundled");
+      skills.sort((a, b) => a.name.localeCompare(b.name));
+      return { skills };
     });
 
     // --- Service control endpoints (called by agent) ---

@@ -26,7 +26,7 @@
 
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
-import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
+import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup } from "./session-runner.js";
 import { runSystemTurn } from "./session-runner.js";
 import type { SSEEvent } from "./sse-client.js";
@@ -719,6 +719,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Get the file tree from the container's workspace. */
   async getFileTreeFromWorker(): Promise<unknown> {
     return workerGet(this.workerUrl, "/files/tree");
+  }
+
+  /**
+   * Fetch Codex's built-in system skills from inside the container
+   * (`~/.codex/skills/**`). Short timeout — it's a small directory scan that
+   * feeds the composer's `/` autocomplete, so a wedged worker must not block
+   * the skills route. See docs/138-skill-invocation (change #5b).
+   */
+  async getCodexBuiltinSkills(): Promise<SkillInfo[]> {
+    await this._workerReady;
+    const res = await workerGet(this.workerUrl, "/codex/skills", { timeoutMs: 3000 }) as { skills?: SkillInfo[] };
+    return res.skills ?? [];
   }
 
   /**
