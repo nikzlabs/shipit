@@ -490,8 +490,10 @@ Stable rendering rules:
 - **Component:** `src/client/components/SubscriptionLimitsBadge.tsx`
   renders **one pill per map entry**, iterating in stable
   agent-registration order. Visual chrome matches
-  `DockerMemoryBadge.tsx`: small `<span>` pill with `tabular-nums`
-  and color tiers (green → yellow → orange → red). Each pill carries
+  `DockerMemoryBadge.tsx` / `UptimeBadge.tsx`: each provider is a
+  single `rounded-full bg-(--color-bg-hover)` pill with `tabular-nums`
+  (not a bare label with nested meter chips — that inverted the visual
+  hierarchy against the neighboring uptime/RAM pills). The pill carries
   a short provider label so the two are distinguishable when both are
   shown (see Open question 4 for the exact label form).
 - **Placement:** `AppLayout.tsx:145`, immediately **before** the
@@ -506,34 +508,38 @@ Stable rendering rules:
   When entry.error is set            →  "Claude —" pill, neutral
                                         color, error string in
                                         tooltip
-  Otherwise                          →  Label "Claude" followed by
-                                        up to two mini *meter pills*:
-                                        "[5h NN%]" and "[7d NN%]".
-                                        Each meter pill has a
-                                        translucent fill bar whose
-                                        width is `pct%` of the pill;
-                                        the percentage sits on top.
-                                        Both width and color signal
-                                        urgency. Tooltip: full
-                                        breakdown, reset times, plan
-                                        name ("Pro" / "Max 20x" /
+  Otherwise                          →  Inside the one provider pill:
+                                        label "Claude" followed by up
+                                        to two *meters*: "5h NN%" and
+                                        "7d NN%". Each meter is
+                                        tier-colored text with a thin
+                                        2px underline gauge beneath it
+                                        whose fill width is `pct%` of
+                                        the meter. Both width and color
+                                        signal urgency — without nesting
+                                        pills inside the pill. Tooltip:
+                                        full breakdown, reset times,
+                                        plan name ("Pro" / "Max 20x" /
                                         "Plus"). No link out — the
                                         number on the badge is the
                                         surface. (§1)
   ```
 
-- **Color tiers** apply per *meter pill*, independently — the 5h
-  meter and the 7d meter color from their own percentages, so a
-  100%/22% state shows a red 5h pill next to a neutral 7d pill (an
-  honest read of "session window full, weekly is fine"). The tier
-  drives both the text color and the fill bar:
-  - ≥90% used → `text-(--color-context-full)` + 40% fill
-  - ≥75% → `text-(--color-context-high)` + 35% fill
-  - ≥60% → `text-(--color-context-mid)` + 30% fill
-  - otherwise → `text-(--color-text-secondary)` + 15% fill
+- **Color tiers** apply per *meter*, independently — the 5h meter and
+  the 7d meter color from their own percentages, so a 100%/22% state
+  shows a red 5h meter next to a neutral 7d meter (an honest read of
+  "session window full, weekly is fine"). The tier (`tierColor()`)
+  returns a `var(--color-context-*)` string that drives **both** the
+  meter text color and its underline-gauge fill:
+  - ≥90% used → `--color-context-full`
+  - ≥75% → `--color-context-high`
+  - ≥60% → `--color-context-mid`
+  - otherwise → `--color-text-secondary` (neutral, same as the label)
 
-  The `--color-context-*` tokens are shared with `ContextDial`, so
-  meter styling stays consistent across themes.
+  The fill width is always proportional to the percentage (`pct%`),
+  independent of tier. The `--color-context-*` tokens are shared with
+  `ContextDial` and tuned per theme, so meter styling stays legible on
+  both dark and light themes.
 
 ### File layout
 

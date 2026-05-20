@@ -3,7 +3,7 @@ import { render, screen, cleanup } from "@testing-library/react";
 import {
   SubscriptionLimitsBadge,
   SubscriptionLimitPill,
-  tierFor,
+  tierColor,
   formatPct,
 } from "./SubscriptionLimitsBadge.js";
 import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
@@ -30,25 +30,25 @@ describe("formatPct", () => {
   });
 });
 
-describe("tierFor", () => {
-  it("uses a subtle neutral fill under 60%", () => {
-    expect(tierFor(0).fill).toContain("--color-text-secondary");
-    expect(tierFor(59.9).fill).toContain("--color-text-secondary");
+describe("tierColor", () => {
+  it("stays neutral (text-secondary) under 60%", () => {
+    expect(tierColor(0)).toContain("--color-text-secondary");
+    expect(tierColor(59.9)).toContain("--color-text-secondary");
   });
 
-  it("uses amber in the 60-74% band", () => {
-    expect(tierFor(60).fill).toContain("amber");
-    expect(tierFor(74.9).fill).toContain("amber");
+  it("uses the mid context token in the 60-74% band", () => {
+    expect(tierColor(60)).toContain("--color-context-mid");
+    expect(tierColor(74.9)).toContain("--color-context-mid");
   });
 
-  it("uses orange in the 75-89% band", () => {
-    expect(tierFor(75).fill).toContain("orange");
-    expect(tierFor(89.9).fill).toContain("orange");
+  it("uses the high context token in the 75-89% band", () => {
+    expect(tierColor(75)).toContain("--color-context-high");
+    expect(tierColor(89.9)).toContain("--color-context-high");
   });
 
-  it("uses red at 90% and above", () => {
-    expect(tierFor(90).fill).toContain("red");
-    expect(tierFor(100).fill).toContain("red");
+  it("uses the full context token at 90% and above", () => {
+    expect(tierColor(90)).toContain("--color-context-full");
+    expect(tierColor(100)).toContain("--color-context-full");
   });
 });
 
@@ -129,7 +129,7 @@ describe("SubscriptionLimitPill", () => {
   });
 
   it("fills each meter independently from its own percentage", () => {
-    // 5h at 96% → red fill; 7d at 22% → neutral fill.
+    // 5h at 96% → full (red) tier; 7d at 22% → neutral tier.
     const { container } = render(
       <SubscriptionLimitPill
         label="Claude"
@@ -140,11 +140,11 @@ describe("SubscriptionLimitPill", () => {
       />,
     );
     const fills = container.querySelectorAll<HTMLElement>("[aria-hidden]");
-    expect(fills[0].className).toContain("red");
-    expect(fills[1].className).toContain("--color-text-secondary");
+    expect(fills[0].style.backgroundColor).toContain("--color-context-full");
+    expect(fills[1].style.backgroundColor).toContain("--color-text-secondary");
   });
 
-  it("keeps text at the primary color so contrast is invariant across themes", () => {
+  it("tiers each meter's text color from its own percentage", () => {
     const { container } = render(
       <SubscriptionLimitPill
         label="Claude"
@@ -154,9 +154,9 @@ describe("SubscriptionLimitPill", () => {
         })}
       />,
     );
-    const meters = container.querySelectorAll("[data-meter-pct]");
-    expect(meters[0].className).toContain("text-(--color-text-primary)");
-    expect(meters[1].className).toContain("text-(--color-text-primary)");
+    const meters = container.querySelectorAll<HTMLElement>("[data-meter-pct]");
+    expect(meters[0].style.color).toContain("--color-context-full");
+    expect(meters[1].style.color).toContain("--color-text-secondary");
   });
 
   it("clamps fill width to the 0–100 range for out-of-range inputs", () => {
