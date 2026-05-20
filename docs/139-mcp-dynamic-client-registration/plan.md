@@ -134,12 +134,11 @@ New `registerOAuthClient({ registrationEndpoint, redirectUri, provider, fetchImp
   ```
 - On `201`, parse `client_id` (+ optional `client_secret`,
   `registration_client_uri`, `client_id_issued_at`).
-- Persist into `CredentialStore.mcpOAuth[source]` so it survives restarts and is
-  reused on reconnect. (Today `OAuthTokens` already carries `clientId` /
-  `clientSecret` for the refresh path — reuse those fields; we store the
-  registered client_id there before any tokens exist, or add a small
-  `mcpOAuthClients` map if we don't want a half-populated tokens record. **Open
-  decision below.**)
+- Cache the registered client in the new `CredentialStore.mcpOAuthClients` map
+  (see Data model) so it's reused on the next connect instead of registering
+  again. The client_id also flows through `OAuthFlowState` for the current
+  handshake and lands in `OAuthTokens.clientId` on successful exchange (which is
+  what the existing refresh path reads).
 
 ### 3. `startOAuthFlow` client-id resolution order
 
@@ -173,17 +172,57 @@ returned.
 ## Data model
 
 `CredentialStore.mcpOAuth` already exists (`Record<string, OAuthTokens>`), and
-`OAuthTokens` already has `clientId?` / `clientSecret?` (used by refresh). The
-question is where to stash a registered `client_id` that exists *before* the
-first token is obtained.
+`OAuthTokens` already has `clientId?` / `clientSecret?` (used by the refresh
+path). `OAuthTokens.accessToken` is **required**, so a registered client_id
+can't live in `mcpOAuth` before the first token exists without either loosening
+the type or writing a half-populated record — and a half-populated record would
+be a problem, because `getAllMcpOAuthTokens()` feeds the `MCP_PLATFORM_*` env
+vars and `listMcpOAuthProviders()` treats "has a tokens record" as
+**Connected**.
 
-**Open decision:** store the registered client on a partial `OAuthTokens` record
-(no `accessToken` yet — requires loosening the type / a separate field), **or**
-add `CredentialStore.mcpOAuthClients?: Record<string, { clientId: string; clientSecret?: string; registeredAt: number }>`. Leaning toward the latter — it
-keeps "I have a client registered" cleanly separate from "I have live tokens",
-and avoids a half-populated tokens object. The callback then copies the
-client_id into the `OAuthTokens` record on success (so refresh keeps working
-unchanged).
+**Decision (settled): add a separate `mcpOAuthClients` map** (option B).
+
+```ts
+// CredentialData
+mcpOAuthClients?: Record<
+  string, // provider source id (e.g. "notion_oauth")
+  { clientId: string; clientSecret?: string; registeredAt: number }
+>;
+```
+
+New `CredentialStore` methods mirroring the `mcpOAuth` accessors:
+`getMcpOAuthClient(source)`, `setMcpOAuthClient(source, client)`,
+`deleteMcpOAuthClient(source)`, and inclusion in `clear()`. Persistence piggybacks
+on the existing `save()`.
+
+Why this over the alternatives:
+- Keeps "I have a registered client" cleanly separate from "I have live tokens",
+  so there is **no false-Connected risk** and no broken `MCP_PLATFORM_*` env var.
+- **Registers once per account/provider** and reuses the cached client on every
+  subsequent connect — no orphan client registrations accruing provider-side,
+  and resilient to DCR rate limits (the same concern the `clientIdEnv` escape
+  hatch exists for).
+- Tiny, self-contained addition that mirrors the existing `mcpOAuth` map; does
+  not touch the resolver / status / refresh code paths.
+
+Rejected: a partial `OAuthTokens` record / making `accessToken` optional —
+ripples through `mcp-resolve.ts`, `getAllMcpOAuthTokens`,
+`listMcpOAuthProviders`, and refresh, all of which assume `accessToken` is
+present. Also rejected: no persistence at all (re-register every connect) — it's
+the smallest diff but leaks orphan clients and risks rate limits for no real
+benefit now that we have the cache.
+
+### Lifecycle
+
+- **Register:** `startOAuthFlow` checks `mcpOAuthClients[source]` first; on a
+  miss it discovers + registers and writes the result here.
+- **Use:** the client_id is copied into `OAuthFlowState` for the live handshake,
+  and into `OAuthTokens.clientId` on successful exchange (so the existing
+  refresh path is unchanged).
+- **Disconnect:** `deleteMcpOAuthTokens(source)` drops the tokens. We **keep**
+  `mcpOAuthClients[source]` so reconnect skips re-registration — the registered
+  public client is harmless without tokens. (A future "forget this provider
+  entirely" affordance can call `deleteMcpOAuthClient`.)
 
 ## UX (unchanged surface, working button)
 
@@ -227,10 +266,12 @@ step again.
   discovery (protected-resource → authorization-server) with TTL cache.
 - `src/server/orchestrator/mcp-oauth-providers.ts` — fix/relax hardcoded Notion
   endpoints; clarify they're fallback-only.
-- `src/server/shared/types/mcp-types.ts` — possibly add `mcpOAuthClients`
-  storage type; `registrationEndpoint` already present.
-- `src/server/orchestrator/credential-store.ts` — registered-client persistence
-  (getter/setter) if we go with `mcpOAuthClients`.
+- `src/server/shared/types/mcp-types.ts` — add the `mcpOAuthClients` entry type
+  (`{ clientId; clientSecret?; registeredAt }`); `registrationEndpoint` already
+  present on `McpOAuthProviderConfig`.
+- `src/server/orchestrator/credential-store.ts` — add `mcpOAuthClients` to
+  `CredentialData` plus `getMcpOAuthClient` / `setMcpOAuthClient` /
+  `deleteMcpOAuthClient`, and wire it into `clear()`.
 - `src/server/shipit-docs/mcp.md` — document that hosted providers now
   auto-register; remove/soften the env-var prerequisite.
 - Tests: `services/mcp-oauth.test.ts` (+ a new discovery test) — cover
@@ -243,7 +284,10 @@ step again.
   `startOAuthFlow` discovers, registers, caches, and builds an authorize URL
   pointed at the **discovered** `authorization_endpoint`.
 - Unit: env-var override wins over registration (operator escape hatch intact).
-- Unit: cached client_id skips a second registration call.
+- Unit: a `client_id` cached in `mcpOAuthClients` skips the `/register` call
+  (assert `fetchImpl` sees no registration request).
+- Unit: `deleteMcpOAuthTokens` (disconnect) leaves `mcpOAuthClients` intact, so a
+  reconnect reuses the cached client.
 - Unit: provider with no `registration_endpoint` in metadata and no env var →
   the existing `ServiceError(400)` is thrown.
 - Manual: real connect against `mcp.notion.com` from Settings, confirm
