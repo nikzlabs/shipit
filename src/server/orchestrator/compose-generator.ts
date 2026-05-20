@@ -25,6 +25,14 @@ export interface ComposeService {
   ports?: string[];
   /** x-shipit-preview value from the user's compose file. */
   shipitPreview?: "auto" | "manual";
+  /**
+   * Whether this service must wait for `agent.install` to finish before it
+   * is started (the `x-shipit-depends-on-install` extension). Resolved during
+   * parsing: an explicit `true`/`false` wins; otherwise it defaults to `true`
+   * for services whose effective preview mode is `auto` and `false` for
+   * `manual`. See docs/137-depends-on-install.
+   */
+  dependsOnInstall?: boolean;
   /** User-defined profiles from the compose file. */
   profiles?: string[];
   /** Raw volume entries from the compose file (for rewriting in override). */
@@ -232,6 +240,18 @@ export function parseComposeFile(
       shipitPreview = preview;
     }
 
+    // Resolve x-shipit-depends-on-install. An explicit boolean wins; otherwise
+    // gate on install for `auto`-preview services and don't for `manual` ones.
+    // See docs/137-depends-on-install.
+    const rawDepends = svc["x-shipit-depends-on-install"];
+    let dependsOnInstall: boolean;
+    if (typeof rawDepends === "boolean") {
+      dependsOnInstall = rawDepends;
+    } else {
+      const effectivePreview = shipitPreview ?? (ports && ports.length > 0 ? "auto" : "manual");
+      dependsOnInstall = effectivePreview === "auto";
+    }
+
     // Extract profiles
     const profiles = Array.isArray(svc.profiles)
       ? svc.profiles.map((p: unknown) => String(p))
@@ -252,6 +272,7 @@ export function parseComposeFile(
       name,
       ports,
       shipitPreview,
+      dependsOnInstall,
       profiles,
       volumes,
       secrets,

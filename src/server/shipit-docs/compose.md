@@ -86,6 +86,33 @@ services:
 When omitted, the default is `auto` if the service has `ports`, `manual`
 otherwise. The `x-` prefix means Docker Compose ignores it.
 
+## `x-shipit-depends-on-install`
+
+Gates a service on `agent.install` (from `shipit.yaml`) completing before it
+starts. This prevents preview services that need `node_modules` (or other
+install output) from racing the agent on cold boot and crash-looping.
+
+| Value | Behavior |
+|-------|----------|
+| `true` | Held until `agent.install` finishes, then started exactly once. If install fails, the service is marked `error` (`agent.install failed — dependent service not started`). **Default for `auto` services.** |
+| `false` | Starts immediately, in parallel with install. **Default for `manual` services.** |
+
+```yaml
+services:
+  preview:
+    image: node:24-slim
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+    ports: ["3000:3000"]
+    x-shipit-preview: auto
+    x-shipit-depends-on-install: true   # default for auto — gate on install
+```
+
+When omitted, it defaults to `true` for `auto` services and `false` for
+`manual` ones. Set it to `false` to opt a preview service out of the gate when
+it genuinely doesn't depend on install output. Editing `shipit.yaml` or a
+lockfile re-runs install and briefly restarts gated services against the
+fresh dependency tree. The `x-` prefix means Docker Compose ignores it.
+
 ## `x-shipit-secrets`
 
 Declare which env vars (API keys, connection strings, tokens) each service

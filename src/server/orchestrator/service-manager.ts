@@ -72,9 +72,23 @@ export interface ManagedService {
   preview: "auto" | "manual";
   status: ServiceStatus;
   error?: string;
+  /**
+   * Whether this service is gated on `agent.install` completing before it
+   * starts (`x-shipit-depends-on-install`). Defaults to `true` for
+   * `auto`-preview services. See docs/137-depends-on-install.
+   */
+  dependsOnInstall: boolean;
   /** Container IP on the session network (populated by status polling). */
   containerIp?: string;
 }
+
+/**
+ * Message used when a gated service can't start because `agent.install`
+ * failed. Surfaces the real cause instead of the downstream symptom
+ * (`vite: not found`, exit 127, etc.).
+ */
+export const INSTALL_FAILED_GATE_MESSAGE =
+  "agent.install failed — dependent service not started";
 
 /** Runs a docker compose command. Resolves on exit 0, rejects otherwise. */
 export type ComposeRunner = (args: string[], cwd: string) => Promise<void>;
@@ -218,6 +232,24 @@ export class ServiceManager extends EventEmitter {
    */
   private _installRunning = false;
 
+  /**
+   * Whether the most recently completed install attempt failed. Combined
+   * with `_installRunning`, this is the install gate: it is open only when
+   * no install is in flight AND the last attempt (if any) succeeded. While
+   * the gate is closed, `dependsOnInstall` services are held — never started,
+   * or latched to `error` if install failed. See docs/137-depends-on-install.
+   */
+  private _installFailed = false;
+
+  /**
+   * Names of `dependsOnInstall` services currently held by the gate (either
+   * waiting for install to finish, or latched to `error` after install
+   * failed). The poller skips these so its `docker compose ps` diff can't
+   * clobber the held `starting`/`error` status, and `handleNonZeroExit`
+   * ignores their exits (e.g. during mid-session re-install teardown).
+   */
+  private gatedServices = new Set<string>();
+
   constructor(opts: ServiceManagerOptions) {
     super();
     this.sessionId = opts.sessionId;
@@ -254,6 +286,7 @@ export class ServiceManager extends EventEmitter {
       composeQuery: this.composeQuery,
       pollIntervalMs: opts.pollIntervalMs ?? 5_000,
       composeArgs: (...extra) => this.composeArgs(...extra),
+      isGated: (name) => this.gatedServices.has(name),
       getService: (name) => this.services.get(name),
       setContainerIp: (name, ip) => {
         const svc = this.services.get(name);
@@ -292,6 +325,13 @@ export class ServiceManager extends EventEmitter {
   private handleNonZeroExit(name: string, exitCode: number): void {
     const svc = this.services.get(name);
     if (!svc) return;
+
+    if (this.gatedServices.has(name)) {
+      // Intentionally held by the install gate — either waiting for install
+      // or being torn down for a mid-session re-install. Ignore the exit; the
+      // gate decides when this service starts. See docs/137-depends-on-install.
+      return;
+    }
 
     if (this._installRunning && svc.preview === "auto") {
       // Install is still extracting deps into the bind-mounted workspace.
@@ -339,21 +379,47 @@ export class ServiceManager extends EventEmitter {
   /**
    * Toggle the install-in-progress gate.
    *
-   * While `true`, services that exit non-zero are restarted with exponential
-   * backoff instead of being marked `error`. This handles the cold-start case
-   * where the agent is running `npm install` (or similar) into a bind-mounted
-   * `node_modules` while a compose service tries to use it — the service may
-   * fail until install completes, and we want it to recover automatically.
+   * This drives two mechanisms:
    *
-   * When toggled from `true` → `false` we make one explicit pass over every
-   * service currently in `error` or pending-retry state and restart it, so a
-   * service that gave up just before install finished gets one more chance.
+   *   1. **The declarative install gate** (docs/137) — services that declare
+   *      `x-shipit-depends-on-install` (the default for `auto` preview) are
+   *      held until install finishes, then started exactly once. On
+   *      `true → false` with a successful install they start in one batched
+   *      `up`; with a failed install they latch to `error`. On `false → true`
+   *      (mid-session re-install) they're torn down and re-held.
+   *
+   *   2. **The legacy install-window backoff** — for services that opted out
+   *      (`x-shipit-depends-on-install: false`) and untouched legacy projects,
+   *      a non-zero exit while `true` is retried with backoff instead of
+   *      latching to `error`, and `true → false` does one explicit restart
+   *      pass over services still in `error` / pending-retry.
+   *
+   * @param opts.failed Set when the completing install failed (`true → false`).
+   *   Gated services latch to `error` instead of starting.
    */
-  setInstallRunning(running: boolean): void {
+  setInstallRunning(running: boolean, opts: { failed?: boolean } = {}): void {
     if (this._installRunning === running) return;
     const wasRunning = this._installRunning;
     this._installRunning = running;
+
+    if (!wasRunning && running) {
+      // Install (re-)starting. Clear the prior failure latch and, mid-session,
+      // tear down + re-hold gated services so they relaunch against the fresh
+      // dependency tree once install completes.
+      this._installFailed = false;
+      this.holdGatedServicesForReinstall();
+      return;
+    }
+
     if (wasRunning && !running) {
+      this._installFailed = opts.failed ?? false;
+      if (this._installFailed) {
+        this.latchGatedServicesToError();
+      } else {
+        this.startGatedServices();
+      }
+      // Legacy safety net for opted-out / non-gated services that crashed
+      // during the install window. Excludes gated services (handled above).
       this.flushPostInstallRetries();
     }
   }
@@ -442,6 +508,7 @@ export class ServiceManager extends EventEmitter {
         port,
         preview,
         status: "stopped",
+        dependsOnInstall: svc.dependsOnInstall ?? (preview === "auto"),
       });
     }
 
@@ -472,18 +539,42 @@ export class ServiceManager extends EventEmitter {
       this.updateServiceStatus(svc.name, "starting");
     }
 
+    // Partition auto services by the install gate (docs/137). The gate is
+    // open when no install is in flight and the last attempt (if any)
+    // succeeded. While closed, `dependsOnInstall` services are held: kept in
+    // `starting` if install is still running, or latched to `error` if a
+    // prior install already failed (the install-finished hook would otherwise
+    // have fired before this start() ran). Non-gated services start now.
+    this.gatedServices.clear();
+    const gateOpen = !this._installRunning && !this._installFailed;
+    const startNow: ManagedService[] = [];
+    for (const svc of autoServices) {
+      if (svc.dependsOnInstall && !gateOpen) {
+        if (this._installFailed) {
+          this.updateServiceStatus(svc.name, "error", INSTALL_FAILED_GATE_MESSAGE);
+          this.gatedServices.add(svc.name);
+        } else {
+          // Install still running — hold in `starting`.
+          this.gatedServices.add(svc.name);
+        }
+      } else {
+        startNow.push(svc);
+      }
+    }
+
     try {
-      // 1. Start auto services (named explicitly so manual services aren't
-      //    started but remain part of the project for dependency resolution).
+      // 1. Start non-gated auto services (named explicitly so manual and
+      //    install-gated services aren't started but remain part of the
+      //    project for dependency resolution).
       //
-      // Edge case: when EVERY service is manual, `autoNames` is `[]`. Calling
-      // `docker compose up -d` with no service names tells compose "bring up
-      // every service in the project," which would silently start the manual
-      // services we explicitly asked to leave alone. Skip the call entirely
-      // in that case — the rest of `start()` (network join, status polling,
-      // log streaming) still runs so the manual services show up in the UI as
-      // `stopped` and the user can start them on demand.
-      const autoNames = autoServices.map(s => s.name);
+      // Edge case: when EVERY service is manual or install-gated, `autoNames`
+      // is `[]`. Calling `docker compose up -d` with no service names tells
+      // compose "bring up every service in the project," which would silently
+      // start the services we explicitly asked to leave alone. Skip the call
+      // entirely in that case — the rest of `start()` (network join, status
+      // polling, log streaming) still runs so manual services show up as
+      // `stopped` and gated services stay `starting` until install completes.
+      const autoNames = startNow.map(s => s.name);
       if (autoNames.length > 0) {
         await this.composeUp(autoNames);
       }
@@ -517,7 +608,11 @@ export class ServiceManager extends EventEmitter {
       this.emit("stack_ready");
     } catch (err) {
       this._startupComplete = true;
-      for (const svc of autoServices) {
+      // Only the services we actually tried to start reflect this failure.
+      // Gated services are intentionally held by the install gate (which is
+      // still pending) — don't clobber their held status with a stack error
+      // that's about the services we brought up.
+      for (const svc of startNow) {
         this.updateServiceStatus(svc.name, "error", (err as Error).message);
       }
       this.emit("stack_error", err);
@@ -796,6 +891,10 @@ export class ServiceManager extends EventEmitter {
     // pending install-window retry timers (cancelling them as a side effect).
     const errorServices: string[] = [];
     for (const svc of this.services.values()) {
+      // Skip gated services — the declarative install gate owns their
+      // lifecycle (started or latched to error by startGatedServices /
+      // latchGatedServicesToError). Only the legacy backoff net applies here.
+      if (this.gatedServices.has(svc.name)) continue;
       if (svc.preview === "auto" && svc.status === "error") {
         errorServices.push(svc.name);
       }
@@ -811,6 +910,104 @@ export class ServiceManager extends EventEmitter {
       this.retry.resetInstallAttempts(name);
       this.updateServiceStatus(name, "starting");
       void this.runRetryNow(name);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Declarative install gate (docs/137-depends-on-install)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Install finished successfully — start every gated service in one batched
+   * `docker compose up` so they share startup time rather than serializing.
+   * Clears the gate set; from here the periodic poller tracks them normally.
+   */
+  private startGatedServices(): void {
+    if (this._disposed) return;
+    if (this.gatedServices.size === 0) return;
+    const names = [...this.gatedServices];
+    this.gatedServices.clear();
+    console.log(
+      `[compose:${this.sessionId}] install finished — starting ${names.length} gated service(s): ${names.join(", ")}`,
+    );
+    for (const name of names) {
+      this.updateServiceStatus(name, "starting");
+    }
+    void this.startGatedBatch(names);
+  }
+
+  /** Bring up a batch of gated services and wire up their post-start plumbing. */
+  private async startGatedBatch(names: string[]): Promise<void> {
+    if (this._disposed) return;
+    try {
+      await this.composeUp(names);
+      // First `up` for an otherwise all-gated/all-manual stack is the moment
+      // the compose network materializes — attach the orchestrator + agent.
+      await this.joinSessionNetwork();
+      await this.poller.pollOnce();
+      // Log streaming for these services is already running: `start()` streams
+      // every service in the map (gated ones included) before the gate opens,
+      // and `docker compose logs -f <service>` follows the service across the
+      // container's first `up`. No need to re-spawn here.
+    } catch (err) {
+      const msg = (err as Error).message;
+      for (const name of names) {
+        this.updateServiceStatus(name, "error", msg);
+      }
+    }
+  }
+
+  /**
+   * Install failed — latch every gated service to `error` with a message that
+   * names the real cause, instead of letting them crash on missing install
+   * output (`vite: not found`, exit 127, etc.). They stay in the gate set so
+   * a subsequent successful re-install restarts them.
+   */
+  private latchGatedServicesToError(): void {
+    if (this.gatedServices.size === 0) return;
+    console.log(
+      `[compose:${this.sessionId}] install failed — ${this.gatedServices.size} gated service(s) not started`,
+    );
+    for (const name of this.gatedServices) {
+      this.updateServiceStatus(name, "error", INSTALL_FAILED_GATE_MESSAGE);
+    }
+  }
+
+  /**
+   * Mid-session re-install began (`setInstallRunning(false → true)`). Tear
+   * down currently-gated services and re-hold them in `starting` so they
+   * relaunch against the fresh dependency tree once install completes. Causes
+   * a visible preview blink — acceptable because the edit that triggered
+   * re-install changed the dependency tree.
+   */
+  private holdGatedServicesForReinstall(): void {
+    if (this._disposed) return;
+    const gated = [...this.services.values()].filter(
+      s => s.preview === "auto" && s.dependsOnInstall,
+    );
+    if (gated.length === 0) return;
+    this.gatedServices = new Set(gated.map(s => s.name));
+    console.log(
+      `[compose:${this.sessionId}] install re-running — holding ${gated.length} gated service(s): ${gated.map(s => s.name).join(", ")}`,
+    );
+    for (const svc of gated) {
+      this.updateServiceStatus(svc.name, "starting");
+    }
+    void this.stopGatedForReinstall([...this.gatedServices]);
+  }
+
+  /** Stop gated containers so they relaunch fresh after re-install completes. */
+  private async stopGatedForReinstall(names: string[]): Promise<void> {
+    for (const name of names) {
+      if (this._disposed) return;
+      try {
+        await this.composeStop(name);
+      } catch (err) {
+        console.warn(
+          `[compose:${this.sessionId}] failed to stop gated service ${name} for re-install:`,
+          (err as Error).message,
+        );
+      }
     }
   }
 

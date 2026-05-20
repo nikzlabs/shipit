@@ -32,8 +32,9 @@ interface StubServiceManager extends EventEmitter {
   _stopCalls: number;
   _stackErrorListenerCount: number;
   _setInstallRunningCalls: boolean[];
+  _setInstallRunningOpts: ({ failed?: boolean } | undefined)[];
   _setSecretsLoaderCalls: (() => Promise<Record<string, string>>)[];
-  setInstallRunning(running: boolean): void;
+  setInstallRunning(running: boolean, opts?: { failed?: boolean }): void;
   setSecretsLoader(loader: () => Promise<Record<string, string>>): void;
   stop(): Promise<void>;
   /** Real runner's setServiceManager calls this — return an empty snapshot. */
@@ -59,8 +60,12 @@ function makeStubServiceManager(): StubServiceManager {
     _stopCalls: 0,
     _stackErrorListenerCount: 0,
     _setInstallRunningCalls: [] as boolean[],
+    _setInstallRunningOpts: [] as ({ failed?: boolean } | undefined)[],
     _setSecretsLoaderCalls: [] as (() => Promise<Record<string, string>>)[],
-    setInstallRunning(running: boolean) { this._setInstallRunningCalls.push(running); },
+    setInstallRunning(running: boolean, opts?: { failed?: boolean }) {
+      this._setInstallRunningCalls.push(running);
+      this._setInstallRunningOpts.push(opts);
+    },
     setSecretsLoader(loader: () => Promise<Record<string, string>>) {
       this._setSecretsLoaderCalls.push(loader);
     },
@@ -280,8 +285,8 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     const mgr = makeStubServiceManager();
     const cm = buildContainerManager();
 
-    let resolveInstall!: () => void;
-    const installPromise = new Promise<void>((r) => { resolveInstall = r; });
+    let resolveInstall!: (result: { ok: boolean }) => void;
+    const installPromise = new Promise<{ ok: boolean }>((r) => { resolveInstall = r; });
 
     adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
       serviceManagers: new Map(),
@@ -294,10 +299,40 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     expect(mgr._setInstallRunningCalls).toEqual([true]);
 
     // Install finishes → gate closes
-    resolveInstall();
+    resolveInstall({ ok: true });
     await Promise.resolve();
     await Promise.resolve();
     expect(mgr._setInstallRunningCalls).toEqual([true, false]);
+    // Successful install closes the gate without the `failed` flag.
+    expect(mgr._setInstallRunningOpts[1]).toEqual({ failed: false });
+
+    runner.dispose({ force: true });
+  });
+
+  it("propagates install failure to the gate (failed: true)", async () => {
+    const runner = makeRunner("s1");
+    const mgr = makeStubServiceManager();
+    const cm = buildContainerManager();
+
+    let resolveInstall!: (result: { ok: boolean }) => void;
+    const installPromise = new Promise<{ ok: boolean }>((r) => { resolveInstall = r; });
+
+    adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+      serviceManagers: new Map(),
+      composeStopPromises: new Map(),
+      containerManager: cm,
+      installPromise,
+    });
+
+    expect(mgr._setInstallRunningCalls).toEqual([true]);
+
+    // Install finishes with a failure → gate closes with failed: true so
+    // gated services latch to error instead of starting.
+    resolveInstall({ ok: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mgr._setInstallRunningCalls).toEqual([true, false]);
+    expect(mgr._setInstallRunningOpts[1]).toEqual({ failed: true });
 
     runner.dispose({ force: true });
   });
