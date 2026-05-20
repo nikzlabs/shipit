@@ -24,13 +24,18 @@ RUN apt-get update && apt-get install -y git curl ca-certificates gnupg \
     && apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-# Bump this build-arg per deploy (deploy.sh sets it to $(date +%s)) so the
-# Claude/Codex CLI layer is rebuilt on every deploy, picking up the latest
-# published versions. The npm cache mount keeps the download itself fast.
-ARG NPM_GLOBALS_REBUILD=0
+# Agent CLIs for local/dogfood mode (RUNTIME_MODE=local spawns the adapters
+# in-process inside this orchestrator container — see app-di.ts
+# buildLocalAgentFactory). Lockfile-pinned, integrity-verified install shared
+# with the worker images (docs/141); canonical comment in
+# Dockerfile.session-worker.prod. Now includes @playwright/mcp via the shared
+# manifest, reconciling the prior prod/dev omission. `--ignore-scripts` blocks
+# the dependency tree's postinstalls; `npm rebuild @anthropic-ai/claude-code`
+# runs the install script for only that trusted package (native binary linker).
+COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
 RUN --mount=type=cache,target=/root/.npm \
-    echo "rebuild=${NPM_GLOBALS_REBUILD}" \
- && npm install -g @anthropic-ai/claude-code @openai/codex
+    (cd /opt/agent-cli && npm ci --ignore-scripts && npm rebuild @anthropic-ai/claude-code)
+ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
 
 WORKDIR /app
 

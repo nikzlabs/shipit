@@ -1,8 +1,17 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 description: Strategy for keeping the Claude/Codex CLIs current without letting unpinned auto-latest break integrations or open supply-chain risk — tested pin + auto-bump, install hardening, and an opt-in latest channel.
 ---
+
+> **Implementation status:** Axis 2 (supply-chain hardening) is implemented —
+> all six Dockerfiles now install the agent CLIs from a committed,
+> integrity-pinned lockfile (`docker/agent-cli/`) via `npm ci --ignore-scripts`
+> (+ `npm rebuild @anthropic-ai/claude-code` for its required native-binary
+> postinstall), and the `NPM_GLOBALS_REBUILD` deploy-time cache-bust is gone.
+> Axes 1 and 3 (Renovate auto-bump, the channel split, and the CLI contract
+> test) remain. See `checklist.md` for the live status, including the
+> `--ignore-scripts` finding about `claude-code`'s required postinstall.
 
 # Agent CLI version strategy
 

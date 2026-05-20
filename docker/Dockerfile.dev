@@ -7,7 +7,17 @@ RUN apt-get update && apt-get install -y git curl python3 make g++ ca-certificat
     && apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
+# Agent CLIs for local/dogfood mode (RUNTIME_MODE=local). Lockfile-pinned,
+# integrity-verified install shared with the worker images (docs/141);
+# canonical comment in Dockerfile.session-worker.prod. Now includes
+# @playwright/mcp via the shared manifest, reconciling the prior prod/dev
+# omission. `--ignore-scripts` blocks the dependency tree's postinstalls;
+# `npm rebuild @anthropic-ai/claude-code` runs the install script for only that
+# trusted package (native binary linker).
+COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
+RUN --mount=type=cache,target=/root/.npm \
+    (cd /opt/agent-cli && npm ci --ignore-scripts && npm rebuild @anthropic-ai/claude-code)
+ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
 
 WORKDIR /app
 
