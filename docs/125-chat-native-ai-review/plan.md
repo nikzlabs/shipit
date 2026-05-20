@@ -1,6 +1,7 @@
 ---
 status: in-progress
 priority: medium
+description: Replace the out-of-band AI review endpoint with a chat-native flow where the agent reviews code through the normal message channel with full repo context.
 ---
 
 # 125 — Chat-native AI Review

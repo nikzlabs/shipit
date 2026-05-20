@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: low
+description: Bake an explicit Claude CLI settings.json into agent containers declaring allowed and denied tool paths, replacing fragile implicit permission defaults.
 ---
 # 097 — Explicit Session-Agent Permissions
 
