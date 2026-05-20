@@ -125,29 +125,29 @@ describe("Settings - Agent → Claude tab", () => {
     await waitFor(() => expect(onApiKey).toHaveBeenCalledWith("sk-ant-test123"));
   });
 
-  it("shows Open Authentication Page link when authUrl is set", () => {
+  it("shows Open authentication page link when authUrl is set", () => {
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} authUrl="https://auth.example.com" />);
     const link = screen.getByTestId("claude-open-auth-url");
-    expect(link).toHaveTextContent("Open Authentication Page");
+    expect(link).toHaveTextContent("Open authentication page");
     expect(link).toHaveAttribute("href", "https://auth.example.com");
     expect(link).toHaveAttribute("target", "_blank");
   });
 
-  it("shows Clear API key button when authenticated", () => {
+  it("shows Sign out button when authenticated", () => {
     render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("claude-clear-api-key")).toHaveTextContent("Clear API key");
+    expect(screen.getByTestId("claude-sign-out")).toHaveTextContent("Sign out");
   });
 
-  it("calls onClearApiKey when Clear API key is clicked", async () => {
+  it("calls onClearApiKey when Sign out is clicked", async () => {
     const onClearApiKey = vi.fn();
     render(<Settings {...defaultProps} onClearApiKey={onClearApiKey} />);
-    await userEvent.click(screen.getByTestId("claude-clear-api-key"));
+    await userEvent.click(screen.getByTestId("claude-sign-out"));
     expect(onClearApiKey).toHaveBeenCalledOnce();
   });
 
-  it("does not show Clear API key when not authenticated", () => {
+  it("does not show Sign out when not authenticated", () => {
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} authUrl="https://auth.example.com" />);
-    expect(screen.queryByTestId("claude-clear-api-key")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-sign-out")).not.toBeInTheDocument();
   });
 });
 

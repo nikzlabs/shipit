@@ -46,16 +46,16 @@ describe("ClaudeAuthCard / status badge", () => {
 });
 
 describe("ClaudeAuthCard / sign-in flow", () => {
-  it("shows Login with Claude when needs auth and no authUrl", () => {
+  it("shows the Sign in button when needs auth and no authUrl", () => {
     renderCard();
-    expect(screen.getByTestId("claude-start-auth")).toHaveTextContent("Login with Claude");
+    expect(screen.getByTestId("claude-start-auth")).toHaveTextContent("Sign in");
   });
 
-  it("calls onStartAuth and shows waiting text on click", () => {
+  it("calls onStartAuth and shows starting text on click", () => {
     const { onStartAuth } = renderCard();
     fireEvent.click(screen.getByTestId("claude-start-auth"));
     expect(onStartAuth).toHaveBeenCalled();
-    expect(screen.getByTestId("claude-start-auth")).toHaveTextContent("Waiting for login...");
+    expect(screen.getByTestId("claude-start-auth")).toHaveTextContent("Starting...");
   });
 
   it("hides login button when already authenticated", () => {
@@ -161,27 +161,27 @@ describe("ClaudeAuthCard / API key fallback", () => {
   });
 });
 
-describe("ClaudeAuthCard / Clear API key", () => {
-  it("hides Clear API key button when onClearApiKey not provided", () => {
+describe("ClaudeAuthCard / signed-in state", () => {
+  it("hides Sign out button when onClearApiKey not provided", () => {
     renderCard({ agent: authedAgent });
-    expect(screen.queryByTestId("claude-clear-api-key")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-sign-out")).not.toBeInTheDocument();
   });
 
-  it("shows Clear API key button when authed and onClearApiKey provided", () => {
+  it("shows Sign out button when authed and onClearApiKey provided", () => {
     const onClearApiKey = vi.fn();
     renderCard({ agent: authedAgent, onClearApiKey });
-    expect(screen.getByTestId("claude-clear-api-key")).toHaveTextContent("Clear API key");
+    expect(screen.getByTestId("claude-sign-out")).toHaveTextContent("Sign out");
   });
 
-  it("calls onClearApiKey when clicked", () => {
+  it("calls onClearApiKey when Sign out clicked", () => {
     const onClearApiKey = vi.fn();
     renderCard({ agent: authedAgent, onClearApiKey });
-    fireEvent.click(screen.getByTestId("claude-clear-api-key"));
+    fireEvent.click(screen.getByTestId("claude-sign-out"));
     expect(onClearApiKey).toHaveBeenCalled();
   });
 
-  it("hides Clear API key button when not authenticated", () => {
+  it("hides Sign out button when not authenticated", () => {
     renderCard({ onClearApiKey: vi.fn() });
-    expect(screen.queryByTestId("claude-clear-api-key")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-sign-out")).not.toBeInTheDocument();
   });
 });

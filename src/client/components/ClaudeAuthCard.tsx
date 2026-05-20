@@ -11,18 +11,26 @@ export interface ClaudeAuthCardProps {
 }
 
 /**
- * Settings → Agent → Claude card. Layout mirrors `CodexAuthCard` so the two
- * agents read as siblings:
+ * Settings → Agent → Claude card. Layout and copy mirror `CodexAuthCard` so
+ * the two agents read as siblings:
  *
  *   1. **Status badge** — installed / authenticated state, with an inline
- *      "Clear API key" button (top-right) when authenticated.
- *   2. **Login with Claude** (primary, when unauthed) — drives the existing
- *      OAuth flow. When the orchestrator returns the OAuth URL, the panel
- *      flips to a Step 1 / Step 2 view (open URL + paste auth code).
+ *      "Sign out" button (top-right) when authenticated.
+ *   2. **Sign in with Claude** (primary, when unauthed) — drives the
+ *      Anthropic OAuth flow. When the orchestrator returns the OAuth URL,
+ *      the panel flips to a Step 1 / Step 2 view (open URL + paste auth
+ *      code). Step 2 differs from Codex by necessity: Anthropic uses a
+ *      paste-back authorization code, OpenAI uses device-auth where the
+ *      user enters a code on the provider's page.
  *   3. **Use API key instead** (collapsed disclosure) — preserves the
  *      `sk-ant-…` fallback, visually deprioritized to match Codex's
- *      `OPENAI_API_KEY` disclosure. To switch from OAuth back to an API
- *      key while authenticated, the user clicks "Clear API key" first.
+ *      API-key disclosure.
+ *
+ * Note: today "Sign out" only clears the stored API key — OAuth credentials
+ * persist via the auth manager. Backend wiring for a full sign-out (clear
+ * both `~/.claude/.credentials.json` and the stored API key) is tracked
+ * separately. Most users only have one credential type, so the button
+ * behaves as expected in the common case.
  */
 export function ClaudeAuthCard({
   agent,
@@ -38,7 +46,7 @@ export function ClaudeAuthCard({
   const [authCode, setAuthCode] = useState("");
   const [authCodeSubmitted, setAuthCodeSubmitted] = useState(false);
   const [authPendingLocal, setAuthPendingLocal] = useState(false);
-  const [clearingApiKey, setClearingApiKey] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [showApiKeyPanel, setShowApiKeyPanel] = useState(false);
 
   // Derive effective authPending: auto-clears when authUrl arrives or agent becomes authenticated
@@ -119,19 +127,19 @@ export function ClaudeAuthCard({
         {agent.installed && agent.authConfigured && onClearApiKey && (
           <button
             onClick={async () => {
-              if (clearingApiKey) return;
-              setClearingApiKey(true);
+              if (signingOut) return;
+              setSigningOut(true);
               try {
                 await onClearApiKey();
               } finally {
-                setClearingApiKey(false);
+                setSigningOut(false);
               }
             }}
-            disabled={clearingApiKey}
+            disabled={signingOut}
             className="shrink-0 text-xs px-2 py-1 rounded-md text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            data-testid="claude-clear-api-key"
+            data-testid="claude-sign-out"
           >
-            {clearingApiKey ? "Clearing..." : "Clear API key"}
+            {signingOut ? "Signing out..." : "Sign out"}
           </button>
         )}
       </div>
@@ -146,7 +154,7 @@ export function ClaudeAuthCard({
               data-testid="claude-oauth-flow"
             >
               <p className="text-xs text-(--color-text-secondary)">
-                Step 1 — open this link and sign in to Anthropic:
+                Step 1 — open this link and sign in:
               </p>
               <a
                 href={authUrl}
@@ -155,7 +163,7 @@ export function ClaudeAuthCard({
                 className="block w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors text-center"
                 data-testid="claude-open-auth-url"
               >
-                Open Authentication Page
+                Open authentication page
               </a>
               <p className="text-xs text-(--color-text-secondary)">
                 Step 2 — paste the authorization code:
@@ -186,10 +194,10 @@ export function ClaudeAuthCard({
           {!isPending && (
             <div className="space-y-2 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) p-3">
               <p className="text-sm font-medium text-(--color-text-primary)">
-                Login with Claude
+                Sign in with Claude
               </p>
               <p className="text-xs text-(--color-text-secondary)">
-                Uses your existing Anthropic plan — recommended.
+                Uses your existing Claude subscription — recommended.
               </p>
               <button
                 onClick={handleStartAuth}
@@ -197,7 +205,7 @@ export function ClaudeAuthCard({
                 className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 data-testid="claude-start-auth"
               >
-                {authPending ? "Waiting for login..." : "Login with Claude"}
+                {authPending ? "Starting..." : "Sign in"}
               </button>
             </div>
           )}
@@ -216,7 +224,7 @@ export function ClaudeAuthCard({
               {showApiKeyPanel && (
                 <div className="mt-2 space-y-2">
                   <p className="text-xs text-(--color-text-tertiary)">
-                    Bills against your Anthropic API account, not your Claude subscription.
+                    Bills against your API account, not your subscription.
                   </p>
                   <input
                     type="password"
