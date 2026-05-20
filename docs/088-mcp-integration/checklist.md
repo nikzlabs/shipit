@@ -145,11 +145,16 @@
 
 ### Phase 2 — deferred / follow-up
 
-- [ ] **Dynamic client registration (RFC 7591).** Neither Linear nor
-  Notion supports it today; the schema field is reserved
-  (`McpOAuthProviderConfig.registrationEndpoint`). Once a provider needs
-  it, plug it into `startOAuthFlow` between the source lookup and the
-  authorize-URL build.
+- [ ] **Dynamic client registration (RFC 7591).** → designed in
+  `docs/139-mcp-dynamic-client-registration/plan.md`. Verified 2026-05-20
+  that Notion's hosted MCP server (`mcp.notion.com`) **does** support the
+  full discovery + DCR chain (issues a public, PKCE-only `client_id` with
+  no operator config), so this is no longer blocked. Note: the registry's
+  hardcoded Notion endpoints (`api.notion.com/v1/oauth/*`) are the *classic
+  integration* auth server and are wrong for DCR — the implementation drives
+  endpoints from metadata discovery starting at `mcpUrl`. Linear still lacks
+  DCR metadata and keeps the env-var path. The schema field is reserved
+  (`McpOAuthProviderConfig.registrationEndpoint`).
 - [x] **Startup-time token refresh sweep.** Landed in `app-lifecycle.ts` as
   the exported `runMcpOAuthStartupRefresh()` helper, kicked off
   (fire-and-forget) from `scheduleStartupTasks` when a `CredentialStore` is
