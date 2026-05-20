@@ -1,10 +1,11 @@
 import { useState, useCallback } from "react";
-import { CheckCircleIcon, PencilSimpleLineIcon } from "@phosphor-icons/react";
+import { CheckCircleIcon, PencilSimpleLineIcon, ShieldCheckIcon } from "@phosphor-icons/react";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import { MarkdownContent } from "./message-markdown.js";
 
 interface PlanApprovalProps {
@@ -27,16 +28,31 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
 
-  const handleAccept = useCallback(() => {
-    if (disabled || submitted) return;
-    // Switch this session out of plan mode so the follow-up message runs in
-    // auto mode. Scope to the current session only — toggling plan mode here
-    // must not affect other sessions.
-    const sid = useSessionStore.getState().sessionId;
-    useSettingsStore.getState().setPermissionMode(sid, "auto");
-    setSubmitted("accepted");
-    onSend("Execute the plan you just described.");
-  }, [disabled, submitted, onSend]);
+  // docs/138 — offer "Approve in guarded mode" alongside the plain approve when
+  // the active agent supports guarded. This mirrors Claude's own plan-approval
+  // menu (a variant of the existing approve choice, not a new shell affordance).
+  const agentList = useUiStore((s) => s.agentList);
+  const activeAgentId = useUiStore((s) => s.activeAgentId);
+  const guardedSupported = !!agentList
+    .find((a) => a.id === activeAgentId)
+    ?.supportedPermissionModes?.includes("guarded");
+
+  const acceptInMode = useCallback(
+    (mode: "auto" | "guarded") => {
+      if (disabled || submitted) return;
+      // Switch this session out of plan mode so the follow-up message runs in
+      // the chosen execution mode. Scope to the current session only — toggling
+      // mode here must not affect other sessions.
+      const sid = useSessionStore.getState().sessionId;
+      useSettingsStore.getState().setPermissionMode(sid, mode);
+      setSubmitted("accepted");
+      onSend("Execute the plan you just described.");
+    },
+    [disabled, submitted, onSend],
+  );
+
+  const handleAccept = useCallback(() => acceptInMode("auto"), [acceptInMode]);
+  const handleAcceptGuarded = useCallback(() => acceptInMode("guarded"), [acceptInMode]);
 
   const handleSendFeedback = useCallback(() => {
     if (disabled || submitted || !feedbackText.trim()) return;
@@ -102,6 +118,18 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
           <CheckCircleIcon size={ICON_SIZE.SM} weight="fill" className="mr-1" />
           Accept &amp; Execute
         </Button>
+        {guardedSupported && (
+          <Button
+            variant="ghost"
+            size="md"
+            onClick={handleAcceptGuarded}
+            disabled={disabled}
+            data-testid="accept-plan-guarded"
+          >
+            <ShieldCheckIcon size={ICON_SIZE.SM} weight="fill" className="mr-1" />
+            Accept in Guarded Mode
+          </Button>
+        )}
         {!showFeedback && (
           <Button
             variant="ghost"

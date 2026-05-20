@@ -7,7 +7,7 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode } from "../../server/shared/types.js";
 
 /**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
@@ -155,6 +155,9 @@ export function useServerEvents(): void {
           // server builds may omit it; default to false so a stale wire
           // payload hides the AI Review affordance rather than showing it.
           supportsReview?: boolean;
+          // 138 — permission modes the agent supports; absent on old payloads,
+          // in which case the selector simply won't offer `guarded`.
+          supportedPermissionModes?: PermissionMode[];
         }[];
       };
       useUiStore.getState().setAgentList(
@@ -162,6 +165,7 @@ export function useServerEvents(): void {
           ...a,
           models: a.models ?? [],
           supportsReview: a.supportsReview ?? false,
+          supportedPermissionModes: a.supportedPermissionModes,
         })),
       );
     });

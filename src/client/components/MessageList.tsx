@@ -74,6 +74,14 @@ export interface ChatMessage {
   streaming?: boolean;
   /** When true, this message represents an error (CLI crash, WS drop, etc.) */
   isError?: boolean;
+  /**
+   * When true, this is an informational system note (docs/138) — e.g. a
+   * guarded-mode fallback or a summary of classifier-blocked actions. Rendered
+   * as a muted, full-width inline note, distinct from both normal assistant
+   * text and the red error style. `noticeLevel` tints warnings.
+   */
+  notice?: boolean;
+  noticeLevel?: "info" | "warn";
   /** When true, this message is queued and waiting for Claude to become available. */
   queued?: boolean;
   /** 1-indexed position in the queue, shown as a badge. */
@@ -333,7 +341,7 @@ export function MessageList({
         const msgMatches = matchesByMessage.get(i) ?? [];
         const segments = parseMessageSegments(msg.text);
         const hasCodeBlocks = segments.some((s) => s.type === "code");
-        const useMarkdown = msg.role === "assistant" && !msg.isError;
+        const useMarkdown = msg.role === "assistant" && !msg.isError && !msg.notice;
         const showRewind = msg.role === "user" && !msg.isError && !msg.queued && !msg.rolledBack && !!onRewind;
         const latestTodoTool = msg.toolUse?.find((t) => t.name === "TodoWrite" && t.id === lastTodoWriteId);
         // Hide the bubble when it would be empty (no text/images/files
@@ -356,6 +364,12 @@ export function MessageList({
               } ${
                 msg.isError
                   ? "bg-(--color-error-subtle) text-(--color-error) border border-(--color-error)/50"
+                  : msg.notice
+                  ? `rounded-lg px-3 py-2 border text-xs ${
+                      msg.noticeLevel === "warn"
+                        ? "bg-(--color-warning)/10 text-(--color-warning) border-(--color-warning)/30"
+                        : "bg-(--color-bg-secondary) text-(--color-text-tertiary) border-(--color-border-secondary)"
+                    }`
                   : msg.queued
                   ? "bg-(--color-accent)/40 text-(--color-accent-text)/70 border border-(--color-accent)/30"
                   : msg.role === "user"

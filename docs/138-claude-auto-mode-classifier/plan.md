@@ -1,6 +1,7 @@
 ---
-status: planned
+status: done
 priority: medium
+description: Classifier-gated "guarded" permission mode (CLI --permission-mode auto) as a third ShipIt mode alongside auto and plan.
 ---
 
 # Claude Code "auto" mode (LLM command-safety classifier) as a third ShipIt permission mode
@@ -319,32 +320,43 @@ would let Codex honor `plan`/`auto`; it still can't offer `guarded`.
 - [x] **Prereq — drop dead `normal` mode** (done): type now `"auto" | "plan"`; removed
       `NORMAL_TOOLS`, the branch, the supervised-prompt injection, capability entries, and
       the two legacy tests. Typecheck/lint/tests green.
-- [ ] **Types:** `attachment-types.ts` — add `guarded` → `"auto" | "plan" | "guarded"`.
-- [ ] **Capabilities (DRY):** `agent-registry.ts:35` AND `claude-adapter.ts:34` (+ the
-      integration `test-helpers.ts` stub) hard-code the mode list — update in sync, and
-      extract to a single shared constant to stop them drifting. Add
-      `supportedPermissionModes`/derived `supportsGuardedMode` to the
-      `WsGlobalSettings.agents[]` payload (`ws-server-messages.ts:170-182`) + its producer.
-- [ ] **`claude.ts`:** allowlist for `guarded` (reuse `AUTO_TOOLS`); `--permission-mode auto`
-      pass-through; remove `normal` branch + its system-prompt injection (`:106-111`); update
-      the stale MCP-allowlist comment at `:18-20` (it names `normal`).
-- [ ] **`claude.ts`/`claude-adapter.ts`:** detect runtime availability from
-      `init.permissionMode`; set per-runner volatile `guardedUnavailable`; transient-outage
-      branch.
-- [ ] **`session-runner.ts`:** add the volatile `guardedUnavailable` flag (not persisted,
-      not in warm-pool snapshot).
-- [ ] **`agent-listeners.ts`:** handle headless abort-on-repeated-blocks
-      (`permission_denials[]`), emit inline notice via `runner.emitMessage()`.
-- [ ] **Client selector:** 3-state, **agent-aware** (reads `agents[]` capability + active
-      model) selector replacing `PlanModeToggle.tsx`; disabled states with reasons; `App.tsx`
-      send wiring; `settings-store` default stays `auto`.
-- [ ] **`PlanApproval.tsx:36`:** add "Approve in guarded mode" option.
-- [ ] **`shipit-docs/sessions.md:139`** + rest of `shipit-docs/`: document `guarded`.
-- [ ] **Tests:** extend `permission-modes.test.ts` (guarded → `--permission-mode auto`,
-      fallback path, abort path); update `PlanModeToggle.test.tsx` (3-state + agent-aware +
-      disabled-unavailable) and **remove the legacy `normal` test at `:36-41`**;
-      `claude-adapter.test.ts` capability assertion.
-- [ ] `npm run lint` + `npm run typecheck`.
+- [x] **Types:** `attachment-types.ts` — `PermissionMode = "auto" | "plan" | "guarded"`.
+- [x] **Capabilities (DRY):** extracted a single shared `CLAUDE_PERMISSION_MODES` constant
+      (`agent-types.ts`) consumed by `agent-registry.ts` AND `claude-adapter.ts` so they
+      can't drift. Added `supportedPermissionModes` to the `WsGlobalSettings.agents[]` +
+      `WsAgentListMessage.agents[]` payloads, the service-layer `AgentInfo`, and all four
+      producers (`app-lifecycle.ts`, `index.ts`, `api-routes-bootstrap.ts`, `settings.ts`).
+- [x] **`claude.ts`:** `guarded` reuses `AUTO_TOOLS`; `guarded` → `--permission-mode auto`
+      pass-through. (`normal` branch was already removed in the prereq.)
+- [x] **`claude.ts`/`claude-adapter.ts`:** `init.permissionMode` + `result.permission_denials`
+      added to the CLI event types and mapped to `AgentInitEvent.permissionMode` /
+      `AgentResultEvent.permissionDenials`. Runtime availability detected in
+      `agent-listeners.ts` from `init.permissionMode`; per-runner volatile
+      `guardedUnavailable` set on mismatch. (No documented transient-outage event shape was
+      available to wire a separate transient branch — see Open question 2; the init-field
+      check is the implemented backstop.)
+- [x] **`session-runner.ts` + `container-session-runner.ts`:** volatile `guardedUnavailable`
+      flag (not persisted, not in the warm-pool snapshot).
+- [x] **`agent-listeners.ts`:** surfaces `permission_denials[]` as an inline `system_notice`
+      via `runner.emitMessage()`; emits the guarded-unavailable fallback notice on init
+      mismatch. `agent-execution.ts` downgrades `guarded` → auto when the flag is set and
+      passes the effective mode as `requestedPermissionMode` to the listeners.
+- [x] **Client selector:** new 3-state, agent-aware + model-aware `PermissionModeSelector.tsx`
+      replaces `PlanModeToggle.tsx` (deleted); wired into `MessageInput.tsx`. Hides for agents
+      with no modes (Codex) and disables `guarded` on Haiku with a reason. `App.tsx` send
+      wiring already omits the field when `auto` and sends `guarded`/`plan` verbatim;
+      `settings-store` default stays `auto`. New `WsSystemNotice` + client handler render the
+      inline notes.
+- [x] **`PlanApproval.tsx`:** "Accept in Guarded Mode" option shown when the active agent
+      supports guarded.
+- [x] **`shipit-docs/sessions.md`:** added a "Permission modes" section documenting plan /
+      guarded / auto.
+- [x] **Tests:** `permission-modes.test.ts` (guarded propagation, fallback path, abort/denial
+      notice); `claude.test.ts` (guarded → `--permission-mode auto`, plan, auto-no-flag,
+      allowlist); `claude-adapter.test.ts` (guarded capability, init/denials mapping);
+      replaced `PlanModeToggle.test.tsx` with `PermissionModeSelector.test.tsx`;
+      `MessageInput.test.tsx` updated for the new selector + Codex-hidden case.
+- [x] `npm run lint` + `npm run typecheck` (both clean).
 
 ## Spike results — verified in a container (CLI 2.1.145, `--model sonnet`)
 

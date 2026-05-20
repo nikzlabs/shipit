@@ -226,6 +226,16 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   // Agent state
   running: boolean;
   wasInterrupted: boolean;
+  /**
+   * Volatile per-runner flag (docs/138): set true once a turn requested guarded
+   * mode but the CLI reported it unavailable (plan/admin/model constraint).
+   * Subsequent turns read this and silently downgrade `guarded` → `auto` so the
+   * user isn't repeatedly told it's unavailable. NOT persisted to SessionManager
+   * and NOT in the warm-pool snapshot — it clears on session/container restart
+   * and on page reload (the client re-reads static capability), so an admin
+   * later enabling auto mode is rediscovered on the next fresh attempt.
+   */
+  guardedUnavailable: boolean;
   accumulatedText: string;
   accumulatedToolUse: ClaudeContentBlockToolUse[];
   turnSummary: string;
@@ -361,6 +371,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _agentId: AgentId;
   private _isRunning = false;
   private _wasInterrupted = false;
+  private _guardedUnavailable = false;
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
@@ -394,6 +405,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set running(v: boolean) { this._isRunning = v; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
+  get guardedUnavailable(): boolean { return this._guardedUnavailable; }
+  set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
   get accumulatedText(): string { return this._accumulatedText; }
   set accumulatedText(s: string) { this._accumulatedText = s; }
   get accumulatedToolUse(): ClaudeContentBlockToolUse[] { return this._accumulatedToolUse; }

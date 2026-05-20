@@ -354,6 +354,58 @@ describe("ClaudeProcess", () => {
       expect(spawnOpts.env.SHIPIT_AUTO_CREATE_PR).toBeUndefined();
     });
 
+    it("maps guarded mode to --permission-mode auto (docs/138)", () => {
+      // Deliberate inversion: ShipIt `guarded` → CLI `auto` (classifier-gated).
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", permissionMode: "guarded" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const idx = args.indexOf("--permission-mode");
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(args[idx + 1]).toBe("auto");
+    });
+
+    it("maps plan mode to --permission-mode plan", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", permissionMode: "plan" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const idx = args.indexOf("--permission-mode");
+      expect(args[idx + 1]).toBe("plan");
+    });
+
+    it("passes no --permission-mode flag for auto mode", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", permissionMode: "auto" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--permission-mode");
+    });
+
+    it("keeps the full AUTO_TOOLS allowlist for guarded mode", () => {
+      // Guarded reuses AUTO_TOOLS — the CLI classifier (not the allowlist)
+      // gates Bash/network. Bash must still be present in the allowlist.
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", permissionMode: "guarded" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools).toContain("Bash");
+      expect(tools).toContain("Write");
+    });
+
     it("includes browser tools in allowed tools list", () => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);

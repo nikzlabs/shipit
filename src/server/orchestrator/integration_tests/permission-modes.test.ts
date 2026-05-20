@@ -93,6 +93,102 @@ describe("Integration: Permission modes", () => {
     client.close();
   });
 
+  it("guarded mode passes permissionMode 'guarded' to ClaudeProcess", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Build it safely", permissionMode: "guarded" });
+    await waitForClaude(() => lastClaude);
+
+    expect(lastClaude.lastPrompt).toBe("Build it safely");
+    expect(lastClaude.lastPermissionMode).toBe("guarded");
+
+    client.close();
+  });
+
+  it("falls back to auto + emits a notice when guarded is unavailable, then downgrades subsequent turns", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Turn 1: request guarded, but the CLI reports it didn't engage (init
+    // permissionMode is "default", not "auto").
+    client.send({ type: "send_message", text: "Try guarded", permissionMode: "guarded" });
+    await waitForClaude(() => lastClaude);
+    expect(lastClaude.lastPermissionMode).toBe("guarded");
+    const firstClaude = lastClaude;
+
+    firstClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "guarded-fallback-session",
+      permissionMode: "default",
+    });
+
+    // A system_notice explaining the fallback should reach the client.
+    let sawNotice = false;
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      try {
+        const msg = await client.receive(200) as { type: string; level?: string };
+        if (msg.type === "system_notice") { sawNotice = true; break; }
+      } catch { break; }
+    }
+    expect(sawNotice).toBe(true);
+
+    firstClaude.finish("guarded-fallback-session");
+
+    // Drain to end of turn 1.
+    const drainTimeout = Date.now() + 1500;
+    while (Date.now() < drainTimeout) {
+      try { await client.receive(100); } catch { break; }
+    }
+
+    // Turn 2: still requesting guarded, but the volatile flag now downgrades it
+    // to auto (no permissionMode flag passed to the CLI).
+    const sessionId = sessionManager.list()[0]?.id;
+    client.send({ type: "send_message", text: "Again", sessionId, permissionMode: "guarded" });
+    await waitForClaude(() => lastClaude, firstClaude);
+    expect(lastClaude.lastPermissionMode).toBeUndefined();
+
+    client.close();
+  });
+
+  it("emits a notice summarizing classifier-blocked actions on the result event", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Do something risky", permissionMode: "guarded" });
+    await waitForClaude(() => lastClaude);
+
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "guarded-block-session",
+      permissionMode: "auto",
+    });
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "guarded-block-session",
+      permission_denials: [{ tool_name: "Bash", tool_use_id: "t1", tool_input: { command: "rm -rf /" } }],
+    });
+
+    let blockNotice: { message: string } | undefined;
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      try {
+        const msg = await client.receive(200) as { type: string; message?: string };
+        if (msg.type === "system_notice" && msg.message?.includes("blocked")) {
+          blockNotice = msg as { message: string };
+          break;
+        }
+      } catch { break; }
+    }
+    expect(blockNotice?.message).toContain("Bash");
+
+    client.close();
+  });
+
   it("switching mode mid-session changes ClaudeProcess args", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status

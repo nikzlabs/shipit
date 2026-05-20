@@ -409,7 +409,7 @@ export class FakeClaudeProcess extends EventEmitter {
     supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: true,
-    supportedPermissionModes: ["auto" as const, "plan" as const],
+    supportedPermissionModes: ["auto" as const, "plan" as const, "guarded" as const],
     toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     models: ["claude-sonnet-4-20250514"],
     supportsReview: true,
@@ -515,6 +515,9 @@ interface RawClaudeEvent {
   duration_ms?: number;
   result?: string;
   parent_tool_use_id?: string;
+  // docs/138 — guarded-mode signals.
+  permissionMode?: string;
+  permission_denials?: { tool_name: string; tool_use_id?: string; tool_input?: unknown }[];
 }
 
 /**
@@ -532,6 +535,7 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         sessionId: raw.session_id,
         model: raw.model,
         tools: raw.tools,
+        permissionMode: raw.permissionMode,
       };
     case "assistant":
       return {
@@ -583,6 +587,13 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         contextWindow,
         durationMs: raw.duration_ms,
         error: raw.subtype === "error" ? raw.result : undefined,
+        permissionDenials: raw.permission_denials?.length
+          ? raw.permission_denials.map((d) => ({
+              toolName: d.tool_name,
+              toolUseId: d.tool_use_id,
+              toolInput: d.tool_input,
+            }))
+          : undefined,
       };
     }
     default:
