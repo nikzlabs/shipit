@@ -1,6 +1,7 @@
 ---
 status: planned
 priority: medium
+description: Agent-agnostic slash-command layer that classifies /compact, /diff, /review, and other backend commands and routes them to the correct ShipIt surface.
 ---
 
 # 132 — Slash Commands

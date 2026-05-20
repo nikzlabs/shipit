@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: medium
+description: Let users pin sessions to the top of the session list, sticky across reloads and drag-reorderable within the pinned group.
 ---
 
 # 110 — Pinned Sessions

@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: low
+description: Remaining security hardening deferred from containerization: non-root worker, network egress allowlist, read-only credential mounts, and cross-platform validation.
 ---
 
 # 067 — Container Hardening & Cross-Platform Validation

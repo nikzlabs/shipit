@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: low
+description: Integrate the Superpowers Claude Code plugin to give agents structured development workflows (TDD, brainstorming, code review) inside ShipIt sessions.
 ---
 
 # 052 — Superpowers Plugin Integration

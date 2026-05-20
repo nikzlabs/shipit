@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: medium
+description: Add @terminal to the composer autocomplete so users can attach recent terminal output as context to the next agent turn without copy-pasting.
 ---
 
 # 108 — `@terminal` Composer Mention

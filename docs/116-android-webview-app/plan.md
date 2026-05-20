@@ -1,6 +1,7 @@
 ---
 status: in-progress
 priority: low
+description: Minimal Android WebView wrapper for self-hosted ShipIt with a runtime-configurable host URL, distributed as a sideload APK via GitHub Releases.
 ---
 
 # 116 — Android WebView wrapper (configurable host)

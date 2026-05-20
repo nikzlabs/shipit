@@ -1,6 +1,7 @@
 ---
 status: planned
 priority: medium
+description: Special session type letting operators debug the production ShipIt host (stuck containers, OOM, Docker state) without leaving the ShipIt UI.
 ---
 
 # Ops session — debug the prod ShipIt host from inside the prod ShipIt UI

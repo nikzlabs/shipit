@@ -1,6 +1,7 @@
 ---
 status: in-progress
 priority: medium
+description: CLI shim letting agents create and manage sibling ShipIt sessions for parallel branch work, with per-turn quotas and sidebar visibility.
 ---
 
 # 117 — Agent-Spawned ShipIt Sessions

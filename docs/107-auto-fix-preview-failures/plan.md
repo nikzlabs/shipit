@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: medium
+description: Detect compose service crashes and setup script failures post-turn, surface logs inline, and optionally trigger an agent fix turn automatically.
 ---
 
 # 107 — Auto-Fix for Preview & Setup Script Failures

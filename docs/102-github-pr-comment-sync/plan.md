@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: high
+description: Bidirectionally sync GitHub PR review comments with ShipIt's inline diff viewer so teammates' comments appear in-app and replies write back to GitHub.
 ---
 
 # 102 — GitHub PR Review Comment Sync
