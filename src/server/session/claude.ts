@@ -55,8 +55,12 @@ export class ClaudeProcess extends EventEmitter {
   run(opts: ClaudeRunOptions): void {
     const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr } = opts;
 
-    const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__*";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
+    // `Skill` is allowlisted in both modes — including plan — so an explicit
+    // `/my-skill` invocation is honored in every permission mode. This accepts
+    // that plan mode is no longer guaranteed read-only when a user
+    // deliberately invokes a side-effecting skill. See docs/138.
+    const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__*";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
 
     // docs/088: enabled user MCP servers contribute a `mcp__<name>__*` glob to
     // the `auto` allowlist. `plan` mode deliberately omits them
