@@ -11,13 +11,15 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 - [x] Confirm Codex steering primitive (`turn/steer`) — already implemented in `codex-adapter.ts` `writeStdin`
 - [x] Research Codex `turn/interrupt` semantics (graceful, `turn/completed status:"interrupted"`)
 
-## Phase 1 — capability + setting (no behavior change)
+## Phase 1 — capability + interface + setting (no behavior change)
 
 - [ ] Add `supportsSteering: boolean` to `AgentCapabilities` (`agent-types.ts`)
 - [ ] Set `supportsSteering: true` on Claude and Codex adapters; default `false` for any future adapter
+- [ ] Add `sendUserMessage(text, {images?})` (+ any control methods) to the `AgentProcess` interface here, so types stay coherent as later phases merge
+- [ ] Publish `supportsSteering` via the **agent registry** (mirror `supportsReview`); gating must NOT read `ProxyAgentProcess.capabilities` (hardcoded defaults)
 - [ ] Add user setting `liveSteering` (default off) to settings store + `settings.ts` service
 - [ ] Surface the toggle in the settings UI with "experimental / can switch back" copy
-- [ ] Tests: capability defaults; setting persistence + default-off
+- [ ] Tests: capability defaults; registry publishes the flag; setting persistence + default-off
 
 ## Phase 2 — Claude streaming adapter
 
@@ -25,19 +27,21 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 - [ ] Persistent process: map `result` event → turn-complete; reserve `done` for process exit
 - [ ] `sendUserMessage(text, {images?})` NDJSON serializer
 - [ ] `interrupt()` via `control_request`; `setPermissionMode()` via `control_request`; track `request_id` ↔ `control_response`
+- [ ] Turn-scoped inactivity watchdog (arm on send, clear on `result`) — not process-scoped
+- [ ] Move auth-detection + ANSI/non-JSON heuristics to the separated stderr pipe (no longer PTY-merged)
 - [ ] Move process teardown to explicit dispose / idle-eviction (not per-turn)
 - [ ] Tests: NDJSON framing, `result`-as-turn-end, replay-echo handling, control-message round-trip
 
 ## Phase 3 — Codex adapter
 
 - [ ] Expose `sendUserMessage()` (wraps existing `turn/steer` path)
-- [ ] Upgrade `interrupt()` from hard `kill()` to `turn/interrupt` (graceful)
+- [ ] Upgrade `interrupt()` from hard `kill()` to `turn/interrupt` (graceful, `turn/completed status:"interrupted"`)
+- [ ] **Decide steer-rejection detection mechanism** — `turn/steer` is fire-and-forget today (no reply); detecting a review/compaction rejection likely needs steer-as-`sendRequest` (with id) or watching for an error notification
 - [ ] Detect/surface `turn/steer` rejection during review/compaction turns → fall back to queue
-- [ ] Tests: `turn/steer` notification shape, interrupt path, rejection fallback
+- [ ] Tests: `turn/steer` request/notification shape, interrupt path, rejection fallback
 
-## Phase 4 — AgentProcess interface + worker + proxy
+## Phase 4 — worker + proxy
 
-- [ ] Add `sendUserMessage` (and any control methods) to `AgentProcess` interface
 - [ ] `POST /agent/message` (`{text, images}`) and `POST /agent/control` (`{subtype, …}`) on session worker (`session-worker.ts` / `worker-http.ts`)
 - [ ] Proxy both through `ProxyAgentProcess` + `container-session-runner.ts` (mirror `writeAgentStdin`)
 - [ ] Tests: worker endpoint validation; proxy delegation
@@ -45,11 +49,15 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 ## Phase 5 — WS routing + turn lifecycle
 
 - [ ] In `send_message`: when `runner.running` && steering active → `sendUserMessage()`, else existing `messageQueue.push()` path verbatim
-- [ ] Emit new `message_steered` server event (type in `ws-server-messages.ts`)
-- [ ] `runAgentWithMessage` / `drainNextQueuedMessage`: "process already alive, feed next message" branch for streaming agents
+- [ ] **Steer targets the runner that owns the in-flight turn** (the `running===true` runner for the captured turn session), NOT the connection's active session — resolve via registry
+- [ ] **Remap post-turn flow onto `agent_result` for streaming agents**: `postTurnCommit`, PR-card emission, `scheduleAutoPush`, `session_agent_finished` SSE, and queue drain currently live in the `done` handler (`agent-execution.ts`) — `done` only fires on dispose/crash in streaming mode
+- [ ] **Unify queue + steer delivery**: `drainNextQueuedMessage` must feed the next message via `sendUserMessage` (not `run()` a fresh process) for streaming agents — single turn-start path
+- [ ] **`answer_question` routing**: when steering active, disable the interrupt-on-AskUserQuestion hack (`agent-listeners.ts:335-357`) and route `handleAnswerQuestion` through `sendUserMessage`/control instead of fresh `--resume`
+- [ ] Emit new `message_steered` server event (type in `ws-server-messages.ts`); broadcast via `runner.emitMessage()` (turn-event buffer for reconnect/multi-viewer)
+- [ ] **Echo dedupe contract**: optimistic client insert tagged with a local id; reconcile against the Claude `--replay-user-messages` echo / Codex accepted `turnId` so the message isn't double-rendered
 - [ ] Respect WS-lifecycle rules: capture session context at turn start, resolve via registry, mutate runner directly, emit via `runner.emitMessage()`
-- [ ] Handle dispose / `restartAgent` (docs/127) / OOM-retry (docs/126) / reconnection with `--resume`-on-respawn for persistent Claude sessions
-- [ ] Integration tests: steer mid-turn, steer-then-disconnect/reconnect, fall-back-to-queue when setting off, interrupt during steered turn
+- [ ] Handle dispose (defined drop/preserve for buffered-but-unsent steer) / `restartAgent` (docs/127 — drops in-flight turn, resumes cold via `--resume`) / agent-container OOM (OOM circuit breaker, docs/122/124 — **not** docs/126, which is preview-OOM) / reconnection with `--resume`-on-respawn
+- [ ] Integration tests: steer mid-turn; `result`-without-`done` post-turn flow; steer-then-disconnect/reconnect; steer-during-session-switch targets correct runner; fall-back-to-queue when setting off; interrupt during steered turn; AskUserQuestion answer via steering
 
 ## Phase 6 — client UX
 
