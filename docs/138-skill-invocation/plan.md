@@ -71,15 +71,25 @@ prompt = isSlashInvocation
 
 One ordering decision, applied uniformly to both file and image context.
 
-### 2. Add `Skill` to the tool allowlists
+### 2. Add `Skill` to the tool allowlists (Claude)
 
-Add `Skill` to `AUTO_TOOLS` and `NORMAL_TOOLS` in `claude.ts`. Leave it out of
-`PLAN_TOOLS` — skills can be side-effecting, and plan mode is deliberately
-read-only (same rationale that omits user MCP globs from `PLAN_TOOLS`).
+Add `Skill` to **all three** Claude allowlists in `claude.ts` — `AUTO_TOOLS`,
+`NORMAL_TOOLS`, **and `PLAN_TOOLS`**. The decision is to honor an explicit
+`/my-skill` invocation even in plan mode: when a user deliberately types a
+skill command, denying it in plan mode would be a confusing dead end. The
+trade-off accepted here is that plan mode is no longer *guaranteed* read-only
+— an explicitly-invoked skill may run side-effecting tools. This differs from
+the user-MCP-glob exclusion (where the tools are implicit, not user-invoked),
+and that asymmetry is intentional.
 
-These two changes are the **functional core**: together they make `/my-skill`
-work for any user who already knows the skill name, with or without
-attachments. They are low-risk and shippable on their own.
+These changes are the **functional core**: together with #1 they make
+`/my-skill` work for any user who already knows the skill name, with or
+without attachments, in every permission mode. They are low-risk and shippable
+on their own.
+
+Codex has no `--allowedTools` allowlist equivalent (it gates via its
+sandbox/approval policy), so there is no Blocker 2 on the Codex side — see
+the Codex section below.
 
 ### 3. Composer `/` autocomplete (discoverability)
 
@@ -90,19 +100,45 @@ mouse selection. This is the chat-shaped surface (§5), not a button row.
 
 ### 4. Skill discovery (feeds the menu)
 
-The menu needs a source of skill names. A small HTTP route scans the
-workspace's `.claude/skills/*/SKILL.md` (project + user skills) plus the
-backend's bundled skills, returning name + description for the autocomplete.
-Follow the project's `add-endpoint` pattern (service → route → client hook).
+The menu lists **both** project skills and the backend's bundled skills:
 
-This is the only genuinely new infra. Changes #1 + #2 ship the capability;
-#3 + #4 layer on discoverability and can follow.
+- **Project skills** — scan the workspace's `.claude/skills/*/SKILL.md`
+  (Claude) and `.codex/prompts/*.md` (Codex), returning name + description.
+- **Bundled skills** — the backend's built-ins (`/loop`, `/simplify`, …).
+  These are per-backend, so the set comes from the `AgentCapabilities` map
+  (the same map doc 132 introduces), not a filesystem scan. The menu shows
+  only what the *active* agent supports.
+
+Exposed via a small HTTP route following the `add-endpoint` pattern (service →
+route → client hook). This is the only genuinely new infra. Changes #1 + #2
+ship the capability; #3 + #4 layer on discoverability and can follow.
+
+### 5. Codex backend
+
+Skill invocation is **backend-agnostic where it can be**:
+
+- **Change #1 (preserve leading slash) is shared** — it lives in
+  `agent-execution.ts`, upstream of the adapter, so it benefits both backends
+  with no Codex-specific work.
+- **Change #2 (allowlist) is Claude-only** — Codex has no `--allowedTools`.
+- **Codex prompt expansion in headless mode is unverified.** Codex's custom
+  prompts live in `.codex/prompts/` and are a REPL feature; `codex exec --help`
+  shows no `/prompt-name` expansion (in contrast to Claude's documented
+  *"Skills still resolve via /skill-name"*). **Before claiming Codex support,
+  verify whether `codex exec "/my-prompt"` actually expands the prompt** — if
+  it does not, Codex skill invocation needs adapter-level expansion in
+  `codex-adapter.ts` (read the prompt file, inline its contents), which is a
+  larger task than the Claude path.
 
 ## Build order
 
-1. #1 + #2 — preserve leading slash, allowlist `Skill`. Unblocks invocation.
-2. #4 — skill-discovery endpoint.
-3. #3 — `/` autocomplete in the composer, fed by #4.
+1. #1 + #2 — preserve leading slash, allowlist `Skill` (all three Claude
+   modes). Unblocks Claude invocation.
+2. #5 verification — confirm whether `codex exec "/my-prompt"` expands; if
+   not, add adapter-level inlining in `codex-adapter.ts`.
+3. #4 — skill-discovery endpoint (project scan + bundled-via-capabilities,
+   both backends).
+4. #3 — `/` autocomplete in the composer, fed by #4.
 
 ## Scope boundary
 
@@ -116,8 +152,7 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
 
 - Unit: prompt builder keeps `/skill` at index 0 with and without file/image
   attachments; non-slash messages keep context prepended as before.
-- Unit: `Skill` present in `AUTO_TOOLS` and `NORMAL_TOOLS`, absent in
-  `PLAN_TOOLS`.
+- Unit: `Skill` present in `AUTO_TOOLS`, `NORMAL_TOOLS`, **and** `PLAN_TOOLS`.
 - Client: autocomplete opens on a leading `/`, filters by query, inserts the
   selected skill name.
 
@@ -127,17 +162,25 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
   (Blocker 1 / change #1)
 - `src/server/session/claude.ts` — `--allowedTools` allowlists (Blocker 2 /
   change #2)
+- `src/server/session/agents/codex-adapter.ts` — Codex prompt expansion
+  fallback if `codex exec` doesn't expand `/prompt-name` (change #5)
 - `src/client/components/MessageInput.tsx`, `FileAutoComplete.tsx` — `/`
   autocomplete (change #3)
 - `docs/132-slash-commands/plan.md` — the broader slash-command layer this
   slice was carved from
 - `docs/096-claude-skills-access/plan.md` — skill *authoring* access (done)
 
+## Decisions
+
+- **Plan mode allows `Skill`** — an explicit `/my-skill` is honored in every
+  permission mode, accepting that plan mode is no longer guaranteed read-only
+  (see change #2).
+- **Discovery lists project + bundled skills** — filesystem scan plus the
+  per-backend `AgentCapabilities` set (see change #4).
+- **Both backends in scope** — Claude path is well-grounded; Codex headless
+  prompt expansion must be verified first (see change #5).
+
 ## Open questions
 
-- Should `PLAN_TOOLS` allow `Skill`? Default here is no (read-only plan mode),
-  but a read-only skill the user explicitly invokes in plan mode would be
-  denied. Revisit if users hit it.
-- Skill discovery scope: project-only, or also the backend's bundled skills
-  (e.g. `/loop`, `/simplify`)? Bundled set is per-backend, so it belongs
-  behind the `AgentCapabilities` map doc 132 introduces.
+- Does `codex exec "/my-prompt"` expand the prompt in headless mode? If not,
+  Codex needs adapter-level inlining — quantify that work after verification.
