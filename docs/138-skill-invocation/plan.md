@@ -48,8 +48,9 @@ slash command is silently swallowed as literal prose.
 
 ### Blocker 2 — the `Skill` tool isn't allowlisted
 
-`claude.ts` defines `AUTO_TOOLS` / `PLAN_TOOLS` / `NORMAL_TOOLS`; none include
-`Skill` (no `Skill`/`skill` reference anywhere in `src/server/session`). In
+`claude.ts` defines two `--allowedTools` lists — `AUTO_TOOLS` and `PLAN_TOOLS`
+(the `guarded` mode reuses `AUTO_TOOLS`); neither includes `Skill` (no
+`Skill`/`skill` reference anywhere in `src/server/session`). In
 headless `-p` mode a tool absent from `--allowedTools` is denied — there is no
 human to approve the prompt. A skill that drives tool use, or a model-initiated
 `Skill` call, is blocked.
@@ -73,8 +74,11 @@ One ordering decision, applied uniformly to both file and image context.
 
 ### 2. Add `Skill` to the tool allowlists (Claude)
 
-Add `Skill` to **all three** Claude allowlists in `claude.ts` — `AUTO_TOOLS`,
-`NORMAL_TOOLS`, **and `PLAN_TOOLS`**. The decision is to honor an explicit
+Add `Skill` to **both** Claude `--allowedTools` lists in `claude.ts` —
+`AUTO_TOOLS` **and `PLAN_TOOLS`**. There are two named lists, three permission
+*modes*: `auto` and `guarded` both resolve to `AUTO_TOOLS`, and `plan` resolves
+to `PLAN_TOOLS` — so adding `Skill` to those two lists covers all three modes.
+The decision is to honor an explicit
 `/my-skill` invocation even in plan mode: when a user deliberately types a
 skill command, denying it in plan mode would be a confusing dead end. The
 trade-off accepted here is that plan mode is no longer *guaranteed* read-only
@@ -117,30 +121,86 @@ ship the capability; #3 + #4 layer on discoverability and can follow.
 
 Skill invocation is **backend-agnostic where it can be**:
 
-- **Change #1 (preserve leading slash) is shared** — it lives in
-  `agent-execution.ts`, upstream of the adapter, so it benefits both backends
-  with no Codex-specific work.
+- **Change #1 (preserve leading slash) is Claude-only in effect** — it lives in
+  `agent-execution.ts`, upstream of the adapter, so it runs for both backends,
+  but it only *matters* for Claude. Codex doesn't do position-sensitive CLI
+  expansion (see below), so the token is just prose the model reads; ordering
+  is irrelevant on the Codex side.
 - **Change #2 (allowlist) is Claude-only** — Codex has no `--allowedTools`.
-- **Codex does NOT expand `/prompt-name` in headless mode — verified.**
-  Tested with `codex exec` (v0.132.0) against a custom prompt in both
-  `.codex/prompts/` (project) and `~/.codex/prompts/` (global): the `user`
-  turn received the literal `/myprompt` text, the prompt body never executed,
-  and the model treated the token as raw input. Custom-prompt expansion is a
-  Codex REPL-only feature. **Consequence:** Codex skill invocation requires
-  adapter-level inlining in `codex-adapter.ts` — resolve `/name` against the
-  prompt directories, read the `.md`, substitute its contents (and any
-  `$ARGUMENTS` / positional args) into the prompt before spawning `codex
-  exec`. This is materially more work than the Claude path (where the CLI does
-  the expansion for us) and should be sequenced after the Claude path ships.
+
+**Codex uses catalog injection, not textual expansion — re-verified
+empirically (codex-cli 0.132.0, `codex debug prompt-input`).** Two findings:
+
+1. **Custom prompts (`.codex/prompts/*.md`) are deprecated and do NOT expand
+   headless.** Running `/myprompt hello world` yielded a final user turn of the
+   literal string `/myprompt hello world`; the prompt body was never inlined.
+   Codex's own docs now say *"Custom prompts are deprecated. Use skills for
+   reusable instructions."* So the original "scan `.codex/prompts/`" design is
+   targeting a dead feature.
+2. **Codex Agent Skills (`.codex/skills/*/SKILL.md`) work in `codex exec`
+   natively — no inlining required.** Running `$myskill` did NOT substitute the
+   skill body either, BUT `codex exec` automatically injected a
+   `<skills_instructions>` block listing every discovered skill (project
+   `.codex/skills/*` **and** `$CODEX_HOME/skills/*`) with its name,
+   description, and absolute `SKILL.md` path, plus the instruction: *"If the
+   user names a skill (with `$SkillName` or plain text) OR the task clearly
+   matches a skill's description … you must use that skill for that turn"* by
+   opening the `SKILL.md` and following it (progressive disclosure). This
+   injection happens automatically in headless mode.
+
+**Consequence — the adapter-level inlining design is dropped.** Codex's skill
+mechanism is architecturally different from Claude's: Claude's CLI does textual
+`/skill` expansion at the prompt; Codex does **catalog injection + model-driven
+file reading**, and it does this itself even under `codex exec`. So
+`codex-adapter.ts` needs **no** prompt-expansion engine. The remaining work is
+small:
+
+- **Project-skill scan moves** from `.codex/prompts/*.md` (deprecated) to
+  `.codex/skills/*/SKILL.md` — the same `name`/`description` frontmatter shape
+  ShipIt already parses for Claude's `.claude/skills/`, so `listSkills()` can
+  reuse almost all of the Claude branch. Project skills live under the
+  workspace, which is bind-mounted and therefore orchestrator-visible, so this
+  half stays a host-side `fs` scan in `services/skills.ts` exactly as today.
+- **Built-in skills require a worker-side scan — they are NOT orchestrator-
+  reachable.** Codex's built-in system skills live at `$CODEX_HOME/skills/*`
+  *inside the session container*. `CODEX_HOME` is not set in ShipIt containers,
+  so it defaults to `~/.codex` = `/root/.codex` (the same path
+  `settings.ts` uses for Codex config) — a container-only filesystem the
+  orchestrator cannot read, because orchestrator↔container communication is
+  HTTP-only (never container FS, never `docker exec`; see CLAUDE.md). So the
+  built-in half needs a **session-worker endpoint** (`session-worker.ts`) that
+  scans `~/.codex/skills/**/SKILL.md` *inside the container* and returns the
+  list over HTTP; the orchestrator's `GET /api/sessions/:id/skills` route then
+  merges host-scanned project skills (`source: "project"`) with worker-scanned
+  built-ins (`source: "bundled"`). This is the one genuinely new piece of infra
+  in #5 — the project-skill repoint is trivial, but built-ins are not a simple
+  `fs.readdir` from where `listSkills()` runs.
+- **Token syntax is `$name`, not `/name`.** The composer keeps `/` as the
+  universal trigger that opens the menu for both backends; on Codex,
+  **selecting inserts `$name `** (vs `/name ` for Claude). Only the inserted
+  token is agent-specific — the trigger char stays `/`. Even plain text
+  matching a skill description triggers the skill, so `$` is a discoverability
+  nicety, not a hard requirement. **Known limitation:** today the menu opens
+  only on a leading `/` (`MessageInput.tsx` matches `/^\/([\w.-]*)$/`). Once a
+  Codex selection has inserted `$name`, the leading char is `$`, so *editing*
+  that token will not re-open the menu. Accepted as a minor edge — the first
+  selection always works; re-opening after edit is out of scope unless we also
+  register `$` as a Codex trigger.
+- **No `$ARGUMENTS` substitution** — there is no substitution step. The user's
+  literal text (including any trailing args) is already in the prompt for the
+  model to read alongside the skill body. This closes the open question below.
+- **Implicit invocation comes for free** — because Codex injects the catalog,
+  the model can pick a matching skill even without an explicit `$name`.
 
 ## Build order
 
 1. ✅ **#1 + #2 — DONE.** Preserve leading slash, allowlist `Skill` (all three
    Claude modes). Unblocks Claude invocation. The prompt-ordering decision is
    extracted as the pure `assembleAgentPrompt()` in `agent-execution.ts` and
-   `Skill` is in `AUTO_TOOLS` / `NORMAL_TOOLS` / `PLAN_TOOLS` in `claude.ts`.
-   Covered by `agent-prompt.test.ts` and the `Skill`-allowlist cases in
-   `claude.test.ts`.
+   `Skill` is in `AUTO_TOOLS` and `PLAN_TOOLS` in `claude.ts` (the two
+   `--allowedTools` lists; `guarded` reuses `AUTO_TOOLS`, so all three modes
+   are covered). Covered by `agent-prompt.test.ts` and the `Skill`-allowlist
+   cases in `claude.test.ts`.
 2. ✅ **#4 (project scan) — DONE.** `GET /api/sessions/:id/skills[?agent=]`
    returns user-invocable project skills via the pure `listSkills(dir,
    agentId)` service: Claude scans `.claude/skills/*/SKILL.md` (frontmatter
@@ -157,9 +217,17 @@ Skill invocation is **backend-agnostic where it can be**:
    mouse), and selecting inserts `/<name> ` keeping the token at index 0. Fed
    by `useFileStore.skills`, fetched on session connect and on agent switch.
    Covered by the `skill autocomplete` cases in `MessageInput.test.tsx`.
-4. #5 — Codex adapter-level prompt inlining in `codex-adapter.ts` (verified
-   necessary: `codex exec` does not expand `/prompt-name`). Sequenced last
-   because it is the largest piece and Claude is the primary backend.
+4. #5 — Codex skills support. **No adapter-level inlining** (re-verified:
+   `codex exec` injects a skills catalog and reads `SKILL.md` itself). Work is:
+   (a) repoint `listSkills()`'s Codex branch at `.codex/skills/*/SKILL.md`
+   instead of the deprecated `.codex/prompts/*.md` (host-side scan, trivial);
+   (b) add a **session-worker endpoint** that scans the container's
+   `~/.codex/skills/**/SKILL.md` for built-ins and have the route merge them as
+   `source: "bundled"` (the orchestrator cannot read `~/.codex` directly);
+   (c) make the composer autocomplete insert `$name ` for Codex (vs `/name ` for
+   Claude); (d) refresh the now-stale `.codex/prompts` comments in `skills.ts`
+   and `domain-types.ts`. Sequenced last because Claude is the primary backend;
+   (a)/(c)/(d) are small, (b) is the only genuinely new infra.
 
 ## Scope boundary
 
@@ -173,7 +241,8 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
 
 - Unit: prompt builder keeps `/skill` at index 0 with and without file/image
   attachments; non-slash messages keep context prepended as before.
-- Unit: `Skill` present in `AUTO_TOOLS`, `NORMAL_TOOLS`, **and** `PLAN_TOOLS`.
+- Unit: `Skill` present in `AUTO_TOOLS` **and** `PLAN_TOOLS` (the two
+  `--allowedTools` lists; `guarded` reuses `AUTO_TOOLS`).
 - Client: autocomplete opens on a leading `/`, filters by query, inserts the
   selected skill name.
 
@@ -183,14 +252,21 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
   (Blocker 1 / change #1)
 - `src/server/session/claude.ts` — `--allowedTools` allowlists (Blocker 2 /
   change #2)
-- `src/server/orchestrator/services/skills.ts` — `listSkills()` project scan
-  (change #4)
+- `src/server/orchestrator/services/skills.ts` — `listSkills()` host-side
+  project scan; Codex branch must move from `.codex/prompts/*.md` to
+  `.codex/skills/*/SKILL.md` (changes #4 / #5)
+- `src/server/session/session-worker.ts` — NEW endpoint for change #5(b):
+  scans the container's `~/.codex/skills/**/SKILL.md` for built-in skills (not
+  orchestrator-reachable via FS), returned over HTTP and merged into the route
+- `src/server/shared/types/domain-types.ts` — `SkillInfo` (`source` discriminant);
+  the `.codex/prompts` doc comment needs refreshing in change #5(d)
 - `src/server/orchestrator/api-routes-files.ts` — `GET /api/sessions/:id/skills`
   route (change #4)
 - `src/client/components/SkillAutoComplete.tsx` — `/` autocomplete menu, plus
   the wiring in `MessageInput.tsx` and `useFileStore.fetchSkills` (change #3)
-- `src/server/session/agents/codex-adapter.ts` — Codex prompt expansion
-  fallback if `codex exec` doesn't expand `/prompt-name` (change #5)
+- `src/server/session/agents/codex-adapter.ts` — **no change needed** for
+  Codex skills (catalog injection is handled by `codex exec` itself); listed
+  only to record that the originally-planned inlining was dropped (change #5)
 - `src/client/components/MessageInput.tsx`, `FileAutoComplete.tsx` — `/`
   autocomplete (change #3)
 - `docs/132-slash-commands/plan.md` — the broader slash-command layer this
@@ -204,12 +280,26 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
   (see change #2).
 - **Discovery lists project + bundled skills** — filesystem scan plus the
   per-backend `AgentCapabilities` set (see change #4).
-- **Both backends in scope** — Claude works via the CLI's own expansion;
-  Codex requires adapter-level inlining (verified: `codex exec` does not
-  expand `/prompt-name`), sequenced last (see change #5).
+- **Both backends in scope** — Claude works via the CLI's own `/skill`
+  expansion; Codex works via its native Agent Skills catalog injection (no
+  inlining), scanning `.codex/skills/*/SKILL.md` and invoking with `$name`
+  (see change #5).
+- **Codex skills, not custom prompts** — `.codex/prompts/*.md` is deprecated
+  upstream and does not expand headless; ShipIt targets `.codex/skills/` and
+  relies on `codex exec`'s automatic `<skills_instructions>` injection.
+- **Codex menu lists project + built-in skills** — both project
+  `.codex/skills/*/SKILL.md` (tagged `source: "project"`) and Codex's built-in
+  `~/.codex/skills/*` system skills (tagged `source: "bundled"`) are surfaced.
+  Both are `SKILL.md` scans (no `AgentCapabilities` map needed, unlike Claude's
+  bundled skills), **but they run in different processes**: project skills are
+  scanned host-side in the orchestrator (workspace is bind-mounted); built-ins
+  must be scanned by a session-worker endpoint inside the container (`~/.codex`
+  is container-only and not orchestrator-reachable over the HTTP link). See
+  change #5.
 
 ## Open questions
 
-- Codex prompt arg semantics: how should positional args / `$ARGUMENTS` from
-  `/myprompt foo bar` be substituted when inlining? Match Codex's REPL
-  behavior so a prompt authored for the REPL behaves identically headless.
+- _(Resolved)_ ~~Codex prompt arg semantics / `$ARGUMENTS` substitution~~ — moot
+  under the catalog-injection model: Codex reads `SKILL.md` itself and sees the
+  user's literal text (including trailing args), so there is no substitution
+  step to define.
