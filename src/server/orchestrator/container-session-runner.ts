@@ -30,7 +30,7 @@ import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo } from "../s
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup } from "./session-runner.js";
 import { runSystemTurn } from "./session-runner.js";
 import type { SSEEvent } from "./sse-client.js";
-import { workerPost, workerGet, workerInstall, workerPushAgentSecrets } from "./worker-http.js";
+import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } from "./service-manager.js";
@@ -696,6 +696,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Write to the agent's stdin on the worker. */
   async writeAgentStdin(data: string): Promise<void> {
     await workerPost(this.workerUrl, "/agent/stdin", { data });
+  }
+
+  /** Inject a user message into the running streaming agent (live steering, docs/140). */
+  async sendAgentMessage(text: string): Promise<void> {
+    await workerPostMessage(this.workerUrl, text);
   }
 
   // --- Worker communication: terminal ---

@@ -29,6 +29,7 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
     toolNames: [] as string[],
     models: [] as string[],
     supportsReview: true,
+    supportsSteering: false,
   };
 
   runCalled = false;
@@ -36,6 +37,7 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
   killed = false;
   interrupted = false;
   stdinData: string[] = [];
+  readonly isStreaming = false;
 
   run(params: AgentRunParams): void {
     this.runCalled = true;
@@ -44,6 +46,10 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
 
   writeStdin(data: string): void {
     this.stdinData.push(data);
+  }
+
+  sendUserMessage(text: string): void {
+    this.writeStdin(text);
   }
 
   interrupt(): void {

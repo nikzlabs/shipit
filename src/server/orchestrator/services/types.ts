@@ -20,6 +20,10 @@ export interface AgentInfo {
    */
   supportsReview: boolean;
   /**
+   * Whether this agent supports live steering (docs/140).
+   */
+  supportsSteering: boolean;
+  /**
    * Permission modes this agent supports (docs/138). The client uses this to
    * gate its agent-aware mode selector (e.g. only offer `guarded` when present).
    */
@@ -35,6 +39,11 @@ export interface GlobalSettings {
   agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
   autoCreatePr: boolean;
+  /**
+   * When true and agent.supportsSteering, mid-turn messages steer the running
+   * agent instead of being queued. (docs/140)
+   */
+  liveSteering: boolean;
 }
 
 export interface GitHubStatus {

@@ -702,6 +702,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       id: a.id, name: a.name, installed: a.installed,
       authConfigured: a.authConfigured, models: a.capabilities.models,
       supportsReview: a.capabilities.supportsReview,
+      supportsSteering: a.capabilities.supportsSteering,
       supportedPermissionModes: a.capabilities.supportedPermissionModes,
     })),
     defaultAgentId,

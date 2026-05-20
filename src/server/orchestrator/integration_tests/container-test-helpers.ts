@@ -23,6 +23,7 @@ export class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements
     toolNames: [] as string[],
     models: [] as string[],
     supportsReview: true,
+    supportsSteering: false,
   };
 
   runCalled = false;
@@ -31,11 +32,14 @@ export class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements
   interrupted = false;
   stdinData: string[] = [];
 
+  readonly isStreaming = false;
+
   run(params: AgentRunParams): void {
     this.runCalled = true;
     this.lastParams = params;
   }
   writeStdin(data: string): void { this.stdinData.push(data); }
+  sendUserMessage(text: string): void { this.writeStdin(text); }
   interrupt(): void { this.interrupted = true; }
   kill(): void { this.killed = true; }
 }

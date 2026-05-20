@@ -37,6 +37,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       models: ["sonnet", "opus", "haiku"],
       supportsReview: true,
+      supportsSteering: true,
     },
   },
   {
@@ -64,6 +65,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
         "gpt-5.2",
       ],
       supportsReview: false,
+      supportsSteering: true,
     },
   },
 ];

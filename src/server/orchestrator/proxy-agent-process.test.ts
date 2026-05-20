@@ -6,6 +6,7 @@ function makeRunner(overrides: Partial<ProxyAgentRunner> = {}): ProxyAgentRunner
   return {
     _startAgentViaProxy: () => Promise.resolve(),
     writeAgentStdin: () => Promise.resolve(),
+    sendAgentMessage: () => Promise.resolve(),
     interruptAgentOnWorker: () => Promise.resolve(),
     killAgentOnWorker: () => Promise.resolve(),
     ...overrides,

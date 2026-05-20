@@ -42,6 +42,12 @@ export interface AgentCapabilities {
    * future adapter can satisfy both, flip this on.
    */
   supportsReview: boolean;
+  /**
+   * Whether the agent supports live steering — injecting user messages mid-turn
+   * or starting next turns without respawning. Claude uses --input-format
+   * stream-json; Codex uses turn/steer. (docs/140)
+   */
+  supportsSteering: boolean;
 }
 
 // ---- Normalized event schema ----
@@ -202,6 +208,11 @@ export interface AgentRunParams {
    * enforce PR creation. Claude-only. See docs/129-stop-hook-pr-enforcement/plan.md.
    */
   autoCreatePr?: boolean;
+  /**
+   * When true, the Claude adapter spawns with --input-format stream-json
+   * for live steering. Ignored by non-streaming adapters. (docs/140)
+   */
+  useStreaming?: boolean;
 }
 
 // ---- AgentProcess interface ----
@@ -237,6 +248,18 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   run(params: AgentRunParams): void;
   /** Write data to the running process's stdin. */
   writeStdin(data: string): void;
+  /**
+   * Inject a user message into the running turn (live steering) or send the
+   * next message on a persistent streaming process. For non-streaming adapters
+   * defaults to writeStdin. (docs/140)
+   */
+  sendUserMessage(text: string, opts?: { images?: ImageAttachment[] }): void;
+  /**
+   * True when this adapter owns a persistent streaming process (--input-format
+   * stream-json for Claude). Post-turn lifecycle differs: done fires only on
+   * process exit, not on turn end. (docs/140)
+   */
+  readonly isStreaming: boolean;
   /** Interrupt the running process (Ctrl+C equivalent). Falls back to kill. */
   interrupt(): void;
   /** Kill the running process. */

@@ -181,6 +181,11 @@ export interface WsGlobalSettings {
      */
     supportsReview: boolean;
     /**
+     * Whether this agent supports live steering (docs/140) — injecting user
+     * messages into a running turn without queuing.
+     */
+    supportsSteering: boolean;
+    /**
      * Permission modes this agent supports (docs/138). Drives the client's
      * agent-aware mode selector — e.g. `guarded` is only offered when this
      * array includes it. Codex reports `[]` (no permission modes).
@@ -188,6 +193,8 @@ export interface WsGlobalSettings {
     supportedPermissionModes: PermissionMode[];
   }[];
   defaultAgentId: AgentId;
+  /** When true, mid-turn messages steer the running agent. (docs/140) */
+  liveSteering: boolean;
 }
 
 // ---- Template messages ----
@@ -224,6 +231,17 @@ export interface WsQueueUpdated {
   queue: { text: string; position: number }[];
   /** Text of the message that was just dequeued for execution (absent on cancel/clear). */
   dequeued?: string;
+}
+
+/**
+ * Server → Client: a user message was steered to the running agent (live
+ * steering active). The message was injected mid-turn rather than queued.
+ * (docs/140)
+ */
+export interface WsMessageSteered {
+  type: "message_steered";
+  text: string;
+  sessionId: string;
 }
 
 // ---- Diff review messages (server → client) ----
@@ -271,6 +289,11 @@ export interface WsAgentListMessage {
      * review" button shows up in the file-preview modal.
      */
     supportsReview: boolean;
+    /**
+     * Whether this agent supports live steering (docs/140) — injecting user
+     * messages into a running turn without queuing.
+     */
+    supportsSteering: boolean;
     /**
      * Permission modes this agent supports (docs/138). Drives the client's
      * agent-aware mode selector — e.g. `guarded` is only offered when this
@@ -751,6 +774,7 @@ export type WsServerMessage =
   | WsTerminalReconnecting
   | WsMessageQueued
   | WsQueueUpdated
+  | WsMessageSteered
   | WsAgentListMessage
   | WsAgentInterrupted
   | WsContainerRestarting

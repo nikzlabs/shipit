@@ -423,6 +423,7 @@ export class FakeClaudeProcess extends EventEmitter {
     toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     models: ["claude-sonnet-4-20250514"],
     supportsReview: true,
+    supportsSteering: false,
   };
 
   public runCalled = false;
@@ -435,6 +436,7 @@ export class FakeClaudeProcess extends EventEmitter {
   public killed = false;
   public interrupted = false;
   public stdinData: string[] = [];
+  public readonly isStreaming = false;
 
   /** Override emit to auto-translate raw Claude events → AgentEvent. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -474,6 +476,10 @@ export class FakeClaudeProcess extends EventEmitter {
 
   writeStdin(data: string) {
     this.stdinData.push(data);
+  }
+
+  sendUserMessage(text: string) {
+    this.writeStdin(text);
   }
 
   /**
