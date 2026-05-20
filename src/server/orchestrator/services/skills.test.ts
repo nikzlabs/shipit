@@ -72,11 +72,15 @@ describe("listSkills", () => {
     expect(skills.map((s) => s.name)).toEqual(["real"]);
   });
 
-  it("scans Codex prompts from .codex/prompts/*.md (filename is the name)", async () => {
-    const dir = path.join(tmpDir, ".codex", "prompts");
+  function writeCodexSkill(name: string, body: string) {
+    const dir = path.join(tmpDir, ".codex", "skills", name);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "deploy.md"), `---\ndescription: Deploy it\n---\nbody`);
-    fs.writeFileSync(path.join(dir, "review.md"), `no frontmatter`);
+    fs.writeFileSync(path.join(dir, "SKILL.md"), body);
+  }
+
+  it("scans Codex skills from .codex/skills/<name>/SKILL.md", async () => {
+    writeCodexSkill("deploy", `---\nname: deploy\ndescription: Deploy it\n---\nbody`);
+    writeCodexSkill("review", `no frontmatter`);
     const skills = await listSkills(tmpDir, "codex");
     expect(skills).toEqual([
       { name: "deploy", description: "Deploy it", source: "project" },
@@ -84,10 +88,20 @@ describe("listSkills", () => {
     ]);
   });
 
-  it("does not cross backends — Claude agent ignores .codex/prompts", async () => {
-    const dir = path.join(tmpDir, ".codex", "prompts");
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "deploy.md"), "body");
+  it("excludes Codex skills that opt out with user-invocable: false", async () => {
+    writeCodexSkill("hidden", `---\nname: hidden\nuser-invocable: false\n---\nbody`);
+    writeCodexSkill("shown", `---\nname: shown\n---\nbody`);
+    const skills = await listSkills(tmpDir, "codex");
+    expect(skills.map((s) => s.name)).toEqual(["shown"]);
+  });
+
+  it("does not cross backends — Claude agent ignores .codex/skills", async () => {
+    writeCodexSkill("deploy", "body");
     expect(await listSkills(tmpDir, "claude")).toEqual([]);
+  });
+
+  it("does not cross backends — Codex agent ignores .claude/skills", async () => {
+    writeClaudeSkill("claude-only", `name: claude-only`);
+    expect(await listSkills(tmpDir, "codex")).toEqual([]);
   });
 });

@@ -409,6 +409,23 @@ describe("MessageInput", () => {
       fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } });
       expect(screen.queryByTestId("skill-autocomplete")).not.toBeInTheDocument();
     });
+
+    it("opens on a leading slash for Codex but displays the $ token", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex" />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "/dep", selectionStart: 4 } });
+      const items = screen.getAllByTestId("skill-autocomplete-item");
+      expect(items).toHaveLength(1);
+      expect(items[0]).toHaveTextContent("$deploy");
+    });
+
+    it("inserts $name for Codex instead of /name", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex" />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "/rev", selectionStart: 4 } });
+      fireEvent.click(screen.getByText("$review"));
+      expect(textarea.value).toBe("$review ");
+    });
   });
 
 });

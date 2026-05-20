@@ -675,7 +675,7 @@ export default function App() {
     saveAgentId(agentId);
     useUiStore.getState().setActiveAgentId(agentId);
     send({ type: "set_agent", agentId });
-    // Skills are per-backend (Claude scans .claude/skills, Codex .codex/prompts),
+    // Skills are per-backend (Claude scans .claude/skills, Codex .codex/skills),
     // so re-fetch when the active agent switches.
     const sid = useSessionStore.getState().sessionId;
     if (sid) void useFileStore.getState().fetchSkills(sid, agentId).catch(() => {});
