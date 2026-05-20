@@ -83,10 +83,10 @@ describe("Settings", () => {
   });
 });
 
-describe("Settings - Agent tab", () => {
-  it("shows Agent tab by default", () => {
+describe("Settings - Agent → Claude tab", () => {
+  it("shows Claude tab by default", () => {
     render(<Settings {...defaultProps} />);
-    const tab = screen.getByRole("tab", { name: "Agent" });
+    const tab = screen.getByRole("tab", { name: "Claude" });
     expect(tab).toHaveAttribute("data-state", "active");
   });
 
@@ -107,16 +107,19 @@ describe("Settings - Agent tab", () => {
     expect(screen.getByText("Not authenticated")).toBeInTheDocument();
   });
 
-  it("shows API key input when authenticated (showApiKeyWhenAuthed)", () => {
-    render(<Settings {...defaultProps} />);
+  it("exposes API key fallback via a collapsible disclosure when unauthenticated", async () => {
+    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    expect(screen.queryByTestId("claude-api-key-input")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("claude-toggle-api-key"));
     const input = screen.getByTestId("claude-api-key-input");
     expect(input).toBeInTheDocument();
     expect(input).toHaveAttribute("type", "password");
   });
 
-  it("calls onApiKey when API key is submitted", async () => {
+  it("calls onApiKey when API key is submitted via the disclosure", async () => {
     const onApiKey = vi.fn();
-    render(<Settings {...defaultProps} onApiKey={onApiKey} />);
+    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} onApiKey={onApiKey} />);
+    await userEvent.click(screen.getByTestId("claude-toggle-api-key"));
     fireEvent.change(screen.getByTestId("claude-api-key-input"), { target: { value: "sk-ant-test123" } });
     await userEvent.click(screen.getByTestId("claude-api-key-submit"));
     await waitFor(() => expect(onApiKey).toHaveBeenCalledWith("sk-ant-test123"));
@@ -130,19 +133,19 @@ describe("Settings - Agent tab", () => {
     expect(link).toHaveAttribute("target", "_blank");
   });
 
-  it("shows Clear API Key button when authenticated", () => {
+  it("shows Clear API key button when authenticated", () => {
     render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("claude-clear-api-key")).toHaveTextContent("Clear API Key");
+    expect(screen.getByTestId("claude-clear-api-key")).toHaveTextContent("Clear API key");
   });
 
-  it("calls onClearApiKey when Clear API Key is clicked", async () => {
+  it("calls onClearApiKey when Clear API key is clicked", async () => {
     const onClearApiKey = vi.fn();
     render(<Settings {...defaultProps} onClearApiKey={onClearApiKey} />);
     await userEvent.click(screen.getByTestId("claude-clear-api-key"));
     expect(onClearApiKey).toHaveBeenCalledOnce();
   });
 
-  it("does not show Clear API Key when not authenticated", () => {
+  it("does not show Clear API key when not authenticated", () => {
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} authUrl="https://auth.example.com" />);
     expect(screen.queryByTestId("claude-clear-api-key")).not.toBeInTheDocument();
   });
@@ -346,7 +349,7 @@ describe("Settings - Instructions tab", () => {
   });
 });
 
-describe("Settings - Codex agent section", () => {
+describe("Settings - Agent → Codex tab", () => {
   const codexInstalled = {
     id: "codex",
     name: "Codex",
@@ -356,20 +359,33 @@ describe("Settings - Codex agent section", () => {
     supportsReview: false,
   };
 
-  it("shows CodexAuthCard when codex is in agentList", () => {
+  async function switchToCodexTab() {
+    await userEvent.click(screen.getByTestId("settings-tab-agent-codex"));
+  }
+
+  it("shows the Codex sub-tab when codex is in agentList", () => {
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
-    expect(screen.getByTestId("codex-auth-card")).toBeInTheDocument();
-    expect(screen.getByText("Codex")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-tab-agent-codex")).toBeInTheDocument();
   });
 
-  it("does not show CodexAuthCard when agentList has no codex", () => {
+  it("hides the Codex sub-tab when agentList has no codex", () => {
     render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
-    expect(screen.queryByTestId("codex-auth-card")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-tab-agent-codex")).not.toBeInTheDocument();
+  });
+
+  it("renders CodexAuthCard inside the Codex sub-tab", async () => {
+    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    await switchToCodexTab();
+    const card = screen.getByTestId("codex-auth-card");
+    expect(card).toBeInTheDocument();
+    // Status badge inside the card shows the agent name.
+    expect(card).toHaveTextContent("Codex");
   });
 
   it("calls onSetAgentEnv when codex API key is submitted", async () => {
     const onSetAgentEnv = vi.fn();
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
+    await switchToCodexTab();
     // The API key input is collapsed by default — feature 119 promotes the
     // ChatGPT subscription flow as the primary affordance. Expand the
     // disclosure first.
@@ -388,6 +404,7 @@ describe("Settings - Codex agent section", () => {
         onStartCodexDeviceAuth={onStartCodexDeviceAuth}
       />,
     );
+    await switchToCodexTab();
     await userEvent.click(screen.getByTestId("codex-start-device-auth"));
     expect(onStartCodexDeviceAuth).toHaveBeenCalledTimes(1);
   });
@@ -463,6 +480,14 @@ describe("Settings - Advanced tab", () => {
 });
 
 describe("Settings - Sidebar groups", () => {
+  it("renders Agent heading", () => {
+    render(<Settings {...defaultProps} />);
+    // The Agent group header is rendered as plain text in the sidebar (the
+    // sub-tabs underneath are labelled "Claude" / "Codex").
+    const headings = screen.getAllByText("Agent");
+    expect(headings.length).toBeGreaterThan(0);
+  });
+
   it("renders General heading", () => {
     render(<Settings {...defaultProps} />);
     expect(screen.getByText("General")).toBeInTheDocument();
@@ -471,6 +496,11 @@ describe("Settings - Sidebar groups", () => {
   it("renders Project heading", () => {
     render(<Settings {...defaultProps} />);
     expect(screen.getByText("Project")).toBeInTheDocument();
+  });
+
+  it("renders Claude sub-tab in sidebar", () => {
+    render(<Settings {...defaultProps} />);
+    expect(screen.getByTestId("settings-tab-agent-claude")).toBeInTheDocument();
   });
 
   it("renders Deployments tab in sidebar", () => {
@@ -504,44 +534,44 @@ describe("Settings - Deployments tab", () => {
 });
 
 describe("Settings - Tab switching", () => {
-  it("Agent tab is selected by default", () => {
+  it("Agent → Claude tab is selected by default", () => {
     render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("claude-api-key-input")).toBeInTheDocument();
+    expect(screen.getByTestId("claude-auth-card")).toBeInTheDocument();
   });
 
   it("clicking GitHub tab switches to GitHub section", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "GitHub" }));
     expect(screen.getByTestId("github-token-form")).toBeInTheDocument();
-    expect(screen.queryByTestId("claude-api-key-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
   it("clicking Git tab switches to git section", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Git" }));
     expect(screen.getByTestId("settings-git-name")).toBeInTheDocument();
-    expect(screen.queryByTestId("claude-api-key-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
   it("clicking Instructions tab switches to instructions section", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
     expect(screen.getByTestId("settings-textarea")).toBeInTheDocument();
-    expect(screen.queryByTestId("claude-api-key-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
   it("clicking Advanced tab switches to advanced section", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Advanced" }));
     expect(screen.getByTestId("settings-reset")).toBeInTheDocument();
-    expect(screen.queryByTestId("claude-api-key-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
-  it("clicking Agent tab switches back", async () => {
+  it("clicking Claude tab switches back", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "GitHub" }));
-    await userEvent.click(screen.getByRole("tab", { name: "Agent" }));
-    expect(screen.getByTestId("claude-api-key-input")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Claude" }));
+    expect(screen.getByTestId("claude-auth-card")).toBeInTheDocument();
     expect(screen.queryByTestId("github-token-form")).not.toBeInTheDocument();
   });
 });

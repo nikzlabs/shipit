@@ -28,7 +28,8 @@ type RightTab =
 type MobilePanel = "chat" | "preview";
 
 type SettingsTab =
-  | "agent"
+  | "agent-claude"
+  | "agent-codex"
   | "github"
   | "git"
   | "instructions"
