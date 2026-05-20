@@ -154,6 +154,73 @@ function pickStringVal(obj: Record<string, unknown>, key: string): string | null
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 
+/**
+ * Claim namespace OpenAI stamps onto the ChatGPT id/access tokens. The
+ * object underneath carries `chatgpt_account_id` and `chatgpt_plan_type`,
+ * which is how we recover the account id + subscription tier without a
+ * separate API call.
+ */
+const OPENAI_AUTH_CLAIM = "https://api.openai.com/auth";
+
+/** Decode a JWT's payload segment. Returns null on any malformed input. */
+function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
+  const parts = jwt.split(".");
+  if (parts.length < 2) return null;
+  try {
+    const json = Buffer.from(parts[1], "base64url").toString("utf-8");
+    const parsed = JSON.parse(json) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read a single field out of the `https://api.openai.com/auth` claim of
+ * the id/access token JWT. Probes both `tokens.*` and top-level token
+ * fields so it tolerates the old and new auth.json shapes.
+ */
+function readAuthClaim(obj: Record<string, unknown>, key: string): unknown {
+  const tokens =
+    obj.tokens && typeof obj.tokens === "object"
+      ? (obj.tokens as Record<string, unknown>)
+      : obj;
+  for (const tokKey of ["id_token", "access_token", "idToken", "accessToken"]) {
+    const jwt = pickStringVal(tokens, tokKey) ?? pickStringVal(obj, tokKey);
+    if (!jwt) continue;
+    const payload = decodeJwtPayload(jwt);
+    const auth = payload?.[OPENAI_AUTH_CLAIM];
+    if (auth && typeof auth === "object") {
+      const v = (auth as Record<string, unknown>)[key];
+      if (v !== undefined && v !== null) return v;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract the subscription tier (e.g. "Plus", "Pro") from a parsed
+ * `auth.json` by reading the `chatgpt_plan_type` JWT claim. The usage
+ * endpoint may or may not echo a plan, so — like Claude, which reads its
+ * tier from the credentials file rather than the `/usage` body — we source
+ * it from the token. That keeps the tier visible in the tooltip even when
+ * the usage fetch itself fails. Exported for unit tests.
+ */
+export function extractCodexPlan(obj: Record<string, unknown>): string | null {
+  const raw = readAuthClaim(obj, "chatgpt_plan_type");
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  const known: Record<string, string> = {
+    free: "Free",
+    plus: "Plus",
+    pro: "Pro",
+    business: "Business",
+    team: "Team",
+    enterprise: "Enterprise",
+  };
+  const lower = raw.toLowerCase();
+  return known[lower] ?? raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
 /** True iff `auth.json` exists and has non-zero size. */
 function authFileExists(): boolean {
   try {
@@ -240,7 +307,12 @@ export class CodexAuthManager extends EventEmitter {
    *   "not-authenticated" }` when nothing usable is present.
    */
   async getAccessToken(): Promise<
-    | { token: string; source: "file"; expiresAt: number | null }
+    | {
+        token: string;
+        source: "file";
+        expiresAt: number | null;
+        plan: string | null;
+      }
     | { token: null; reason: "api-key" | "not-authenticated" }
   > {
     if (this.checkAuthFile()) {
@@ -249,7 +321,12 @@ export class CodexAuthManager extends EventEmitter {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         const token = extractCodexAccessToken(parsed);
         if (token) {
-          return { token, source: "file", expiresAt: extractCodexExpiresAt(parsed) };
+          return {
+            token,
+            source: "file",
+            expiresAt: extractCodexExpiresAt(parsed),
+            plan: extractCodexPlan(parsed),
+          };
         }
       } catch (err) {
         console.warn(

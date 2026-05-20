@@ -136,11 +136,31 @@ export interface AgentResultEvent {
   permissionDenials?: { toolName: string; toolUseId?: string; toolInput?: unknown }[];
 }
 
+/**
+ * Subscription rate-limit snapshot pushed by an agent backend mid-turn.
+ *
+ * Codex emits this from the `account/rateLimits/updated` JSON-RPC
+ * notification its app-server streams — the same numbers it uses to draw
+ * its own `/status` line. The orchestrator routes it into the
+ * subscription-limits badge (see `CodexLimitsProvider`). Percentages are
+ * 0–100; `resetAt` is an ISO timestamp. Either window may be null if the
+ * backend only reported one. Claude has no equivalent (its limits come
+ * from a polled HTTP endpoint), so today only Codex emits this.
+ */
+export interface AgentRateLimitsEvent {
+  type: "agent_rate_limits";
+  /** Rolling short-window quota (Codex: 5h). */
+  session: { usedPct: number; resetAt: string } | null;
+  /** Weekly quota. */
+  weekly: { usedPct: number; resetAt: string } | null;
+}
+
 export type AgentEvent =
   | AgentInitEvent
   | AgentAssistantEvent
   | AgentToolResultEvent
-  | AgentResultEvent;
+  | AgentResultEvent
+  | AgentRateLimitsEvent;
 
 /** Unified content blocks (text or tool use). */
 export type AgentContentBlock =
