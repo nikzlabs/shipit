@@ -19,12 +19,22 @@ let app: FastifyInstance;
 let sessionManager: SessionManager;
 let repoStore: RepoStore;
 let dbManager: DatabaseManager;
+let origGitTerminalPrompt: string | undefined;
 
 beforeEach(async () => {
   dbManager = createTestDatabaseManager();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-repo-test-"));
   sessionManager = new SessionManager(dbManager);
   repoStore = new RepoStore(dbManager);
+
+  // Prevent git from prompting for credentials (hangs in CI/test). The
+  // claim-session slow path now re-clones a missing bare cache from the
+  // remote (ensureBareCache); against a nonexistent repo that would block
+  // on a credential prompt without this. GIT_TERMINAL_PROMPT=0 makes it
+  // fail fast so the route returns 500.
+  origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
+  process.env.GIT_TERMINAL_PROMPT = "0";
+
   const credentialStore = createTestCredentialStore(tmpDir);
 
   app = await buildApp({
@@ -42,6 +52,11 @@ beforeEach(async () => {
 afterEach(async () => {
   await app.close();
   dbManager.close();
+  if (origGitTerminalPrompt === undefined) {
+    delete process.env.GIT_TERMINAL_PROMPT;
+  } else {
+    process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
+  }
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
