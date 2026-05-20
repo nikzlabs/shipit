@@ -54,7 +54,7 @@ Exception worth noting: Claude's `/init`, `/review`, `/security-review`
 |---|---|---|
 | **1. ShipIt already owns the surface** | Intercept the `/command` client-side, route to the existing ShipIt feature. ShipIt's native version is canonical; the slash command is an alias. | §1/§2 — already inline |
 | **2. Maps to a spawn arg / session setting** | Expose as a session setting *and* accept the command as a shortcut that sets it. Implemented in the agent adapters' spawn args. | Per-turn CLI flags translate cleanly |
-| **3. Bundled skills (Claude only)** | Pass through — these *are* prompts and already work via `-p`. Needs only `/` autocomplete for discoverability. | Same mechanism as custom skills |
+| **3. Bundled skills (Claude only)** | Skill invocation via `/skill-name`. **Carved out into doc 138** — the prompt must reach the CLI with the slash token at index 0, and `Skill` must be allowlisted; neither holds today. | Same mechanism as custom skills |
 | **4. Stateful agent-behavior ShipIt doesn't model yet** | Build a native feature: persist on session metadata, inject into agent context each turn. | The real product work — `/goal` |
 | **5. Drop** | Not exposed. CLI-environment-specific, provider-cloud-specific, or conflicts with ShipIt's identity. | No meaning in a chat-shaped IDE |
 
@@ -74,9 +74,9 @@ Exception worth noting: Claude's `/init`, `/review`, `/security-review`
 - **Bucket 2 — spawn arg / session setting:** `/model` · `/effort` ·
   `/plan` (`--permission-mode plan`) · `/fast` · `/sandbox` · `/add-dir`
   (mostly N/A — ShipIt controls the workspace)
-- **Bucket 3 — bundled skills, pass through + autocomplete:** `/loop` ·
+- **Bucket 3 — skill invocation via `/skill-name` (see doc 138):** `/loop` ·
   `/batch` · `/simplify` · `/debug` · `/claude-api` ·
-  `/fewer-permission-prompts` · `/btw`
+  `/fewer-permission-prompts` · `/btw`, plus any custom/project skill
 - **Bucket 4 — needs native feature:** `/goal` · `/compact` `/context`
   (partly `ContextDial`, but the compaction *action* needs a native
   trigger) · `/recap` `/insights` `/export`
@@ -155,7 +155,8 @@ Before `runAgentWithMessage`:
   not start an agent turn.
 - Bucket 2 → apply the session-setting change, optionally continue with
   the remaining text as a prompt.
-- Bucket 3 → pass through unchanged.
+- Bucket 3 → skill invocation, handled in doc 138 (preserve the leading
+  `/`, allowlist `Skill`); pass the text through unchanged otherwise.
 - Bucket 4 → route to the native feature handler.
 - Unrecognized `/foo` → warn in the composer instead of sending a
   literal prompt to the agent.
@@ -174,8 +175,9 @@ The one genuinely new capability:
 
 ## Build order
 
-1. `/` autocomplete in the composer (Bucket 3 + recognized names).
-   Discoverability, ships fast, low risk.
+1. Skill invocation + `/` autocomplete — **see doc 138** (the Bucket 3
+   slice). Discoverability, ships fast, low risk; the autocomplete surface
+   it builds is shared by the recognized commands below.
 2. Agent-agnostic command registry + `AgentCapabilities` wiring.
 3. Bucket 1 interception in `send-message.ts` — recognized commands
    route to existing UI; unrecognized `/foo` warns.
