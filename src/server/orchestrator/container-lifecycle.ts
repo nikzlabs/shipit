@@ -18,6 +18,11 @@ import {
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import {
+  ensureSessionCredentialsScaffold,
+  perSessionCredentialsDir,
+  perSessionCredentialsSubpath,
+} from "./session-credentials.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -90,14 +95,24 @@ export function buildMounts(
     binds.push(`${hostWorkspaceDir}:${CONTAINER_WORKSPACE_DIR}:rw`);
   }
 
+  // docs/138 — mount the session's *private* credentials subtree at
+  // /credentials, never the shared root. The subtree lives under
+  // `<credentialsDir>/sessions/<sessionId>` and contains only the pinned
+  // agent's creds (populated on first turn) plus the shared `.gitconfig`. This
+  // is the cross-agent isolation boundary: a Claude session never sees `.codex`
+  // and vice versa.
   if (credentialsVolume) {
+    // Production: the credentials volume root maps to `config.credentialsDir`,
+    // so the per-session subtree is reachable via a Subpath mount.
     mounts.push({
       Type: "volume",
       Source: credentialsVolume,
       Target: "/credentials",
+      VolumeOptions: { Subpath: perSessionCredentialsSubpath(config.sessionId) },
     });
   } else {
-    binds.push(`${config.credentialsDir}:/credentials:rw`);
+    // Dev: bind the per-session subtree directly.
+    binds.push(`${perSessionCredentialsDir(config.credentialsDir, config.sessionId)}:/credentials:rw`);
   }
 
   // Mount the uploads directory for user-uploaded files.
@@ -219,6 +234,22 @@ export async function createContainer(
   // Ensure the dep cache directory exists on the host before mounting.
   if (config.depCacheDir) {
     fs.mkdirSync(config.depCacheDir, { recursive: true });
+  }
+
+  // docs/138 — create the session's private credentials subtree before the
+  // mount references it, and seed it with the shared `.gitconfig`. Warm/standby
+  // containers hit this too: they carry no agent creds while idle (the agent
+  // subtree is only copied in on first turn), satisfying the isolation goal.
+  // Best-effort: Docker auto-creates a missing bind/subpath source, and the
+  // first-turn provisioning re-creates the dir + copies `.gitconfig` anyway, so
+  // a non-writable credentials dir (e.g. in unit tests) must not block create.
+  try {
+    ensureSessionCredentialsScaffold(config.credentialsDir, config.sessionId);
+  } catch (err) {
+    console.warn(
+      `[containers] credentials scaffold failed for ${config.sessionId}:`,
+      err instanceof Error ? err.message : String(err),
+    );
   }
 
   const { binds, mounts, workspaceDir } = buildMounts(

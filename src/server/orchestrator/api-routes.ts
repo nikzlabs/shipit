@@ -57,6 +57,12 @@ export interface ApiDeps {
   credentialStore: CredentialStore;
   defaultAgentId: AgentId;
   workspaceDir: string;
+  /**
+   * docs/138 — source-of-truth credentials root (e.g. `/credentials`). Used by
+   * `fullReset` to drop all per-session credential subtrees. Omitted in
+   * runtimes without container credentials (tests, local mode).
+   */
+  credentialsDir?: string;
   usageManager: UsageManager;
   runnerRegistry: SessionRunnerRegistry;
   chatHistoryManager: ChatHistoryManager;

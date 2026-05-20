@@ -82,6 +82,19 @@ describe("SessionManager", () => {
     expect(mgr.delete("nonexistent")).toBe(false);
   });
 
+  it("docs/138: agentPinned defaults to false and is set by setAgentPinned", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("sess-1", "Pin me");
+    expect(mgr.get("sess-1")!.agentPinned).toBeUndefined();
+
+    mgr.setAgentId("sess-1", "claude");
+    mgr.setAgentPinned("sess-1");
+
+    const reloaded = new SessionManager(dbManager).get("sess-1")!;
+    expect(reloaded.agentId).toBe("claude");
+    expect(reloaded.agentPinned).toBe(true);
+  });
+
   it("persists sessions across manager instances", () => {
     const mgr1 = new SessionManager(dbManager);
     mgr1.track("sess-1", "Persisted");

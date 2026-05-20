@@ -9,7 +9,7 @@ You are running inside a Docker container managed by ShipIt.
 | `/workspace` | Project root. This is the git repo. Your working directory. |
 | `/uploads` | User-uploaded files (outside git, never committed). |
 | `/tmp` | Scratch space — use for temporary files, unpacking archives. |
-| `/credentials` | OAuth tokens (read-only to you, managed by ShipIt). Includes `~/.claude` (Anthropic OAuth) and `~/.codex` (OpenAI ChatGPT login). |
+| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, and vice versa. The agent is pinned on the first message and can't be changed afterward. |
 | `/dep-cache` | Shared npm/yarn/pnpm cache across sessions for the same repo. |
 
 ## Installed tools

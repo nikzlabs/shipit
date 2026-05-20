@@ -1,6 +1,7 @@
 ---
-status: planned
+status: done
 priority: medium
+description: Each session container only carries the credentials of its pinned agent — a Claude session never has .codex on disk, and vice versa.
 ---
 
 # Per-agent credential isolation
@@ -130,6 +131,70 @@ is the authoritative guard regardless; the UI disable is defense-in-depth + UX.
 - **Warm-pool teardown** of per-session credentials volumes for containers that are
   evicted from the pool unclaimed (never pinned) — should be a no-op cleanup since
   they were never populated, but verify they're labeled and reaped.
+
+## Implementation (shipped)
+
+The isolation is built on a **per-session credentials subtree**, not a separate
+Docker volume per session. This mirrors how the workspace volume is sub-pathed
+per session and avoids volume proliferation:
+
+- **`session-credentials.ts`** — pure fs helpers:
+  - `perSessionCredentialsDir(root, sid)` → `<root>/sessions/<sid>` (orchestrator
+    host path).
+  - `perSessionCredentialsSubpath(sid)` → `sessions/<sid>` (Docker `Subpath`).
+  - `ensureSessionCredentialsScaffold(root, sid)` — mkdir + copy the shared
+    `.gitconfig`. Called at container create (incl. warm/standby) so an idle
+    container carries **no agent creds**.
+  - `provisionAgentCredentials(root, sid, agentId)` — copy ONLY the pinned
+    agent's subtree (`.claude` + `.claude.json`, or `.codex`) plus a fresh
+    `.gitconfig`. `shipit-credentials.json` is deliberately **not** copied — the
+    agent gets its env via the 087/088 agent-env push, not by reading that file.
+  - `removeSessionCredentials` / `sessionCredentialsRoot` — teardown helpers.
+- **`container-lifecycle.ts`** — `createContainer` scaffolds the per-session dir;
+  `buildMounts` mounts `<credentialsDir>/sessions/<sid>` at `/credentials` (bind
+  in dev, volume `Subpath` in prod) instead of the shared root. The image's
+  `~/.claude` / `~/.codex` symlinks resolve into this private subtree.
+- **First-turn pin** — `runAgentWithMessage` (`agent-execution.ts`) pins the agent
+  on the first turn for *every* runner type (sets `agent_id` + `agent_pinned`),
+  and for container runners also provisions the agent subtree **before**
+  `/agent/start`. Write-once: skipped once `agentPinned` is set, so the CLI's
+  in-place writes to `.claude` are never clobbered.
+- **`set_agent` lock** — `index.ts` rejects a switch to a *different* agent once
+  `agentPinned` is set (re-selecting the same agent is a no-op). UI lock
+  (`ModelAgentSelector` disabled via `hasActiveSession`) is defense-in-depth.
+- **Schema** — migration 14 adds `sessions.agent_pinned`; `SessionManager`
+  exposes `setAgentPinned()` and surfaces `SessionInfo.agentPinned`.
+- **Cleanup** — `disk-janitor.ts` `sweepOrphanCredentialDirs` removes subtrees for
+  archived/untracked sessions on startup; `fullReset` drops the whole
+  `<credentialsDir>/sessions` tree (top-level source-of-truth creds preserved so
+  reset doesn't sign the user out).
+
+### Resolved open questions
+
+- **`.claude.json` / `shipit-credentials.json`** — `.claude.json` is Claude-only
+  and is copied for Claude sessions. `shipit-credentials.json` is **not** mounted
+  into session containers at all (it never needed to be — agent env arrives via
+  the agent-env push), which also shrinks the secret surface.
+- **Codex source-of-truth** — `.codex/` is copied straight from the credentials
+  root (where `codex login` writes it), same as Claude's `.claude/`.
+- **Warm-pool teardown** — unclaimed warm sessions only ever get the `.gitconfig`
+  scaffold (no agent creds), and the janitor reaps the subtree once the session
+  is archived/deleted.
+
+### Known limitations
+
+- **`.gitconfig` token freshness** — the GitHub token is embedded in the copied
+  `.gitconfig` credential helper. It's refreshed at scaffold (container create)
+  and at pin (first turn), so it's current when the first push happens. A token
+  *rotated mid-session* won't propagate to the already-copied per-session
+  `.gitconfig` until the container is recycled. Orchestrator-side pushes always
+  use the live root `.gitconfig`, so only in-container agent `git push` is
+  affected — an accepted, rare edge case.
+- **In-flight containers across deploy** — containers created before this change
+  still mount the shared root; they pick up the per-session mount when recycled
+  (idle eviction / restart). Not a correctness regression (matches old behavior).
+- **Local/test mode** — no containers, so no per-session mount; the agent is
+  still pinned (so `set_agent` locks), but credential provisioning is a no-op.
 
 ## Out of scope
 
