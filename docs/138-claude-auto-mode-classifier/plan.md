@@ -263,18 +263,54 @@ would let Codex honor `plan`/`auto`; it still can't offer `guarded`.
       disabled-unavailable); `claude-adapter.test.ts` capability; remove `normal` test.
 - [ ] `npm run lint` + `npm run typecheck`.
 
+## Spike results — verified in a container (CLI 2.1.145, `--model sonnet`)
+
+Ran `claude -p … --permission-mode auto --output-format stream-json --verbose` directly
+in the session container. **Risks #1, #2, #3 below are resolved:**
+
+- **Headless activation works, no opt-in.** Exit 0; the turn ran to completion. The
+  `system`/`init` stream event reports **`"permissionMode": "auto"`** — this is the
+  authoritative detection signal that auto actually engaged. (Note: an earlier
+  `system`/`subtype:"status"` event reports `permissionMode:"default"` — ignore it; read
+  the `init` event.) This account/plan/model **supports** auto mode (no unavailable error).
+- **Classifier engages and blocks.** Prompted to append to `~/.bashrc`; the model attempted
+  the Bash call and it was **blocked**. The block surfaces two ways:
+  - `result.permission_denials[]` → `{ tool_name, tool_use_id, tool_input }` for each
+    blocked call. This is the array to count for the 3-consecutive / 20-total abort logic.
+  - The model receives a textual reason ("…blocked because `~/.bashrc` is flagged as a
+    sensitive file. You can either approve the permission when prompted, or run it
+    yourself…") and re-routes / reports. **A single block does NOT abort the turn**
+    (still exit 0).
+- **Allowlist interaction confirmed.** `--allowedTools "Bash"` did **not** pre-approve the
+  `.bashrc` write — auto mode drops the blanket `Bash` grant and routes it to the
+  classifier, exactly as documented. ⇒ **Reusing `AUTO_TOOLS` for `guarded` is correct.**
+- **Model self-refusal is separate from the classifier.** A `git push --force origin main`
+  prompt was refused by the model itself before any tool call (empty `permission_denials`).
+  Integration must not conflate model refusals with classifier denials — only
+  `permission_denials[]` represents a classifier block.
+- `claude auto-mode {config,defaults,critique}` subcommands exist and run locally (no
+  auth/token cost); `defaults`/`config` dump the allow / soft_deny / hard_deny rule sets —
+  useful for surfacing "why was this blocked" context inline.
+
+Reproduction is preserved conceptually above; scratch dirs were under `/tmp` (outside the
+repo) and cleaned up.
+
 ## Open questions / risks
 
-1. **Headless activation (highest risk).** Does `claude -p --permission-mode auto` enter
-   auto cleanly, or trip an opt-in/refusal? Spike in a container first; the UI design
-   depends on the answer.
-2. **Availability detection signal.** Exact stream/stderr/exit-code shape for "auto mode
-   unavailable" (non-transient) vs "cannot determine the safety" (transient) — capture in
-   the spike so detection isn't guesswork.
-3. **Allowlist interaction.** Confirm passing `--allowedTools` alongside
-   `--permission-mode auto` behaves as expected (blanket Bash dropped → classifier-gated)
-   and doesn't accidentally pre-approve things the classifier should see.
-4. **Model intersection.** Ensure the models ShipIt offers for Claude include at least one
+1. ~~**Headless activation.**~~ ✅ Resolved by spike: activates cleanly, `init` event
+   reports `permissionMode:"auto"`.
+2. **Availability "unavailable" signal (partially open).** This account *supports* auto, so
+   the spike could not capture the **non-transient unavailable** error shape (Pro plan /
+   admin-locked / unsupported model). Detection should be: treat `init.permissionMode ===
+   "auto"` as success; if a run requested auto but `init.permissionMode !== "auto"` (or the
+   CLI errors), classify as unavailable and fall back. Capture the exact error string when
+   we can test on a Pro account, or handle defensively via the init-field check.
+3. ~~**Allowlist interaction.**~~ ✅ Resolved: blanket Bash dropped → classifier-gated.
+4. **Abort-after-N-blocks (untested).** Docs say 3 consecutive / 20 total blocks abort a
+   `-p` session; a single block does not (verified). The multi-block abort path wasn't
+   exercised (would need 3+ forced blocks). Build the inline handler per docs and verify
+   later.
+5. **Model intersection.** Ensure the models ShipIt offers for Claude include at least one
    auto-mode-supported model (Sonnet 4.6 / Opus 4.6 / Opus 4.7); otherwise `guarded` is
    unavailable regardless of plan. Cross-check with the model lineup from commit
    `9b81f8f4c`.
