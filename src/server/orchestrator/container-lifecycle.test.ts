@@ -33,11 +33,24 @@ function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
 // ---------------------------------------------------------------------------
 
 describe("buildMounts", () => {
-  it("returns basic session + credentials bind mounts without optional dirs", () => {
+  it("returns basic session + per-session credentials bind mounts without optional dirs", () => {
     const result = buildMounts(baseConfig(), undefined, undefined);
     expect(result.binds).toContain("/workspace/sessions/sess-1:/workspace:rw");
-    expect(result.binds).toContain("/credentials:/credentials:rw");
+    // docs/138 — the container gets its PRIVATE credentials subtree, never the
+    // shared root, so a Claude session can't read Codex's creds and vice versa.
+    expect(result.binds).toContain("/credentials/sessions/sess-1:/credentials:rw");
+    expect(result.binds).not.toContain("/credentials:/credentials:rw");
     expect(result.mounts).toHaveLength(0);
+  });
+
+  it("docs/138: mounts the per-session credentials subpath when credentialsVolume is set", () => {
+    const result = buildMounts(baseConfig(), undefined, "shipit-credentials");
+    const credMount = result.mounts.find((m) => m.Target === "/credentials");
+    expect(credMount).toBeDefined();
+    expect(credMount!.Source).toBe("shipit-credentials");
+    expect(credMount!.VolumeOptions?.Subpath).toBe("sessions/sess-1");
+    // No whole-root bind/mount leaked in.
+    expect(result.binds).not.toContain("/credentials:/credentials:rw");
   });
 
   it("mounts depCacheDir at /dep-cache as bind mount when no volume", () => {

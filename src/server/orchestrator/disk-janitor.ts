@@ -79,6 +79,7 @@ import type { RepoStore } from "./repo-store.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { RepoGit } from "./repo-git.js";
 import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
+import { sessionCredentialsRoot } from "./session-credentials.js";
 
 export interface DiskJanitorDeps {
   sessionManager: SessionManager;
@@ -89,6 +90,14 @@ export interface DiskJanitorDeps {
   archivedWorkspaceDays?: number;
   /** Age threshold (days) for unreferenced repo/dep cache directories. */
   cacheDays?: number;
+  /**
+   * docs/138 — source-of-truth credentials root (e.g. `/credentials`). When
+   * provided, the janitor sweeps per-session credential subtrees under
+   * `<credentialsDir>/sessions/<id>` whose session is archived or no longer
+   * tracked, so provisioned agent credentials don't linger on disk. Omitted in
+   * tests / runtimes without container credentials.
+   */
+  credentialsDir?: string;
   /**
    * Shell-out hook for docker prune commands. Overridable for tests so we
    * never touch a real Docker daemon from unit tests. Resolves with the
@@ -119,6 +128,8 @@ export interface DiskJanitorResult {
   cachesRemoved: number;
   /** Remote `shipit/*` branches whose PR is merged and no live session uses them. */
   orphanBranchesRemoved: number;
+  /** Per-session credential subtrees removed (archived or untracked sessions). */
+  credentialDirsRemoved: number;
 }
 
 const DEFAULT_CACHE_DAYS = 30;
@@ -136,6 +147,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     workspacesRemoved: 0,
     cachesRemoved: 0,
     orphanBranchesRemoved: 0,
+    credentialDirsRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
 
@@ -171,6 +183,16 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
   }
 
+  if (deps.credentialsDir) {
+    try {
+      result.credentialDirsRemoved = await sweepOrphanCredentialDirs(
+        deps.sessionManager, deps.credentialsDir,
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] credential-dir sweep failed:", getMessage(err));
+    }
+  }
+
   if (
     deps.sweepOrphanBranches !== false
     && deps.githubAuthManager
@@ -195,9 +217,55 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     + `orphan-networks=${result.orphanNetworksRemoved} `
     + `workspaces=${result.workspacesRemoved} `
     + `caches=${result.cachesRemoved} `
-    + `orphan-branches=${result.orphanBranchesRemoved}`,
+    + `orphan-branches=${result.orphanBranchesRemoved} `
+    + `credential-dirs=${result.credentialDirsRemoved}`,
   );
   return result;
+}
+
+/**
+ * docs/138 — remove per-session credential subtrees under
+ * `<credentialsDir>/sessions/<id>` whose session is archived or no longer
+ * tracked in the DB. These hold copies of the pinned agent's credentials
+ * (provisioned on first turn); they should not outlive the session.
+ *
+ * Preserved: dirs for **active, non-archived** sessions — i.e. sessions still
+ * in `allIds()` and NOT in `listArchived()`. This keeps warm and idle-evicted
+ * sessions intact (their containers may resume) while reaping archived,
+ * deleted, and full-reset sessions. An archived session that's later
+ * unarchived simply re-provisions on its next first turn / container create.
+ *
+ * Returns the count of subtrees removed.
+ */
+async function sweepOrphanCredentialDirs(
+  sessionManager: SessionManager,
+  credentialsDir: string,
+): Promise<number> {
+  const root = sessionCredentialsRoot(credentialsDir);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(root);
+  } catch {
+    return 0; // No per-session credentials dir yet — nothing to sweep.
+  }
+
+  const tracked = new Set(sessionManager.allIds());
+  const archived = new Set(sessionManager.listArchived().map((s) => s.id));
+
+  let removed = 0;
+  for (const entry of entries) {
+    // Keep dirs for sessions that are still tracked AND not archived.
+    if (tracked.has(entry) && !archived.has(entry)) continue;
+    const full = path.join(root, entry);
+    try {
+      await fs.rm(full, { recursive: true, force: true });
+      removed += 1;
+      console.log(`[disk-janitor] removed orphan credentials dir ${full}`);
+    } catch (err) {
+      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
+    }
+  }
+  return removed;
 }
 
 /**

@@ -15,6 +15,7 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { CredentialStore } from "../credential-store.js";
 import { collectMcpAgentEnv } from "../secret-resolver.js";
+import { provisionAgentCredentials } from "../session-credentials.js";
 import { refreshExpiredMcpOAuthTokens } from "../services/mcp-oauth.js";
 
 /**
@@ -561,6 +562,31 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // failure is logged worker-side and never throws — so awaiting it here
   // just sequences the push ahead of `/agent/start` without adding a
   // failure path.
+  // docs/138 — pin the agent on the session's first turn. From here the agent
+  // is fixed for the session's life and `set_agent` is rejected server-side.
+  // For container sessions, also provision ONLY the pinned agent's credential
+  // subtree into the session's private credentials dir — cross-agent isolation,
+  // so the other agent's creds never land on disk in this session's container.
+  // Write-once (skipped after `agentPinned` is set): re-copying would clobber
+  // the CLI's in-place writes to `.claude`. Provisioning runs before
+  // `/agent/start` so the freshly-copied creds are present when the CLI
+  // authenticates; the per-session dir is already mounted, so the host-side
+  // write is visible in the container immediately — no remount needed.
+  if (capturedSessionId) {
+    const session = ctx.sessionManager.get(capturedSessionId);
+    if (session && !session.agentPinned) {
+      if (runner instanceof ContainerSessionRunner) {
+        try {
+          provisionAgentCredentials(ctx.credentialsDir, capturedSessionId, currentAgent.agentId);
+        } catch (err) {
+          console.warn("[credentials] provisioning failed:", getErrorMessage(err));
+        }
+      }
+      ctx.sessionManager.setAgentId(capturedSessionId, currentAgent.agentId);
+      ctx.sessionManager.setAgentPinned(capturedSessionId);
+    }
+  }
+
   if (runner instanceof ContainerSessionRunner) {
     await runner.tryPushAgentSecrets(
       selectAgentEnvForPush({

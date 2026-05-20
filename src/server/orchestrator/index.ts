@@ -567,6 +567,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       sessionManager,
       repoStore,
       stateDir,
+      credentialsDir,
       archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
       cacheDays: Number.isFinite(cacheDays) ? cacheDays : 30,
       githubAuthManager,
@@ -587,6 +588,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     credentialStore,
     defaultAgentId,
     workspaceDir,
+    credentialsDir,
     usageManager,
     runnerRegistry,
     chatHistoryManager,
@@ -999,7 +1001,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         repoStore, warmSessionForRepo, generateText,
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
-        workspaceDir, sessionsRoot, defaultAgentId,
+        workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
       };
 
@@ -1080,6 +1082,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           case "clear_logs": { terminalHandlers.handleClearLogs(ctx); return; }
           case "set_agent": {
             const agentId = msg.agentId;
+            // docs/138 — once the session has taken its first turn the agent is
+            // pinned for life: its credentials were provisioned into the
+            // per-session credentials dir and the other agent's creds are
+            // deliberately absent. Reject any switch to a *different* agent
+            // (re-selecting the same one is a harmless no-op). This is the
+            // authoritative guard; the UI also disables the picker on an active
+            // session as defense-in-depth.
+            if (activeAppSessionId) {
+              const pinnedSession = sessionManager.get(activeAppSessionId);
+              if (pinnedSession?.agentPinned && pinnedSession.agentId && pinnedSession.agentId !== agentId) {
+                send({
+                  type: "error",
+                  message: `This session is locked to ${pinnedSession.agentId} and the agent can't be changed after the first message.`,
+                });
+                return;
+              }
+            }
             const info = agentRegistry.get(agentId);
             if (!info) { send({ type: "error", message: `Unknown agent: ${agentId}` }); return; }
             if (!info.installed) { send({ type: "error", message: `${info.name} CLI is not installed` }); return; }

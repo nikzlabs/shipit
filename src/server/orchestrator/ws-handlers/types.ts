@@ -115,6 +115,12 @@ export interface AppCtx {
   workspaceDir: string;
   sessionsRoot: string;
   defaultAgentId: AgentId;
+  /**
+   * docs/138 — source-of-truth credentials root (e.g. `/credentials`). Used by
+   * the first-turn hook to provision the pinned agent's credential subtree into
+   * the session's private `<credentialsDir>/sessions/<id>` dir.
+   */
+  credentialsDir: string;
 }
 
 

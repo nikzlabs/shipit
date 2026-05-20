@@ -250,6 +250,7 @@ export async function registerBootstrapRoutes(
           deps.repoStore,
           deps.databaseManager,
           deps.composeStopPromises,
+          deps.credentialsDir,
         );
         deps.sseBroadcast("full_reset_complete", {});
         return { success: true };
