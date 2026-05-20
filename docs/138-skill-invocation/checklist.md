@@ -59,8 +59,11 @@ headless.
       automatic); leave a code comment / doc note recording the dropped inlining
       design so it isn't re-litigated
 - [ ] Client test: autocomplete inserts `$name` under the Codex agent
-- [ ] (Optional) Surface Codex's built-in `$CODEX_HOME/skills/*` system skills
-      in the menu, or scope the menu to project skills only — decide and note
+- [ ] Also surface Codex's built-in system skills from `$CODEX_HOME/skills/*`
+      (e.g. `.system/imagegen`, `skill-creator`) in the menu — tag them
+      `source: "bundled"`. Note: unlike Claude's bundled skills (which need doc
+      132's `AgentCapabilities` map), Codex built-ins are filesystem-discoverable
+      via the same `SKILL.md` scan, so no capabilities map is required for Codex.
 
 ## Cross-cutting
 

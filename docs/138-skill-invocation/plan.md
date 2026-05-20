@@ -249,6 +249,11 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
 - **Codex skills, not custom prompts** — `.codex/prompts/*.md` is deprecated
   upstream and does not expand headless; ShipIt targets `.codex/skills/` and
   relies on `codex exec`'s automatic `<skills_instructions>` injection.
+- **Codex menu lists project + built-in skills** — both project
+  `.codex/skills/*/SKILL.md` and Codex's built-in `$CODEX_HOME/skills/*` system
+  skills are surfaced (tagged `source: "bundled"`). Both are filesystem-
+  discoverable via the same `SKILL.md` scan, so — unlike Claude's bundled
+  skills — Codex needs no `AgentCapabilities` map.
 
 ## Open questions
 
