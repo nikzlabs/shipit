@@ -14,10 +14,14 @@ Tracks all work for explicit skill invocation across both backends. See
 
 ## #2 — Allowlist `Skill` (Claude) — DONE
 
-- [x] `Skill` added to `AUTO_TOOLS` in `claude.ts`
-- [x] `Skill` added to `NORMAL_TOOLS` in `claude.ts`
+- [x] `Skill` added to `AUTO_TOOLS` in `claude.ts` (also covers `guarded` mode,
+      which reuses `AUTO_TOOLS`)
 - [x] `Skill` added to `PLAN_TOOLS` in `claude.ts` (explicit invocation honored
       in plan mode by design)
+- Note: there are only **two** `--allowedTools` lists (`AUTO_TOOLS`,
+  `PLAN_TOOLS`), not three — earlier drafts referenced a nonexistent
+  `NORMAL_TOOLS`. The three permission *modes* are `auto`/`guarded`→`AUTO_TOOLS`
+  and `plan`→`PLAN_TOOLS`.
 - [x] `Skill`-allowlist cases in `claude.test.ts`
 
 ## #4 — Project skill discovery — DONE (project half)
@@ -48,25 +52,48 @@ Empirically re-verified (codex-cli 0.132.0): **no adapter inlining needed** —
 itself. `.codex/prompts/*.md` is deprecated upstream and does not expand
 headless.
 
+**(a) Project skills (host-side, trivial)**
+
 - [ ] Repoint `listSkills()` Codex branch from `.codex/prompts/*.md` →
       `.codex/skills/*/SKILL.md` (reuse the Claude frontmatter parser:
-      `name`/`description`, honor `user-invocable: false`)
+      `name`/`description`, honor `user-invocable: false`). Stays in
+      `services/skills.ts` — the workspace is bind-mounted, so an orchestrator
+      `fs` scan still works.
 - [ ] Update `skills.test.ts` Codex cases for the new directory + `SKILL.md`
       shape
-- [ ] Composer autocomplete: keep `/` as the universal trigger that opens the
-      menu for both backends; on Codex, **selecting inserts `$name `** (vs
-      `/name ` for Claude). Thread the active agent's insert-prefix into
-      `SkillAutoComplete.tsx` (trigger char stays `/`; only the inserted token
-      differs)
+
+**(b) Built-in skills (worker-side — NEW infra)**
+
+- [ ] Built-in Codex skills live at `~/.codex/skills/**` *inside the container*
+      (`CODEX_HOME` is unset → defaults to `/root/.codex`). The orchestrator
+      cannot `fs.readdir` this — orchestrator↔container is HTTP-only. Add a
+      **session-worker endpoint** (`session-worker.ts`) that scans
+      `~/.codex/skills/**/SKILL.md` inside the container and returns the list.
+- [ ] `GET /api/sessions/:id/skills` route merges host-scanned project skills
+      (`source: "project"`) + worker-scanned built-ins (`source: "bundled"`).
+      No `AgentCapabilities` map needed for Codex (unlike Claude bundled skills).
+- [ ] Worker-endpoint test + route-merge test.
+
+**(c) Composer**
+
+- [ ] Keep `/` as the universal trigger that opens the menu for both backends;
+      on Codex, **selecting inserts `$name `** (vs `/name ` for Claude). Thread
+      the active agent's insert-prefix into `SkillAutoComplete.tsx` (trigger
+      char stays `/`; only the inserted token differs).
+- [ ] Accept the known limitation: after a Codex selection inserts `$name`, the
+      leading char is `$`, so *editing* the token won't re-open the menu (the
+      open regex matches a leading `/` only). Out of scope unless we also
+      register `$` as a Codex trigger — note in code, don't silently ship.
+- [ ] Client test: autocomplete inserts `$name` under the Codex agent.
+
+**(d) Cleanup / no-op confirmations**
+
+- [ ] Refresh the stale `.codex/prompts` references in the `skills.ts` module
+      docstring + `scanCodexPrompts`, and the `SkillInfo.source` doc comment in
+      `domain-types.ts`, to describe `.codex/skills/*/SKILL.md` + `$name`.
 - [ ] Confirm no `codex-adapter.ts` change is required (catalog injection is
       automatic); leave a code comment / doc note recording the dropped inlining
-      design so it isn't re-litigated
-- [ ] Client test: autocomplete inserts `$name` under the Codex agent
-- [ ] Also surface Codex's built-in system skills from `$CODEX_HOME/skills/*`
-      (e.g. `.system/imagegen`, `skill-creator`) in the menu — tag them
-      `source: "bundled"`. Note: unlike Claude's bundled skills (which need doc
-      132's `AgentCapabilities` map), Codex built-ins are filesystem-discoverable
-      via the same `SKILL.md` scan, so no capabilities map is required for Codex.
+      design so it isn't re-litigated.
 
 ## Cross-cutting
 

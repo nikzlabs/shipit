@@ -48,8 +48,9 @@ slash command is silently swallowed as literal prose.
 
 ### Blocker 2 — the `Skill` tool isn't allowlisted
 
-`claude.ts` defines `AUTO_TOOLS` / `PLAN_TOOLS` / `NORMAL_TOOLS`; none include
-`Skill` (no `Skill`/`skill` reference anywhere in `src/server/session`). In
+`claude.ts` defines two `--allowedTools` lists — `AUTO_TOOLS` and `PLAN_TOOLS`
+(the `guarded` mode reuses `AUTO_TOOLS`); neither includes `Skill` (no
+`Skill`/`skill` reference anywhere in `src/server/session`). In
 headless `-p` mode a tool absent from `--allowedTools` is denied — there is no
 human to approve the prompt. A skill that drives tool use, or a model-initiated
 `Skill` call, is blocked.
@@ -73,8 +74,11 @@ One ordering decision, applied uniformly to both file and image context.
 
 ### 2. Add `Skill` to the tool allowlists (Claude)
 
-Add `Skill` to **all three** Claude allowlists in `claude.ts` — `AUTO_TOOLS`,
-`NORMAL_TOOLS`, **and `PLAN_TOOLS`**. The decision is to honor an explicit
+Add `Skill` to **both** Claude `--allowedTools` lists in `claude.ts` —
+`AUTO_TOOLS` **and `PLAN_TOOLS`**. There are two named lists, three permission
+*modes*: `auto` and `guarded` both resolve to `AUTO_TOOLS`, and `plan` resolves
+to `PLAN_TOOLS` — so adding `Skill` to those two lists covers all three modes.
+The decision is to honor an explicit
 `/my-skill` invocation even in plan mode: when a user deliberately types a
 skill command, denying it in plan mode would be a confusing dead end. The
 trade-off accepted here is that plan mode is no longer *guaranteed* read-only
@@ -151,16 +155,37 @@ file reading**, and it does this itself even under `codex exec`. So
 `codex-adapter.ts` needs **no** prompt-expansion engine. The remaining work is
 small:
 
-- **Discovery scan moves** from `.codex/prompts/*.md` (deprecated) to
+- **Project-skill scan moves** from `.codex/prompts/*.md` (deprecated) to
   `.codex/skills/*/SKILL.md` — the same `name`/`description` frontmatter shape
   ShipIt already parses for Claude's `.claude/skills/`, so `listSkills()` can
-  reuse almost all of the Claude branch.
+  reuse almost all of the Claude branch. Project skills live under the
+  workspace, which is bind-mounted and therefore orchestrator-visible, so this
+  half stays a host-side `fs` scan in `services/skills.ts` exactly as today.
+- **Built-in skills require a worker-side scan — they are NOT orchestrator-
+  reachable.** Codex's built-in system skills live at `$CODEX_HOME/skills/*`
+  *inside the session container*. `CODEX_HOME` is not set in ShipIt containers,
+  so it defaults to `~/.codex` = `/root/.codex` (the same path
+  `settings.ts` uses for Codex config) — a container-only filesystem the
+  orchestrator cannot read, because orchestrator↔container communication is
+  HTTP-only (never container FS, never `docker exec`; see CLAUDE.md). So the
+  built-in half needs a **session-worker endpoint** (`session-worker.ts`) that
+  scans `~/.codex/skills/**/SKILL.md` *inside the container* and returns the
+  list over HTTP; the orchestrator's `GET /api/sessions/:id/skills` route then
+  merges host-scanned project skills (`source: "project"`) with worker-scanned
+  built-ins (`source: "bundled"`). This is the one genuinely new piece of infra
+  in #5 — the project-skill repoint is trivial, but built-ins are not a simple
+  `fs.readdir` from where `listSkills()` runs.
 - **Token syntax is `$name`, not `/name`.** The composer keeps `/` as the
   universal trigger that opens the menu for both backends; on Codex,
   **selecting inserts `$name `** (vs `/name ` for Claude). Only the inserted
   token is agent-specific — the trigger char stays `/`. Even plain text
   matching a skill description triggers the skill, so `$` is a discoverability
-  nicety, not a hard requirement.
+  nicety, not a hard requirement. **Known limitation:** today the menu opens
+  only on a leading `/` (`MessageInput.tsx` matches `/^\/([\w.-]*)$/`). Once a
+  Codex selection has inserted `$name`, the leading char is `$`, so *editing*
+  that token will not re-open the menu. Accepted as a minor edge — the first
+  selection always works; re-opening after edit is out of scope unless we also
+  register `$` as a Codex trigger.
 - **No `$ARGUMENTS` substitution** — there is no substitution step. The user's
   literal text (including any trailing args) is already in the prompt for the
   model to read alongside the skill body. This closes the open question below.
@@ -172,9 +197,10 @@ small:
 1. ✅ **#1 + #2 — DONE.** Preserve leading slash, allowlist `Skill` (all three
    Claude modes). Unblocks Claude invocation. The prompt-ordering decision is
    extracted as the pure `assembleAgentPrompt()` in `agent-execution.ts` and
-   `Skill` is in `AUTO_TOOLS` / `NORMAL_TOOLS` / `PLAN_TOOLS` in `claude.ts`.
-   Covered by `agent-prompt.test.ts` and the `Skill`-allowlist cases in
-   `claude.test.ts`.
+   `Skill` is in `AUTO_TOOLS` and `PLAN_TOOLS` in `claude.ts` (the two
+   `--allowedTools` lists; `guarded` reuses `AUTO_TOOLS`, so all three modes
+   are covered). Covered by `agent-prompt.test.ts` and the `Skill`-allowlist
+   cases in `claude.test.ts`.
 2. ✅ **#4 (project scan) — DONE.** `GET /api/sessions/:id/skills[?agent=]`
    returns user-invocable project skills via the pure `listSkills(dir,
    agentId)` service: Claude scans `.claude/skills/*/SKILL.md` (frontmatter
@@ -193,11 +219,15 @@ small:
    Covered by the `skill autocomplete` cases in `MessageInput.test.tsx`.
 4. #5 — Codex skills support. **No adapter-level inlining** (re-verified:
    `codex exec` injects a skills catalog and reads `SKILL.md` itself). Work is:
-   (a) point `listSkills()`'s Codex branch at `.codex/skills/*/SKILL.md`
-   instead of the deprecated `.codex/prompts/*.md`; (b) make the composer
-   autocomplete insert `$name ` for Codex (vs `/name ` for Claude). Sequenced
-   last because Claude is the primary backend, but it is now a *small* slice,
-   not the largest.
+   (a) repoint `listSkills()`'s Codex branch at `.codex/skills/*/SKILL.md`
+   instead of the deprecated `.codex/prompts/*.md` (host-side scan, trivial);
+   (b) add a **session-worker endpoint** that scans the container's
+   `~/.codex/skills/**/SKILL.md` for built-ins and have the route merge them as
+   `source: "bundled"` (the orchestrator cannot read `~/.codex` directly);
+   (c) make the composer autocomplete insert `$name ` for Codex (vs `/name ` for
+   Claude); (d) refresh the now-stale `.codex/prompts` comments in `skills.ts`
+   and `domain-types.ts`. Sequenced last because Claude is the primary backend;
+   (a)/(c)/(d) are small, (b) is the only genuinely new infra.
 
 ## Scope boundary
 
@@ -211,7 +241,8 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
 
 - Unit: prompt builder keeps `/skill` at index 0 with and without file/image
   attachments; non-slash messages keep context prepended as before.
-- Unit: `Skill` present in `AUTO_TOOLS`, `NORMAL_TOOLS`, **and** `PLAN_TOOLS`.
+- Unit: `Skill` present in `AUTO_TOOLS` **and** `PLAN_TOOLS` (the two
+  `--allowedTools` lists; `guarded` reuses `AUTO_TOOLS`).
 - Client: autocomplete opens on a leading `/`, filters by query, inserts the
   selected skill name.
 
@@ -221,9 +252,14 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
   (Blocker 1 / change #1)
 - `src/server/session/claude.ts` — `--allowedTools` allowlists (Blocker 2 /
   change #2)
-- `src/server/orchestrator/services/skills.ts` — `listSkills()` project scan;
-  Codex branch must move from `.codex/prompts/*.md` to `.codex/skills/*/SKILL.md`
-  (changes #4 / #5)
+- `src/server/orchestrator/services/skills.ts` — `listSkills()` host-side
+  project scan; Codex branch must move from `.codex/prompts/*.md` to
+  `.codex/skills/*/SKILL.md` (changes #4 / #5)
+- `src/server/session/session-worker.ts` — NEW endpoint for change #5(b):
+  scans the container's `~/.codex/skills/**/SKILL.md` for built-in skills (not
+  orchestrator-reachable via FS), returned over HTTP and merged into the route
+- `src/server/shared/types/domain-types.ts` — `SkillInfo` (`source` discriminant);
+  the `.codex/prompts` doc comment needs refreshing in change #5(d)
 - `src/server/orchestrator/api-routes-files.ts` — `GET /api/sessions/:id/skills`
   route (change #4)
 - `src/client/components/SkillAutoComplete.tsx` — `/` autocomplete menu, plus
@@ -252,10 +288,14 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
   upstream and does not expand headless; ShipIt targets `.codex/skills/` and
   relies on `codex exec`'s automatic `<skills_instructions>` injection.
 - **Codex menu lists project + built-in skills** — both project
-  `.codex/skills/*/SKILL.md` and Codex's built-in `$CODEX_HOME/skills/*` system
-  skills are surfaced (tagged `source: "bundled"`). Both are filesystem-
-  discoverable via the same `SKILL.md` scan, so — unlike Claude's bundled
-  skills — Codex needs no `AgentCapabilities` map.
+  `.codex/skills/*/SKILL.md` (tagged `source: "project"`) and Codex's built-in
+  `~/.codex/skills/*` system skills (tagged `source: "bundled"`) are surfaced.
+  Both are `SKILL.md` scans (no `AgentCapabilities` map needed, unlike Claude's
+  bundled skills), **but they run in different processes**: project skills are
+  scanned host-side in the orchestrator (workspace is bind-mounted); built-ins
+  must be scanned by a session-worker endpoint inside the container (`~/.codex`
+  is container-only and not orchestrator-reachable over the HTTP link). See
+  change #5.
 
 ## Open questions
 
