@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import type { GitCommit } from "../components/GitHistory.js";
-import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage, RuntimeMode } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
 import { getContextWindowForModel } from "../../server/shared/model-windows.js";
 import type { AgentOption } from "../components/AgentPicker.js";
@@ -63,6 +63,8 @@ interface BootstrapResponse {
     agentSystemInstructions?: string;
     autoCreatePr?: boolean;
   };
+  /** Orchestrator runtime mode (feature 118). Defaults to "containerized". */
+  runtimeMode?: RuntimeMode;
 }
 
 /**
@@ -195,5 +197,6 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(data.settings.agentSystemInstructionsEnabled);
   if (data.settings.agentSystemInstructions) useSettingsStore.getState().setAgentSystemInstructions(data.settings.agentSystemInstructions);
   if (data.settings.autoCreatePr !== undefined) useSettingsStore.getState().setAutoCreatePr(data.settings.autoCreatePr);
+  useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
   useUiStore.getState().setBootstrapLoaded(true);
 }

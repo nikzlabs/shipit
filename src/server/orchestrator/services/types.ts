@@ -3,7 +3,7 @@
  */
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
-import type { SessionInfo, ProjectTemplate, RepoInfo } from "../../shared/types.js";
+import type { SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 
 // ---- Types for service function results ----
 
@@ -60,6 +60,14 @@ export interface BootstrapData {
   templates: Omit<ProjectTemplate, "files">[];
   githubStatus: GitHubStatus;
   settings: GlobalSettings;
+  /**
+   * Orchestrator runtime mode (feature 118). `"local"` means the orchestrator
+   * runs in-process without a Docker/container layer (the dogfooding
+   * ShipIt-in-ShipIt path). The client uses this to surface a local-mode
+   * banner and hide container-only affordances (preview, terminal). Defaults
+   * to `"containerized"` for every production deploy.
+   */
+  runtimeMode: RuntimeMode;
 }
 
 // ---- Error type for service-level errors with HTTP status codes ----
