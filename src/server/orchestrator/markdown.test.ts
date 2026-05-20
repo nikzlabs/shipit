@@ -204,6 +204,48 @@ describe("findMarkdownFiles", () => {
     expect(docs[0].title).toBe("Auth");
   });
 
+  describe("description frontmatter", () => {
+    it("parses a description from frontmatter", async () => {
+      fs.writeFileSync(
+        path.join(tmpDir, "plan.md"),
+        "---\nstatus: done\ndescription: A short summary of the feature.\n---\n# Plan",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].description).toBe("A short summary of the feature.");
+    });
+
+    it("trims surrounding whitespace from the description", async () => {
+      fs.writeFileSync(
+        path.join(tmpDir, "plan.md"),
+        "---\ndescription:   padded summary   \n---\n# Plan",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].description).toBe("padded summary");
+    });
+
+    it("leaves description undefined when absent", async () => {
+      fs.writeFileSync(path.join(tmpDir, "plan.md"), "---\nstatus: done\n---\n# Plan");
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].description).toBeUndefined();
+    });
+
+    it("leaves description undefined when the value is empty", async () => {
+      fs.writeFileSync(path.join(tmpDir, "plan.md"), "---\ndescription:   \n---\n# Plan");
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].description).toBeUndefined();
+    });
+
+    it("reads description from a checklist.md (full-read path)", async () => {
+      fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "docs", "001-feature", "checklist.md"),
+        "---\ndescription: Checklist summary.\n---\n- [ ] one",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].description).toBe("Checklist summary.");
+    });
+  });
+
   describe("customStatus", () => {
     it("captures unrecognized status values as customStatus", async () => {
       fs.writeFileSync(

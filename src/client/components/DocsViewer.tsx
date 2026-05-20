@@ -114,6 +114,33 @@ function pathContext(docPath: string): string | null {
   return docPath.slice(0, lastSlash + 1);
 }
 
+/**
+ * The clickable text column of a doc row: title, an optional frontmatter
+ * `description` (wraps to two lines so a full sentence stays readable), and
+ * the parent-directory path context as the smallest, last line. Shared across
+ * the Modified / Tracked / Archived groups so every row stays consistent.
+ */
+function DocRowText({ doc, onClick }: { doc: DocEntry; onClick: () => void }) {
+  const ctx = pathContext(doc.path);
+  return (
+    <button onClick={onClick} className="flex-1 min-w-0 text-left cursor-pointer">
+      <span className="text-sm text-(--color-text-primary) truncate block">
+        {doc.title}
+      </span>
+      {doc.description && (
+        <span className="text-xs text-(--color-text-secondary) line-clamp-2 block">
+          {doc.description}
+        </span>
+      )}
+      {ctx && (
+        <span className="text-[11px] text-(--color-text-tertiary) truncate block">
+          {ctx}
+        </span>
+      )}
+    </button>
+  );
+}
+
 /** Sort key for a doc's status: known enum order, then custom-status order, then last. */
 function statusOrder(doc: DocEntry): number {
   if (doc.status) return STATUS_CONFIG[doc.status]?.order ?? 99;
@@ -265,25 +292,12 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
               Modified in this session
             </div>
             {sortedModified.map((doc) => {
-              const ctx = pathContext(doc.path);
               return (
                 <div
                   key={doc.path}
                   className="flex items-center justify-between w-full text-left px-3 py-2 hover:bg-(--color-bg-hover) transition-colors gap-2 group/row"
                 >
-                  <button
-                    onClick={() => onFileClick(doc.path)}
-                    className="flex-1 min-w-0 text-left cursor-pointer"
-                  >
-                    <span className="text-sm text-(--color-text-primary) truncate block">
-                      {doc.title}
-                    </span>
-                    {ctx && (
-                      <span className="text-[11px] text-(--color-text-tertiary) truncate block">
-                        {ctx}
-                      </span>
-                    )}
-                  </button>
+                  <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                   <div className="flex items-center gap-2 shrink-0">
                     <Badge variant="info" className="text-[11px]">Modified</Badge>
                     {doc.checklist && doc.checklist.total > 0 && (
@@ -337,25 +351,12 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
               </div>
             )}
             {trackedActive.map((doc) => {
-              const ctx = pathContext(doc.path);
               return (
                 <div
                   key={doc.path}
                   className="flex items-center justify-between w-full text-left px-3 py-2 hover:bg-(--color-bg-hover) transition-colors gap-2 group/row"
                 >
-                  <button
-                    onClick={() => onFileClick(doc.path)}
-                    className="flex-1 min-w-0 text-left cursor-pointer"
-                  >
-                    <span className="text-sm text-(--color-text-primary) truncate block">
-                      {doc.title}
-                    </span>
-                    {ctx && (
-                      <span className="text-[11px] text-(--color-text-tertiary) truncate block">
-                        {ctx}
-                      </span>
-                    )}
-                  </button>
+                  <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                   <div className="flex items-center gap-2 shrink-0">
                     {doc.checklist && doc.checklist.total > 0 && (
                       <ChecklistProgressBadge progress={doc.checklist} />
@@ -385,25 +386,12 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                   <span>Archived ({trackedArchived.length})</span>
                 </button>
                 {archivedExpanded && trackedArchived.map((doc) => {
-                  const ctx = pathContext(doc.path);
                   return (
                     <div
                       key={doc.path}
                       className="flex items-center justify-between w-full text-left px-3 py-2 hover:bg-(--color-bg-hover) transition-colors gap-2 group/row"
                     >
-                      <button
-                        onClick={() => onFileClick(doc.path)}
-                        className="flex-1 min-w-0 text-left cursor-pointer"
-                      >
-                        <span className="text-sm text-(--color-text-primary) truncate block">
-                          {doc.title}
-                        </span>
-                        {ctx && (
-                          <span className="text-[11px] text-(--color-text-tertiary) truncate block">
-                            {ctx}
-                          </span>
-                        )}
-                      </button>
+                      <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                       <div className="flex items-center gap-2 shrink-0">
                         {doc.checklist && doc.checklist.total > 0 && (
                           <ChecklistProgressBadge progress={doc.checklist} />

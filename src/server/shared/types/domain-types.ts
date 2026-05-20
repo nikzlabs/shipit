@@ -103,6 +103,12 @@ export interface DocEntry {
   /** Human-readable title. Derived from frontmatter `title:` field, or from filename. */
   title: string;
   /**
+   * Short one-line summary from the frontmatter `description:` field. Rendered
+   * under the title in the docs panel so a doc's purpose is legible without
+   * opening it. Single-line only (trimmed); omitted when absent.
+   */
+  description?: string;
+  /**
    * File mtime as ISO 8601 string. Used by the client to surface docs that
    * were modified during the current session at the top of the docs tab.
    */

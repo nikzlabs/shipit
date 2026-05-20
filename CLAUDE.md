@@ -385,3 +385,12 @@ status: planned
 priority: high
 ---
 ```
+
+`plan.md` may also include an optional `description` field — a single-line summary of what the feature is about. The docs viewer renders it under the title (wrapping to at most two lines) so a doc's purpose is legible without opening it. Keep it to one sentence; it's parsed as a single line, so no multi-line YAML block scalars. Example:
+
+```yaml
+---
+status: in-progress
+description: Show a short doc description from frontmatter under the title in the docs panel.
+---
+```
