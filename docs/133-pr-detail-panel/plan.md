@@ -7,7 +7,9 @@ priority: medium
 
 ## Summary
 
-Clicking a `PrLifecycleCard` opens an **inline PR detail panel** rendered entirely inside ShipIt — title, description (markdown), full check breakdown, deploy statuses, review comments, activity timeline, and file list. The card in chat stays as a compact, live status marker; the panel is the drill-in surface that subsumes everything a user would otherwise leave for github.com.
+Clicking a `PrLifecycleCard` brings forward an **inline PR detail tab** in the right-hand panel, rendered entirely inside ShipIt — title, description (markdown), full check breakdown, deploy statuses, review comments, activity timeline, and file list. The card in chat stays as a compact, live status marker; the PR tab is the drill-in surface that subsumes everything a user would otherwise leave for github.com.
+
+> **Surface decision:** the detail view is a **tab in the existing tabbed right panel**, a peer of Preview/Docs/Files/etc., rather than a separate slide-over panel. See [Design → Surface](#surface) for the rationale. "Panel" throughout this doc refers to the contents of that tab.
 
 This is the destination view that the product principles in `CLAUDE.md` point at:
 
@@ -36,18 +38,32 @@ A separate small change (covered in the conversation that produced this doc — 
 
 ### Surface
 
-A right-hand **side panel** that slides over (or pushes, depending on viewport width) the chat column when opened. Similar in spirit to the existing diff panel — it's a "drill-in" mode, not a modal.
+A new **"PR" tab in the existing right-hand panel** — a peer of the current Preview / Services / Docs / Files / Terminal / History tabs, not a separate floating surface.
 
-- **Trigger** — clicking anywhere on the `PrLifecycleCard` body (except interactive controls like the auto-fix toggle or merge button).
-- **Dismissal** — `Esc`, clicking outside the panel, or a close affordance in the panel header. The card in chat keeps its current state; closing the panel doesn't change PR state.
-- **Persistence** — the panel is per-session ephemeral UI state (`ui-store.ts`). It does not survive a page reload — reloading restores chat with the panel closed.
-- **Multi-PR** — only one PR detail panel open at a time. Clicking a different PR card swaps the panel contents.
+The right column in `App.tsx` (`rightPanel`) is already a tabbed container whose active tab is the `RightTab` union in `ui-store.ts`, persisted to localStorage. The PR detail view slots in as one more tab rather than introducing a fifth kind of surface (the app already has: chat, the tabbed right panel, the diff modal, and the file-preview modal). This was chosen over the originally-sketched slide-over side panel because:
+
+- **It reuses the existing pattern.** Add `"pr"` to the `RightTab` union plus one tab button — the same shape as every other tab. A slide-over would be net-new UI machinery for the same job.
+- **It honors §1/§2 better.** A persistent, peer-level tab reads as "the PR is a real, first-class view inside ShipIt." A transient overlay reads as "a popover you dismiss."
+- **Persistence is free.** The tab survives reloads and session switches via the existing `saveRightTab` mechanism — no new ephemeral state to manage.
+- **No chat compression.** The tab lives in the space already allocated to the right panel; nothing has to push or cover the chat column.
+
+Behavior:
+
+- **Tab visibility** — the "PR" tab is shown only when the active session has a PR (open or recently merged), mirroring how the `Services` tab is conditional on `composeServices.length > 0`. When there's no PR, the tab is absent and the panel falls back to the previously selected tab.
+- **Trigger** — clicking anywhere on the `PrLifecycleCard` body (except interactive controls like the auto-fix toggle or merge button) calls `handleTabChange("pr")` to bring the tab forward. The user can also click the tab directly. (`handleTabChange` is the existing tab-strip entry point — it wraps `setRightTab` and is also where per-tab data fetches and the `pr_tab_active` WS emit fire, so routing the card click through it keeps activation behavior identical regardless of entry point.)
+- **Dismissal** — there's nothing to "dismiss": the user simply selects another tab, exactly as with Preview/Docs/etc. `Esc` is not overloaded. The card in chat keeps its current state regardless of which tab is active.
+- **Persistence** — selecting the PR tab persists like any other `rightTab` choice (localStorage), so a reload restores it. The heavy-field polling gate (below) keys off "is the PR tab the active tab for this session," not a bespoke open/closed flag.
+- **Multi-PR** — same 1:1 model as `docs/064`: one PR per session, so the tab always reflects that session's single PR. Switching sessions repaints the tab from the new session's `PrCardState`.
+- **Mobile** — no special handling needed. On mobile (`AppLayout.tsx`), the bottom `MobileTabBar` toggles between the chat panel and the *entire* `rightPanel` — including its in-panel tab strip. The PR tab therefore appears in that strip for free; the bottom bar doesn't need a third button. (This is a concrete advantage over a slide-over, which would have required bespoke mobile layout work.)
 
 ### Layout
 
+The PR tab's content sits below the shared right-panel tab strip (the same strip that holds Preview / Docs / Files / …); there is no in-panel close button — switching tabs is the dismissal.
+
 ```
+│ Preview │ Docs │ Files │ Terminal │ History │ ▸PR◂ │   ← shared tab strip
 ┌────────────────────────────────────────────────────────────────────┐
-│  ← #42  Add PR lifecycle flow                          [⋯]  [×]   │
+│  #42  Add PR lifecycle flow                                 [⋯]   │
 │  main ← shipit/abc123 · opened 2h ago · +42 -12                    │
 ├────────────────────────────────────────────────────────────────────┤
 │                                                                    │
@@ -92,8 +108,8 @@ A right-hand **side panel** that slides over (or pushes, depending on viewport w
 
 | Section | Source | Editable in ShipIt? |
 |---|---|---|
-| Header (number, title, branches, age, diff stats) | PR poller (extend with `title`, `createdAt`) | Title: yes (calls `updatePullRequest` GraphQL) |
-| Description | New `body` field on poller GraphQL query | Yes — pencil → Monaco markdown editor → `updatePullRequest` |
+| Header (number, title, branches, age, diff stats) | `prTitle` already on the summary; extend `PR_STATUS_QUERY` with `createdAt` for age | Title: yes (calls `updatePullRequest` GraphQL) |
+| Description | `prBody` — already selected by `PR_STATUS_QUERY` and parsed into the summary | Yes — pencil → Monaco markdown editor → `updatePullRequest` |
 | Status (checks, deploys, merge state) | Existing card data, restyled for the panel | Same controls as card (auto-fix, auto-merge, merge button) |
 | Conversation (review threads + issue comments) | `reviewThreads` from [`docs/102`](../102-github-pr-comment-sync/plan.md) GraphQL + `comments` (issue-level) | Reply, resolve — same mutations as 102 |
 | Files | Reuse server diff API + existing Monaco diff viewer | "View diff" opens existing diff panel; not a re-implementation |
@@ -103,9 +119,9 @@ The "Status" section is the same data the card renders, restyled to fit the wide
 
 ### Card ↔ panel relationship
 
-The card stays as today: compact, live, in chat. It gains one change — the whole card body becomes clickable, with a subtle hover affordance ("Open PR details ↗" or just a chevron in the corner). The interactive controls (auto-fix toggle, merge dropdown, etc.) call `e.stopPropagation()` so clicking them doesn't also open the panel.
+The card stays as today: compact, live, in chat. It gains one change — the whole card body becomes clickable, with a subtle hover affordance ("Open PR details ↗" or just a chevron in the corner). Clicking it calls `handleTabChange("pr")` to bring the PR tab forward. The interactive controls (auto-fix toggle, merge dropdown, etc.) call `e.stopPropagation()` so clicking them doesn't also switch the tab.
 
-Inside the panel, the card's existing controls (auto-fix, auto-merge, merge button, merge method dropdown) are present in the Status section. Toggling either surface updates the shared store; the other surface re-renders automatically.
+Inside the PR tab, the card's existing controls (auto-fix, auto-merge, merge button, merge method dropdown) are present in the Status section. Toggling either surface updates the shared store; the other surface re-renders automatically.
 
 ### Data layer
 
@@ -113,10 +129,10 @@ Extend `PrStatusSummary` in `src/server/shared/types/github-types.ts`:
 
 ```ts
 interface PrStatusSummary {
-  // existing fields
+  // already present (declared, and populated by the poller)
   prTitle: string;
+  prBody: string;             // markdown source — already on the type
   // new
-  prBody: string;             // markdown source
   prCreatedAt: string;        // ISO timestamp
   prAuthor: { login: string; avatarUrl: string };
   reviewThreads: ReviewThread[];     // from docs/102
@@ -125,7 +141,7 @@ interface PrStatusSummary {
 }
 ```
 
-`pr-status-poller.ts` gains the corresponding GraphQL selections. The poller already runs on a tick — adding these fields costs one GraphQL round-trip's worth of extra payload per tick per session with an open PR. For sessions whose panel is closed, the poller can skip the heavier `reviewThreads`/`timeline` selections (gate on `panelOpenForSession[sessionId]` reported back over WS). This keeps idle-session polling cheap.
+`PR_STATUS_QUERY` (in `pr-status-parser.ts`) gains the corresponding GraphQL selections, and the parser populates the new summary fields. The poller already runs on a tick — adding these fields costs one GraphQL round-trip's worth of extra payload per tick per session with an open PR. For sessions where the PR tab is **not** the active right-panel tab, the poller can skip the heavier `reviewThreads`/`timeline` selections (gate on `prTabActiveForSession[sessionId]`, reported back over WS via the `pr_tab_active` message that `handleTabChange` emits whenever the active tab enters/leaves `"pr"`). This keeps idle-session polling cheap.
 
 ### Mutations (write paths)
 
@@ -144,7 +160,7 @@ Errors surface inline in the panel (toast-style banner inside the section that f
 
 ### Client architecture
 
-- **New component:** `src/client/components/PrDetailPanel.tsx` — top-level panel, composes sub-sections.
+- **New component:** `src/client/components/PrDetailPanel.tsx` — top-level panel body rendered as the `rightTab === "pr"` branch in `App.tsx`'s `rightPanel`, composes sub-sections.
 - **Sub-components** (siblings under `components/pr-detail/`):
   - `PrDetailHeader.tsx`
   - `PrDescriptionSection.tsx` (markdown view + edit mode using existing Monaco markdown setup from `MarkdownSectionComments.tsx`)
@@ -152,14 +168,15 @@ Errors surface inline in the panel (toast-style banner inside the section that f
   - `PrConversationSection.tsx` (reuses widgets from [`docs/102`](../102-github-pr-comment-sync/plan.md) for review threads; adds an issue-comment composer)
   - `PrFilesSection.tsx` (file rows that delegate to existing diff viewer)
   - `PrTimelineSection.tsx`
-- **Store changes:** extend `pr-store.ts:PrCardState` with the new fields; add `ui-store.ts:openPrDetailPanel(sessionId)` / `closePrDetailPanel()`.
-- **Card change:** wrap `PrLifecycleCard`'s body in a clickable container that dispatches `openPrDetailPanel`. Existing interactive controls call `stopPropagation`.
+- **Store changes:** extend `pr-store.ts:PrCardState` with the new fields; add `"pr"` to the `RightTab` union in `ui-store.ts`. No bespoke open/close actions — `App.tsx`'s existing `handleTabChange` (which wraps `setRightTab`) is the entry point.
+- **Tab strip change:** add a conditional "PR" tab button in `App.tsx`'s `rightPanel` (shown only when the session has a PR) and a `rightTab === "pr"` render branch for `PrDetailPanel`.
+- **Card change:** wrap `PrLifecycleCard`'s body in a clickable container that calls `handleTabChange("pr")`. Existing interactive controls call `stopPropagation`.
 
 ### Phasing
 
 | Phase | Scope | Depends on |
 |---|---|---|
-| **1. Panel scaffold + header + description** | Panel surface, open/close UX, render title + markdown body (read-only), poller fetches `prBody`, "View on GitHub" overflow link. Card becomes clickable. | — |
+| **1. Panel scaffold + header + description** | "PR" tab wired into `rightPanel` (conditional on a PR existing), tab-selection UX, render title + markdown body read-only (`prTitle`/`prBody` are already on the summary — Phase 1 just renders them), "View on GitHub" overflow link. Card becomes clickable (selects the PR tab). | — |
 | **2. Editable description + title** | Pencil → Monaco markdown edit → `updatePullRequest`. Title click-to-edit. Optimistic update with revert-on-error. | Phase 1 |
 | **3. Status section in panel + extract shared sub-component** | Move status visuals into a sub-component used by both card and panel. Card UX unchanged; panel gets full status detail. | Phase 1 |
 | **4. Conversation section** | Issue comments + review threads. Heavy overlap with [`docs/102`](../102-github-pr-comment-sync/plan.md) — co-sequence so the GraphQL query and widget work happen once. | [`docs/102`](../102-github-pr-comment-sync/plan.md) Phase 1 |
@@ -179,16 +196,18 @@ Phases 1-3 are the minimum viable panel. Phase 4 is the largest single win (subs
 
 | File | Change |
 |---|---|
-| `src/server/orchestrator/pr-status-poller.ts` | Add `body`, `createdAt`, `author`, `timeline`, `issueComments` (and `reviewThreads` per 102) to GraphQL query. Gate heavy selections on `panelOpenForSession`. |
-| `src/server/shared/types/github-types.ts` | Extend `PrStatusSummary` with `prBody`, `prCreatedAt`, `prAuthor`, `timeline`, `issueComments`. |
+| `src/server/orchestrator/pr-status-parser.ts` | `PR_STATUS_QUERY` lives here (not the poller) and already selects `title`/`body`. Add `createdAt`, `author`, `timeline`, `issueComments` (and `reviewThreads` per 102) selections + parse them into the summary. |
+| `src/server/orchestrator/pr-status-poller.ts` | Gate the heavy selections (`reviewThreads`/`timeline`) on `prTabActiveForSession`; run the poll/broadcast loop. |
+| `src/server/shared/types/github-types.ts` | Extend `PrStatusSummary` with `prCreatedAt`, `prAuthor`, `timeline`, `issueComments` (and `reviewThreads` per 102). `prTitle`/`prBody` already exist on the type. |
 | `src/server/orchestrator/services/github.ts` | Add `updatePullRequest`, `addIssueComment` service functions. |
 | `src/server/orchestrator/api-routes-github.ts` | Add `PATCH /api/sessions/:id/pr` and `POST /api/sessions/:id/pr/comments` routes. |
-| `src/server/orchestrator/ws-handlers/misc-handlers.ts` (or new) | New WS message `pr_detail_panel_state { sessionId, open }` so server knows whether to fetch heavy fields. |
-| `src/client/components/PrLifecycleCard.tsx` | Wrap body in clickable container; add hover affordance; `stopPropagation` on interactive controls. Extract status visuals into shared sub-component. |
-| `src/client/components/PrDetailPanel.tsx` (new) | Top-level panel component. |
+| `src/server/orchestrator/ws-handlers/misc-handlers.ts` (or new) | New WS message `pr_tab_active { sessionId, active }` (emitted by `handleTabChange` when the active tab enters/leaves `"pr"`) so server knows whether to fetch heavy fields. |
+| `src/client/App.tsx` | Add conditional "PR" tab button to `rightPanel`'s tab strip and a `rightTab === "pr"` render branch for `PrDetailPanel`. Extend `handleTabChange`'s typed parameter union (currently `"preview" \| "docs" \| "files" \| "terminal" \| "history" \| "services"`) with `"pr"`, and add the `pr_tab_active` WS emit there (it's the single choke point for tab activation + per-tab data fetches). |
+| `src/client/components/PrLifecycleCard.tsx` | Wrap body in clickable container that calls `handleTabChange("pr")` (threaded down from `App.tsx`); add hover affordance; `stopPropagation` on interactive controls. Extract status visuals into shared sub-component. |
+| `src/client/components/PrDetailPanel.tsx` (new) | Top-level panel component rendered inside the PR tab. |
 | `src/client/components/pr-detail/*.tsx` (new) | Section sub-components. |
 | `src/client/stores/pr-store.ts` | Extend `PrCardState` with new fields; selector helpers. |
-| `src/client/stores/ui-store.ts` | `prDetailPanelSessionId: string \| null`; `openPrDetailPanel` / `closePrDetailPanel` actions. |
+| `src/client/stores/ui-store.ts` | Add `"pr"` to the `RightTab` union. Activation routes through `App.tsx`'s `handleTabChange`, which calls `setRightTab` — no new store action needed. |
 | `src/client/hooks/useApi.ts` | Hooks for `PATCH /api/sessions/:id/pr` and the new comments endpoint. |
 
 ## Tests
@@ -196,12 +215,13 @@ Phases 1-3 are the minimum viable panel. Phase 4 is the largest single win (subs
 Per the `testing-and-quality` skill checklist:
 
 - **Server:** `integration_tests/pr-detail-panel.test.ts`
-  - Poller fetches body/timeline/issueComments only when panel is open for the session.
+  - Poller fetches body/timeline/issueComments only when the PR tab is the active right-panel tab for the session.
   - `PATCH /api/sessions/:id/pr` calls `updatePullRequest` with the right payload; round-trips title/body change to the next poll tick.
   - `POST /api/sessions/:id/pr/comments` calls `addIssueComment`; 401 if `GitHubAuthManager` not authenticated.
 - **Client:** `PrDetailPanel.test.tsx`, `PrLifecycleCard.test.tsx`
-  - Clicking the card opens the panel; clicking the auto-fix toggle does **not** open the panel (stopPropagation).
-  - `Esc` closes the panel.
+  - Clicking the card selects the PR tab (`rightTab === "pr"`); clicking the auto-fix toggle does **not** switch the tab (stopPropagation).
+  - The "PR" tab is only present when the session has a PR; absent otherwise.
+  - Selecting another tab leaves the card state untouched.
   - Edit description → save → optimistic update; on server error, reverts and shows inline banner.
 - **Smoke:** add the panel to a single existing render-the-app smoke test to catch obvious regressions.
 
