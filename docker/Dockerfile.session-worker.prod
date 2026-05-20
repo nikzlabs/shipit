@@ -19,8 +19,9 @@ RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
 FROM node:24-slim
 
 # Runtime tools: git + curl for user projects, python3/make/g++ for native npm addons
-# in user sessions (npm install inside /workspace may compile C/C++ addons).
-RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip && rm -rf /var/lib/apt/lists/*
+# in user sessions (npm install inside /workspace may compile C/C++ addons),
+# ripgrep (rg) because agents (Codex, Claude Code) prefer it for fast code search.
+RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip ripgrep && rm -rf /var/lib/apt/lists/*
 
 # Bump this build-arg per deploy (deploy.sh sets it to $(date +%s)) so the
 # Claude/Codex CLI layer is rebuilt on every deploy, picking up the latest
