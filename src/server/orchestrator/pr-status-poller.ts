@@ -24,6 +24,7 @@ import type { PrStatusSummary, AutoFixState, AutoMergeState, PrAutoMergeError } 
 import { parseGitHubRemote } from "./git-utils.js";
 import {
   PR_STATUS_QUERY,
+  PR_STATUS_QUERY_WITH_CONVERSATION,
   type GraphQLPrNode,
   type GraphQLResponse,
   parsePrNode,
@@ -63,6 +64,13 @@ export class PrStatusPoller {
   private lastKnown = new Map<string, PrStatusSummary>();
   /** sessionId → repo key tracking */
   private sessionRepos = new Map<string, string>();
+  /**
+   * Sessions whose PR tab is the active right-panel tab (docs/133 Phase 4).
+   * Reported over WS via `pr_tab_active`. When any tracked session on a repo is
+   * here, that repo's poll fetches the heavier conversation fields (issue
+   * comments + review threads); otherwise the light query is used.
+   */
+  private prTabActiveSessions = new Set<string>();
   /** Sessions whose PRs have been merged or closed — excluded from future queries. */
   private mergedSessions = new Set<string>();
   /**
@@ -181,11 +189,46 @@ export class PrStatusPoller {
     this.lastPrNodes.delete(sessionId);
     this.inFlightVerify.delete(sessionId);
     this.verifiedAbsent.delete(sessionId);
+    this.prTabActiveSessions.delete(sessionId);
     this.graceTracker.untrack(sessionId);
 
     if (repoKey) {
       this.maybeStopPolling(repoKey);
     }
+  }
+
+  /**
+   * Mark whether a session's PR tab is the active right-panel tab (docs/133
+   * Phase 4). When turned on, kicks an immediate poll for the session's repo so
+   * the conversation fields populate without waiting a full poll interval.
+   */
+  setPrTabActive(sessionId: string, active: boolean): void {
+    const was = this.prTabActiveSessions.has(sessionId);
+    if (active) this.prTabActiveSessions.add(sessionId);
+    else this.prTabActiveSessions.delete(sessionId);
+    if (active === was) return;
+
+    if (active) {
+      const repoKey = this.sessionRepos.get(sessionId);
+      const slash = repoKey?.indexOf("/") ?? -1;
+      if (repoKey && slash > 0) {
+        const owner = repoKey.slice(0, slash);
+        const repo = repoKey.slice(slash + 1);
+        // Treat activation as user activity so an idle-paused repo resumes.
+        this.recordClientActivity();
+        this.pollRepo(repoKey, owner, repo).catch((err: unknown) => {
+          console.error(`[pr-poller] Error on PR-tab-activated poll ${repoKey}:`, err);
+        });
+      }
+    }
+  }
+
+  /** True when any tracked session on this repo has its PR tab active. */
+  private repoHasActiveTab(repoKey: string): boolean {
+    for (const sessionId of this.prTabActiveSessions) {
+      if (this.sessionRepos.get(sessionId) === repoKey) return true;
+    }
+    return false;
   }
 
   /**
@@ -381,8 +424,11 @@ export class PrStatusPoller {
     if (stillLimited) return;
     if (this.canSkipPoll()) return;
 
+    // docs/133 Phase 4: fetch the heavier conversation fields only when a
+    // session on this repo has its PR tab open. Idle polls stay cheap.
+    const includeConversation = this.repoHasActiveTab(repoKey);
     const result = await this.githubAuth.graphqlQuery<GraphQLResponse>(
-      PR_STATUS_QUERY,
+      includeConversation ? PR_STATUS_QUERY_WITH_CONVERSATION : PR_STATUS_QUERY,
       { owner, name: repo },
     );
 
@@ -473,6 +519,18 @@ export class PrStatusPoller {
         }
 
         const prev = this.lastKnown.get(session.id);
+
+        // On a light poll the conversation fields aren't fetched (undefined).
+        // Carry forward whatever we last knew so the change-detection gate
+        // doesn't wipe the client's conversation when the PR tab loses focus.
+        if (!includeConversation) {
+          if (summary.issueComments === undefined && prev?.issueComments !== undefined) {
+            summary.issueComments = prev.issueComments;
+          }
+          if (summary.reviewThreads === undefined && prev?.reviewThreads !== undefined) {
+            summary.reviewThreads = prev.reviewThreads;
+          }
+        }
 
         // Handle auto-fix state transitions
         this.autoFix.handleTransition(session.id, summary, prNode, owner, repo);

@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PrStatusPoller, parsePrNode, extractHeadSha, extractFailedCheckRuns } from "./pr-status-poller.js";
+import {
+  PR_STATUS_QUERY,
+  PR_STATUS_QUERY_WITH_CONVERSATION,
+  parseConversation,
+  prStatusEqual,
+} from "./pr-status-parser.js";
+import type { PrStatusSummary } from "../shared/types/github-types.js";
 import * as workflowLoader from "./workflow-loader.js";
 import type { ParsedWorkflow } from "./workflow-loader.js";
 import type { SessionManager } from "./sessions.js";
@@ -53,6 +60,37 @@ function makeGraphQLPrNode(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+/** Conversation selections as GitHub returns them (docs/133 Phase 4). */
+const CONVERSATION_OVERRIDES = {
+  comments: {
+    nodes: [
+      {
+        id: "IC_1",
+        body: "Looks good",
+        createdAt: "2026-05-20T10:00:00Z",
+        url: "https://github.com/owner/repo/pull/42#issuecomment-1",
+        author: { login: "alice", avatarUrl: "https://avatars/alice.png" },
+      },
+    ],
+  },
+  reviewThreads: {
+    nodes: [
+      {
+        id: "RT_1",
+        isResolved: false,
+        isOutdated: true,
+        path: "src/x.ts",
+        line: 12,
+        comments: {
+          nodes: [
+            { id: "RC_1", body: "nit: rename", createdAt: "2026-05-20T10:05:00Z", author: { login: "bob", avatarUrl: "" } },
+          ],
+        },
+      },
+    ],
+  },
+};
 
 function makeSessionManager(sessions: { id: string; branch?: string; remoteUrl?: string }[]): SessionManager {
   return {
@@ -325,6 +363,95 @@ describe("parsePrNode", () => {
   });
 });
 
+describe("parseConversation (docs/133 Phase 4)", () => {
+  it("parses issue comments and review threads when present", () => {
+    const { issueComments, reviewThreads } = parseConversation(
+      makeGraphQLPrNode(CONVERSATION_OVERRIDES) as never,
+    );
+    expect(issueComments).toEqual([
+      {
+        id: "IC_1",
+        author: { login: "alice", avatarUrl: "https://avatars/alice.png" },
+        body: "Looks good",
+        createdAt: "2026-05-20T10:00:00Z",
+        url: "https://github.com/owner/repo/pull/42#issuecomment-1",
+      },
+    ]);
+    expect(reviewThreads).toHaveLength(1);
+    expect(reviewThreads![0]).toMatchObject({
+      id: "RT_1",
+      isResolved: false,
+      isOutdated: true,
+      path: "src/x.ts",
+      line: 12,
+    });
+    expect(reviewThreads![0].comments[0]).toEqual({
+      id: "RC_1",
+      author: { login: "bob", avatarUrl: "" },
+      body: "nit: rename",
+      createdAt: "2026-05-20T10:05:00Z",
+    });
+  });
+
+  it("leaves fields undefined when the conversation selections are absent (light query)", () => {
+    const { issueComments, reviewThreads } = parseConversation(makeGraphQLPrNode() as never);
+    expect(issueComments).toBeUndefined();
+    expect(reviewThreads).toBeUndefined();
+  });
+
+  it("falls back to 'ghost' for comments from a deleted author", () => {
+    const node = makeGraphQLPrNode({
+      comments: { nodes: [{ id: "IC_2", body: "hi", createdAt: "2026-05-20T10:00:00Z", url: "u", author: null }] },
+    });
+    const { issueComments } = parseConversation(node as never);
+    expect(issueComments![0].author).toEqual({ login: "ghost", avatarUrl: "" });
+  });
+
+  it("parsePrNode includes conversation when selected, omits it otherwise", () => {
+    expect(parsePrNode(makeGraphQLPrNode(CONVERSATION_OVERRIDES) as never, "s1").issueComments).toHaveLength(1);
+    expect(parsePrNode(makeGraphQLPrNode() as never, "s1").issueComments).toBeUndefined();
+  });
+});
+
+describe("prStatusEqual conversation comparison (docs/133 Phase 4)", () => {
+  const base = parsePrNode(makeGraphQLPrNode(CONVERSATION_OVERRIDES) as never, "s1");
+
+  it("treats both-undefined conversation as equal", () => {
+    const a = parsePrNode(makeGraphQLPrNode() as never, "s1");
+    const b = parsePrNode(makeGraphQLPrNode() as never, "s1");
+    expect(prStatusEqual(a, b)).toBe(true);
+  });
+
+  it("detects a defined/undefined mismatch (first fetch)", () => {
+    const light = parsePrNode(makeGraphQLPrNode() as never, "s1");
+    expect(prStatusEqual(light, base)).toBe(false);
+  });
+
+  it("detects a new issue comment", () => {
+    const more: PrStatusSummary = {
+      ...base,
+      issueComments: [
+        ...base.issueComments!,
+        { id: "IC_2", author: { login: "alice", avatarUrl: "" }, body: "another", createdAt: "2026-05-20T11:00:00Z", url: "u2" },
+      ],
+    };
+    expect(prStatusEqual(base, more)).toBe(false);
+  });
+
+  it("detects a thread resolve flip", () => {
+    const resolved: PrStatusSummary = {
+      ...base,
+      reviewThreads: base.reviewThreads!.map((t) => ({ ...t, isResolved: true })),
+    };
+    expect(prStatusEqual(base, resolved)).toBe(false);
+  });
+
+  it("is equal when conversation is unchanged", () => {
+    const same = parsePrNode(makeGraphQLPrNode(CONVERSATION_OVERRIDES) as never, "s1");
+    expect(prStatusEqual(base, same)).toBe(true);
+  });
+});
+
 describe("PrStatusPoller", () => {
   let poller: PrStatusPoller;
   let sseBroadcast: ReturnType<typeof vi.fn<(event: string, data: unknown) => void>>;
@@ -397,6 +524,36 @@ describe("PrStatusPoller", () => {
     // Second poll — same data, no broadcast
     await vi.advanceTimersByTimeAsync(5_000);
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches conversation fields only when a session's PR tab is active (docs/133 Phase 4)", async () => {
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode(CONVERSATION_OVERRIDES)] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // Initial poll uses the light query (no conversation fields).
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).toHaveBeenLastCalledWith(PR_STATUS_QUERY, expect.anything());
+
+    // Opening the PR tab kicks an immediate poll with the conversation query.
+    poller.setPrTabActive("s1", true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).toHaveBeenLastCalledWith(
+      PR_STATUS_QUERY_WITH_CONVERSATION,
+      expect.anything(),
+    );
+
+    // Closing it returns to the light query on the next tick.
+    poller.setPrTabActive("s1", false);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(githubAuth.graphqlQuery).toHaveBeenLastCalledWith(PR_STATUS_QUERY, expect.anything());
   });
 
   it("broadcasts when the PR title changes (edited on github.com or by the agent)", async () => {

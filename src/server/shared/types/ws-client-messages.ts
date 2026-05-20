@@ -75,6 +75,19 @@ export interface WsCancelQueuedMessage {
   position: number | "all";
 }
 
+// ---- PR detail panel messages (client → server) ----
+
+/**
+ * Client → Server: report whether the PR detail tab is the active right-panel
+ * tab for a session (docs/133 Phase 4). Gates the poller's heavier conversation
+ * fields (issue comments + review threads) so idle sessions stay cheap.
+ */
+export interface WsPrTabActive {
+  type: "pr_tab_active";
+  sessionId: string;
+  active: boolean;
+}
+
 // ---- Rollback messages (client → server) ----
 
 /** Client → Server: rollback code only (git reset, chat stays). */
@@ -129,4 +142,5 @@ export type WsClientMessage =
   | WsRollbackCode
   | WsRollbackCodeAndChat
   | WsForkSessionFromMessage
-  | WsRewindToMessage;
+  | WsRewindToMessage
+  | WsPrTabActive;

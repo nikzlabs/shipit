@@ -1,5 +1,11 @@
 import { create } from "zustand";
-import type { PrStatusSummary, PrFileStat } from "../../server/shared/types/github-types.js";
+import type {
+  PrStatusSummary,
+  PrFileStat,
+  PrIssueComment,
+  PrReviewThread,
+} from "../../server/shared/types/github-types.js";
+import { useSettingsStore } from "./settings-store.js";
 
 // ---- Types ----
 
@@ -60,6 +66,13 @@ export interface PrCardState {
     settingsUrl?: string;
     error?: { code: string; message: string; settingsUrl: string };
   };
+  /**
+   * PR-level (issue) comments — docs/133 Phase 4. Only populated while the PR
+   * tab is open (the poller gates the fetch); `undefined` means "not fetched".
+   */
+  issueComments?: PrIssueComment[];
+  /** Review threads (line comments) — docs/133 Phase 4, read-only. */
+  reviewThreads?: PrReviewThread[];
   /** Error message (error phase). */
   errorMessage?: string;
   /**
@@ -105,6 +118,15 @@ interface PrState {
   fixCI: (sessionId: string) => Promise<string | null>;
   /** Toggle auto-fix on/off. */
   toggleAutoFix: (sessionId: string, enabled: boolean) => Promise<void>;
+
+  // Conversation actions (docs/133 Phase 4)
+  /**
+   * Post a PR-level (issue) comment. Optimistically appends it to the card so
+   * the user sees it immediately, then reconciles on the next poll. Returns an
+   * error message on failure (after reverting the optimistic append), null on
+   * success.
+   */
+  postComment: (sessionId: string, body: string) => Promise<string | null>;
 
   // Merge actions
   /** Merge the PR with the given method. Returns error message on failure, null on success. */
@@ -166,6 +188,9 @@ export const usePrStore = create<PrState>((set, get) => ({
               insertions: update.insertions,
               deletions: update.deletions,
             },
+            // Preserve last-known conversation when an update omits it (light poll).
+            issueComments: update.issueComments ?? existing?.issueComments,
+            reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
           };
         } else {
           nextCards[update.sessionId] = {
@@ -184,6 +209,9 @@ export const usePrStore = create<PrState>((set, get) => ({
             checks: update.checks,
             autoFix: update.autoFix,
             autoMerge: update.autoMerge,
+            // Preserve last-known conversation when an update omits it (light poll).
+            issueComments: update.issueComments ?? existing?.issueComments,
+            reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
           };
         }
       }
@@ -321,6 +349,72 @@ export const usePrStore = create<PrState>((set, get) => ({
       // State updates come from SSE, not from the POST response
     } catch (err) {
       console.error("[pr-store] Auto-fix toggle failed:", err);
+    }
+  },
+
+  // ---- Conversation actions (docs/133 Phase 4) ----
+
+  postComment: async (sessionId, body) => {
+    const trimmed = body.trim();
+    if (!trimmed) return "Comment cannot be empty";
+
+    const ghUser = useSettingsStore.getState().githubStatus;
+    const optimisticId = `optimistic-${Date.now()}`;
+    const optimistic: PrIssueComment = {
+      id: optimisticId,
+      author: { login: ghUser.username ?? "you", avatarUrl: ghUser.avatarUrl ?? "" },
+      body: trimmed,
+      createdAt: new Date().toISOString(),
+      url: "",
+    };
+
+    // Optimistically append so the comment shows immediately; the next poll
+    // tick reconciles with GitHub's authoritative copy.
+    set((state) => {
+      const existing = state.cardBySession[sessionId];
+      if (!existing) return state;
+      return {
+        cardBySession: {
+          ...state.cardBySession,
+          [sessionId]: {
+            ...existing,
+            issueComments: [...(existing.issueComments ?? []), optimistic],
+          },
+        },
+      };
+    });
+
+    const revert = () => {
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        if (!existing?.issueComments) return state;
+        return {
+          cardBySession: {
+            ...state.cardBySession,
+            [sessionId]: {
+              ...existing,
+              issueComments: existing.issueComments.filter((c) => c.id !== optimisticId),
+            },
+          },
+        };
+      });
+    };
+
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/comments`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ body: trimmed }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        revert();
+        return data.error || "Failed to post comment";
+      }
+      return null;
+    } catch (err) {
+      revert();
+      return err instanceof Error ? err.message : "Failed to post comment";
     }
   },
 
