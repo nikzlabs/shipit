@@ -131,6 +131,26 @@ export interface DocEntry {
   checklist?: { total: number; done: number };
 }
 
+// ---- Skill types ----
+
+/**
+ * A user-invocable skill/prompt that can be triggered with `/name` at the
+ * start of a chat message. Feeds the composer's `/` autocomplete menu.
+ * See docs/138-skill-invocation.
+ */
+export interface SkillInfo {
+  /** Slash-invocable name, e.g. "my-skill" → invoked as `/my-skill`. */
+  name: string;
+  /** One-line description from the skill's frontmatter, if present. */
+  description?: string;
+  /**
+   * Where the skill comes from. "project" — scanned from the workspace
+   * (`.claude/skills/**` or `.codex/prompts/**`). "bundled" — a built-in
+   * shipped by the active agent backend.
+   */
+  source: "project" | "bundled";
+}
+
 // ---- Template types ----
 
 export interface ProjectTemplate {

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { FileTreeNode } from "../components/FileTree.js";
-import type { DocEntry, UploadedFile, UploadItem } from "../../server/shared/types.js";
+import type { DocEntry, SkillInfo, UploadedFile, UploadItem } from "../../server/shared/types.js";
 import { detectFilePreviewType, type FilePreviewType } from "../utils/file-preview-type.js";
 import type { FilePreviewAction } from "../components/FilePreviewModal.js";
 import { useSessionStore } from "./session-store.js";
@@ -29,6 +29,9 @@ interface FileState {
   docFiles: DocEntry[];
   selectedDoc: string | null;
   docContent: string | null;
+
+  // User-invocable skills for the composer's `/` autocomplete (doc 138).
+  skills: SkillInfo[];
 
   // Session uploads — persisted in Zustand to survive route transitions
   sessionUploads: UploadItem[];
@@ -69,6 +72,7 @@ interface FileState {
   refreshFileContent: (sessionId: string, filePath: string) => Promise<void>;
   fetchDocs: (sessionId: string) => Promise<void>;
   fetchDoc: (sessionId: string, filePath: string) => Promise<void>;
+  fetchSkills: (sessionId: string, agentId?: string) => Promise<void>;
 }
 
 let uploadIdCounter = 0;
@@ -81,6 +85,7 @@ const initialState = {
   docFiles: [] as DocEntry[],
   selectedDoc: null as string | null,
   docContent: null as string | null,
+  skills: [] as SkillInfo[],
   sessionUploads: [] as UploadItem[],
   previewFile: null as string | null,
   previewContent: null as string | null,
@@ -309,5 +314,15 @@ export const useFileStore = create<FileState>((set) => ({
     }
     const { content } = await res.json() as { content: string | null };
     set({ docContent: content });
+  },
+
+  fetchSkills: async (sessionId, agentId) => {
+    const query = agentId ? `?agent=${encodeURIComponent(agentId)}` : "";
+    const res = await fetch(`/api/sessions/${sessionId}/skills${query}`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch skills: ${res.status}`);
+    }
+    const { skills } = await res.json() as { skills: SkillInfo[] };
+    set({ skills });
   },
 }));

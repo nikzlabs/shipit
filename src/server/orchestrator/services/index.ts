@@ -7,6 +7,7 @@
 
 export * from "./types.js";
 export * from "./files.js";
+export * from "./skills.js";
 export * from "./session.js";
 export * from "./git.js";
 export * from "./github.js";
