@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { McpServerSettings } from "./McpServerSettings.js";
 import { useMcpStore } from "../stores/mcp-store.js";
 import type { McpServerConfig } from "../../server/shared/types.js";
@@ -232,5 +232,43 @@ describe("McpServerSettings (docs/088)", () => {
     const valueInputs = screen.getAllByPlaceholderText("(unchanged)");
     expect(valueInputs).toHaveLength(1);
     expect((valueInputs[0] as HTMLInputElement).value).toBe("");
+  });
+
+  it("badges an OAuth-managed server and hides its Edit button", async () => {
+    const notionServer: McpServerConfig = {
+      name: "notion",
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer $platform:notion_oauth" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [notionServer] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({
+      providers: [
+        {
+          id: "notion_oauth",
+          label: "Notion",
+          description: "Connect to your Notion workspace.",
+          mcpUrl: "https://mcp.notion.com/mcp",
+          defaultServerName: "notion",
+          status: { source: "notion_oauth", connected: true },
+        },
+      ],
+    }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={true} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-server-notion")).toBeInTheDocument();
+    });
+
+    // The row identifies itself as managed by the connection above…
+    expect(screen.getByText(/via Notion connection/)).toBeInTheDocument();
+    // …and hides Edit (the URL/auth are wired from the connection), while
+    // keeping Test usable now that $platform: resolves correctly.
+    const row = screen.getByTestId("mcp-server-notion");
+    expect(within(row).queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(within(row).getByRole("button", { name: "Test" })).toBeInTheDocument();
   });
 });

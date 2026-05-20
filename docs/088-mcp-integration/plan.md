@@ -33,6 +33,20 @@ status: in-progress
 > account-level set instead would clobber `agent: true` compose secrets
 > since the worker REPLACES its tracked set on every push.
 >
+> **Test path now resolves `$platform:` (bug fix).** The worker's
+> `/mcp/test` endpoint had its own secret-only resolver
+> (`resolveMcpServerConfig`) that understood `$secret:` but not
+> `$platform:<source>`. Testing an OAuth-managed server (whose auth header is
+> `Bearer $platform:<source>`, e.g. the auto-created `notion` entry) sent the
+> unresolved literal upstream and the provider answered `401 Unauthorized` —
+> even though the agent could use the server fine (the agent path,
+> `resolveMcpServer`, always handled both forms). The two resolvers now share
+> one exported helper, `substituteMcpPlaceholders()` in `mcp-resolve.ts`, so
+> they can't drift again. The Settings UI also badges OAuth-managed servers
+> ("· via <provider> connection") and hides their Edit button so the
+> auto-created entry doesn't read as a stray duplicate of the "Connected"
+> provider card.
+>
 > **Mid-session `crashed` detection landed.** `agent-listeners.ts` records
 > every tool_use it sees within a turn and, on `agent_tool_result` with
 > `is_error: true`, attributes the failure back to the right MCP server by

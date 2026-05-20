@@ -18,7 +18,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, McpServerConfig } from "./agents/agent-process.js";
-import { resolveMcpServer } from "./mcp-resolve.js";
+import { resolveMcpServer, substituteMcpPlaceholders } from "./mcp-resolve.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
@@ -601,23 +601,24 @@ export class SessionWorker extends EventEmitter {
   }
 
   /**
-   * Resolve `$secret:` placeholders in a user MCP server config against
-   * `process.env`, returning a fully-resolved `McpServerConfig`. Used by the
-   * test endpoint. Returns `{ ok: false }` when a referenced secret is absent.
+   * Resolve `$secret:` and `$platform:` placeholders in a user MCP server
+   * config against `process.env`, returning a fully-resolved
+   * `McpServerConfig`. Used by the test endpoint. Returns `{ ok: false }`
+   * when a referenced secret/token is absent.
+   *
+   * Delegates substitution to the shared {@link substituteMcpPlaceholders}
+   * helper so the test path understands the exact same placeholder forms as
+   * the agent's `generateMcpConfig()` — including `$platform:<source>` used by
+   * OAuth-managed servers. Without this, testing a connected Notion/Linear
+   * server sent the literal `$platform:…` header and the provider returned a
+   * misleading 401.
    */
   private resolveMcpServerConfig(
     server: McpServerConfig,
   ): { ok: true; config: McpServerConfig } | { ok: false; error: string } {
     const missing: string[] = [];
     const subst = (value: string): string =>
-      value.replace(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g, (_m, key: string) => {
-        const v = process.env[key];
-        if (v === undefined || v === "") {
-          missing.push(key);
-          return "";
-        }
-        return v;
-      });
+      substituteMcpPlaceholders(value, process.env, missing);
     const substRecord = (rec?: Record<string, string>): Record<string, string> | undefined => {
       if (!rec) return undefined;
       const out: Record<string, string> = {};

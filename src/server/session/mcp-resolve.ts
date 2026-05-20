@@ -54,12 +54,26 @@ export interface McpResolveResult {
  * with `LINEAR_API_KEY=""` in its env can't authenticate to Linear, so the
  * server should be dropped rather than spawned with an empty credential.
  */
-export function resolveMcpServer(
-  server: McpServerConfig,
-  env: Record<string, string | undefined> = process.env,
-): McpResolveResult {
-  const missing: string[] = [];
-
+/**
+ * Apply `$secret:` and `$platform:` substitution to a single string, pushing
+ * any missing/empty referenced env keys onto `missing`.
+ *
+ *   `/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g`   → `env[capturedGroup]`
+ *   `/\$platform:([a-z][a-z0-9_]*)/g`        → `env[MCP_PLATFORM_<UPPER>]`
+ *
+ * Exported so every codepath that turns a stored MCP config into a live
+ * config — the agent's `generateMcpConfig()` (via {@link resolveMcpServer})
+ * AND the worker's `/mcp/test` connectivity check — substitutes the SAME
+ * placeholder forms. Previously the test path had its own copy that only
+ * understood `$secret:`, so testing an OAuth-managed server (whose auth
+ * header is `Bearer $platform:<source>`) sent the unresolved literal and the
+ * provider answered `401`, even though the agent could use the server fine.
+ */
+export function substituteMcpPlaceholders(
+  value: string,
+  env: Record<string, string | undefined>,
+  missing: string[],
+): string {
   const lookup = (envKey: string): string => {
     const v = env[envKey];
     if (v === undefined || v === "") {
@@ -68,13 +82,20 @@ export function resolveMcpServer(
     }
     return v;
   };
+  return value
+    .replace(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g, (_m, key: string) => lookup(key))
+    .replace(/\$platform:([a-z][a-z0-9_]*)/g, (_m, source: string) =>
+      lookup(`MCP_PLATFORM_${source.toUpperCase()}`),
+    );
+}
 
-  const subst = (value: string): string =>
-    value
-      .replace(/\$secret:([A-Za-z_][A-Za-z0-9_]*)/g, (_m, key: string) => lookup(key))
-      .replace(/\$platform:([a-z][a-z0-9_]*)/g, (_m, source: string) =>
-        lookup(`MCP_PLATFORM_${source.toUpperCase()}`),
-      );
+export function resolveMcpServer(
+  server: McpServerConfig,
+  env: Record<string, string | undefined> = process.env,
+): McpResolveResult {
+  const missing: string[] = [];
+
+  const subst = (value: string): string => substituteMcpPlaceholders(value, env, missing);
 
   const substRecord = (rec?: Record<string, string>): Record<string, string> | undefined => {
     if (!rec) return undefined;
