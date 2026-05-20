@@ -18,7 +18,8 @@
  */
 
 import type { AuthManager } from "../auth.js";
-import type { LimitsProvider } from "./types.js";
+import type { LimitsProvider, LimitsSkipTick } from "./types.js";
+import { LIMITS_SKIP_TICK, isAccessTokenExpired } from "./types.js";
 import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../shared/types.js";
 
 /**
@@ -110,13 +111,24 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     return this.lastKnownFetchable;
   }
 
-  async fetch(): Promise<SubscriptionLimits | null> {
+  async fetch(): Promise<SubscriptionLimits | null | LimitsSkipTick> {
     const tokenResult = await this.authManager.getAccessToken();
     if (tokenResult.token === null) {
       this.lastKnownFetchable = false;
       return null;
     }
     this.lastKnownFetchable = true;
+
+    // The access token in the shared credential file is short-lived;
+    // the Claude CLI refreshes it on each turn. When a session sits
+    // idle past the TTL nobody refreshes it, and hitting /usage with
+    // the stale token returns 401 — a misleading "auth expired" given
+    // the long-lived refresh token is still valid. Skip the doomed
+    // call; the badge keeps its last numbers and self-heals on the
+    // next turn. See LIMITS_SKIP_TICK.
+    if (isAccessTokenExpired(tokenResult.expiresAt, this.now())) {
+      return LIMITS_SKIP_TICK;
+    }
     // Plan label is derived from the credentials file (the /usage
     // response doesn't include one — Phase 0 finding). When the token
     // came from ANTHROPIC_AUTH_TOKEN (env, dogfooding) there's no

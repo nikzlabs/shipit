@@ -381,18 +381,42 @@ A new `LimitsPoller` lives next to `pr-status-poller.ts`:
   fails for a provider that already has a cached successful snapshot,
   the poller **preserves the prior data fields** (`session`,
   `weekly`, `weeklyOpus`, `plan`, `fetchedAt`) and merges only the
-  fresh `error` reason on top. The UI then renders the meters dimmed
-  and surfaces the failure in the tooltip rather than collapsing to
-  a "—". When there's never been a successful snapshot (cold start
-  with an error), the error-only form is stored as today and the UI
-  renders the em-dash. A subsequent successful fetch replaces the
-  snapshot wholesale, clearing both the staleness and the error.
-  Each provider has its own backoff counter — Claude failing doesn't
-  slow Codex down. Three distinct cases per provider:
-  - **401 / 403 (auth):** mark `error: "auth expired"`, stop polling
-    *that provider* until its auth manager re-emits `auth_complete`.
-    Other providers keep polling normally. Don't back off; re-auth
-    is the only fix.
+  fresh `error` reason on top. The UI keeps rendering the meters at
+  full strength and surfaces the failure in the tooltip only ("Last
+  refresh failed (…) — showing data from N min ago") rather than
+  collapsing to a "—" or dimming the pill. When there's never been a
+  successful snapshot (cold start with an error), the error-only form
+  is stored and the UI renders the em-dash. A subsequent successful
+  fetch replaces the snapshot wholesale, clearing both the staleness
+  and the error. Each provider has its own backoff counter — Claude
+  failing doesn't slow Codex down. Distinct cases per provider:
+  - **Idle access-token expiry (the common false alarm):** Claude and
+    Codex credentials live in *one shared file* (`/credentials/.claude`
+    + the Codex `auth.json`) that every session's CLI refreshes *on
+    each turn*. The access token in that file is short-lived (hours);
+    the refresh token is long-lived (~1yr). When a session sits idle
+    past the access-token TTL nobody refreshes the file, so the token
+    on disk goes stale even though auth is fundamentally valid —
+    hitting the usage endpoint then returns 401 and *looks* like
+    "auth expired" when it isn't. The providers pre-empt this: before
+    fetching, they check the credential's `expiresAt` (exposed by
+    `AuthManager.getAccessToken()` / `CodexAuthManager.getAccessToken()`)
+    and, if it's past `now + 60s`, return the `LIMITS_SKIP_TICK`
+    sentinel instead of firing the doomed request. The poller leaves
+    the cache and per-provider state untouched on a skip (no
+    broadcast, no error), so the badge keeps its last-known numbers
+    and self-heals the moment any session runs a turn (which refreshes
+    the shared credential). We deliberately do **not** refresh the
+    token ourselves: the credential is shared by every agent, so a
+    botched write or mishandled refresh-token rotation would break
+    *all* agent auth, not just the badge — too much blast radius for a
+    header indicator. See `LIMITS_SKIP_TICK` /
+    `isAccessTokenExpired()` in `limits/types.ts`.
+  - **401 / 403 (auth) despite a non-expired token:** a genuine auth
+    problem. Mark `error: "auth expired"`, stop polling *that
+    provider* until its auth manager re-emits `auth_complete`. Other
+    providers keep polling normally. Don't back off; re-auth is the
+    only fix.
   - **429 (rate-limited by the usage endpoint itself):** respect
     `Retry-After` if present; otherwise back off to **30 minutes**
     *for that provider* — visibly longer than the normal 5-minute

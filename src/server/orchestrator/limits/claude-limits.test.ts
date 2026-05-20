@@ -3,7 +3,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, vi } from "vitest";
 import { ClaudeLimitsProvider, parseClaudeUsage } from "./claude-limits.js";
+import { LIMITS_SKIP_TICK } from "./types.js";
 import type { AuthManager } from "../auth.js";
+import type { SubscriptionLimits } from "../../shared/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAX_20X_FIXTURE = JSON.parse(
@@ -14,6 +16,13 @@ function makeAuthStub(
   result: Awaited<ReturnType<AuthManager["getAccessToken"]>>,
 ): Pick<AuthManager, "getAccessToken"> {
   return { getAccessToken: vi.fn().mockResolvedValue(result) };
+}
+
+/** Fetch and assert the provider didn't skip, narrowing out the sentinel. */
+async function fetchSnapshot(provider: ClaudeLimitsProvider): Promise<SubscriptionLimits | null> {
+  const r = await provider.fetch();
+  expect(r).not.toBe(LIMITS_SKIP_TICK);
+  return r as SubscriptionLimits | null;
 }
 
 describe("parseClaudeUsage", () => {
@@ -117,13 +126,32 @@ describe("ClaudeLimitsProvider", () => {
     expect(provider.canFetch()).toBe(false);
   });
 
+  it("skips the call when the access token is already expired (idle CLI hasn't refreshed it)", async () => {
+    // expiresAt is in the past relative to `now` → the on-disk token
+    // is stale; hitting /usage would 401. We skip instead.
+    const auth = makeAuthStub({ token: "tok", source: "file", expiresAt: 500, plan: "Pro" });
+    const fetchImpl = vi.fn();
+    const provider = new ClaudeLimitsProvider({ authManager: auth, fetchImpl, now: () => 100_000 });
+    const result = await provider.fetch();
+    expect(result).toBe(LIMITS_SKIP_TICK);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("still fetches when the token has a comfortable future expiry", async () => {
+    const auth = makeAuthStub({ token: "tok", source: "file", expiresAt: 10_000_000, plan: "Pro" });
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
+    const provider = new ClaudeLimitsProvider({ authManager: auth, fetchImpl, now: () => 1_000 });
+    await provider.fetch();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("returns an auth-expired snapshot on 401", async () => {
     const auth = makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" });
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(null, { status: 401 }),
     );
     const provider = new ClaudeLimitsProvider({ authManager: auth, fetchImpl, now: () => 1_000 });
-    const result = await provider.fetch();
+    const result = await fetchSnapshot(provider);
     expect(result?.error).toBe("auth expired");
     expect(result?.fetchedAt).toBe(1_000);
   });
@@ -134,7 +162,7 @@ describe("ClaudeLimitsProvider", () => {
       new Response("oops", { status: 503 }),
     );
     const provider = new ClaudeLimitsProvider({ authManager: auth, fetchImpl });
-    const result = await provider.fetch();
+    const result = await fetchSnapshot(provider);
     expect(result?.error).toBe("limits unavailable");
   });
 
@@ -144,7 +172,7 @@ describe("ClaudeLimitsProvider", () => {
       new Response(null, { status: 429 }),
     );
     const provider = new ClaudeLimitsProvider({ authManager: auth, fetchImpl });
-    const result = await provider.fetch();
+    const result = await fetchSnapshot(provider);
     expect(result?.error).toBe("rate limited");
   });
 
@@ -162,7 +190,7 @@ describe("ClaudeLimitsProvider", () => {
       }),
     );
     const provider = new ClaudeLimitsProvider({ authManager: auth, fetchImpl, now: () => 42 });
-    const result = await provider.fetch();
+    const result = await fetchSnapshot(provider);
     expect(result).toMatchObject({
       agentId: "claude",
       plan: "Pro",
@@ -182,7 +210,7 @@ describe("ClaudeLimitsProvider", () => {
       }),
     );
     const provider = new ClaudeLimitsProvider({ authManager: auth, fetchImpl });
-    const result = await provider.fetch();
+    const result = await fetchSnapshot(provider);
     expect(result?.error).toBe("limits unavailable");
   });
 
@@ -190,7 +218,7 @@ describe("ClaudeLimitsProvider", () => {
     const auth = makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" });
     const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
     const provider = new ClaudeLimitsProvider({ authManager: auth, fetchImpl });
-    const result = await provider.fetch();
+    const result = await fetchSnapshot(provider);
     expect(result?.error).toBe("limits unavailable");
   });
 
@@ -213,7 +241,7 @@ describe("ClaudeLimitsProvider", () => {
       }),
     );
     const provider = new ClaudeLimitsProvider({ authManager: auth, fetchImpl });
-    const result = await provider.fetch();
+    const result = await fetchSnapshot(provider);
     expect(result?.plan).toBe("Max 20x");
     expect(result?.session?.usedPct).toBe(54);
     expect(result?.weekly?.usedPct).toBe(16);
@@ -224,7 +252,7 @@ describe("ClaudeLimitsProvider", () => {
     const auth = makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" });
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
     const provider = new ClaudeLimitsProvider({ authManager: auth, fetchImpl });
-    const result = await provider.fetch();
+    const result = await fetchSnapshot(provider);
     expect(result?.plan).toBe("Pro");
     expect(result?.error).toBe("limits unavailable");
   });
