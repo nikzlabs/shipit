@@ -1,6 +1,7 @@
 ---
 status: in-progress
 priority: high
+description: Add OAuth-based Codex authentication via ChatGPT subscription (codex login) instead of requiring a Platform API key, matching how Claude auth works.
 ---
 
 # 119 — Codex subscription auth (ChatGPT plan instead of Platform API key)

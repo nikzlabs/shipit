@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: medium
+description: Per-file "viewed" checkbox in the diff viewer to track review progress across large PRs, mirroring GitHub's review UX.
 ---
 
 # 103 — Mark Files as Viewed in Diff Viewer

@@ -1,6 +1,7 @@
 ---
 status: planned
 priority: medium
+description: Pause or throttle session containers whose browser tab has been inactive for several minutes to reclaim memory on multi-session setups.
 ---
 
 # Background session suspension — release memory from inactive tabs

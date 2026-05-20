@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: medium
+description: Unified notification center surfacing tool approvals, session errors, PR events, and deploy results across all sessions with inline actions.
 ---
 
 # 060 — Global Notification System

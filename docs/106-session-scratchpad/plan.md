@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: medium
+description: Persistent, agent-readable notes file (.shipit/notes.md) scoped to each session, surfaced as a side panel and auto-attached to every agent turn.
 ---
 
 # 106 — Per-Session Scratchpad

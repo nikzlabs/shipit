@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: low
+description: Architecture for running ShipIt as a multi-tenant managed service on Kubernetes with per-tenant namespace isolation, Sysbox DinD, and resource quotas.
 ---
 
 # 062 — Managed ShipIt (Multi-Tenant Hosting)

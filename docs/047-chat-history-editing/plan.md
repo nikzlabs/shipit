@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: low
+description: Let users delete messages and compact conversation history into a summarized fork to genuinely reduce the agent's context window.
 ---
 # 047 — Chat History Editing
 

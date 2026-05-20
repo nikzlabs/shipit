@@ -1,6 +1,7 @@
 ---
 status: in-progress
 priority: medium
+description: Fix blockers preventing /skill-name tokens from reaching the Claude CLI in non-interactive mode so users can invoke skills directly from the composer.
 ---
 
 # 138 — Explicit Skill Invocation (`/my-skill`)

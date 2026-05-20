@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: medium
+description: Switch the working branch to a fresh branch off main while preserving chat history and agent context, so users can start the next feature without losing the conversational warmup.
 ---
 
 # 111 — Continue on a New Branch

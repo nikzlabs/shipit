@@ -1,5 +1,7 @@
 ---
 status: planned
+priority: medium
+description: Collapsible table-of-contents pane with auto-generated one-line summaries per turn so users can jump between turns in long sessions.
 ---
 
 # 104 — Chat Table of Contents & Turn Summaries
