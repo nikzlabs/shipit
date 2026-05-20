@@ -147,6 +147,32 @@ describe("MessageList", () => {
       );
       expect(screen.getByText("TODO")).toBeInTheDocument();
     });
+
+    it("shows query for WebSearch tools", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "WebSearch", input: { query: "Claude Code permission 2026" } },
+      ];
+      render(
+        <MessageList
+          messages={[msg("assistant", "Searching the web", { toolUse: tools })]}
+          isLoading={false}
+        />
+      );
+      expect(screen.getByText("Claude Code permission 2026")).toBeInTheDocument();
+    });
+
+    it("shows url for WebFetch tools", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "WebFetch", input: { url: "https://example.com/docs" } },
+      ];
+      render(
+        <MessageList
+          messages={[msg("assistant", "Fetching", { toolUse: tools })]}
+          isLoading={false}
+        />
+      );
+      expect(screen.getByText("https://example.com/docs")).toBeInTheDocument();
+    });
   });
 
   describe("tool call grouping (render)", () => {
