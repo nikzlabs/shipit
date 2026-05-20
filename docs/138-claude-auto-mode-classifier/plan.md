@@ -162,55 +162,120 @@ but reduces confusion; call it out for the reviewer. (Its supervised-prompt code
 ### 2. `claude.ts` — spawn wiring
 - Tool allowlist for `guarded`: **reuse `AUTO_TOOLS`** (incl. user MCP globs). Auto mode
   drops the blanket `Bash` grant and routes Bash/network through the classifier; Write/Edit
-  in the working dir are tier-2 auto-approved. (Verify empirically that keeping the
-  allowlist doesn't suppress the classifier vs. removing it — see Open questions.)
+  in the working dir are tier-2 auto-approved. (Spike-confirmed: the allowlist does not
+  suppress the classifier — see Spike results.)
 - Pass the flag: extend the branch at `:84-86` so `guarded` → `--permission-mode auto`.
-- No system-prompt injection for `guarded` (the classifier *is* the mechanism, and auto
-  mode already nudges Claude to keep working without clarifying questions).
+- **System-prompt interplay (drop only the mode-specific injection).** `guarded` removes
+  *only* the `normal`-mode "use AskUserQuestion before acting" injection (`claude.ts:106-111`,
+  deleted with `normal`). It does **not** touch (a) a user's custom system prompt from
+  Settings, or (b) the managed `--settings /etc/shipit/managed-settings.json` hooks
+  (docs/130 branch-block, docs/129 stop-PR) — both still apply. The classifier and our
+  `PreToolUse` hook are independent layers; both run.
+- **MCP side-effecting tools.** The dropped `normal` injection used to tell Claude to
+  confirm before side-effecting MCP calls. Under `guarded`, MCP tool calls route through
+  the classifier like any non-read action — but the classifier's default rule set is
+  framed around shell/git/cloud/filesystem verbs and may not reliably recognize an
+  arbitrary `mcp__<server>__<verb>` as side-effecting. **Mitigation:** keep the MCP globs in
+  the allowlist (tools remain available) but do **not** assume the classifier gates them
+  well; if we want a hard guarantee for known-destructive MCP tools, add explicit `deny`
+  rules (deny rules resolve before the classifier — see decision order). Flag this for the
+  implementer to validate against a real side-effecting MCP server.
 
 ### 3. Availability detection + graceful fallback (per CLAUDE.md §1/§2 — surface inline, never link out)
-The user's plan/model/admin state can make `guarded` unavailable for **non-transient**
-reasons. Strategy:
-- **Attempt-and-detect.** Spawn with `--permission-mode auto`; if the CLI emits the
-  non-transient "auto mode unavailable" signal, (a) surface an inline chat message
-  explaining *why* it's unavailable and that we're falling back, (b) **fall back to today's
-  `auto`** behavior for that turn, and (c) remember per-session that `guarded` is
-  unavailable so we stop offering it / auto-fall-back silently next time.
-- **Transient classifier outage** ("cannot determine the safety of an action") is handled
-  differently: do not permanently disable; surface a transient notice.
-- Detection lives in `ClaudeProcess`/`claude-adapter` parsing of the stream/stderr; the
-  resolved availability is emitted back to the client to drive the selector's enabled state.
-  *(Exact detection strings/exit semantics: TBD in the spike — see Open questions.)*
 
-### 4. Headless-abort handling (`agent-execution.ts`)
-- When `-p` aborts due to repeated classifier blocks (3 consecutive / 20 total),
-  surface an inline chat message listing the denial reason(s) and suggesting either
-  rephrasing, stating a narrower scope, or switching to `auto` for the action — rather
-  than a silent/confusing turn failure. Reuse the post-turn message-emission path
-  (`runner.emitMessage`, not `ctx.send`).
+There are two independent availability questions, handled in two places:
 
-### 5. Client UI — replace the binary toggle with a 3-state selector
-- `PlanModeToggle.tsx` is binary (auto↔plan). Replace with a 3-state control
-  (`plan` / `guarded` / `auto`) — segmented control or a Shift-Tab-style cycle consistent
-  with ShipIt's design language. `guarded` is shown **disabled with an explanatory
-  tooltip** when the session has detected it as unavailable.
-- `App.tsx`: today the field is omitted from `send_message` when it equals `"auto"`. Keep
-  that, and send `"guarded"`/`"plan"` explicitly.
-- `settings-store.ts`: defaults unchanged (`"auto"` stays the **default** — `guarded` is a
-  research preview with availability constraints, so we do not make it the default).
-  `permissionModeBySession` already scopes per session.
-- `PlanApproval.tsx`: the "Approve and start in auto mode" path could optionally offer
-  "Approve in guarded mode" (mirrors Claude's own plan-approval options). Nice-to-have.
+**(a) Static capability — "could this account/agent ever use guarded?"** Drives whether the
+selector even offers `guarded`. This is the agent's `supportedPermissionModes` plus model
+support (see §5). It rides the **existing** `WsGlobalSettings.agents[]` payload
+(`ws-server-messages.ts:170-182`, the same channel that already carries `models` and
+`supportsReview`) — no new message type needed. Add a derived `supportsGuardedMode: boolean`
+(or expose `supportedPermissionModes`) per agent so the client can disable the option
+without a round-trip.
+
+**(b) Runtime availability — "did this specific run actually engage auto?"** Detected from
+the agent stream, since plan/admin/model state can refuse it even when statically offered:
+
+- **Authoritative signal (from spike):** the `system`/`init` event's `permissionMode` field.
+  `init.permissionMode === "auto"` ⇒ guarded engaged. If we requested auto but `init`
+  reports anything else (or the run errors before init), treat as **non-transient
+  unavailable**.
+- **On unavailable:** (a) `runner.emitMessage()` an inline notice explaining *why* and that
+  we fell back; (b) **the run already proceeds in default/auto-equivalent** since the CLI
+  itself dropped to `default` — so for that turn we simply let it complete and label it; (c)
+  set a **per-runner volatile flag** `guardedUnavailable = true` on the `SessionRunner`
+  (NOT persisted to SessionManager, NOT in the warm-pool snapshot). Subsequent turns read
+  the flag and silently send `auto`. The flag clears on session/container restart and on
+  page reload (the client re-reads static capability), so an admin later enabling auto is
+  rediscovered on the next fresh attempt — no stale lock in the database.
+- **Transient classifier outage** ("cannot determine the safety of an action") is the CLI's
+  documented separate signal: do **not** set the volatile flag; surface a one-off transient
+  notice and keep `guarded` selected.
+
+*(Open: the exact `init`-vs-error shape for a genuinely unavailable account (Pro/admin-lock)
+couldn't be captured — this account supports auto. The init-field check above is the
+defensive fallback; capture exact strings when a Pro account is available — Open question 2.)*
+
+### 4. Headless-abort handling — message shape & routing
+
+A single classifier block does **not** abort the turn (spike-verified); the model re-routes.
+The abort only fires after the CLI's 3-consecutive / 20-total threshold, at which point a
+`-p` run ends without a human prompt. Handling:
+
+- **Detection:** count entries in the `result` event's `permission_denials[]` (spike-verified
+  shape `{ tool_name, tool_use_id, tool_input }`). The CLI owns the threshold and ends the
+  process; we detect the resulting early/empty-result turn in `agent-listeners.ts`
+  (`agent_result` handling) — the same place post-turn actions already run.
+- **Message shape & routing:** emit a single **system-style notice** (reuse the existing
+  inline notice/log message kind broadcast via `runner.emitMessage()` — NOT `ctx.send()`, so
+  every viewer sees it and it lands in the turn-event buffer for reconnects) summarizing the
+  denial reason(s) from `permission_denials[]` and offering next steps: rephrase, state a
+  narrower scope, or switch to `auto` for the action.
+- **Retry flow:** no auto-retry. The user re-sends (optionally after switching to `auto`);
+  that is a **fresh turn**, consistent with how every other turn boundary works. We do not
+  silently re-run in `auto`.
+- **State-scope:** session context (id/dir) is captured at turn start per CLAUDE.md WS rules;
+  the notice is emitted against the captured runner resolved via the registry, never the
+  per-connection `attachedRunner`.
+
+### 5. Client UI — 3-state, agent-aware selector
+
+- **Replace** the binary `PlanModeToggle.tsx` with a 3-state control (`plan` / `guarded` /
+  `auto`) — segmented control or Shift-Tab-style cycle per the design-language skill.
+- **Agent-aware (MVP, not future work).** The selector reads the active agent's capability
+  from the `WsGlobalSettings.agents[]` payload (§3a). For Codex (`supportsPermissionModes:
+  false`) it hides `guarded`; today's binary toggle already ignores capability, so this also
+  fixes the latent gap where `plan` is shown for Codex. Source of the active agent:
+  `useUiStore.activeAgentId` (set in `App.tsx:646-649`, synced in `useConnectionSync.ts:43`).
+- **Model coupling.** `guarded` requires a supported model (Sonnet 4.6 / Opus 4.6 / Opus
+  4.7; Opus 4.7 Max-only). ShipIt's model picker exposes aliases `["sonnet","opus","haiku"]`
+  (`agent-registry.ts`); **Haiku is unsupported**, so picking Haiku must disable `guarded`
+  with a tooltip naming the reason ("Guarded mode needs Sonnet or Opus"). The orchestrator
+  cannot always pre-resolve the alias→version, so the runtime `init`-field check (§3b) is the
+  backstop if a selected model turns out unsupported.
+- **Disabled states carry a reason** in the tooltip (unsupported agent / unsupported model /
+  detected-unavailable), never a link-out.
+- **`App.tsx` send wiring:** keep omitting the field when it equals `"auto"`; send
+  `"guarded"`/`"plan"` explicitly.
+- **`settings-store.ts`:** default stays `"auto"` (research preview); `permissionModeBySession`
+  already scopes per session and is intentionally not persisted.
+- **`PlanApproval.tsx`:** add an "Approve in guarded mode" option alongside the existing
+  "Approve in auto" (`:36` resets to `"auto"` today). This is a *variant of the existing
+  approve choice*, not a new shell-shaped affordance (CLAUDE.md §5) — it mirrors Claude's own
+  plan-approval menu.
 
 ### 6. Usage / cost note
-Classifier calls count toward the user's token usage and add a round-trip before
-shell/network actions. `UsageManager` already tracks per-session cost; no special handling
-needed, but note it in the mode's tooltip/help so users understand `guarded` is slightly
-slower and costs a bit more than `auto`.
+Classifier calls run on a server-side model independent of `/model`, add a round-trip before
+each shell/network action, and **count toward the user's token usage**. `UsageManager`
+already tracks per-session cost, so totals stay correct with no new plumbing. Surface the
+tradeoff in the mode tooltip ("safety-checked; slightly slower and costs a bit more than
+auto"). Logging classifier blocks as separate telemetry is **out of scope** for the MVP
+(noted as a possible follow-up).
 
 ### 7. shipit-docs
-Update `src/server/shipit-docs/` if any agent-facing doc describes permission behavior, so
-the in-container agent reference matches.
+`src/server/shipit-docs/sessions.md:139` already references "permission mode" (subagent
+context). Audit it plus the rest of `src/server/shipit-docs/` and update any user/agent-facing
+description of the available modes to include `guarded`.
 
 ## Codex: investigated — different model, no classifier
 
@@ -245,22 +310,33 @@ would let Codex honor `plan`/`auto`; it still can't offer `guarded`.
 
 ## Touchpoints checklist
 
-- [ ] Spike: confirm `claude -p --permission-mode auto` activates headlessly without an
-      interactive opt-in (and capture the exact unavailable/outage signals).
-- [ ] `attachment-types.ts`: add `guarded`, drop `normal`.
-- [ ] `agent-registry.ts`, `claude-adapter.ts`: update `supportedPermissionModes`.
-- [ ] `claude.ts`: allowlist for `guarded`, `--permission-mode auto` pass-through, remove
-      `normal` system-prompt injection.
-- [ ] `claude-adapter.ts` / `claude.ts`: parse + emit availability (non-transient
-      unavailable vs transient outage); fall back to `auto`.
-- [ ] `agent-execution.ts`: handle headless abort-on-repeated-blocks, surface inline.
-- [ ] Client: 3-state, **agent-aware** selector replacing `PlanModeToggle`; disabled state
-      for unavailable `guarded`; `App.tsx` send wiring; `settings-store` (default stays
-      `auto`); optional `PlanApproval` "approve in guarded" option.
-- [ ] `src/server/shipit-docs/`: update if permission behavior is documented there.
-- [ ] Tests: extend `permission-modes.test.ts` (guarded → `--permission-mode auto`,
-      fallback path); update `PlanModeToggle.test.tsx` (3-state + agent-aware +
-      disabled-unavailable); `claude-adapter.test.ts` capability; remove `normal` test.
+- [x] Spike: `claude -p --permission-mode auto` activates headlessly without an opt-in;
+      capture detection signal (done — see Spike results).
+- [ ] **Types:** `attachment-types.ts` — `PermissionMode = "auto" | "plan" | "guarded"`
+      (drop `normal`).
+- [ ] **Capabilities (DRY):** `agent-registry.ts:35` AND `claude-adapter.ts:34` both
+      hard-code the mode list — update in sync, and extract to a single shared constant to
+      stop them drifting. Add `supportedPermissionModes`/derived `supportsGuardedMode` to the
+      `WsGlobalSettings.agents[]` payload (`ws-server-messages.ts:170-182`) + its producer.
+- [ ] **`claude.ts`:** allowlist for `guarded` (reuse `AUTO_TOOLS`); `--permission-mode auto`
+      pass-through; remove `normal` branch + its system-prompt injection (`:106-111`); update
+      the stale MCP-allowlist comment at `:18-20` (it names `normal`).
+- [ ] **`claude.ts`/`claude-adapter.ts`:** detect runtime availability from
+      `init.permissionMode`; set per-runner volatile `guardedUnavailable`; transient-outage
+      branch.
+- [ ] **`session-runner.ts`:** add the volatile `guardedUnavailable` flag (not persisted,
+      not in warm-pool snapshot).
+- [ ] **`agent-listeners.ts`:** handle headless abort-on-repeated-blocks
+      (`permission_denials[]`), emit inline notice via `runner.emitMessage()`.
+- [ ] **Client selector:** 3-state, **agent-aware** (reads `agents[]` capability + active
+      model) selector replacing `PlanModeToggle.tsx`; disabled states with reasons; `App.tsx`
+      send wiring; `settings-store` default stays `auto`.
+- [ ] **`PlanApproval.tsx:36`:** add "Approve in guarded mode" option.
+- [ ] **`shipit-docs/sessions.md:139`** + rest of `shipit-docs/`: document `guarded`.
+- [ ] **Tests:** extend `permission-modes.test.ts` (guarded → `--permission-mode auto`,
+      fallback path, abort path); update `PlanModeToggle.test.tsx` (3-state + agent-aware +
+      disabled-unavailable) and **remove the legacy `normal` test at `:36-41`**;
+      `claude-adapter.test.ts` capability assertion.
 - [ ] `npm run lint` + `npm run typecheck`.
 
 ## Spike results — verified in a container (CLI 2.1.145, `--model sonnet`)
@@ -310,9 +386,10 @@ repo) and cleaned up.
    `-p` session; a single block does not (verified). The multi-block abort path wasn't
    exercised (would need 3+ forced blocks). Build the inline handler per docs and verify
    later.
-5. **Model intersection.** Ensure the models ShipIt offers for Claude include at least one
-   auto-mode-supported model (Sonnet 4.6 / Opus 4.6 / Opus 4.7); otherwise `guarded` is
-   unavailable regardless of plan. Cross-check with the model lineup from commit
-   `9b81f8f4c`.
-5. **Default stays `auto`.** Research-preview status + availability constraints argue
+5. **Model intersection (verify before building the selector).** ShipIt's Claude model
+   picker exposes aliases `["sonnet","opus","haiku"]` (`agent-registry.ts`), not pinned
+   versions. Auto mode needs Sonnet 4.6 / Opus 4.6 / Opus 4.7 (Opus 4.7 Max-only) and
+   Haiku is unsupported. Confirm the alias→version the CLI resolves so the selector's
+   model-coupling logic (§5) is correct; the runtime `init`-field check is the backstop.
+6. **Default stays `auto`.** Research-preview status + availability constraints argue
    against defaulting to `guarded`. Revisit once it's GA and broadly available.
