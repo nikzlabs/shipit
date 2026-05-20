@@ -20,8 +20,10 @@ FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45ef
 
 # Runtime tools: git + curl for user projects, python3/make/g++ for native npm addons
 # in user sessions (npm install inside /workspace may compile C/C++ addons),
-# ripgrep (rg) because agents (Codex, Claude Code) prefer it for fast code search.
-RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip ripgrep && rm -rf /var/lib/apt/lists/*
+# ripgrep (rg) because agents (Codex, Claude Code) prefer it for fast code search,
+# bubblewrap (bwrap) because Codex probes for it on PATH at startup and logs an
+# ERROR + configWarning when it's missing (falling back to its bundled copy).
+RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip ripgrep bubblewrap && rm -rf /var/lib/apt/lists/*
 
 # Bump this build-arg per deploy (deploy.sh sets it to $(date +%s)) so the
 # Claude/Codex CLI layer is rebuilt on every deploy, picking up the latest
