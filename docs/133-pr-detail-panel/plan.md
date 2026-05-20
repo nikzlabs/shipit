@@ -40,8 +40,17 @@ immediate poll. `App.tsx` emits the gate from an effect keyed on tab + session
 `pr-store.postComment` with revert-on-error); `PrConversationSection` renders
 comments + review threads (read-only) with an inline error banner.
 
-**Not yet done (need server work / docs/102):** Phase 2 (editable title/body +
-`PATCH /pr`), Phase 4's review-thread **reply/resolve write-back** (the
+**Shipped (Phase 2, editable title + description):** the header title and
+description section gain inline editing when the PR is open (phase `open`).
+A pencil on the description enters a markdown-source textarea (Save/Cancel);
+the title gets a click-to-edit pencil → inline input (Enter saves, Esc cancels).
+Both call `pr-store.updatePr(sessionId, { title?, body? })`, which optimistically
+patches the card's `pr` slice and reverts on error, surfacing the failure in an
+inline `Banner`. The write goes through the existing
+`PATCH /api/sessions/:id/pr/:number` route (`editPullRequest` →
+`updatePullRequest`). Merged/closed PRs show no edit affordances.
+
+**Not yet done (need server work / docs/102):** Phase 4's review-thread **reply/resolve write-back** (the
 remaining docs/102 mutations + Monaco-widget surface), Phase 6 (activity
 timeline), and the `prCreatedAt`/`prAuthor`/`timeline` summary fields. The
 shipped Status section is read-only; wiring the card's merge/auto-fix/auto-merge
@@ -220,7 +229,7 @@ Errors surface inline in the panel (toast-style banner inside the section that f
 | Phase | Scope | Depends on | Status |
 |---|---|---|---|
 | **1. Panel scaffold + header + description** | "PR" tab wired into `rightPanel` (conditional on a PR existing), tab-selection UX, render title + markdown body read-only (`prTitle`/`prBody` are already on the summary — Phase 1 just renders them), "View on GitHub" overflow link. Card becomes clickable (selects the PR tab). | — | ✅ done |
-| **2. Editable description + title** | Pencil → Monaco markdown edit → `updatePullRequest`. Title click-to-edit. Optimistic update with revert-on-error. | Phase 1 | ⬜ todo |
+| **2. Editable description + title** | Pencil → markdown-source edit → `updatePullRequest`. Title click-to-edit. Optimistic update with revert-on-error. | Phase 1 | ✅ done (textarea editor, not Monaco — kept consistent with the existing comment composer) |
 | **3. Status section in panel + extract shared sub-component** | Move status visuals into a sub-component used by both card and panel. Card UX unchanged; panel gets full status detail. | Phase 1 | 🟡 partial — read-only status section shipped (reads shared store slice); shared sub-component extraction + actionable controls in panel still todo |
 | **4. Conversation section** | Issue comments + review threads. Heavy overlap with [`docs/102`](../102-github-pr-comment-sync/plan.md) — co-sequence so the GraphQL query and widget work happen once. | [`docs/102`](../102-github-pr-comment-sync/plan.md) Phase 1 | 🟡 partial — issue comments (read + post) + **read-only** review threads shipped, gated by `pr_tab_active`; review-thread reply/resolve write-back still todo (docs/102) |
 | **5. Files section** | List from existing diff API; "View diff" opens the existing Monaco diff panel — no diff re-implementation. | Phase 1 | 🟡 partial — single "View full diff" link shipped; per-file list still todo |

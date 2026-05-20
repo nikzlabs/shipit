@@ -32,10 +32,12 @@ export function PrDetailPanel({ sessionId }: { sessionId: string }) {
     );
   }
 
+  const editable = card.phase === "open";
+
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <PrDetailHeader card={card} />
-      <PrDescriptionSection body={card.pr.body} />
+      <PrDetailHeader card={card} sessionId={sessionId} />
+      <PrDescriptionSection sessionId={sessionId} body={card.pr.body} editable={editable} />
       <PrStatusSection sessionId={sessionId} card={card} />
       <PrConversationSection
         sessionId={sessionId}
