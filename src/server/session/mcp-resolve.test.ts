@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { resolveMcpServer } from "./mcp-resolve.js";
+import { resolveMcpServer, substituteMcpPlaceholders } from "./mcp-resolve.js";
 import type { McpServerConfig } from "./agents/agent-process.js";
 
 describe("resolveMcpServer (docs/088)", () => {
@@ -234,5 +234,39 @@ describe("resolveMcpServer (docs/088)", () => {
         headers: { Authorization: "Bearer $platform:LINEAR_OAUTH" },
       });
     });
+  });
+});
+
+// The connectivity-test path (worker `/mcp/test`) shares this helper so it
+// can't drift from the agent's resolver — the bug it fixes was a duplicate
+// secret-only resolver that left `$platform:` literals in the auth header.
+describe("substituteMcpPlaceholders (shared by agent + test paths)", () => {
+  it("substitutes both $secret: and $platform: in one string", () => {
+    const missing: string[] = [];
+    const out = substituteMcpPlaceholders(
+      "Bearer $platform:notion_oauth / $secret:mcp__x__K",
+      { MCP_PLATFORM_NOTION_OAUTH: "ntn_tok", mcp__x__K: "sk_val" },
+      missing,
+    );
+    expect(out).toBe("Bearer ntn_tok / sk_val");
+    expect(missing).toEqual([]);
+  });
+
+  it("maps $platform:<source> to MCP_PLATFORM_<UPPER>", () => {
+    const missing: string[] = [];
+    const out = substituteMcpPlaceholders(
+      "Bearer $platform:notion_oauth",
+      { MCP_PLATFORM_NOTION_OAUTH: "ntn_tok" },
+      missing,
+    );
+    expect(out).toBe("Bearer ntn_tok");
+    expect(missing).toEqual([]);
+  });
+
+  it("records the MCP_PLATFORM_* env name when an OAuth token is missing", () => {
+    const missing: string[] = [];
+    const out = substituteMcpPlaceholders("Bearer $platform:notion_oauth", {}, missing);
+    expect(out).toBe("Bearer ");
+    expect(missing).toEqual(["MCP_PLATFORM_NOTION_OAUTH"]);
   });
 });
