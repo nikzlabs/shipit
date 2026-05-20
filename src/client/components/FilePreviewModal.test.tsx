@@ -212,4 +212,76 @@ describe("FilePreviewModal", () => {
       expect(screen.queryByRole("button", { name: /ai review/i })).not.toBeInTheDocument();
     });
   });
+
+  // 114 — Sibling tabs let a user jump between a plan and its checklist (and
+  // any other sibling .md files) without leaving the modal.
+  describe("sibling tabs (114)", () => {
+    const siblings = [
+      { path: "docs/114-feature/plan.md", label: "Plan" },
+      { path: "docs/114-feature/checklist.md", label: "Checklist" },
+    ];
+
+    it("renders a tab strip when there is more than one sibling", () => {
+      render(
+        <FilePreviewModal
+          filePath="docs/114-feature/plan.md"
+          content="# Plan"
+          fileType="markdown"
+          siblings={siblings}
+          onSwitchSibling={() => {}}
+          onClose={() => {}}
+        />,
+      );
+      const tablist = screen.getByRole("tablist", { name: /related docs/i });
+      expect(tablist).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "Plan" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: "Checklist" })).toHaveAttribute("aria-selected", "false");
+    });
+
+    it("does not render a tab strip with a single sibling", () => {
+      render(
+        <FilePreviewModal
+          filePath="docs/114-feature/plan.md"
+          content="# Plan"
+          fileType="markdown"
+          siblings={[siblings[0]]}
+          onSwitchSibling={() => {}}
+          onClose={() => {}}
+        />,
+      );
+      expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    });
+
+    it("calls onSwitchSibling when an inactive tab is clicked", () => {
+      const onSwitchSibling = vi.fn();
+      render(
+        <FilePreviewModal
+          filePath="docs/114-feature/plan.md"
+          content="# Plan"
+          fileType="markdown"
+          siblings={siblings}
+          onSwitchSibling={onSwitchSibling}
+          onClose={() => {}}
+        />,
+      );
+      fireEvent.click(screen.getByRole("tab", { name: "Checklist" }));
+      expect(onSwitchSibling).toHaveBeenCalledExactlyOnceWith("docs/114-feature/checklist.md");
+    });
+
+    it("does not call onSwitchSibling when the active tab is clicked", () => {
+      const onSwitchSibling = vi.fn();
+      render(
+        <FilePreviewModal
+          filePath="docs/114-feature/plan.md"
+          content="# Plan"
+          fileType="markdown"
+          siblings={siblings}
+          onSwitchSibling={onSwitchSibling}
+          onClose={() => {}}
+        />,
+      );
+      fireEvent.click(screen.getByRole("tab", { name: "Plan" }));
+      expect(onSwitchSibling).not.toHaveBeenCalled();
+    });
+  });
 });
