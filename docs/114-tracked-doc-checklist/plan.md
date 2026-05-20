@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: medium
 ---
 
@@ -46,6 +46,9 @@ this pairing, so the friction was not rare.
   `siblings` + `onSwitchSibling` props. Renders the tab strip when
   `siblings.length > 1`. Discards an empty review draft on the outgoing tab
   before switching, mirroring close-without-comments behavior.
+- `src/client/components/FilePreviewModal.test.tsx` — covers the sibling
+  tab strip: renders only with >1 sibling, marks the active tab, and fires
+  `onSwitchSibling` only for inactive tabs.
 - `src/client/App.tsx` — computes `previewSiblings` from
   `useFileStore.docFiles` filtered to the open doc's directory; wires
   `handleSwitchSibling` to reuse the existing `handleOpenDoc` so the
