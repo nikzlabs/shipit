@@ -39,6 +39,17 @@ export interface ClaudeRunOptions {
   autoCreatePr?: boolean;
 }
 
+function prependSystemPromptForStreaming(prompt: string, systemPrompt?: string): string {
+  if (!systemPrompt) return prompt;
+  return [
+    "<shipit_system_instructions>",
+    systemPrompt,
+    "</shipit_system_instructions>",
+    "",
+    prompt,
+  ].join("\n");
+}
+
 export class ClaudeProcess extends EventEmitter {
   private proc: IPty | null = null;
   private buffer = "";
@@ -315,7 +326,9 @@ export class StreamingClaudeProcess extends EventEmitter {
     if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
     if (model) args.push("--model", model);
     if (settingsPath) args.push("--settings", settingsPath);
-    if (systemPrompt) args.push("--system-prompt", systemPrompt);
+    // Streaming JSON input can trip Claude CLI/model combinations that reject
+    // a literal `role: "system"` message. Keep the instructions, but deliver
+    // them as part of the first user message instead of via --system-prompt.
 
     const spawnEnv: Record<string, string> = {
       ...process.env,
@@ -370,8 +383,10 @@ export class StreamingClaudeProcess extends EventEmitter {
       this.proc = null;
     });
 
-    // Send the initial user message
-    this.sendUserMessage(prompt);
+    // Send the initial user message. Include ShipIt's system instructions in
+    // the user payload for streaming mode to avoid CLI/model combinations that
+    // reject a literal `role: "system"` message.
+    this.sendUserMessage(prependSystemPromptForStreaming(prompt, systemPrompt));
   }
 
   sendUserMessage(text: string, _opts?: { images?: ImageAttachment[] }): void {

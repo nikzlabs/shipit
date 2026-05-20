@@ -59,6 +59,11 @@ Streaming mode inverts this:
   --replay-user-messages …` and **keep the process alive across turns**.
 - The initial prompt is no longer a CLI arg — it's the first NDJSON user message
   written to stdin.
+- ShipIt's system instructions are prepended to that first user message in
+  streaming mode. Do not pass `--system-prompt` on the streaming path: some
+  Claude CLI/model combinations translate it into a literal `role: "system"`
+  API message, which can fail with `role 'system' is not supported on this
+  model`. The legacy one-shot PTY path still uses `--system-prompt`.
 - A **turn ends at the `result` event**, not at process exit. The process stays
   resident waiting for the next stdin message.
 - Steering = writing another user-message NDJSON line to stdin mid-turn.
@@ -118,6 +123,8 @@ that's fine, but it means Codex needs no lifecycle rework for this feature.
 
 **Session — `src/server/session/claude.ts`**
 - New streaming spawn path (piped stdio, the flags above), persistent process.
+- In streaming mode, fold the effective system prompt into the initial
+  `sendUserMessage()` payload instead of passing `--system-prompt`.
 - Map the `result` event to turn-complete while keeping the process alive;
   reserve `done` for actual process exit / dispose.
 - `sendUserMessage()` NDJSON serializer; `interrupt()` and `setPermissionMode()`

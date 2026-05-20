@@ -1,8 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ClaudeProcess } from "./claude.js";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { ClaudeProcess, StreamingClaudeProcess } from "./claude.js";
 
 // Mock node-pty
 vi.mock("node-pty", () => {
+  return {
+    spawn: vi.fn(),
+  };
+});
+
+vi.mock("node:child_process", () => {
   return {
     spawn: vi.fn(),
   };
@@ -17,7 +25,9 @@ vi.mock("../shared/strip-ansi.js", () => {
 
 
 import * as pty from "node-pty";
+import { spawn } from "node:child_process";
 const mockPtySpawn = vi.mocked(pty.spawn);
+const mockChildSpawn = vi.mocked(spawn);
 
 /** Callback-based mock matching the IPty interface. */
 function createMockPty() {
@@ -49,6 +59,20 @@ function createMockPty() {
     },
   };
   return mock;
+}
+
+function createMockChildProcess() {
+  const proc = new EventEmitter() as EventEmitter & {
+    stdout: PassThrough;
+    stderr: PassThrough;
+    stdin: PassThrough;
+    kill: ReturnType<typeof vi.fn>;
+  };
+  proc.stdout = new PassThrough();
+  proc.stderr = new PassThrough();
+  proc.stdin = new PassThrough();
+  proc.kill = vi.fn();
+  return proc;
 }
 
 describe("ClaudeProcess", () => {
@@ -621,5 +645,50 @@ describe("ClaudeProcess", () => {
       const watchdogLog = logs.find((l) => l.text.includes("No output from Claude CLI"));
       expect(watchdogLog).toBeUndefined();
     });
+  });
+});
+
+describe("StreamingClaudeProcess", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not pass --system-prompt in streaming mode", () => {
+    const mockProc = createMockChildProcess();
+    mockChildSpawn.mockReturnValue(mockProc as any);
+
+    const claude = new StreamingClaudeProcess();
+    claude.run({ prompt: "hello", systemPrompt: "Be helpful" });
+
+    const args = mockChildSpawn.mock.calls[0][1] as string[];
+    expect(args).not.toContain("--system-prompt");
+  });
+
+  it("prepends system instructions to the initial streaming user message", () => {
+    const mockProc = createMockChildProcess();
+    mockChildSpawn.mockReturnValue(mockProc as any);
+    const writes: string[] = [];
+    mockProc.stdin.write = vi.fn((chunk: string) => {
+      writes.push(chunk);
+      return true;
+    }) as any;
+
+    const claude = new StreamingClaudeProcess();
+    claude.run({ prompt: "hello", systemPrompt: "Be helpful" });
+
+    expect(writes).toHaveLength(1);
+    const msg = JSON.parse(writes[0]) as { message: { content: [{ text: string }] } };
+    expect(msg.message.content[0].text).toBe([
+      "<shipit_system_instructions>",
+      "Be helpful",
+      "</shipit_system_instructions>",
+      "",
+      "hello",
+    ].join("\n"));
   });
 });
