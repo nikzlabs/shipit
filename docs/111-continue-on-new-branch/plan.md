@@ -1,14 +1,16 @@
 ---
-status: planned
-priority: medium
-description: Switch the working branch to a fresh branch off main while preserving chat history and agent context, so users can start the next feature without losing the conversational warmup.
+status: paused
+priority: low
+description: Switch the working branch to a fresh branch off main while preserving chat history and agent context, so users can start a closely-related next feature without losing the agent's re-orientation cost.
 ---
 
 # 111 — Continue on a New Branch
 
 ## Summary
 
-A "continue on new branch" action in a session: keep the chat history and Claude's working context, but switch the underlying git worktree to a fresh branch off `main`. The current branch (and any outstanding PR) stays intact. Inspired by Conductor v0.32.0 — useful when you finish one feature and want to immediately start the next without losing the conversational warmup with the codebase.
+A "continue on new branch" action in a session: keep the chat history and Claude's working context, but switch the underlying git worktree to a fresh branch off `main`. The current branch (and any outstanding PR) stays intact. Inspired by Conductor v0.32.0 — useful when you finish one feature and want to immediately start a *closely-related* next one without paying to re-orient the agent on the codebase.
+
+> **What Conductor actually ships (v0.32.0, 2026-01-22):** *"Click 'Continue on new branch' to start work on a new feature in the same workspace. Use this to keep your chats and ignored files, or if it takes a long time to create new workspaces."* Two motivations: (a) keep chats + ignored files, (b) avoid slow workspace creation. See [§ Is this worth building in ShipIt?](#is-this-worth-building-in-shipit) — motivation (b) does not survive the move to ShipIt.
 
 ## Motivation
 
@@ -19,6 +21,22 @@ Today, when a user finishes a feature in a session, their options are:
 3. **Fork from a turn** ([RewindDropdown](../099-auto-pr-on-meaningful-turn/plan.md) flow) — only useful for going backward, not forward.
 
 Power users want a fourth: keep the conversation warm (Claude has built useful context about the repo, conventions, recent decisions) but reset the working tree so commits go to a new branch and a new PR. Effectively: graduate the session.
+
+There's also a hard constraint that makes this an orchestrator action rather than a chat instruction: **[doc 130](../130-block-branch-ops/plan.md) (done) structurally blocks the agent from `git checkout -b` / `git switch -c` / `git branch <name>`** via a PreToolUse hook. So a user *cannot* just tell the agent "start the next feature on a fresh branch off main" — the hook rejects it. Without this feature, the only in-product "next feature" path is opening a new (cold) session. 111 is the sanctioned escape hatch for the exact operation 130 forbids the agent from doing.
+
+## Is this worth building in ShipIt?
+
+Conductor's pitch leans on two motivations; only one survives the port to ShipIt, and even that one is narrower than it looks. This section is the honest reckoning — read it before picking the feature up.
+
+**Motivation that does NOT survive: "slow to create new workspaces."** ShipIt creates sessions fast — warm session pool, bare-cache clones, and `dep-cache/<hash>`. Conductor users wait on clone + `npm install`; ShipIt users mostly don't. The "skip the workspace-creation cost" argument is the headline reason in Conductor and it essentially evaporates here.
+
+**Motivation that partially survives: "keep your chats and ignored files."**
+- *Ignored / untracked files* (`.env`, build artifacts, caches): in ShipIt this is mostly covered by the secret store + dep-cache, so the win is thin.
+- *Keep your chats*: real, but double-edged. Docs [047](../047-chat-history-editing/plan.md) and [104](../104-chat-toc-and-summaries/plan.md) exist precisely because long contexts degrade answer quality and inflate cost. Carrying a full feature's worth of debugging chatter into an *unrelated* next feature is a liability, not an asset.
+
+**What genuinely justifies it anyway — agent re-orientation cost.** Creating a container is cheap; getting the *agent* back to the same level of understanding is not. A fresh session's agent re-reads `CLAUDE.md`, re-explores the subsystem, and rebuilds its mental model — potentially several turns with a cold prompt cache. When the next feature is *closely related* to the one just shipped (same subsystem, conventions just established), continuing on a new branch is materially faster and cheaper. "Session creation is fast" answers infra cost; it does not answer cognition cost.
+
+**Conclusion.** Narrow but real — a power-user action for closely-related follow-up work, **not** a headline feature (hence `priority: low`). The strongest form is not "carry the entire chat forward" but **"graduate to a fresh branch off main with a compacted summary"** (compose with [104](../104-chat-toc-and-summaries/plan.md)): keep repo/convention knowledge, drop the debugging noise. That variant is strictly better than a cold new session for related work and neutralizes the context-pollution objection. If we build 111, build that version.
 
 ## Design
 
@@ -33,9 +51,19 @@ Power users want a fourth: keep the conversation warm (Claude has built useful c
 
 ### What it does NOT do
 
-- Doesn't clear chat history. The summarizer ([104](../104-chat-toc-and-summaries/plan.md)) and Claude's own prompt-cache benefit from continuity.
+- Doesn't clear chat history. The summarizer ([104](../104-chat-toc-and-summaries/plan.md)) and Claude's own prompt-cache benefit from continuity. (But see the [usefulness reckoning](#is-this-worth-building-in-shipit) — the *compacted-summary* variant is the preferred form, not raw carry-forward.)
 - Doesn't reset Claude's working files context — the worktree is fresh on the new branch but the agent is still running. This is a feature: Claude knows the codebase from the previous work.
+- **Preserves ignored / untracked working state.** Because we reuse the worktree (not re-clone), gitignored and untracked files survive — `node_modules`, `.env`, `dist/`, local caches. This is the one place ShipIt mirrors Conductor's "keep ignored files" benefit; fork ([session-fork-merge.ts](../../src/server/orchestrator/services/session-fork-merge.ts)) and spawn ([117](../117-agent-spawned-sessions/plan.md)) both lose it since they clone fresh.
 - Doesn't delete the old branch. It stays remotely so the PR keeps working independently.
+
+### What is a ShipIt design choice vs. what Conductor does
+
+Conductor's changelog only promises "new branch, same workspace, keep chats and ignored files." The following are **our** additions, not observed Conductor behavior — call them out as decisions, not requirements:
+
+- **Branch off `origin/main` specifically.** Conductor just says "new branch"; the base is unspecified. We pick `main` (configurable later — see Future extensions).
+- **PR-state reset** (`prNumber/prStatus/mergedAt` cleared, card flips to "ready"). ShipIt-specific because we own the PR lifecycle card; Conductor has no equivalent.
+- **The merged-PR / confirm gating** (below). Conductor offers it as an always-available button with no precondition.
+- **"Warm agent context" claim.** Conductor says "keep your chats" — i.e. UI history. Whether the underlying agent context survives is a ShipIt implementation question: because we keep the *same* agent process and `--resume` session and only swap the worktree branch, the resume context and prompt cache do carry over. State this as an implementation property we deliberately preserve, not an assumption.
 
 ### Constraints
 
