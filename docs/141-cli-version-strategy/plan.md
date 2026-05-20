@@ -87,8 +87,8 @@ narrow and known, which makes Axis 3 cheap and high-leverage:
 
 Driven by product input:
 
-- **Freshness SLA: within a few days.** A **7-day** tested cooldown is the chosen
-  setting; safety is weighted over same-hour currency.
+- **Freshness SLA: within a few days.** A tested cooldown is acceptable (length
+  set in Axis 2); safety is weighted over same-hour currency.
 - **Two channels: yes.** Power users opt into bleeding-edge per session; the
   default stays on the tested pin.
 - **Top concern: integrations breaking.** Axis 3 (adapter contract tests) is the
@@ -228,8 +228,9 @@ version dropped" from roulette into a green check. Run it in two modes:
 ## Recommended rollout order
 
 1. **Axis 2 (independent, do first):** dedicated `package.json` +
-   `package-lock.json` for the global CLIs, `npm ci --ignore-scripts`, 7-day
-   cooldown; drop the `date +%s` cache-buster. Biggest risk reduction per hour.
+   `package-lock.json` for the global CLIs, `npm ci --ignore-scripts`, the
+   install cooldown; drop the `date +%s` cache-buster. Biggest risk reduction per
+   hour.
 2. **Axis 3:** the adapter contract test against real CLIs.
 3. **Axis 1 = Option C:** install the Renovate GitHub App + commit `renovate.json`;
    it opens bump PRs (cooldown via `minimumReleaseAge`) gated on the contract
@@ -293,8 +294,8 @@ Other touchpoints:
   agent (agent-facing platform behavior).
 - New: per-channel CLI install `package.json` + `package-lock.json`; CLI contract
   test; `renovate.json` for the Renovate GitHub App (config the manifest as a
-  dependency target, set `minimumReleaseAge: "7 days"` for the cooldown, enable
-  auto-merge on green).
+  dependency target, set `minimumReleaseAge` for the cooldown, enable auto-merge
+  on green).
 
 ## Bump tooling — decision
 
@@ -314,8 +315,7 @@ SCA/security platform is *not* required for this use case.
 
 ## Open questions
 
-- Cooldown length is fixed at **7 days**; open only whether any package warrants
-  a different value (default: same 7 days for all).
+- Whether any package warrants a cooldown different from the default (Axis 2).
 - Where the channel setting lives canonically (session setting vs. `shipit.yaml`
   vs. both) and precedence between them.
 - Whether `@playwright/mcp` follows the same pin/channel discipline or stays a
