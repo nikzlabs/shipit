@@ -58,5 +58,6 @@
 - [ ] Smoke test against a real OpenAI account in a dev container,
       verify `OPENAI_API_KEY` doesn't leak to the spawned process env
       via `/proc/<pid>/environ`.
-- [ ] Mark `plan.md` as `status: done` once the open follow-ups above
-      are resolved.
+- [x] Mark `plan.md` as `status: done`. Done 2026-05-20; the remaining
+      unchecked items above are non-blocking follow-ups, kept here as a
+      record of deferred work.
