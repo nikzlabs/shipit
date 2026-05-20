@@ -14,11 +14,6 @@ Comprehensive security review of the ShipIt codebase covering injection vulnerab
 
 ## Medium Severity
 
-### 1. Path Traversal in `preview.directory` — OBSOLETE (architecture migrated to Compose)
-
-- **Original location**: `src/server/session/preview-config.ts:127-131`
-- **2026-05-20 status**: **No longer applicable.** The session-side preview manager was removed; previews now run as Docker Compose services (`ServiceManager`). The `preview.directory` field is a legacy alias mapped to compose `working_dir` (see `src/server/shipit-docs/shipit-yaml.md:143-145`), which is interpreted by Docker, not by ShipIt path-resolution code. `preview-config.ts` and `preview-manager.ts` no longer exist, so the un-guarded `path.resolve` this finding described is gone. No fix required; closing.
-
 ### 2. TOCTOU Race in Docker Bind-Mount Validation
 
 - **Location**: `src/server/orchestrator/docker-proxy-auth.ts:109-125`
@@ -27,12 +22,6 @@ Comprehensive security review of the ShipIt codebase covering injection vulnerab
 - **Recommendation**: Document this as an accepted risk. Consider enforcing `nosymfollow` mount options or inode-based checks if the threat model changes.
 
 ## Low Severity
-
-### 3. Shell Command Execution via `preview.command` — OBSOLETE (architecture migrated to Compose)
-
-- **Original location**: `src/server/session/preview-manager.ts:437` (`spawn("sh", ["-c", command])`)
-- **2026-05-20 status**: **No longer applicable.** ShipIt no longer spawns the preview command itself; `preview.command` is a legacy alias for a Docker Compose service `command`, executed by Docker. The `spawn("sh", ["-c", ...])` path described here is gone.
-- **Trust-boundary note (still spirit-relevant)**: A `docker-compose.yml` or `shipit.yaml` is still executable configuration — auto-importing either from an untrusted repository hands that repo arbitrary command execution in the session container. This is the same trust boundary, now expressed through compose. Keep "do not auto-import from untrusted sources" as a documented invariant.
 
 ### 4. File Operations on User Paths — No Issue Found
 
@@ -138,28 +127,13 @@ The audit identified several well-implemented security controls:
 | WebSocket handlers | `ws-handlers/*.ts` | Secure |
 | File uploads/downloads | `services/files.ts`, `validation.ts` | Secure |
 | Docker proxy | `docker-proxy-auth.ts`, `docker-proxy-sanitize.ts` | Medium (TOCTOU) |
-| Child process spawning | `install-runner.ts`, `preview-manager.ts` | Low (by design) |
+| Child process spawning | `install-runner.ts` | Low (by design) |
 | Terminal management | `terminal.ts`, `session-worker.ts` | Secure |
 | Agent spawning | `claude.ts`, `codex-adapter.ts` | Secure |
 | JSON/data parsing | All routes and handlers | Secure (no eval/Function) |
 | Database operations | `secret-store.ts`, `database.ts` | Secure |
-| Preview config | ~~`preview-config.ts`, `preview-manager.ts`~~ → Compose (`ServiceManager`) | Obsolete (preview now Compose-based; #1/#3 closed) |
 | Credential reachability from sandbox | `git-config.ts`, `session-credentials.ts`, `agent-shim/gh.ts` | High (GitHub PAT readable in-container — #5) |
 | Container network egress | `container-lifecycle.ts`, `docker-proxy-sanitize.ts` | Medium (no egress controls — #6) |
-
-## Planned proxy policy changes (089-shipit-in-shipit) — LANDED
-
-> **2026-05-20 status**: The `docs/089-shipit-in-shipit/` doc no longer exists, and the three relaxations below have shipped (`container-lifecycle.ts` now sets `SecurityOpt: ["no-new-privileges"]` with the `CapDrop: ALL` + scoped `CapAdd` allowlist). The analysis is retained for the record; the "review once implemented" checklist item is closed. The security conclusion is unchanged: these were net-neutral or net-positive for the threat model.
-
-The proposal made three proxy relaxations to support nested orchestrators. Security analysis:
-
-1. **Allow safe CapAdd when CapDrop: ALL is present** — the allowlist (`CHOWN`, `SETUID`, `SETGID`, `FOWNER`, `DAC_OVERRIDE`, `NET_BIND_SERVICE`, `KILL`) is a strict subset of Docker's default capability set. The dangerous capabilities (`SYS_ADMIN`, `SYS_PTRACE`, `NET_ADMIN`, `NET_RAW`) remain blocked. `NET_RAW` is still force-injected into `CapDrop`. **No change to threat model.**
-
-2. **Allow `no-new-privileges` in SecurityOpt** — this is a hardening flag, not a relaxation. Allowing it makes child containers *more* secure. Currently the proxy strips it, which silently weakens child container security. **Improves security posture.**
-
-3. **Volume allowlist for workspace/credentials volumes** — allows sessions to mount the named volumes they were given (by name, not by host path). The session already has full read/write access to these volumes, so allowing child containers to mount them doesn't expand the access boundary. The allowlist is set by the orchestrator, not by the session. **No change to threat model.**
-
-The TOCTOU race (issue #2) applies identically under nested scenarios — same mitigations, same accepted-risk status.
 
 ## Checklist
 
@@ -171,8 +145,6 @@ The TOCTOU race (issue #2) applies identically under nested scenarios — same m
 - [x] Audit Docker security controls
 - [x] Document findings
 - [x] Review architecture against Anthropic managed-agents threat model (credential reachability + egress)
-- [x] ~~Fix path traversal in preview.directory (issue #1)~~ — obsolete, preview migrated to Docker Compose
 - [ ] Add accepted-risk documentation for TOCTOU race (issue #2)
-- [x] ~~Review proxy policy changes from 089-shipit-in-shipit once implemented~~ — relaxations landed; doc removed
 - [ ] **Fix GitHub PAT reachability from sandbox (issue #5)** — replace in-container inline-token credential helper with a brokering helper (`shipit-git-credential`) that proxies to the worker, mirroring the `gh` shim; stop copying the token-bearing `.gitconfig` into the container
 - [ ] **Add egress controls for agent containers (issue #6)** — orchestrator forward proxy with host allowlist (GitHub + Anthropic/agent endpoints + configured MCP hosts), or document as accepted risk with `agent: true` secrets clearly labeled exfiltratable
