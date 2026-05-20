@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { CodexAdapter } from "./codex-adapter.js";
+import { CodexAdapter, unwrapShellCommand } from "./codex-adapter.js";
 import type { AgentEvent } from "./agent-process.js";
 
 /**
@@ -359,6 +359,25 @@ describe("CodexAdapter", () => {
     expect(events.map((e) => (e as any).content[0].text)).toEqual(["Hi ", "there"]);
   });
 
+  describe("unwrapShellCommand", () => {
+    it("strips the /bin/bash -lc wrapper (single and double quotes)", () => {
+      expect(unwrapShellCommand("/bin/bash -lc 'ls -la'")).toBe("ls -la");
+      expect(unwrapShellCommand(`/bin/bash -lc "sed -n '1,20p' docs/plan.md"`)).toBe("sed -n '1,20p' docs/plan.md");
+      expect(unwrapShellCommand("bash -c 'echo hi'")).toBe("echo hi");
+      expect(unwrapShellCommand("sh -c 'echo hi'")).toBe("echo hi");
+    });
+
+    it("preserves inner quotes that aren't the outer wrapper", () => {
+      expect(unwrapShellCommand(`/bin/bash -lc 'rg -n "^status:" docs/a.md'`)).toBe('rg -n "^status:" docs/a.md');
+    });
+
+    it("leaves non-wrapped commands unchanged", () => {
+      expect(unwrapShellCommand("ls -la")).toBe("ls -la");
+      expect(unwrapShellCommand("npm run build")).toBe("npm run build");
+      expect(unwrapShellCommand("")).toBe("");
+    });
+  });
+
   it("maps a commandExecution item to tool_use (started) and tool_result (completed)", async () => {
     await createAndInit("Run ls");
     events.length = 0;
@@ -394,7 +413,8 @@ describe("CodexAdapter", () => {
           type: "tool_use",
           id: "call-001",
           name: "shell",
-          input: { command: "/bin/bash -lc 'ls -la'", cwd: "/workspace" },
+          // The `/bin/bash -lc '…'` wrapper is stripped so it reads like Claude's Bash.
+          input: { command: "ls -la", cwd: "/workspace" },
         },
       ],
     });
@@ -451,12 +471,77 @@ describe("CodexAdapter", () => {
     expect(events[0]).toEqual({
       type: "agent_assistant",
       content: [
-        { type: "tool_use", id: "fc-1", name: "apply_patch", input: { files: ["src/a.ts", "src/b.ts"] } },
+        {
+          type: "tool_use",
+          id: "fc-1",
+          name: "apply_patch",
+          input: {
+            files: ["src/a.ts", "src/b.ts"],
+            changes: [
+              { path: "src/a.ts", kind: "update", diff: "@@" },
+              { path: "src/b.ts", kind: "add", diff: "@@" },
+            ],
+          },
+        },
       ],
     });
     expect(events[1]).toEqual({
       type: "agent_tool_result",
       content: [{ type: "tool_result", tool_use_id: "fc-1", content: "update src/a.ts\nadd src/b.ts" }],
+    });
+  });
+
+  it("labels internally-tagged kinds and surfaces the top-level diff (not [object Object])", async () => {
+    // Verified wire shape (Codex App Server v2, FileUpdateChange): the unified
+    // diff is the top-level `diff` string and `kind` is an internally-tagged
+    // enum object `{ type: "add"|"delete"|"update", move_path? }`.
+    await createAndInit("Edit a file");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/completed", {
+      item: {
+        type: "fileChange",
+        id: "fc-2",
+        status: "completed",
+        changes: [
+          { path: "/workspace/src/game/Game.js", diff: "@@ -1 +1 @@\n-a\n+b", kind: { type: "update", move_path: null } },
+          { path: "/workspace/src/new.js", diff: "+line1\n+line2", kind: { type: "add" } },
+          { path: "/workspace/src/old.js", diff: "-gone", kind: { type: "delete" } },
+        ],
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(2);
+    });
+
+    expect(events[0]).toEqual({
+      type: "agent_assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "fc-2",
+          name: "apply_patch",
+          input: {
+            files: ["/workspace/src/game/Game.js", "/workspace/src/new.js", "/workspace/src/old.js"],
+            changes: [
+              { path: "/workspace/src/game/Game.js", kind: "update", diff: "@@ -1 +1 @@\n-a\n+b" },
+              { path: "/workspace/src/new.js", kind: "add", diff: "+line1\n+line2" },
+              { path: "/workspace/src/old.js", kind: "delete", diff: "-gone" },
+            ],
+          },
+        },
+      ],
+    });
+    expect(events[1]).toEqual({
+      type: "agent_tool_result",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "fc-2",
+          content: "update /workspace/src/game/Game.js\nadd /workspace/src/new.js\ndelete /workspace/src/old.js",
+        },
+      ],
     });
   });
 
