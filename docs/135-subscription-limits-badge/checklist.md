@@ -12,10 +12,17 @@
       doesn't carry a plan field — derived from
       `claudeAiOauth.subscriptionType` + `rateLimitTier` in the
       credentials file instead.
-- [ ] Capture the Codex `/codex/usage` (or whatever the real path
-      turns out to be) against a ChatGPT-plan-authenticated `codex`
-      CLI. Update `CODEX_USAGE_URL` and `parseCodexUsage` field
-      lists to match the captured shape.
+- [x] **Codex usage source — resolved without an HTTP endpoint.**
+      The community-reported `/backend-api/codex/usage` path 401/403s
+      even with a valid bearer (it wants a `chatgpt-account-id`
+      header and possibly more), so polling it surfaced a permanent
+      "auth expired" on the badge. Replaced with the *event-driven*
+      source the Codex App Server already pushes: an
+      `account/rateLimits/updated` JSON-RPC notification carrying the
+      same `primary` (5h) / `secondary` (weekly) windows it draws its
+      own `/status` line from. Verified present in prod session logs.
+      No `CODEX_USAGE_URL` / `parseCodexUsage` — see the rewritten
+      "Codex (OpenAI)" section in `plan.md`.
 - [x] **Confirm Claude OAuth scope.** Done 2026-05-19. The CLI's
       existing scopes (`user:file_upload, user:inference,
       user:mcp_servers, user:profile, user:sessions:claude_code`)
@@ -51,17 +58,30 @@ and refresh behavior. Ready to ship.
       `<UptimeBadge>` in `AppLayout`.
 - [x] Unit tests: parser, provider, poller, badge.
 
-## Phase 2 — Codex
+## Phase 2 — Codex (event-driven)
 
-Implementation landed in the same change to keep the provider
-architecture symmetric; gated by Phase 0 confirmation.
+The Codex pill is fed by the App Server's `account/rateLimits/updated`
+stream rather than an HTTP poll (see Phase 0 above for why). The pill
+is blank until the first turn of a session delivers a snapshot — an
+accepted trade for using the one source we've *verified* works.
 
-- [x] `CodexLimitsProvider` with tolerant schema parser.
-- [x] `CodexAuthManager.getAccessToken()` reading
-      `~/.codex/auth.json`.
-- [x] Registered in `app-di.ts` / `index.ts` so the pill appears
-      whenever Codex credentials are on disk.
-- [ ] Verify against the real Codex `/status`-backing endpoint.
+- [x] `CodexLimitsProvider` — *event-fed*, not polled. `setRateLimits()`
+      stores the latest pushed windows; `fetch()` returns them enriched
+      with the plan tier; `canFetch()` is true once a snapshot has
+      arrived (`limits/codex-limits.ts`).
+- [x] `CodexAdapter` captures the `account/rateLimits/updated`
+      JSON-RPC notification and emits an `agent_rate_limits`
+      AgentEvent (`session/agents/codex-adapter.ts`).
+- [x] Event plumbing: worker SSE → `ProxyAgentProcess` →
+      `wireAgentListeners` calls `recordCodexRateLimits()`, which pushes
+      into the provider and fires `markAuthRefreshed("codex")` so the
+      pill updates within seconds.
+- [x] `CodexAuthManager.getAccessToken()` + `extractCodexPlan()` read
+      the `chatgpt_plan_type` JWT claim from `~/.codex/auth.json` for
+      the tooltip's plan tier (`limitName` in the payload is null).
+- [x] Registered in `app-di.ts` / `index.ts`.
+- [x] Verified against the real App Server stream (snapshot observed
+      in prod session logs).
 
 ## Phase 3 — Header fallback (optional, deferred)
 
@@ -69,12 +89,13 @@ architecture symmetric; gated by Phase 0 confirmation.
       turns. Significantly more invasive than this doc — call out
       for completeness rather than as a planned follow-up.
 
-## Open questions to resolve during implementation polish
+## Open questions resolved during implementation
 
-- [ ] Tooltip prose (Open question 1) — current strings are
-      reasonable defaults; revisit after Phase 0 fixtures land.
-- [ ] Per-pill provider label — defaulted to name prefix; revisit
-      if brand-icon assets land later.
+- [x] Tooltip prose (Open question 1) — shipped with the current
+      strings (full breakdown, reset times, plan name); cosmetic, can
+      be tuned later without design changes.
+- [x] Per-pill provider label — shipped with the name prefix
+      ("Claude" / "Codex"); revisit only if brand-icon assets land.
 
 ## Risk register
 

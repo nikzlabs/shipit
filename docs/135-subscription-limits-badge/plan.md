@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: medium
 description: Header badges showing subscription rate-limit usage (5-hour window, weekly cap, reset clock) for Claude and Codex, rendered inline without leaving ShipIt.
 ---
@@ -694,11 +694,13 @@ done; Codex (2) is still outstanding.
 
 ## Phasing
 
-**Phase 0 — Spike.** ✅ **Claude side complete (2026-05-19).** URL
-verified, scope verified, refresh behavior verified, body fixture
-checked in. Codex side still outstanding — needs a real
-ChatGPT-plan login to capture against. Until then the Codex
-provider's URL/parser are best-effort.
+**Phase 0 — Spike.** ✅ **Complete.** Claude side (2026-05-19):
+URL verified, scope verified, refresh behavior verified, body
+fixture checked in. Codex side: the HTTP-endpoint capture was
+abandoned — the candidate `/backend-api/codex/usage` path 401/403s
+even with a valid token. The verified source turned out to be the
+App Server's `account/rateLimits/updated` stream (observed in prod
+session logs), so the Codex provider is event-fed, not polled.
 
 **Phase 1 — Claude.** ✅ **Implementation complete and verified
 end-to-end against the real endpoint.** Provider +
@@ -707,12 +709,14 @@ parsing the real Anthropic response shape. Plan label
 (`"Max 20x"` / `"Pro"` / ...) is derived from the credentials file
 because `/usage` doesn't return one.
 
-**Phase 2 — Codex.** Provider code landed in the same change to
-keep the architecture symmetric, but the URL + response shape are
-still community-reported, not yet verified empirically. Repeat the
-Phase 0 procedure for Codex (load the auth token, hit candidate
-URLs, save a fixture, reconcile the parser) before announcing the
-badge for Codex users.
+**Phase 2 — Codex.** ✅ **Complete (event-driven).** After the HTTP
+endpoint proved unusable, the provider was reworked to consume the
+App Server's `account/rateLimits/updated` notification: `CodexAdapter`
+emits an `agent_rate_limits` event, the orchestrator pushes it into an
+event-fed `CodexLimitsProvider` via `recordCodexRateLimits()`, and the
+plan tier is read from the `chatgpt_plan_type` JWT claim. The pill is
+blank until a session's first turn delivers a snapshot — the accepted
+trade for using the one verified source.
 
 **Phase 3 (optional, separate doc) — Header-fallback for Claude.**
 Capture `anthropic-ratelimit-unified-*` headers from completed turns.
