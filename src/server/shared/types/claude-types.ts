@@ -72,6 +72,11 @@ export interface ClaudeUserEvent {
   };
   /** See ClaudeAssistantEvent.parent_tool_use_id. */
   parent_tool_use_id?: string;
+  /**
+   * When --replay-user-messages is active, the CLI re-emits injected user
+   * messages with isReplay: true for echo deduplication. (docs/140)
+   */
+  isReplay?: boolean;
 }
 
 /**

@@ -50,14 +50,14 @@ export async function registerBootstrapRoutes(
   );
 
   // PUT /api/settings — save global settings
-  app.put<{ Body: { gitIdentity?: { name: string; email: string }; systemPrompt?: string; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; autoCreatePr?: boolean } }>(
+  app.put<{ Body: { gitIdentity?: { name: string; email: string }; systemPrompt?: string; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; autoCreatePr?: boolean; liveSteering?: boolean } }>(
     "/api/settings",
     async (request, reply) => {
       try {
         return await saveGlobalSettings(
           deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir, deps.credentialStore,
           request.body.gitIdentity, request.body.systemPrompt, request.body.maxIdleContainers,
-          request.body.agentSystemInstructionsEnabled, request.body.autoCreatePr,
+          request.body.agentSystemInstructionsEnabled, request.body.autoCreatePr, request.body.liveSteering,
         );
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -226,6 +226,7 @@ export async function registerBootstrapRoutes(
           id: a.id, name: a.name, installed: a.installed,
           authConfigured: a.authConfigured, models: a.capabilities.models,
           supportsReview: a.capabilities.supportsReview,
+          supportsSteering: a.capabilities.supportsSteering,
           supportedPermissionModes: a.capabilities.supportedPermissionModes,
         }));
         deps.sseBroadcast("agent_list", { agents, defaultAgentId: deps.defaultAgentId });

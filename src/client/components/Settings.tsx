@@ -153,6 +153,41 @@ function PullRequestSettings() {
   );
 }
 
+function LiveSteeringSettings() {
+  const liveSteering = useSettingsStore((s) => s.liveSteering);
+
+  const handleToggle = async (v: boolean) => {
+    useSettingsStore.getState().setLiveSteering(v);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ liveSteering: v }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      useSettingsStore.getState().setLiveSteering(!v);
+      useUiStore.getState().setToast({ message: "Failed to update live steering setting" });
+      console.error("[settings] toggle liveSteering failed:", err);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">Live Steering</h3>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between py-1 gap-4">
+          <div>
+            <span className="text-sm text-(--color-text-primary)">Inject messages mid-turn</span>
+            <p className="text-xs text-(--color-text-tertiary)">Send a message while the agent is running to steer it without waiting for the turn to finish. Experimental — toggle off to return to the stable queue-based mode.</p>
+          </div>
+          <ToggleSwitch enabled={liveSteering} onToggle={(v) => void handleToggle(v)} testId="settings-live-steering" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Settings({
   initialContent,
   onSaveInstructions,
@@ -656,6 +691,10 @@ export function Settings({
                   </div>
                 )}
               </div>
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              <LiveSteeringSettings />
 
               <div className="border-t border-(--color-border-secondary)" />
 

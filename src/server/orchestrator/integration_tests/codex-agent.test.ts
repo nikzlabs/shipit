@@ -55,11 +55,14 @@ class FakeCodexProcess extends EventEmitter<AgentProcessEvents> implements Agent
     toolNames: ["shell", "file_write", "file_read", "file_edit"],
     models: ["codex-mini-latest", "o4-mini"],
     supportsReview: false,
+    supportsSteering: false,
   };
 
   public runCalled = false;
   public lastParams: AgentRunParams | null = null;
   public killed = false;
+
+  readonly isStreaming = false;
 
   run(params: AgentRunParams): void {
     this.runCalled = true;
@@ -67,6 +70,10 @@ class FakeCodexProcess extends EventEmitter<AgentProcessEvents> implements Agent
   }
 
   writeStdin(_data: string): void {
+    // no-op for tests
+  }
+
+  sendUserMessage(_text: string): void {
     // no-op for tests
   }
 

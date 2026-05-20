@@ -1,6 +1,8 @@
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../shared/types.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 
@@ -261,6 +263,223 @@ export class ClaudeProcess extends EventEmitter {
           this.emit("auth_required");
         }
         console.warn("[claude] non-JSON line:", trimmed.slice(0, 120));
+        this.emit("log", "stdout", trimmed);
+      }
+    }
+  }
+}
+
+/**
+ * StreamingClaudeProcess — persistent Claude CLI process using
+ * --input-format stream-json for live steering (docs/140).
+ *
+ * Unlike ClaudeProcess (PTY, one-shot per turn), this class:
+ * - Spawns once and keeps the process alive across turns.
+ * - Sends user messages as NDJSON on stdin.
+ * - Treats `result` events as turn-end without killing the process.
+ * - Emits `done` only when the process actually exits (on kill/dispose).
+ * - Uses piped stdio (not PTY) since stream-json input is designed for pipes.
+ */
+export class StreamingClaudeProcess extends EventEmitter {
+  private proc: ChildProcess | null = null;
+  private buffer = "";
+  private watchdog: ReturnType<typeof setTimeout> | null = null;
+  private requestIdCounter = 0;
+
+  run(opts: ClaudeRunOptions): void {
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr } = opts;
+
+    const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__*";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
+
+    const userMcpGlobs = (mcpServerNames ?? []).map((name) => `mcp__${name}__*`).join(",");
+    const withUserMcp = (base: string): string => userMcpGlobs ? `${base},${userMcpGlobs}` : base;
+    const tools = permissionMode === "plan" ? PLAN_TOOLS : withUserMcp(AUTO_TOOLS);
+
+    const args = [
+      "--print",
+      "--input-format", "stream-json",
+      "--output-format", "stream-json",
+      "--replay-user-messages",
+      "--verbose",
+      "--allowedTools", tools,
+    ];
+
+    if (permissionMode === "plan") {
+      args.push("--permission-mode", "plan");
+    } else if (permissionMode === "guarded") {
+      args.push("--permission-mode", "auto");
+    }
+
+    if (sessionId) args.push("--resume", sessionId);
+    if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
+    if (model) args.push("--model", model);
+    if (settingsPath) args.push("--settings", settingsPath);
+    if (systemPrompt) args.push("--system-prompt", systemPrompt);
+
+    const spawnEnv: Record<string, string> = {
+      ...process.env,
+      HOME: "/root",
+      NODE_ENV: "development",
+    } as Record<string, string>;
+    if (autoCreatePr) {
+      spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
+    } else {
+      delete spawnEnv.SHIPIT_AUTO_CREATE_PR;
+    }
+
+    console.log("[streaming-claude] spawning:", "claude", args.slice(0, 8).join(" "), "| cwd:", cwd);
+
+    try {
+      this.proc = spawn("claude", args, {
+        cwd,
+        env: spawnEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (err) {
+      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+
+    this.buffer = "";
+
+    this.proc.stdout?.on("data", (chunk: Buffer) => {
+      this.clearWatchdog();
+      this.buffer += chunk.toString("utf-8");
+      this.drainLines();
+    });
+
+    this.proc.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString("utf-8");
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      this.checkAuthMessages(trimmed);
+      console.warn("[streaming-claude] stderr:", trimmed.slice(0, 200));
+      this.emit("log", "stderr", trimmed);
+    });
+
+    this.proc.on("error", (err) => {
+      this.clearWatchdog();
+      this.emit("error", err);
+    });
+
+    this.proc.on("close", (exitCode) => {
+      this.clearWatchdog();
+      this.drainLines(true);
+      this.emit("done", exitCode ?? 0);
+      this.proc = null;
+    });
+
+    // Send the initial user message
+    this.sendUserMessage(prompt);
+  }
+
+  sendUserMessage(text: string, _opts?: { images?: ImageAttachment[] }): void {
+    const msg = {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text }] },
+    };
+    this.writeToStdin(`${JSON.stringify(msg)}\n`);
+    this.armWatchdog();
+  }
+
+  writeStdin(data: string): void {
+    this.writeToStdin(data);
+  }
+
+  interrupt(): void {
+    const requestId = `ctrl-${++this.requestIdCounter}-${Date.now()}`;
+    const msg = {
+      type: "control_request",
+      request_id: requestId,
+      request: { subtype: "interrupt" },
+    };
+    this.writeToStdin(`${JSON.stringify(msg)}\n`);
+
+    const forceKillTimer = setTimeout(() => {
+      if (this.proc) {
+        console.warn("[streaming-claude] Force killing after interrupt timeout");
+        this.kill();
+      }
+    }, 5000);
+
+    this.proc?.on("close", () => clearTimeout(forceKillTimer));
+  }
+
+  kill(): void {
+    this.clearWatchdog();
+    if (this.proc) {
+      this.proc.kill("SIGTERM");
+      this.proc = null;
+    }
+  }
+
+  private writeToStdin(data: string): void {
+    if (this.proc?.stdin?.writable) {
+      this.proc.stdin.write(data);
+    }
+  }
+
+  private armWatchdog(): void {
+    this.clearWatchdog();
+    this.watchdog = setTimeout(() => {
+      console.warn("[streaming-claude] No output within 30s — process may be stuck");
+      this.emit("log", "server", "Warning: No output from Claude CLI after 30 seconds. The process may be stuck.");
+      this.watchdog = null;
+    }, 30_000);
+  }
+
+  private clearWatchdog(): void {
+    if (this.watchdog) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
+  }
+
+  private checkAuthMessages(text: string): void {
+    const lc = text.toLowerCase();
+    if (
+      lc.includes("not authenticated") ||
+      lc.includes("not logged in") ||
+      lc.includes("authentication required") ||
+      lc.includes("please login") ||
+      lc.includes("unauthorized") ||
+      lc.includes("oauth") ||
+      lc.includes("sign in")
+    ) {
+      this.emit("auth_required");
+    }
+  }
+
+  private drainLines(flush = false): void {
+    const lines = this.buffer.split("\n");
+    if (!flush) {
+      this.buffer = lines.pop() ?? "";
+    } else {
+      this.buffer = "";
+    }
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const event = JSON.parse(trimmed) as ClaudeEvent;
+        // Clear watchdog on any valid event (turn is making progress)
+        if (event.type === "result") {
+          // Turn ended — arm watchdog for next potential turn; don't kill process
+          this.clearWatchdog();
+        }
+        this.emit("event", event);
+      } catch {
+        const lc = trimmed.toLowerCase();
+        if (
+          lc.includes("not authenticated") ||
+          lc.includes("not logged in") ||
+          lc.includes("unauthorized")
+        ) {
+          this.emit("auth_required");
+        }
+        console.warn("[streaming-claude] non-JSON line:", trimmed.slice(0, 120));
         this.emit("log", "stdout", trimmed);
       }
     }
