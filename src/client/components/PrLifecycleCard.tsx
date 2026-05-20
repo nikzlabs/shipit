@@ -758,9 +758,24 @@ function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
 
 // ---- Main component ----
 
-export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
+export function PrLifecycleCard({ sessionId, onOpenDetails }: { sessionId: string; onOpenDetails?: () => void }) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   if (!card) return null;
+
+  // The whole card body opens the PR detail tab, but only once a PR exists
+  // (open/merged/closed) — the ready/creating/error phases have no PR to
+  // drill into. Clicks that originate on an interactive control (button, link,
+  // input) are ignored via the closest() guard, so toggling auto-fix, merging,
+  // or copying the branch never also switches the tab — no per-control
+  // stopPropagation needed. See docs/133.
+  const hasPr = !!card.pr && (card.phase === "open" || card.phase === "merged" || card.phase === "closed");
+  const clickable = hasPr && !!onOpenDetails;
+
+  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!clickable) return;
+    if ((e.target as HTMLElement).closest("button, a, input, textarea")) return;
+    onOpenDetails?.();
+  };
 
   // Key the inner subtree on sessionId so transient per-session UI state
   // (e.g. MergeButton's "Merging..." flag, CreatePR's "Creating..." flag,
@@ -768,7 +783,12 @@ export function PrLifecycleCard({ sessionId }: { sessionId: string }) {
   // Without this, switching sessions while a merge is in flight leaves the
   // button stuck on "Merging..." against the new session.
   return (
-    <div key={sessionId} className="mx-4 rounded-t-xl border border-b-0 border-(--color-border-primary) bg-(--color-bg-secondary)/20 px-4 py-2">
+    <div
+      key={sessionId}
+      onClick={handleClick}
+      title={clickable ? "Open PR details" : undefined}
+      className={`mx-4 rounded-t-xl border border-b-0 border-(--color-border-primary) bg-(--color-bg-secondary)/20 px-4 py-2 ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
+    >
       {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
       {card.phase === "merged" && (
