@@ -748,14 +748,32 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // model/agent pick in one session leak into others on reconnect).
       let perConnectionAgentId: AgentId = session.agentId ?? requestedAgent ?? defaultAgentId;
       let selectedModel: string | undefined = session.model ?? requestedModel;
+      // Reconcile the model against the agent. The two are resolved from
+      // INDEPENDENT sources (agent: session/default; model: the
+      // localStorage-derived query param), so they can diverge — most often a
+      // new session defaulting to Claude while a stale "gpt-5.5" rides in on
+      // the model param because the AgentPicker saves the agent without
+      // clearing the model. That would spawn `claude --model gpt-5.5`, which
+      // the Claude CLI rejects with "There's an issue with the selected model
+      // (gpt-5.5)". The agent is authoritative here; conform the model to it
+      // (set_model handles the inverse — an explicit model pick switches the
+      // agent — and set_agent re-runs this same reconciliation).
+      {
+        const agentInfo = agentRegistry.get(perConnectionAgentId);
+        if (selectedModel && agentInfo && !agentInfo.capabilities.models.includes(selectedModel)) {
+          selectedModel = agentInfo.capabilities.models[0];
+        }
+      }
       // Lock in the choices on first connect so future reconnects ignore the
       // global localStorage values. After this, `session.agent_id` /
-      // `session.model` are the only source of truth.
+      // `session.model` are the only source of truth. Persist the reconciled
+      // model whenever it differs from what's stored — this also heals a
+      // session whose persisted model predates this reconciliation.
       if (!session.agentId) {
         try { sessionManager.setAgentId(sessionId, perConnectionAgentId); } catch { /* ignore */ }
       }
-      if (!session.model && requestedModel) {
-        try { sessionManager.setModel(sessionId, requestedModel); } catch { /* ignore */ }
+      if (selectedModel && selectedModel !== session.model) {
+        try { sessionManager.setModel(sessionId, selectedModel); } catch { /* ignore */ }
       }
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
@@ -917,11 +935,24 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         const s = sessionManager.get(sid);
         activeAppSessionId = sid;
         const dir = s?.workspaceDir ?? null;
+        // The session's persisted agent is authoritative. A runner is seeded
+        // with the global default agent at creation (warm pool, container
+        // recovery), and the real choice is meant to be applied on WS
+        // connect — see RecoveryDeps.defaultAgentId. activateSession is that
+        // application point: without it, getActiveAgentId() returns the
+        // runner's stale agent (e.g. claude) while the model is the session's
+        // (e.g. gpt-5.5), spawning `claude --model gpt-5.5` which the CLI
+        // rejects as "issue with the selected model". Don't disturb a runner
+        // mid-turn.
+        const sessionAgentId = s?.agentId ?? perConnectionAgentId;
         const existingRunner = runnerRegistry.get(sid);
         if (existingRunner) {
+          if (!existingRunner.running && existingRunner.agentId !== sessionAgentId) {
+            existingRunner.agentId = sessionAgentId;
+          }
           attachToRunner(existingRunner);
         } else if (dir) {
-          const runner = runnerRegistry.getOrCreate(sid, dir, perConnectionAgentId);
+          const runner = runnerRegistry.getOrCreate(sid, dir, sessionAgentId);
           attachToRunner(runner);
         } else {
           detachFromRunner();
@@ -1089,6 +1120,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               return;
             }
             ctx.setActiveAgentId(agentId);
+            // Conform the model to the new agent. The AgentPicker switches the
+            // agent without touching the model, so without this a Codex →
+            // Claude switch would leave a "gpt-5.5" model selected and the next
+            // turn would spawn `claude --model gpt-5.5` and fail. Fall back to
+            // the new agent's default model when the current one isn't in its
+            // lineup.
+            const currentModel = ctx.getSelectedModel();
+            if (currentModel && !info.capabilities.models.includes(currentModel)) {
+              const fallbackModel = info.capabilities.models[0];
+              ctx.setSelectedModel(fallbackModel);
+              if (activeAppSessionId) {
+                sessionManager.setModel(activeAppSessionId, fallbackModel);
+              }
+            }
             // Persist per-session so reconnects don't pick up the global
             // localStorage agent from another session.
             if (activeAppSessionId) {
@@ -1097,10 +1142,31 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             return;
           }
           case "set_model": {
-            const activeAgent = agentRegistry.get(ctx.getActiveAgentId());
+            const currentAgentId = ctx.getActiveAgentId();
+            const activeAgent = agentRegistry.get(currentAgentId);
             if (activeAgent && !activeAgent.capabilities.models.includes(msg.model)) {
-              send({ type: "error", message: `Model "${msg.model}" is not available for ${activeAgent.name}` });
-              return;
+              // The model isn't in the current agent's lineup. The grouped
+              // model picker switches agent + model together by firing
+              // `set_agent` then `set_model`, so this fires whenever the user
+              // crosses an agent boundary (e.g. Codex → Opus). Rather than
+              // depend on `set_agent` having already landed — which it may not
+              // have, if its auth/install guard bailed or the two messages
+              // raced — make `set_model` self-healing: if an installed+authed
+              // agent owns this model, switch to it here. Only error when no
+              // available agent can run the model.
+              const owner = agentRegistry.available().find(
+                (a) => a.capabilities.models.includes(msg.model),
+              );
+              if (!owner) {
+                send({ type: "error", message: `Model "${msg.model}" is not available for ${activeAgent.name}` });
+                return;
+              }
+              if (owner.id !== currentAgentId) {
+                ctx.setActiveAgentId(owner.id);
+                if (activeAppSessionId) {
+                  sessionManager.setAgentId(activeAppSessionId, owner.id);
+                }
+              }
             }
             ctx.setSelectedModel(msg.model);
             // Persist to session metadata so it survives reconnects and warm pool

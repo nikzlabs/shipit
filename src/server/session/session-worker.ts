@@ -26,6 +26,7 @@ import { scanFileTree } from "../shared/file-tree.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./claude.js";
 import { ClaudeAdapter } from "./agents/claude-adapter.js";
+import { CodexAdapter } from "./agents/codex-adapter.js";
 import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
@@ -936,10 +937,23 @@ export class SessionWorker extends EventEmitter {
 // Standalone entry point (when run as a container process)
 // ---------------------------------------------------------------------------
 
+/**
+ * Build the worker's agent process for a given agentId. Dispatches on the
+ * agentId the orchestrator sends with /agent/start — hardcoding ClaudeAdapter
+ * here made container-mode sessions ALWAYS run Claude regardless of the
+ * selected agent, so a Codex session (model e.g. gpt-5.5) spawned
+ * `claude --model gpt-5.5`, which the Claude CLI rejects as "There's an issue
+ * with the selected model". Exported for the regression test.
+ */
+export const createWorkerAgent: WorkerAgentFactory = (agentId: AgentId) =>
+  agentId === "codex"
+    ? new CodexAdapter()
+    : new ClaudeAdapter(new ClaudeProcess());
+
 // Only auto-start when run directly (not when imported for testing)
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   const worker = new SessionWorker({
-    agentFactory: () => new ClaudeAdapter(new ClaudeProcess()),
+    agentFactory: createWorkerAgent,
     port: Number(process.env.WORKER_PORT) || 9100,
     workspaceDir: process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR,
   });
