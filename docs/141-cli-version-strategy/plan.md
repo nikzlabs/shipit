@@ -9,8 +9,12 @@ description: Strategy for keeping the Claude/Codex CLIs current without letting 
 > integrity-pinned lockfile (`docker/agent-cli/`) via `npm ci --ignore-scripts`
 > (+ `npm rebuild @anthropic-ai/claude-code` for its required native-binary
 > postinstall), and the `NPM_GLOBALS_REBUILD` deploy-time cache-bust is gone.
-> Axes 1 and 3 (Renovate auto-bump, the channel split, and the CLI contract
-> test) remain. See `checklist.md` for the live status, including the
+> Axis 1/C's config has landed too: `renovate.json` (scoped to
+> `docker/agent-cli/**`, `minimumReleaseAge: "7 days"`) opens the grouped bump
+> PRs — auto-merge stays off until the Axis-3 contract test is the required
+> gate, and installing the Renovate GitHub App is still an out-of-band admin
+> action. Axis 3 (the CLI contract test) and Axis 1/D (the channel split)
+> remain. See `checklist.md` for the live status, including the
 > `--ignore-scripts` finding about `claude-code`'s required postinstall.
 
 # Agent CLI version strategy

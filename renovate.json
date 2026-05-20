@@ -1,0 +1,20 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "includePaths": ["docker/agent-cli/**"],
+  "rangeStrategy": "pin",
+  "packageRules": [
+    {
+      "description": "Agent CLIs baked into ShipIt session-worker/orchestrator images (docs/141-cli-version-strategy). Hold every new version for the 7-day supply-chain cooldown, group all three into a single PR, and keep the bump as exact pins so docker/agent-cli/package-lock.json is regenerated with fresh integrity hashes. Auto-merge stays OFF until the Axis-3 CLI contract test is wired as a required status check — until then a human reviews + merges the bump PR.",
+      "matchFileNames": ["docker/agent-cli/package.json"],
+      "matchPackageNames": [
+        "@anthropic-ai/claude-code",
+        "@openai/codex",
+        "@playwright/mcp"
+      ],
+      "groupName": "agent CLIs",
+      "minimumReleaseAge": "7 days",
+      "automerge": false
+    }
+  ]
+}

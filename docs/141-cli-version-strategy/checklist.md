@@ -61,10 +61,18 @@ Tracks the four-axis rollout from `plan.md`. Order follows the plan's
 ## Axis 1 / Option C — tested pin + auto-bump (Renovate)
 
 - [ ] Install the Mend-hosted Renovate GitHub App (out-of-band admin action).
-- [ ] Commit `renovate.json` targeting `docker/agent-cli/package.json` as a
-      dependency target.
-- [ ] Set `minimumReleaseAge` to enforce the 7-day cooldown.
-- [ ] Enable auto-merge on green (contract test is the required gate).
+- [x] Commit `renovate.json` targeting `docker/agent-cli/package.json` as a
+      dependency target. Scoped with `includePaths: ["docker/agent-cli/**"]` so
+      Renovate ignores the root repo deps and only bumps the three agent CLIs;
+      `rangeStrategy: "pin"` keeps the exact pins so the lockfile (and its
+      integrity hashes) is regenerated on every bump.
+- [x] Set `minimumReleaseAge` (`"7 days"`) to enforce the cooldown.
+- [ ] Enable auto-merge on green. **Deliberately left `automerge: false`** until
+      the Axis-3 CLI contract test exists and is wired as a required status
+      check — auto-merging CLI bumps on only lint/build/unit-test green would
+      ship the exact integration breakage Axis 3 is meant to catch (the plan's
+      top concern). Flip to `true` in the package rule once Axis 3 lands. Until
+      then a human reviews + merges the grouped bump PR.
 
 ## Axis 1 / Option D — stable + latest channels
 
