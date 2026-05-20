@@ -13,6 +13,8 @@ import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
 import type { CommentWidgetManager, LineCommentLike } from "./MonacoCommentWidgets.js";
 import type { FilePreviewType } from "../utils/file-preview-type.js";
 import type { ReviewComment, FileReview } from "../../server/shared/types.js";
+import { composeReviewMessage } from "../utils/compose-review-body.js";
+import { WithTooltip } from "./ui/tooltip.js";
 import type * as MonacoEditor from "monaco-editor";
 
 export interface FilePreviewAction {
@@ -52,6 +54,12 @@ export interface FilePreviewModalProps {
    * existing `send_message` flow.
    */
   onSendComments?: (prompt: string) => void;
+  /**
+   * docs/125 — called when the user clicks "Ask agent to review". Receives the
+   * composed review prompt and the file path to authorize the review tool for.
+   * Caller dispatches a `send_review_message` and closes the modal.
+   */
+  onAskAgentReview?: (prompt: string, filePath: string) => void;
 }
 
 /** Map file extensions to Monaco language IDs. */
@@ -311,8 +319,13 @@ export function FilePreviewModal({
   onSwitchSibling,
   onClose,
   onSendComments,
+  onAskAgentReview,
 }: FilePreviewModalProps) {
   const sessionId = useSessionStore((s) => s.sessionId) ?? "";
+  // Agent-busy state: a review is a chat turn, so we can't start one while the
+  // agent is mid-turn. The button stays visible but disabled (the composed
+  // prompt depends on current draft state, so we don't auto-queue).
+  const agentRunning = useSessionStore((s) => s.isLoading);
 
   // 125 — chat-native AI review is gated on `supportsReview` from the active
   // agent's capabilities. Today the affordance is the existing AI Review
@@ -332,11 +345,7 @@ export function FilePreviewModal({
   const history = useFileReviewStore((s) =>
     key ? s.historyByKey[key] ?? EMPTY_HISTORY : EMPTY_HISTORY,
   );
-  const aiLoading = useFileReviewStore((s) =>
-    key ? s.aiLoadingByKey[key] ?? false : false,
-  );
   const load = useFileReviewStore((s) => s.load);
-  const aiReview = useFileReviewStore((s) => s.aiReview);
   const sendDraft = useFileReviewStore((s) => s.sendDraft);
   const discardEmptyDraft = useFileReviewStore((s) => s.discardEmptyDraft);
 
@@ -350,12 +359,17 @@ export function FilePreviewModal({
   }, [sessionId, filePath, reviewable, content, load]);
 
   const commentCount = draft?.comments.length ?? 0;
-  const showAiReview =
+  // The subagent can usefully review markdown of any size, or code under a cap
+  // (binaries/huge generated files get no affordance). 10 KB cap per plan §Surface.
+  const reviewableForAgent =
+    fileType === "markdown" || (fileType === "code" && (content?.length ?? 0) <= 10 * 1024);
+  const showAskReview =
     reviewable
-    && fileType === "markdown"
+    && reviewableForAgent
     && !!sessionId
     && content !== null
-    && activeAgentSupportsReview;
+    && activeAgentSupportsReview
+    && !!onAskAgentReview;
   const canSend = !!onSendComments && commentCount > 0;
 
   const handleClose = useCallback(() => {
@@ -378,10 +392,11 @@ export function FilePreviewModal({
     [filePath, onSwitchSibling, sessionId, reviewable, draft, discardEmptyDraft],
   );
 
-  const handleAiReview = useCallback(() => {
-    if (!sessionId) return;
-    void aiReview(sessionId, filePath);
-  }, [sessionId, filePath, aiReview]);
+  const handleAskReview = useCallback(() => {
+    if (!sessionId || !onAskAgentReview || agentRunning) return;
+    const prompt = composeReviewMessage(filePath, draft, history);
+    onAskAgentReview(prompt, filePath);
+  }, [sessionId, filePath, onAskAgentReview, agentRunning, draft, history]);
 
   const handleSend = useCallback(async () => {
     if (!sessionId || !onSendComments) return;
@@ -402,11 +417,13 @@ export function FilePreviewModal({
               {filePath}
             </DialogTitle>
             <div className="flex items-center gap-2 shrink-0 ml-4">
-              {showAiReview && (
-                <Button variant="secondary" size="sm" onClick={handleAiReview} disabled={aiLoading}>
-                  <RobotIcon size={ICON_SIZE.SM} className="mr-1" />
-                  {aiLoading ? "Reviewing..." : "AI Review"}
-                </Button>
+              {showAskReview && (
+                <WithTooltip label={agentRunning ? "Wait for the current turn to finish" : "Start a chat review turn"}>
+                  <Button variant="secondary" size="sm" onClick={handleAskReview} disabled={agentRunning}>
+                    <RobotIcon size={ICON_SIZE.SM} className="mr-1" />
+                    Ask agent to review
+                  </Button>
+                </WithTooltip>
               )}
               {actions?.map((action) => (
                 <Button

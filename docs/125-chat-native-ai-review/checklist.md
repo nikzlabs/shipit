@@ -40,36 +40,59 @@ on Claude sessions is unchanged.
   Claude active, hidden on Codex active, hidden when the agent list
   hasn't loaded yet.
 
-## Phase 2 — Chat-native review on Claude (NOT STARTED)
+## Phase 2 — Chat-native review on Claude (DONE)
 
 Substantial. Lands the MCP bridge, `submit_review_comments` tool, the
 allow-listed `send_review_message` flow, the `review_updated` event, the
 "Ask agent to review" button rewording, and the `/review` slash command.
 The old `/ai-review` endpoint stays in place but is unused by the client.
 
-- [ ] Add `@modelcontextprotocol/sdk` to the worker image's deps.
-- [ ] Ship `mcp-review-bridge.js` (stdio MCP server, no business
-  logic).
-- [ ] Worker generates per-session `mcp.json` and Unix socket; thread
-  the config path through `mcpConfigPath`.
-- [ ] Implement the worker-side review tool handler with allow-list,
-  draft resolution, re-anchoring, size caps, server-side `source: "ai"`,
-  and rejection on `sent` drafts.
-- [ ] Add the `review_updated` worker SSE event and the corresponding
-  WS server message; relay through `ContainerSessionRunner`.
-- [ ] Add the `send_review_message` WS client message + handler;
-  manage `runner.activeReviewFilePath` lifecycle per CLAUDE.md
-  WS-resilience rules.
-- [ ] Replace the AI Review button with "Ask agent to review";
+**Architectural deltas from the plan (intentional, confirmed during impl):**
+
+- **The tool handler runs in the orchestrator, not the worker.** The plan
+  put it in the worker, but `FileReviewStore` (the DB) and the runner's
+  `activeReviewFilePath` allow-list both live in the orchestrator, and the
+  worker is a separate container in prod with no access to either. So the
+  flow is **bridge → worker `/agent-ops/review/submit` → orchestrator
+  `POST /api/sessions/:id/review-submit`**. The worker is a thin relay that
+  injects the trusted `SESSION_ID` (the existing agent-ops broker pattern);
+  all business logic, allow-list auth, persistence, and the `review_updated`
+  broadcast live in the orchestrator. Every plan *decision* is preserved.
+- **HTTP relay, not a Unix socket.** The bridge POSTs to the worker's
+  existing localhost HTTP server (`WORKER_PORT`), exactly like the `gh`/
+  `shipit` shims. Each worker already has its own port, so the plan's
+  Unix-socket "local-mode collision" concern doesn't apply.
+- **No worker SSE `review_updated` event.** Because persistence happens in
+  the orchestrator, it broadcasts `review_updated` directly via the
+  resolved runner's `emitMessage` — the worker→orchestrator SSE hop the
+  plan described (touchpoints 1–2) is unnecessary.
+- **Bridge ships as `mcp-review-bridge.ts` run via tsx-by-absolute-path**
+  (mirrors the `gh` shim), not `.js`. Uses the SDK's low-level `Server`
+  with plain JSON Schema to avoid a direct `zod` dependency.
+
+- [x] Add `@modelcontextprotocol/sdk` to the worker image's deps.
+- [x] Ship `mcp-review-bridge.ts` (stdio MCP server, no business logic).
+- [x] Worker generates `mcp.json` declaring the bridge (reached via
+  `WORKER_PORT` HTTP, not a socket); threaded through `mcpConfigPath`.
+- [x] Implement the review tool handler (in the orchestrator) with
+  allow-list, draft resolution, re-anchoring, size caps, server-side
+  `source: "ai"`, and rejection on `sent` drafts.
+- [x] Add the `review_updated` WS server message; broadcast via the
+  runner's `emitMessage` (no worker SSE hop needed).
+- [x] Add the `send_review_message` WS client message + handler;
+  manage `runner.activeReviewFilePath` lifecycle (set at turn start in
+  `runAgentWithMessage`, cleared on done, registry-resolved) per
+  CLAUDE.md WS-resilience rules.
+- [x] Replace the AI Review button with "Ask agent to review";
   compose body with the 20-comment cap and 500-char truncation.
-- [ ] Wire the `/review [@file]` slash command to the same body.
-- [ ] Client store: handle `review_updated`, drop `aiReview` action.
-- [ ] Stand up an MCP fake usable by integration tests; add the full
-  flow integration test (chat message → tool call → draft populated →
-  client receives `review_updated`).
-- [ ] Tool-handler unit tests: `source: "ai"` is enforced server-side,
-  rejection on sent drafts, oversize payload, re-anchor against current
-  file.
+- [x] Wire the `/review [@file]` slash command to the same body.
+- [x] Client store: handle `review_updated`, drop `aiReview` action.
+- [x] Full-flow integration test (`review-chat-native.test.ts`): chat
+  message → simulated tool call → draft populated → client receives
+  `review_updated`; plus allow-list rejection cases.
+- [x] Tool-handler unit tests (`reviews.test.ts`): `source: "ai"` enforced
+  server-side, rejection on sent drafts, oversize payload, re-anchor
+  against current file.
 
 ## Phase 3 — Remove the old path (NOT STARTED)
 

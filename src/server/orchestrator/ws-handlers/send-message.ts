@@ -17,13 +17,33 @@ export { postTurnCommit } from "./post-turn.js";
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
 type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
+type WsSendReviewMessage = Extract<WsClientMessage, { type: "send_review_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 
 // ---------------------------------------------------------------------------
 // Exported handlers
 // ---------------------------------------------------------------------------
 
-export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promise<void> {
+/**
+ * docs/125 — start a chat-native review turn. Thin wrapper over
+ * `handleSendMessage`: it routes the composed prompt through the exact same
+ * agent code path, but passes `reviewFilePath` so the turn authorizes the
+ * `submit_review_comments` tool for that file (and only that file). The client
+ * has already ensured a draft exists for the file before sending this.
+ */
+export async function handleSendReviewMessage(ctx: FullCtx, msg: WsSendReviewMessage): Promise<void> {
+  await handleSendMessage(
+    ctx,
+    { type: "send_message", text: msg.text, sessionId: msg.sessionId },
+    msg.reviewFilePath,
+  );
+}
+
+export async function handleSendMessage(
+  ctx: FullCtx,
+  msg: WsSendMessage,
+  reviewFilePath?: string,
+): Promise<void> {
   // Check auth before spawning — the CLI hangs if not authenticated
   if (!ctx.authManager.authenticated) {
     ctx.authManager.checkCredentials();
@@ -55,12 +75,16 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
     // and the user sees: "agent starts briefly, nothing happens".
     const actuallyRunning = await runnerForQueue.verifyRunningState();
     if (actuallyRunning) {
-      // Live steering: inject the message mid-turn if capability + setting active
+      // Live steering: inject the message mid-turn if capability + setting active.
+      // Review messages (reviewFilePath set) are never steered — a review needs
+      // its own turn so the per-turn review-tool allow-list is established
+      // (docs/125). They fall through to the queue, which carries reviewFilePath
+      // and applies the allow-list at dequeue/turn-start.
       const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
       const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
       const liveSteering = ctx.credentialStore.getLiveSteering();
 
-      if (steeringCapable && liveSteering) {
+      if (steeringCapable && liveSteering && !reviewFilePath) {
         // Steer the running agent — inject message mid-turn
         const steeringAgent = runnerForQueue.getAgent();
         if (steeringAgent) {
@@ -83,7 +107,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
       }
 
       // Not steering (or no active agent ref): queue the message
-      runnerForQueue.messageQueue.push({ text: msg.text, images: msg.images, files: msg.files, uploads: msg.uploads, permissionMode: msg.permissionMode });
+      runnerForQueue.messageQueue.push({ text: msg.text, images: msg.images, files: msg.files, uploads: msg.uploads, permissionMode: msg.permissionMode, reviewFilePath });
       ctx.send({
         type: "message_queued",
         position: runnerForQueue.messageQueue.length,
@@ -297,6 +321,7 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
     permissionMode: msg.permissionMode,
     isNewSession: !msg.sessionId,
     uploadPaths,
+    reviewFilePath,
   });
 }
 

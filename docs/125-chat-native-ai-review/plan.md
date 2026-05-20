@@ -6,14 +6,26 @@ description: Replace the out-of-band AI review endpoint with a chat-native flow 
 
 # 125 — Chat-native AI Review
 
-> **Status note (Phase 1 landed).** The capability gate is in place:
-> `AgentCapabilities.supportsReview` ships true on Claude, false on Codex,
-> and the file-preview modal hides the "AI Review" button when the active
-> agent reports `supportsReview === false`. The existing out-of-band AI
-> Review endpoint is still present and still works on Claude — its removal
-> is Phase 3. The chat-native flow itself (MCP bridge,
-> `submit_review_comments`, `/review` slash command, button rewording) is
-> Phase 2 and not yet implemented. See `checklist.md` for tracking.
+> **Status note (Phases 1 & 2 landed).** The chat-native flow is live on
+> Claude: an MCP bridge (`mcp-review-bridge.ts`) exposes
+> `submit_review_comments`; the "Ask agent to review" button and the
+> `/review [@file]` slash command compose a delegation prompt and send it
+> via `send_review_message`, which authorizes the tool for one file
+> (`runner.activeReviewFilePath`); the orchestrator persists the AI comments
+> (`source: "ai"`, re-anchored) and broadcasts `review_updated` to the modal.
+>
+> **One load-bearing deviation from the design below:** the write-back tool
+> handler runs in the **orchestrator**, not the worker. `FileReviewStore` and
+> the allow-list both live there, and the worker is a separate container in
+> prod. The bridge therefore relays **bridge → worker `/agent-ops/review/submit`
+> → orchestrator `POST /review-submit`** over HTTP (worker injects the trusted
+> `SESSION_ID`, mirroring the existing agent-ops broker), not a Unix socket;
+> and `review_updated` is broadcast directly via the runner's `emitMessage`
+> (no worker SSE hop). All design *decisions* are preserved. See `checklist.md`
+> for the full delta list.
+>
+> The out-of-band `/ai-review` endpoint is still present (now unused by the
+> client) — its removal is Phase 3.
 
 ## Summary
 

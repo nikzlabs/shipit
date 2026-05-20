@@ -18,6 +18,25 @@ export interface WsAnswerQuestion {
   answers: Record<string, string>;
 }
 
+/**
+ * Client → Server: start a chat-native AI review turn (docs/125).
+ *
+ * Distinct from `send_message` so the orchestrator can authorize the review
+ * tool: on receipt the handler sets `runner.activeReviewFilePath` to
+ * `reviewFilePath`, and the `submit_review_comments` tool handler rejects any
+ * call whose `file_path` doesn't match. A user who simply types
+ * "Review docs/foo.md" in the composer goes through `send_message` instead —
+ * plain chat, no tool authorization. The text is routed through the same agent
+ * code path as `send_message` for everything else.
+ */
+export interface WsSendReviewMessage {
+  type: "send_review_message";
+  text: string;
+  sessionId?: string;
+  /** The file the review tool is authorized to write comments on this turn. */
+  reviewFilePath: string;
+}
+
 // ---- Agent selection (per-connection state, must stay on WS) ----
 
 /** Client → Server: set the active agent for this connection. */
@@ -126,6 +145,7 @@ export interface WsRewindToMessage {
 
 export type WsClientMessage =
   | WsSendMessage
+  | WsSendReviewMessage
   | WsClearLogs
   | WsAnswerQuestion
   | WsSetAgentMessage

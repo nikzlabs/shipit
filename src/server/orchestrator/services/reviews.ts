@@ -413,6 +413,129 @@ export async function sendReview(
   return { prompt, review: updated ?? review };
 }
 
+// ---- Chat-native AI review write-back (docs/125) ----
+
+/** Max comments accepted in a single `submit_review_comments` call. */
+export const MAX_REVIEW_COMMENTS = 50;
+/** Max characters per comment text in a single `submit_review_comments` call. */
+export const MAX_REVIEW_COMMENT_CHARS = 2048;
+
+/**
+ * Comment shape the review subagent submits via the `submit_review_comments`
+ * MCP tool. snake_case to match the tool's JSON schema; `source` is
+ * deliberately absent — it's set to `"ai"` server-side and cannot be supplied
+ * by the caller.
+ */
+export type AiReviewCommentInput =
+  | { kind: "section"; section_heading: string; section_index?: number; text: string }
+  | { kind: "line"; line: number; text: string };
+
+export interface SubmitAiReviewResult {
+  review: FileReview;
+  /** Number of comments persisted. */
+  added: number;
+  /** Number of section comments whose heading no longer exists (anchored as outdated). */
+  outdated: number;
+}
+
+/**
+ * Persist the chat-native review subagent's findings into the (session, file)
+ * draft (docs/125). Called by the orchestrator's `review-submit` endpoint,
+ * which the worker relays to from the `submit_review_comments` tool bridge.
+ *
+ * Contract:
+ * - `source: "ai"` is forced server-side; the caller cannot set it.
+ * - Section comments are re-anchored against the CURRENT file (not the version
+ *   the subagent read). A comment whose heading no longer exists is persisted
+ *   anyway (kept, not dropped) and counted as `outdated` — same posture as Send.
+ * - Refuses the call if no draft exists. The review turn ensures a draft at
+ *   start, so absence means the user sent or discarded it mid-review; creating
+ *   a fresh draft here would attach AI comments the user never asked for.
+ * - Enforces the size guardrails (`MAX_REVIEW_COMMENTS`, `MAX_REVIEW_COMMENT_CHARS`).
+ */
+export async function submitAiReviewComments(
+  reviewStore: FileReviewStore,
+  sessionId: string,
+  filePath: string,
+  workspaceDir: string,
+  comments: AiReviewCommentInput[],
+): Promise<SubmitAiReviewResult> {
+  if (comments.length > MAX_REVIEW_COMMENTS) {
+    throw new ServiceError(
+      400,
+      `Too many comments in one call (${comments.length}); the maximum is ${MAX_REVIEW_COMMENTS}.`,
+    );
+  }
+  for (const c of comments) {
+    if (typeof c.text !== "string" || !c.text.trim()) {
+      throw new ServiceError(400, "Each comment must have non-empty text.");
+    }
+    if (c.text.length > MAX_REVIEW_COMMENT_CHARS) {
+      throw new ServiceError(
+        400,
+        `Comment text exceeds the ${MAX_REVIEW_COMMENT_CHARS}-character limit.`,
+      );
+    }
+  }
+
+  // Resolve the draft to write into. Two no-draft cases, distinguished:
+  //   - the most recent review is `sent` (the user sent it mid-review) → refuse,
+  //     so we don't attach AI comments to a draft the user already shipped;
+  //   - no review at all (the user closed the modal mid-review) → ensure a fresh
+  //     draft so the review still lands somewhere.
+  let draft = reviewStore.getDraft(sessionId, filePath);
+  if (!draft) {
+    const all = reviewStore.listReviews(sessionId, filePath);
+    if (all.length > 0 && all[0].status === "sent") {
+      throw new ServiceError(
+        409,
+        "This review was already sent during the review run. Re-run the review to start a fresh draft.",
+      );
+    }
+    draft = await ensureDraftReview(reviewStore, sessionId, filePath, workspaceDir);
+  }
+
+  // Re-anchor section comments against the current file, not the version the
+  // subagent read while it worked. Reuses the same parser as Send.
+  const content = (await readFileSafe(workspaceDir, filePath)) ?? "";
+  const currentHeadings =
+    draft.fileType === "markdown" && content
+      ? parseMarkdownSections(content)
+          .map((s) => s.heading)
+          .filter((h) => h !== "")
+      : [];
+  const headingIndex = new Map(currentHeadings.map((h, i) => [h, i]));
+
+  let added = 0;
+  let outdated = 0;
+  for (const c of comments) {
+    if (c.kind === "line") {
+      // Line comments only make sense on code files; ignore mismatches rather
+      // than failing the whole batch.
+      if (draft.fileType !== "code") continue;
+      if (!Number.isInteger(c.line) || c.line < 1) continue;
+      reviewStore.addLineComment(draft.id, c.line, c.text, "ai");
+      added++;
+      continue;
+    }
+    if (draft.fileType !== "markdown") continue;
+    const heading = c.section_heading ?? "";
+    const resolvedIndex = heading === "" ? 0 : headingIndex.get(heading);
+    if (resolvedIndex === undefined) outdated++;
+    reviewStore.addSectionComment(
+      draft.id,
+      heading,
+      resolvedIndex ?? c.section_index ?? 0,
+      c.text,
+      "ai",
+    );
+    added++;
+  }
+
+  const updated = reviewStore.getReview(draft.id) ?? draft;
+  return { review: updated, added, outdated };
+}
+
 // ---- AI Review ----
 
 const AI_REVIEW_PROMPT_TEMPLATE = `You are reviewing a design document. Read the following plan and provide structured feedback.
