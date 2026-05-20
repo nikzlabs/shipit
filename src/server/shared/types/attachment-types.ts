@@ -26,7 +26,12 @@ export interface FileAttachment {
   endLine?: number;
 }
 
-export type PermissionMode = "auto" | "plan" | "normal";
+/**
+ * Agent permission mode. `auto` = autonomous (write tools allowed); `plan` =
+ * read-only research/planning. (A classifier-gated `guarded` mode is planned —
+ * see docs/138.)
+ */
+export type PermissionMode = "auto" | "plan";
 
 export interface FileContextRef {
   /** Relative path within the workspace. */

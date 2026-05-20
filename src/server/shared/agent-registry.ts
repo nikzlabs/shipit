@@ -32,7 +32,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsImages: true,
       supportsSystemPrompt: true,
       supportsPermissionModes: true,
-      supportedPermissionModes: ["auto", "plan", "normal"],
+      supportedPermissionModes: ["auto", "plan"],
       toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       models: ["sonnet", "opus", "haiku"],
       supportsReview: true,

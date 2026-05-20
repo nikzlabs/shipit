@@ -31,7 +31,7 @@ export class ClaudeAdapter
     supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: true,
-    supportedPermissionModes: ["auto", "plan", "normal"],
+    supportedPermissionModes: ["auto", "plan"],
     toolNames: [
       "Write", "Read", "Edit", "Bash", "Glob", "Grep",
       "WebFetch", "WebSearch", "AskUserQuestion",

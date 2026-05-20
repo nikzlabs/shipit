@@ -144,12 +144,16 @@ Oversight ladder (most → least): `plan` → `guarded` → `auto`.
 **Recommendation: `guarded`.** UI label "Guarded mode", tooltip e.g. "Autonomous —
 commands are safety-checked by Claude before running; risky ones are blocked."
 
-### Also recommended: delete the dead `normal` mode
+### Done (prerequisite): deleted the dead `normal` mode
 
-`normal` is unreachable from the UI and only kept alive by one test. Removing it while we
-touch the type keeps the union honest (`"auto" | "plan" | "guarded"`). This is optional
-but reduces confusion; call it out for the reviewer. (Its supervised-prompt code in
-`claude.ts:106-111` would go too.)
+`normal` was unreachable from the UI (the binary toggle only ever emitted `auto`/`plan`)
+and not persisted, so it was removed as a self-contained prep step ahead of the `guarded`
+work. The union is now `PermissionMode = "auto" | "plan"`. Removed: the type member, the
+`NORMAL_TOOLS` constant + `claude.ts` branch, its supervised-prompt injection, the
+`supportedPermissionModes` entries in `agent-registry.ts` / `claude-adapter.ts` /
+test-helpers, and the two legacy tests (`permission-modes.test.ts`,
+`PlanModeToggle.test.tsx`). Typecheck + lint + the 31 affected tests pass. The `guarded`
+work below adds the third member to the now-clean two-member union.
 
 ## Design
 
@@ -312,11 +316,14 @@ would let Codex honor `plan`/`auto`; it still can't offer `guarded`.
 
 - [x] Spike: `claude -p --permission-mode auto` activates headlessly without an opt-in;
       capture detection signal (done — see Spike results).
-- [ ] **Types:** `attachment-types.ts` — `PermissionMode = "auto" | "plan" | "guarded"`
-      (drop `normal`).
-- [ ] **Capabilities (DRY):** `agent-registry.ts:35` AND `claude-adapter.ts:34` both
-      hard-code the mode list — update in sync, and extract to a single shared constant to
-      stop them drifting. Add `supportedPermissionModes`/derived `supportsGuardedMode` to the
+- [x] **Prereq — drop dead `normal` mode** (done): type now `"auto" | "plan"`; removed
+      `NORMAL_TOOLS`, the branch, the supervised-prompt injection, capability entries, and
+      the two legacy tests. Typecheck/lint/tests green.
+- [ ] **Types:** `attachment-types.ts` — add `guarded` → `"auto" | "plan" | "guarded"`.
+- [ ] **Capabilities (DRY):** `agent-registry.ts:35` AND `claude-adapter.ts:34` (+ the
+      integration `test-helpers.ts` stub) hard-code the mode list — update in sync, and
+      extract to a single shared constant to stop them drifting. Add
+      `supportedPermissionModes`/derived `supportsGuardedMode` to the
       `WsGlobalSettings.agents[]` payload (`ws-server-messages.ts:170-182`) + its producer.
 - [ ] **`claude.ts`:** allowlist for `guarded` (reuse `AUTO_TOOLS`); `--permission-mode auto`
       pass-through; remove `normal` branch + its system-prompt injection (`:106-111`); update
