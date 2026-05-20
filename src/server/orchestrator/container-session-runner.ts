@@ -76,6 +76,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _isRunning = false;
   private _wasInterrupted = false;
   private _guardedUnavailable = false;
+  private _activeReviewFilePath: string | null = null;
 
   // Terminal (remote — runs inside container)
   private _terminal: TerminalProcess | null = null;
@@ -211,6 +212,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get guardedUnavailable(): boolean { return this._guardedUnavailable; }
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
+  get activeReviewFilePath(): string | null { return this._activeReviewFilePath; }
+  set activeReviewFilePath(v: string | null) { this._activeReviewFilePath = v; }
 
   get accumulatedText(): string { return this.turn.accumulatedText; }
   set accumulatedText(s: string) { this.turn.accumulatedText = s; }

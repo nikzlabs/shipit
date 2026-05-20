@@ -217,6 +217,7 @@ export async function drainNextQueuedMessage(
       permissionMode: next.permissionMode,
       isNewSession: false,
       uploadPaths: nextUploadRefs?.map((u) => u.path),
+      reviewFilePath: next.reviewFilePath,
     });
   } catch (err) {
     console.error("[queue] Error processing queued message:", getErrorMessage(err));
@@ -238,6 +239,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   isNewSession: boolean;
   /** Original upload paths consumed by this message (for sent-state tracking on reload). */
   uploadPaths?: string[];
+  /**
+   * docs/125 — when this turn is a chat-native review, the file the
+   * `submit_review_comments` tool is authorized to write on. Set on the runner
+   * at turn start (here, which is also the dequeue point for queued turns) and
+   * cleared when the turn ends.
+   */
+  reviewFilePath?: string;
 }): Promise<void> {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths } = opts;
   let { agentSessionId } = opts;
@@ -274,6 +282,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     runner.chatMessageGroups = [];
     runner.needsNewMessageGroup = true;
     runner.wasInterrupted = false;
+    // docs/125 — authorize the review tool for exactly this turn's file (or
+    // clear the allow-list for a normal turn). Setting it at turn start — the
+    // same point sessionId is captured — means a queued review message is
+    // authorized only when it actually starts running. Subagent tool calls
+    // happen inline within the parent's turn, so the value is still set when
+    // `submit_review_comments` lands.
+    runner.activeReviewFilePath = opts.reviewFilePath ?? null;
   }
   // Live steering: use streaming mode when enabled and the active agent supports it.
   // For streaming agents, reuse the existing agent process (it persists across turns)
@@ -626,6 +641,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     if (capturedSessionId && !(runner?.running ?? false)) {
       ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
       if (runner) runner.onAgentFinished();
+      // docs/125 — clear the review allow-list now the turn is fully done and
+      // no queued turn took over. (A queued turn that started already reset the
+      // field for itself in runAgentWithMessage's turn-start block above.)
+      if (runner) runner.activeReviewFilePath = null;
     }
   });
 

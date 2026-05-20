@@ -64,7 +64,12 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
         "gpt-5.3-codex",
         "gpt-5.2",
       ],
-      supportsReview: false,
+      // docs/125 — Codex now ships subagents (model-invoked via the
+      // `spawn_agent` collab tool, triggered by explicit instruction) AND MCP
+      // servers (`[mcp_servers.*]` in config.toml). The worker writes the
+      // review bridge into the Codex config; the same chat-native review flow
+      // works on both backends.
+      supportsReview: true,
       supportsSteering: true,
     },
   },

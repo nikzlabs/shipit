@@ -58,6 +58,8 @@ export interface QueuedMessage {
   files?: FileContextRef[];
   uploads?: UploadRef[];
   permissionMode?: PermissionMode;
+  /** docs/125 — set when a chat-native review message is queued behind a running turn. */
+  reviewFilePath?: string;
 }
 
 /**
@@ -236,6 +238,16 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * later enabling auto mode is rediscovered on the next fresh attempt.
    */
   guardedUnavailable: boolean;
+  /**
+   * docs/125 — per-turn allow-list for the chat-native review tool. Set to the
+   * authorized file path when a `send_review_message` turn starts; the
+   * `submit_review_comments` tool handler rejects any call whose `file_path`
+   * doesn't match. Cleared when the turn ends (and overwritten by the next
+   * turn — a normal `send_message` sets it back to null). Lives on the runner
+   * (not the WS connection) and is mutated via the registry-resolved runner so
+   * a reconnect mid-review doesn't clear it.
+   */
+  activeReviewFilePath: string | null;
   accumulatedText: string;
   accumulatedToolUse: ClaudeContentBlockToolUse[];
   turnSummary: string;
@@ -380,6 +392,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _isRunning = false;
   private _wasInterrupted = false;
   private _guardedUnavailable = false;
+  private _activeReviewFilePath: string | null = null;
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
@@ -415,6 +428,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get guardedUnavailable(): boolean { return this._guardedUnavailable; }
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
+  get activeReviewFilePath(): string | null { return this._activeReviewFilePath; }
+  set activeReviewFilePath(v: string | null) { this._activeReviewFilePath = v; }
   get accumulatedText(): string { return this._accumulatedText; }
   set accumulatedText(s: string) { this._accumulatedText = s; }
   get accumulatedToolUse(): ClaudeContentBlockToolUse[] { return this._accumulatedToolUse; }

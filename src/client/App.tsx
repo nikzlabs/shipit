@@ -69,6 +69,8 @@ import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
+import { useFileReviewStore } from "./stores/file-review-store.js";
+import { composeReviewMessage } from "./utils/compose-review-body.js";
 import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
 import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug, shouldAdoptClaimedSession } from "./utils/repo-label.js";
 import { saveAgentId, saveModelId } from "./utils/local-storage.js";
@@ -342,6 +344,48 @@ export default function App() {
   // ── Callback helpers ──
   const handleSend = useCallback(
     async (text: string) => {
+      // docs/125 — `/review [@path]` is the chat-native entry point to AI
+      // review: same composed prompt as the modal button, routed through
+      // `send_review_message` so the orchestrator authorizes the review tool.
+      const trimmed = text.trim();
+      if (/^\/review(?:\s|$)/.test(trimmed)) {
+        const argMatch = /^\/review\s+@?(\S+)/.exec(trimmed);
+        const targetFile = argMatch?.[1] ?? useFileStore.getState().previewFile ?? undefined;
+        const sid = useSessionStore.getState().sessionId;
+        if (!sid) {
+          useUiStore.getState().setToast({ message: "Start a session before running /review." });
+          return;
+        }
+        if (useSessionStore.getState().isLoading) {
+          useUiStore.getState().setToast({
+            message: "Wait for the current turn to finish before running /review.",
+          });
+          return;
+        }
+        if (!targetFile) {
+          useUiStore.getState().setToast({
+            message: "/review needs a file — open one in preview, or use /review @path/to/file.",
+          });
+          return;
+        }
+        const reviewStore = useFileReviewStore.getState();
+        // Ensure a draft exists so the review tool has somewhere to write and
+        // the server can tell "sent mid-review" from "fresh review".
+        await reviewStore.load(sid, targetFile);
+        const prompt = composeReviewMessage(
+          targetFile,
+          reviewStore.getDraft(sid, targetFile),
+          reviewStore.getHistory(sid, targetFile),
+        );
+        const session = useSessionStore.getState();
+        useFileStore.getState().closePreview();
+        session.setMessages((prev) => [...prev, { role: "user", text: prompt }]);
+        session.setIsLoading(true);
+        session.setActivity({ label: "Reviewing..." });
+        send({ type: "send_review_message", text: prompt, sessionId: sid, reviewFilePath: targetFile });
+        return;
+      }
+
       requestPermission();
       disableAutoFix();
       const session = useSessionStore.getState();
@@ -674,6 +718,22 @@ export default function App() {
     [send],
   );
 
+  // docs/125 — "Ask agent to review": start a chat-native review turn. Distinct
+  // from send_message so the orchestrator authorizes the review tool for this
+  // file. Closing the modal shifts focus to the chat where the agent works;
+  // new AI comments stream back into the (reopened) modal via `review_updated`.
+  const handleAskAgentReview = useCallback(
+    (prompt: string, reviewFilePath: string) => {
+      const session = useSessionStore.getState();
+      useFileStore.getState().closePreview();
+      session.setMessages((prev) => [...prev, { role: "user", text: prompt }]);
+      session.setIsLoading(true);
+      session.setActivity({ label: "Reviewing..." });
+      send({ type: "send_review_message", text: prompt, sessionId: session.sessionId, reviewFilePath });
+    },
+    [send],
+  );
+
   const handleSwitchSibling = useCallback(
     (path: string) => {
       const doc = useFileStore.getState().docFiles.find((d) => d.path === path);
@@ -888,6 +948,7 @@ export default function App() {
           onSwitchSibling={handleSwitchSibling}
           onClose={() => useFileStore.getState().closePreview()}
           onSendComments={handleFileSendComments}
+          onAskAgentReview={handleAskAgentReview}
         />
       )}
       {settingsOpen && (

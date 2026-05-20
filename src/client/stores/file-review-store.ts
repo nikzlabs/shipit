@@ -47,8 +47,6 @@ interface FileReviewState {
   draftByKey: Record<string, FileReview | null>;
   /** Sent-review history for each (session, file). */
   historyByKey: Record<string, FileReview[]>;
-  /** True while AI Review is in flight for the given key. */
-  aiLoadingByKey: Record<string, boolean>;
   /** True while the initial draft is being loaded for the given key. */
   loadingByKey: Record<string, boolean>;
 
@@ -87,8 +85,13 @@ interface FileReviewState {
     commentId: string,
   ) => Promise<void>;
 
-  /** Run AI Review on the current draft (markdown only). */
-  aiReview: (sessionId: string, filePath: string) => Promise<ReviewComment[]>;
+  /**
+   * Apply a `review_updated` WS message (docs/125): the chat-native review
+   * subagent wrote anchored comments via `submit_review_comments`, and the
+   * server broadcast the authoritative updated draft. Replace the local draft
+   * so an open modal renders the new AI comments live.
+   */
+  applyReviewUpdate: (review: FileReview) => void;
 
   /**
    * Send the draft. Marks it sent, returns the constructed prompt, moves the
@@ -111,7 +114,6 @@ interface FileReviewState {
 export const useFileReviewStore = create<FileReviewState>((set, get) => ({
   draftByKey: {},
   historyByKey: {},
-  aiLoadingByKey: {},
   loadingByKey: {},
 
   load: async (sessionId, filePath) => {
@@ -236,33 +238,9 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
     }
   },
 
-  aiReview: async (sessionId, filePath) => {
-    const key = makeKey(sessionId, filePath);
-    const draft = get().draftByKey[key];
-    if (!draft) return [];
-    set((s) => ({ aiLoadingByKey: { ...s.aiLoadingByKey, [key]: true } }));
-    try {
-      const { comments } = await request<{ comments: ReviewComment[] }>(
-        "POST",
-        `/api/sessions/${sessionId}/file-reviews/${draft.id}/ai-review`,
-      );
-      set((s) => {
-        const current = s.draftByKey[key];
-        if (!current) return s;
-        return {
-          draftByKey: {
-            ...s.draftByKey,
-            [key]: { ...current, comments: [...current.comments, ...comments] },
-          },
-        };
-      });
-      return comments;
-    } catch (err) {
-      console.error("[file-review-store] aiReview failed:", err);
-      return [];
-    } finally {
-      set((s) => ({ aiLoadingByKey: { ...s.aiLoadingByKey, [key]: false } }));
-    }
+  applyReviewUpdate: (review) => {
+    const key = makeKey(review.sessionId, review.filePath);
+    set((s) => ({ draftByKey: { ...s.draftByKey, [key]: review } }));
   },
 
   sendDraft: async (sessionId, filePath) => {

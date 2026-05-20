@@ -1,11 +1,21 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { ReviewComment } from "../../shared/types.js";
+import { DatabaseManager } from "../../shared/database.js";
+import { FileReviewStore } from "../review-store.js";
 import {
   parseMarkdownSections,
   reanchorComments,
   buildReviewPrompt,
   detectFileReviewType,
+  submitAiReviewComments,
+  MAX_REVIEW_COMMENTS,
+  MAX_REVIEW_COMMENT_CHARS,
 } from "./reviews.js";
+import type { AiReviewCommentInput } from "./reviews.js";
+import { ServiceError } from "./types.js";
 
 // ---- Helpers ----
 
@@ -283,5 +293,118 @@ describe("buildReviewPrompt (code)", () => {
       [],
     );
     expect(prompt).toContain("Please address each comment.");
+  });
+});
+
+// ============================================================
+// submitAiReviewComments (docs/125 — chat-native AI review write-back)
+// ============================================================
+
+describe("submitAiReviewComments", () => {
+  let dbManager: DatabaseManager;
+  let store: FileReviewStore;
+  let workspaceDir: string;
+  const FILE = "docs/001-foo/plan.md";
+  const MARKDOWN = ["## Overview", "Intro.", "", "## Architecture", "Body."].join("\n");
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+    store = new FileReviewStore(dbManager);
+    workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-submit-"));
+    fs.mkdirSync(path.join(workspaceDir, "docs/001-foo"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, FILE), MARKDOWN);
+  });
+
+  afterEach(() => {
+    dbManager.close();
+    fs.rmSync(workspaceDir, { recursive: true, force: true });
+  });
+
+  function seedDraft(): void {
+    store.createDraft("s1", FILE, "markdown", "h", ["## Overview", "## Architecture"]);
+  }
+
+  it("forces source:ai server-side and persists into the existing draft", async () => {
+    seedDraft();
+    const comments: AiReviewCommentInput[] = [
+      { kind: "section", section_heading: "## Architecture", section_index: 1, text: "tighten this" },
+    ];
+    const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, comments);
+
+    expect(result.added).toBe(1);
+    expect(result.review.comments).toHaveLength(1);
+    expect(result.review.comments[0]!.source).toBe("ai");
+  });
+
+  it("re-anchors section comments against the CURRENT file, not a cached snapshot", async () => {
+    // Draft was created with stale headings; the agent passes a wrong index.
+    store.createDraft("s1", FILE, "markdown", "h", ["## Overview"]);
+    const comments: AiReviewCommentInput[] = [
+      { kind: "section", section_heading: "## Architecture", section_index: 99, text: "x" },
+    ];
+    const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, comments);
+
+    const c = result.review.comments[0]!;
+    expect(c.kind).toBe("section");
+    if (c.kind === "section") {
+      // "## Architecture" is index 1 in the current file — not the bogus 99.
+      expect(c.sectionIndex).toBe(1);
+    }
+    expect(result.outdated).toBe(0);
+  });
+
+  it("counts a comment on a vanished section as outdated but still persists it", async () => {
+    seedDraft();
+    const comments: AiReviewCommentInput[] = [
+      { kind: "section", section_heading: "## Removed", section_index: 0, text: "stale" },
+    ];
+    const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, comments);
+    expect(result.outdated).toBe(1);
+    expect(result.review.comments).toHaveLength(1);
+  });
+
+  it("rejects when the draft was sent during the review run", async () => {
+    seedDraft();
+    const draft = store.getDraft("s1", FILE)!;
+    store.addSectionComment(draft.id, "## Overview", 0, "human note", "human");
+    store.markSent(draft.id);
+
+    await expect(
+      submitAiReviewComments(store, "s1", FILE, workspaceDir, [
+        { kind: "section", section_heading: "## Overview", section_index: 0, text: "late" },
+      ]),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("ensures a fresh draft when none exists (modal closed mid-review)", async () => {
+    // No draft and no prior review at all.
+    const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, [
+      { kind: "section", section_heading: "## Overview", section_index: 0, text: "fresh" },
+    ]);
+    expect(result.added).toBe(1);
+    expect(store.getDraft("s1", FILE)).not.toBeNull();
+  });
+
+  it("rejects an oversize payload (too many comments)", async () => {
+    seedDraft();
+    const tooMany: AiReviewCommentInput[] = Array.from({ length: MAX_REVIEW_COMMENTS + 1 }, () => ({
+      kind: "section" as const,
+      section_heading: "## Overview",
+      section_index: 0,
+      text: "x",
+    }));
+    await expect(
+      submitAiReviewComments(store, "s1", FILE, workspaceDir, tooMany),
+    ).rejects.toBeInstanceOf(ServiceError);
+  });
+
+  it("rejects a comment whose text exceeds the per-comment limit", async () => {
+    seedDraft();
+    const big: AiReviewCommentInput[] = [
+      { kind: "section", section_heading: "## Overview", section_index: 0, text: "x".repeat(MAX_REVIEW_COMMENT_CHARS + 1) },
+    ];
+    await expect(
+      submitAiReviewComments(store, "s1", FILE, workspaceDir, big),
+    ).rejects.toBeInstanceOf(ServiceError);
   });
 });
