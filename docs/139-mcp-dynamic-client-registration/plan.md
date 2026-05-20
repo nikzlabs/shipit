@@ -76,6 +76,8 @@ responds exactly as the MCP auth spec / RFC 8414 / RFC 7591 require:
   `client_secret` issued). This is exactly ShipIt's PKCE-only model (see the
   rationale comment in `services/mcp-oauth.ts`).
 - **S256 PKCE is supported** — matches what `startOAuthFlow` already sends.
+- `client_id_metadata_document_supported: false` confirms there's no
+  client-ID-metadata-document shortcut — DCR is the path to a `client_id`.
 
 ### ⚠️ Correction: the hardcoded Notion endpoints in the registry are wrong for DCR
 
@@ -101,22 +103,45 @@ Flow becomes: **discover → register (if no cached/env client_id) → PKCE auth
 
 Given a provider's `mcpUrl`:
 
-1. Derive the origin and fetch
-   `<origin>/.well-known/oauth-protected-resource` (try the path-suffixed
-   variant `.../oauth-protected-resource/mcp` too, per the `WWW-Authenticate`
-   `resource_metadata` value). Read `authorization_servers[0]`.
-   - Optionally short-circuit: do an unauthenticated probe of `mcpUrl` and read
-     `resource_metadata` straight from the `WWW-Authenticate` header.
-2. For the chosen authorization server, fetch
-   `<as>/.well-known/oauth-authorization-server` (RFC 8414). Fall back to
-   `<as>/.well-known/openid-configuration` if the former 404s.
-3. Return a normalized record:
+1. **Find the protected-resource metadata URL — header first.** Do an
+   unauthenticated probe of `mcpUrl` (`POST` an empty/`initialize` body) and read
+   the `resource_metadata` value out of the `401`'s `WWW-Authenticate` header
+   (the verified probe returns
+   `…/.well-known/oauth-protected-resource/mcp` there — this is the
+   **authoritative** source, per the MCP auth spec). Only if the challenge is
+   absent, fall back to guessing the well-known paths
+   `<origin>/.well-known/oauth-protected-resource` and the resource-path-suffixed
+   `<origin>/.well-known/oauth-protected-resource/mcp`.
+   - **SSRF guard:** require the `resource_metadata` URL's origin to equal
+     `mcpUrl`'s origin before fetching it — a compromised MCP endpoint must not
+     be able to redirect discovery at an arbitrary host.
+2. Fetch the protected-resource metadata and read `authorization_servers[0]`.
+   **Validate** that AS origin against the `resource` origin (don't follow an
+   arbitrary cross-origin AS).
+3. Fetch the authorization-server metadata (RFC 8414). **Path construction:** for
+   an origin-rooted issuer (Notion's case) it's
+   `<issuer>/.well-known/oauth-authorization-server`; for an issuer *with a path
+   component* RFC 8414 requires inserting the well-known segment **between host
+   and path** (`https://host/.well-known/oauth-authorization-server/<path>`), not
+   appending. Fall back to `<issuer>/.well-known/openid-configuration` on 404
+   (Notion 404s this — RFC 8414 is the live path).
+4. **Validate** each discovered endpoint (`authorization_endpoint`,
+   `token_endpoint`, `registration_endpoint`) shares the AS origin before ShipIt
+   POSTs registration data or redeems a code there.
+5. Validate `S256 ∈ code_challenge_methods_supported` (we always send S256);
+   throw a clear error otherwise.
+6. Return a normalized record:
    `{ authorizationEndpoint, tokenEndpoint, registrationEndpoint?, codeChallengeMethods }`.
-4. Validate `S256 ∈ code_challenge_methods_supported` (we always send S256).
 
 Cache the discovered metadata in-memory with a short TTL (endpoints are stable;
 re-discovering on every connect is cheap and avoids staleness). No need to
 persist.
+
+> **Scope of the "generalizes to any spec-compliant server" claim:** the
+> origin-rooted RFC 8414 path and the origin checks above assume `mcpUrl` is a
+> trusted, registry/operator-controlled value (it is today). If `mcpUrl` ever
+> becomes user-supplied, the SSRF surface widens — revisit the origin checks and
+> consider an allowlist before relaxing that.
 
 ### 2. Dynamic registration (`services/mcp-oauth.ts`)
 
@@ -145,29 +170,87 @@ New `registerOAuthClient({ registrationEndpoint, redirectUri, provider, fetchImp
 Replace the "env var or bust" check (`services/mcp-oauth.ts:164–174`) with:
 
 1. **Operator override** — `env[provider.clientIdEnv]` if set (keeps the escape
-   hatch / rate-limit workaround documented in `mcp-oauth-providers.ts`).
-2. **Cached registered client** — `CredentialStore` client_id for this source,
-   if a prior registration succeeded.
-3. **Dynamic registration** — discover, then register, then use the issued id.
+   hatch / rate-limit workaround documented in `mcp-oauth-providers.ts`). When
+   the override is used we still need endpoints — run discovery, or fall back to
+   the registry endpoints if discovery is unavailable.
+2. **Cached registered client** — `credentialStore.getMcpOAuthClient(source)`
+   (keyed by `provider.id`, e.g. `notion_oauth`), if a prior registration
+   succeeded.
+3. **Dynamic registration** — discover, then `POST` to the discovered
+   `registration_endpoint`, then use the issued id.
 4. Only if all three fail **and** the provider published no
-   `registration_endpoint` do we throw the existing "Missing OAuth client id"
-   error (now genuinely an edge case).
+   `registration_endpoint` (and none was hardcoded) do we throw the existing
+   "Missing OAuth client id" error (now genuinely an edge case).
 
-Also: when discovery succeeds, prefer the **discovered** authorize/token
-endpoints over the registry's hardcoded values for building the authorize URL
-and for the code exchange. Thread the resolved endpoints through `OAuthFlowState`
-so `handleOAuthCallback` exchanges at the same `token_endpoint` discovery
-returned.
+**`startOAuthFlow` becomes `async`.** It currently returns
+`StartOAuthFlowResult` synchronously (`mcp-oauth.ts:148–158`) and the route calls
+it without `await` (`api-routes-mcp.ts:240`). Discovery + registration are network
+calls, so the signature changes to `Promise<StartOAuthFlowResult>` and
+`POST /api/mcp-servers/oauth/start` must `await` it. The route already returns
+JSON before the popup opens, so failures surface as a `ServiceError` → JSON error
+the Settings panel renders inline (the popup is only opened *after* a successful
+`authorizeUrl` is returned).
+
+**Endpoint threading (load-bearing — this is the actual bug being fixed).** The
+discovered `authorization_endpoint` is used to build the authorize URL, and the
+discovered `token_endpoint` **must** be used for the later code exchange. Today
+`handleOAuthCallback` re-derives the provider via `getMcpOAuthProvider(flow.source)`
+and exchanges at `provider.tokenEndpoint` (`mcp-oauth.ts:224–236`, `:268`) — the
+*hardcoded* registry value, which for Notion is the wrong `api.notion.com` server.
+Concrete changes:
+
+- Add `tokenEndpoint: string` (and, for symmetry, `authorizationEndpoint: string`)
+  to `OAuthFlowState` (`mcp-oauth.ts:47–55`). `startOAuthFlow` writes the resolved
+  values when it `put()`s the flow state. **All three client-id resolution
+  branches must populate these** — the env-override branch (which skips
+  registration) still runs discovery for endpoints, or falls back to the
+  corrected registry `tokenEndpoint`; never leave the flow state's endpoints
+  unset.
+- `handleOAuthCallback` / `exchangeCodeForTokens` must read `flow.tokenEndpoint`
+  instead of `provider.tokenEndpoint`.
+- The **same** `redirectUri` value must be used at all three steps —
+  registration, authorize URL, and token exchange — or the provider rejects the
+  exchange. Reuse the single derived callback URL (`deriveCallbackUrl`,
+  `api-routes-mcp.ts:333`) throughout the flow; `registerOAuthClient` is called
+  from inside `startOAuthFlow` so it already has that `redirectUri` in scope.
+
+**Failure UX** (all surface as inline errors in the Settings panel, before the
+popup opens):
+
+- Discovery 404 on both well-known paths / no `WWW-Authenticate` challenge →
+  `ServiceError(502, "Couldn't discover <provider> OAuth configuration")`.
+- `/register` 4xx (incl. rate limit — the scenario `clientIdEnv` exists for) →
+  `ServiceError(502, …)` with a hint to set `<PROVIDER>_OAUTH_CLIENT_ID` as a
+  fallback.
+- Metadata missing `S256` → `ServiceError(502, "provider doesn't support S256
+  PKCE")`.
 
 ### 4. Registry cleanup (`mcp-oauth-providers.ts`)
 
-- Mark `authorizationEndpoint` / `tokenEndpoint` as **fallback-only** in
-  comments; for Notion they're currently the *wrong* server, so either:
-  - replace them with the discovered `mcp.notion.com` endpoints as static
-    fallback, or
-  - make them optional in `McpOAuthProviderConfig` and rely on discovery.
-- `registrationEndpoint` stays optional — discovery supplies it; the static
-  field is a fallback for providers without metadata.
+- **Commit (not "either/or"): replace Notion's hardcoded endpoints with the
+  discovered `mcp.notion.com` values** (`authorize` / `token`) so the static
+  fallback is at least the *correct* server. Discovery still overrides them at
+  runtime; this just makes the fallback safe and fixes the refresh path (below).
+- Mark `authorizationEndpoint` / `tokenEndpoint` as **fallback-only** in the
+  field comments. `registrationEndpoint` stays optional — discovery supplies it;
+  the static field is a fallback for providers without metadata.
+- **Fix the stale header comment** at `mcp-oauth-providers.ts:16–23`, which today
+  claims the registered client_id is cached "in `CredentialStore.mcpOAuth[id].clientId`."
+  That contradicts the settled decision (separate `mcpOAuthClients` map) — update
+  it. Also reconcile the `clientIdEnv` comment block, which describes DCR as
+  already-implemented behavior when it isn't yet.
+
+### Refresh-path correctness
+
+`refreshOAuthTokens` (`mcp-oauth.ts:334–384`) exchanges at `provider.tokenEndpoint`
+(`:359`) — the registry value. After this feature, Notion's registry endpoint is
+corrected to `mcp.notion.com/token` (above), so refresh hits the right server. We
+do **not** rely on "Notion tokens never expire": `refreshExpiredMcpOAuthTokens`
+runs for any source with a `refreshToken` + `expiresAt`, so the endpoint must be
+correct regardless. (Belt-and-suspenders: we could also persist the discovered
+`tokenEndpoint` alongside the registered client and have refresh prefer it, but
+correcting the registry value is sufficient and simpler. Persisting it is the
+follow-up if a provider's token endpoint ever diverges from its registry entry.)
 
 ## Data model
 
@@ -176,9 +259,13 @@ returned.
 path). `OAuthTokens.accessToken` is **required**, so a registered client_id
 can't live in `mcpOAuth` before the first token exists without either loosening
 the type or writing a half-populated record — and a half-populated record would
-be a problem, because `getAllMcpOAuthTokens()` feeds the `MCP_PLATFORM_*` env
-vars and `listMcpOAuthProviders()` treats "has a tokens record" as
-**Connected**.
+be a problem because `listMcpOAuthProviders()` (`mcp-oauth.ts:398–410`) treats
+*any* tokens record as `connected: true` (it never checks `accessToken`), so a
+client-only record would falsely show **Connected** in Settings. (The env-var
+writer is *not* at risk: `collectMcpAgentEnv()` in `secret-resolver.ts:267–287`
+already guards `if (!tokens?.accessToken) continue;` at `:280`, so a tokenless
+record would not push a broken `MCP_PLATFORM_*` env var — but the false-Connected
+status alone is reason enough to keep the two concerns separate.)
 
 **Decision (settled): add a separate `mcpOAuthClients` map** (option B).
 
@@ -197,7 +284,7 @@ on the existing `save()`.
 
 Why this over the alternatives:
 - Keeps "I have a registered client" cleanly separate from "I have live tokens",
-  so there is **no false-Connected risk** and no broken `MCP_PLATFORM_*` env var.
+  so there is **no false-Connected risk** in `listMcpOAuthProviders`.
 - **Registers once per account/provider** and reuses the cached client on every
   subsequent connect — no orphan client registrations accruing provider-side,
   and resilient to DCR rate limits (the same concern the `clientIdEnv` escape
@@ -206,7 +293,7 @@ Why this over the alternatives:
   not touch the resolver / status / refresh code paths.
 
 Rejected: a partial `OAuthTokens` record / making `accessToken` optional —
-ripples through `mcp-resolve.ts`, `getAllMcpOAuthTokens`,
+ripples through `secret-resolver.ts` (`collectMcpAgentEnv`), `mcp-resolve.ts`,
 `listMcpOAuthProviders`, and refresh, all of which assume `accessToken` is
 present. Also rejected: no persistence at all (re-register every connect) — it's
 the smallest diff but leaks orphan clients and risks rate limits for no real
@@ -217,8 +304,11 @@ benefit now that we have the cache.
 - **Register:** `startOAuthFlow` checks `mcpOAuthClients[source]` first; on a
   miss it discovers + registers and writes the result here.
 - **Use:** the client_id is copied into `OAuthFlowState` for the live handshake,
-  and into `OAuthTokens.clientId` on successful exchange (so the existing
-  refresh path is unchanged).
+  and into `OAuthTokens.clientId` on successful exchange. The refresh path
+  (`refreshOAuthTokens`) is structurally unchanged — it reads `clientId` off the
+  stored tokens — and now hits the correct token endpoint because Notion's
+  registry `tokenEndpoint` is corrected to `mcp.notion.com/token` (see
+  Refresh-path correctness).
 - **Disconnect:** `deleteMcpOAuthTokens(source)` drops the tokens. We **keep**
   `mcpOAuthClients[source]` so reconnect skips re-registration — the registered
   public client is harmless without tokens. (A future "forget this provider
@@ -246,12 +336,21 @@ step again.
 ## Security considerations
 
 - **Public client, PKCE-only.** No client secret to leak; PKCE protects the code
-  redemption (RFC 8252 native-app guidance, same as today).
-- **Discovery is fetched over TLS** from the provider origin; validate the
-  `authorization_servers` entry shares the resource origin (don't follow an
-  arbitrary cross-origin AS without a sanity check).
-- **Redirect URI** registered must exactly match the orchestrator callback used
-  in the flow; mismatch is the most common DCR failure mode.
+  redemption (RFC 8252 native-app guidance, same as today). State/PKCE handling
+  is unchanged from the existing flow (opaque `state`, 10-min TTL store).
+- **SSRF surface from discovery (the main new risk).** Discovery follows URLs
+  derived from the provider's responses, so the orchestrator must validate
+  origins before each fetch/POST (enforced in Discovery §1):
+  - the `resource_metadata` URL from the `WWW-Authenticate` header must share
+    `mcpUrl`'s origin;
+  - `authorization_servers[0]` must share the `resource` origin;
+  - the discovered `authorization_endpoint` / `token_endpoint` /
+    `registration_endpoint` must share the AS origin.
+  All fetches are HTTPS-only. `mcpUrl` is registry/operator-controlled today; if
+  it ever becomes user-supplied, add an allowlist (noted in Discovery §1).
+- **Redirect URI** must be byte-identical at registration, authorize, and token
+  exchange (single derived `deriveCallbackUrl` value); mismatch is the most
+  common DCR failure mode.
 - **Registration is per account** (CredentialStore is account-scoped) — one
   registered client per provider per account, reused across sessions.
 - Throwaway client minted during verification (`Q4b8…`) is harmless — public,
@@ -259,30 +358,46 @@ step again.
 
 ## Key files
 
-- `src/server/orchestrator/services/mcp-oauth.ts` — add registration + reorder
-  client-id resolution in `startOAuthFlow`; thread discovered endpoints through
-  `OAuthFlowState` → `handleOAuthCallback`.
+- `src/server/orchestrator/services/mcp-oauth.ts` — make `startOAuthFlow` async +
+  reorder client-id resolution; add `registerOAuthClient`; add
+  `tokenEndpoint`/`authorizationEndpoint` to `OAuthFlowState`; have
+  `handleOAuthCallback`/`exchangeCodeForTokens` exchange at `flow.tokenEndpoint`
+  (not `provider.tokenEndpoint`).
 - `src/server/orchestrator/services/mcp-oauth-discovery.ts` — **new**: metadata
-  discovery (protected-resource → authorization-server) with TTL cache.
-- `src/server/orchestrator/mcp-oauth-providers.ts` — fix/relax hardcoded Notion
-  endpoints; clarify they're fallback-only.
+  discovery (WWW-Authenticate → protected-resource → authorization-server) with
+  origin validation, S256 check, and TTL cache.
+- `src/server/orchestrator/api-routes-mcp.ts` — `await` the now-async
+  `startOAuthFlow` at the `POST /oauth/start` route (`:240`); reuse the single
+  `deriveCallbackUrl` (`:333`) as the redirect URI for register/authorize/exchange.
+- `src/server/orchestrator/mcp-oauth-providers.ts` — correct Notion's hardcoded
+  endpoints to `mcp.notion.com/{authorize,token}`; mark them fallback-only; fix
+  the stale header comment (`:16–23`) that points client-id caching at
+  `mcpOAuth[id].clientId`, and the `clientIdEnv` comment that implies DCR already
+  exists.
 - `src/server/shared/types/mcp-types.ts` — add the `mcpOAuthClients` entry type
   (`{ clientId; clientSecret?; registeredAt }`); `registrationEndpoint` already
   present on `McpOAuthProviderConfig`.
 - `src/server/orchestrator/credential-store.ts` — add `mcpOAuthClients` to
   `CredentialData` plus `getMcpOAuthClient` / `setMcpOAuthClient` /
   `deleteMcpOAuthClient`, and wire it into `clear()`.
-- `src/server/shipit-docs/mcp.md` — document that hosted providers now
-  auto-register; remove/soften the env-var prerequisite.
-- Tests: `services/mcp-oauth.test.ts` (+ a new discovery test) — cover
-  discovery parsing, registration parsing, resolution order (env > cached >
-  register), S256 validation, and the no-registration-endpoint fallback error.
+- `src/server/shipit-docs/secrets.md` — the agent-facing platform-credentials doc
+  (there is **no** `mcp.md` today). Its `source:` table (`:121`) lists only
+  `claude_oauth` / `github_token` and never mentions the MCP OAuth
+  `platform:<id>` sources; add the MCP OAuth providers and note hosted providers
+  now auto-register (no `<PROVIDER>_OAUTH_CLIENT_ID` prerequisite). Optionally
+  split this into a dedicated `mcp.md` if the section grows.
+- Tests: `services/mcp-oauth.test.ts` + new `services/mcp-oauth-discovery.test.ts`
+  (see Testing).
 
 ## Testing
 
 - Unit: stub `fetchImpl` to return the four canned responses above; assert
   `startOAuthFlow` discovers, registers, caches, and builds an authorize URL
   pointed at the **discovered** `authorization_endpoint`.
+- Unit (**the actual bug fix**): drive `startOAuthFlow` → `handleOAuthCallback`
+  end-to-end with a stub `fetchImpl`; assert the code exchange POSTs to the
+  **discovered** `mcp.notion.com/token`, never the registry's old
+  `api.notion.com/v1/oauth/token`.
 - Unit: env-var override wins over registration (operator escape hatch intact).
 - Unit: a `client_id` cached in `mcpOAuthClients` skips the `/register` call
   (assert `fetchImpl` sees no registration request).
@@ -290,6 +405,10 @@ step again.
   reconnect reuses the cached client.
 - Unit: provider with no `registration_endpoint` in metadata and no env var →
   the existing `ServiceError(400)` is thrown.
+- Unit (discovery): `WWW-Authenticate` header parsing; RFC 8414 success +
+  `openid-configuration` fallback on 404; missing-S256 → error; **origin-mismatch
+  rejection** for a `resource_metadata` / AS / endpoint pointing off-origin
+  (SSRF guard).
 - Manual: real connect against `mcp.notion.com` from Settings, confirm
   "Connected" + a working `notion` server in a live session.
 
