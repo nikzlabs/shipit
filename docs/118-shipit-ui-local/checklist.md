@@ -1,25 +1,45 @@
 # Checklist — ShipIt UI in local mode
 
+> **Status (2026-05-20).** Server-side plumbing is complete: `stateDir`,
+> `runtimeMode`, the `setupContainerManager` local early-return, the
+> `buildRunnerFactory` local branch, the local `agentFactory`, env-based auth
+> (Claude + GitHub), `compose_not_configured` suppression, the `isTestMode`
+> vs `runtimeMode` comment blocks, and the subprocess-kill paths are all in,
+> with unit coverage for `buildRunnerFactory` and the idle-limit no-op. The
+> repo entry point (`docker-compose.yml`, `Dockerfile.dogfood`, `shipit.yaml`
+> `compose:`, `.gitignore`, `WORKSPACE_SKIP_DIRS`) is in place, as is the
+> prebake/install-state-machine/preview-overlay hardening (see "landed"
+> sections).
+>
+> **Remaining for v1:** (1) thread `runtimeMode` into the bootstrap payload and
+> a client store — this gates all the inner-UI surfacing (banner, hide
+> preview/terminal panels, file-tree refresh, hide container affordances,
+> install-skip messaging); (2) the local-mode boot+turn integration test;
+> (3) the `agentFactory`-consumer audit and the compose-volume-rewrite check;
+> (4) the manual smoke test (which also first-exercises the real `ClaudeAdapter`
+> and the subprocess-reaping check). Flip `plan.md` to `done` after the smoke
+> test passes.
+
 ## Phase 0 — preconditions (could land as a separate refactor PR before 118 starts)
 
-- [ ] Add a `stateDir` parameter to `AppDeps` in `app-di.ts`. Default `stateDir = workspaceDir` so existing production installs need no migration. Route three paths through `stateDir`: the SQLite database (`app-di.ts:159`, `${workspaceDir}/.shipit.db`), `repo-cache/` (`app-lifecycle.ts:901`), and `dep-cache/` (`app-lifecycle.ts:914`). `sessionsRoot` (`${workspaceDir}/sessions`) does **not** move — inner-session clones must live in the user's view of the workspace.
-- [ ] `src/server/shared/fs-constants.ts` — add `sessions/`, `.inner-shipit/`, and `.shipit/` to `WORKSPACE_SKIP_DIRS`. Verify no production flow relied on watching these.
-- [ ] ShipIt repo's checked-in `.gitignore` — add `sessions/`, `.inner-shipit/`, and `.shipit/`. There is no auto-`.gitignore` mechanism in `git.autoCommit` (it just runs `git add -A`); these must be real `.gitignore` entries. Without them, the outer's auto-commit will commit inner-session clones as gitlinks and check secret env files into git.
+- [x] Add a `stateDir` parameter to `AppDeps` in `app-di.ts`. Default `stateDir = workspaceDir` so existing production installs need no migration. Route three paths through `stateDir`: the SQLite database, `repo-cache/`, and `dep-cache/`. `sessionsRoot` (`${workspaceDir}/sessions`) does **not** move — inner-session clones must live in the user's view of the workspace. Done: `stateDir` in `AppDeps` (`app-di.ts:97`), `SHIPIT_STATE_DIR` read at `app-di.ts:212`, DB at `app-di.ts:237`.
+- [x] `src/server/shared/fs-constants.ts` — add `sessions/`, `.inner-shipit/`, and `.shipit/` to `WORKSPACE_SKIP_DIRS`. Done (`fs-constants.ts:26-28`).
+- [x] ShipIt repo's checked-in `.gitignore` — add `sessions/`, `.inner-shipit/`, and `.shipit/`. There is no auto-`.gitignore` mechanism in `git.autoCommit` (it just runs `git add -A`); these must be real `.gitignore` entries. Done (`.gitignore:18-19` and `.shipit` entry).
 
 ## Phase 1 — get the inner UI working (no inner-session preview)
 
 ### Runtime mode plumbing
-- [ ] `src/server/orchestrator/app-di.ts` — add `runtimeMode: "containerized" | "local"` to `AppDeps`. Default from `process.env.RUNTIME_MODE`, falling back to `"containerized"`. **Distinct from `isTestMode`** — see hardening note in plan.md.
-- [ ] `src/server/orchestrator/app-lifecycle.ts:setupContainerManager` — add a `runtimeMode === "local"` early-return *in addition to* the existing `isTestMode` gate. The throw at `app-lifecycle.ts:101` ("Docker is required") must be guarded behind both. No Docker proxy server, no `cleanupOrphanComposeResources`, no `resolveOwnContainerIp`.
-- [ ] `src/server/orchestrator/app-lifecycle.ts:buildRunnerFactory` — add a `local`-mode branch that returns a factory constructing `SessionRunner` (the existing in-process runner, `session-runner.ts:356`) instead of `ContainerSessionRunner`.
-- [ ] Default `agentFactory` in local mode: when `deps.agentFactory` is not provided and `runtimeMode === "local"`, construct adapters directly (`new ClaudeAdapter()`, `new CodexAdapter()`) keyed by `agentId`. Both seams matter: (a) `runner.createAgent` (only exists on `ContainerSessionRunner`) and (b) the process-level `agentFactory` fallback at `app-lifecycle.ts:445`.
+- [x] `src/server/orchestrator/app-di.ts` — add `runtimeMode: "containerized" | "local"` to `AppDeps`. Default from `process.env.RUNTIME_MODE`, falling back to `"containerized"`. **Distinct from `isTestMode`** — see hardening note in plan.md. Done: type at `app-di.ts:39`, `resolveRuntimeMode()` at `app-di.ts:42-45`.
+- [x] `src/server/orchestrator/app-lifecycle.ts:setupContainerManager` — add a `runtimeMode === "local"` early-return *in addition to* the existing `isTestMode` gate. The "Docker is required" throw must be guarded behind both. No Docker proxy server, no `cleanupOrphanComposeResources`, no `resolveOwnContainerIp`. Done (`app-lifecycle.ts:108-110`).
+- [x] `src/server/orchestrator/app-lifecycle.ts:buildRunnerFactory` — add a `local`-mode branch that returns a factory constructing `SessionRunner` instead of `ContainerSessionRunner`. Done (`app-lifecycle.ts:327-334`).
+- [x] Default `agentFactory` in local mode: when `deps.agentFactory` is not provided and `runtimeMode === "local"`, construct adapters directly (`new ClaudeAdapter()`, `new CodexAdapter()`) keyed by `agentId`. Done: `buildLocalAgentFactory()` (`app-di.ts:385-402`), wired at `app-di.ts:223`.
 - [ ] Audit `agentFactory` consumers outside session context (e.g. `generateText` for PR descriptions). In local mode they spawn real `ClaudeAdapter` subprocesses with whatever `cwd` is passed; verify no caller passes the outer workspace as cwd with `permissionMode: "auto"`.
-- [ ] Confirm `enforceIdleContainerLimit` (`app-lifecycle.ts:319-368`) is a no-op when `containerManager === null`.
+- [x] Confirm `enforceIdleContainerLimit` is a no-op when `containerManager === null`. Done — covered by `integration_tests/container-exit-logging.test.ts:260` ("is a no-op when no containerManager is wired (local mode)").
 
 ### ShipIt repo entry point
-- [ ] Add `docker-compose.yml` at the repo root with the `dev` service shown in the plan's "Entry point" section. Must include: `image: node:22`, `command: sh -c "npm install && npm run dev"` (NOT just `npm run dev` — `agent.install` does not run for compose services), `working_dir: /workspace`, `init: true`, `volumes: [".:/workspace"]`, `environment.RUNTIME_MODE: local`, `environment.PORT: 3000`, `environment.SHIPIT_STATE_DIR: /workspace/.inner-shipit`, `ports: ["3000:3000"]`, `x-shipit-preview: auto`, and `x-shipit-secrets` for `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `GITHUB_TOKEN`.
-- [ ] Add `compose: docker-compose.yml` to the existing `shipit.yaml` at the repo root. **Without this, `setupServiceManager` skips Compose entirely (`app-lifecycle.ts:576`) and the dev service never starts.**
-- [ ] Verify `compose-generator.ts` volume-rewriting (`compose-generator.ts:377-424`) produces a working mount for `.:/workspace` when the Compose file is run inside an outer session.
+- [x] Add `docker-compose.yml` at the repo root with the `dev` service. Done. Includes `init: true`, `command: sh -c "npm install && npm run dev"`, `RUNTIME_MODE: local`, `SHIPIT_STATE_DIR: /workspace/.inner-shipit`, `CHOKIDAR_USEPOLLING: "1"`, `x-shipit-secrets` for the three credentials, and `build:`/`image: shipit-dogfood:local` referencing `docker/Dockerfile.dogfood`. **Note:** the service is `x-shipit-preview: manual` (per the plan's heavy-boot rationale), not `auto` as this checklist line originally stated — manual is correct.
+- [x] Add `compose: docker-compose.yml` to the existing `shipit.yaml` at the repo root. Done (`shipit.yaml:17`).
+- [ ] Verify `compose-generator.ts` volume-rewriting produces a working mount for `.:/workspace` when the Compose file is run inside an outer session. (Empirical — covered by the manual smoke test.)
 
 ### Credential injection — `x-shipit-secrets` plus secrets-dir handling
 - [ ] Confirm `x-shipit-secrets` resolves correctly: `secret-resolver.ts:writePerServiceEnvFiles` writes `.shipit/.env.dev` into the workspace volume; `compose-generator.ts` adds `env_file:` to the resolved compose service. Verify with one end-to-end test.
@@ -30,19 +50,24 @@
 - [x] Verify `GitHubAuthManager` (`github-auth.ts`) reads `GITHUB_TOKEN` from env. `checkCredentials()` now falls back to `process.env.GITHUB_TOKEN` when `CredentialStore` has nothing on disk. Env-sourced tokens are not persisted to disk — env stays the source of truth so outer-orch token rotation is picked up on the next check.
 
 ### Inner-UI suppressions and surfacing
-- [ ] Bootstrap response includes `runtimeMode`. Client store reads it.
-- [ ] "Running in local mode" banner in the inner UI when `runtimeMode === "local"`. Brief, dismissible, enumerates what's disabled (terminal, file-watcher live updates, preview).
-- [ ] Hide the preview panel in the inner UI when `runtimeMode === "local"` (Phase 2 will re-enable).
-- [ ] Hide or disable the inner UI's terminal panel; render "Terminal not available in local mode — use the outer terminal." (`ws-handlers/terminal-handlers.ts` requires `ContainerSessionRunner` and will return an error otherwise.)
-- [ ] File-tree refresh: add a manual refresh button (or rely on existing one) since live watcher updates won't fire. Initial scan via `scanFileTree` still works.
-- [ ] Suppress `compose_not_configured` events when `runtimeMode === "local"` — either at the emission site (preferred) or in the inner UI's WS handler. Otherwise every inner-session creation flashes a "compose not configured" message.
-- [ ] Hide container-specific affordances in the inner UI: idle-container indicators, container-recovery dialogs, anything that would obviously confuse in local mode.
-- [ ] Inner sessions: skip / suppress the `agent.install` step in the UI (or surface "install skipped — local mode") since `runInstall` is `instanceof ContainerSessionRunner`-gated and never runs.
+- [ ] Bootstrap response includes `runtimeMode`. Client store reads it. **Not done** — no `runtimeMode` in `services/misc.ts:getBootstrapData()` and no `runtimeMode` reference anywhere in `src/client`.
+- [ ] "Running in local mode" banner in the inner UI when `runtimeMode === "local"`. Brief, dismissible, enumerates what's disabled (terminal, file-watcher live updates, preview). **Not done** — no banner in the client.
+- [ ] Hide the preview panel in the inner UI when `runtimeMode === "local"` (Phase 2 will re-enable). **Not done.**
+- [ ] Hide or disable the inner UI's terminal panel; render "Terminal not available in local mode — use the outer terminal." **Not done.**
+- [ ] File-tree refresh: add a manual refresh button (or rely on existing one) since live watcher updates won't fire. **Not done** (depends on `runtimeMode` reaching the client).
+- [x] Suppress `compose_not_configured` events when `runtimeMode === "local"` — either at the emission site (preferred) or in the inner UI's WS handler. Done at the emission site: `runner-registry-factory.ts:167-172` skips `setupServiceManager`/the event when `runtimeMode === "local"`.
+- [ ] Hide container-specific affordances in the inner UI: idle-container indicators, container-recovery dialogs, anything that would obviously confuse in local mode. **Not done** (depends on `runtimeMode` reaching the client).
+- [ ] Inner sessions: skip / suppress the `agent.install` step in the UI (or surface "install skipped — local mode") since `runInstall` is `instanceof ContainerSessionRunner`-gated and never runs. **Not done.**
+
+> **Remaining client work is gated on one prerequisite:** `runtimeMode` is not yet
+> threaded into the bootstrap payload or any client store. All of the inner-UI
+> surfacing items above (banner, panel hiding, refresh button, affordance hiding,
+> install-skip messaging) need that wire first.
 
 ### Hardening (see "Hardening notes" in plan.md)
-- [ ] Add a comment block at the top of `app-lifecycle.ts` and in `app-di.ts` spelling out the difference between `isTestMode` and `runtimeMode === "local"`. Do not add code that checks both as a single condition unless both are genuinely required.
-- [ ] Verify `ClaudeAdapter.kill()` terminates the underlying `node-pty` PTY (`claude.ts:163-172` — already does, confirm). Same check for `CodexAdapter`.
-- [ ] Verify `SessionRunner.dispose()` calls `agent.kill()` and awaits exit (`session-runner.ts:551` — already does, confirm).
+- [x] Add a comment block at the top of `app-lifecycle.ts` and in `app-di.ts` spelling out the difference between `isTestMode` and `runtimeMode === "local"`. Done (`app-di.ts:22-37`, `app-lifecycle.ts:201-204`).
+- [x] Verify `ClaudeAdapter.kill()` terminates the underlying `node-pty` PTY. Confirmed: `ClaudeAdapter.kill()` (`claude-adapter.ts:216`) → `ClaudeProcess.kill()` kills the PTY. `CodexAdapter.kill()` (`codex-adapter.ts:337`) sends `SIGTERM` to the process and rejects pending requests.
+- [x] Verify `SessionRunner.dispose()` calls `agent.kill()` and awaits exit. Confirmed: `session-runner.ts:560` `dispose()` calls `this.agent.kill()` and `this._terminal.kill()`.
 - [ ] Subprocess-reaping smoke test: create 5 inner sessions, run a turn in each, dispose each, then run `ps -ef` inside the dev compose service container and confirm no leftover `claude` processes. Repeat after `SIGTERM`-ing the inner orch (`init: true` in compose should reap; verify).
 - [ ] Verify outer `git status` does not stage inner-session clones as gitlinks. (Phase 0 `.gitignore` should handle this.)
 - [ ] Verify `.shipit/.env.dev` is gitignored and not visible to the outer file watcher.
@@ -59,9 +84,9 @@
 - [ ] Preview proxy `getContainerIpForPort(3000)` resolves to the dev compose service's IP on the session network. (The `ports: ["3000:3000"]` line is stripped by `compose-generator.ts:464`; the proxy uses internal IP discovery.)
 
 ### Tests
-- [ ] Unit test: `buildRunnerFactory` returns a `SessionRunner` factory under `runtimeMode: "local"`, a `ContainerSessionRunner` factory under `"containerized"`.
-- [ ] Integration test: boot the orchestrator with `runtimeMode: "local"`, create a session, run a turn end-to-end. Assert the local path was used (e.g. by checking `containerManager` is null). **Note: this still uses `FakeClaudeProcess`, not `ClaudeAdapter` — real-adapter behavior is only validated by the manual smoke test.**
-- [ ] Manual smoke: open the ShipIt repo in production ShipIt, confirm the preview panel shows the inner UI, create an inner session, send a chat message, confirm the agent responds and edits a file. Document date and result here.
+- [x] Unit test: `buildRunnerFactory` returns a `SessionRunner` factory under `runtimeMode: "local"`, a `ContainerSessionRunner` factory under `"containerized"`. Done (`app-lifecycle.test.ts:434-524`, incl. "local mode wins over a non-null containerManager").
+- [ ] Integration test: boot the orchestrator with `runtimeMode: "local"`, create a session, run a turn end-to-end. Assert the local path was used (e.g. by checking `containerManager` is null). **Not done** — only the `enforceIdleContainerLimit` no-op test exists; no full boot+turn local-mode integration test. **Note: it would still use `FakeClaudeProcess`, not `ClaudeAdapter`.**
+- [ ] Manual smoke: open the ShipIt repo in production ShipIt, confirm the preview panel shows the inner UI, create an inner session, send a chat message, confirm the agent responds and edits a file. Document date and result here. **Not done.**
 
 ### Quality gates
 - [ ] `npm run typecheck` clean.
@@ -70,8 +95,8 @@
 - [ ] No regressions in `runtimeMode: "containerized"` mode (production path unchanged when env var is absent).
 
 ### Docs
-- [ ] `CLAUDE.md` — add a short "Dogfooding ShipIt in ShipIt" section pointing to this doc.
-- [ ] `plan.md` status → `done` once the smoke test passes.
+- [x] `CLAUDE.md` — add a short "Dogfooding ShipIt in ShipIt" section pointing to this doc. Done.
+- [ ] `plan.md` status → `done` once the smoke test passes. Still `in-progress` — pending the inner-UI surfacing work and the manual smoke test.
 
 ## Phase 1.5 — optional inner UI enhancements (only if v1 dogfooding loop demands them)
 
