@@ -2,7 +2,7 @@
  * Shared types and error class for the service layer.
  */
 
-import type { AgentId } from "../../shared/types.js";
+import type { AgentId, PermissionMode } from "../../shared/types.js";
 import type { SessionInfo, ProjectTemplate, RepoInfo } from "../../shared/types.js";
 
 // ---- Types for service function results ----
@@ -19,6 +19,11 @@ export interface AgentInfo {
    * "Ask agent to review" affordance in the file-preview modal.
    */
   supportsReview: boolean;
+  /**
+   * Permission modes this agent supports (docs/138). The client uses this to
+   * gate its agent-aware mode selector (e.g. only offer `guarded` when present).
+   */
+  supportedPermissionModes: PermissionMode[];
 }
 
 export interface GlobalSettings {

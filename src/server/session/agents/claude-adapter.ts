@@ -10,6 +10,7 @@
 import { EventEmitter } from "node:events";
 import { ClaudeProcess } from "../claude.js";
 import type { ClaudeEvent, ClaudeMcpServerInit } from "../../shared/types.js";
+import { CLAUDE_PERMISSION_MODES } from "../../shared/types.js";
 import type {
   AgentId,
   AgentCapabilities,
@@ -31,7 +32,7 @@ export class ClaudeAdapter
     supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: true,
-    supportedPermissionModes: ["auto", "plan"],
+    supportedPermissionModes: CLAUDE_PERMISSION_MODES,
     toolNames: [
       "Write", "Read", "Edit", "Bash", "Glob", "Grep",
       "WebFetch", "WebSearch", "AskUserQuestion",
@@ -98,6 +99,8 @@ export class ClaudeAdapter
           sessionId: raw.session_id,
           model: raw.model,
           tools: raw.tools,
+          // docs/138 — authoritative guarded-mode availability signal.
+          permissionMode: raw.permissionMode,
         };
 
       case "assistant":
@@ -166,6 +169,15 @@ export class ClaudeAdapter
           contextWindow,
           durationMs: raw.duration_ms,
           error: raw.subtype === "error" ? raw.result : undefined,
+          // docs/138 — normalize the CLI's snake_case classifier denials into
+          // the camelCase shape the orchestrator consumes for inline surfacing.
+          permissionDenials: raw.permission_denials?.length
+            ? raw.permission_denials.map((d) => ({
+                toolName: d.tool_name,
+                toolUseId: d.tool_use_id,
+                toolInput: d.tool_input,
+              }))
+            : undefined,
         };
       }
 

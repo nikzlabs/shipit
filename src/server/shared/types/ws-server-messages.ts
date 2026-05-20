@@ -1,4 +1,5 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
+import type { PermissionMode } from "./attachment-types.js";
 import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement } from "./domain-types.js";
 import type {
   WsGitHubStatus,
@@ -179,6 +180,12 @@ export interface WsGlobalSettings {
      * review" button shows up in the file-preview modal.
      */
     supportsReview: boolean;
+    /**
+     * Permission modes this agent supports (docs/138). Drives the client's
+     * agent-aware mode selector — e.g. `guarded` is only offered when this
+     * array includes it. Codex reports `[]` (no permission modes).
+     */
+    supportedPermissionModes: PermissionMode[];
   }[];
   defaultAgentId: AgentId;
 }
@@ -264,6 +271,12 @@ export interface WsAgentListMessage {
      * review" button shows up in the file-preview modal.
      */
     supportsReview: boolean;
+    /**
+     * Permission modes this agent supports (docs/138). Drives the client's
+     * agent-aware mode selector — e.g. `guarded` is only offered when this
+     * array includes it. Codex reports `[]` (no permission modes).
+     */
+    supportedPermissionModes: PermissionMode[];
   }[];
   defaultAgentId: AgentId;
 }
@@ -652,6 +665,22 @@ export interface WsSystemUserMessage {
   activity?: string;
 }
 
+/**
+ * Server → Client: an informational system note rendered inline in the chat
+ * (docs/138). Distinct from `error` — it does NOT clear the loading state, so
+ * it can be emitted mid-turn (e.g. "guarded mode unavailable, continuing in
+ * auto") as well as post-turn (e.g. a summary of classifier-blocked actions).
+ * Broadcast via `runner.emitMessage()` so every viewer sees it and it lands in
+ * the turn-event buffer for reconnecting viewers.
+ */
+export interface WsSystemNotice {
+  type: "system_notice";
+  sessionId: string;
+  message: string;
+  /** Visual emphasis. `warn` for blocked-action / abort notices; `info` otherwise. */
+  level?: "info" | "warn";
+}
+
 // ---- Rollback messages (server → client) ----
 
 /** Server → Client: a commit was linked to an assistant message. */
@@ -736,6 +765,7 @@ export type WsServerMessage =
   | WsRepoList
   | WsPrLifecycleUpdate
   | WsSystemUserMessage
+  | WsSystemNotice
   | WsCommitLinked
   | WsRollbackComplete
   | WsRewindComplete

@@ -7,7 +7,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "./ui/dropdown-menu.js";
-import type { AgentId } from "../../server/shared/types.js";
+import type { AgentId, PermissionMode } from "../../server/shared/types.js";
 
 export interface AgentOption {
   id: string;
@@ -21,6 +21,13 @@ export interface AgentOption {
    * review" affordance shows up in the file-preview modal.
    */
   supportsReview: boolean;
+  /**
+   * Permission modes this agent supports (docs/138). Drives the agent-aware
+   * mode selector — e.g. `guarded` is only offered when this includes it.
+   * Optional for backward-compat with older wire payloads / test fixtures;
+   * the selector falls back to hiding `guarded` when it's absent.
+   */
+  supportedPermissionModes?: PermissionMode[];
 }
 
 interface AgentPickerProps {

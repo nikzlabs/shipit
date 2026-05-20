@@ -25,6 +25,7 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
     authConfigured: a.authConfigured,
     models: a.capabilities.models,
     supportsReview: a.capabilities.supportsReview,
+    supportedPermissionModes: a.capabilities.supportedPermissionModes,
   }));
 }
 

@@ -8,6 +8,14 @@ import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
 
 export type AgentId = "claude" | "codex";
 
+/**
+ * The permission modes the Claude Code adapter supports (docs/138). Single
+ * source of truth shared by the session adapter (`claude-adapter.ts`) and the
+ * orchestrator-side static registry (`agent-registry.ts`) so the two can't
+ * drift. `guarded` is the classifier-gated mode (CLI `--permission-mode auto`).
+ */
+export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
+
 // ---- Agent capabilities ----
 
 export interface AgentCapabilities {
@@ -45,6 +53,16 @@ export interface AgentInitEvent {
   sessionId: string;
   model?: string;
   tools?: string[];
+  /**
+   * The permission mode the CLI actually engaged for this run, as reported by
+   * the init event (docs/138). For Claude Code, `"auto"` here means the
+   * classifier-gated guarded mode is live. If guarded was requested but this
+   * reports anything else, guarded was unavailable (plan/admin/model
+   * constraint) and the run silently dropped to default — the orchestrator
+   * uses this as the authoritative availability signal. Undefined for adapters
+   * that don't surface it.
+   */
+  permissionMode?: string;
 }
 
 /** An assistant turn — text and/or tool invocations. */
@@ -106,6 +124,16 @@ export interface AgentResultEvent {
   contextWindow?: number;
   durationMs?: number;
   error?: string;
+  /**
+   * Tool calls the guarded-mode classifier blocked during this turn (docs/138).
+   * Each entry is one blocked call. A single block does NOT abort the turn (the
+   * model re-routes); the Claude CLI aborts a headless (`-p`) run only after its
+   * 3-consecutive / 20-total threshold. The orchestrator surfaces the denial
+   * reason(s) inline so a guarded turn never fails silently. Empty/undefined
+   * when nothing was blocked. Note: model self-refusals are NOT classifier
+   * denials and never appear here.
+   */
+  permissionDenials?: { toolName: string; toolUseId?: string; toolInput?: unknown }[];
 }
 
 export type AgentEvent =

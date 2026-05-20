@@ -5,7 +5,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useIsMobile } from "../hooks/useMediaQuery.js";
 import { PlusIcon, StopIcon, ArrowUpIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { PlanModeToggle } from "./PlanModeToggle.js";
+import { PermissionModeSelector } from "./PermissionModeSelector.js";
 import { ModelAgentSelector } from "./ModelAgentSelector.js";
 import { ContextDial } from "./ContextDial.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
@@ -415,11 +415,14 @@ export function MessageInput({
             </button>
             </WithTooltip>
 
-            {/* Plan mode toggle */}
+            {/* Permission mode selector (3-state, agent-aware — docs/138) */}
             {onPermissionModeChange && (
-              <PlanModeToggle
+              <PermissionModeSelector
                 mode={permissionMode}
                 onChange={onPermissionModeChange}
+                agents={agents}
+                activeAgentId={activeAgentId}
+                modelInfo={modelInfo}
               />
             )}
 
