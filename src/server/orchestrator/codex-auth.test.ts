@@ -15,10 +15,17 @@ import {
   CodexAuthManager,
   USER_CODE_PATTERN,
   VERIFICATION_URL_PATTERN,
+  extractCodexPlan,
   type CodexAuthFailedEvent,
   type CodexAuthPendingEvent,
   type SpawnFn,
 } from "./codex-auth.js";
+
+/** Build a fake JWT (header.payload.signature) carrying the OpenAI auth claim. */
+function fakeJwt(authClaim: Record<string, unknown>): string {
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  return `${b64({ alg: "none" })}.${b64({ "https://api.openai.com/auth": authClaim })}.sig`;
+}
 
 // ---------------------------------------------------------------------------
 // Fake child_process
@@ -69,6 +76,29 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 // Regex sanity checks
 // ---------------------------------------------------------------------------
+
+describe("extractCodexPlan", () => {
+  it("reads and title-cases the chatgpt_plan_type claim from the id token", () => {
+    const auth = { tokens: { id_token: fakeJwt({ chatgpt_plan_type: "plus" }) } };
+    expect(extractCodexPlan(auth)).toBe("Plus");
+  });
+
+  it("maps known tiers to their display names", () => {
+    expect(extractCodexPlan({ tokens: { id_token: fakeJwt({ chatgpt_plan_type: "pro" }) } })).toBe("Pro");
+    expect(extractCodexPlan({ tokens: { id_token: fakeJwt({ chatgpt_plan_type: "enterprise" }) } })).toBe("Enterprise");
+  });
+
+  it("falls back to the access token when the id token lacks the claim", () => {
+    const auth = { tokens: { access_token: fakeJwt({ chatgpt_plan_type: "free" }) } };
+    expect(extractCodexPlan(auth)).toBe("Free");
+  });
+
+  it("returns null when no plan claim is present", () => {
+    expect(extractCodexPlan({ tokens: { id_token: fakeJwt({ chatgpt_account_id: "acct-1" }) } })).toBeNull();
+    expect(extractCodexPlan({})).toBeNull();
+    expect(extractCodexPlan({ tokens: { id_token: "not.a.jwt-with-bad-payload" } })).toBeNull();
+  });
+});
 
 describe("CodexAuthManager / regex", () => {
   it("USER_CODE_PATTERN matches XXXX-XXXXX", () => {

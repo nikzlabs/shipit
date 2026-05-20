@@ -1,30 +1,30 @@
 /**
- * CodexLimitsProvider — pulls a subscription rate-limit snapshot
- * from OpenAI's internal Codex usage endpoint, the same call the
- * `codex` CLI uses to populate its `/status` REPL line.
+ * CodexLimitsProvider — surfaces the user's Codex subscription
+ * rate-limit usage in the header badge.
  *
- * Same caveat as Claude (see docs/135-subscription-limits-badge/plan.md
- * "API research"): the URL is community-reported and has shifted
- * across versions. The provider tolerates schema drift gracefully:
- * any shape it doesn't recognize is returned as
- * `error: "limits unavailable"` rather than throwing.
+ * Unlike Claude, Codex has no usable HTTP usage endpoint we can poll
+ * (the community-reported `/backend-api/codex/usage` path 401s even
+ * with a valid token — see docs/135 "API research"). Instead the Codex
+ * App Server *pushes* the exact numbers it uses for its own `/status`
+ * line via an `account/rateLimits/updated` JSON-RPC notification during
+ * a turn. `CodexAdapter` captures that and emits an `agent_rate_limits`
+ * AgentEvent; the orchestrator feeds it here via `setRateLimits()`.
+ *
+ * This provider is therefore *event-fed*, not polled: `fetch()` returns
+ * the latest pushed snapshot (enriched with the plan tier read from the
+ * auth token), and `canFetch()` is true once at least one turn has
+ * delivered a snapshot. The `LimitsPoller` still polls it on its normal
+ * cadence — that's cheap now (no network) and keeps the plan tier fresh
+ * — but the badge updates within seconds because each incoming event
+ * triggers an immediate `markAuthRefreshed("codex")` refresh.
  */
 
 import type { CodexAuthManager } from "../codex-auth.js";
 import type { LimitsProvider, LimitsSkipTick } from "./types.js";
-import { LIMITS_SKIP_TICK, isAccessTokenExpired } from "./types.js";
 import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../shared/types.js";
-
-/**
- * Community-reported usage endpoint the Codex CLI uses internally
- * to populate `/status`. Unstable — confirm before relying on.
- */
-export const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/codex/usage";
 
 export interface CodexLimitsDeps {
   codexAuthManager: Pick<CodexAuthManager, "getAccessToken">;
-  /** Inject for tests; defaults to `globalThis.fetch`. */
-  fetchImpl?: typeof fetch;
   /** Inject for deterministic tests; defaults to `Date.now`. */
   now?: () => number;
 }
@@ -32,230 +32,61 @@ export interface CodexLimitsDeps {
 export class CodexLimitsProvider implements LimitsProvider {
   readonly agentId = "codex" as const;
   private codexAuthManager: Pick<CodexAuthManager, "getAccessToken">;
-  private fetchImpl: typeof fetch;
   private now: () => number;
-  private lastKnownFetchable = false;
+  /**
+   * Latest windows pushed from the Codex app-server stream. `null` until
+   * the first `account/rateLimits/updated` arrives (i.e. until a turn has
+   * run), which is also what gates `canFetch()`.
+   */
+  private latest: {
+    session: SubscriptionLimitsWindow | null;
+    weekly: SubscriptionLimitsWindow | null;
+    at: number;
+  } | null = null;
 
   constructor(deps: CodexLimitsDeps) {
     this.codexAuthManager = deps.codexAuthManager;
-    this.fetchImpl = deps.fetchImpl ?? ((input, init) => fetch(input, init));
     this.now = deps.now ?? (() => Date.now());
   }
 
+  /**
+   * Record a fresh rate-limit snapshot pushed from a Codex turn. Called by
+   * the orchestrator when an `agent_rate_limits` AgentEvent arrives. The
+   * caller should follow this with `LimitsPoller.markAuthRefreshed("codex")`
+   * so the badge updates immediately rather than on the next tick.
+   */
+  setRateLimits(
+    session: SubscriptionLimitsWindow | null,
+    weekly: SubscriptionLimitsWindow | null,
+  ): void {
+    this.latest = { session, weekly, at: this.now() };
+  }
+
   canFetch(): boolean {
-    return this.lastKnownFetchable;
+    return this.latest !== null;
   }
 
   async refreshFetchable(): Promise<boolean> {
-    const result = await this.codexAuthManager.getAccessToken();
-    this.lastKnownFetchable = result.token !== null;
-    return this.lastKnownFetchable;
+    return this.latest !== null;
   }
 
   async fetch(): Promise<SubscriptionLimits | null | LimitsSkipTick> {
+    if (!this.latest) return null;
+    // Plan tier isn't part of the rate-limit payload (`limitName` is null),
+    // so — like Claude reading its tier from the credentials file — we pull
+    // it from the auth token's JWT claim. A missing token just means no tier
+    // in the tooltip; the usage numbers still render.
+    let plan: string | null = null;
     const tokenResult = await this.codexAuthManager.getAccessToken();
-    if (tokenResult.token === null) {
-      this.lastKnownFetchable = false;
-      return null;
+    if (tokenResult.token !== null) {
+      plan = tokenResult.plan;
     }
-    this.lastKnownFetchable = true;
-
-    // Same idle-expiry story as Claude: the Codex CLI refreshes the
-    // shared credential file on each turn, so an idle session leaves a
-    // stale access token that 401s. Skip rather than surfacing a false
-    // "auth expired". See LIMITS_SKIP_TICK.
-    if (isAccessTokenExpired(tokenResult.expiresAt, this.now())) {
-      return LIMITS_SKIP_TICK;
-    }
-
-    const fetchedAt = this.now();
-    let response: Response;
-    try {
-      response = await this.fetchImpl(CODEX_USAGE_URL, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${tokenResult.token}`,
-          Accept: "application/json",
-          "User-Agent": "ShipIt-Orchestrator/1.0 (codex-limits-poller)",
-        },
-      });
-    } catch (err) {
-      return this.errorSnapshot(
-        fetchedAt,
-        "limits unavailable",
-        `network error: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    if (response.status === 401 || response.status === 403) {
-      return this.errorSnapshot(fetchedAt, "auth expired", `HTTP ${response.status}`);
-    }
-    if (response.status === 429) {
-      return this.errorSnapshot(fetchedAt, "rate limited", "HTTP 429");
-    }
-    if (!response.ok) {
-      return this.errorSnapshot(
-        fetchedAt,
-        "limits unavailable",
-        `HTTP ${response.status}`,
-      );
-    }
-
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch (err) {
-      return this.errorSnapshot(
-        fetchedAt,
-        "limits unavailable",
-        `non-JSON body: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    const parsed = parseCodexUsage(body, fetchedAt);
-    if (!parsed) {
-      const preview = JSON.stringify(body ?? null).slice(0, 1024);
-      console.warn("[codex-limits] Unexpected /codex/usage payload shape:", preview);
-      return this.errorSnapshot(
-        fetchedAt,
-        "limits unavailable",
-        "unexpected payload shape",
-      );
-    }
-    return parsed;
-  }
-
-  private errorSnapshot(
-    fetchedAt: number,
-    userFacing: string,
-    detail: string,
-  ): SubscriptionLimits {
-    console.warn(`[codex-limits] fetch failed: ${userFacing} (${detail})`);
     return {
       agentId: "codex",
-      plan: null,
-      session: null,
-      weekly: null,
-      fetchedAt,
-      error: userFacing,
+      plan,
+      session: this.latest.session,
+      weekly: this.latest.weekly,
+      fetchedAt: this.latest.at,
     };
   }
-}
-
-// ---- Parser ----
-
-/**
- * Parse the Codex `/codex/usage` response into a SubscriptionLimits
- * snapshot. Tolerant of multiple field-name variants because the
- * endpoint is undocumented and the shape has drifted across CLI
- * versions — see plan.md "API research".
- *
- * Exported for unit tests.
- */
-export function parseCodexUsage(body: unknown, fetchedAt: number): SubscriptionLimits | null {
-  if (!body || typeof body !== "object") return null;
-  const obj = body as Record<string, unknown>;
-
-  const plan =
-    pickStr(obj, "plan") ??
-    pickStr(obj, "subscription") ??
-    pickStr(obj, "tier") ??
-    pickNestedStr(obj, "plan", "name") ??
-    null;
-
-  const session = readWindow(obj, ["five_hour", "session", "rolling", "fiveHour"]);
-  const weekly = readWindow(obj, ["weekly", "seven_day", "week", "sevenDay"]);
-
-  if (!session && !weekly) return null;
-
-  return {
-    agentId: "codex",
-    plan,
-    session,
-    weekly,
-    fetchedAt,
-  };
-}
-
-function readWindow(
-  obj: Record<string, unknown>,
-  candidateKeys: string[],
-): SubscriptionLimitsWindow | null {
-  for (const key of candidateKeys) {
-    const v = obj[key];
-    if (v && typeof v === "object") {
-      const parsed = parseWindow(v as Record<string, unknown>);
-      if (parsed) return parsed;
-    }
-  }
-  return null;
-}
-
-function parseWindow(obj: Record<string, unknown>): SubscriptionLimitsWindow | null {
-  const usedRaw =
-    pickNum(obj, "utilization") ??
-    pickNum(obj, "used_pct") ??
-    pickNum(obj, "usedPct") ??
-    pickNum(obj, "percent_used") ??
-    pickNum(obj, "percentUsed");
-  if (usedRaw === null) return null;
-  const usedPct = clampPct(usedRaw <= 1 ? usedRaw * 100 : usedRaw);
-
-  const resetAt =
-    pickIso(obj, "resets_at") ??
-    pickIso(obj, "reset_at") ??
-    pickIso(obj, "resetAt") ??
-    pickEpoch(obj, "resets_at_epoch") ??
-    pickEpoch(obj, "reset_epoch");
-  if (!resetAt) return null;
-
-  return { usedPct, resetAt };
-}
-
-function clampPct(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  if (n < 0) return 0;
-  if (n > 100) return 100;
-  return n;
-}
-
-function pickStr(obj: Record<string, unknown>, key: string): string | null {
-  const v = obj[key];
-  return typeof v === "string" && v.length > 0 ? v : null;
-}
-
-function pickNestedStr(
-  obj: Record<string, unknown>,
-  outer: string,
-  inner: string,
-): string | null {
-  const o = obj[outer];
-  if (o && typeof o === "object") {
-    const v = (o as Record<string, unknown>)[inner];
-    if (typeof v === "string" && v.length > 0) return v;
-  }
-  return null;
-}
-
-function pickNum(obj: Record<string, unknown>, key: string): number | null {
-  const v = obj[key];
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
-}
-
-function pickIso(obj: Record<string, unknown>, key: string): string | null {
-  const v = obj[key];
-  if (typeof v === "string" && v.length > 0) {
-    const t = Date.parse(v);
-    if (!Number.isNaN(t)) return new Date(t).toISOString();
-  }
-  return null;
-}
-
-function pickEpoch(obj: Record<string, unknown>, key: string): string | null {
-  const v = obj[key];
-  if (typeof v === "number" && Number.isFinite(v) && v > 0) {
-    const ms = v < 10_000_000_000 ? v * 1000 : v;
-    return new Date(ms).toISOString();
-  }
-  return null;
 }

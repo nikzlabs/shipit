@@ -111,6 +111,16 @@ export interface AppCtx {
   // PR lifecycle
   prStatusPoller: PrStatusPoller;
 
+  /**
+   * Push a Codex rate-limit snapshot (from an `agent_rate_limits` AgentEvent)
+   * into the subscription-limits badge. Optional because test contexts and
+   * non-WS callers don't wire it. See index.ts / `CodexLimitsProvider`.
+   */
+  recordCodexRateLimits?: (
+    session: { usedPct: number; resetAt: string } | null,
+    weekly: { usedPct: number; resetAt: string } | null,
+  ) => void;
+
   // Config
   workspaceDir: string;
   sessionsRoot: string;

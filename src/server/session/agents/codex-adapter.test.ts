@@ -457,6 +457,44 @@ describe("CodexAdapter", () => {
     expect((resultEvent as any).error).toBeUndefined();
   });
 
+  it("maps account/rateLimits/updated to an agent_rate_limits event", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("account/rateLimits/updated", {
+      rateLimits: {
+        limitId: "codex",
+        limitName: null,
+        primary: { usedPercent: 5, windowDurationMins: 300, resetsAt: 1779296611 },
+        secondary: { usedPercent: 1, windowDurationMins: 10080, resetsAt: 1779883011 },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_rate_limits")).toBe(true);
+    });
+
+    const ev = events.find((e) => e.type === "agent_rate_limits");
+    expect(ev).toMatchObject({
+      type: "agent_rate_limits",
+      session: { usedPct: 5, resetAt: new Date(1779296611 * 1000).toISOString() },
+      weekly: { usedPct: 1, resetAt: new Date(1779883011 * 1000).toISOString() },
+    });
+  });
+
+  it("ignores a rate-limits notification with no parseable window", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("account/rateLimits/updated", {
+      rateLimits: { limitId: "codex", limitName: null },
+    });
+
+    // Give the adapter a tick to (not) emit.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(events.some((e) => e.type === "agent_rate_limits")).toBe(false);
+  });
+
   it("maps turn/completed with non-completed status to error", async () => {
     await createAndInit("Hello");
     events.length = 0;

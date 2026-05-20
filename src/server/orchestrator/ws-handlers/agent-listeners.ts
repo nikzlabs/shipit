@@ -196,6 +196,15 @@ export function wireAgentListeners(
   });
 
   agent.on("event", (event: AgentEvent) => {
+    // Subscription rate-limits are account-wide telemetry, not chat content:
+    // route them into the limits badge (which broadcasts its own SSE) and
+    // stop — forwarding as an `agent_event` would just be noise for the chat
+    // message grouping. See CodexLimitsProvider / docs/135.
+    if (event.type === "agent_rate_limits") {
+      ctx.recordCodexRateLimits?.(event.session, event.weekly);
+      return;
+    }
+
     emitToViewers({ type: "agent_event", event });
 
     if (event.type === "agent_init") {
