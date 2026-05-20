@@ -1,5 +1,5 @@
 # ---- Build stage (install all deps including native addons) ----
-FROM node:24-slim AS build
+FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d AS build
 
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 
@@ -16,7 +16,7 @@ COPY src/server/shared/ ./src/server/shared/
 RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
 
 # ---- Production image ----
-FROM node:24-slim
+FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
 
 # Runtime tools: git + curl for user projects, python3/make/g++ for native npm addons
 # in user sessions (npm install inside /workspace may compile C/C++ addons),
