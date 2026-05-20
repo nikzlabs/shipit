@@ -366,6 +366,24 @@ describe("ClaudeProcess", () => {
       const tools = args[toolsIdx + 1];
       expect(tools).toContain("mcp__playwright__");
     });
+
+    // docs/138: `Skill` must be allowlisted in every permission mode so an
+    // explicit `/my-skill` invocation is honored even in headless `-p` mode
+    // (no human to approve the prompt) and even in plan mode.
+    it.each([
+      ["auto", undefined],
+      ["plan", "plan"],
+    ] as const)("allowlists the Skill tool in %s mode", (_label, permissionMode) => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "/my-skill", permissionMode: permissionMode as any });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools.split(",")).toContain("Skill");
+    });
   });
 
   describe("kill", () => {

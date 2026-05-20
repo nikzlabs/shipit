@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 ---
 
@@ -135,9 +135,16 @@ Skill invocation is **backend-agnostic where it can be**:
 
 ## Build order
 
-1. #1 + #2 — preserve leading slash, allowlist `Skill` (all three Claude
-   modes). Unblocks Claude invocation.
+1. ✅ **#1 + #2 — DONE.** Preserve leading slash, allowlist `Skill` (all three
+   Claude modes). Unblocks Claude invocation. The prompt-ordering decision is
+   extracted as the pure `assembleAgentPrompt()` in `agent-execution.ts` and
+   `Skill` is in `AUTO_TOOLS` / `NORMAL_TOOLS` / `PLAN_TOOLS` in `claude.ts`.
+   Covered by `agent-prompt.test.ts` and the `Skill`-allowlist cases in
+   `claude.test.ts`.
 2. #4 — skill-discovery endpoint (project scan + bundled-via-capabilities).
+   Blocked on doc 132's `AgentCapabilities` bundled-skills set, which does not
+   exist yet. Project-skill scanning (`.claude/skills/*/SKILL.md`) is
+   independent and could ship first.
 3. #3 — `/` autocomplete in the composer, fed by #4.
 4. #5 — Codex adapter-level prompt inlining in `codex-adapter.ts` (verified
    necessary: `codex exec` does not expand `/prompt-name`). Sequenced last
