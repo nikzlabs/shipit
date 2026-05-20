@@ -593,6 +593,21 @@ export async function commentOnPullRequest(
   return { number: prNumber, commentUrl: result.url };
 }
 
+/**
+ * Add a PR-level (issue) comment to the session's current-branch PR
+ * (docs/133 Phase 4's Conversation composer). Thin wrapper over
+ * `commentOnPullRequest` that always resolves the open PR for the current
+ * branch — the panel only ever shows that session's single PR.
+ */
+export async function addIssueComment(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  body: string,
+  options: { remoteUrl?: string } = {},
+): Promise<{ number: number; commentUrl: string }> {
+  return commentOnPullRequest(git, githubAuthManager, body, { remoteUrl: options.remoteUrl });
+}
+
 /** Mark a draft PR as ready for review. */
 export async function markPrReady(
   git: GitManager,

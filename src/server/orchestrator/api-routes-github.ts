@@ -16,6 +16,7 @@ import {
   agentCreatePr,
   editPullRequest,
   commentOnPullRequest,
+  addIssueComment,
   markPrReady,
   closePullRequest,
   reopenPullRequest,
@@ -289,6 +290,34 @@ export async function registerGitHubRoutes(
         const session = sessionManager.get(request.params.id);
         return await commentOnPullRequest(git, deps.githubAuthManager, request.body?.body ?? "", {
           number: num,
+          remoteUrl: session?.remoteUrl,
+        });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to comment: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/comments — add a PR-level (issue) comment to the
+  // session's current-branch PR (docs/133 Phase 4 Conversation composer).
+  app.post<{ Params: { id: string }; Body: { body: string } }>(
+    "/api/sessions/:id/pr/comments",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const body = request.body?.body ?? "";
+      if (typeof body !== "string" || !body.trim()) {
+        reply.code(400).send({ error: "Comment body is required" });
+        return;
+      }
+      try {
+        const git = createGitManager(dir);
+        const session = sessionManager.get(request.params.id);
+        return await addIssueComment(git, deps.githubAuthManager, body, {
           remoteUrl: session?.remoteUrl,
         });
       } catch (err) {

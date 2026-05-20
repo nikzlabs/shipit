@@ -27,14 +27,26 @@ description: Inline PR detail tab (header, description, status, diff link) as a 
   per-control `stopPropagation` needed).
 - Tests: `PrDetailPanel.test.tsx` and new card-click cases in `PrLifecycleCard.test.tsx`.
 
+**Shipped (Phase 4, conversation — issue comments + read-only threads):** the
+`PrStatusSummary` gained `issueComments` + `reviewThreads`, `PR_STATUS_QUERY`
+is now built via `buildPrStatusQuery(includeConversation)` (light vs. heavy
+variant), and the parser populates the new fields. The poller's
+`pr_tab_active` gate (WS message `pr_tab_active { sessionId, active }` →
+`PrStatusPoller.setPrTabActive`) fetches the heavy conversation fields only
+while a session's PR tab is the active right-panel tab; activation kicks an
+immediate poll. `App.tsx` emits the gate from an effect keyed on tab + session
++ connection (survives reconnects/switches). Issue comments are read + post
+(`POST /api/sessions/:id/pr/comments` → `addIssueComment`, optimistic append in
+`pr-store.postComment` with revert-on-error); `PrConversationSection` renders
+comments + review threads (read-only) with an inline error banner.
+
 **Not yet done (need server work / docs/102):** Phase 2 (editable title/body +
-`PATCH /pr`), Phase 4 (Conversation — review threads + issue comments), Phase 6
-(activity timeline), the `prCreatedAt`/`prAuthor`/`timeline`/`issueComments`
-summary fields, and the `pr_tab_active` WS message + poller heavy-field gating
-(deferred until there are heavy fields to gate). The shipped Status section is
-read-only; wiring the card's merge/auto-fix/auto-merge controls into the panel
-is the remaining part of Phase 3. The Files section is a single diff link, not a
-per-file list (Phase 5).
+`PATCH /pr`), Phase 4's review-thread **reply/resolve write-back** (the
+remaining docs/102 mutations + Monaco-widget surface), Phase 6 (activity
+timeline), and the `prCreatedAt`/`prAuthor`/`timeline` summary fields. The
+shipped Status section is read-only; wiring the card's merge/auto-fix/auto-merge
+controls into the panel is the remaining part of Phase 3. The Files section is a
+single diff link, not a per-file list (Phase 5).
 
 ## Summary
 
@@ -210,7 +222,7 @@ Errors surface inline in the panel (toast-style banner inside the section that f
 | **1. Panel scaffold + header + description** | "PR" tab wired into `rightPanel` (conditional on a PR existing), tab-selection UX, render title + markdown body read-only (`prTitle`/`prBody` are already on the summary — Phase 1 just renders them), "View on GitHub" overflow link. Card becomes clickable (selects the PR tab). | — | ✅ done |
 | **2. Editable description + title** | Pencil → Monaco markdown edit → `updatePullRequest`. Title click-to-edit. Optimistic update with revert-on-error. | Phase 1 | ⬜ todo |
 | **3. Status section in panel + extract shared sub-component** | Move status visuals into a sub-component used by both card and panel. Card UX unchanged; panel gets full status detail. | Phase 1 | 🟡 partial — read-only status section shipped (reads shared store slice); shared sub-component extraction + actionable controls in panel still todo |
-| **4. Conversation section** | Issue comments + review threads. Heavy overlap with [`docs/102`](../102-github-pr-comment-sync/plan.md) — co-sequence so the GraphQL query and widget work happen once. | [`docs/102`](../102-github-pr-comment-sync/plan.md) Phase 1 | ⬜ todo |
+| **4. Conversation section** | Issue comments + review threads. Heavy overlap with [`docs/102`](../102-github-pr-comment-sync/plan.md) — co-sequence so the GraphQL query and widget work happen once. | [`docs/102`](../102-github-pr-comment-sync/plan.md) Phase 1 | 🟡 partial — issue comments (read + post) + **read-only** review threads shipped, gated by `pr_tab_active`; review-thread reply/resolve write-back still todo (docs/102) |
 | **5. Files section** | List from existing diff API; "View diff" opens the existing Monaco diff panel — no diff re-implementation. | Phase 1 | 🟡 partial — single "View full diff" link shipped; per-file list still todo |
 | **6. Activity timeline** | Timeline GraphQL query; new `PrTimelineSection`. Read-only. | Phase 1 | ⬜ todo |
 

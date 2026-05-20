@@ -190,6 +190,53 @@ export interface AutoMergeState {
   error?: PrAutoMergeError;
 }
 
+/** Author of a PR comment or review (subset of GitHub's Actor). */
+export interface PrCommentAuthor {
+  login: string;
+  /** Avatar URL; empty string when GitHub omits it (e.g. deleted user). */
+  avatarUrl: string;
+}
+
+/**
+ * A PR-level (issue) comment — the conversation timeline comments that appear
+ * under the PR body on github.com, not tied to a diff line. docs/133 Phase 4.
+ */
+export interface PrIssueComment {
+  /** GraphQL node id — stable identity for diffing/keys. */
+  id: string;
+  author: PrCommentAuthor;
+  /** Markdown source. */
+  body: string;
+  /** ISO timestamp. */
+  createdAt: string;
+  /** Permalink on github.com (escape hatch). */
+  url: string;
+}
+
+/** A single comment within a review thread. */
+export interface PrReviewThreadComment {
+  id: string;
+  author: PrCommentAuthor;
+  body: string;
+  createdAt: string;
+}
+
+/**
+ * A review thread — line comments grouped as GitHub renders them. Read-only in
+ * docs/133 Phase 4 (reply/resolve write-back is deferred to docs/102).
+ */
+export interface PrReviewThread {
+  id: string;
+  isResolved: boolean;
+  /** True when the thread targets a line that has since changed. */
+  isOutdated: boolean;
+  /** File path the thread is anchored to (null for file-level threads). */
+  path: string | null;
+  /** Line number in the diff (null when outdated/unavailable). */
+  line: number | null;
+  comments: PrReviewThreadComment[];
+}
+
 /** Summary of a PR's current status, used by both the inline card and sidebar icons. */
 export interface PrStatusSummary {
   sessionId: string;
@@ -223,6 +270,17 @@ export interface PrStatusSummary {
   };
   /** GitHub Deployment statuses from platforms like Vercel/Cloudflare (fetched via GitHub Deployments API). */
   deployments?: GitHubDeploymentStatus[];
+  /**
+   * PR-level (issue) comments — docs/133 Phase 4. Only populated when the
+   * conversation fields were fetched (i.e. a session's PR tab is active);
+   * `undefined` means "not fetched", distinct from `[]` ("none").
+   */
+  issueComments?: PrIssueComment[];
+  /**
+   * Review threads (line comments) — docs/133 Phase 4, read-only. Same
+   * fetch-gating semantics as `issueComments`.
+   */
+  reviewThreads?: PrReviewThread[];
   /** Auto-merge state — present when auto-merge has been interacted with. */
   autoMerge?: {
     enabled: boolean;
