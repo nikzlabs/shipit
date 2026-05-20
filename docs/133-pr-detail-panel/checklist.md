@@ -1,75 +1,140 @@
-# 133 — Phase 4 (Conversation section) checklist
+# 133 — Inline PR Detail Panel checklist
 
-Scope for this pass (decided 2026-05-20):
+Tracks the whole feature (all phases in `plan.md`), not just one pass. Legend:
+`[x]` done · `[ ]` todo. Phase status mirrors the phasing table in `plan.md`.
 
-- **Issue comments** — read + post PR-level (issue) comments in the panel.
-- **Review threads** — render **read-only** (author, body, resolved/outdated state).
-  Reply/resolve write-back is deferred (full docs/102 work).
-- **Poller heavy-field gating** — fetch conversation fields only when the PR tab
-  is the active right-panel tab for a session (`pr_tab_active`).
+## Phase 1 — Panel scaffold + header + description (✅ done)
 
-## Server — data layer
+- [x] `ui-store.ts`: add `"pr"` to the `RightTab` union.
+- [x] `utils/local-storage.ts`: add `"pr"` to `VALID_RIGHT_TABS` so the tab
+      selection persists across reloads.
+- [x] `App.tsx`: conditional **"PR" tab** in the right-panel strip, shown only
+      when the active session has a PR (phase `open`/`merged`/`closed`); fall back
+      to Preview when the persisted tab is `"pr"` but the session has no PR.
+- [x] `App.tsx`: `rightTab === "pr"` render branch for `PrDetailPanel`.
+- [x] `PrDetailPanel.tsx` (new): top-level panel body reading the shared
+      `pr-store` slice.
+- [x] `pr-detail/PrDetailHeader.tsx` (new): number, title, branches, diff stats,
+      overflow menu → "View on GitHub" (escape hatch, not happy-path).
+- [x] `pr-detail/PrDescriptionSection.tsx` (new): read-only markdown body.
+- [x] `PrLifecycleCard.tsx`: optional `onOpenDetails` prop; whole card body
+      clickable when a PR exists, with a `closest("button, a, input, textarea")`
+      guard so interactive controls don't also switch the tab.
+- [x] Tests: `PrDetailPanel.test.tsx` + card-click cases in `PrLifecycleCard.test.tsx`.
 
+## Phase 2 — Editable title + description (✅ done)
+
+- [x] `pr-store.ts`: add `updatePr(sessionId, { title?, body? })` — optimistic
+      patch of the card's `pr` slice, revert-on-error, returns inline error string.
+- [x] `pr-detail/PrDescriptionSection.tsx`: pencil → markdown-source `textarea`
+      (Save/Cancel) with inline error `Banner`; editable only when phase `open`.
+- [x] `pr-detail/PrDetailHeader.tsx`: click-to-edit title → inline input (Enter
+      saves, Esc cancels), check/cancel buttons, inline error `Banner`; editable
+      only when phase `open`.
+- [x] `PrDetailPanel.tsx`: thread `sessionId` + `editable` (phase === `open`)
+      into header and description.
+- [x] Reuse existing `PATCH /api/sessions/:id/pr/:number` (`editPullRequest` →
+      `updatePullRequest`) — no new server route needed.
+- [x] Tests: `PrDetailPanel.test.tsx` — title edit + optimistic update, failure
+      revert + error banner, body edit, no edit affordances on merged PR.
+- [ ] Optional follow-up: "Regenerate from conversation" hook into the
+      `docs/032-ai-pr-description` generator (deferred).
+- [ ] Optional follow-up: swap the `textarea` for the Monaco markdown editor if
+      richer editing is wanted (currently a plain textarea, consistent with the
+      conversation composer).
+
+## Phase 3 — Status section in panel + shared sub-component (🟡 partial)
+
+- [x] `pr-detail/PrStatusSection.tsx` (new): read-only status — checks summary,
+      failed-check list, deployments, conflict warning — reading the same
+      `pr-store` slice as the card.
+- [ ] Extract the status visuals from `PrLifecycleCard` into a shared
+      sub-component rendered by both card and panel (currently parallel render
+      logic, same store slice).
+- [ ] Wire the card's actionable controls into the panel's Status section:
+      auto-fix toggle, auto-merge toggle, merge button, merge-method dropdown
+      (store actions `toggleAutoFix` / `toggleAutoMerge` / `merge` / `setMergeMethod`
+      already exist — surface them in `PrStatusSection`).
+- [ ] Surface mergeability conflict detail/resolution prompts more verbosely than
+      the card (per `docs/113-pr-mergeable-state`).
+
+## Phase 4 — Conversation section (🟡 partial)
+
+Shipped scope (decided 2026-05-20): issue comments read + post; review threads
+**read-only**; poller heavy-field gating via `pr_tab_active`.
+
+### Server — data layer
 - [x] `github-types.ts`: add `PrCommentAuthor`, `PrIssueComment`,
-      `PrReviewThreadComment`, `PrReviewThread` types; extend `PrStatusSummary`
-      with optional `issueComments?` and `reviewThreads?`.
-- [x] `pr-status-parser.ts`: parameterize the query via
-      `buildPrStatusQuery(includeConversation)`; keep `PR_STATUS_QUERY` (light)
-      and add `PR_STATUS_QUERY_WITH_CONVERSATION` (heavy).
-- [x] `pr-status-parser.ts`: extend `GraphQLPrNode` with optional `comments` /
-      `reviewThreads`; add `parseConversation(node)` and populate the new summary
-      fields in `parsePrNode`.
+      `PrReviewThreadComment`, `PrReviewThread`; extend `PrStatusSummary` with
+      optional `issueComments?` / `reviewThreads?`.
+- [x] `pr-status-parser.ts`: `buildPrStatusQuery(includeConversation)` (light vs.
+      heavy `PR_STATUS_QUERY_WITH_CONVERSATION`).
+- [x] `pr-status-parser.ts`: extend `GraphQLPrNode`; add `parseConversation(node)`
+      and populate the new fields in `parsePrNode`.
 - [x] `pr-status-parser.ts`: extend `prStatusEqual` (`conversationEqual`) to
-      detect comment/thread changes; treats defined/undefined mismatch as changed.
+      detect comment/thread changes.
 
-## Server — gating
-
-- [x] `pr-status-poller.ts`: track `prTabActiveSessions: Set<string>`; add
-      `setPrTabActive(sessionId, active)` that flips the flag and kicks an
-      immediate poll for that repo when turned on.
-- [x] `pr-status-poller.ts`: in `pollRepo`, pick the heavy query only when a
-      tracked session on the repo has the tab active; carry the previous
-      conversation forward on light polls so a focus change doesn't wipe it.
+### Server — gating
+- [x] `pr-status-poller.ts`: `prTabActiveSessions: Set<string>` +
+      `setPrTabActive(sessionId, active)` (kicks an immediate poll on enable).
+- [x] `pr-status-poller.ts`: heavy query only when a tracked session on the repo
+      has the tab active; carry conversation forward on light polls.
 - [x] `pr-status-poller.ts`: clear the flag in `untrackSession`.
 
-## Server — WS message + write route
+### Server — WS + write route
+- [x] `ws-client-messages.ts`: add `WsPrTabActive`.
+- [x] `ws-handlers/misc-handlers.ts`: `handlePrTabActive` → `setPrTabActive`.
+- [x] `index.ts`: dispatch `pr_tab_active`.
+- [x] `services/github.ts`: `addIssueComment` wrapper.
+- [x] `api-routes-github.ts`: `POST /api/sessions/:id/pr/comments` → `addIssueComment`.
 
-- [x] `ws-client-messages.ts`: add `WsPrTabActive` to the union.
-- [x] `ws-handlers/misc-handlers.ts`: add `handlePrTabActive(ctx, msg)` →
-      `ctx.prStatusPoller.setPrTabActive(...)`.
-- [x] `index.ts`: dispatch `pr_tab_active` (single per-session WS dispatcher).
-- [x] `services/github.ts`: add `addIssueComment` (wrapper over
-      `commentOnPullRequest`, resolving the current-branch PR).
-- [x] `api-routes-github.ts`: add `POST /api/sessions/:id/pr/comments`
-      (body `{ body }`) → `addIssueComment`. (No explicit post-poll trigger —
-      the client appends optimistically and the active-tab poll reconciles.)
-
-## Client
-
-- [x] `pr-store.ts`: extend `PrCardState` with `issueComments` / `reviewThreads`;
-      populate them in `applyPrStatusUpdates` (preserving on light polls); add a
-      `postComment(sessionId, body)` action (optimistic + revert-on-error).
-- [x] `App.tsx`: emit `pr_tab_active` from an effect keyed on rightTab + session
-      + connection status (survives session switches and reconnects).
-- [x] `components/pr-detail/PrConversationSection.tsx` (new): issue comments +
-      read-only review threads + composer + inline error banner.
+### Client
+- [x] `pr-store.ts`: `PrCardState` gains `issueComments` / `reviewThreads`
+      (preserved on light polls); `postComment` action (optimistic + revert).
+- [x] `App.tsx`: emit `pr_tab_active` from an effect keyed on rightTab + session +
+      connection status.
+- [x] `pr-detail/PrConversationSection.tsx` (new): issue comments + read-only
+      review threads + composer + inline error banner.
 - [x] `PrDetailPanel.tsx`: render `PrConversationSection` between Status and Files.
 
-## Tests
+### Remaining (write-back — needs the rest of docs/102)
+- [ ] Review-thread **reply** write-back (composer per thread).
+- [ ] Review-thread **resolve / unresolve** write-back.
+- [ ] Monaco-widget surface for inline-on-diff threads (docs/102).
 
-- [x] Parser/poller tests live in `pr-status-poller.test.ts` (alongside existing
-      parser tests, not a new file): conversation parsing, `prStatusEqual` change
-      detection, light-query omission, and the `pr_tab_active` query gate.
-- [x] Route tests added to `integration_tests/http-mutations.test.ts` (not a new
-      `pr-detail-panel.test.ts`): `POST /pr/comments` 400 (empty body) / 401
-      (unauth) / 200 success calling `addPullRequestComment`. Stub gained
-      `addPullRequestComment` + `lastIssueComment` capture.
-- [x] `PrConversationSection.test.tsx`: renders comments/threads, loading/empty
-      states, composer posts + clears, error banner; `pr-store.test.ts` covers
-      `postComment` optimistic + revert.
-- [x] `npm run lint` + `npm run typecheck` clean; `npm run test:dev` green (247).
+### Tests
+- [x] `pr-status-poller.test.ts`: conversation parsing, `prStatusEqual`,
+      light-query omission, `pr_tab_active` gate.
+- [x] `integration_tests/http-mutations.test.ts`: `POST /pr/comments` 400 / 401 / 200.
+- [x] `PrConversationSection.test.tsx` + `pr-store.test.ts` (`postComment`).
 
-## Docs
+## Phase 5 — Files section (🟡 partial)
 
-- [x] Update `plan.md`: Phase 4 marked partial (read-only threads + issue comments
-      shipped, gating implemented); write-back deferred to docs/102.
+- [x] `pr-detail/PrFilesSection.tsx` (new): single "View full diff" link →
+      existing Monaco diff dialog.
+- [ ] Per-file list (path, status M/A/D, +/− stats) with a per-row "View diff"
+      that opens the existing diff viewer scoped to that file — no diff
+      re-implementation.
+
+## Phase 6 — Activity timeline (⬜ todo)
+
+- [ ] `github-types.ts`: add `TimelineItem` and `timeline?` on `PrStatusSummary`
+      (plus `prCreatedAt` / `prAuthor` header fields, see Data layer below).
+- [ ] `pr-status-parser.ts`: add `timelineItems` GraphQL selection to the heavy
+      query; parse into the summary (gate behind `pr_tab_active` like conversation).
+- [ ] `pr-detail/PrTimelineSection.tsx` (new): read-only unified activity feed
+      (PR opened, checks, deploys, reviews, fixup commits, approvals).
+- [ ] `PrDetailPanel.tsx`: render `PrTimelineSection`.
+- [ ] Tests: parser timeline parsing + section render.
+
+## Data layer — remaining summary fields (⬜ todo)
+
+- [ ] `PrStatusSummary`: `prCreatedAt` (ISO) — render PR age in the header.
+- [ ] `PrStatusSummary`: `prAuthor { login, avatarUrl }` — render author in header.
+- [ ] `pr-status-parser.ts`: select `createdAt` / `author` and parse them.
+
+## Cross-cutting
+
+- [ ] Smoke: add the panel to an existing render-the-app smoke test (per the
+      Tests section of `plan.md`).
+- [x] `npm run lint` + `npm run typecheck` clean after each pass.
