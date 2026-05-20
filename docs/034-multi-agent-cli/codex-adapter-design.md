@@ -184,6 +184,45 @@ AgentEvent:
 
 If `arguments` is malformed JSON, the adapter wraps the raw string as `{ raw: "..." }` rather than crashing.
 
+**Shell command unwrapping.** Codex runs every shell command as
+`/bin/bash -lc '<script>'` (the `commandExecution` item's `command` field is that
+full invocation). `unwrapShellCommand()` strips the wrapper and one layer of outer
+quotes so the tool call reads like Claude's Bash — `ls -la`, not
+`/bin/bash -lc 'ls -la'`. Non-wrapped commands pass through untouched. The client
+also gives the `shell` tool the same bash syntax-highlighting as `Bash` in the
+tool-output modal.
+
+### File change mapping (`fileChange` → `apply_patch`)
+
+A `fileChange` item is surfaced as an `apply_patch` tool call so edits render as
+diffs in chat, matching Claude's Edit/Write. Each change is normalized to
+`{ path, kind, diff }`. The wire shape is the v2 `FileUpdateChange` (verified
+against `codex app-server generate-json-schema`, CLI 0.132.x):
+
+- **`diff`** is a **top-level unified-diff string** — always present. `update` is
+  a standard hunk diff, `add` is all-`+` lines, `delete` is all-`-`.
+  `extractUnifiedDiff()` simply returns it.
+- **`kind`** is an **internally-tagged** enum object — `{ type: "add" }`,
+  `{ type: "delete" }`, or `{ type: "update", move_path: string | null }` — **not**
+  the plain string the field name suggests. Interpolating this object raw was the
+  source of the old `[object Object] <path>` rendering. `fileChangeKindLabel()`
+  reads `.type` (and tolerates a plain string / single-key object defensively).
+
+```
+Codex item (FileUpdateChange):
+  { type: "fileChange", id: "fc-1", changes: [
+      { path: "src/a.ts", diff: "@@ -1 +1 @@\n-a\n+b", kind: { type: "update", move_path: null } } ]}
+
+AgentEvent (tool_use):
+  { type: "tool_use", id: "fc-1", name: "apply_patch", input: {
+      files: ["src/a.ts"],
+      changes: [{ path: "src/a.ts", kind: "update", diff: "@@ -1 +1 @@\n-a\n+b" }] }}
+```
+
+The client's `ToolUseItem` renders one `DiffBlock` per change; `DiffBlock`'s
+`unifiedDiff` mode counts `+`/`-` lines for the stat and renders the colored hunk
+view in its modal. `files` is retained for back-compat (paths only, no diff).
+
 ---
 
 ## Tool name mapping
