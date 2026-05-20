@@ -33,13 +33,6 @@ describe("PlanModeToggle", () => {
     expect(onChange).toHaveBeenCalledWith("auto");
   });
 
-  it("treats legacy normal mode as not-plan (toggles to plan)", () => {
-    const onChange = vi.fn();
-    render(<PlanModeToggle mode="normal" onChange={onChange} />);
-    fireEvent.click(screen.getByTestId("plan-mode-toggle"));
-    expect(onChange).toHaveBeenCalledWith("plan");
-  });
-
   it("button is never disabled", () => {
     render(<PlanModeToggle mode="auto" onChange={vi.fn()} />);
     expect(screen.getByTestId("plan-mode-toggle")).toBeEnabled();

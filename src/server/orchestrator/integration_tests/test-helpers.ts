@@ -409,7 +409,7 @@ export class FakeClaudeProcess extends EventEmitter {
     supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: true,
-    supportedPermissionModes: ["auto" as const, "plan" as const, "normal" as const],
+    supportedPermissionModes: ["auto" as const, "plan" as const],
     toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     models: ["claude-sonnet-4-20250514"],
     supportsReview: true,

@@ -93,19 +93,6 @@ describe("Integration: Permission modes", () => {
     client.close();
   });
 
-  it("normal mode passes permissionMode 'normal' to ClaudeProcess", async () => {
-    const client = await TestClient.connect(port);
-    await client.receive(); // preview_status
-
-    client.send({ type: "send_message", text: "Make careful changes", permissionMode: "normal" });
-    await waitForClaude(() => lastClaude);
-
-    expect(lastClaude.lastPrompt).toBe("Make careful changes");
-    expect(lastClaude.lastPermissionMode).toBe("normal");
-
-    client.close();
-  });
-
   it("switching mode mid-session changes ClaudeProcess args", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
