@@ -74,14 +74,22 @@ FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45ef
 # ERROR + configWarning when it's missing (falling back to its bundled copy).
 RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip ripgrep bubblewrap && rm -rf /var/lib/apt/lists/*
 
-RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
+# Agent CLIs: lockfile-pinned, integrity-verified install (docs/141). See the
+# canonical comment in Dockerfile.session-worker.prod. `--ignore-scripts` blocks
+# the dependency tree's postinstalls; `npm rebuild @anthropic-ai/claude-code`
+# runs the install script for only that trusted package (native binary linker).
+COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
+RUN --mount=type=cache,target=/root/.npm \
+    (cd /opt/agent-cli && npm ci --ignore-scripts && npm rebuild @anthropic-ai/claude-code)
+ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
 
 # Install Chrome and its system dependencies for Playwright MCP browser tools.
 # Playwright MCP now defaults to the `chrome-for-testing` channel, so we install
 # system deps via the playwright CLI and then fetch the chrome-for-testing build
-# via @playwright/mcp's installer.
-RUN npx playwright install-deps chromium \
- && npx @playwright/mcp install-browser chrome-for-testing
+# via @playwright/mcp's installer. Invoke the pinned bins directly (on PATH)
+# rather than `npx <pkg>`, which would re-fetch an unpinned copy.
+RUN playwright install-deps chromium \
+ && playwright-mcp install-browser chrome-for-testing
 
 WORKDIR /app
 

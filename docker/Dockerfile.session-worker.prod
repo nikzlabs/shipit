@@ -25,20 +25,32 @@ FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45ef
 # ERROR + configWarning when it's missing (falling back to its bundled copy).
 RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip ripgrep bubblewrap && rm -rf /var/lib/apt/lists/*
 
-# Bump this build-arg per deploy (deploy.sh sets it to $(date +%s)) so the
-# Claude/Codex CLI layer is rebuilt on every deploy, picking up the latest
-# published versions. The npm cache mount keeps the download itself fast.
-ARG NPM_GLOBALS_REBUILD=0
+# Agent CLIs: lockfile-pinned, integrity-verified, cooldown-aged install.
+# See docs/141-cli-version-strategy. The versions live in
+# docker/agent-cli/package.json and are byte-verified against
+# docker/agent-cli/package-lock.json (not just by version string), so a deploy
+# ships exactly what's committed — deterministic, auditable, git-revertable.
+# `--ignore-scripts` blocks postinstall code-exec across the whole dependency
+# tree (the usual supply-chain vector); `npm rebuild @anthropic-ai/claude-code`
+# then runs the install script for ONLY that trusted package, which ships a
+# native binary its postinstall links into place (codex and @playwright/mcp need
+# no scripts). Version bumps are driven by the Renovate GitHub App (7-day
+# cooldown via minimumReleaseAge) and gated on the CLI contract test — not by a
+# deploy-time cache-bust. Bins land on PATH so the bare-name spawns in
+# claude.ts / codex-adapter.ts / session-worker.ts (playwright-mcp) keep working.
+COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
 RUN --mount=type=cache,target=/root/.npm \
-    echo "rebuild=${NPM_GLOBALS_REBUILD}" \
- && npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
+    (cd /opt/agent-cli && npm ci --ignore-scripts && npm rebuild @anthropic-ai/claude-code)
+ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
 
 # Install Chrome and its system dependencies for Playwright MCP browser tools.
 # Playwright MCP now defaults to the `chrome-for-testing` channel, so we install
 # system deps via the playwright CLI and then fetch the chrome-for-testing build
-# via @playwright/mcp's installer.
-RUN npx playwright install-deps chromium \
- && npx @playwright/mcp install-browser chrome-for-testing
+# via @playwright/mcp's installer. We invoke the pinned bins directly (now on
+# PATH) rather than `npx <pkg>`, which would resolve against /app and re-fetch
+# an unpinned copy from the registry.
+RUN playwright install-deps chromium \
+ && playwright-mcp install-browser chrome-for-testing
 
 WORKDIR /app
 

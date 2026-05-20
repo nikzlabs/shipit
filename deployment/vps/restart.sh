@@ -3,11 +3,12 @@
 # Called by the shipit-restarter systemd path unit when .restart-requested appears.
 #
 # This intentionally does NOT call deploy.sh. deploy.sh runs
-# `docker compose build` (which always busts the npm-globals cache layer via
-# NPM_GLOBALS_REBUILD=$(date +%s)) plus an image/builder prune. Both are
-# pointless for a pure restart where neither the source nor the image
-# changed — they just add 30s+ of needless work, which makes the user
-# wonder whether the restart actually happened.
+# `docker compose build` plus an image/builder prune. Both are pointless for a
+# pure restart where neither the source nor the image changed — they just add
+# 30s+ of needless work, which makes the user wonder whether the restart
+# actually happened. (The agent CLIs install from a committed lockfile now, so
+# a build only changes them when that lockfile changes — see
+# docs/141-cli-version-strategy.)
 #
 # All we need is to recreate the orchestrator container so the
 # in-process state is reset.

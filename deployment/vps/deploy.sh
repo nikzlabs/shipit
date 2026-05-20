@@ -19,10 +19,16 @@ docker network prune -f
 # Build both images (session-worker is a build-only profile, must be named explicitly).
 # Reuses Docker's build cache by default; set FORCE_REBUILD=1 (or "true",
 # "yes", "on") to bypass it.
-# NPM_GLOBALS_REBUILD is bumped every deploy so the Claude/Codex CLI install
-# layer always picks up the latest published versions, even when the rest of
-# the image is cache-reused. The npm cache mount keeps the download fast.
-BUILD_ARGS=("--pull" "--build-arg" "NPM_GLOBALS_REBUILD=$(date +%s)")
+#
+# The agent CLIs (Claude/Codex/Playwright-MCP) are no longer refreshed by a
+# per-deploy cache-bust. They install from a committed lockfile
+# (docker/agent-cli/package-lock.json) with `npm ci`, so the shipped versions
+# are deterministic and only change when that lockfile changes (bumped by the
+# Renovate GitHub App with a cooldown, gated on the CLI contract test — see
+# docs/141-cli-version-strategy). Docker's content hash of the COPYed lockfile
+# invalidates the install layer automatically when versions change; nothing
+# time-based is needed.
+BUILD_ARGS=("--pull")
 case "${FORCE_REBUILD:-0}" in
   1|true|TRUE|True|yes|YES|Yes|on|ON|On)
     BUILD_ARGS+=("--no-cache")
