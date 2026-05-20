@@ -91,6 +91,36 @@ function saveImagesToUploadsDir(images: ImageAttachment[], workspaceDir: string)
   return `<attached_images>\nThe user has attached the following image(s) to this message. Use the Read tool to view each one:\n${refs}\n</attached_images>`;
 }
 
+/**
+ * Assemble the final prompt string from the user text plus optional file and
+ * image context.
+ *
+ * Normally context is PREPENDED to the user text. But when the user invokes a
+ * slash command / skill (`/my-skill …`), the Claude CLI only resolves the
+ * command when the `/token` sits at index 0 of the prompt. Prepending file or
+ * image context would push the `/` off the front and the command would be
+ * silently swallowed as literal prose. So for slash invocations we APPEND the
+ * context after the user text instead, keeping `/my-skill` at position 0.
+ *
+ * Extracted as a pure function for unit testability — the ordering decision is
+ * the contract. See docs/138.
+ */
+export function assembleAgentPrompt(input: {
+  userText: string;
+  fileContext: string;
+  imageContext: string;
+}): string {
+  const { userText, fileContext, imageContext } = input;
+  const isSlashInvocation = /^\/[a-zA-Z0-9._-]+/.test(userText.trimStart());
+  return (
+    isSlashInvocation
+      ? [userText, fileContext, imageContext]
+      : [imageContext, fileContext, userText]
+  )
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 /** Full handler context — send-message handlers need all three sub-contexts. */
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
@@ -471,20 +501,16 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         : sessionReplay;
     }
   }
-  // Prepend file context to the prompt if files are attached
-  let prompt = userText;
-  if (validatedFiles.length > 0) {
-    const context = formatFileContext(validatedFiles);
-    prompt = `${context}\n\n${prompt}`;
-  }
-
+  // Assemble the prompt from the user text plus optional file/image context.
+  // The slash-command-aware ordering lives in `assembleAgentPrompt`.
+  const activeDir = ctx.getActiveDir();
+  const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   // Save images to the host uploads directory and reference them in the prompt.
   // This avoids sending large base64 payloads over HTTP to the session worker.
-  const activeDir = ctx.getActiveDir();
-  if (images && images.length > 0 && activeDir) {
-    const imageContext = saveImagesToUploadsDir(images, activeDir);
-    prompt = `${imageContext}\n\n${prompt}`;
-  }
+  const imageContext =
+    images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
+
+  const prompt = assembleAgentPrompt({ userText, fileContext, imageContext });
 
   // Always point the Claude CLI at the baked managed-settings.json. It
   // registers two hooks: a PreToolUse branch-block hook (always active —
