@@ -42,11 +42,17 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "haiku": 200_000,
   "claude-haiku": 200_000,
   "opus-1m": 1_000_000,
-  // Codex / GPT-5 family (256K)
-  "gpt-5": 256_000,
-  "gpt-5.4": 256_000,
-  "gpt-5.4-mini": 256_000,
-  "gpt-5.3-codex": 256_000,
+  // Codex / GPT-5 family (272K). Values verified against the ChatGPT
+  // `/backend-api/codex/models` endpoint — all currently-listed codex
+  // models advertise a `context_window` of 272000 tokens. Keep the bare
+  // `gpt-5` substring fallback for forward compatibility with future
+  // gpt-5.x.
+  "gpt-5": 272_000,
+  "gpt-5.5": 272_000,
+  "gpt-5.4": 272_000,
+  "gpt-5.4-mini": 272_000,
+  "gpt-5.3-codex": 272_000,
+  "gpt-5.2": 272_000,
 };
 
 /**

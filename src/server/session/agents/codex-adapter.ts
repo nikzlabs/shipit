@@ -106,7 +106,18 @@ export class CodexAdapter
     supportsPermissionModes: false,
     supportedPermissionModes: [],
     toolNames: ["shell", "file_write", "file_read", "file_edit"],
-    models: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+    // Mirror of agent-registry.ts. Verified against the ChatGPT
+    // `/backend-api/codex/models` endpoint — every entry returned for a
+    // Plus plan with `visibility: list` and `supported_in_api: true`,
+    // including the codex-specialized `gpt-5.3-codex` variant. Keep in
+    // sync with the registry; both feed the same picker in the UI.
+    models: [
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.2",
+    ],
     // Codex has neither a subagent primitive nor a hook for registering
     // custom tools. 125 requires both, so the chat-native review flow is
     // gated off on Codex sessions.
@@ -234,11 +245,17 @@ export class CodexAdapter
   }
 
   writeStdin(data: string): void {
-    // For Codex, user input during a turn is sent via turn/steer
+    // For Codex, user input during a turn is sent via turn/steer.
+    //
+    // `input` is an array of content blocks, not a string. The Codex
+    // app-server tightened its schema in CLI 0.131.x — sending a bare
+    // string now fails with JSON-RPC -32600 "invalid type: string,
+    // expected a sequence". See `initializeAndRun` for the matching
+    // `turn/start` shape.
     if (this.proc && this.threadId) {
       this.sendNotification("turn/steer", {
         threadId: this.threadId,
-        input: data.trim(),
+        input: [{ type: "text", text: data.trim() }],
       });
     }
   }
@@ -530,14 +547,28 @@ export class CodexAdapter
       type: "agent_init",
       agentId: "codex",
       sessionId: this.threadId ?? `codex-${Date.now()}`,
-      model: params.model ?? "gpt-5.4",
+      model: params.model ?? "gpt-5.5",
       tools: this.capabilities.toolNames,
     } as AgentEvent);
 
-    // Step 3: Build turn input
+    // Step 3: Build turn input.
+    //
+    // `input` is an array of typed content blocks (`{type:"text",text:"…"}`)
+    // — Codex CLI 0.131.x tightened the `turn/start` schema and the
+    // app-server now rejects a bare string with:
+    //
+    //   {"error":{"code":-32600,
+    //     "message":"Invalid request: invalid type: string \"…\",
+    //                expected a sequence"}}
+    //
+    // The earlier UI symptom was a confusing "There's an issue with the
+    // selected model (gpt-5.4)" — that was the model-picker rendering a
+    // generic failure for the rejected turn, not an actual model access
+    // problem. The fix is to send the new shape; gpt-5.4 (and the rest of
+    // the lineup) work fine once the request is well-formed.
     const turnParams: Record<string, unknown> = {
       threadId: this.threadId,
-      input: params.prompt,
+      input: [{ type: "text", text: params.prompt }],
     };
 
     if (params.cwd) {
