@@ -94,6 +94,37 @@ The old `/ai-review` endpoint stays in place but is unused by the client.
   server-side, rejection on sent drafts, oversize payload, re-anchor
   against current file.
 
+## Phase 2.5 — Codex parity (DONE)
+
+Codex turned out to have both required primitives after all (the plan's
+"Claude-only" framing was written before Codex shipped subagents):
+
+- subagents — model-invoked via the `spawn_agent` collab tool, spawned on
+  explicit instruction (exactly what the composed prompt asks for);
+- custom MCP tools — `[mcp_servers.*]` in `config.toml`.
+
+Most of the flow was already backend-agnostic (allow-list, write-back handler,
+`review_updated`, `send_review_message`, button, `/review`, store). Only the
+MCP registration and the flag/prompt were backend-specific.
+
+- [x] Flip `supportsReview: true` on Codex (`codex-adapter.ts` + `AGENT_DEFS`),
+  with an updated rationale comment.
+- [x] Worker writes a managed `[mcp_servers.shipit-review]` block into the
+  Codex `config.toml` before spawn (`SessionWorker.ensureCodexReviewMcpConfig`)
+  — idempotent, non-clobbering, reuses the same bridge.
+- [x] Reword the composed prompt to be backend-agnostic (drop "via the Task
+  tool" → "spawn a subagent").
+- [x] Map `collabToolCall` items in `CodexAdapter` so subagent spawn/coordination
+  renders in chat (transparency parity with Claude's `Task`).
+- [x] Update the Codex capability unit test; add `codex-review-mcp.test.ts`
+  covering the config writer (append, idempotent, non-clobbering).
+
+**Not validated against a real Codex CLI** (no binary in this environment):
+the config-writer, adapter mapping, and capability flag are unit-tested, but
+the end-to-end "Codex spawns a subagent that calls the bridge" leg needs a
+dogfood run. Same prompt-only-delegation risk as Claude; plus upstream bugs
+openai/codex#18335 (slot leak) and #14841 (repeated spawn).
+
 ## Phase 3 — Remove the old path (NOT STARTED)
 
 Cleanup-only PR. Reverting Phase 2 leaves the old path in place; this

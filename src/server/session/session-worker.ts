@@ -245,6 +245,44 @@ export class SessionWorker extends EventEmitter {
     return { tsxBin, bridgePath };
   }
 
+  /**
+   * docs/125 — register the review bridge for Codex. Unlike Claude (which takes
+   * a per-run `mcpConfigPath` JSON file), the Codex CLI loads MCP servers from
+   * `[mcp_servers.*]` in `config.toml` at app-server startup. We append a
+   * managed `shipit-review` block to the Codex config dir (`CODEX_HOME` or
+   * `/root/.codex`, the same dir that holds `auth.json`) before spawn. The same
+   * bridge serves both backends; it reads `WORKER_PORT` from the inherited env.
+   *
+   * Idempotent (skips if our block is already present) and non-clobbering
+   * (appends — a user's existing config and any docs/088 servers are left
+   * intact). Best-effort: a write failure is logged and never blocks the turn.
+   */
+  private ensureCodexReviewMcpConfig(): void {
+    const bridge = this.reviewBridgePaths();
+    if (!bridge) return;
+    const codexHome = process.env.CODEX_HOME || "/root/.codex";
+    const configPath = path.join(codexHome, "config.toml");
+    try {
+      let existing = "";
+      try {
+        existing = fs.readFileSync(configPath, "utf-8");
+      } catch { /* no config yet */ }
+      if (existing.includes("[mcp_servers.shipit-review]")) return;
+      const block = [
+        "",
+        "# docs/125 — internal review tool bridge (managed by ShipIt; do not edit).",
+        "[mcp_servers.shipit-review]",
+        `command = ${JSON.stringify(bridge.tsxBin)}`,
+        `args = [${JSON.stringify(bridge.bridgePath)}]`,
+        "",
+      ].join("\n");
+      fs.mkdirSync(codexHome, { recursive: true });
+      fs.appendFileSync(configPath, block);
+    } catch (err) {
+      console.warn(`[mcp] failed to register codex review bridge: ${getErrorMessage(err)}`);
+    }
+  }
+
   // --- Session mode endpoints (agent, terminal, file watcher) ---
 
   private registerSessionEndpoints(app: FastifyInstance): void {
@@ -263,6 +301,12 @@ export class SessionWorker extends EventEmitter {
       try {
         // Generate MCP config — built-in Playwright + user-configured servers.
         const mcpConfigPath = this.generateMcpConfig(agentId, params);
+
+        // docs/125 — Codex loads MCP servers from config.toml, not a per-run
+        // path, so register the review bridge there before spawn.
+        if (agentId === "codex") {
+          this.ensureCodexReviewMcpConfig();
+        }
 
         this.agent = this.agentFactory(agentId);
         this.wireAgentEvents(this.agent);
