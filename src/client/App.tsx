@@ -613,7 +613,7 @@ export default function App() {
     };
   }, [rightTab, hasPr, wsSessionId, status, send]);
 
-  const handleSettingsOpen = useCallback(async (tab?: "agent" | "github" | "git" | "instructions" | "advanced") => {
+  const handleSettingsOpen = useCallback(async (tab?: "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "advanced") => {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {

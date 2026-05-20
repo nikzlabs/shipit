@@ -18,7 +18,7 @@ const MAX_LENGTH = 50_000;
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent" | "github" | "git" | "instructions" | "mcp" | "advanced" | "deployments" | "secrets";
+type Tab = "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "mcp" | "advanced" | "deployments" | "secrets";
 
 export interface SettingsProps {
   initialContent: string;
@@ -220,7 +220,7 @@ export function Settings({
   onSecretsLoad,
   onClose,
 }: SettingsProps) {
-  const activeTab = useUiStore((s) => s.settingsTab) ?? "agent";
+  const activeTab = useUiStore((s) => s.settingsTab) ?? "agent-claude";
   const setActiveTab = useUiStore((s) => s.setSettingsTab);
   const [content, setContent] = useState(initialContent);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
@@ -280,10 +280,11 @@ export function Settings({
   const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
 
-  const generalTabs = ["agent", "github", "git", "instructions", "mcp", "advanced"] as const;
+  const generalTabs = ["github", "git", "instructions", "mcp", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
-      case "agent": return "Agent";
+      case "agent-claude": return "Claude";
+      case "agent-codex": return "Codex";
       case "github": return "GitHub";
       case "git": return "Git";
       case "instructions": return "Instructions";
@@ -327,6 +328,18 @@ export function Settings({
           {/* Tab list — vertical sidebar on desktop, horizontal scroll on mobile */}
           <TabsList className="md:w-40 md:shrink-0 md:border-r md:py-2 max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:px-2 max-md:py-1.5 max-md:gap-1 max-md:shrink-0 border-(--color-border-secondary)">
             <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary) max-md:hidden">
+              Agent
+            </div>
+            <TabsTrigger value="agent-claude" data-testid="settings-tab-agent-claude" className={mobileTabClass}>
+              {tabLabel("agent-claude")}
+            </TabsTrigger>
+            {codexAgent && (
+              <TabsTrigger value="agent-codex" data-testid="settings-tab-agent-codex" className={mobileTabClass}>
+                {tabLabel("agent-codex")}
+              </TabsTrigger>
+            )}
+
+            <div className="px-4 py-1.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary) max-md:hidden">
               General
             </div>
             {generalTabs.map((tab) => (
@@ -353,7 +366,7 @@ export function Settings({
           </TabsList>
 
           {/* Right content area */}
-          <TabsContent value="agent">
+          <TabsContent value="agent-claude">
             <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
               <ClaudeAuthCard
                 agent={claudeAgent}
@@ -362,21 +375,22 @@ export function Settings({
                 onApiKeySubmit={async (key) => { onApiKey(key); return undefined; }}
                 onPasteAuthCode={onPasteCode}
                 onClearApiKey={onClearApiKey}
-                showApiKeyWhenAuthed
               />
+            </div>
+          </TabsContent>
 
+          <TabsContent value="agent-codex">
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
               {codexAgent && (
-                <div className="pt-2 border-t border-(--color-border-secondary)">
-                  <CodexAuthCard
-                    agent={codexAgent}
-                    deviceAuth={codexDeviceAuth ?? null}
-                    deviceAuthError={codexDeviceAuthError ?? null}
-                    onStartDeviceAuth={onStartCodexDeviceAuth}
-                    onCancelDeviceAuth={onCancelCodexDeviceAuth}
-                    onSignOut={onSignOutCodex}
-                    onApiKeySubmit={async (key) => { onSetAgentEnv?.("codex", "OPENAI_API_KEY", key); return undefined; }}
-                  />
-                </div>
+                <CodexAuthCard
+                  agent={codexAgent}
+                  deviceAuth={codexDeviceAuth ?? null}
+                  deviceAuthError={codexDeviceAuthError ?? null}
+                  onStartDeviceAuth={onStartCodexDeviceAuth}
+                  onCancelDeviceAuth={onCancelCodexDeviceAuth}
+                  onSignOut={onSignOutCodex}
+                  onApiKeySubmit={async (key) => { onSetAgentEnv?.("codex", "OPENAI_API_KEY", key); return undefined; }}
+                />
               )}
             </div>
           </TabsContent>
