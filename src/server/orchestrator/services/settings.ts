@@ -25,6 +25,7 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
     authConfigured: a.authConfigured,
     models: a.capabilities.models,
     supportsReview: a.capabilities.supportsReview,
+    supportsSteering: a.capabilities.supportsSteering,
     supportedPermissionModes: a.capabilities.supportedPermissionModes,
   }));
 }
@@ -57,11 +58,12 @@ export async function getGlobalSettings(
   const maxIdleContainers = credentialStore?.getMaxIdleContainers() ?? 5;
   const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
   const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
+  const liveSteering = credentialStore?.getLiveSteering() ?? false;
   // Render the instructions with the same conditional sections the WS handler would
   // (currently just the auto-create-PR nudge) so the Settings UI accurately reflects
   // what the agent sees on its next turn.
   const agentSystemInstructions = buildAgentSystemInstructions({ autoCreatePr });
-  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr };
+  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering };
 }
 
 // ---- Mutation operations ----
@@ -92,6 +94,7 @@ export async function saveGlobalSettings(
   maxIdleContainers?: number,
   agentSystemInstructionsEnabled?: boolean,
   autoCreatePr?: boolean,
+  liveSteering?: boolean,
 ): Promise<GlobalSettings> {
   // Save git identity if provided
   if (gitIdentity) {
@@ -133,6 +136,11 @@ export async function saveGlobalSettings(
   // Save auto-create PR toggle if provided
   if (autoCreatePr !== undefined) {
     credentialStore.setAutoCreatePr(autoCreatePr);
+  }
+
+  // Save live steering toggle if provided
+  if (liveSteering !== undefined) {
+    credentialStore.setLiveSteering(liveSteering);
   }
 
   return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir, credentialStore);

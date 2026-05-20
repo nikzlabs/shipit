@@ -422,6 +422,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       id: a.id, name: a.name, installed: a.installed,
       authConfigured: a.authConfigured, models: a.capabilities.models,
       supportsReview: a.capabilities.supportsReview,
+      supportsSteering: a.capabilities.supportsSteering,
       supportedPermissionModes: a.capabilities.supportedPermissionModes,
     }));
     client.write(`event: agent_list\ndata: ${JSON.stringify({ agents, defaultAgentId })}\n\n`);

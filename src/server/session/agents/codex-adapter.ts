@@ -180,6 +180,7 @@ export class CodexAdapter
     // custom tools. 125 requires both, so the chat-native review flow is
     // gated off on Codex sessions.
     supportsReview: false,
+    supportsSteering: true,
   };
 
   private proc: ChildProcess | null = null;
@@ -313,6 +314,8 @@ export class CodexAdapter
     });
   }
 
+  readonly isStreaming = false;
+
   writeStdin(data: string): void {
     // For Codex, user input during a turn is sent via turn/steer.
     //
@@ -327,6 +330,11 @@ export class CodexAdapter
         input: [{ type: "text", text: data.trim() }],
       });
     }
+  }
+
+  sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
+    // Codex steers via turn/steer (writeStdin already does this)
+    this.writeStdin(text);
   }
 
   interrupt(): void {

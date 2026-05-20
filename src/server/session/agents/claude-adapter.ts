@@ -1,14 +1,14 @@
 /**
- * ClaudeAdapter — wraps the existing ClaudeProcess to implement the
- * AgentProcess interface, translating ClaudeEvent → AgentEvent.
+ * ClaudeAdapter — wraps ClaudeProcess (one-shot) or StreamingClaudeProcess
+ * (persistent, streaming) to implement the AgentProcess interface.
  *
- * This is a thin wrapper: the real CLI interaction logic stays in
- * ClaudeProcess. The adapter adds event normalization and capability
- * reporting.
+ * When params.useStreaming is true (live steering enabled), run() creates a
+ * StreamingClaudeProcess that keeps the process alive across turns. Otherwise
+ * it creates the legacy PTY ClaudeProcess. (docs/140)
  */
 
 import { EventEmitter } from "node:events";
-import { ClaudeProcess } from "../claude.js";
+import { ClaudeProcess, StreamingClaudeProcess } from "../claude.js";
 import type { ClaudeEvent, ClaudeMcpServerInit } from "../../shared/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../../shared/types.js";
 import type {
@@ -41,24 +41,26 @@ export class ClaudeAdapter
     // Claude Code has both a subagent primitive (the Task tool) and custom
     // MCP tool registration via mcpConfigPath, which 125 needs.
     supportsReview: true,
+    supportsSteering: true,
   };
 
-  private inner: ClaudeProcess;
+  private inner: ClaudeProcess | StreamingClaudeProcess;
+  private _isStreaming = false;
 
   constructor(inner?: ClaudeProcess) {
     super();
     this.inner = inner ?? new ClaudeProcess();
-    this.wireEvents();
+    this.wireEvents(this.inner);
   }
 
-  /** Forward and translate events from the inner ClaudeProcess. */
-  private wireEvents(): void {
-    this.inner.on("event", (raw: ClaudeEvent) => {
-      // docs/088: when the CLI reports per-MCP-server connection status in
-      // its init event, surface that as a separate `mcp_status` emission so
-      // the worker can broadcast it as the authoritative liveness signal —
-      // overriding the speculative `loaded`/`failed` that `generateMcpConfig`
-      // emits based on placeholder resolution alone.
+  get isStreaming(): boolean {
+    return this._isStreaming;
+  }
+
+  /** Forward and translate events from the inner process. */
+  private wireEvents(proc: ClaudeProcess | StreamingClaudeProcess): void {
+    proc.on("event", (raw: ClaudeEvent) => {
+      // docs/088: surface MCP connection status from init event
       if (raw.type === "system" && raw.subtype === "init" && raw.mcp_servers) {
         const statuses = raw.mcp_servers.map(mapCliMcpStatus);
         if (statuses.length > 0) {
@@ -72,19 +74,19 @@ export class ClaudeAdapter
       }
     });
 
-    this.inner.on("done", (code: number) => {
+    proc.on("done", (code: number) => {
       this.emit("done", code);
     });
 
-    this.inner.on("error", (err: Error) => {
+    proc.on("error", (err: Error) => {
       this.emit("error", err);
     });
 
-    this.inner.on("auth_required", () => {
+    proc.on("auth_required", () => {
       this.emit("auth_required");
     });
 
-    this.inner.on("log", (source: string, text: string) => {
+    proc.on("log", (source: string, text: string) => {
       this.emit("log", source, text);
     });
   }
@@ -114,6 +116,9 @@ export class ClaudeAdapter
         };
 
       case "user":
+        // Skip replayed user messages (--replay-user-messages echo) to avoid
+        // double-rendering — the orchestrator already emitted message_steered.
+        if (raw.isReplay) return null;
         return {
           type: "agent_tool_result",
           content: raw.message.content,
@@ -187,6 +192,22 @@ export class ClaudeAdapter
   }
 
   run(params: AgentRunParams): void {
+    if (params.useStreaming) {
+      if (this._isStreaming) {
+        // Persistent streaming process is already alive — send the next turn
+        // via message injection instead of spawning a new process. (docs/140)
+        this.sendUserMessage(params.prompt);
+        return;
+      }
+      // First turn with streaming: swap in a StreamingClaudeProcess.
+      const streaming = new StreamingClaudeProcess();
+      // Remove previous inner process listeners before replacing
+      this.inner.removeAllListeners();
+      this.inner = streaming;
+      this._isStreaming = true;
+      this.wireEvents(streaming);
+    }
+
     this.inner.run({
       prompt: params.prompt,
       sessionId: params.sessionId,
@@ -203,6 +224,13 @@ export class ClaudeAdapter
       settingsPath: params.settingsPath,
       autoCreatePr: params.autoCreatePr,
     });
+  }
+
+  sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
+    if (this.inner instanceof StreamingClaudeProcess) {
+      this.inner.sendUserMessage(text);
+    }
+    // Non-streaming: no-op (caller should not reach here for non-streaming agents)
   }
 
   writeStdin(data: string): void {

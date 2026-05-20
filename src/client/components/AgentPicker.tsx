@@ -28,6 +28,11 @@ export interface AgentOption {
    * the selector falls back to hiding `guarded` when it's absent.
    */
   supportedPermissionModes?: PermissionMode[];
+  /**
+   * Whether the agent supports live steering — injecting user messages mid-turn.
+   * (docs/140)
+   */
+  supportsSteering?: boolean;
 }
 
 interface AgentPickerProps {

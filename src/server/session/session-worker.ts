@@ -277,6 +277,22 @@ export class SessionWorker extends EventEmitter {
       return { written: true };
     });
 
+    // POST /agent/message — inject a user message (live steering, docs/140)
+    app.post<{ Body: { text: string } }>(
+      "/agent/message",
+      async (request, reply) => {
+        if (!this.agent) {
+          return reply.code(400).send({ error: "No agent running" });
+        }
+        const { text } = request.body;
+        if (typeof text !== "string" || !text) {
+          return reply.code(400).send({ error: "text is required" });
+        }
+        this.agent.sendUserMessage(text);
+        return { success: true };
+      },
+    );
+
     app.get("/agent/status", async () => ({
       running: this.agent !== null,
     }));

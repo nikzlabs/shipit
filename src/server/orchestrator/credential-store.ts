@@ -14,6 +14,12 @@ interface CredentialData {
   agentSystemInstructionsEnabled?: boolean;
   autoCreatePr?: boolean;
   /**
+   * When true, mid-turn messages are steered to the running agent instead of
+   * queued. Capability-gated: only active when the agent also sets
+   * supportsSteering: true. (docs/140)
+   */
+  liveSteering?: boolean;
+  /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
    * the `mcp__<server>__<KEY>` namespace, not here.
@@ -289,6 +295,17 @@ export class CredentialStore {
 
   setAutoCreatePr(enabled: boolean): void {
     this.data.autoCreatePr = enabled;
+    this.save();
+  }
+
+  // ---- Live steering ----
+
+  getLiveSteering(): boolean {
+    return this.data.liveSteering ?? false;
+  }
+
+  setLiveSteering(enabled: boolean): void {
+    this.data.liveSteering = enabled;
     this.save();
   }
 

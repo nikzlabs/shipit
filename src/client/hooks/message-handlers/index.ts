@@ -24,6 +24,7 @@ import { handleInstallStatus } from "./install-status.js";
 import { handleLogEntry } from "./log-entry.js";
 import { handleMcpServerStatus } from "./mcp-server-status.js";
 import { handleMessageQueued } from "./message-queued.js";
+import { handleMessageSteered } from "./message-steered.js";
 import { handleModelInfo } from "./model-info.js";
 import { handlePrLifecycleUpdate } from "./pr-lifecycle-update.js";
 import { handlePreviewError } from "./preview-error.js";
@@ -103,6 +104,7 @@ export const messageHandlers: MessageHandlerMap = {
   log_entry: handleLogEntry,
   mcp_server_status: handleMcpServerStatus,
   message_queued: handleMessageQueued,
+  message_steered: handleMessageSteered,
   model_info: handleModelInfo,
   pr_lifecycle_update: handlePrLifecycleUpdate,
   preview_error: handlePreviewError,

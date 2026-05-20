@@ -111,6 +111,14 @@ export async function workerInstall(baseUrl: string, commands: string[]): Promis
 }
 
 /**
+ * POST /agent/message on the session worker — inject a user message for live
+ * steering (docs/140). Delegates to agent.sendUserMessage() inside the worker.
+ */
+export async function workerPostMessage(baseUrl: string, text: string, opts?: WorkerHttpOpts): Promise<void> {
+  await workerPost(baseUrl, "/agent/message", { text }, opts);
+}
+
+/**
  * Send an HTTP PUT to a session worker endpoint. Mirrors {@link workerPost}
  * — JSON request/response, optional timeout, error-on-4xx-or-5xx semantics.
  */

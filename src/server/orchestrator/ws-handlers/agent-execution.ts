@@ -275,9 +275,16 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     runner.needsNewMessageGroup = true;
     runner.wasInterrupted = false;
   }
+  // Live steering: use streaming mode when enabled and the active agent supports it.
+  // For streaming agents, reuse the existing agent process (it persists across turns)
+  // rather than creating a new one via the factory. (docs/140)
+  const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
+  const useStreaming = ctx.credentialStore.getLiveSteering() && (agentInfo?.capabilities.supportsSteering ?? false);
+
   let receivedResult = false;
-  const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
-  if (runner) runner.setAgent(currentAgent);
+  const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
+  const currentAgent = existingAgent ?? ctx.agentFactory(ctx.getActiveAgentId());
+  if (!existingAgent && runner) runner.setAgent(currentAgent);
 
   // Notify via SSE for sidebar activity dots
   if (capturedSessionId) {
@@ -340,10 +347,149 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     persistUserMessage(capturedSessionId);
   }
 
+  // For streaming agents: wire post-turn actions on agent_result instead of done.
+  // done fires only on process exit (dispose/crash), not on turn end. (docs/140)
+  if (useStreaming) {
+    let streamingPostTurnFired = false;
+    currentAgent.on("event", async (event: AgentEvent) => {
+      if (event.type !== "agent_result") return;
+      if (streamingPostTurnFired) return; // guard against multiple result events per turn
+      streamingPostTurnFired = true;
+
+      // agent-listeners already set runner.running=false on agent_result.
+      // Clear the agent ref so the next turn can set a fresh one (or reuse this one
+      // via the existingAgent path above). For streaming, the process stays alive;
+      // we just release the runner's reference so the next turn's setAgent call
+      // doesn't conflict.
+      if (runner) runner.setAgent(null);
+      stopRunner(runner);
+
+      // Drain queue (may start next turn immediately via the existingAgent path)
+      await drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone);
+
+      // Auto-commit
+      let commitHash: string | null = null;
+      try {
+        if (capturedSessionDir) {
+          commitHash = await postTurnCommit(ctx, {
+            sessionDir: capturedSessionDir,
+            sessionId: capturedSessionId,
+            emit: emitDone,
+            turnSummary: runner?.turnSummary ?? "",
+          });
+        }
+      } catch (err) {
+        console.error("[git] streaming auto-commit failed:", getErrorMessage(err));
+      }
+
+      // PR lifecycle card (mirrors non-streaming done handler)
+      if (commitHash && capturedSessionId && capturedSessionDir) {
+        try {
+          const session = ctx.sessionManager.get(capturedSessionId);
+          if (session?.remoteUrl && session.branchRenamed !== false && !session.mergedAt) {
+            const git = ctx.createGitManager(capturedSessionDir);
+            const prStatus = ctx.prStatusPoller.getStatus(capturedSessionId);
+            if (!prStatus) {
+              const shouldAutoCreate = ctx.credentialStore.getAutoCreatePr()
+                && ctx.githubAuthManager.authenticated;
+              if (shouldAutoCreate) {
+                emitDone({
+                  type: "pr_lifecycle_update",
+                  sessionId: capturedSessionId,
+                  cardId: `pr-card-${capturedSessionId}`,
+                  phase: "creating",
+                });
+                try {
+                  const result = await quickCreatePr(
+                    git,
+                    ctx.githubAuthManager,
+                    ctx.chatHistoryManager,
+                    ctx.generateText,
+                    capturedSessionId,
+                    session.title ?? "",
+                    capturedSessionDir,
+                    session.remoteUrl,
+                  );
+                  if (ctx.prStatusPoller && session.remoteUrl) {
+                    ctx.prStatusPoller.trackSession(capturedSessionId, session.remoteUrl);
+                  }
+                  emitDone({
+                    type: "pr_lifecycle_update",
+                    sessionId: capturedSessionId,
+                    cardId: `pr-card-${capturedSessionId}`,
+                    phase: "open",
+                    pr: {
+                      number: result.number,
+                      title: result.title,
+                      body: result.body,
+                      url: result.url,
+                      baseBranch: result.baseBranch,
+                      headBranch: result.headBranch,
+                      insertions: result.insertions,
+                      deletions: result.deletions,
+                    },
+                  });
+                } catch (prErr) {
+                  console.error("[pr-lifecycle] streaming auto-create PR failed:", getErrorMessage(prErr));
+                  emitDone({
+                    type: "pr_lifecycle_update",
+                    sessionId: capturedSessionId,
+                    cardId: `pr-card-${capturedSessionId}`,
+                    phase: "error",
+                    errorMessage: getErrorMessage(prErr),
+                  });
+                }
+              } else {
+                const headBranch = session.branch || await git.getCurrentBranch();
+                const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
+                emitDone({
+                  type: "pr_lifecycle_update",
+                  sessionId: capturedSessionId,
+                  cardId: `pr-card-${capturedSessionId}`,
+                  phase: "ready",
+                  headBranch,
+                  totalInsertions,
+                  totalDeletions,
+                });
+              }
+            }
+          }
+        } catch (err) {
+          console.error("[pr-lifecycle] streaming diff stats failed:", getErrorMessage(err));
+        }
+      }
+
+      if (capturedSessionId && !(runner?.running ?? false)) {
+        ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
+        if (runner) runner.onAgentFinished();
+      }
+    });
+  }
+
   currentAgent.on("done", async (code: number | null) => {
     console.log("[agent] process exited with code", code);
     ctx.broadcastLog("server", `Agent process exited with code ${code}`);
     if (runner) runner.setAgent(null);
+
+    // For streaming agents, post-turn flow (commit, PR card, queue drain) already
+    // ran in the agent_result listener above. done fires only on process exit
+    // (dispose/crash), not on turn end. Just handle the error/cleanup path. (docs/140)
+    if (useStreaming) {
+      if (!receivedResult && !(runner?.wasInterrupted ?? false)) {
+        const reason = code !== 0
+          ? `Agent process exited with code ${code}`
+          : "Agent process ended without a response";
+        emitDone({ type: "error", message: reason });
+      }
+      stopRunner(runner);
+      if (capturedSessionId && !(runner?.running ?? false)) {
+        ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
+        if (runner) runner.onAgentFinished();
+      }
+      return;
+    }
+
+    // Non-streaming: original post-turn flow below.
 
     // If the process exited without producing a result event, notify the
     // client so it can clear the loading state instead of hanging forever.
@@ -620,6 +766,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     settingsPath,
     autoCreatePr: autoCreatePrActive,
     mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
+    useStreaming,
   });
   // "Agent process started" is now emitted from agent-listeners.ts
   // when the agent_init event arrives, so the log reflects an actual

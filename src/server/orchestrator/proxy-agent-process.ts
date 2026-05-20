@@ -39,6 +39,7 @@ function describeWorkerError(err: unknown, op: "start" | "stdin" | "interrupt"):
 export interface ProxyAgentRunner {
   _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void>;
   writeAgentStdin(data: string): Promise<void>;
+  sendAgentMessage(text: string): Promise<void>;
   interruptAgentOnWorker(): Promise<void>;
   killAgentOnWorker(): Promise<void>;
 }
@@ -69,6 +70,7 @@ export class ProxyAgentProcess extends EventEmitter<{
     // here; the orchestrator publishes the real flag via the agent registry,
     // which is what the client uses to gate the AI review affordance.
     supportsReview: false,
+    supportsSteering: false,
   };
 
   private runner: ProxyAgentRunner;
@@ -89,6 +91,16 @@ export class ProxyAgentProcess extends EventEmitter<{
   /** Fire-and-forget POST to worker /agent/stdin. */
   writeStdin(data: string): void {
     this.runner.writeAgentStdin(data).catch((err: unknown) => {
+      this.emit("error", describeWorkerError(err, "stdin"));
+    });
+  }
+
+  readonly isStreaming = false;
+
+  sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
+    // Delegate to worker /agent/message so the real streaming logic inside
+    // the session container handles the injection (docs/140).
+    this.runner.sendAgentMessage(text).catch((err: unknown) => {
       this.emit("error", describeWorkerError(err, "stdin"));
     });
   }

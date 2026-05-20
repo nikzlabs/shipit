@@ -47,6 +47,7 @@ export function MessageInput({
   onOpenUsageDetails,
   focusKey,
   hasPrCard = false,
+  liveSteeringActive = false,
 }: {
   onSend: (text: string) => void;
   disabled: boolean;
@@ -83,6 +84,8 @@ export function MessageInput({
   focusKey?: string;
   /** When true, only round bottom corners (PR card provides the top). */
   hasPrCard?: boolean;
+  /** When true, show both Stop and Send buttons simultaneously (live steering active). */
+  liveSteeringActive?: boolean;
 }) {
   const isMobile = useIsMobile();
   const [text, setText] = useState("");
@@ -501,16 +504,29 @@ export function MessageInput({
             {/* Send / Stop button — extra gap from model selector */}
             <div className="w-1" />
             {isLoading && onInterrupt ? (
-              <WithTooltip label="Stop (Esc)">
-              <button
-                onClick={onInterrupt}
-                className="flex items-center justify-center shrink-0 rounded-lg p-2 bg-(--color-error) text-white hover:brightness-110 transition-colors"
-                aria-label="Stop the agent"
-                data-testid="stop-button"
-              >
-                <StopIcon size={ICON_SIZE.SM} weight="fill" />
-              </button>
-              </WithTooltip>
+              <>
+                <WithTooltip label="Stop (Esc)">
+                <button
+                  onClick={onInterrupt}
+                  className="flex items-center justify-center shrink-0 rounded-lg p-2 bg-(--color-error) text-white hover:brightness-110 transition-colors"
+                  aria-label="Stop the agent"
+                  data-testid="stop-button"
+                >
+                  <StopIcon size={ICON_SIZE.SM} weight="fill" />
+                </button>
+                </WithTooltip>
+                {liveSteeringActive && (
+                  <button
+                    onClick={handleSubmit}
+                    disabled={disabled || !text.trim()}
+                    className="flex items-center justify-center shrink-0 rounded-lg p-2 bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    aria-label="Send message"
+                    data-testid="send-button"
+                  >
+                    <ArrowUpIcon size={ICON_SIZE.SM} weight="bold" />
+                  </button>
+                )}
+              </>
             ) : (
               <button
                 onClick={handleSubmit}

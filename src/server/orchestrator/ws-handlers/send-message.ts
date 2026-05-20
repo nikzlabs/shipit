@@ -55,6 +55,34 @@ export async function handleSendMessage(ctx: FullCtx, msg: WsSendMessage): Promi
     // and the user sees: "agent starts briefly, nothing happens".
     const actuallyRunning = await runnerForQueue.verifyRunningState();
     if (actuallyRunning) {
+      // Live steering: inject the message mid-turn if capability + setting active
+      const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
+      const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
+      const liveSteering = ctx.credentialStore.getLiveSteering();
+
+      if (steeringCapable && liveSteering) {
+        // Steer the running agent — inject message mid-turn
+        const steeringAgent = runnerForQueue.getAgent();
+        if (steeringAgent) {
+          const capturedSessionId = ctx.getActiveAppSessionId();
+          steeringAgent.sendUserMessage(msg.text);
+          // Persist the steered message to chat history
+          if (capturedSessionId) {
+            ctx.chatHistoryManager.append(capturedSessionId, { role: "user", text: msg.text });
+          }
+          // Broadcast message_steered so all viewers (including other tabs) see it
+          if (capturedSessionId) {
+            runnerForQueue.emitMessage({
+              type: "message_steered",
+              text: msg.text,
+              sessionId: capturedSessionId,
+            });
+          }
+          return;
+        }
+      }
+
+      // Not steering (or no active agent ref): queue the message
       runnerForQueue.messageQueue.push({ text: msg.text, images: msg.images, files: msg.files, uploads: msg.uploads, permissionMode: msg.permissionMode });
       ctx.send({
         type: "message_queued",
