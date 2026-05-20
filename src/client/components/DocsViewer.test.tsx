@@ -48,6 +48,29 @@ describe("DocsViewer", () => {
       expect(screen.getByText("Deploy")).toBeInTheDocument();
     });
 
+    it("renders the frontmatter description under the title", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001-auth/plan.md",
+          title: "Auth",
+          status: "planned",
+          description: "Adds login and session management.",
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("Adds login and session management.")).toBeInTheDocument();
+    });
+
+    it("omits the description line when no description is present", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", status: "planned" }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.queryByText("Adds login and session management.")).not.toBeInTheDocument();
+    });
+
     it("renders doc paths for untracked docs", () => {
       const props = defaultProps();
       props.files = [

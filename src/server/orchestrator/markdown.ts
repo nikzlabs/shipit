@@ -45,7 +45,9 @@ export function parseStatusFromFrontmatter(content: string): DocStatus | undefin
 }
 
 /**
- * Parse status, priority, and title from frontmatter in a single extraction.
+ * Parse status, priority, title, and description from frontmatter in a single
+ * extraction. `description` is an optional single-line summary surfaced under
+ * the title in the docs panel.
  *
  * `priority` is only returned when `status === "planned"` — it's a sort hint
  * for picking the next thing to work on, so it's meaningless on
@@ -59,7 +61,13 @@ export function parseStatusFromFrontmatter(content: string): DocStatus | undefin
  */
 function parseFrontmatterFields(
   content: string,
-): { status?: DocStatus; customStatus?: string; priority?: DocPriority; title?: string } {
+): {
+  status?: DocStatus;
+  customStatus?: string;
+  priority?: DocPriority;
+  title?: string;
+  description?: string;
+} {
   const fm = extractFrontmatter(content);
   if (!fm) return {};
 
@@ -92,7 +100,14 @@ function parseFrontmatterFields(
     title = titleMatch[1].trim();
   }
 
-  return { status, customStatus, priority, title };
+  let description: string | undefined;
+  const descriptionMatch = /^description:\s*(.+)$/m.exec(fm);
+  if (descriptionMatch) {
+    const raw = descriptionMatch[1].trim();
+    if (raw.length > 0) description = raw;
+  }
+
+  return { status, customStatus, priority, title, description };
 }
 
 /** Generic filenames where the parent directory name is more meaningful. */
@@ -151,7 +166,7 @@ function titleFromPath(relativePath: string): string {
 
 /**
  * Read one `.md` file and produce its `DocEntry`. For most docs we sniff
- * only the first 512 bytes (frontmatter); for `checklist.md` we read the
+ * only the first 1024 bytes (frontmatter); for `checklist.md` we read the
  * whole file so we can count checkboxes for the progress badge.
  */
 async function readMarkdownEntry(
@@ -163,6 +178,7 @@ async function readMarkdownEntry(
   let customStatus: string | undefined;
   let priority: DocPriority | undefined;
   let title: string | undefined;
+  let description: string | undefined;
   let modifiedAt: string | undefined;
   let checklist: { total: number; done: number } | undefined;
 
@@ -178,6 +194,7 @@ async function readMarkdownEntry(
       customStatus = fields.customStatus;
       priority = fields.priority;
       title = fields.title;
+      description = fields.description;
       const progress = parseChecklistProgress(content);
       // Suppress empty checklists — they'd render as `0/0`, which is noise.
       if (progress.total > 0) checklist = progress;
@@ -186,14 +203,15 @@ async function readMarkdownEntry(
     } else {
       const handle = await fs.open(fullPath, "r");
       try {
-        const buf = Buffer.alloc(512);
-        const { bytesRead } = await handle.read(buf, 0, 512, 0);
+        const buf = Buffer.alloc(1024);
+        const { bytesRead } = await handle.read(buf, 0, 1024, 0);
         const content = buf.toString("utf-8", 0, bytesRead);
         const fields = parseFrontmatterFields(content);
         status = fields.status;
         customStatus = fields.customStatus;
         priority = fields.priority;
         title = fields.title;
+        description = fields.description;
         // Capture mtime from the same handle to avoid a second syscall.
         // Used by the client to surface docs touched in the current session.
         const stat = await handle.stat();
@@ -212,6 +230,7 @@ async function readMarkdownEntry(
     customStatus,
     priority,
     title: title ?? titleFromPath(relativePath),
+    description,
     modifiedAt,
     checklist,
   };
