@@ -21,6 +21,11 @@ import type { GitHubDeploymentStatus } from "../shared/types/deployment-types.js
  * poller). Status rollups beyond the first 10 contexts are an extreme edge
  * case; if it bites, increase here rather than dropping back to a
  * paginated GraphQL.
+ *
+ * NOTE: `files(first: 100)` is the hard ceiling — the GitHub GraphQL `files`
+ * connection rejects any `first` above 100 with an EXCESSIVE_PAGINATION error
+ * (the request 200s but the data is dropped). PRs touching more than 100 files
+ * get a truncated file list here; do not raise this above 100.
  */
 export const PR_STATUS_QUERY = `
 query($owner: String!, $name: String!) {
@@ -38,7 +43,7 @@ query($owner: String!, $name: String!) {
         baseRefName
         additions
         deletions
-        files(first: 300) {
+        files(first: 100) {
           nodes { path }
         }
         commits(last: 1) {
