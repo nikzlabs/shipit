@@ -47,7 +47,8 @@
  */
 
 import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap } from "../shared/types.js";
-import type { LimitsProvider } from "./limits/types.js";
+import type { LimitsProvider, LimitsSkipTick } from "./limits/types.js";
+import { LIMITS_SKIP_TICK } from "./limits/types.js";
 
 export interface LimitsPollerOptions {
   /** Map of registered providers, keyed by agent id. */
@@ -206,7 +207,7 @@ export class LimitsPoller {
     this.tickInFlight = true;
     try {
       const now = Date.now();
-      const fetches: Promise<{ agentId: AgentId; snapshot: SubscriptionLimits | null }>[] = [];
+      const fetches: Promise<{ agentId: AgentId; snapshot: SubscriptionLimits | null | LimitsSkipTick }>[] = [];
 
       for (const [agentId, provider] of this.providers) {
         const state = this.ensureState(agentId);
@@ -252,6 +253,10 @@ export class LimitsPoller {
           continue;
         }
         const { agentId, snapshot } = result.value;
+        // Skip sentinel — provider deliberately declined to fetch
+        // (e.g. its access token is expired but refreshable). Leave
+        // the cache and per-provider state untouched.
+        if (snapshot === LIMITS_SKIP_TICK) continue;
         if (this.applySnapshot(agentId, snapshot)) {
           changed = true;
         }
@@ -273,6 +278,7 @@ export class LimitsPoller {
 
     const refreshed = await maybeRefreshFetchable(provider);
     const snapshot = refreshed ? await provider.fetch() : null;
+    if (snapshot === LIMITS_SKIP_TICK) return;
     if (this.applySnapshot(agentId, snapshot)) {
       this.broadcast();
     }

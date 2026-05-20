@@ -11,7 +11,8 @@
  */
 
 import type { CodexAuthManager } from "../codex-auth.js";
-import type { LimitsProvider } from "./types.js";
+import type { LimitsProvider, LimitsSkipTick } from "./types.js";
+import { LIMITS_SKIP_TICK, isAccessTokenExpired } from "./types.js";
 import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../shared/types.js";
 
 /**
@@ -51,13 +52,21 @@ export class CodexLimitsProvider implements LimitsProvider {
     return this.lastKnownFetchable;
   }
 
-  async fetch(): Promise<SubscriptionLimits | null> {
+  async fetch(): Promise<SubscriptionLimits | null | LimitsSkipTick> {
     const tokenResult = await this.codexAuthManager.getAccessToken();
     if (tokenResult.token === null) {
       this.lastKnownFetchable = false;
       return null;
     }
     this.lastKnownFetchable = true;
+
+    // Same idle-expiry story as Claude: the Codex CLI refreshes the
+    // shared credential file on each turn, so an idle session leaves a
+    // stale access token that 401s. Skip rather than surfacing a false
+    // "auth expired". See LIMITS_SKIP_TICK.
+    if (isAccessTokenExpired(tokenResult.expiresAt, this.now())) {
+      return LIMITS_SKIP_TICK;
+    }
 
     const fetchedAt = this.now();
     let response: Response;

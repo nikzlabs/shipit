@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { LimitsPoller } from "./limits-poller.js";
-import type { LimitsProvider } from "./limits/types.js";
+import { LIMITS_SKIP_TICK } from "./limits/types.js";
+import type { LimitsProvider, LimitsSkipTick } from "./limits/types.js";
 import type { AgentId, SubscriptionLimits } from "../shared/types.js";
 
 class StubLimitsProvider implements LimitsProvider {
   readonly agentId: AgentId;
   /** Sequence of snapshots to return on consecutive fetch() calls. */
-  snapshots: (SubscriptionLimits | null)[] = [];
+  snapshots: (SubscriptionLimits | null | LimitsSkipTick)[] = [];
   fetchCallCount = 0;
   refreshFetchableCallCount = 0;
   fetchable = true;
@@ -24,13 +25,13 @@ class StubLimitsProvider implements LimitsProvider {
     return this.fetchable;
   }
 
-  async fetch(): Promise<SubscriptionLimits | null> {
+  async fetch(): Promise<SubscriptionLimits | null | LimitsSkipTick> {
     this.fetchCallCount += 1;
     const next = this.snapshots.shift();
     return next === undefined ? null : next;
   }
 
-  enqueue(snapshot: SubscriptionLimits | null): this {
+  enqueue(snapshot: SubscriptionLimits | null | LimitsSkipTick): this {
     this.snapshots.push(snapshot);
     return this;
   }
@@ -274,6 +275,42 @@ describe("LimitsPoller", () => {
     expect(last.limits.claude.error).toBeUndefined();
     expect(last.limits.claude.fetchedAt).toBe(3_000);
     expect(last.limits.claude.weekly?.usedPct).toBe(55);
+  });
+
+  it("keeps the last snapshot and does not broadcast when a provider skips a tick", async () => {
+    const claude = new StubLimitsProvider("claude")
+      .enqueue(makeSnapshot({ agentId: "claude", weekly: { usedPct: 40, resetAt: "x" } }))
+      .enqueue(LIMITS_SKIP_TICK);
+    const spy = makeBroadcastSpy();
+
+    const poller = new LimitsPoller({
+      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      sseBroadcast: spy.broadcast,
+    });
+    await poller.tick(); // success → cached + broadcast
+    await poller.tick(); // skip → cache untouched, no new broadcast
+
+    expect(claude.fetchCallCount).toBe(2);
+    // Only the first tick broadcast; the skip produced no event.
+    expect(spy.calls).toHaveLength(1);
+    // The last good snapshot is still in the cache.
+    expect(poller.getSnapshot().claude?.weekly?.usedPct).toBe(40);
+    expect(poller.getSnapshot().claude?.error).toBeUndefined();
+  });
+
+  it("omits a provider that skips on a cold start (no prior snapshot)", async () => {
+    const claude = new StubLimitsProvider("claude").enqueue(LIMITS_SKIP_TICK);
+    const spy = makeBroadcastSpy();
+
+    const poller = new LimitsPoller({
+      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      sseBroadcast: spy.broadcast,
+    });
+    await poller.tick();
+
+    expect(claude.fetchCallCount).toBe(1);
+    expect(spy.calls).toHaveLength(0);
+    expect(poller.getSnapshot().claude).toBeUndefined();
   });
 
   it("markSignedOut drops a cached entry and broadcasts the removal", async () => {

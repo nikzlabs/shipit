@@ -11,6 +11,45 @@
 
 import type { AgentId, SubscriptionLimits } from "../../shared/types.js";
 
+/**
+ * Sentinel a provider's `fetch()` may return to mean "skip this tick
+ * — keep the last cached snapshot, don't broadcast, don't treat as
+ * an error."
+ *
+ * Both the Claude and Codex credentials live in one shared file that
+ * each agent's CLI refreshes *on every turn*. The access token in
+ * that file is short-lived (hours); the refresh token is long-lived.
+ * When a session sits idle past the access-token TTL nobody refreshes
+ * the file, so the token on disk goes stale even though auth is
+ * fundamentally valid. Hitting the upstream usage endpoint with the
+ * stale token returns 401 → a misleading "auth expired" in the UI.
+ *
+ * When a provider can *see* (via the credential's `expiresAt`) that
+ * its token is expired, it returns this sentinel instead of firing
+ * the doomed request: the badge keeps its last-known numbers and
+ * self-heals the moment any session runs a turn (which refreshes the
+ * shared credential). See docs/135-subscription-limits-badge/plan.md.
+ */
+export const LIMITS_SKIP_TICK = Symbol("limits-skip-tick");
+export type LimitsSkipTick = typeof LIMITS_SKIP_TICK;
+
+/**
+ * Skew applied when judging access-token expiry: treat a token as
+ * expired slightly early so we don't fire a request that dies
+ * mid-flight. 60s covers clock skew + request latency.
+ */
+export const ACCESS_TOKEN_EXPIRY_SKEW_MS = 60_000;
+
+/**
+ * True when a *known* expiry is at/before `now + skew`. A `null`
+ * expiry (env tokens, or a credentials schema that omits the field)
+ * is never treated as expired — in that case we let a real upstream
+ * 401 be the signal rather than guessing.
+ */
+export function isAccessTokenExpired(expiresAt: number | null, now: number): boolean {
+  return expiresAt !== null && expiresAt <= now + ACCESS_TOKEN_EXPIRY_SKEW_MS;
+}
+
 export interface LimitsProvider {
   /** Which agent backend this provider belongs to. */
   readonly agentId: AgentId;
@@ -34,8 +73,10 @@ export interface LimitsProvider {
    * "the provider became unfetchable between `canFetch()` and the
    * actual fetch" (e.g. credentials were cleared mid-poll); the
    * caller treats this the same as `canFetch() === false`.
+   * Returning `LIMITS_SKIP_TICK` means "leave the cache untouched
+   * this tick" (see the sentinel's docstring).
    */
-  fetch(): Promise<SubscriptionLimits | null>;
+  fetch(): Promise<SubscriptionLimits | null | LimitsSkipTick>;
 }
 
 /**
