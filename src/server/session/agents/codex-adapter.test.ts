@@ -208,8 +208,25 @@ describe("CodexAdapter", () => {
     const reqs = fakeProc.getRequests();
     const turnStart = reqs.find((r) => r.method === "turn/start");
     expect(turnStart).toBeDefined();
-    expect((turnStart!.params as any).input).toBe("Write a hello world script");
+    // `input` is a sequence of typed content blocks — the Codex
+    // app-server rejects a bare string with JSON-RPC -32600 since CLI
+    // 0.131.x. See codex-adapter.ts comment in `initializeAndRun`.
+    expect((turnStart!.params as any).input).toEqual([
+      { type: "text", text: "Write a hello world script" },
+    ]);
     expect((turnStart!.params as any).threadId).toBe("thread-abc-123");
+  });
+
+  it("never sends turn/start `input` as a bare string (regression guard)", async () => {
+    // The Codex app-server tightened the schema in 0.131.x and now
+    // rejects a string `input` with -32600. The UI surfaced this as a
+    // misleading "selected model may not exist" error. Guard against
+    // regressing to the old shape.
+    await createAndInit("anything");
+    const turnStart = fakeProc.getRequests().find((r) => r.method === "turn/start");
+    expect(turnStart).toBeDefined();
+    expect(typeof (turnStart!.params as any).input).not.toBe("string");
+    expect(Array.isArray((turnStart!.params as any).input)).toBe(true);
   });
 
   it("emits agent_init event after handshake", async () => {
@@ -220,7 +237,7 @@ describe("CodexAdapter", () => {
       type: "agent_init",
       agentId: "codex",
       sessionId: "thread-abc-123",
-      model: "gpt-5.4",
+      model: "gpt-5.5",
       tools: ["shell", "file_write", "file_read", "file_edit"],
     });
   });
@@ -382,7 +399,11 @@ describe("CodexAdapter", () => {
     const reqs = fakeProc.getRequests();
     const steer = reqs.find((r) => r.method === "turn/steer");
     expect(steer).toBeDefined();
-    expect((steer!.params as any).input).toBe("user reply text");
+    // Matches the same content-block schema as turn/start — see the
+    // explanatory comment in codex-adapter.ts `writeStdin`.
+    expect((steer!.params as any).input).toEqual([
+      { type: "text", text: "user reply text" },
+    ]);
   });
 
   it("handles malformed JSON arguments gracefully", async () => {
