@@ -54,10 +54,18 @@ function priorityOrder(priority: DocPriority | undefined): number {
   return priority ? PRIORITY_CONFIG[priority].order : 99;
 }
 
+/**
+ * Shared sizing for every badge in a doc row. A fixed height keeps the cluster
+ * aligned regardless of which badges render — notably the progress pill carries
+ * a border (+2px box height) that the borderless badges don't, so without a
+ * common height it would sit taller than its neighbors.
+ */
+const DOC_BADGE_CLASS = "h-[18px] text-[11px]";
+
 function StatusBadge({ status }: { status: DocStatus }) {
   const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.planned;
   return (
-    <Badge variant={config.variant} className="text-[11px]">
+    <Badge variant={config.variant} className={DOC_BADGE_CLASS}>
       {config.label}
     </Badge>
   );
@@ -70,7 +78,7 @@ function StatusBadge({ status }: { status: DocStatus }) {
  */
 function CustomStatusBadge({ customStatus }: { customStatus: string }) {
   return (
-    <Badge variant="default" className="text-[11px]">
+    <Badge variant="default" className={DOC_BADGE_CLASS}>
       {customStatus}
     </Badge>
   );
@@ -79,7 +87,7 @@ function CustomStatusBadge({ customStatus }: { customStatus: string }) {
 function PriorityBadge({ priority }: { priority: DocPriority }) {
   const config = PRIORITY_CONFIG[priority];
   return (
-    <Badge variant={config.variant} className="text-[11px]">
+    <Badge variant={config.variant} className={DOC_BADGE_CLASS}>
       {config.label}
     </Badge>
   );
@@ -99,11 +107,80 @@ function ChecklistProgressBadge({
   return (
     <Badge
       variant={complete ? "success" : "default"}
-      className="text-[11px] tabular-nums"
+      className={`${DOC_BADGE_CLASS} tabular-nums`}
       title={`${progress.done} of ${progress.total} checklist items complete`}
     >
       {progress.done}/{progress.total}
     </Badge>
+  );
+}
+
+/**
+ * Fuses the "In Progress" status and the `done/total` checklist count into a
+ * single pill whose background doubles as a progress bar: the warning-tinted
+ * fill spans `done/total` of the pill width, the rest is the neutral track.
+ * The partial fill *is* the "in progress" signal, so we drop the separate
+ * status label. Text stays neutral (`text-secondary`) because it sits over
+ * both the fill and the track and must read on either.
+ */
+function ProgressStatusBadge({
+  progress,
+}: {
+  progress: { total: number; done: number };
+}) {
+  const pct =
+    progress.total > 0
+      ? Math.round((progress.done / progress.total) * 100)
+      : 0;
+  return (
+    <span
+      className={`${DOC_BADGE_CLASS} relative inline-flex w-20 shrink-0 items-center justify-center overflow-hidden rounded-full border border-(--color-border-secondary)/50 px-2 font-medium tabular-nums bg-(--color-bg-tertiary) text-(--color-text-secondary)`}
+      title={`In progress — ${progress.done} of ${progress.total} checklist items complete`}
+    >
+      <span
+        aria-hidden
+        className="absolute inset-y-0 left-0 bg-(--color-warning-subtle)"
+        style={{ width: `${pct}%` }}
+      />
+      <span className="relative">
+        {progress.done}/{progress.total}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The trailing badge cluster for a doc row. An in-progress doc that has
+ * checklist progress collapses its count and status into a single
+ * {@link ProgressStatusBadge}; everything else renders the count and status as
+ * separate badges. `compact` (archived rows) omits priority and custom-status
+ * badges, matching the reduced cluster those rows showed before.
+ */
+function DocStatusBadges({
+  doc,
+  compact = false,
+}: {
+  doc: DocEntry;
+  compact?: boolean;
+}) {
+  const checklist =
+    doc.checklist && doc.checklist.total > 0 ? doc.checklist : null;
+
+  if (doc.status === "in-progress" && checklist) {
+    return <ProgressStatusBadge progress={checklist} />;
+  }
+
+  return (
+    <>
+      {checklist && <ChecklistProgressBadge progress={checklist} />}
+      {!compact && doc.status === "planned" && doc.priority && (
+        <PriorityBadge priority={doc.priority} />
+      )}
+      {doc.status && <StatusBadge status={doc.status} />}
+      {!compact && !doc.status && doc.customStatus && (
+        <CustomStatusBadge customStatus={doc.customStatus} />
+      )}
+    </>
   );
 }
 
@@ -299,17 +376,8 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                 >
                   <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                   <div className="flex items-center gap-2 shrink-0">
-                    <Badge variant="info" className="text-[11px]">Modified</Badge>
-                    {doc.checklist && doc.checklist.total > 0 && (
-                      <ChecklistProgressBadge progress={doc.checklist} />
-                    )}
-                    {doc.status === "planned" && doc.priority && (
-                      <PriorityBadge priority={doc.priority} />
-                    )}
-                    {doc.status && <StatusBadge status={doc.status} />}
-                    {!doc.status && doc.customStatus && (
-                      <CustomStatusBadge customStatus={doc.customStatus} />
-                    )}
+                    <Badge variant="info" className={DOC_BADGE_CLASS}>Modified</Badge>
+                    <DocStatusBadges doc={doc} />
                   </div>
                 </div>
               );
@@ -358,16 +426,7 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                 >
                   <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                   <div className="flex items-center gap-2 shrink-0">
-                    {doc.checklist && doc.checklist.total > 0 && (
-                      <ChecklistProgressBadge progress={doc.checklist} />
-                    )}
-                    {doc.status === "planned" && doc.priority && (
-                      <PriorityBadge priority={doc.priority} />
-                    )}
-                    {doc.status && <StatusBadge status={doc.status} />}
-                    {!doc.status && doc.customStatus && (
-                      <CustomStatusBadge customStatus={doc.customStatus} />
-                    )}
+                    <DocStatusBadges doc={doc} />
                   </div>
                 </div>
               );
@@ -393,10 +452,7 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
                     >
                       <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                       <div className="flex items-center gap-2 shrink-0">
-                        {doc.checklist && doc.checklist.total > 0 && (
-                          <ChecklistProgressBadge progress={doc.checklist} />
-                        )}
-                        {doc.status && <StatusBadge status={doc.status} />}
+                        <DocStatusBadges doc={doc} compact />
                       </div>
                     </div>
                   );

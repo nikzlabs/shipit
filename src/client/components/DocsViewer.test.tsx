@@ -246,6 +246,43 @@ describe("DocsViewer", () => {
       expect(screen.getByText("7/12")).toBeInTheDocument();
     });
 
+    it("fuses status and count into one progress pill for in-progress docs with a checklist", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001-feature/plan.md",
+          title: "Feature",
+          status: "in-progress",
+          checklist: { total: 75, done: 58 },
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      // The count is shown...
+      const count = screen.getByText("58/75");
+      expect(count).toBeInTheDocument();
+      // ...but the separate "In Progress" status label is dropped — the partial
+      // fill is the in-progress signal now.
+      expect(screen.queryByText("In Progress")).not.toBeInTheDocument();
+      // The pill carries a fill element sized to the completion fraction.
+      const pill = count.closest("span")?.parentElement;
+      const fill = pill?.querySelector("[aria-hidden]") as HTMLElement | null;
+      expect(fill).not.toBeNull();
+      expect(fill?.style.width).toBe("77%"); // round(58/75 * 100)
+    });
+
+    it("keeps the separate status label for in-progress docs without a checklist", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001/plan.md",
+          title: "NoChecklist",
+          status: "in-progress",
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("In Progress")).toBeInTheDocument();
+    });
+
     it("does not render a checklist badge when checklist is missing", () => {
       const props = defaultProps();
       props.files = [
