@@ -125,6 +125,7 @@ export default function App() {
 
   const fileTree = useFileStore((s) => s.tree);
   const docFiles = useFileStore((s) => s.docFiles);
+  const skills = useFileStore((s) => s.skills);
   const previewFile = useFileStore((s) => s.previewFile);
   const previewContent = useFileStore((s) => s.previewContent);
   const previewType = useFileStore((s) => s.previewType);
@@ -238,6 +239,8 @@ export default function App() {
 
   useConnectionSync({ status, send, onSessionConnect: (sid: string) => {
     void useFileStore.getState().hydrateUploads(sid);
+    // Load user-invocable skills for the composer's `/` autocomplete (doc 138).
+    void useFileStore.getState().fetchSkills(sid, useUiStore.getState().activeAgentId).catch(() => {});
     // Re-fetch docs if the docs tab is currently active. loadSessionHistory()
     // populates the file tree and commit log but not docs, so without this a
     // session switch leaves the DocsViewer stuck on "No docs found" until the
@@ -647,6 +650,10 @@ export default function App() {
     saveAgentId(agentId);
     useUiStore.getState().setActiveAgentId(agentId);
     send({ type: "set_agent", agentId });
+    // Skills are per-backend (Claude scans .claude/skills, Codex .codex/prompts),
+    // so re-fetch when the active agent switches.
+    const sid = useSessionStore.getState().sessionId;
+    if (sid) void useFileStore.getState().fetchSkills(sid, agentId).catch(() => {});
   }, [send]);
 
   const handleModelChange = useCallback((model: string) => {
@@ -769,7 +776,7 @@ export default function App() {
         </div>
       )}
       {!showHomeScreen && !showNewSessionView && queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} onOpenUsageDetails={handleUsageBadgeClick} focusKey={messageInputFocusKey} hasPrCard={hasPrCard} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} skills={skills} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} onOpenUsageDetails={handleUsageBadgeClick} focusKey={messageInputFocusKey} hasPrCard={hasPrCard} />}
     </>
   );
 

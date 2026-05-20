@@ -15,6 +15,7 @@ import {
   getFileContent,
   getRawFilePath,
   listDocs,
+  listSkills,
   getDocContent,
   saveUploadedFile,
   listUploads,
@@ -28,7 +29,7 @@ export async function registerFileRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
 ): Promise<void> {
-  const { sessionManager } = deps;
+  const { sessionManager, defaultAgentId } = deps;
 
   // GET /api/sessions/:id/files — file tree
   app.get<{ Params: { id: string } }>("/api/sessions/:id/files", async (request, reply) => {
@@ -129,6 +130,24 @@ export async function registerFileRoutes(
     if (!dir) return;
     return { docs: await listDocs(dir) };
   });
+
+  // GET /api/sessions/:id/skills — user-invocable project skills for the
+  // composer's `/` autocomplete. The backend is the session's locked-in agent
+  // (falling back to the optional ?agent= override, then the server default),
+  // since Claude scans `.claude/skills/**` and Codex scans `.codex/prompts/**`.
+  app.get<{ Params: { id: string }; Querystring: { agent?: string } }>(
+    "/api/sessions/:id/skills",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const session = sessionManager.get(request.params.id);
+      const queryAgent = request.query.agent === "codex" || request.query.agent === "claude"
+        ? request.query.agent
+        : undefined;
+      const agentId = session?.agentId ?? queryAgent ?? defaultAgentId;
+      return { skills: await listSkills(dir, agentId) };
+    },
+  );
 
   // GET /api/sessions/:id/docs/* — doc content
   app.get<{ Params: { id: string; "*": string } }>(

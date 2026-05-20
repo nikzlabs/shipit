@@ -9,12 +9,13 @@ import { PlanModeToggle } from "./PlanModeToggle.js";
 import { ModelAgentSelector } from "./ModelAgentSelector.js";
 import { ContextDial } from "./ContextDial.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
+import { SkillAutoComplete } from "./SkillAutoComplete.js";
 import { FileAttachmentChips } from "./FileAttachmentChips.js";
 import { FileUploadChips } from "./FileUploadChips.js";
 import { Popover, PopoverAnchor } from "./ui/popover.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { getSavedDraftMessage, saveDraftMessage } from "../utils/local-storage.js";
-import type { PermissionMode, FileContextRef, FileTreeNode, AgentId } from "../../server/shared/types.js";
+import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
 import type { AgentOption } from "./AgentPicker.js";
 import type { ModelInfo } from "./StatusBar.js";
@@ -30,6 +31,7 @@ export function MessageInput({
   onRemoveFile,
   onAddFile,
   fileTree = [],
+  skills = [],
   uploads = [],
   allUploads,
   onUploadFiles,
@@ -56,6 +58,8 @@ export function MessageInput({
   onRemoveFile?: (index: number) => void;
   onAddFile?: (filePath: string) => void;
   fileTree?: FileTreeNode[];
+  /** User-invocable skills for `/` autocomplete (doc 138). */
+  skills?: SkillInfo[];
   uploads?: UploadItem[];
   /** All session uploads — for @-autocomplete (persists across sends). */
   allUploads?: UploadItem[];
@@ -85,6 +89,8 @@ export function MessageInput({
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
   const [autoCompleteQuery, setAutoCompleteQuery] = useState("");
+  const [showSkillMenu, setShowSkillMenu] = useState(false);
+  const [skillQuery, setSkillQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCountRef = useRef(0);
@@ -204,11 +210,12 @@ export function MessageInput({
     onSend(trimmed);
     setText("");
     setShowAutoComplete(false);
+    setShowSkillMenu(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Don't handle Enter/Escape if autocomplete is open — let it handle them
-    if (showAutoComplete) return;
+    // Don't handle Enter/Escape if an autocomplete menu is open — let it handle them
+    if (showAutoComplete || showSkillMenu) return;
     // On mobile, Enter inserts a newline (matches native chat-app behavior — the
     // on-screen keyboard's return key shouldn't fire-and-forget a message). The
     // user sends via the send button instead.
@@ -223,11 +230,23 @@ export function MessageInput({
     const newText = e.target.value;
     setText(newText);
 
+    const cursorPos = e.target.selectionStart ?? newText.length;
+    const textBeforeCursor = newText.slice(0, cursorPos);
+
+    // Detect a leading `/` for skill autocomplete. Skills only resolve when the
+    // `/name` token sits at the very start of the prompt (the CLI requirement),
+    // so the menu only opens while the cursor is inside that first token.
+    const slashMatch = /^\/([a-zA-Z0-9._-]*)$/.exec(textBeforeCursor);
+    if (slashMatch && skills.length > 0) {
+      setSkillQuery(slashMatch[1]);
+      setShowSkillMenu(true);
+      setShowAutoComplete(false);
+      return;
+    }
+    setShowSkillMenu(false);
+
     // Detect @ trigger for file autocomplete
     if (onAddFile && fileTree.length > 0) {
-      const cursorPos = e.target.selectionStart ?? newText.length;
-      const textBeforeCursor = newText.slice(0, cursorPos);
-
       // Find the last @ that's not preceded by a word character (to avoid email addresses)
       const atMatch = /(?:^|[^a-zA-Z0-9])@([^\s]*)$/.exec(textBeforeCursor);
       if (atMatch) {
@@ -239,6 +258,30 @@ export function MessageInput({
       }
     }
   };
+
+  const handleSkillSelect = useCallback(
+    (skillName: string) => {
+      const cursorPos = textareaRef.current?.selectionStart ?? text.length;
+      // The slash token is always at index 0, so replace everything up to the
+      // cursor with `/<name> ` and keep the rest of the message intact.
+      const newText = `/${skillName} ${text.slice(cursorPos)}`;
+      setText(newText);
+      setShowSkillMenu(false);
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current;
+        if (ta) {
+          const pos = skillName.length + 2; // "/" + name + " "
+          ta.focus();
+          ta.setSelectionRange(pos, pos);
+        }
+      });
+    },
+    [text],
+  );
+
+  const handleSkillDismiss = useCallback(() => {
+    setShowSkillMenu(false);
+  }, []);
 
   const handleAutoCompleteSelect = useCallback(
     (filePath: string) => {
@@ -358,7 +401,7 @@ export function MessageInput({
         </div>
       )}
 
-      <Popover open={showAutoComplete} modal={false}>
+      <Popover open={showAutoComplete || showSkillMenu} modal={false}>
       <PopoverAnchor asChild>
       <div className="relative">
         {/* Hidden file input */}
@@ -487,6 +530,14 @@ export function MessageInput({
           onSelect={handleAutoCompleteSelect}
           onDismiss={handleAutoCompleteDismiss}
           uploadPaths={(allUploads ?? uploads).filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
+        />
+      )}
+      {showSkillMenu && (
+        <SkillAutoComplete
+          query={skillQuery}
+          skills={skills}
+          onSelect={handleSkillSelect}
+          onDismiss={handleSkillDismiss}
         />
       )}
       </Popover>

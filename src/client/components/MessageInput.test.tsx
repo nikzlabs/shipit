@@ -337,4 +337,50 @@ describe("MessageInput", () => {
     });
   });
 
+  describe("skill autocomplete", () => {
+    const skills = [
+      { name: "deploy", description: "Deploy the app", source: "project" as const },
+      { name: "review", description: "Review a PR", source: "project" as const },
+    ];
+
+    it("opens on a leading slash and lists skills", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } });
+      expect(screen.getByTestId("skill-autocomplete")).toBeInTheDocument();
+      expect(screen.getAllByTestId("skill-autocomplete-item")).toHaveLength(2);
+    });
+
+    it("filters skills by the query after the slash", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "/dep", selectionStart: 4 } });
+      const items = screen.getAllByTestId("skill-autocomplete-item");
+      expect(items).toHaveLength(1);
+      expect(items[0]).toHaveTextContent("/deploy");
+    });
+
+    it("inserts the selected skill name with a trailing space", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "/rev", selectionStart: 4 } });
+      fireEvent.click(screen.getByText("/review"));
+      expect(textarea.value).toBe("/review ");
+    });
+
+    it("does not open when the slash is not at the start", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "hello /deploy", selectionStart: 13 } });
+      expect(screen.queryByTestId("skill-autocomplete")).not.toBeInTheDocument();
+    });
+
+    it("does not open when no skills are available", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} skills={[]} />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } });
+      expect(screen.queryByTestId("skill-autocomplete")).not.toBeInTheDocument();
+    });
+  });
+
 });
