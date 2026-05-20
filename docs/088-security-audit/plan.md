@@ -14,18 +14,10 @@ Comprehensive security review of the ShipIt codebase covering injection vulnerab
 
 ## Medium Severity
 
-### 1. Path Traversal in `preview.directory`
+### 1. Path Traversal in `preview.directory` — OBSOLETE (architecture migrated to Compose)
 
-- **Location**: `src/server/session/preview-config.ts:127-131`
-- **Issue**: The `directory` field parsed from `shipit.yaml` is type-checked but not validated to stay within the workspace root. While `path.resolve(workspaceDir, directory)` in `preview-manager.ts` normalizes the path, there is no explicit `startsWith()` guard to reject values like `../../`.
-- **Recommendation**: Add an explicit containment check after resolving the path:
-
-```typescript
-const resolvedDir = path.resolve(workspaceDir, directory);
-if (!resolvedDir.startsWith(workspaceDir + path.sep)) {
-  throw new PreviewConfigError("preview.directory must be under the workspace");
-}
-```
+- **Original location**: `src/server/session/preview-config.ts:127-131`
+- **2026-05-20 status**: **No longer applicable.** The session-side preview manager was removed; previews now run as Docker Compose services (`ServiceManager`). The `preview.directory` field is a legacy alias mapped to compose `working_dir` (see `src/server/shipit-docs/shipit-yaml.md:143-145`), which is interpreted by Docker, not by ShipIt path-resolution code. `preview-config.ts` and `preview-manager.ts` no longer exist, so the un-guarded `path.resolve` this finding described is gone. No fix required; closing.
 
 ### 2. TOCTOU Race in Docker Bind-Mount Validation
 
@@ -36,12 +28,11 @@ if (!resolvedDir.startsWith(workspaceDir + path.sep)) {
 
 ## Low Severity
 
-### 3. Shell Command Execution via `preview.command`
+### 3. Shell Command Execution via `preview.command` — OBSOLETE (architecture migrated to Compose)
 
-- **Location**: `src/server/session/preview-manager.ts:437`
-- **Issue**: The `preview.command` string from `shipit.yaml` is passed to `spawn("sh", ["-c", command])`. This is by design — developers control their own preview configuration.
-- **Risk**: Only relevant if `shipit.yaml` is auto-imported from untrusted repositories.
-- **Recommendation**: Document that `shipit.yaml` must not be auto-imported from untrusted sources. This is an inherent trust boundary.
+- **Original location**: `src/server/session/preview-manager.ts:437` (`spawn("sh", ["-c", command])`)
+- **2026-05-20 status**: **No longer applicable.** ShipIt no longer spawns the preview command itself; `preview.command` is a legacy alias for a Docker Compose service `command`, executed by Docker. The `spawn("sh", ["-c", ...])` path described here is gone.
+- **Trust-boundary note (still spirit-relevant)**: A `docker-compose.yml` or `shipit.yaml` is still executable configuration — auto-importing either from an untrusted repository hands that repo arbitrary command execution in the session container. This is the same trust boundary, now expressed through compose. Keep "do not auto-import from untrusted sources" as a documented invariant.
 
 ### 4. File Operations on User Paths — No Issue Found
 
@@ -152,13 +143,15 @@ The audit identified several well-implemented security controls:
 | Agent spawning | `claude.ts`, `codex-adapter.ts` | Secure |
 | JSON/data parsing | All routes and handlers | Secure (no eval/Function) |
 | Database operations | `secret-store.ts`, `database.ts` | Secure |
-| Preview config | `preview-config.ts`, `preview-manager.ts` | Medium (path traversal) |
+| Preview config | ~~`preview-config.ts`, `preview-manager.ts`~~ → Compose (`ServiceManager`) | Obsolete (preview now Compose-based; #1/#3 closed) |
 | Credential reachability from sandbox | `git-config.ts`, `session-credentials.ts`, `agent-shim/gh.ts` | High (GitHub PAT readable in-container — #5) |
 | Container network egress | `container-lifecycle.ts`, `docker-proxy-sanitize.ts` | Medium (no egress controls — #6) |
 
-## Planned proxy policy changes (089-shipit-in-shipit)
+## Planned proxy policy changes (089-shipit-in-shipit) — LANDED
 
-[089-shipit-in-shipit](../089-shipit-in-shipit/plan.md) proposes three proxy relaxations to support nested orchestrators. Security analysis:
+> **2026-05-20 status**: The `docs/089-shipit-in-shipit/` doc no longer exists, and the three relaxations below have shipped (`container-lifecycle.ts` now sets `SecurityOpt: ["no-new-privileges"]` with the `CapDrop: ALL` + scoped `CapAdd` allowlist). The analysis is retained for the record; the "review once implemented" checklist item is closed. The security conclusion is unchanged: these were net-neutral or net-positive for the threat model.
+
+The proposal made three proxy relaxations to support nested orchestrators. Security analysis:
 
 1. **Allow safe CapAdd when CapDrop: ALL is present** — the allowlist (`CHOWN`, `SETUID`, `SETGID`, `FOWNER`, `DAC_OVERRIDE`, `NET_BIND_SERVICE`, `KILL`) is a strict subset of Docker's default capability set. The dangerous capabilities (`SYS_ADMIN`, `SYS_PTRACE`, `NET_ADMIN`, `NET_RAW`) remain blocked. `NET_RAW` is still force-injected into `CapDrop`. **No change to threat model.**
 
@@ -178,8 +171,8 @@ The TOCTOU race (issue #2) applies identically under nested scenarios — same m
 - [x] Audit Docker security controls
 - [x] Document findings
 - [x] Review architecture against Anthropic managed-agents threat model (credential reachability + egress)
-- [ ] Fix path traversal in preview.directory (issue #1)
+- [x] ~~Fix path traversal in preview.directory (issue #1)~~ — obsolete, preview migrated to Docker Compose
 - [ ] Add accepted-risk documentation for TOCTOU race (issue #2)
-- [ ] Review proxy policy changes from 089-shipit-in-shipit once implemented
+- [x] ~~Review proxy policy changes from 089-shipit-in-shipit once implemented~~ — relaxations landed; doc removed
 - [ ] **Fix GitHub PAT reachability from sandbox (issue #5)** — replace in-container inline-token credential helper with a brokering helper (`shipit-git-credential`) that proxies to the worker, mirroring the `gh` shim; stop copying the token-bearing `.gitconfig` into the container
 - [ ] **Add egress controls for agent containers (issue #6)** — orchestrator forward proxy with host allowlist (GitHub + Anthropic/agent endpoints + configured MCP hosts), or document as accepted risk with `agent: true` secrets clearly labeled exfiltratable
