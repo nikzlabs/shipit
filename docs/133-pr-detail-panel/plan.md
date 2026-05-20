@@ -1,9 +1,40 @@
 ---
-status: planned
+status: in-progress
 priority: medium
+description: Inline PR detail tab (header, description, status, diff link) as a peer of Preview/Docs/Files, opened by clicking the PR lifecycle card.
 ---
 
 # 133 — Inline PR Detail Panel
+
+## Implementation status
+
+**Shipped (client-only, no server changes):** the minimum-viable panel.
+
+- `"pr"` added to the `RightTab` union (`ui-store.ts`) and to `VALID_RIGHT_TABS`
+  (`utils/local-storage.ts`) so the tab selection persists across reloads.
+- Conditional **"PR" tab** in `App.tsx`'s right-panel tab strip — shown only when
+  the active session has a PR (phase `open`/`merged`/`closed`). When the persisted
+  tab is `"pr"` but the session has no PR, the panel falls back to the Preview view.
+- `PrDetailPanel.tsx` + `components/pr-detail/` sub-components:
+  `PrDetailHeader` (number, title, branches, diff stats, overflow → "View on GitHub"),
+  `PrDescriptionSection` (read-only markdown body), `PrStatusSection` (checks
+  breakdown, failed-check list, deployments, conflict warning — reads the same
+  `pr-store` slice as the card), `PrFilesSection` ("View full diff" → existing
+  Monaco diff dialog).
+- `PrLifecycleCard` gains an optional `onOpenDetails` prop; the whole card body is
+  clickable when a PR exists, and a `closest("button, a, input, textarea")` guard
+  in the click handler means interactive controls never also switch the tab (no
+  per-control `stopPropagation` needed).
+- Tests: `PrDetailPanel.test.tsx` and new card-click cases in `PrLifecycleCard.test.tsx`.
+
+**Not yet done (need server work / docs/102):** Phase 2 (editable title/body +
+`PATCH /pr`), Phase 4 (Conversation — review threads + issue comments), Phase 6
+(activity timeline), the `prCreatedAt`/`prAuthor`/`timeline`/`issueComments`
+summary fields, and the `pr_tab_active` WS message + poller heavy-field gating
+(deferred until there are heavy fields to gate). The shipped Status section is
+read-only; wiring the card's merge/auto-fix/auto-merge controls into the panel
+is the remaining part of Phase 3. The Files section is a single diff link, not a
+per-file list (Phase 5).
 
 ## Summary
 
@@ -174,14 +205,14 @@ Errors surface inline in the panel (toast-style banner inside the section that f
 
 ### Phasing
 
-| Phase | Scope | Depends on |
-|---|---|---|
-| **1. Panel scaffold + header + description** | "PR" tab wired into `rightPanel` (conditional on a PR existing), tab-selection UX, render title + markdown body read-only (`prTitle`/`prBody` are already on the summary — Phase 1 just renders them), "View on GitHub" overflow link. Card becomes clickable (selects the PR tab). | — |
-| **2. Editable description + title** | Pencil → Monaco markdown edit → `updatePullRequest`. Title click-to-edit. Optimistic update with revert-on-error. | Phase 1 |
-| **3. Status section in panel + extract shared sub-component** | Move status visuals into a sub-component used by both card and panel. Card UX unchanged; panel gets full status detail. | Phase 1 |
-| **4. Conversation section** | Issue comments + review threads. Heavy overlap with [`docs/102`](../102-github-pr-comment-sync/plan.md) — co-sequence so the GraphQL query and widget work happen once. | [`docs/102`](../102-github-pr-comment-sync/plan.md) Phase 1 |
-| **5. Files section** | List from existing diff API; "View diff" opens the existing Monaco diff panel — no diff re-implementation. | Phase 1 |
-| **6. Activity timeline** | Timeline GraphQL query; new `PrTimelineSection`. Read-only. | Phase 1 |
+| Phase | Scope | Depends on | Status |
+|---|---|---|---|
+| **1. Panel scaffold + header + description** | "PR" tab wired into `rightPanel` (conditional on a PR existing), tab-selection UX, render title + markdown body read-only (`prTitle`/`prBody` are already on the summary — Phase 1 just renders them), "View on GitHub" overflow link. Card becomes clickable (selects the PR tab). | — | ✅ done |
+| **2. Editable description + title** | Pencil → Monaco markdown edit → `updatePullRequest`. Title click-to-edit. Optimistic update with revert-on-error. | Phase 1 | ⬜ todo |
+| **3. Status section in panel + extract shared sub-component** | Move status visuals into a sub-component used by both card and panel. Card UX unchanged; panel gets full status detail. | Phase 1 | 🟡 partial — read-only status section shipped (reads shared store slice); shared sub-component extraction + actionable controls in panel still todo |
+| **4. Conversation section** | Issue comments + review threads. Heavy overlap with [`docs/102`](../102-github-pr-comment-sync/plan.md) — co-sequence so the GraphQL query and widget work happen once. | [`docs/102`](../102-github-pr-comment-sync/plan.md) Phase 1 | ⬜ todo |
+| **5. Files section** | List from existing diff API; "View diff" opens the existing Monaco diff panel — no diff re-implementation. | Phase 1 | 🟡 partial — single "View full diff" link shipped; per-file list still todo |
+| **6. Activity timeline** | Timeline GraphQL query; new `PrTimelineSection`. Read-only. | Phase 1 | ⬜ todo |
 
 Phases 1-3 are the minimum viable panel. Phase 4 is the largest single win (subsumes the link-out to GitHub for review). Phases 5-6 fill in the long tail.
 

@@ -53,6 +53,7 @@ const EMPTY_TURN_USAGE: TurnUsage[] = [];
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
+import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
@@ -141,6 +142,14 @@ export default function App() {
 
   const importSearchResults = usePrStore((s) => s.importSearchResults);
   const hasPrCard = usePrStore((s) => wsSessionId ? !!s.cardBySession[wsSessionId] : false);
+  // The PR tab is shown only when the active session actually has a PR (open,
+  // merged, or closed) — mirroring how the Services tab is conditional on
+  // composeServices. The ready/creating/error phases have no PR to detail.
+  const hasPr = usePrStore((s) => {
+    if (!wsSessionId) return false;
+    const card = s.cardBySession[wsSessionId];
+    return !!card?.pr && (card.phase === "open" || card.phase === "merged" || card.phase === "closed");
+  });
 
   // Permission mode is keyed per-session (with a fallback to the pre-session
   // default). This subscription recomputes whenever wsSessionId or any
@@ -503,7 +512,7 @@ export default function App() {
   });
 
   const handleTabChange = useCallback(
-    (tab: "preview" | "docs" | "files" | "terminal" | "history" | "services") => {
+    (tab: "preview" | "docs" | "files" | "terminal" | "history" | "services" | "pr") => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
@@ -700,10 +709,13 @@ export default function App() {
         <button onClick={() => handleTabChange("files")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "files" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Files</button>
         <button onClick={() => handleTabChange("terminal")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "terminal" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Terminal</button>
         <button onClick={() => handleTabChange("history")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "history" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>History</button>
+        {hasPr && (
+          <button onClick={() => handleTabChange("pr")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "pr" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>PR</button>
+        )}
       </div>
       <div className="flex-1 min-h-0 relative">
         {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active */}
-        <div className={`absolute inset-0 ${rightTab === "preview" ? "" : "invisible pointer-events-none"}`}>
+        <div className={`absolute inset-0 ${(rightTab === "preview" || (rightTab === "pr" && !hasPr)) ? "" : "invisible pointer-events-none"}`}>
           <PreviewFrame preview={effectivePreviewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} onStartService={(name) => send({ type: "start_service", name })} onStopService={(name) => send({ type: "stop_service", name })} />
         </div>
         {rightTab === "docs" ? (
@@ -718,6 +730,8 @@ export default function App() {
           <GitHistory commits={gitCommits} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
         ) : rightTab === "services" ? (
           <ServicesPanel lastMessage={lastMessage} drainMessages={drainMessages} send={send} onSendToAgent={handleSendServiceLogsToAgent} />
+        ) : rightTab === "pr" && hasPr && wsSessionId ? (
+          <PrDetailPanel sessionId={wsSessionId} />
         ) : rightTab === "files" ? (
           <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
         ) : null}
@@ -764,7 +778,7 @@ export default function App() {
           <div className="flex flex-col gap-2">
             {isLoading && <AgentStatusBar activity={activity} />}
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
-            {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} />}
+            {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} onOpenDetails={() => handleTabChange("pr")} />}
           </div>
         </div>
       )}

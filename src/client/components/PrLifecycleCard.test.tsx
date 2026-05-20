@@ -718,3 +718,45 @@ describe("PrStateBadge", () => {
     expect(screen.getByTitle("PR closed")).toBeInTheDocument();
   });
 });
+
+// ---- Card → PR detail tab (docs/133) ----
+
+describe("PrLifecycleCard — open PR details", () => {
+  it("calls onOpenDetails when the card body is clicked (open PR)", () => {
+    setCard("s1", openPrCard);
+    const onOpenDetails = vi.fn();
+    const { container } = render(
+      <PrLifecycleCard sessionId="s1" onOpenDetails={onOpenDetails} />,
+    );
+    fireEvent.click(container.firstChild as HTMLElement);
+    expect(onOpenDetails).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT call onOpenDetails when an interactive control is clicked", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 2, failed: 1, pending: 0 },
+      autoFix: { enabled: false, status: "idle", attemptCount: 0, maxAttempts: 3 },
+    });
+    const onOpenDetails = vi.fn();
+    render(<PrLifecycleCard sessionId="s1" onOpenDetails={onOpenDetails} />);
+
+    // Opening the overflow menu (a button) must not switch the tab.
+    fireEvent.click(screen.getByLabelText("More options"));
+    expect(onOpenDetails).not.toHaveBeenCalled();
+
+    // Toggling auto-fix (a button inside the menu) must not switch the tab.
+    fireEvent.click(screen.getByText("Auto-fix"));
+    expect(onOpenDetails).not.toHaveBeenCalled();
+  });
+
+  it("is not clickable in the ready phase (no PR yet)", () => {
+    setCard("s1", { cardId: "c1", phase: "ready", totalInsertions: 5, totalDeletions: 1 });
+    const onOpenDetails = vi.fn();
+    const { container } = render(
+      <PrLifecycleCard sessionId="s1" onOpenDetails={onOpenDetails} />,
+    );
+    fireEvent.click(container.firstChild as HTMLElement);
+    expect(onOpenDetails).not.toHaveBeenCalled();
+  });
+});
