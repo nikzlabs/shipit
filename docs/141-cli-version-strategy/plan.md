@@ -94,6 +94,12 @@ Driven by product input:
 - **Top concern: integrations breaking.** Axis 3 (adapter contract tests) is the
   centerpiece and the gate everything else hangs off of. Supply-chain hardening
   (Axis 2) is still done, but the contract test is the priority.
+- **Bump tooling: the Renovate GitHub App.** Install the Mend-hosted Renovate
+  app (free for public and private repos) and drive it with a committed
+  `renovate.json`. It opens the version-bump PRs and enforces the cooldown via
+  `minimumReleaseAge`; our CI contract test is the required gate. We are *not*
+  self-hosting Renovate or hand-rolling a bump Action — the hosted app is the
+  least-maintenance option that still gives us the cooldown primitive.
 
 ## Axis 1 — Version selection: tested pin + auto-bump, plus a latest channel
 
@@ -106,9 +112,10 @@ Options considered:
   bottleneck on users getting new models — contradicts the "stay current" goal
   and the few-days SLA.
 - **C — Pinned floor, auto-promoted ceiling (chosen).** A pinned known-good
-  version lives in a single manifest. An automated job opens a bump PR when a
-  new CLI ships; the PR is gated on the Axis-3 contract tests + the cooldown.
-  Green → merge; red → it parks and warns us *before* shipping. Deterministic,
+  version lives in a single manifest. The Renovate GitHub App opens a bump PR
+  when a new CLI ships (held back until the version clears the cooldown via
+  `minimumReleaseAge`); the PR is gated on the Axis-3 contract tests. Green →
+  auto-merge; red → it parks and warns us *before* shipping. Deterministic,
   auditable, git-revertable rollback, and stays current automatically within the
   few-days SLA.
 - **D — Two channels (chosen, on top of C).** Default sessions run the
@@ -224,8 +231,9 @@ version dropped" from roulette into a green check. Run it in two modes:
    `package-lock.json` for the global CLIs, `npm ci --ignore-scripts`, 3–7 day
    cooldown; drop the `date +%s` cache-buster. Biggest risk reduction per hour.
 2. **Axis 3:** the adapter contract test against real CLIs.
-3. **Axis 1 = Option C:** Renovate (or a scheduled GH Action) opens bump PRs,
-   gated on the contract test + cooldown; green auto-merges, red parks and pings.
+3. **Axis 1 = Option C:** install the Renovate GitHub App + commit `renovate.json`;
+   it opens bump PRs (cooldown via `minimumReleaseAge`) gated on the contract
+   test; green auto-merges, red parks and pings.
 4. **Axis 1 = Option D:** bake `stable` + `latest` into the image under
    versioned paths; add `agent.channel` (session setting + `shipit.yaml`); thread
    selection through the adapter spawn. Default stays on the tested pin.
@@ -284,7 +292,25 @@ Other touchpoints:
 - `src/server/shipit-docs/` — document `agent.channel` for the in-container
   agent (agent-facing platform behavior).
 - New: per-channel CLI install `package.json` + `package-lock.json`; CLI contract
-  test; Renovate config or scheduled bump Action.
+  test; `renovate.json` for the Renovate GitHub App (config the manifest as a
+  dependency target, set `minimumReleaseAge` for the cooldown, enable auto-merge
+  on green).
+
+## Bump tooling — decision
+
+Use the **Mend-hosted Renovate GitHub App** (free for public and private repos).
+Rationale:
+
+- The cooldown primitive (`minimumReleaseAge`) is built in — the one thing we
+  specifically need and the reason we don't roll our own.
+- Hosted app = no infra to run (vs. self-hosting Renovate as an Action/cron).
+- Auto-merge-on-green is native, so the happy path needs no human babysitting.
+
+Alternatives considered and rejected for now: **Dependabot** (built into GitHub,
+free, but weaker/newer cooldown support); **self-hosted Renovate** (more control,
+unnecessary infra); a **hand-rolled scheduled Action** (~30 lines: `npm view`,
+age check, bump, open PR — full control but more code to maintain). Mend's paid
+SCA/security platform is *not* required for this use case.
 
 ## Open questions
 
