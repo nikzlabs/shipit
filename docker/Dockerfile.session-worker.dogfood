@@ -70,7 +70,7 @@ RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
 
 FROM node:24-slim
 
-RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip ripgrep && rm -rf /var/lib/apt/lists/*
 
 RUN --mount=type=cache,target=/root/.npm npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
 
