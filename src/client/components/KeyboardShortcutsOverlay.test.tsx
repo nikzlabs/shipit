@@ -59,7 +59,7 @@ describe("KeyboardShortcutsOverlay", () => {
 
   it("shows toggle search bar shortcut", () => {
     render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
-    expect(screen.getByText("Toggle search bar")).toBeInTheDocument();
+    expect(screen.getByText("Toggle chat search (when chat input is focused)")).toBeInTheDocument();
   });
 
   it("shows next search match shortcut", () => {

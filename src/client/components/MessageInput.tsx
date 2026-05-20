@@ -438,6 +438,7 @@ export function MessageInput({
           {/* Textarea — full width on top */}
           <textarea
             ref={textareaRef}
+            data-chat-input
             value={text}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
