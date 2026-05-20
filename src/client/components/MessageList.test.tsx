@@ -173,33 +173,6 @@ describe("MessageList", () => {
       );
       expect(screen.getByText("https://example.com/docs")).toBeInTheDocument();
     });
-
-    it("shows description as a fallback for tools without a more specific field", () => {
-      const tools: ToolUseBlock[] = [
-        { type: "tool_use", id: "t1", name: "Agent", input: { description: "Search the codebase", prompt: "find all usages" } },
-      ];
-      render(
-        <MessageList
-          messages={[msg("assistant", "Delegating", { toolUse: tools })]}
-          isLoading={false}
-        />
-      );
-      expect(screen.getByText("Search the codebase")).toBeInTheDocument();
-    });
-
-    it("does not render description when a command is present (e.g. Bash)", () => {
-      const tools: ToolUseBlock[] = [
-        { type: "tool_use", id: "t1", name: "Bash", input: { command: "npm test", description: "Run the tests" } },
-      ];
-      render(
-        <MessageList
-          messages={[msg("assistant", "Testing", { toolUse: tools })]}
-          isLoading={false}
-        />
-      );
-      expect(screen.getByText("npm test")).toBeInTheDocument();
-      expect(screen.queryByText("Run the tests")).not.toBeInTheDocument();
-    });
   });
 
   describe("tool call grouping (render)", () => {

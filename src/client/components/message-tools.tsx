@@ -138,18 +138,11 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   const urlText = "url" in tool.input && tool.input.url
     ? (tool.input.url as string)
     : null;
-  // Short description (e.g. Agent/Task subagent task) — only used as a
-  // fallback when no more specific input field applies, so tools like Bash
-  // (which carry both `command` and `description`) don't render twice.
-  const descriptionText = !commandText && !filePathText && !patternText && !queryText && !urlText
-    && "description" in tool.input && tool.input.description
-    ? (tool.input.description as string)
-    : null;
 
   // Full command text for the modal header
   const fullCommandText = "command" in tool.input && tool.input.command
     ? (tool.input.command as string)
-    : filePathText ?? patternText ?? queryText ?? urlText ?? descriptionText ?? "";
+    : filePathText ?? patternText ?? queryText ?? urlText ?? "";
 
   return (
     <div className="min-w-0 overflow-hidden">
@@ -179,11 +172,6 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         {urlText ? (
           <span className="ml-1 text-(--color-text-secondary) truncate">
             {urlText}
-          </span>
-        ) : null}
-        {descriptionText ? (
-          <span className="ml-1 text-(--color-text-secondary) truncate">
-            {descriptionText}
           </span>
         ) : null}
         {hasResult && (
