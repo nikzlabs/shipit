@@ -18,6 +18,15 @@ and stays the default. Live steering is a capability-gated mode the user can
 turn on (and off) in settings. If steering misbehaves, the user flips back to
 the queue without losing anything.
 
+**Both backends can steer.** Claude steers via `--input-format stream-json`
+(persistent process, inject user-message NDJSON on stdin). Codex steers via the
+app-server `turn/steer` JSON-RPC method — and the `CodexAdapter` **already
+implements it** in `writeStdin` (`codex-adapter.ts`). The blocker is the same for
+both: the WS routing layer queues mid-turn messages instead of routing them to
+the adapter's steering primitive. So the bulk of the work (WS routing, client
+UX, settings toggle) is shared; only the Claude adapter needs a substantial
+spawn-mode change.
+
 ## Why this is feasible (spike findings)
 
 Spiked directly against the pinned CLI (`claude` v2.1.145) driving
@@ -67,10 +76,11 @@ entangle the legacy PTY one-shot path with the streaming pipe path.
 
 Two independent switches gate the feature:
 
-1. **`AgentCapabilities.supportsStreamingInput`** (`agent-types.ts`) — Claude:
-   `true`, Codex: `false`. Backend-level fact about whether the adapter can
-   stream input at all.
-2. **User setting `liveSteering` (default off)** — even for a streaming-capable
+1. **`AgentCapabilities.supportsSteering`** (`agent-types.ts`) — `true` for
+   **both** Claude (stream-json input) and Codex (`turn/steer`). Backend-level
+   fact about whether the adapter can accept input mid-turn. An adapter with no
+   steering primitive sets `false` and always uses the queue.
+2. **User setting `liveSteering` (default off)** — even for a steering-capable
    agent, the user must opt in. Lives in the settings store / `settings.ts`
    service, surfaced in the settings UI. This is the "switch back to the stable
    way" escape hatch.
@@ -78,10 +88,25 @@ Two independent switches gate the feature:
 Live steering is active for a session only when **both** are true. Otherwise the
 existing queue path runs unchanged.
 
+### Per-adapter status
+
+| Adapter | Steering primitive | Adapter work needed |
+|---|---|---|
+| **Claude** | `--input-format stream-json` + user-message NDJSON on stdin | Substantial: new persistent streaming spawn path (see below). |
+| **Codex** | `turn/steer` JSON-RPC notification | Minimal: `writeStdin` already sends `turn/steer` (`codex-adapter.ts:298`). Mostly just expose `sendUserMessage` and upgrade `interrupt()` to `turn/interrupt` (graceful) instead of the current hard `kill()`. |
+
+Codex caveat: `turn/steer` is rejected during **review** and **manual
+compaction** turns — the adapter must surface that rejection (fall back to the
+queue for that message) rather than dropping it silently. Codex also kills its
+app-server at `turn/completed` today (`handleTurnCompleted` → `kill()`), so
+cross-turn persistence differs from Claude; steering is *within* a live turn, so
+that's fine, but it means Codex needs no lifecycle rework for this feature.
+
 ## Touchpoints
 
 **Types — `src/server/shared/types/agent-types.ts`**
-- Add `supportsStreamingInput: boolean` to `AgentCapabilities`.
+- Add `supportsSteering: boolean` to `AgentCapabilities` (Claude + Codex both
+  `true`).
 - Add a first-class `AgentProcess.sendUserMessage(text, { images? })` method
   distinct from raw `writeStdin()`. Streaming adapters serialize an NDJSON user
   event; the interface stays honest about intent.
@@ -107,9 +132,11 @@ existing queue path runs unchanged.
 **Routing — `ws-handlers/send-message.ts` + `agent-execution.ts`**
 - In `send_message`: if `runner.running` **and** live steering active, call
   `sendUserMessage()` and emit a new `message_steered` server event (rendered
-  inline in the live transcript, confirmed by the `--replay-user-messages`
-  echo). Otherwise keep the `messageQueue.push()` + `message_queued` path
-  verbatim.
+  inline in the live transcript — for Claude, confirmed by the
+  `--replay-user-messages` echo; for Codex, by the `turn/steer` accepted
+  `turnId`). Otherwise keep the `messageQueue.push()` + `message_queued` path
+  verbatim. If a steering primitive rejects the message (e.g. Codex during a
+  review/compaction turn), fall back to the queue rather than dropping it.
 - The persistent process means the agent is **not** recreated each turn.
   `runAgentWithMessage` / `drainNextQueuedMessage` need a "process already
   alive, feed it the next message" branch for streaming agents. This is the
@@ -162,12 +189,18 @@ exited":
   "interrupted" vs. "error" for the post-turn flow (auto-commit, PR card).
 - Whether to also adopt `--include-partial-messages` for token-level streaming
   or keep message-granularity to limit blast radius.
-- Codex parity: does the codex CLI have any streaming-input equivalent, or does
-  it stay queue-only indefinitely (capability `false`).
+- Codex `interrupt()` upgrade: switch from hard `kill()` to `turn/interrupt`
+  (graceful, emits `turn/completed status:"interrupted"`) so an interrupted
+  Codex turn keeps the thread alive — confirm this doesn't regress the existing
+  interrupt UI/flow.
+- How to detect/surface a `turn/steer` rejection (review/compaction turn) so the
+  message falls back to the queue instead of vanishing.
 
 ## Key files
 
 - `src/server/session/claude.ts` — spawn, stdin model, event mapping.
+- `src/server/session/agents/codex-adapter.ts` — already wires `turn/steer` in
+  `writeStdin`; needs `sendUserMessage` exposure + `turn/interrupt`.
 - `src/server/shared/types/agent-types.ts` — capabilities + AgentProcess.
 - `src/server/session/session-worker.ts`, `worker-http.ts` — worker endpoints.
 - `src/server/orchestrator/proxy-agent-process.ts`,
