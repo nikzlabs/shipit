@@ -134,19 +134,19 @@ export interface DocEntry {
 // ---- Skill types ----
 
 /**
- * A user-invocable skill/prompt that can be triggered with `/name` at the
- * start of a chat message. Feeds the composer's `/` autocomplete menu.
- * See docs/138-skill-invocation.
+ * A user-invocable skill that can be triggered at the start of a chat message
+ * (`/name` on Claude, `$name` on Codex). Feeds the composer's `/` autocomplete
+ * menu. See docs/138-skill-invocation.
  */
 export interface SkillInfo {
-  /** Slash-invocable name, e.g. "my-skill" → invoked as `/my-skill`. */
+  /** Invocable name, e.g. "my-skill" → `/my-skill` (Claude) or `$my-skill` (Codex). */
   name: string;
   /** One-line description from the skill's frontmatter, if present. */
   description?: string;
   /**
    * Where the skill comes from. "project" — scanned from the workspace
-   * (`.claude/skills/**` or `.codex/prompts/**`). "bundled" — a built-in
-   * shipped by the active agent backend.
+   * (`.claude/skills/**` or `.codex/skills/**`). "bundled" — a built-in
+   * shipped by the active agent backend (e.g. Codex's `~/.codex/skills/**`).
    */
   source: "project" | "bundled";
 }

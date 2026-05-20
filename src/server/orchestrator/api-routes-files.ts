@@ -29,7 +29,7 @@ export async function registerFileRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
 ): Promise<void> {
-  const { sessionManager, defaultAgentId } = deps;
+  const { sessionManager, defaultAgentId, runnerRegistry } = deps;
 
   // GET /api/sessions/:id/files — file tree
   app.get<{ Params: { id: string } }>("/api/sessions/:id/files", async (request, reply) => {
@@ -131,10 +131,13 @@ export async function registerFileRoutes(
     return { docs: await listDocs(dir) };
   });
 
-  // GET /api/sessions/:id/skills — user-invocable project skills for the
-  // composer's `/` autocomplete. The backend is the session's locked-in agent
-  // (falling back to the optional ?agent= override, then the server default),
-  // since Claude scans `.claude/skills/**` and Codex scans `.codex/prompts/**`.
+  // GET /api/sessions/:id/skills — user-invocable skills for the composer's `/`
+  // autocomplete. The backend is the session's locked-in agent (falling back to
+  // the optional ?agent= override, then the server default): Claude scans
+  // `.claude/skills/**`, Codex scans `.codex/skills/**`. For Codex we also merge
+  // its built-in system skills (`~/.codex/skills/**`), which live inside the
+  // container and are scanned by a session-worker endpoint (the orchestrator
+  // can't read that path directly). See docs/138-skill-invocation.
   app.get<{ Params: { id: string }; Querystring: { agent?: string } }>(
     "/api/sessions/:id/skills",
     async (request, reply) => {
@@ -145,7 +148,29 @@ export async function registerFileRoutes(
         ? request.query.agent
         : undefined;
       const agentId = session?.agentId ?? queryAgent ?? defaultAgentId;
-      return { skills: await listSkills(dir, agentId) };
+
+      const projectSkills = await listSkills(dir, agentId);
+      if (agentId !== "codex") {
+        return { skills: projectSkills };
+      }
+
+      // Merge Codex's container-side built-ins. Best-effort — if there's no
+      // running container or the worker is unreachable, fall back to project
+      // skills alone rather than failing the autocomplete.
+      let bundled: Awaited<ReturnType<typeof listSkills>> = [];
+      const runner = runnerRegistry.get(request.params.id);
+      if (runner?.getCodexBuiltinSkills) {
+        try {
+          bundled = await runner.getCodexBuiltinSkills();
+        } catch {
+          bundled = [];
+        }
+      }
+      // Project skills win over a built-in of the same name.
+      const names = new Set(projectSkills.map((s) => s.name));
+      const merged = [...projectSkills, ...bundled.filter((s) => !names.has(s.name))];
+      merged.sort((a, b) => a.name.localeCompare(b.name));
+      return { skills: merged };
     },
   );
 

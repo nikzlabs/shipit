@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: medium
 ---
 
@@ -217,17 +217,29 @@ small:
    mouse), and selecting inserts `/<name> ` keeping the token at index 0. Fed
    by `useFileStore.skills`, fetched on session connect and on agent switch.
    Covered by the `skill autocomplete` cases in `MessageInput.test.tsx`.
-4. #5 — Codex skills support. **No adapter-level inlining** (re-verified:
-   `codex exec` injects a skills catalog and reads `SKILL.md` itself). Work is:
-   (a) repoint `listSkills()`'s Codex branch at `.codex/skills/*/SKILL.md`
-   instead of the deprecated `.codex/prompts/*.md` (host-side scan, trivial);
-   (b) add a **session-worker endpoint** that scans the container's
-   `~/.codex/skills/**/SKILL.md` for built-ins and have the route merge them as
-   `source: "bundled"` (the orchestrator cannot read `~/.codex` directly);
-   (c) make the composer autocomplete insert `$name ` for Codex (vs `/name ` for
-   Claude); (d) refresh the now-stale `.codex/prompts` comments in `skills.ts`
-   and `domain-types.ts`. Sequenced last because Claude is the primary backend;
-   (a)/(c)/(d) are small, (b) is the only genuinely new infra.
+4. ✅ **#5 — Codex skills support — DONE.** **No adapter-level inlining**
+   (re-verified: `codex exec` injects a skills catalog and reads `SKILL.md`
+   itself). Shipped:
+   (a) `listSkills()`'s Codex branch now scans `.codex/skills/*/SKILL.md`
+   (host-side) instead of the deprecated `.codex/prompts/*.md`. Both backends
+   now share the layer-neutral `scanSkillsDir()` in `src/server/shared/
+   skill-scan.ts` (`<dir>/<name>/SKILL.md`, `name`/`description` frontmatter,
+   `user-invocable: false` opt-out).
+   (b) New **session-worker endpoint** `GET /codex/skills` scans the container's
+   `~/.codex/skills/<name>/SKILL.md` for built-ins (`source: "bundled"`); the
+   orchestrator reaches it via `ContainerSessionRunner.getCodexBuiltinSkills()`
+   (3s timeout, best-effort) and `GET /api/sessions/:id/skills` merges them with
+   host-scanned project skills (project wins on name collision). The merge is
+   skipped when the runner has no container (in-process runners omit the
+   method), falling back to project skills alone.
+   (c) The composer autocomplete inserts `$name ` for Codex (vs `/name ` for
+   Claude); the `/` trigger stays universal. `SkillAutoComplete` takes a
+   `tokenPrefix` prop so the menu displays the right token too.
+   (d) Stale `.codex/prompts` comments refreshed in `skills.ts` and
+   `domain-types.ts`.
+   Covered by `skill-scan.test.ts` (shared scanner), the updated Codex cases in
+   `skills.test.ts` + the `Integration: Skills` suite, and the Codex `$name`
+   cases in `MessageInput.test.tsx`.
 
 ## Scope boundary
 
@@ -252,12 +264,19 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
   (Blocker 1 / change #1)
 - `src/server/session/claude.ts` — `--allowedTools` allowlists (Blocker 2 /
   change #2)
+- `src/server/shared/skill-scan.ts` — layer-neutral `scanSkillsDir()` +
+  frontmatter helpers shared by the orchestrator service and the session
+  worker (change #4 / #5)
 - `src/server/orchestrator/services/skills.ts` — `listSkills()` host-side
-  project scan; Codex branch must move from `.codex/prompts/*.md` to
-  `.codex/skills/*/SKILL.md` (changes #4 / #5)
-- `src/server/session/session-worker.ts` — NEW endpoint for change #5(b):
-  scans the container's `~/.codex/skills/**/SKILL.md` for built-in skills (not
-  orchestrator-reachable via FS), returned over HTTP and merged into the route
+  project scan; Codex branch now scans `.codex/skills/*/SKILL.md` via
+  `scanSkillsDir()` (changes #4 / #5)
+- `src/server/session/session-worker.ts` — `GET /codex/skills` endpoint
+  (change #5b): scans the container's `~/.codex/skills/**/SKILL.md` for built-in
+  skills (not orchestrator-reachable via FS), returned over HTTP and merged
+  into the route as `source: "bundled"`
+- `src/server/orchestrator/container-session-runner.ts` /
+  `session-runner.ts` — `getCodexBuiltinSkills()` runner method (optional on
+  the interface; container-only) used by the route to reach the worker endpoint
 - `src/server/shared/types/domain-types.ts` — `SkillInfo` (`source` discriminant);
   the `.codex/prompts` doc comment needs refreshing in change #5(d)
 - `src/server/orchestrator/api-routes-files.ts` — `GET /api/sessions/:id/skills`

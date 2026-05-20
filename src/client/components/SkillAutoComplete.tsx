@@ -9,6 +9,12 @@ export interface SkillAutoCompleteProps {
   query: string;
   /** Available skills to search through. */
   skills: SkillInfo[];
+  /**
+   * Token prefix shown before each skill name — `/` for Claude, `$` for Codex.
+   * The trigger char stays `/` for both backends; only the displayed/inserted
+   * token differs. Defaults to `/`. See docs/138-skill-invocation §5.
+   */
+  tokenPrefix?: string;
   /** Called when the user selects a skill (passes the skill name). */
   onSelect: (skillName: string) => void;
   /** Called when the autocomplete should be dismissed. */
@@ -25,6 +31,7 @@ function filterSkills(skills: SkillInfo[], query: string): SkillInfo[] {
 export function SkillAutoComplete({
   query,
   skills,
+  tokenPrefix = "/",
   onSelect,
   onDismiss,
 }: SkillAutoCompleteProps) {
@@ -121,7 +128,7 @@ export function SkillAutoComplete({
         >
           <LightningIcon size={14} className="shrink-0 mt-0.5 text-(--color-text-secondary)" />
           <span className="min-w-0">
-            <span className="font-medium">/{skill.name}</span>
+            <span className="font-medium">{tokenPrefix}{skill.name}</span>
             {skill.description && (
               <span className="block truncate text-(--color-text-tertiary)">{skill.description}</span>
             )}

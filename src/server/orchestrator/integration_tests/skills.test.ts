@@ -86,11 +86,11 @@ describe("Integration: Skills", () => {
     ]);
   });
 
-  it("honors ?agent=codex by scanning .codex/prompts", async () => {
+  it("honors ?agent=codex by scanning .codex/skills", async () => {
     writeClaudeSkill("claude-only", `name: claude-only`);
-    const promptsDir = path.join(sessionDir, ".codex", "prompts");
-    fs.mkdirSync(promptsDir, { recursive: true });
-    fs.writeFileSync(path.join(promptsDir, "ship.md"), "body");
+    const shipDir = path.join(sessionDir, ".codex", "skills", "ship");
+    fs.mkdirSync(shipDir, { recursive: true });
+    fs.writeFileSync(path.join(shipDir, "SKILL.md"), "body");
 
     const res = await app.inject({
       method: "GET",
