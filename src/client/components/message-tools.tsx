@@ -84,6 +84,30 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     );
   }
 
+  // Codex's apply_patch — render one diff block per changed file, mirroring
+  // how Claude's Edit/Write render. `changes` carries { path, kind, diff };
+  // older payloads only have `files` (paths, no diff) — render those as bare lines.
+  if (tool.name === "apply_patch") {
+    const changes = Array.isArray(tool.input.changes)
+      ? (tool.input.changes as { path: string; kind?: string; diff?: string }[])
+      : Array.isArray(tool.input.files)
+        ? (tool.input.files as string[]).map((path) => ({ path, kind: "update", diff: undefined }))
+        : [];
+    return (
+      <div>
+        {changes.map((c, i) => (
+          <DiffBlock
+            key={`${c.path}-${i}`}
+            filePath={c.path}
+            unifiedDiff={c.diff ?? ""}
+            label={patchKindVerb(c.kind)}
+          />
+        ))}
+        {inProgress && <ToolProgressBar tool="apply_patch" />}
+      </div>
+    );
+  }
+
   if (tool.name === "AskUserQuestion" && Array.isArray(tool.input.questions)) {
     const questions = tool.input.questions as AskQuestionItem[];
     return (
@@ -195,6 +219,16 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
       )}
     </div>
   );
+}
+
+/** Maps a Codex file-change kind to a verb in Claude's vocabulary for visual parity. */
+function patchKindVerb(kind?: string): string {
+  switch (kind) {
+    case "add": return "Write";
+    case "delete": return "Delete";
+    case "update": return "Edit";
+    default: return kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : "Edit";
+  }
 }
 
 /** Parses an MCP tool name like "mcp__playwright__browser_take_screenshot" into { server, tool } parts. */

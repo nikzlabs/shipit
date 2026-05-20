@@ -18,6 +18,13 @@ export interface DiffBlockProps {
   newString?: string;
   /** When true, the entire content is a new file write (no old content). */
   isWrite?: boolean;
+  /**
+   * A unified-diff string (e.g. Codex's apply_patch). When set, line stats and
+   * the modal body are derived from the diff rather than old/new strings.
+   */
+  unifiedDiff?: string;
+  /** Override the leading verb ("Edit"/"Write"); used for Codex change kinds. */
+  label?: string;
 }
 
 function countLines(text: string): number {
@@ -25,16 +32,30 @@ function countLines(text: string): number {
   return text.split("\n").length;
 }
 
-export function DiffBlock({ filePath, oldString, newString, isWrite }: DiffBlockProps) {
+/** Count added/removed lines in a unified diff, ignoring file/hunk headers. */
+function countDiffLines(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) added++;
+    else if (line.startsWith("-") && !line.startsWith("---")) removed++;
+  }
+  return { added, removed };
+}
+
+export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff, label }: DiffBlockProps) {
   const [showModal, setShowModal] = useState(false);
-  const removed = countLines(oldString ?? "");
-  const added = countLines(newString ?? "");
+  const isUnified = unifiedDiff !== undefined;
+  const { added, removed } = isUnified
+    ? countDiffLines(unifiedDiff)
+    : { added: countLines(newString ?? ""), removed: countLines(oldString ?? "") };
   const hasContent = added > 0 || removed > 0;
+  const verb = label ?? (isWrite ? "Write" : "Edit");
 
   return (
     <>
       <div className="mt-1 flex items-center gap-2 text-xs font-mono text-(--color-text-tertiary) pl-[1em] opacity-70 border-l-2 border-(--color-text-tertiary)/40">
-        <span className="text-(--color-text-secondary)">{isWrite ? "Write" : "Edit"}</span>
+        <span className="text-(--color-text-secondary)">{verb}</span>
         <span className="text-(--color-text-primary) truncate">{sessionRelativePath(filePath)}</span>
         {hasContent ? (
           <button
@@ -45,7 +66,7 @@ export function DiffBlock({ filePath, oldString, newString, isWrite }: DiffBlock
             {added > 0 && <span className="text-(--color-success)">+{added}</span>}
             {removed > 0 && <span className="text-(--color-error)">-{removed}</span>}
           </button>
-        ) : (
+        ) : isUnified ? null : (
           <span className="flex items-center gap-1.5 shrink-0">
             <span className="text-(--color-text-secondary) italic">no changes</span>
           </span>
@@ -57,6 +78,8 @@ export function DiffBlock({ filePath, oldString, newString, isWrite }: DiffBlock
           oldString={oldString}
           newString={newString}
           isWrite={isWrite}
+          unifiedDiff={unifiedDiff}
+          verb={verb}
           onClose={() => setShowModal(false)}
         />
       )}
@@ -64,11 +87,13 @@ export function DiffBlock({ filePath, oldString, newString, isWrite }: DiffBlock
   );
 }
 
-function DiffModal({ filePath, oldString, newString, isWrite, onClose }: {
+function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb, onClose }: {
   filePath: string;
   oldString?: string;
   newString?: string;
   isWrite?: boolean;
+  unifiedDiff?: string;
+  verb: string;
   onClose: () => void;
 }) {
   return (
@@ -85,8 +110,10 @@ function DiffModal({ filePath, oldString, newString, isWrite, onClose }: {
         </button>
       </div>
       <div className="flex-1 overflow-auto p-4">
-        <pre className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all mb-4 pb-4 border-b border-(--color-border-secondary)">{isWrite ? "Write" : "Edit"} {sessionRelativePath(filePath)}</pre>
-        {isWrite ? (
+        <pre className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all mb-4 pb-4 border-b border-(--color-border-secondary)">{verb} {sessionRelativePath(filePath)}</pre>
+        {unifiedDiff !== undefined ? (
+          <UnifiedDiff diff={unifiedDiff} />
+        ) : isWrite ? (
           <WriteContent content={newString ?? ""} />
         ) : (
           <EditDiff oldString={oldString} newString={newString} />
@@ -94,6 +121,30 @@ function DiffModal({ filePath, oldString, newString, isWrite, onClose }: {
       </div>
     </DialogContent>
     </Dialog>
+  );
+}
+
+/** Renders a unified diff with per-line coloring (additions, removals, hunks). */
+function UnifiedDiff({ diff }: { diff: string }) {
+  const lines = diff.split("\n");
+  return (
+    <pre className="text-xs font-mono leading-relaxed overflow-x-auto">
+      {lines.map((line, i) => {
+        const isAdd = line.startsWith("+") && !line.startsWith("+++");
+        const isDel = line.startsWith("-") && !line.startsWith("---");
+        const isHunk = line.startsWith("@@");
+        const cls = isAdd
+          ? "bg-(--color-success)/10 text-(--color-success)"
+          : isDel
+            ? "bg-(--color-error)/10 text-(--color-error)"
+            : isHunk
+              ? "text-(--color-text-tertiary)"
+              : "text-(--color-text-secondary)";
+        return (
+          <div key={i} className={cls}>{line || " "}</div>
+        );
+      })}
+    </pre>
   );
 }
 

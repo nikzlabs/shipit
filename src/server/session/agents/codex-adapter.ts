@@ -119,8 +119,11 @@ interface CodexItem {
   aggregatedOutput?: string | null;
   exitCode?: number | null;
   status?: string;
-  // fileChange — applied patch
-  changes?: { path: string; kind?: string; diff?: string }[];
+  // fileChange — applied patch (FileUpdateChange[], v2 schema). `diff` is the
+  // top-level unified diff. `kind` is an internally-tagged enum object
+  // (`{ type: "add"|"delete"|"update", move_path? }`), not the plain string the
+  // field name suggests — interpolating it raw was the "[object Object]" bug.
+  changes?: { path: string; kind?: string | Record<string, unknown>; diff?: string }[];
   // mcpToolCall / dynamicToolCall — generic tool invocations
   tool?: string;
   arguments?: string; // JSON-encoded arguments
@@ -131,6 +134,35 @@ interface CodexItem {
   receiverThreadId?: string;
   newThreadId?: string;
   agentStatus?: string;
+}
+
+/**
+ * Resolve a human label ("add" | "delete" | "update") for a file change's
+ * `kind`. Per the v2 schema (`PatchChangeKind`), Codex sends `kind` as an
+ * internally-tagged enum object — `{ type: "update", move_path? }` — so
+ * interpolating it directly yields "[object Object]". Accepts a plain string
+ * and an externally-tagged single-key object too, for resilience.
+ */
+function fileChangeKindLabel(kind: unknown): string {
+  if (typeof kind === "string" && kind) return kind;
+  if (kind && typeof kind === "object") {
+    const obj = kind as Record<string, unknown>;
+    if (typeof obj.type === "string" && obj.type) return obj.type;
+    const key = Object.keys(obj)[0];
+    if (key) return key;
+  }
+  return "update";
+}
+
+/**
+ * The unified diff for a single file change. Per the Codex App Server v2 schema
+ * (`FileUpdateChange`, CLI 0.132.x — verified via `generate-json-schema`), every
+ * change carries a top-level `diff` string: adds render as all-`+` lines, deletes
+ * as all-`-`, updates as a standard hunk diff. Returns undefined only if the field
+ * is absent, so the UI degrades to a plain path + label line.
+ */
+function extractUnifiedDiff(change: { diff?: string }): string | undefined {
+  return typeof change.diff === "string" && change.diff ? change.diff : undefined;
 }
 
 /**
@@ -614,13 +646,24 @@ export class CodexAdapter
 
       case "fileChange": {
         // The patch has already been applied to disk by the time we see the
-        // completed item; surface it as a tool call so the edit is visible.
+        // completed item; surface it as a tool call so the edit renders as a
+        // diff (one block per file), matching how Claude's Edit/Write render.
         if (phase !== "completed") return;
-        const changes = item.changes ?? [];
+        const changes = (item.changes ?? []).map((c) => ({
+          path: c.path,
+          kind: fileChangeKindLabel(c.kind),
+          diff: extractUnifiedDiff(c),
+        }));
         this.emitAssistant([
-          { type: "tool_use", id, name: "apply_patch", input: { files: changes.map((c) => c.path) } },
+          {
+            type: "tool_use",
+            id,
+            name: "apply_patch",
+            // `files` kept for back-compat; `changes` carries per-file diffs.
+            input: { files: changes.map((c) => c.path), changes },
+          },
         ]);
-        const summary = changes.map((c) => `${c.kind ?? "update"} ${c.path}`).join("\n");
+        const summary = changes.map((c) => `${c.kind} ${c.path}`).join("\n");
         this.emitToolResult(id, summary || "applied");
         return;
       }
