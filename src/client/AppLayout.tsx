@@ -1,5 +1,5 @@
 import type { ReactNode, RefObject } from "react";
-import { GearSixIcon, ListIcon } from "@phosphor-icons/react";
+import { GearSixIcon, ListIcon, QuestionIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { WithTooltip } from "./components/ui/tooltip.js";
 import { ThemePicker } from "./components/ThemePicker.js";
@@ -22,6 +22,7 @@ interface AppLayoutProps {
   theme: Theme;
   onSelectTheme: (theme: Theme) => void;
   onSettingsOpen: () => void;
+  onShortcutsOpen: () => void;
   hasSystemPrompt: boolean;
   githubAuthenticated: boolean;
   dockerMemory: DockerMemoryStats | null;
@@ -81,6 +82,7 @@ export function AppLayout({
   theme,
   onSelectTheme,
   onSettingsOpen,
+  onShortcutsOpen,
   hasSystemPrompt,
   githubAuthenticated,
   dockerMemory,
@@ -149,6 +151,11 @@ export function AppLayout({
           <SubscriptionLimitsBadge limits={subscriptionLimits} />
           {processStartedAt !== null && <UptimeBadge processStartedAt={processStartedAt} />}
           {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
+          <WithTooltip label="Keyboard shortcuts">
+          <button onClick={onShortcutsOpen} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Keyboard shortcuts">
+            <QuestionIcon size={ICON_SIZE.SM} />
+          </button>
+          </WithTooltip>
           <WithTooltip label="Settings">
           <button onClick={onSettingsOpen} className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${hasSystemPrompt || githubAuthenticated ? "text-(--color-accent) hover:text-(--color-accent-hover) hover:bg-(--color-bg-hover)" : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"}`} aria-label="Settings">
             <GearSixIcon size={ICON_SIZE.SM} />
