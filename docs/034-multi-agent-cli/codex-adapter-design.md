@@ -57,11 +57,44 @@ ShipIt Server (index.ts)
 
 ## JSON-RPC Protocol
 
-The Codex App Server uses JSON-RPC 2.0 over JSONL on stdio. Three message types:
+The Codex App Server uses JSON-RPC 2.0 over JSONL on stdio. Four message types:
 
-- **Requests** (client → server): `{ method, id, params? }` — expect a response.
+- **Client requests** (client → server): `{ method, id, params? }` — expect a response.
 - **Responses** (server → client): `{ id, result? }` or `{ id, error: { code, message } }`.
 - **Notifications** (server → client): `{ method, params? }` — no `id`, fire-and-forget.
+- **Server requests** (server → client): `{ method, id, params? }` — the server asks
+  *us* something and blocks the turn until we reply with `{ id, result }`. Approval
+  prompts arrive this way (`item/commandExecution/requestApproval`,
+  `item/fileChange/requestApproval`).
+
+> **Critical:** a server request and a response are both `id`-bearing, so they MUST
+> be distinguished by the presence of a `method` field — a server request has both
+> `id` and `method`; a response has `id` only. `handleMessage` checks `hasId &&
+> hasMethod` *before* the response branch. Misrouting a server request as a stray
+> response drops it on the floor, and the app-server blocks the turn forever
+> (`thread/status/changed` flips to `activeFlags: ["waitingOnApproval"]` and the UI
+> sits on "Thinking…").
+
+### Approval handling — auto-approve, like Claude
+
+ShipIt runs Codex inside its own session container: the container *is* the sandbox
+and the agent operates the box autonomously (CLAUDE.md §5), exactly like the Claude
+adapter. `turn/start` sets `approvalPolicy: "never"` + `sandboxPolicy:
+dangerFullAccess`, which suppresses *most* prompts — but the model can still request
+escalated permissions explicitly, forcing an approval request regardless of policy.
+`handleServerRequest` auto-answers every such request:
+
+| Server request method | Reply |
+|---|---|
+| `item/commandExecution/requestApproval` (v2) | `{ decision: "accept" }` |
+| `item/fileChange/requestApproval` (v2) | `{ decision: "accept" }` |
+| `execCommandApproval` / `applyPatchApproval` (legacy v1) | `{ decision: "approved" }` |
+| anything else (tool input, MCP elicitation) | JSON-RPC error `-32601` (fail fast, never hang) |
+
+Because approvals are auto-answered, Codex never actually blocks on a human and the
+UI needs no separate "waiting for approval" state — the `waitingOnApproval` flag is
+transient. Decision enums are from the generated schema (`codex app-server
+generate-json-schema`).
 
 ### Transport layer
 
@@ -72,7 +105,10 @@ private sendRequest(method, params?)   → Promise<result>   // Stores in pendin
 private sendNotification(method, params?) → void            // Fire-and-forget
 private writeJsonRpc(msg)              → void               // JSON.stringify + "\n" to stdin
 private drainLines(flush?)             → void               // Buffer stdout, split on "\n", parse JSON
-private handleMessage(msg)             → void               // Dispatch: response → resolve promise, notification → handleNotification
+private handleMessage(msg)             → void               // Dispatch: server request → handleServerRequest, response → resolve promise, notification → handleNotification
+private handleServerRequest(req)       → void               // Auto-approve approval requests; error on the rest
+private sendResponse(id, result)       → void               // Reply to a server request
+private sendErrorResponse(id, code, m) → void               // Reply to a server request with an error
 ```
 
 The `pendingRequests` map (keyed by incrementing `id`) bridges the async request/response pattern. When a response arrives, the matching promise is resolved or rejected.
