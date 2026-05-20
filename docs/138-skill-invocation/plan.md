@@ -121,24 +121,27 @@ Skill invocation is **backend-agnostic where it can be**:
   `agent-execution.ts`, upstream of the adapter, so it benefits both backends
   with no Codex-specific work.
 - **Change #2 (allowlist) is Claude-only** — Codex has no `--allowedTools`.
-- **Codex prompt expansion in headless mode is unverified.** Codex's custom
-  prompts live in `.codex/prompts/` and are a REPL feature; `codex exec --help`
-  shows no `/prompt-name` expansion (in contrast to Claude's documented
-  *"Skills still resolve via /skill-name"*). **Before claiming Codex support,
-  verify whether `codex exec "/my-prompt"` actually expands the prompt** — if
-  it does not, Codex skill invocation needs adapter-level expansion in
-  `codex-adapter.ts` (read the prompt file, inline its contents), which is a
-  larger task than the Claude path.
+- **Codex does NOT expand `/prompt-name` in headless mode — verified.**
+  Tested with `codex exec` (v0.132.0) against a custom prompt in both
+  `.codex/prompts/` (project) and `~/.codex/prompts/` (global): the `user`
+  turn received the literal `/myprompt` text, the prompt body never executed,
+  and the model treated the token as raw input. Custom-prompt expansion is a
+  Codex REPL-only feature. **Consequence:** Codex skill invocation requires
+  adapter-level inlining in `codex-adapter.ts` — resolve `/name` against the
+  prompt directories, read the `.md`, substitute its contents (and any
+  `$ARGUMENTS` / positional args) into the prompt before spawning `codex
+  exec`. This is materially more work than the Claude path (where the CLI does
+  the expansion for us) and should be sequenced after the Claude path ships.
 
 ## Build order
 
 1. #1 + #2 — preserve leading slash, allowlist `Skill` (all three Claude
    modes). Unblocks Claude invocation.
-2. #5 verification — confirm whether `codex exec "/my-prompt"` expands; if
-   not, add adapter-level inlining in `codex-adapter.ts`.
-3. #4 — skill-discovery endpoint (project scan + bundled-via-capabilities,
-   both backends).
-4. #3 — `/` autocomplete in the composer, fed by #4.
+2. #4 — skill-discovery endpoint (project scan + bundled-via-capabilities).
+3. #3 — `/` autocomplete in the composer, fed by #4.
+4. #5 — Codex adapter-level prompt inlining in `codex-adapter.ts` (verified
+   necessary: `codex exec` does not expand `/prompt-name`). Sequenced last
+   because it is the largest piece and Claude is the primary backend.
 
 ## Scope boundary
 
@@ -177,10 +180,12 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
   (see change #2).
 - **Discovery lists project + bundled skills** — filesystem scan plus the
   per-backend `AgentCapabilities` set (see change #4).
-- **Both backends in scope** — Claude path is well-grounded; Codex headless
-  prompt expansion must be verified first (see change #5).
+- **Both backends in scope** — Claude works via the CLI's own expansion;
+  Codex requires adapter-level inlining (verified: `codex exec` does not
+  expand `/prompt-name`), sequenced last (see change #5).
 
 ## Open questions
 
-- Does `codex exec "/my-prompt"` expand the prompt in headless mode? If not,
-  Codex needs adapter-level inlining — quantify that work after verification.
+- Codex prompt arg semantics: how should positional args / `$ARGUMENTS` from
+  `/myprompt foo bar` be substituted when inlining? Match Codex's REPL
+  behavior so a prompt authored for the REPL behaves identically headless.
