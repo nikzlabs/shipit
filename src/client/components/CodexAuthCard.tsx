@@ -200,7 +200,7 @@ export function CodexAuthCard({
               data-testid="codex-device-auth-pending"
             >
               <p className="text-xs text-(--color-text-secondary)">
-                Step 1 — open this link and sign in to OpenAI:
+                Step 1 — open this link and sign in:
               </p>
               <a
                 href={deviceAuth.verificationUri}
@@ -209,10 +209,10 @@ export function CodexAuthCard({
                 className="block w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors text-center"
                 data-testid="codex-open-auth-url"
               >
-                Open auth.openai.com
+                Open authentication page
               </a>
               <p className="text-xs text-(--color-text-secondary)">
-                Step 2 — enter this code on the OpenAI page:
+                Step 2 — enter this code on the sign-in page:
               </p>
               <div className="flex items-center gap-2">
                 <code
@@ -251,7 +251,7 @@ export function CodexAuthCard({
                 Sign in with ChatGPT
               </p>
               <p className="text-xs text-(--color-text-secondary)">
-                Uses your existing ChatGPT plan or Codex credits — recommended.
+                Uses your existing ChatGPT subscription — recommended.
               </p>
               <button
                 onClick={() => {
@@ -290,14 +290,14 @@ export function CodexAuthCard({
               {showApiKeyPanel && (
                 <div className="mt-2 space-y-2">
                   <p className="text-xs text-(--color-text-tertiary)">
-                    Bills against your OpenAI Platform account, not your ChatGPT subscription.
+                    Bills against your API account, not your subscription.
                   </p>
                   <input
                     type="password"
                     value={codexKey}
                     onChange={(e) => { setCodexKey(e.target.value); setCodexKeyError(""); }}
                     onKeyDown={handleApiKeyKeyDown}
-                    placeholder="OPENAI_API_KEY"
+                    placeholder="sk-..."
                     className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-gray-500 focus:outline-none focus:border-(--color-border-focus) font-mono"
                     disabled={codexKeyLoading}
                     data-testid="codex-api-key-input"
