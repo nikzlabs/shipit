@@ -16,6 +16,7 @@ import { UptimeBadge } from "./components/UptimeBadge.js";
 import { SubscriptionLimitsBadge } from "./components/SubscriptionLimitsBadge.js";
 import { MemoryPressureBanner } from "./components/MemoryPressureBanner.js";
 import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
+import { LocalModeBanner } from "./components/LocalModeBanner.js";
 
 interface AppLayoutProps {
   // Header
@@ -126,6 +127,7 @@ export function AppLayout({
     <>
       <MemoryPressureBanner stats={dockerMemory} />
       <GitHubRateLimitBanner />
+      <LocalModeBanner />
       <header className="relative flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
           {isMobile && (

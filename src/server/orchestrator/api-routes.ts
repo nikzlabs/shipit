@@ -26,6 +26,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { WsLogEntry } from "../shared/types.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import type { SessionLoopDetector } from "./loop-detector.js";
+import type { RuntimeMode } from "../shared/types.js";
 
 import { ServiceError } from "./services/index.js";
 
@@ -57,6 +58,12 @@ export interface ApiDeps {
   credentialStore: CredentialStore;
   defaultAgentId: AgentId;
   workspaceDir: string;
+  /**
+   * Orchestrator runtime mode (feature 118). Forwarded into the bootstrap
+   * payload so the client can surface local-mode UI. Defaults to
+   * `"containerized"` when omitted.
+   */
+  runtimeMode?: RuntimeMode;
   /**
    * docs/138 — source-of-truth credentials root (e.g. `/credentials`). Used by
    * `fullReset` to drop all per-session credential subtrees. Omitted in

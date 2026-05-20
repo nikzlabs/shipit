@@ -18,6 +18,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import { listTemplates } from "../templates.js";
 import { ServiceError } from "./types.js";
 import type { BootstrapData } from "./types.js";
+import type { RuntimeMode } from "../../shared/types.js";
 import { listSessions } from "./session.js";
 import { listAgents, getGlobalSettings } from "./settings.js";
 import { getGitHubStatus } from "./github.js";
@@ -41,6 +42,12 @@ export async function getBootstrapData(deps: {
   credentialStore?: CredentialStore;
   defaultAgentId: AgentId;
   workspaceDir: string;
+  /**
+   * Orchestrator runtime mode (feature 118). Forwarded verbatim to the client
+   * so the inner UI can render the local-mode banner and hide container-only
+   * affordances. Defaults to `"containerized"` when omitted.
+   */
+  runtimeMode?: RuntimeMode;
 }): Promise<BootstrapData> {
   // Each call is wrapped individually so a failure in one (e.g. expired
   // GitHub token causing listUserRepos to throw) doesn't kill the entire
@@ -70,6 +77,7 @@ export async function getBootstrapData(deps: {
     templates: listTemplates(),
     githubStatus: getGitHubStatus(deps.githubAuthManager),
     settings,
+    runtimeMode: deps.runtimeMode ?? "containerized",
   };
 }
 

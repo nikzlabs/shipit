@@ -1,6 +1,6 @@
 # Checklist — ShipIt UI in local mode
 
-> **Status (2026-05-20).** Server-side plumbing is complete: `stateDir`,
+> **Status (2026-05-20, updated).** Server-side plumbing is complete: `stateDir`,
 > `runtimeMode`, the `setupContainerManager` local early-return, the
 > `buildRunnerFactory` local branch, the local `agentFactory`, env-based auth
 > (Claude + GitHub), `compose_not_configured` suppression, the `isTestMode`
@@ -11,14 +11,29 @@
 > prebake/install-state-machine/preview-overlay hardening (see "landed"
 > sections).
 >
-> **Remaining for v1:** (1) thread `runtimeMode` into the bootstrap payload and
-> a client store — this gates all the inner-UI surfacing (banner, hide
-> preview/terminal panels, file-tree refresh, hide container affordances,
-> install-skip messaging); (2) the local-mode boot+turn integration test;
-> (3) the `agentFactory`-consumer audit and the compose-volume-rewrite check;
-> (4) the manual smoke test (which also first-exercises the real `ClaudeAdapter`
-> and the subprocess-reaping check). Flip `plan.md` to `done` after the smoke
-> test passes.
+> **Inner-UI surfacing now landed.** `runtimeMode` is threaded into the
+> `/api/bootstrap` payload (`BootstrapData.runtimeMode`, defaulting to
+> `"containerized"`) and read into `useUiStore.runtimeMode`. The inner UI now:
+> renders a dismissible `LocalModeBanner`; hides the Preview and Terminal tab
+> buttons and coerces a persisted preview/terminal `rightTab` selection to
+> `files`; keeps the existing manual file-tree refresh button (live watcher
+> updates don't fire in local mode). The `RuntimeMode` type was moved to
+> `shared/types` (re-exported from `app-di`) so the client references it
+> without reaching into orchestrator-only modules. A `local-mode.test.ts`
+> integration test boots with `runtimeMode: "local"` and runs a turn through
+> the in-process `SessionRunner` to auto-commit; `http-bootstrap.test.ts`
+> asserts the `"containerized"` default. The `agentFactory`-consumer audit is
+> done: all `generateText` callers (`services/github.ts`, `services/reviews.ts`)
+> pass a per-session directory resolved via `resolveSessionDir`, never the
+> outer orchestrator workspace, so the real adapter's cwd is the inner-session
+> clone.
+>
+> **Remaining for v1:** (1) the optional "install skipped — local mode" inner-UI
+> messaging (low priority — preview/StartupSteps overlay is hidden in local
+> mode anyway); (2) the compose-volume-rewrite check (empirical, covered by the
+> smoke test); (3) the manual smoke test (which also first-exercises the real
+> `ClaudeAdapter` and the subprocess-reaping check). Flip `plan.md` to `done`
+> after the smoke test passes.
 
 ## Phase 0 — preconditions (could land as a separate refactor PR before 118 starts)
 
@@ -33,7 +48,7 @@
 - [x] `src/server/orchestrator/app-lifecycle.ts:setupContainerManager` — add a `runtimeMode === "local"` early-return *in addition to* the existing `isTestMode` gate. The "Docker is required" throw must be guarded behind both. No Docker proxy server, no `cleanupOrphanComposeResources`, no `resolveOwnContainerIp`. Done (`app-lifecycle.ts:108-110`).
 - [x] `src/server/orchestrator/app-lifecycle.ts:buildRunnerFactory` — add a `local`-mode branch that returns a factory constructing `SessionRunner` instead of `ContainerSessionRunner`. Done (`app-lifecycle.ts:327-334`).
 - [x] Default `agentFactory` in local mode: when `deps.agentFactory` is not provided and `runtimeMode === "local"`, construct adapters directly (`new ClaudeAdapter()`, `new CodexAdapter()`) keyed by `agentId`. Done: `buildLocalAgentFactory()` (`app-di.ts:385-402`), wired at `app-di.ts:223`.
-- [ ] Audit `agentFactory` consumers outside session context (e.g. `generateText` for PR descriptions). In local mode they spawn real `ClaudeAdapter` subprocesses with whatever `cwd` is passed; verify no caller passes the outer workspace as cwd with `permissionMode: "auto"`.
+- [x] Audit `agentFactory` consumers outside session context (e.g. `generateText` for PR descriptions). Done: the only `generateText` callers are `services/github.ts` (PR title/body) and `services/reviews.ts` (AI markdown review); all pass a per-session directory resolved via `resolveSessionDir` (`session.workspaceDir`), never the outer orchestrator workspace. In local mode the real `ClaudeAdapter` therefore runs with cwd at the inner-session clone, which is the intended sandbox.
 - [x] Confirm `enforceIdleContainerLimit` is a no-op when `containerManager === null`. Done — covered by `integration_tests/container-exit-logging.test.ts:260` ("is a no-op when no containerManager is wired (local mode)").
 
 ### ShipIt repo entry point
@@ -50,19 +65,14 @@
 - [x] Verify `GitHubAuthManager` (`github-auth.ts`) reads `GITHUB_TOKEN` from env. `checkCredentials()` now falls back to `process.env.GITHUB_TOKEN` when `CredentialStore` has nothing on disk. Env-sourced tokens are not persisted to disk — env stays the source of truth so outer-orch token rotation is picked up on the next check.
 
 ### Inner-UI suppressions and surfacing
-- [ ] Bootstrap response includes `runtimeMode`. Client store reads it. **Not done** — no `runtimeMode` in `services/misc.ts:getBootstrapData()` and no `runtimeMode` reference anywhere in `src/client`.
-- [ ] "Running in local mode" banner in the inner UI when `runtimeMode === "local"`. Brief, dismissible, enumerates what's disabled (terminal, file-watcher live updates, preview). **Not done** — no banner in the client.
-- [ ] Hide the preview panel in the inner UI when `runtimeMode === "local"` (Phase 2 will re-enable). **Not done.**
-- [ ] Hide or disable the inner UI's terminal panel; render "Terminal not available in local mode — use the outer terminal." **Not done.**
-- [ ] File-tree refresh: add a manual refresh button (or rely on existing one) since live watcher updates won't fire. **Not done** (depends on `runtimeMode` reaching the client).
+- [x] Bootstrap response includes `runtimeMode`. Client store reads it. Done: `BootstrapData.runtimeMode` (`services/types.ts`), forwarded by `getBootstrapData` (`services/misc.ts`) and `ApiDeps`/`index.ts`; client `BootstrapResponse.runtimeMode` → `useUiStore.setRuntimeMode` (`session-data.ts`, `ui-store.ts`). `RuntimeMode` now lives in `shared/types` (re-exported from `app-di`) so the client doesn't import orchestrator-only modules.
+- [x] "Running in local mode" banner in the inner UI when `runtimeMode === "local"`. Brief, dismissible, enumerates what's disabled (terminal, file-watcher live updates, preview). Done: `components/LocalModeBanner.tsx`, mounted in `AppLayout.tsx` alongside the other banners; dismissal persisted in localStorage.
+- [x] Hide the preview panel in the inner UI when `runtimeMode === "local"` (Phase 2 will re-enable). Done: `App.tsx` hides the Preview tab button and keeps the always-rendered `PreviewFrame` `invisible` in local mode; a persisted `rightTab === "preview"` coerces to `files`.
+- [x] Hide or disable the inner UI's terminal panel. Done: `App.tsx` hides the Terminal tab button and coerces a persisted `rightTab === "terminal"` to `files` (so the panel never renders). The banner tells the user to use the outer terminal.
+- [x] File-tree refresh: relies on the existing `FileTree` refresh button (`App.tsx` `onRefresh`) since live watcher updates won't fire in local mode.
 - [x] Suppress `compose_not_configured` events when `runtimeMode === "local"` — either at the emission site (preferred) or in the inner UI's WS handler. Done at the emission site: `runner-registry-factory.ts:167-172` skips `setupServiceManager`/the event when `runtimeMode === "local"`.
-- [ ] Hide container-specific affordances in the inner UI: idle-container indicators, container-recovery dialogs, anything that would obviously confuse in local mode. **Not done** (depends on `runtimeMode` reaching the client).
-- [ ] Inner sessions: skip / suppress the `agent.install` step in the UI (or surface "install skipped — local mode") since `runInstall` is `instanceof ContainerSessionRunner`-gated and never runs. **Not done.**
-
-> **Remaining client work is gated on one prerequisite:** `runtimeMode` is not yet
-> threaded into the bootstrap payload or any client store. All of the inner-UI
-> surfacing items above (banner, panel hiding, refresh button, affordance hiding,
-> install-skip messaging) need that wire first.
+- [x] Hide container-specific affordances in the inner UI. The Docker memory badge / pressure banner are driven by `dockerMemory` (only populated when a `containerManager` + Docker stats poller exist — both absent in local mode), and container-recovery dialogs are driven by container SSE events that never fire in local mode, so these affordances are naturally inert. The explicit hiding above (preview/terminal) covers the panels a user would otherwise click into.
+- [ ] Inner sessions: surface "install skipped — local mode" (or skip the step) since `runInstall` is `instanceof ContainerSessionRunner`-gated and never runs. **Deferred (low priority)** — the install/StartupSteps overlay is part of the preview panel, which is hidden in local mode, so there's no visible "install" affordance to correct yet.
 
 ### Hardening (see "Hardening notes" in plan.md)
 - [x] Add a comment block at the top of `app-lifecycle.ts` and in `app-di.ts` spelling out the difference between `isTestMode` and `runtimeMode === "local"`. Done (`app-di.ts:22-37`, `app-lifecycle.ts:201-204`).
@@ -85,7 +95,7 @@
 
 ### Tests
 - [x] Unit test: `buildRunnerFactory` returns a `SessionRunner` factory under `runtimeMode: "local"`, a `ContainerSessionRunner` factory under `"containerized"`. Done (`app-lifecycle.test.ts:434-524`, incl. "local mode wins over a non-null containerManager").
-- [ ] Integration test: boot the orchestrator with `runtimeMode: "local"`, create a session, run a turn end-to-end. Assert the local path was used (e.g. by checking `containerManager` is null). **Not done** — only the `enforceIdleContainerLimit` no-op test exists; no full boot+turn local-mode integration test. **Note: it would still use `FakeClaudeProcess`, not `ClaudeAdapter`.**
+- [x] Integration test: boot the orchestrator with `runtimeMode: "local"`, create a session, run a turn end-to-end. Done: `integration_tests/local-mode.test.ts` boots with `runtimeMode: "local"`, asserts `/api/bootstrap` reports `runtimeMode: "local"`, and runs a send_message → init → result → done turn through the in-process `SessionRunner` to a `git_committed`. `http-bootstrap.test.ts` asserts the `"containerized"` default. (Uses `FakeClaudeProcess`, not the real `ClaudeAdapter` — the adapter is first exercised by the manual smoke test below.)
 - [ ] Manual smoke: open the ShipIt repo in production ShipIt, confirm the preview panel shows the inner UI, create an inner session, send a chat message, confirm the agent responds and edits a file. Document date and result here. **Not done.**
 
 ### Quality gates

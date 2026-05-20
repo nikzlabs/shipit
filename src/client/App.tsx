@@ -171,7 +171,17 @@ export default function App() {
   const codexDeviceAuth = useSettingsStore((s) => s.codexDeviceAuth);
   const codexDeviceAuthError = useSettingsStore((s) => s.codexDeviceAuthError);
 
-  const rightTab = useUiStore((s) => s.rightTab);
+  const rightTabRaw = useUiStore((s) => s.rightTab);
+  const runtimeMode = useUiStore((s) => s.runtimeMode);
+  // Feature 118 (local mode): the Preview and Terminal panels are
+  // container-backed and don't function in the in-process orchestrator, so we
+  // hide their tabs. Coerce a persisted "preview"/"terminal" selection to a
+  // panel that does work, so the right panel never lands on a dead tab.
+  const isLocalMode = runtimeMode === "local";
+  const rightTab =
+    isLocalMode && (rightTabRaw === "preview" || rightTabRaw === "terminal")
+      ? "files"
+      : rightTabRaw;
   const mobilePanel = useUiStore((s) => s.mobilePanel);
   const showTemplates = useUiStore((s) => s.showTemplates);
   const templates = useUiStore((s) => s.templates);
@@ -739,13 +749,17 @@ export default function App() {
   const rightPanel = (
     <>
       <div className="flex h-10 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
-        <button onClick={() => handleTabChange("preview")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "preview" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Preview</button>
+        {!isLocalMode && (
+          <button onClick={() => handleTabChange("preview")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "preview" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Preview</button>
+        )}
         {composeServices.length > 0 && (
           <button onClick={() => handleTabChange("services")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "services" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Services</button>
         )}
         <button onClick={() => handleTabChange("docs")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "docs" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Docs</button>
         <button onClick={() => handleTabChange("files")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "files" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Files</button>
-        <button onClick={() => handleTabChange("terminal")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "terminal" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Terminal</button>
+        {!isLocalMode && (
+          <button onClick={() => handleTabChange("terminal")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "terminal" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Terminal</button>
+        )}
         <button onClick={() => handleTabChange("history")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "history" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>History</button>
         {hasPr && (
           <button onClick={() => handleTabChange("pr")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "pr" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>PR</button>
@@ -753,7 +767,7 @@ export default function App() {
       </div>
       <div className="flex-1 min-h-0 relative">
         {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active */}
-        <div className={`absolute inset-0 ${(rightTab === "preview" || (rightTab === "pr" && !hasPr)) ? "" : "invisible pointer-events-none"}`}>
+        <div className={`absolute inset-0 ${(!isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr))) ? "" : "invisible pointer-events-none"}`}>
           <PreviewFrame preview={effectivePreviewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} onStartService={(name) => send({ type: "start_service", name })} onStopService={(name) => send({ type: "stop_service", name })} />
         </div>
         {rightTab === "docs" ? (
