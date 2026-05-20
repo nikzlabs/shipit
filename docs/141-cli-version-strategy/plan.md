@@ -15,11 +15,12 @@ adapters. This doc separates those concerns and lays out the chosen approach.
 
 ## Problem
 
-Today the CLIs are installed **unpinned, at image build time**, and refreshed by
-busting a Docker cache layer on every deploy:
+Today the CLIs are installed **unpinned, at image build time**. Only the
+production worker image refreshes them, by busting a Docker cache layer on every
+deploy:
 
 ```dockerfile
-# docker/Dockerfile.session-worker.prod (also .prod / .dev / .dogfood variants)
+# docker/Dockerfile.session-worker.prod (lines 31-34) — the ONLY image with the cache-bust
 ARG NPM_GLOBALS_REBUILD=0
 RUN --mount=type=cache,target=/root/.npm \
     echo "rebuild=${NPM_GLOBALS_REBUILD}" \
@@ -27,12 +28,19 @@ RUN --mount=type=cache,target=/root/.npm \
 ```
 
 ```bash
-# deployment/vps/deploy.sh
+# deployment/vps/deploy.sh (line 25)
 BUILD_ARGS=("--pull" "--build-arg" "NPM_GLOBALS_REBUILD=$(date +%s)")
 ```
 
-The effective policy is *"whatever `@latest` resolved to at the instant of the
-deploy, frozen until the next deploy."* Consequences:
+The effective policy on `.prod` is *"whatever `@latest` resolved to at the
+instant of the deploy, frozen until the next deploy."* The other images are
+**worse**: `Dockerfile.session-worker.dev:7` and `.dogfood:77` run a plain
+`npm install -g …` with **no** `NPM_GLOBALS_REBUILD` ARG, so they install
+whatever `@latest` resolved to *at first build* and then never refresh (pure
+layer cache) until something else invalidates the layer. The orchestrator images
+(`Dockerfile.prod:33`, `Dockerfile.dev:10`, `Dockerfile.dogfood:34`) install the
+CLIs too — relevant for local/dogfood mode (see below) — and prod/dev install
+only `claude-code` + `codex`, **not** `@playwright/mcp`. Consequences:
 
 - **Non-deterministic & unaudited.** The shipped version is a side effect of
   *when* we deployed. Two deploys an hour apart can ship different agent
@@ -46,8 +54,10 @@ deploy, frozen until the next deploy."* Consequences:
   freshly published malicious version can land in our image within minutes of
   publication — before the ecosystem has flagged and unpublished it.
 
-The adapters only check that the binary exists (`which`), never its version
-(`claude-adapter.ts`, `codex-adapter.ts`, `shared/agent-registry.ts`). The
+No code anywhere inspects the CLI version. `codex-adapter.ts` and
+`agent-registry.ts` `which` the binary to confirm it exists; `claude.ts` doesn't
+even do that — it just `pty.spawn("claude", …)` and relies on the spawn failing
+if the binary is absent. None of the three look at a version. The
 multi-agent design doc (`docs/034-multi-agent-cli/plan.md`, "Pin supported CLI
 versions; adapter includes version detection and warns on unknown versions")
 flagged this as a risk mitigation that was never implemented.
@@ -105,12 +115,49 @@ Options considered:
   pinned/tested version (`stable`); opt-in `latest` per session. Resolves the
   core tension: cautious by default, bleeding-edge on request.
 
-**Channel mechanism.** Versions are baked into the worker image, so per-session
-selection must avoid a per-session npm fetch (slow cold start + reintroduces
-per-session supply-chain exposure). Bake **both** `stable` and `latest` into the
-image under versioned/prefixed install paths and select via env var or PATH at
-spawn time in the adapters. The bump pipeline pins `stable`; `latest` resolves
-to the newest cooled-down version at build time.
+**Channel mechanism (concrete — this is the load-bearing part).** Versions are
+baked into the image, so per-session selection must avoid a per-session npm fetch
+(slow cold start + reintroduces per-session supply-chain exposure). The naive
+reading — "two global installs, pick one at spawn" — does **not** work as-is:
+
+- `npm install -g` writes one `bin` symlink per package into a single global
+  prefix (`/usr/local/bin/claude`); a second install **overwrites** the first.
+  You cannot have a `stable` and a `latest` `claude` from one global prefix.
+- All three spawn/probe sites resolve the CLI **by bare name** via `$PATH`:
+  `claude.ts` → `pty.spawn("claude", …)`; `codex-adapter.ts` → `which codex`
+  then `spawn("codex", …)`; `agent-registry.ts` → `which <binary>`. Bare-name
+  resolution can only ever find one version.
+
+So the concrete design is:
+
+1. **Two install trees, not two global installs.** Install each channel into its
+   own prefix at build time, e.g.
+   `npm ci --prefix /opt/agents/stable …` and `npm ci --prefix /opt/agents/latest …`,
+   yielding `/opt/agents/<channel>/bin/{claude,codex}`. The bump pipeline pins
+   `stable`; `latest` resolves to the newest cooled-down version at build time.
+   `@playwright/mcp` is consumed via `npx @playwright/mcp` (an MCP server, not a
+   spawned agent) — decide whether it is channel-scoped or stays a single global
+   install (see Open Questions).
+2. **Channel-aware spawn in three files.** `claude.ts` must spawn an absolute
+   path (`/opt/agents/${channel}/bin/claude`) or prepend the channel's bin dir to
+   `PATH` in the existing `spawnEnv`; `codex-adapter.ts`'s `which` check and bare
+   `spawn("codex")` must both become channel-aware; `agent-registry.ts`'s
+   `which`-based `installed` probe must report per channel.
+3. **Channel must thread through the agent factory.** `agentFactory` is currently
+   `(agentId: AgentId) => AgentProcess` (`app-di.ts:85`) — no channel parameter.
+   Threading channel through means extending the factory signature / agent run
+   params and the call sites in `session-runner.ts`.
+
+This is feasible but it is **not** a one-line env-var read; it touches
+`claude.ts`, `codex-adapter.ts`, `agent-registry.ts`, the agent factory, and the
+Dockerfiles. The doc calls this out so the work isn't undersold.
+
+**Warm pool / pre-baked images.** Both channels are baked into a **single**
+image, so warm-pooled containers (already booted before the user picks a channel)
+need no rebuild — channel is purely a spawn-time bin-dir choice made when the
+agent process is created, not an image property. A warm container can therefore
+serve either channel. (This is the payoff of "bake both" over "install on
+demand.")
 
 **Surfacing the choice.** Channel selection is *configuration*, not a
 shell-shaped affordance, so it fits the product principles (CLAUDE.md §5). Expose
@@ -187,23 +234,56 @@ Net: deterministic and auditable, git-revertable rollback, supply-chain risk
 slashed by cooldown + integrity + `--ignore-scripts`, breakage caught in CI
 before users see it, and power users get the bleeding edge on demand.
 
+## Local / dogfood mode (RUNTIME_MODE=local)
+
+In `local` mode there are no session-worker containers: `buildLocalAgentFactory`
+(`app-di.ts`) spawns `ClaudeAdapter`/`CodexAdapter` **in-process inside the
+orchestrator container**, which gets its CLIs from `Dockerfile.prod` /
+`Dockerfile.dev` / `Dockerfile.dogfood` — *not* the worker image. So:
+
+- The two-prefix install + channel-aware spawn must be replicated in the
+  orchestrator images, or `agent.channel` silently no-ops in local/dogfood mode.
+- Axis-2 hardening and the Axis-3 contract test must cover the orchestrator-image
+  install path too, not only the worker image.
+- The orchestrator prod/dev images currently omit `@playwright/mcp`; the channel
+  layout there differs from the worker image and should be reconciled.
+
+This is a first-class supported runtime (CLAUDE.md "Dogfooding ShipIt in
+ShipIt"), so it's part of scope, not an afterthought.
+
 ## Key files (to touch when implementing)
 
-- `docker/Dockerfile.session-worker.prod` / `.dev` / `.dogfood`,
-  `docker/Dockerfile.prod`, `docker/Dockerfile.dogfood` — global CLI install
-  layer; replace ad-hoc `npm install -g … @latest` with lockfile-based install
-  of both channels.
-- `deployment/vps/deploy.sh` — drop `NPM_GLOBALS_REBUILD=$(date +%s)`.
-- `src/server/session/agents/claude-adapter.ts`,
-  `src/server/session/agents/codex-adapter.ts` — channel-aware binary selection;
-  optional startup version self-check.
-- `src/server/session/claude.ts`, `src/server/session/agents/tool-map.ts` —
-  surfaces exercised by the contract test.
-- `src/server/shared/agent-registry.ts` — version/health reporting.
-- `src/server/shared/shipit-config.ts` — `AgentConfig` gains `channel`.
+CLI install layer — **six** Dockerfiles install the CLIs, not a subset:
+- Worker images: `docker/Dockerfile.session-worker.prod` (has cache-bust),
+  `.dev` (no refresh), `.dogfood` (no refresh).
+- Orchestrator images (local/dogfood mode): `docker/Dockerfile.prod`,
+  `docker/Dockerfile.dev`, `docker/Dockerfile.dogfood` — prod/dev omit
+  `@playwright/mcp` today.
+- Replace ad-hoc `npm install -g … @latest` with lockfile-based per-prefix
+  installs of both channels in all six.
+- `docker/Dockerfile.session-worker.docker` exists but does **not** install the
+  CLIs — no change needed.
+
+Other touchpoints:
+- `deployment/vps/deploy.sh` — drop `NPM_GLOBALS_REBUILD=$(date +%s)` (line 25)
+  and update the explanatory comment block (lines 22-24); likewise the comments
+  in `Dockerfile.session-worker.prod:28-30`.
+- `src/server/session/claude.ts` — bare `pty.spawn("claude")` → channel-aware
+  absolute path / PATH-scoped spawn.
+- `src/server/session/agents/codex-adapter.ts` — channel-aware `which` check and
+  `spawn("codex")`; optional startup version self-check.
+- `src/server/session/agents/tool-map.ts` — surface exercised by the contract
+  test (no change, but covered).
+- `src/server/shared/agent-registry.ts` — per-channel `installed`/health probe;
+  version reporting.
+- `src/server/orchestrator/app-di.ts` / `session-runner.ts` — extend the
+  `agentFactory` signature (currently `(agentId) => AgentProcess`) and call sites
+  to carry the channel; covers `buildLocalAgentFactory` for local mode.
+- `src/server/shared/shipit-config.ts` — `AgentConfig` gains `channel`; add it to
+  `AGENT_DEFAULTS` (line 68) and `KNOWN_AGENT_KEYS` (line 80).
 - `src/server/shipit-docs/` — document `agent.channel` for the in-container
   agent (agent-facing platform behavior).
-- New: CLI global-install `package.json` + `package-lock.json`; CLI contract
+- New: per-channel CLI install `package.json` + `package-lock.json`; CLI contract
   test; Renovate config or scheduled bump Action.
 
 ## Open questions
@@ -211,7 +291,16 @@ before users see it, and power users get the bleeding edge on demand.
 - Exact cooldown length (3 vs. 7 days) and whether it differs per package.
 - Where the channel setting lives canonically (session setting vs. `shipit.yaml`
   vs. both) and precedence between them.
-- Whether `@playwright/mcp` follows the same pin/channel discipline or stays
-  best-effort latest (it's less tightly coupled than the agent CLIs).
+- Whether `@playwright/mcp` follows the same pin/channel discipline or stays a
+  single best-effort-latest global install (it's an MCP server invoked via `npx`,
+  not a spawned agent, so less tightly coupled — but it's absent from the
+  prod/dev orchestrator images, so its layout already differs).
 - Whether the startup self-check should *block* a session on a failed handshake
   or merely warn.
+- **Shared credential store across channels.** Both channels share a single
+  credentials volume (`/root/.claude`, `/root/.codex`, `~/.claude.json`). A
+  `latest` CLI that migrates or rewrites the on-disk auth format (e.g. Codex
+  `auth.json`, the `codex login --device-auth` flow) could break the `stable`
+  channel that shares the same file. The Axis-3 contract test checks *protocol*,
+  not credential-store migration, so this needs separate consideration — possibly
+  per-channel credential paths, or pinning the auth schema across channels.
