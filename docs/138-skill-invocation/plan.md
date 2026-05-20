@@ -141,11 +141,22 @@ Skill invocation is **backend-agnostic where it can be**:
    `Skill` is in `AUTO_TOOLS` / `NORMAL_TOOLS` / `PLAN_TOOLS` in `claude.ts`.
    Covered by `agent-prompt.test.ts` and the `Skill`-allowlist cases in
    `claude.test.ts`.
-2. #4 — skill-discovery endpoint (project scan + bundled-via-capabilities).
-   Blocked on doc 132's `AgentCapabilities` bundled-skills set, which does not
-   exist yet. Project-skill scanning (`.claude/skills/*/SKILL.md`) is
-   independent and could ship first.
-3. #3 — `/` autocomplete in the composer, fed by #4.
+2. ✅ **#4 (project scan) — DONE.** `GET /api/sessions/:id/skills[?agent=]`
+   returns user-invocable project skills via the pure `listSkills(dir,
+   agentId)` service: Claude scans `.claude/skills/*/SKILL.md` (frontmatter
+   `name`/`description`, excluding `user-invocable: false`), Codex scans
+   `.codex/prompts/*.md` (filename is the token). The backend is the session's
+   locked-in `agentId`, falling back to the `?agent=` override then the server
+   default. Covered by `skills.test.ts` (service) and the `Integration:
+   Skills` suite (route). The **bundled-skills** half is still blocked on doc
+   132's `AgentCapabilities` set — `SkillInfo.source` already distinguishes
+   `"project"` vs `"bundled"` so bundled entries can be layered in by the route
+   without a client change.
+3. ✅ **#3 — DONE.** `SkillAutoComplete.tsx` mirrors `FileAutoComplete`: typing
+   `/` at the **start** of the composer opens a filtered menu (keyboard +
+   mouse), and selecting inserts `/<name> ` keeping the token at index 0. Fed
+   by `useFileStore.skills`, fetched on session connect and on agent switch.
+   Covered by the `skill autocomplete` cases in `MessageInput.test.tsx`.
 4. #5 — Codex adapter-level prompt inlining in `codex-adapter.ts` (verified
    necessary: `codex exec` does not expand `/prompt-name`). Sequenced last
    because it is the largest piece and Claude is the primary backend.
@@ -172,6 +183,12 @@ surface doc 132 needs, so it is a shared foundation rather than throwaway work.
   (Blocker 1 / change #1)
 - `src/server/session/claude.ts` — `--allowedTools` allowlists (Blocker 2 /
   change #2)
+- `src/server/orchestrator/services/skills.ts` — `listSkills()` project scan
+  (change #4)
+- `src/server/orchestrator/api-routes-files.ts` — `GET /api/sessions/:id/skills`
+  route (change #4)
+- `src/client/components/SkillAutoComplete.tsx` — `/` autocomplete menu, plus
+  the wiring in `MessageInput.tsx` and `useFileStore.fetchSkills` (change #3)
 - `src/server/session/agents/codex-adapter.ts` — Codex prompt expansion
   fallback if `codex exec` doesn't expand `/prompt-name` (change #5)
 - `src/client/components/MessageInput.tsx`, `FileAutoComplete.tsx` — `/`
