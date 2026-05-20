@@ -27,11 +27,21 @@ export interface FileAttachment {
 }
 
 /**
- * Agent permission mode. `auto` = autonomous (write tools allowed); `plan` =
- * read-only research/planning. (A classifier-gated `guarded` mode is planned —
- * see docs/138.)
+ * Agent permission mode (oversight ladder, most → least):
+ * - `plan` — read-only research/planning, no edits.
+ * - `guarded` — autonomous, but every shell/network action is LLM-safety-checked
+ *   by Claude Code's `--permission-mode auto` classifier before it runs; risky
+ *   ones are blocked and the model is re-routed. See docs/138.
+ * - `auto` — autonomous with no LLM safety check (relies on the tool allowlist +
+ *   branch hook + container isolation). Default.
+ *
+ * Note the deliberate, documented inversion: the ShipIt `guarded` mode maps to
+ * the Claude CLI value `--permission-mode auto`, while ShipIt `auto` passes no
+ * `--permission-mode` flag at all. The CLI value `auto` is the classifier-gated
+ * one; ShipIt couldn't reuse that name internally because `auto` was already
+ * taken by the no-safety-check default.
  */
-export type PermissionMode = "auto" | "plan";
+export type PermissionMode = "auto" | "plan" | "guarded";
 
 export interface FileContextRef {
   /** Relative path within the workspace. */

@@ -43,6 +43,7 @@ import { handleSessionForked } from "./session-forked.js";
 import { handleSessionMemoryExhausted } from "./session-memory-exhausted.js";
 import { handleSessionStarted } from "./session-started.js";
 import { handleSessionStatus } from "./session-status.js";
+import { handleSystemNotice } from "./system-notice.js";
 import { handleSystemUserMessage } from "./system-user-message.js";
 import { handleTemplateApplied } from "./template-applied.js";
 import { handleTerminalExit } from "./terminal-exit.js";
@@ -121,6 +122,7 @@ export const messageHandlers: MessageHandlerMap = {
   session_memory_exhausted: handleSessionMemoryExhausted,
   session_started: handleSessionStarted,
   session_status: handleSessionStatus,
+  system_notice: handleSystemNotice,
   system_user_message: handleSystemUserMessage,
   template_applied: handleTemplateApplied,
   terminal_exit: handleTerminalExit,

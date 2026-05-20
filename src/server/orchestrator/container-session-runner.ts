@@ -75,6 +75,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _agentId: AgentId;
   private _isRunning = false;
   private _wasInterrupted = false;
+  private _guardedUnavailable = false;
 
   // Terminal (remote — runs inside container)
   private _terminal: TerminalProcess | null = null;
@@ -208,6 +209,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
+  get guardedUnavailable(): boolean { return this._guardedUnavailable; }
+  set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
 
   get accumulatedText(): string { return this.turn.accumulatedText; }
   set accumulatedText(s: string) { this.turn.accumulatedText = s; }

@@ -9,6 +9,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { AgentId, AgentCapabilities } from "./types/agent-types.js";
+import { CLAUDE_PERMISSION_MODES } from "./types/agent-types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,7 +33,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsImages: true,
       supportsSystemPrompt: true,
       supportsPermissionModes: true,
-      supportedPermissionModes: ["auto", "plan"],
+      supportedPermissionModes: CLAUDE_PERMISSION_MODES,
       toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       models: ["sonnet", "opus", "haiku"],
       supportsReview: true,

@@ -253,6 +253,18 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // queue-drained turns that may finish after the originating WS is gone.
   const runner = resolveRunner(ctx, capturedSessionId);
 
+  // docs/138 — if a previous turn this session found guarded mode unavailable,
+  // silently downgrade `guarded` → `auto` (omit the field) so we don't keep
+  // re-requesting a mode the account/model can't use and re-notifying the user.
+  // The flag is volatile (clears on restart / reload), so a later admin enable
+  // is rediscovered on the next fresh attempt. The downgraded mode is what we
+  // both pass to the CLI and report to the listeners as "requested", so the
+  // availability check only fires when guarded was genuinely attempted.
+  const effectivePermissionMode: PermissionMode | undefined =
+    permissionMode === "guarded" && runner?.guardedUnavailable
+      ? undefined
+      : permissionMode;
+
   // Reset turn-scoped state directly on the runner.
   if (runner) {
     runner.clearTurnEventBuffer();
@@ -312,6 +324,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     persistUserMessage,
     fallbackTitle: userText.slice(0, 80) || "New session",
     capturedSessionId,
+    requestedPermissionMode: effectivePermissionMode,
     onError: () => drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone),
   });
 
@@ -601,7 +614,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     sessionId: agentSessionId,
     systemPrompt,
     cwd: activeDir,
-    permissionMode,
+    permissionMode: effectivePermissionMode,
     previewUrl,
     model: ctx.getSelectedModel(),
     settingsPath,

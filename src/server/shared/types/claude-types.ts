@@ -20,6 +20,14 @@ export interface ClaudeSystemEvent {
   tools?: string[];
   model?: string;
   /**
+   * The permission mode the CLI engaged for this run (docs/138). When ShipIt
+   * requested guarded mode (`--permission-mode auto`), `"auto"` here is the
+   * authoritative confirmation that the classifier is live. Note the CLI also
+   * emits an earlier `system`/`subtype:"status"` event that reports
+   * `"default"` — that one is NOT this init event and should be ignored.
+   */
+  permissionMode?: string;
+  /**
    * Real connection status for each MCP server the CLI tried to load. ShipIt
    * uses this as the authoritative liveness signal for `mcp_server_status`
    * events, since `generateMcpConfig()` itself only knows whether secret
@@ -130,6 +138,17 @@ export interface ClaudeResultEvent {
    * preferred over ShipIt's static fallback map.
    */
   modelUsage?: Record<string, ClaudeModelUsage>;
+  /**
+   * Tool calls blocked by the guarded-mode (`--permission-mode auto`)
+   * classifier during this turn (docs/138). Spike-verified shape: one entry
+   * per blocked call. The orchestrator counts these for the headless
+   * abort-on-repeated-blocks signal and surfaces the reasons inline.
+   */
+  permission_denials?: {
+    tool_name: string;
+    tool_use_id?: string;
+    tool_input?: unknown;
+  }[];
 }
 
 export type ClaudeEvent =

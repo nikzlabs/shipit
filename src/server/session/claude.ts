@@ -71,6 +71,11 @@ export class ClaudeProcess extends EventEmitter {
     const withUserMcp = (base: string): string =>
       userMcpGlobs ? `${base},${userMcpGlobs}` : base;
 
+    // `guarded` (docs/138) reuses the AUTO_TOOLS allowlist: the CLI's auto
+    // (classifier) mode drops the blanket `Bash` grant and routes shell/network
+    // through the classifier, while working-dir Write/Edit stay tier-2
+    // auto-approved. Spike-confirmed the allowlist does not suppress the
+    // classifier, so reusing AUTO_TOOLS is correct.
     const tools = permissionMode === "plan"
       ? PLAN_TOOLS
       : withUserMcp(AUTO_TOOLS);
@@ -82,8 +87,12 @@ export class ClaudeProcess extends EventEmitter {
       "--allowedTools", tools,
     ];
 
+    // Deliberate inversion (docs/138): ShipIt `guarded` → CLI `auto` (the
+    // classifier-gated mode); ShipIt `auto` passes no flag. `plan` is verbatim.
     if (permissionMode === "plan") {
       args.push("--permission-mode", "plan");
+    } else if (permissionMode === "guarded") {
+      args.push("--permission-mode", "auto");
     }
 
     if (sessionId) {

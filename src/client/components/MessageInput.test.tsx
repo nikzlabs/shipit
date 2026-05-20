@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { MessageInput } from "./MessageInput.js";
+import type { PermissionMode } from "../../server/shared/types.js";
 
 afterEach(cleanup);
 
@@ -92,15 +93,42 @@ describe("MessageInput", () => {
     });
   });
 
-  describe("plan mode toggle", () => {
-    it("renders plan mode toggle when onPermissionModeChange is provided", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} onPermissionModeChange={vi.fn()} />);
-      expect(screen.getByTestId("plan-mode-toggle")).toBeInTheDocument();
+  describe("permission mode selector", () => {
+    const claudeWithModes = [{
+      id: "claude", name: "Claude Code", installed: true, authConfigured: true,
+      models: ["claude-sonnet-4"], supportsReview: true,
+      supportedPermissionModes: ["auto", "plan", "guarded"] as PermissionMode[],
+    }];
+
+    it("renders permission mode selector when onPermissionModeChange is provided and the agent supports modes", () => {
+      render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          onPermissionModeChange={vi.fn()}
+          agents={claudeWithModes}
+          activeAgentId="claude"
+        />,
+      );
+      expect(screen.getByTestId("permission-mode-selector")).toBeInTheDocument();
     });
 
-    it("does not render plan mode toggle when onPermissionModeChange is not provided", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} />);
-      expect(screen.queryByTestId("plan-mode-toggle")).not.toBeInTheDocument();
+    it("does not render permission mode selector when onPermissionModeChange is not provided", () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} agents={claudeWithModes} activeAgentId="claude" />);
+      expect(screen.queryByTestId("permission-mode-selector")).not.toBeInTheDocument();
+    });
+
+    it("hides the selector for an agent that advertises no permission modes", () => {
+      render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          onPermissionModeChange={vi.fn()}
+          agents={[{ id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false, supportedPermissionModes: [] }]}
+          activeAgentId="codex"
+        />,
+      );
+      expect(screen.queryByTestId("permission-mode-selector")).not.toBeInTheDocument();
     });
   });
 

@@ -1,4 +1,4 @@
-import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage } from "../../shared/types.js";
+import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import type { ChatMessageGroup, ToolResultEntry } from "../session-runner.js";
@@ -96,6 +96,15 @@ export function wireAgentListeners(
      * for ergonomics in the rare test that wires listeners directly.
      */
     capturedSessionId?: string;
+    /**
+     * The permission mode this turn actually requested from the CLI (docs/138),
+     * AFTER any guarded→auto downgrade. When this is `"guarded"`, the
+     * `agent_init` handler reads `init.permissionMode` to confirm the
+     * classifier engaged (`"auto"`) and, if not, sets the runner's volatile
+     * `guardedUnavailable` flag and emits an inline fallback notice. Undefined /
+     * non-guarded turns skip the check entirely.
+     */
+    requestedPermissionMode?: PermissionMode;
     /**
      * Called from the `error` handler after the runner has been cleaned up.
      * `runAgentWithMessage` uses this to drain the next queued message so a
@@ -218,6 +227,31 @@ export function wireAgentListeners(
           model: event.model,
           contextWindowTokens: getContextWindowForModel(event.model),
         });
+      }
+
+      // docs/138 — guarded-mode runtime availability detection. The init
+      // event's `permissionMode` is the authoritative signal: `"auto"` means
+      // the classifier engaged. We only check when this turn actually
+      // requested guarded; for `auto`/`plan` the field is irrelevant.
+      if (opts.requestedPermissionMode === "guarded" && runner) {
+        if (event.permissionMode === "auto") {
+          // Engaged. Clear any stale unavailable flag (e.g. an admin
+          // re-enabled auto mode since the last failed attempt this session).
+          runner.guardedUnavailable = false;
+        } else {
+          // Requested but not engaged → non-transient unavailable (plan / admin
+          // lock / unsupported model). The CLI already dropped to default for
+          // this turn, so we let it complete in auto-equivalent and just label
+          // it. Set the volatile flag so subsequent turns silently send auto.
+          runner.guardedUnavailable = true;
+          emitToViewers({
+            type: "system_notice",
+            sessionId: turnSessionId,
+            level: "warn",
+            message:
+              "Guarded mode isn't available for this account or model, so this turn is running in auto mode (no command safety check). It needs a Max, Team, or Enterprise plan and a Sonnet or Opus model.",
+          });
+        }
       }
     }
 
@@ -378,6 +412,26 @@ export function wireAgentListeners(
         ctx.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
         ctx.sessionManager.track(turnSessionId);
         ctx.sseBroadcast("session_list", { sessions: ctx.sessionManager.list() });
+      }
+
+      // docs/138 — surface guarded-mode classifier blocks inline so a guarded
+      // turn never fails silently. A single block doesn't abort (the model
+      // re-routes); the CLI ends a headless run only after its 3-consecutive /
+      // 20-total threshold, at which point the turn produces an early/empty
+      // result with these denials populated. Either way we summarize the
+      // blocked tool(s) and offer next steps. Model self-refusals are NOT
+      // classifier denials and never reach this array.
+      if (event.permissionDenials?.length && turnSessionId) {
+        const blockedTools = [...new Set(event.permissionDenials.map((d) => d.toolName))].join(", ");
+        const count = event.permissionDenials.length;
+        emitToViewers({
+          type: "system_notice",
+          sessionId: turnSessionId,
+          level: "warn",
+          message:
+            `Guarded mode blocked ${count} action${count === 1 ? "" : "s"} (${blockedTools}) as potentially unsafe. ` +
+            "Rephrase with a narrower scope, run the command yourself, or switch to auto mode for this action.",
+        });
       }
 
       const usageSessionId = turnSessionId ?? event.sessionId;

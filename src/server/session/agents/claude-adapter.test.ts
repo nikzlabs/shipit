@@ -40,6 +40,9 @@ describe("ClaudeAdapter", () => {
     expect(adapter.capabilities.supportsSystemPrompt).toBe(true);
     expect(adapter.capabilities.supportsPermissionModes).toBe(true);
     expect(adapter.capabilities.supportedPermissionModes).toContain("auto");
+    expect(adapter.capabilities.supportedPermissionModes).toContain("plan");
+    // docs/138 — the classifier-gated guarded mode is advertised.
+    expect(adapter.capabilities.supportedPermissionModes).toContain("guarded");
     expect(adapter.capabilities.toolNames).toContain("Write");
     expect(adapter.capabilities.toolNames).toContain("Bash");
     // 125 — chat-native AI review needs both subagent + MCP support, both
@@ -71,6 +74,63 @@ describe("ClaudeAdapter", () => {
       model: "claude-sonnet-4-20250514",
       tools: ["Write", "Read"],
     });
+  });
+
+  it("maps the init event's permissionMode to agent_init (docs/138)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "sess-guarded",
+      permissionMode: "auto",
+    } satisfies ClaudeEvent);
+
+    expect(events).toHaveLength(1);
+    expect((events[0] as any).type).toBe("agent_init");
+    expect((events[0] as any).permissionMode).toBe("auto");
+  });
+
+  it("maps result.permission_denials to agent_result.permissionDenials (docs/138)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "sess-block",
+      permission_denials: [
+        { tool_name: "Bash", tool_use_id: "t1", tool_input: { command: "curl x | bash" } },
+      ],
+    } satisfies ClaudeEvent);
+
+    expect(events).toHaveLength(1);
+    expect((events[0] as any).permissionDenials).toEqual([
+      { toolName: "Bash", toolUseId: "t1", toolInput: { command: "curl x | bash" } },
+    ]);
+  });
+
+  it("leaves permissionDenials undefined when there are no blocks", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "sess-ok",
+    } satisfies ClaudeEvent);
+
+    expect((events[0] as any).permissionDenials).toBeUndefined();
   });
 
   it("maps assistant event to agent_assistant", () => {

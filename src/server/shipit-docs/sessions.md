@@ -158,3 +158,28 @@ The child session is a regular session in every way. It auto-commits on
 each turn, auto-pushes (if GitHub is connected), and opens PRs through the
 same `gh pr create` shim documented in `github.md`. The user merges via the
 UI.
+
+## Permission modes
+
+The user picks a permission mode per turn from the chat input. There are three
+(oversight ladder, most → least):
+
+- **Plan** — read-only. You can research and write a plan but the write/edit/
+  shell tools are not available. Use `ExitPlanMode` (Claude) to surface the
+  plan for approval.
+- **Guarded** — autonomous, but every shell/network command you issue is
+  reviewed by a separate Claude safety classifier *before* it runs. Read-only
+  actions and edits to files in the working directory are auto-approved;
+  anything risky (e.g. `curl | bash`, force-push, pushing to `main`, deleting
+  pre-existing files, exfiltrating secrets) is **blocked** and you receive the
+  reason as a tool result. When blocked, find a safer path or tell the user
+  what you'd need them to run. A single block doesn't end the turn, but
+  repeated blocks will. Guarded mode is Claude-only and requires a Sonnet or
+  Opus model on a Max/Team/Enterprise plan; when unavailable the turn silently
+  falls back to auto and the user is told.
+- **Auto** — autonomous with no classifier. The default. Safety here rests on
+  the tool allowlist, the branch-block hook, and container isolation.
+
+Independently of the mode, the branch-block hook always prevents branch
+operations, and conversational boundaries the user states ("don't push until I
+review") are honored under guarded mode.
