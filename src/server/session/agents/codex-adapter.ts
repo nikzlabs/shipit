@@ -137,6 +137,25 @@ interface CodexItem {
 }
 
 /**
+ * Strip Codex's shell wrapper so commands read like Claude's Bash tool. Codex
+ * runs every shell command as `/bin/bash -lc '<script>'` (the `command` field is
+ * that full invocation); we surface just `<script>`. Recognizes an optional path
+ * prefix and `bash`/`sh` with a `-c`/`-lc`-style flag, then peels one layer of
+ * matching outer quotes. Returns the input unchanged when it doesn't match, so
+ * non-wrapped commands (and Claude's already-clean commands) pass through.
+ */
+export function unwrapShellCommand(command: string): string {
+  const m = /^\s*(?:\S*\/)?(?:bash|sh)\s+-[a-z]*c\s+([\s\S]+?)\s*$/.exec(command);
+  if (!m) return command;
+  const inner = m[1].trim();
+  const q = inner[0];
+  if ((q === "'" || q === '"') && inner.length >= 2 && inner.endsWith(q)) {
+    return inner.slice(1, -1);
+  }
+  return inner;
+}
+
+/**
  * Resolve a human label ("add" | "delete" | "update") for a file change's
  * `kind`. Per the v2 schema (`PatchChangeKind`), Codex sends `kind` as an
  * internally-tagged enum object — `{ type: "update", move_path? }` — so
@@ -632,7 +651,7 @@ export class CodexAdapter
       case "commandExecution": {
         if (phase === "started") {
           this.emitAssistant([
-            { type: "tool_use", id, name: "shell", input: { command: item.command ?? "", cwd: item.cwd } },
+            { type: "tool_use", id, name: "shell", input: { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd } },
           ]);
         } else {
           const out = item.aggregatedOutput ?? "";

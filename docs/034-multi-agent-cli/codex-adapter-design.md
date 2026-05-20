@@ -184,6 +184,14 @@ AgentEvent:
 
 If `arguments` is malformed JSON, the adapter wraps the raw string as `{ raw: "..." }` rather than crashing.
 
+**Shell command unwrapping.** Codex runs every shell command as
+`/bin/bash -lc '<script>'` (the `commandExecution` item's `command` field is that
+full invocation). `unwrapShellCommand()` strips the wrapper and one layer of outer
+quotes so the tool call reads like Claude's Bash — `ls -la`, not
+`/bin/bash -lc 'ls -la'`. Non-wrapped commands pass through untouched. The client
+also gives the `shell` tool the same bash syntax-highlighting as `Bash` in the
+tool-output modal.
+
 ### File change mapping (`fileChange` → `apply_patch`)
 
 A `fileChange` item is surfaced as an `apply_patch` tool call so edits render as
