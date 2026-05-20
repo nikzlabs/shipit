@@ -27,9 +27,11 @@
       `DELETE /api/codex-auth`.
 - [x] WS server message types added in
       `src/server/shared/types/ws-server-messages.ts`.
-- [ ] Integration test driving the full device-flow happy path
-      (shim `codex` on `$PATH`, assert SSE event ordering and
-      `agent_list.authConfigured` flip).
+- [x] Integration test driving the full device-flow happy path
+      (`integration_tests/codex-auth.test.ts` — faked `codex` spawn,
+      asserts SSE `codex_auth_pending` → `codex_auth_complete` →
+      `agent_list.authConfigured` flip, plus the non-zero-exit failure
+      path and `start` idempotency).
 
 ## Phase 3 — UI
 
