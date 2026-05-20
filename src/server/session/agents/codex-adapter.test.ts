@@ -202,6 +202,59 @@ describe("CodexAdapter", () => {
     expect((threadResume!.params as any).threadId).toBe("existing-thread-id");
   });
 
+  it("passes systemPrompt as developerInstructions on thread/start", async () => {
+    // ShipIt's environment instructions reach Claude via `--system-prompt`;
+    // Codex's equivalent is `developerInstructions` on thread/start. Without
+    // this, Codex sessions had no idea they were running inside ShipIt.
+    adapter = new CodexAdapter();
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({
+      prompt: "Hello",
+      cwd: "/workspace",
+      systemPrompt: "You are running inside ShipIt.",
+    });
+
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+    fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
+
+    const threadStart = fakeProc.getRequests().find((r) => r.method === "thread/start");
+    expect(threadStart).toBeDefined();
+    expect((threadStart!.params as any).developerInstructions).toBe(
+      "You are running inside ShipIt.",
+    );
+  });
+
+  it("passes systemPrompt as developerInstructions on thread/resume", async () => {
+    adapter = new CodexAdapter();
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({
+      prompt: "Hello",
+      cwd: "/workspace",
+      sessionId: "existing-thread-id",
+      systemPrompt: "You are running inside ShipIt.",
+    });
+
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+    fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
+
+    const threadResume = fakeProc.getRequests().find((r) => r.method === "thread/resume");
+    expect(threadResume).toBeDefined();
+    expect((threadResume!.params as any).developerInstructions).toBe(
+      "You are running inside ShipIt.",
+    );
+    expect((threadResume!.params as any).threadId).toBe("existing-thread-id");
+  });
+
+  it("omits developerInstructions when no systemPrompt is provided", async () => {
+    await createAndInit("Hello");
+
+    const threadStart = fakeProc.getRequests().find((r) => r.method === "thread/start");
+    expect(threadStart).toBeDefined();
+    expect((threadStart!.params as any).developerInstructions).toBeUndefined();
+  });
+
   it("extracts threadId from the 0.132 `thread.id` response shape", async () => {
     // Regression guard for the reported "issue with the selected model" bug:
     // CLI 0.132.x moved the id from a top-level `threadId` to a nested

@@ -646,20 +646,35 @@ export class CodexAdapter
     this.sendNotification("initialized");
     this.initialized = true;
 
-    // Step 2: Start or resume a thread
+    // Step 2: Start or resume a thread.
+    //
+    // ShipIt's environment instructions (the "you are running inside ShipIt…"
+    // system prompt built by buildAgentSystemInstructions) arrive as
+    // `params.systemPrompt`. Codex's app-server has no per-turn system-prompt
+    // slot, but `thread/start`/`thread/resume` accept `developerInstructions` —
+    // appended to the model's base instructions rather than replacing them
+    // (that's `baseInstructions`, which we deliberately leave alone). Without
+    // this, Codex sessions had no idea they were running inside ShipIt, unlike
+    // Claude (which gets the same text via `--system-prompt`).
+    const threadBase: Record<string, unknown> = {};
+    if (params.systemPrompt) {
+      threadBase.developerInstructions = params.systemPrompt;
+    }
+
     let threadResult: unknown;
     if (params.sessionId) {
       // Resume existing thread
       try {
         threadResult = await this.sendRequest("thread/resume", {
+          ...threadBase,
           threadId: params.sessionId,
         });
       } catch {
         // If resume fails, start a new thread
-        threadResult = await this.sendRequest("thread/start", {});
+        threadResult = await this.sendRequest("thread/start", { ...threadBase });
       }
     } else {
-      threadResult = await this.sendRequest("thread/start", {});
+      threadResult = await this.sendRequest("thread/start", { ...threadBase });
     }
 
     // Extract thread ID from the response.
