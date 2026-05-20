@@ -459,6 +459,41 @@ describe("Integration: Codex agent — validation and default agent", () => {
     client.close();
   });
 
+  it("docs/138: set_agent is rejected once the session is pinned (first turn)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // First turn pins the agent (claude, the default) for this session.
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+    expect(lastClaude.runCalled).toBe(true);
+
+    // Switching to a different agent is now rejected with a "locked" error.
+    client.send({ type: "set_agent", agentId: "codex" });
+    const err = await receiveByType(client, "error");
+    expect((err as { message: string }).message).toContain("locked to claude");
+
+    client.close();
+  });
+
+  it("docs/138: re-selecting the SAME agent after pin is a no-op (no error)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+
+    // Re-selecting the already-pinned agent must NOT error.
+    client.send({ type: "set_agent", agentId: "claude" });
+    // Send a follow-up message; the next agent_event proves no error short-
+    // circuited the connection and claude is still the agent.
+    client.send({ type: "send_message", text: "Again" });
+    await waitForClaude(() => lastClaude);
+    expect(lastClaude.runCalled).toBe(true);
+
+    client.close();
+  });
+
   it("Codex capabilities report correct feature support", () => {
     const codex = new FakeCodexProcess();
     expect(codex.capabilities.supportsImages).toBe(false);

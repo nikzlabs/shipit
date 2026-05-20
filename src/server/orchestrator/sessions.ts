@@ -20,6 +20,8 @@ interface SessionRow {
   merged_at: string | null;
   model: string | null;
   agent_id: string | null;
+  /** docs/138 — set once the session has taken its first turn (agent pinned). */
+  agent_pinned: number;
   pr_status: string | null;
   /** docs/117 — set when the session was spawned by another via `shipit session create`. */
   parent_session_id: string | null;
@@ -52,6 +54,7 @@ export class SessionManager {
     if (row.merged_at) info.mergedAt = row.merged_at;
     if (row.model) info.model = row.model;
     if (row.agent_id === "claude" || row.agent_id === "codex") info.agentId = row.agent_id;
+    if (row.agent_pinned) info.agentPinned = true;
     if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
     return info;
@@ -271,6 +274,16 @@ export class SessionManager {
   /** Store the selected agent (provider) for a session. */
   setAgentId(id: string, agentId: AgentId): void {
     this.db.prepare("UPDATE sessions SET agent_id = ? WHERE id = ?").run(agentId, id);
+  }
+
+  /**
+   * docs/138 — pin the agent for a session. Called when the first turn starts,
+   * after the agent's credentials have been provisioned into the per-session
+   * credentials directory. Once pinned, `set_agent` is rejected server-side and
+   * credential provisioning is skipped (write-once).
+   */
+  setAgentPinned(id: string): void {
+    this.db.prepare("UPDATE sessions SET agent_pinned = 1 WHERE id = ?").run(id);
   }
 
   /**

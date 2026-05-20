@@ -220,6 +220,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN agent_id TEXT");
   },
+  // Migration 14: per-agent credential isolation (docs/138). `agent_pinned`
+  // records that a session has taken its first turn — at that point the agent
+  // is fixed for the session's life and its credentials have been provisioned
+  // into the per-session credentials directory. The server rejects `set_agent`
+  // once this is set, and the credential provisioning step is skipped (it's
+  // write-once). Defaults to 0 (not yet pinned).
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN agent_pinned INTEGER DEFAULT 0");
+  },
 ];
 
 export class DatabaseManager {

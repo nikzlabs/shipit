@@ -40,6 +40,13 @@ export interface SessionInfo {
   /** Agent (provider) selected for this session. Locked in on first WS connect. */
   agentId?: AgentId;
   /**
+   * docs/138 — true once the session has taken its first turn. At that point
+   * the agent is fixed for the session's life: its credentials have been
+   * provisioned into the per-session credentials directory, the other agent's
+   * credentials are deliberately absent, and `set_agent` is rejected.
+   */
+  agentPinned?: boolean;
+  /**
    * If this session was spawned by another session via `shipit session create`
    * (see docs/117-agent-spawned-sessions/), the parent's session ID. Used to
    * render the sidebar grouping ("spawned by parent") and to scope the

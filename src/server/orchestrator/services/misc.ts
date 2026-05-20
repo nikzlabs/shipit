@@ -22,6 +22,7 @@ import { listSessions } from "./session.js";
 import { listAgents, getGlobalSettings } from "./settings.js";
 import { getGitHubStatus } from "./github.js";
 import { listRepos } from "./repos.js";
+import { sessionCredentialsRoot } from "../session-credentials.js";
 
 // ---- Read operations ----
 
@@ -83,6 +84,14 @@ export async function fullReset(
   repoStore?: RepoStore,
   databaseManager?: DatabaseManager,
   composeStopPromises?: Map<string, Promise<void>>,
+  /**
+   * docs/138 — credentials root (e.g. `/credentials`). When provided, every
+   * per-session credential subtree under `<credentialsDir>/sessions` is dropped
+   * (the user is wiping everything; provisioned agent creds must not survive).
+   * The top-level source-of-truth creds (`.claude`, `.codex`, …) are preserved
+   * so a full reset doesn't sign the user out.
+   */
+  credentialsDir?: string,
 ): Promise<void> {
   // Signal compose-stop to drop named volumes for every active session
   // before we tear them down — full reset is the user saying "wipe
@@ -132,6 +141,18 @@ export async function fullReset(
       await fs.rm(path.join(workspaceDir, entry), { recursive: true, force: true });
     } catch {
       // Best-effort
+    }
+  }
+
+  // docs/138 — drop all per-session credential subtrees. They live under the
+  // credentials root (separate from the workspace dir), so the workspace wipe
+  // above doesn't touch them. The top-level source-of-truth creds are left in
+  // place so a full reset doesn't sign the user out of Claude/Codex.
+  if (credentialsDir) {
+    try {
+      await fs.rm(sessionCredentialsRoot(credentialsDir), { recursive: true, force: true });
+    } catch {
+      // Best-effort — the disk-janitor sweeps any leftovers on next startup.
     }
   }
 }

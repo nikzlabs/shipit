@@ -750,4 +750,57 @@ describe("runDiskJanitor", () => {
     expect(deleted).toEqual(["shipit/orphan-branch"]);
     expect(result.orphanBranchesRemoved).toBe(1);
   });
+
+  it("sweeps per-session credential dirs for archived / untracked sessions only", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const liveId = "live000000000000";
+    const archivedId = "arch000000000000";
+    const goneId = "gone000000000000";
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+    ).run(liveId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 1)",
+    ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+
+    // Lay down per-session credential dirs for all three.
+    const credentialsDir = path.join(tmpDir, "credentials");
+    for (const id of [liveId, archivedId, goneId]) {
+      const dir = path.join(credentialsDir, "sessions", id);
+      fs.mkdirSync(path.join(dir, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".claude", ".credentials.json"), "{}");
+    }
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      credentialsDir,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    // Live (tracked + not archived) is preserved; archived and untracked are reaped.
+    expect(fs.existsSync(path.join(credentialsDir, "sessions", liveId))).toBe(true);
+    expect(fs.existsSync(path.join(credentialsDir, "sessions", archivedId))).toBe(false);
+    expect(fs.existsSync(path.join(credentialsDir, "sessions", goneId))).toBe(false);
+    expect(result.credentialDirsRemoved).toBe(2);
+  });
+
+  it("credential-dir sweep is a no-op when credentialsDir is omitted", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.credentialDirsRemoved).toBe(0);
+  });
 });
