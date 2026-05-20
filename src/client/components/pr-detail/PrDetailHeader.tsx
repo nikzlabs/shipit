@@ -14,9 +14,13 @@ import {
   GitBranchIcon,
   ArrowSquareOutIcon,
   DotsThreeVerticalIcon,
+  PencilSimpleIcon,
+  CheckIcon,
+  XIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
-import type { PrCardState } from "../../stores/pr-store.js";
+import { usePrStore, type PrCardState } from "../../stores/pr-store.js";
+import { Banner } from "../ui/banner.js";
 
 function StateBadge({ phase }: { phase: PrCardState["phase"] }) {
   const base = "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium border";
@@ -41,10 +45,55 @@ function StateBadge({ phase }: { phase: PrCardState["phase"] }) {
   );
 }
 
-export function PrDetailHeader({ card }: { card: PrCardState }) {
+export function PrDetailHeader({
+  card,
+  sessionId,
+}: {
+  card: PrCardState;
+  sessionId: string;
+}) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const pr = card.pr;
   if (!pr) return null;
+
+  const editable = card.phase === "open";
+
+  const startEditing = () => {
+    setDraft(pr.title);
+    setError(null);
+    setEditingTitle(true);
+  };
+
+  const cancel = () => {
+    setEditingTitle(false);
+    setError(null);
+  };
+
+  const save = async () => {
+    const title = draft.trim();
+    if (submitting) return;
+    if (!title) {
+      setError("Title cannot be empty");
+      return;
+    }
+    if (title === pr.title) {
+      cancel();
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    const err = await usePrStore.getState().updatePr(sessionId, { title });
+    setSubmitting(false);
+    if (err) {
+      setError(err);
+      return;
+    }
+    setEditingTitle(false);
+  };
 
   return (
     <div className="border-b border-(--color-border-primary) px-4 py-3">
@@ -54,9 +103,65 @@ export function PrDetailHeader({ card }: { card: PrCardState }) {
             <StateBadge phase={card.phase} />
             <span className="text-(--color-text-tertiary) text-sm font-mono">#{pr.number}</span>
           </div>
-          <h2 className="mt-1.5 text-base font-semibold text-(--color-text-primary) wrap-break-word">
-            {pr.title}
-          </h2>
+          {editingTitle ? (
+            <div className="mt-1.5 flex flex-col gap-2">
+              <div className="flex items-center gap-1.5">
+                <input
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void save();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      cancel();
+                    }
+                  }}
+                  disabled={submitting}
+                  autoFocus
+                  aria-label="PR title"
+                  className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1 text-base font-semibold text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none disabled:opacity-50"
+                />
+                <button
+                  onClick={() => void save()}
+                  disabled={submitting}
+                  aria-label="Save title"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-(--color-success) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50"
+                >
+                  <CheckIcon size={ICON_SIZE.SM} weight="bold" />
+                </button>
+                <button
+                  onClick={cancel}
+                  disabled={submitting}
+                  aria-label="Cancel title edit"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50"
+                >
+                  <XIcon size={ICON_SIZE.SM} weight="bold" />
+                </button>
+              </div>
+              {error && (
+                <Banner variant="error" className="rounded-md text-left">
+                  {error}
+                </Banner>
+              )}
+            </div>
+          ) : (
+            <div className="mt-1.5 flex items-start gap-1.5">
+              <h2 className="min-w-0 flex-1 text-base font-semibold text-(--color-text-primary) wrap-break-word">
+                {pr.title}
+              </h2>
+              {editable && (
+                <button
+                  onClick={startEditing}
+                  aria-label="Edit title"
+                  className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
+                >
+                  <PencilSimpleIcon size={ICON_SIZE.SM} />
+                </button>
+              )}
+            </div>
+          )}
           <div className="mt-1 flex items-center gap-2 text-xs text-(--color-text-tertiary) flex-wrap">
             <span className="font-mono">{pr.baseBranch}</span>
             <span>←</span>
