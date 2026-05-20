@@ -80,6 +80,9 @@ describe("Integration: GET /api/bootstrap", () => {
     expect(body.githubStatus.authenticated).toBe(false);
     expect(Array.isArray(body.templates)).toBe(true);
     expect(body.templates.length).toBeGreaterThan(0);
+    // Feature 118: runtimeMode defaults to "containerized" when neither
+    // the RUNTIME_MODE env var nor a deps override is set.
+    expect(body.runtimeMode).toBe("containerized");
   });
 
   it("returns sessions when they exist", async () => {

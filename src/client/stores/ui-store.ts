@@ -7,7 +7,7 @@ import type {
 } from "../components/UsageModal.js";
 import type { ModelInfo } from "../components/StatusBar.js";
 import type { ToastData } from "../components/Toast.js";
-import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap } from "../../server/shared/types.js";
+import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap, RuntimeMode } from "../../server/shared/types.js";
 import {
   getSavedAgentId,
   getSavedSidebarCollapsed,
@@ -92,6 +92,14 @@ interface UiState {
    * See docs/135-subscription-limits-badge/plan.md.
    */
   subscriptionLimits: SubscriptionLimitsMap;
+  /**
+   * Orchestrator runtime mode (feature 118), seeded from the `/api/bootstrap`
+   * response. `"local"` means the orchestrator runs in-process with no Docker
+   * layer — the dogfooding ShipIt-in-ShipIt path. The UI uses this to show a
+   * local-mode banner and hide container-only affordances (preview, terminal).
+   * Defaults to `"containerized"` for every production deploy.
+   */
+  runtimeMode: RuntimeMode;
 
   // Actions
   setRightTab: (tab: RightTab) => void;
@@ -115,6 +123,7 @@ interface UiState {
   setProcessStartedAt: (epochMs: number | null) => void;
   setSubscriptionLimits: (limits: SubscriptionLimitsMap) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
+  setRuntimeMode: (mode: RuntimeMode) => void;
   reset: () => void;
 
   // Async actions
@@ -144,6 +153,7 @@ const initialState = {
   dockerMemory: null as DockerMemoryStats | null,
   processStartedAt: null as number | null,
   subscriptionLimits: {} as SubscriptionLimitsMap,
+  runtimeMode: "containerized" as RuntimeMode,
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -204,6 +214,8 @@ export const useUiStore = create<UiState>((set) => ({
   setSubscriptionLimits: (subscriptionLimits) => set({ subscriptionLimits }),
 
   setBootstrapLoaded: (bootstrapLoaded) => set({ bootstrapLoaded }),
+
+  setRuntimeMode: (runtimeMode) => set({ runtimeMode }),
 
   reset: () =>
     set({

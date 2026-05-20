@@ -1,5 +1,27 @@
 import type { AgentId } from "./agent-types.js";
 
+// ---- Runtime mode (feature 118) ----
+
+/**
+ * Runtime mode for the orchestrator.
+ *
+ *   - `containerized` (default): production mode. Each session gets a Docker
+ *     container with a session-worker; agents run inside containers; compose
+ *     stacks manage previews. Requires Docker.
+ *   - `local`: dogfooding mode (ShipIt running inside ShipIt). No Docker
+ *     containers are created for inner sessions; agent CLIs are spawned as
+ *     in-process subprocesses; per-session inner-compose stacks are skipped.
+ *     See docs/118-shipit-ui-local/plan.md.
+ *
+ * Defined here (shared types) so both the orchestrator and the React client
+ * can reference it without the client reaching into orchestrator-only modules.
+ * `app-di.ts` re-exports this symbol for back-compat with existing imports.
+ *
+ * NOTE: this is NOT the same as `isTestMode`. `isTestMode` means "test harness
+ * with mocks"; `local` means "production behavior minus the container layer."
+ */
+export type RuntimeMode = "containerized" | "local";
+
 // ---- Git types ----
 
 export interface GitCommitInfo {

@@ -604,6 +604,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     credentialStore,
     defaultAgentId,
     workspaceDir,
+    runtimeMode,
     credentialsDir,
     usageManager,
     runnerRegistry,

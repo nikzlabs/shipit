@@ -17,26 +17,18 @@ import { initGlobalGitConfig } from "./git-config.js";
 import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
-import type { AgentId, AgentEvent, AgentProcess } from "../shared/types.js";
+import type { AgentId, AgentEvent, AgentProcess, RuntimeMode } from "../shared/types.js";
 
 /**
- * Runtime mode for the orchestrator.
+ * Runtime mode for the orchestrator. Selected via the `RUNTIME_MODE` env var.
  *
- *   - `containerized` (default): production mode. Each session gets a Docker
- *     container with a session-worker; agents run inside containers; compose
- *     stacks manage previews. Requires Docker.
- *   - `local`: dogfooding mode (ShipIt running inside ShipIt). No Docker
- *     containers are created for inner sessions; agent CLIs are spawned as
- *     in-process subprocesses; per-session inner-compose stacks are skipped.
- *     See docs/118-shipit-ui-local/plan.md.
- *
- * Selected via the `RUNTIME_MODE` env var on the orchestrator process.
- *
- * NOTE: this is NOT the same as `isTestMode`. `isTestMode` means "test harness
- * with mocks"; `local` means "production behavior minus the container layer."
- * See "isTestMode ≠ runtimeMode === 'local'" in the plan.
+ * The type itself lives in `shared/types` (so the React client can reference
+ * it without importing orchestrator-only modules) and is re-exported here for
+ * back-compat with the many call sites that import it from `app-di`. See the
+ * docstring on `RuntimeMode` in `domain-types.ts` and the
+ * "isTestMode ≠ runtimeMode === 'local'" note in docs/118.
  */
-export type RuntimeMode = "containerized" | "local";
+export type { RuntimeMode } from "../shared/types.js";
 
 /** Read RUNTIME_MODE from process.env, defaulting to "containerized". */
 export function resolveRuntimeMode(): RuntimeMode {
