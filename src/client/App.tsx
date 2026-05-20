@@ -933,6 +933,7 @@ export default function App() {
         theme={theme}
         onSelectTheme={setTheme}
         onSettingsOpen={() => handleSettingsOpen()}
+        onShortcutsOpen={() => setShortcutsOpen(true)}
         hasSystemPrompt={hasSystemPrompt}
         githubAuthenticated={githubStatus.authenticated}
         dockerMemory={dockerMemory}
