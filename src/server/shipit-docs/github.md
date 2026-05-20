@@ -89,12 +89,29 @@ file.
 
 ### Push semantics and credentials
 
-Inside the session container `git push` is **not** authenticated — there is
-no credential helper in the workspace. Use `gh pr create`; it pushes the
-branch through the orchestrator (which has the token) before opening the PR.
-If you only need to push without opening a PR, ask the user to push from the
-ShipIt UI, or add work to a follow-up commit and push it via `gh pr edit`-
-adjacent flows.
+`git push`/`git pull`/`git fetch` to `github.com` work from inside the session
+container, but **the GitHub token is never on disk or in your environment**.
+Git is configured with a *brokering* credential helper
+(`/usr/local/bin/shipit-git-credential`): when git needs a credential it asks
+the helper, which fetches the token from the ShipIt orchestrator over localhost
+for that one operation. The token is never written into `.gitconfig`, never
+exported as an env var, and is only ever returned for `github.com`.
+
+Practically: you won't see the token if you `cat ~/.gitconfig` or run
+`git config --get credential.helper` — you'll see the helper *path*, not a
+secret. This is intentional (see the security model below).
+
+For opening pull requests, still prefer `gh pr create` — it also flushes any
+pending working-tree changes and registers the PR with ShipIt's lifecycle UI.
+
+### Security model (why the token isn't reachable)
+
+The agent (you) runs inside the same container your `Bash` tool runs in, so any
+secret physically present in the container is reachable by injected/untrusted
+instructions. ShipIt therefore keeps the GitHub token *out* of the container:
+the `gh` shim brokers PR API calls, and the `shipit-git-credential` helper
+brokers raw git transport. Both proxy to the orchestrator, which holds the
+token. There is nothing in the sandbox to exfiltrate.
 
 ## CI status
 

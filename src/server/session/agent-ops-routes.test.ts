@@ -231,6 +231,41 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toBe("Spawned session not found");
   });
 
+  it("POST /agent-ops/git/credential forwards host/protocol to /git/credential", async () => {
+    client.setResponse("POST", "/git/credential", {
+      ok: true, status: 200,
+      body: { username: "x-access-token", password: "ghp_brokered" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/git/credential",
+      payload: { host: "github.com", protocol: "https" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ username: "x-access-token", password: "ghp_brokered" });
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/git/credential",
+      body: { host: "github.com", protocol: "https" },
+    });
+  });
+
+  it("POST /agent-ops/git/credential surfaces a 404 (no credential) verbatim", async () => {
+    client.setResponse("POST", "/git/credential", {
+      ok: false, status: 404, body: { error: "No credential available for host" },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/git/credential",
+      payload: { host: "example.com" },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe("No credential available for host");
+  });
+
   it("returns a 500 with a clear message when the orchestrator client cannot be constructed", async () => {
     const errApp = Fastify({ logger: false });
     registerAgentOpsRoutes(errApp, {

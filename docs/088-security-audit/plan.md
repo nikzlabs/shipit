@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: medium
 description: Comprehensive security audit of the ShipIt codebase covering injection, auth, secrets, XSS, Docker hardening, and SSRF with findings and remediation checklist.
 ---
@@ -20,6 +20,7 @@ Comprehensive security review of the ShipIt codebase covering injection vulnerab
 - **Issue**: The code validates that bind-mount source paths resolve inside the workspace, but a container process could swap a symlink between validation and the Docker mount syscall. The developers have documented this race condition in code comments.
 - **Mitigation in place**: Containers run with `CapDrop: ALL`, limiting blast radius. The race requires precise timing and a pre-existing symlink inside the workspace.
 - **Recommendation**: Document this as an accepted risk. Consider enforcing `nosymfollow` mount options or inode-based checks if the threat model changes.
+- **Status (2026-05-20): ACCEPTED RISK.** The race is documented in the code comments at `docker-proxy-auth.ts` and accepted: the attacker needs a process already running inside the sandbox, a pre-planted symlink in the workspace, and precise timing against the Docker mount syscall — and even then `CapDrop: ALL` plus the read-only nature of the validated bind contains the blast radius. Re-evaluate (and add `nosymfollow`/inode checks) only if the threat model adds a stronger in-sandbox adversary or the bind-mount surface widens.
 
 ## Low Severity
 
@@ -65,6 +66,13 @@ ShipIt's architecture is the coupled shape the article warns about — **the age
 - **Why it matters**: This is precisely the failure the article calls out — *"a prompt injection only had to convince Claude to read its own environment."* The `gh` shim closes the *API-surface* hole but not this one: the underlying PAT is still physically present in the sandbox. With no egress controls (finding #6), exfiltration is a one-liner. The article's stated goal is that *"git push and pull work from inside the sandbox without the agent ever handling the token itself"* — ShipIt does not yet meet that bar for raw git transport.
 - **Recommendation**: Replace the inline-token helper *in the container's* gitconfig with a **brokering credential helper** that mirrors the `gh` shim: a small `shipit-git-credential` binary installed in the session image, configured as `credential.helper = shipit-git-credential`, that POSTs to the worker (`/agent-ops/git/credential`) and returns the token only to git's credential protocol over localhost — never landing it on disk or in env. The orchestrator keeps the real token. (The orchestrator-side gitconfig can keep the inline helper, since the orchestrator is the trust boundary, not the sandbox.) If a brokered helper is too invasive short-term, at minimum stop copying the token-bearing `.gitconfig` into the container and inject identity-only config, routing all pushes through an orchestrator-side git proxy.
 
+- **Status (2026-05-20): FIXED.** Implemented the brokering credential helper exactly as recommended:
+  - **`src/server/session/agent-shim/git-credential.ts`** — the `shipit-git-credential` helper. Git invokes it (`get`/`store`/`erase`); on `get` it POSTs the requested host to the worker's `/agent-ops/git/credential` and writes `username=`/`password=` back to git on stdout. `store`/`erase` are no-ops (the orchestrator owns the credential). On any error / unreachable worker it prints nothing and exits 0 so git never hard-fails. Installed at `/usr/local/bin/shipit-git-credential` in all session-worker images (prod/dev/dogfood; `.docker` inherits dev).
+  - **`src/server/orchestrator/git-config.ts`** — new `writeContainerGitConfig(destPath)` + `CONTAINER_CREDENTIAL_HELPER` constant. Writes a *token-free* gitconfig (identity copied from the orchestrator's global config, `commit.gpgsign=false`, `credential.helper = /usr/local/bin/shipit-git-credential`). The orchestrator's own global gitconfig keeps the inline helper — it's the trust boundary, not the sandbox.
+  - **`src/server/orchestrator/session-credentials.ts`** — `.gitconfig` removed from `SHARED_CREDENTIAL_PATHS`; the per-session gitconfig is now *generated* (token-free) by `writeSessionGitConfig()` in both `ensureSessionCredentialsScaffold` (warm/idle) and `provisionAgentCredentials` (first turn). The token-bearing orchestrator `.gitconfig` is **never copied into the container** anymore.
+  - **Broker + route**: `/agent-ops/git/credential` (worker, `agent-ops-routes.ts`) relays to `POST /api/sessions/:id/git/credential` (orchestrator, `api-routes-github.ts`), backed by `getGitCredential()` in `services/github.ts`, which returns the token only for `github.com`.
+  - **Result**: `cat /credentials/.gitconfig`, `git config --get credential.helper`, and `git credential fill` all yield the helper *path*, not the PAT. `git push`/`pull`/`fetch` to github.com still work — the article's stated bar (*"git push and pull work from inside the sandbox without the agent ever handling the token itself"*) is now met for raw git transport too.
+
 ## Medium Severity
 
 ### 6. No network egress controls on agent containers
@@ -77,6 +85,10 @@ ShipIt's architecture is the coupled shape the article warns about — **the age
   2. A Docker network with no default route + explicit per-session firewall rules to required hosts.
   3. At minimum, document the lack of egress filtering as an accepted risk and ensure secrets marked `agent: true` are opt-in and clearly labeled as exfiltratable to anyone who can inject the agent.
 - **Residual / accepted risk**: The agent's own CLI OAuth token is intentionally in the sandbox (the CLI needs it to function), matching the article's acceptance of the agent's own credentials being present. The mitigations above shrink the exfiltration window for *all* in-container credentials rather than trying to remove them.
+- **Status (2026-05-20): ACCEPTED RISK, with mitigation #5 landed + labeling done.** The full forward-proxy / no-default-route options (1 and 2) are larger infra changes left for a follow-up; option 3 is now in place:
+  - The highest-value in-container credential — the GitHub PAT — is no longer in the container at all (finding #5 fixed), removing the most damaging single exfiltration target even though egress is still open.
+  - `agent: true` secrets are now explicitly labeled exfiltratable in `src/server/shipit-docs/secrets.md` (field reference + a dedicated "agent-container egress" security note), so anyone opting a value into the agent container is told it can be exfiltrated by an injected agent.
+  - Remaining in-container credentials (agent CLI OAuth, MCP tokens, `agent: true` secrets) and the lack of an egress chokepoint are documented and accepted pending the forward-proxy work.
 
 ## Strengths
 
@@ -132,8 +144,8 @@ The audit identified several well-implemented security controls:
 | Agent spawning | `claude.ts`, `codex-adapter.ts` | Secure |
 | JSON/data parsing | All routes and handlers | Secure (no eval/Function) |
 | Database operations | `secret-store.ts`, `database.ts` | Secure |
-| Credential reachability from sandbox | `git-config.ts`, `session-credentials.ts`, `agent-shim/gh.ts` | High (GitHub PAT readable in-container — #5) |
-| Container network egress | `container-lifecycle.ts`, `docker-proxy-sanitize.ts` | Medium (no egress controls — #6) |
+| Credential reachability from sandbox | `git-config.ts`, `session-credentials.ts`, `agent-shim/gh.ts`, `agent-shim/git-credential.ts` | **Fixed** (#5 — PAT brokered via `shipit-git-credential`, no longer on disk in-container) |
+| Container network egress | `container-lifecycle.ts`, `docker-proxy-sanitize.ts` | Medium — accepted risk + labeling (#6); forward proxy is follow-up |
 
 ## Checklist
 
@@ -145,6 +157,6 @@ The audit identified several well-implemented security controls:
 - [x] Audit Docker security controls
 - [x] Document findings
 - [x] Review architecture against Anthropic managed-agents threat model (credential reachability + egress)
-- [ ] Add accepted-risk documentation for TOCTOU race (issue #2)
-- [ ] **Fix GitHub PAT reachability from sandbox (issue #5)** — replace in-container inline-token credential helper with a brokering helper (`shipit-git-credential`) that proxies to the worker, mirroring the `gh` shim; stop copying the token-bearing `.gitconfig` into the container
-- [ ] **Add egress controls for agent containers (issue #6)** — orchestrator forward proxy with host allowlist (GitHub + Anthropic/agent endpoints + configured MCP hosts), or document as accepted risk with `agent: true` secrets clearly labeled exfiltratable
+- [x] Add accepted-risk documentation for TOCTOU race (issue #2)
+- [x] **Fix GitHub PAT reachability from sandbox (issue #5)** — replaced the in-container inline-token credential helper with a brokering helper (`shipit-git-credential`) that proxies to the worker, mirroring the `gh` shim; the token-bearing `.gitconfig` is no longer copied into the container (a token-free one is generated instead)
+- [x] **Add egress controls for agent containers (issue #6)** — documented as accepted risk; `agent: true` secrets are now clearly labeled exfiltratable in `secrets.md`. Orchestrator forward proxy with host allowlist (GitHub + Anthropic/agent endpoints + configured MCP hosts) remains a follow-up.

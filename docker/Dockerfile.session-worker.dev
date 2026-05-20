@@ -47,6 +47,13 @@ RUN printf '#!/bin/sh\nexec /app/node_modules/.bin/tsx /app/src/server/session/a
 RUN printf '#!/bin/sh\nexec /app/node_modules/.bin/tsx /app/src/server/session/agent-shim/shipit.ts "$@"\n' > /usr/local/bin/shipit \
     && chmod 0755 /usr/local/bin/shipit
 
+# Install the brokering `shipit-git-credential` helper (docs/088 finding #5).
+# Wired into the container's gitconfig as `credential.helper`; it fetches the
+# GitHub token from the worker over localhost at git-time so the PAT is never
+# written into /credentials/.gitconfig. Same tsx-by-absolute-path rationale.
+RUN printf '#!/bin/sh\nexec /app/node_modules/.bin/tsx /app/src/server/session/agent-shim/git-credential.ts "$@"\n' > /usr/local/bin/shipit-git-credential \
+    && chmod 0755 /usr/local/bin/shipit-git-credential
+
 # Bake the agent hooks: the PreToolUse branch-block hook (docs/130) and the
 # Stop-hook PR enforcement (docs/129). The settings file is referenced via
 # `claude --settings <path>` from src/server/session/claude.ts — always for

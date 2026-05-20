@@ -116,6 +116,37 @@ export async function getPrStatus(
   };
 }
 
+/**
+ * Resolve a git credential for the in-container brokering credential helper
+ * (`shipit-git-credential`, see `src/server/session/agent-shim/git-credential.ts`).
+ *
+ * This is the orchestrator side of finding #5 in docs/088-security-audit: the
+ * GitHub PAT is NOT written into the container's gitconfig. Instead the
+ * helper asks the worker (over localhost) for the credential at git-time, and
+ * the worker brokers to this route. The token is returned only over the
+ * worker→helper→git stdout channel and never lands on disk or in the
+ * container's environment.
+ *
+ * Returns the credential only for `github.com` (the only host the
+ * orchestrator holds a token for); any other host yields `null` so git falls
+ * back to its other helpers / anonymous access. Mirrors the format the
+ * orchestrator's own inline helper echoes: username `x-access-token`, password
+ * = the PAT.
+ */
+export function getGitCredential(
+  githubAuthManager: GitHubAuthManager,
+  host: string | undefined,
+): { username: string; password: string } | null {
+  const normalizedHost = (host ?? "").trim().toLowerCase();
+  // The orchestrator only ever holds a GitHub token. Returning it for any
+  // other host would hand the PAT to an arbitrary git remote the agent could
+  // configure (an exfiltration channel). Scope it strictly to github.com.
+  if (normalizedHost !== "github.com") return null;
+  const token = githubAuthManager.getToken();
+  if (!token) return null;
+  return { username: "x-access-token", password: token };
+}
+
 // ---- Mutation operations ----
 
 /** Create a pull request. */
