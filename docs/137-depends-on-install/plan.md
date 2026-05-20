@@ -1,6 +1,7 @@
 ---
-status: planned
+status: done
 priority: medium
+description: Declarative x-shipit-depends-on-install gate that holds compose preview services until agent.install finishes, then starts them exactly once.
 ---
 
 # `x-shipit-depends-on-install` — declarative install gate for compose services
@@ -150,18 +151,28 @@ by `docker compose up`. The two compose; they don't fight.
 start on the same `docker compose up <s1> <s2> ...` invocation so they
 share startup time rather than serializing.
 
-## Key files
+## Key files (as implemented)
 
 | File | Change |
 |---|---|
-| `src/server/shared/types/domain-types.ts` | Add `dependsOnInstall: boolean` to the per-service config type (default `true`). |
-| `src/server/orchestrator/compose-generator.ts` | Parse and strip `x-shipit-depends-on-install` from each service. Default to `true` when `x-shipit-preview` is `auto`; `false` for `manual`. Capture per-service flag in the parsed model. |
-| `src/server/orchestrator/compose-generator.test.ts` | Cover default, explicit `true`, explicit `false`, and the `manual`-preview default. |
-| `src/server/orchestrator/service-manager.ts` | In the auto-start path, partition services by `dependsOnInstall`. Start non-gated ones immediately (today's path). For gated ones: register them with the manager but defer `docker compose up`. Hook into `setInstallRunning(false)`: when the install succeeded, start every gated service in one batched `up`; when it failed, latch each gated service to `error` with the cause message. Mid-session re-install: when `setInstallRunning(true)` flips, `docker compose stop` gated services and re-enter the gated state. |
-| `src/server/orchestrator/service-manager.test.ts` | Add cases: gated service not started during install, started after install success, latched to error after install failure, restarted after mid-session re-install, no-install vacuous open, mixed gated + non-gated services. |
-| `src/server/shipit-docs/preview.md` | Document the new field and the new default. Remove the "exit 127 is expected" footnote — it now only applies to projects that explicitly opt out. |
-| `src/server/shipit-docs/compose.md` | Add the field to the `x-shipit-*` reference. |
-| `src/server/orchestrator/integration_tests/service-manager-*.test.ts` | One end-to-end integration test: fake install promise + fake compose, assert the gate ordering. |
+| `src/server/orchestrator/compose-generator.ts` | `ComposeService.dependsOnInstall` added (the per-service parsed model — there was no separate type in `domain-types.ts`). `parseComposeFile` resolves `x-shipit-depends-on-install`: explicit boolean wins, else `true` for effective `auto` preview / `false` for `manual`. No stripping needed — `x-` keys are valid compose extensions Docker ignores (same as `x-shipit-preview`). |
+| `src/server/orchestrator/compose-generator.test.ts` | Covers default-auto, implicit-auto (ports), default-manual, implicit-manual (portless), explicit `false` on auto, explicit `true` on manual. |
+| `src/server/orchestrator/service-manager.ts` | `ManagedService.dependsOnInstall` + `INSTALL_FAILED_GATE_MESSAGE`. Gate state: `_installFailed`, `gatedServices`. `start()` partitions auto services — non-gated start now, gated held in `starting` (or latched to `error` if a prior install failed). `setInstallRunning(running, { failed })`: `true→false` success → `startGatedServices` (one batched `up`); `true→false` fail → `latchGatedServicesToError`; `false→true` → `holdGatedServicesForReinstall` (stop + re-hold). `handleNonZeroExit` ignores gated services. `flushPostInstallRetries` (legacy net) excludes gated services. |
+| `src/server/orchestrator/service-poller.ts` | New `isGated` callback — the poller skips gated services so a transient `ps` reading can't clobber the gate-owned status. |
+| `src/server/orchestrator/container-session-runner.ts` | `runInstall` now returns `Promise<{ ok: boolean }>`; `signalInstallComplete(ok)` carries success/failure (from `install_done`/`install_error` and the reconnect resync). |
+| `src/server/orchestrator/service-manager-setup.ts` | Plumbs the install outcome: `installPromise` is `Promise<{ ok: boolean }>`, and both the create and adopt paths call `setInstallRunning(false, { failed: !ok })`. |
+| `src/server/orchestrator/service-manager.test.ts` | New "install gate" describe block: not-started-during-install, started-after-success, latched-on-failure, vacuous open, opted-out starts immediately, mixed gated/non-gated, mid-session re-install teardown+restart, batched multi-service up. Three legacy backoff-net tests updated to use `x-shipit-depends-on-install: false` (the net no longer applies to gated defaults). |
+| `src/server/orchestrator/integration_tests/service-manager-adoption.test.ts` | Stub captures `setInstallRunning` opts; asserts `{ failed: false }` on success and `{ failed: true }` on failure through the adopt path. |
+| `src/server/shipit-docs/preview.md`, `compose.md` | Document the field, the new default, the failure message, and the mid-session re-install blink. The "exit 127 is expected" note is now scoped to opted-out services only. |
+
+### Implementation note: log streaming
+
+Gated services are NOT re-streamed in the gated-start batch. `start()` already
+streams logs for every service in the map (`docker compose logs -f <service>`
+follows the service across its first `up`), so re-spawning a log follower in
+`startGatedBatch` was both redundant and — in test environments without a real
+`docker` binary — a source of duplicate spawns. The single stream from
+`start()` covers gated services for their whole lifecycle.
 
 ## Out of scope
 

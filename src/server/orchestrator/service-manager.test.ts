@@ -1019,7 +1019,9 @@ describe("ServiceManager install-running retry gate", () => {
 
   it("retries while install is running instead of marking error", async () => {
     const dir = setup();
-    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    // Opted out of the install gate (docs/137) so this exercises the legacy
+    // install-window backoff net rather than being held by the gate.
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    x-shipit-depends-on-install: false\n");
     const { mgr, setPsResponse } = makeManager(dir);
 
     setPsResponse(exitedPs(1));
@@ -1084,7 +1086,9 @@ describe("ServiceManager install-running retry gate", () => {
   it("backoff retry restarts the service via composeUpService", async () => {
     vi.useFakeTimers();
     const dir = setup();
-    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    // Opted out of the install gate (docs/137) — the install-window backoff
+    // net only applies to non-gated services now.
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    x-shipit-depends-on-install: false\n");
     const { mgr, composeUpCalls, setPsResponse } = makeManager(dir);
 
     setPsResponse(exitedPs(1));
@@ -1144,7 +1148,9 @@ services:
   it("stop() cancels pending retry timers", async () => {
     vi.useFakeTimers();
     const dir = setup();
-    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    // Opted out of the install gate (docs/137) so a real backoff timer is
+    // scheduled — that's what stop() must cancel.
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    x-shipit-depends-on-install: false\n");
     const { mgr, composeUpCalls, setPsResponse } = makeManager(dir);
 
     setPsResponse(exitedPs(1));
@@ -1421,5 +1427,253 @@ services:
     // don't trigger the recovery path.
     expect(upCalls.length).toBe(1);
     expect(rmCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Declarative install gate (docs/137-depends-on-install)
+// ---------------------------------------------------------------------------
+
+describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
+  let tmpDir: string;
+
+  function setup() {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-mgr-gate-"));
+    return tmpDir;
+  }
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.useRealTimers();
+  });
+
+  function writeCompose(dir: string, content: string): void {
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), content);
+  }
+
+  /**
+   * Build a manager that records the service names passed to each `up` and
+   * each `stop`, and serves a configurable `docker compose ps` response.
+   */
+  function makeManager(dir: string) {
+    const upCalls: string[][] = [];
+    const stopCalls: string[] = [];
+    let psResponse = "";
+
+    const composeRunner: ComposeRunner = (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) upCalls.push(args.slice(upIdx));
+      const stopIdx = args.indexOf("stop");
+      if (stopIdx >= 0) stopCalls.push(args[stopIdx + 1]);
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(psResponse);
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    return {
+      mgr,
+      upCalls,
+      stopCalls,
+      setPsResponse: (s: string) => { psResponse = s; },
+    };
+  }
+
+  /** Names passed across every `up` invocation. */
+  function upNames(upCalls: string[][]): string[] {
+    const names: string[] = [];
+    for (const call of upCalls) {
+      // Strip leading flags (up -d --build --remove-orphans …); service names
+      // are the non-flag trailing args.
+      for (const a of call) {
+        if (a === "up" || a.startsWith("-")) continue;
+        names.push(a);
+      }
+    }
+    return names;
+  }
+
+  async function flushMicrotasks(): Promise<void> {
+    for (let i = 0; i < 20; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+  }
+
+  it("does not start a gated service while install is running", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, upCalls } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+
+    // Gated service is held in `starting`, never passed to `up`.
+    expect(mgr.getService("web")?.status).toBe("starting");
+    expect(upNames(upCalls)).not.toContain("web");
+  });
+
+  it("starts the gated service after install succeeds", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, upCalls, setPsResponse } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    expect(upNames(upCalls)).not.toContain("web");
+
+    // Install finishes successfully → service starts in one `up` and the
+    // poll sees it running.
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+
+    expect(upNames(upCalls)).toContain("web");
+    expect(mgr.getService("web")?.status).toBe("running");
+  });
+
+  it("latches the gated service to error when install fails", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, upCalls } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+
+    mgr.setInstallRunning(false, { failed: true });
+    await flushMicrotasks();
+
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toContain("agent.install failed");
+    // It was never started.
+    expect(upNames(upCalls)).not.toContain("web");
+  });
+
+  it("starts immediately when no install is in flight (vacuous open)", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, upCalls, setPsResponse } = makeManager(dir);
+
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+    // No setInstallRunning(true) — gate is vacuously open.
+    await mgr.start();
+
+    expect(upNames(upCalls)).toContain("web");
+    expect(mgr.getService("web")?.status).toBe("running");
+  });
+
+  it("starts an opted-out service even while install is running", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    ports: ['5173:5173']
+    x-shipit-depends-on-install: false
+`);
+    const { mgr, upCalls, setPsResponse } = makeManager(dir);
+
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+    mgr.setInstallRunning(true);
+    await mgr.start();
+
+    // Opted out → starts immediately despite the open install window.
+    expect(upNames(upCalls)).toContain("web");
+    expect(mgr.getService("web")?.status).toBe("running");
+  });
+
+  it("starts non-gated services immediately while holding gated ones", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  gated:
+    image: node:20
+    ports: ['5173:5173']
+  free:
+    image: node:20
+    ports: ['4000:4000']
+    x-shipit-depends-on-install: false
+`);
+    const { mgr, upCalls, setPsResponse } = makeManager(dir);
+
+    setPsResponse(JSON.stringify({ Service: "free", ID: "f1", State: "running", ExitCode: 0 }));
+    mgr.setInstallRunning(true);
+    await mgr.start();
+
+    // Only the non-gated service was brought up; the gated one is held.
+    expect(upNames(upCalls)).toContain("free");
+    expect(upNames(upCalls)).not.toContain("gated");
+    expect(mgr.getService("gated")?.status).toBe("starting");
+  });
+
+  it("tears down and restarts gated services on a mid-session re-install", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, upCalls, stopCalls, setPsResponse } = makeManager(dir);
+
+    // Initial boot with install → start → running.
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    expect(mgr.getService("web")?.status).toBe("running");
+
+    const upCountBefore = upNames(upCalls).filter(n => n === "web").length;
+
+    // Re-install begins → gated service torn down + re-held.
+    mgr.setInstallRunning(true);
+    await flushMicrotasks();
+    expect(stopCalls).toContain("web");
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    // Re-install finishes → service restarted exactly once more.
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    const upCountAfter = upNames(upCalls).filter(n => n === "web").length;
+    expect(upCountAfter).toBe(upCountBefore + 1);
+    expect(mgr.getService("web")?.status).toBe("running");
+  });
+
+  it("batches multiple gated services into a single up after install", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  a:
+    image: node:20
+    ports: ['3001:3001']
+  b:
+    image: node:20
+    ports: ['3002:3002']
+`);
+    const { mgr, upCalls, setPsResponse } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    const upCallCountBefore = upCalls.length;
+
+    setPsResponse(
+      `${JSON.stringify({ Service: "a", ID: "a1", State: "running", ExitCode: 0 })}\n${JSON.stringify({ Service: "b", ID: "b1", State: "running", ExitCode: 0 })}`,
+    );
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+
+    // Exactly one new `up` invocation carrying both gated service names.
+    expect(upCalls.length).toBe(upCallCountBefore + 1);
+    const lastUp = upCalls[upCalls.length - 1];
+    expect(lastUp).toContain("a");
+    expect(lastUp).toContain("b");
   });
 });

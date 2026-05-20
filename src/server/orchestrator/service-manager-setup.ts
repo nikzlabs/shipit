@@ -67,7 +67,7 @@ export function adoptExistingServiceManager(
     composeStopPromises: Map<string, Promise<void>>;
     containerManager: SessionContainerManager | null;
     broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
-    installPromise: Promise<void> | null;
+    installPromise: Promise<{ ok: boolean }> | null;
     /**
      * Fresh closure that reads the session's latest secrets (the OLD
      * closure baked into `mgr` references the disposed runner; safe today
@@ -143,9 +143,11 @@ export function adoptExistingServiceManager(
   //    the gate retries it instead of latching to `error`.
   if (installPromise) {
     mgr.setInstallRunning(true);
-    void installPromise.finally(() => {
-      mgr.setInstallRunning(false);
-    });
+    const p = installPromise;
+    void (async () => {
+      const res = await p;
+      mgr.setInstallRunning(false, { failed: !res.ok });
+    })();
   }
 
   // 5. Disposed handler — same shape as the create path, including the
@@ -296,10 +298,11 @@ export function setupServiceManager(
   // window around it below so dev servers that race install on a shared
   // bind mount get retried instead of latching to `error`.
   const installCommands = shipitConfig.agent.install;
-  let installPromise: Promise<void> | null = null;
+  let installPromise: Promise<{ ok: boolean }> | null = null;
   if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
     installPromise = runner.runInstall(installCommands).catch((err: unknown) => {
       console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
+      return { ok: false };
     });
   }
 
@@ -456,9 +459,11 @@ export function setupServiceManager(
   // pending-retry state. Skip when there's nothing to wait for.
   if (installPromise) {
     mgr.setInstallRunning(true);
-    void installPromise.finally(() => {
-      mgr.setInstallRunning(false);
-    });
+    const p = installPromise;
+    void (async () => {
+      const res = await p;
+      mgr.setInstallRunning(false, { failed: !res.ok });
+    })();
   }
 
   // Clean up on runner dispose
