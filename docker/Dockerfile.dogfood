@@ -1,41 +1,38 @@
 # ShipIt-in-ShipIt dogfooding image (feature 118).
 #
-# Pre-installs node_modules at /workspace/node_modules so the anonymous volume
-# declared in docker-compose.yml seeds from this image on first compose start.
-# Each outer session gets its own anonymous volume that initializes from this
-# image's filesystem at /workspace/node_modules — so every new session opens
-# with deps already in place, cutting the cold-start `npm install` from ~20s
-# to a fast lockfile verify.
+# Minimal image for the `dev` Compose service: a Node runtime plus the agent
+# CLIs. It no longer pre-bakes node_modules — the `dev` service now shares the
+# agent container's bind-mounted /workspace/node_modules (populated by
+# `agent.install`) instead of carrying its own copy. See the volumes/command
+# notes in docker-compose.yml, and feature 137 (docs/137-depends-on-install)
+# for the broader "share the install output instead of racing it" rationale,
+# for why the separate tree and the in-command `npm install` were removed.
 #
-# The runtime command in docker-compose.yml still runs `npm install` to
-# reconcile any lockfile drift between the image's bake-time state and the
-# outer session's branch. When the lockfile matches it's a no-op verify;
-# when it differs only the diff is installed.
-#
-# Build context is the repo root. .dockerignore excludes node_modules/dist/
-# git so the build context stays small.
-#
-# Node version intentionally matches the runtime container (node:22) so the
-# baked native modules (better-sqlite3, etc.) are ABI-compatible at runtime.
-# This is also intentionally different from the agent container's Node 24 —
-# see the anonymous-volume rationale in docker-compose.yml.
+# Node version is pinned to the SAME node:24-slim digest as the agent /
+# session-worker image (Dockerfile.session-worker.dogfood). This is load-bearing:
+# the native modules in node_modules (better-sqlite3, node-pty, …) are built by
+# `agent.install` inside the node:24 agent container, and the `dev` service must
+# share that ABI to load them. (Previously this image was node:22 with its own
+# node_modules; that split is gone now that the tree is shared.)
 
-FROM node:22@sha256:1031993481795705055273f2eef0c24597abdcb277d6e058c82f78cbbdef92a6
+FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
 
 WORKDIR /workspace
+
+# Runtime tools the inner orchestrator needs. The previous full `node:22` base
+# bundled git; `node:24-slim` does not, so install it explicitly along with the
+# same toolset baked into the session-worker runtime image
+# (Dockerfile.session-worker.{prod,dogfood}). git is load-bearing — the inner
+# orch's GitManager shells out to it for clone/commit/diff. The others keep the
+# inner orch's behavior at parity with a real session container.
+RUN apt-get update \
+    && apt-get install -y git curl python3 make g++ zip unzip ripgrep bubblewrap \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install the agent CLIs globally so the inner orchestrator (RUNTIME_MODE=local)
 # can spawn them in-process via claude-adapter / codex-adapter. The shared
 # AgentRegistry detects agents with `which <binary>`, so without these on PATH
 # the inner UI shows "Not installed" on the Agent Setup screen and no session
 # can start. This mirrors the npm-globals layer in Dockerfile.session-worker.prod.
-# Placed before the COPY below so it stays cached across lockfile changes.
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g @anthropic-ai/claude-code @openai/codex @playwright/mcp
-
-# package.json/package-lock.json at /workspace are shadowed at runtime by the
-# bind mount of the outer session's working tree — they only matter during
-# image build. The resulting node_modules at /workspace/node_modules is what
-# seeds the anonymous volume on first session start.
-COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --loglevel=verbose

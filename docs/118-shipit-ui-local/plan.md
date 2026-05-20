@@ -50,8 +50,10 @@ The ShipIt repo gains a `docker-compose.yml` with a single `dev` service that th
 ```yaml
 services:
   dev:
-    image: node:22
-    command: sh -c "npm install && npm run dev"   # see "agent.install does not run for compose services"
+    build: { context: ., dockerfile: docker/Dockerfile.dogfood }  # node:24 + agent CLIs
+    # No `npm install` — the dev service shares the agent container's
+    # /workspace/node_modules (populated by agent.install) and just waits for it.
+    command: sh -c "... while [ ! -x node_modules/.bin/vite ]; do sleep 1; done && npm run dev ..."
     working_dir: /workspace
     init: true              # so orphaned agent subprocesses are reapable
     environment:
@@ -62,7 +64,7 @@ services:
       WORKSPACE_DIR: /workspace
       SHIPIT_STATE_DIR: /workspace/.inner-shipit
     volumes:
-      - .:/workspace        # required — without this, /workspace is empty
+      - .:/workspace        # required — also shares node_modules with the agent
     ports:
       - "3000:3000"
     x-shipit-preview: manual  # heavy boot — user starts on demand
@@ -71,6 +73,21 @@ services:
       - { name: ANTHROPIC_AUTH_TOKEN,     source: platform:claude_oauth }
       - { name: GITHUB_TOKEN,             source: platform:github_token }
 ```
+
+> **Update (post-137): shared node_modules, no in-command install.** The dev
+> service originally ran `node:22` with `sh -c "npm install && npm run dev"` and
+> a per-service anonymous `node_modules` volume. That split existed to avoid
+> (a) corrupting a shared tree via concurrent `npm install` runs and (b) an ABI
+> mismatch between the dev service (Node 22) and the agent container (Node 24).
+> Both reasons are gone: the dev image is now pinned to the **same node:24
+> digest** as the agent container, and the in-command `npm install` is removed,
+> so `agent.install` is the sole writer of the now-**shared** /workspace/node_modules.
+> The dev service simply waits for `node_modules/.bin/vite` to exist, then boots.
+> Note 137's `x-shipit-depends-on-install` gate does **not** auto-apply here —
+> it only gates `x-shipit-preview: auto` services; `manual` services start via
+> `startService` without consulting the gate — hence the explicit wait guard in
+> the command rather than relying on the gate. See the live `docker-compose.yml`
+> and `docker/Dockerfile.dogfood` for the exact command and image.
 
 This must be paired with a top-level `compose: docker-compose.yml` field in the ShipIt repo's `shipit.yaml` — without it, `resolveShipitConfig` returns `compose: undefined` and `setupServiceManager` (`app-lifecycle.ts:576`) skips Compose entirely, so the dev service never starts.
 

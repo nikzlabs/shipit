@@ -15,10 +15,12 @@
 # See docs/118-shipit-ui-local/plan.md for the full design.
 services:
   dev:
-    # Built from docker/Dockerfile.dogfood, which pre-installs node_modules
-    # at /workspace/node_modules. The anonymous volume below seeds from that
-    # path on first start, so every new outer session opens with deps already
-    # in place instead of paying ~20s for a cold `npm install`.
+    # Built from docker/Dockerfile.dogfood — a thin node:24 + agent-CLIs image.
+    # It no longer bakes node_modules: the `dev` service shares the agent
+    # container's bind-mounted /workspace/node_modules (populated by
+    # `agent.install`) instead of carrying its own copy. See the volumes and
+    # command notes below, and feature 137 (docs/137-depends-on-install) for
+    # the "share the install output instead of re-installing" rationale.
     #
     # `image:` names the build output so Compose can reuse it across stack
     # restarts. The first session on a given outer host pays the build cost
@@ -27,13 +29,25 @@ services:
       context: .
       dockerfile: docker/Dockerfile.dogfood
     image: shipit-dogfood:local
-    # `agent.install` from shipit.yaml does NOT run for compose services —
-    # it only runs for session containers. So bake the install into the
-    # service command. With the Dockerfile pre-baking node_modules, this
-    # `npm install` is usually a fast lockfile verify; it only does real
-    # work when the outer session's branch has lockfile drift vs. the image.
-    # We keep `npm install` rather than `npm ci` so drift is tolerated
-    # rather than fatal.
+    # No `npm install` here anymore. The `dev` service now shares the agent
+    # container's /workspace/node_modules (see volumes below), which
+    # `agent.install` populates at session boot — so the deps are already in
+    # place by the time the user manually starts this heavyweight service.
+    # Running our own `npm install` would be both redundant AND unsafe: it
+    # would write the *shared* tree concurrently with `agent.install`, which
+    # is the tarball-extraction corruption race the old per-service
+    # node_modules volume existed to avoid (feature 137 is the broader
+    # "depend on install instead of racing it" move).
+    #
+    # 137's declarative gate (`x-shipit-depends-on-install`) only auto-applies
+    # to `x-shipit-preview: auto` services — it does NOT cover this `manual`
+    # service (`ServiceManager.startService` starts manual services on demand
+    # without consulting the gate). So instead of the gate we use a tiny
+    # wait-for-deps guard: block until `node_modules/.bin/vite` exists before
+    # launching. In the common case agent.install finished long ago and this
+    # is an instant check; it only ever waits if the user starts `dev` during
+    # the brief boot-time install window.
+    #
     # `mkdir -p` ensures SHIPIT_STATE_DIR exists before the inner orch
     # tries to open its SQLite db there (DatabaseManager doesn't create
     # parent dirs). Required because `.inner-shipit/` is in .gitignore
@@ -57,7 +71,9 @@ services:
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} &&
-      npm install &&
+      while [ ! -x node_modules/.bin/vite ]; do
+        echo '[dev] waiting for agent.install to populate node_modules…'; sleep 1;
+      done &&
       (PORT=4000 npm run dev 2>&1 | sed 's/^/[orch] /' &) &&
       API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
       "
@@ -98,25 +114,23 @@ services:
     volumes:
       # Required: without this, /workspace inside the dev container is
       # empty. Bind-mounting the outer session's workspace lets the inner
-      # orch see (and edit) the live ShipIt source.
+      # orch see (and edit) the live ShipIt source — INCLUDING
+      # /workspace/node_modules, which is now shared with the agent container
+      # rather than shadowed by a per-service volume.
+      #
+      # Why the old anonymous `- /workspace/node_modules` volume is gone:
+      #   1. Concurrent-write corruption — the only thing that wrote the
+      #      shared tree from this side was the in-command `npm install`,
+      #      which we removed. With the dev service no longer installing,
+      #      `agent.install` is the sole writer and there's no race.
+      #   2. ABI mismatch — the dev image was Node 22 vs the agent's Node 24,
+      #      so a shared tree's native modules wouldn't load. The dev image is
+      #      now pinned to the SAME node:24 digest as the agent container
+      #      (docker/Dockerfile.dogfood), so the agent-built better-sqlite3 /
+      #      node-pty binaries load fine here.
+      # Sharing the tree drops ~600MB of duplicate deps and a duplicate
+      # install per session.
       - .:/workspace
-      # Anonymous volume that shadows /workspace/node_modules. Without
-      # this, the outer agent container and this dev container both write
-      # to the same bind-mounted /workspace/node_modules and:
-      #   1. Concurrent tarball extraction races corrupt files (we saw
-      #      `tsx` and `zustand` go missing with TAR_ENTRY_ERROR warnings).
-      #   2. The agent container runs Node 24 while this service is on
-      #      Node 22, so native modules like better-sqlite3 get a prebuilt
-      #      binary for one ABI that fails to load under the other.
-      # An anonymous volume gives the dev container its own node_modules.
-      # Compose preserves it across container restarts (it's only recreated
-      # when the service definition itself changes), so npm install caches.
-      # We use anonymous instead of named because the orchestrator-generated
-      # `.shipit/compose.override.yml` declares its own top-level `volumes:`
-      # block, and compose's multi-file merge ends up dropping the user
-      # file's top-level volume declarations — anonymous volumes don't
-      # need a top-level entry.
-      - /workspace/node_modules
     ports:
       - "3000:3000"
     # Tells the outer orchestrator to surface this service in the preview
