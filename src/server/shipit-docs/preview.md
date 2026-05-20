@@ -7,14 +7,21 @@ automatically as you edit files.
 
 1. ShipIt reads `shipit.yaml` for the compose file path (or auto-detects
    `docker-compose.yml` / `compose.yml` at the workspace root).
-2. If `agent.install` commands are specified, they run in the agent container
-   **in parallel** with compose services starting — install does not block
-   previews. While install is in flight, a compose service that exits
-   non-zero (typically because dependencies aren't ready yet) is restarted
-   automatically with backoff instead of being marked `error`. Once install
-   finishes, ShipIt does one explicit restart pass on any service still in
-   `error` so a service that crashed just before install completed still
-   recovers without manual intervention.
+2. If `agent.install` commands are specified, they run in the agent container.
+   By default, every `auto` preview service **waits for install to finish**
+   before it starts — it is held in `starting` ("waiting for install") rather
+   than racing the agent and crash-looping on missing dependencies. This is
+   the `x-shipit-depends-on-install` gate (see below), and it is `true` by
+   default for `auto` services. Once install completes successfully, gated
+   services start exactly once. If install fails, gated services are marked
+   `error` with the message `agent.install failed — dependent service not
+   started`, surfacing the real cause instead of a downstream symptom.
+
+   A service that opts out (`x-shipit-depends-on-install: false`) starts
+   immediately, in parallel with install. For those, the legacy safety net
+   still applies: a non-zero exit during the install window is retried with
+   backoff instead of being marked `error`, and once install finishes ShipIt
+   does one explicit restart pass on any such service still in `error`.
 3. Services defined in docker-compose.yml start as Docker Compose containers.
    Services marked as `auto` (or with `ports`) start automatically.
 4. ShipIt detects when ports are ready and routes browser traffic through a
@@ -45,10 +52,14 @@ services:
     volumes: [".:/app"]
 ```
 
-The dev server will exit `127` ("vite: not found") on the first cold-boot
-attempt because `node_modules` doesn't exist yet — that's expected. ShipIt
-notices `agent.install` is still running and restarts the service until it
-comes up.
+By default the dev server **waits** for `agent.install` to finish before it
+starts (the `x-shipit-depends-on-install` gate), so there is no cold-boot
+crash and no `127` ("vite: not found") noise. The preview shows `starting`
+until install completes, then comes up cleanly in a single start.
+
+> The `127` / "vite: not found" cold-boot crash only happens for services
+> that explicitly opt out with `x-shipit-depends-on-install: false`. For those,
+> the exit is expected and ShipIt retries with backoff until install finishes.
 
 ### Common pitfall: duplicate install in compose `command`
 
@@ -73,6 +84,34 @@ the broken tree, dev server fails with `vite: not found`, container exits
 |---------------------|----------|
 | `auto` (default for services with ports) | Starts automatically, shown in preview |
 | `manual` (default for services without ports) | User clicks "Start" in UI |
+
+## Install gate (`x-shipit-depends-on-install`)
+
+Controls whether a service waits for `agent.install` before starting.
+
+| Value | Behavior |
+|-------|----------|
+| `true` (default for `auto` services) | Held in `starting` until `agent.install` finishes, then started exactly once. If install fails, the service is marked `error` with `agent.install failed — dependent service not started`. |
+| `false` (default for `manual` services) | Starts immediately, in parallel with install. Crash-loops while dependencies are missing are retried with backoff (the legacy net). |
+
+```yaml
+services:
+  preview:
+    image: node:24-slim
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+    ports: ["3000:3000"]
+    x-shipit-preview: auto
+    x-shipit-depends-on-install: true   # default for auto — gate on install
+```
+
+Set it to `false` only when a preview service genuinely does not depend on
+`agent.install` output and you want fail-fast feedback.
+
+**Mid-session re-install.** Editing `shipit.yaml` or a lockfile re-runs
+`agent.install`. Gated services are torn down while install re-runs and
+restarted once it completes — so expect a brief preview blink on those edits.
+That's intentional: the edit changed the dependency tree, so the service
+relaunches against the fresh `node_modules`.
 
 ## Multi-service
 

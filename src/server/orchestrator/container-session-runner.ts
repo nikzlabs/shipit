@@ -764,8 +764,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * SSE stream delivers `install_done` or `install_error`, or when the
    * worker reports the install was skipped (marker present).
    */
-  private _installComplete: Promise<void> | null = null;
-  private _resolveInstallComplete: (() => void) | null = null;
+  private _installComplete: Promise<{ ok: boolean }> | null = null;
+  private _resolveInstallComplete: ((result: { ok: boolean }) => void) | null = null;
   /**
    * True while the orchestrator believes an install is in flight on the
    * worker. Used by the SSE reconnect path: if our SSE stream drops between
@@ -790,8 +790,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * instead of resetting `_resolveInstallComplete` (which would orphan the
    * first call's resolver and leak a never-resolving promise).
    */
-  async runInstall(commands: string[]): Promise<void> {
-    if (commands.length === 0) return;
+  async runInstall(commands: string[]): Promise<{ ok: boolean }> {
+    if (commands.length === 0) return { ok: true };
 
     // Concurrent-call guard: if an install is already in flight (either we
     // armed `_installComplete` and haven't resolved yet, or the worker is
@@ -803,10 +803,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // caller kicked off in the same tick takes the join branch instead of
     // also slipping past the guard while we're still awaiting `_workerReady`.
     if (this._installComplete) {
-      await this._installComplete;
-      return;
+      return this._installComplete;
     }
-    this._installComplete = new Promise<void>((resolve) => {
+    const completion = this._installComplete = new Promise<{ ok: boolean }>((resolve) => {
       this._resolveInstallComplete = resolve;
     });
     this._installInFlight = true;
@@ -814,7 +813,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await this._workerReady;
     if (this._disposed) {
       this.signalInstallComplete();
-      return;
+      return { ok: true };
     }
 
     this.emitMessage({
@@ -833,10 +832,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           status: "skipped",
         });
         this.signalInstallComplete();
-        return;
+        return { ok: true };
       }
-      // Started — wait for SSE-delivered install_done / install_error.
-      await this._installComplete;
+      // Started — wait for SSE-delivered install_done / install_error to
+      // resolve the completion promise with the success/failure outcome.
+      return await completion;
     } catch (err) {
       this.emitMessage({
         type: "install_status",
@@ -844,17 +844,23 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         status: "error",
         message: err instanceof Error ? err.message : String(err),
       });
-      this.signalInstallComplete();
+      this.signalInstallComplete(false);
+      return { ok: false };
     }
   }
 
-  /** Resolve the in-flight install promise (idempotent). */
-  private signalInstallComplete(): void {
+  /**
+   * Resolve the in-flight install promise (idempotent). `ok` carries whether
+   * the install succeeded — propagated to the ServiceManager install gate so
+   * a failed install latches dependent services to `error` rather than
+   * starting them (docs/137).
+   */
+  private signalInstallComplete(ok = true): void {
     this._installInFlight = false;
     if (this._resolveInstallComplete) {
       const r = this._resolveInstallComplete;
       this._resolveInstallComplete = null;
-      r();
+      r({ ok });
     }
     this._installComplete = null;
   }
@@ -913,7 +919,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         message: last.message ?? "Install failed",
       });
     }
-    this.signalInstallComplete();
+    this.signalInstallComplete(last.ok);
   }
 
   /**
@@ -1097,7 +1103,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             command: data.command as string | undefined,
             message: (data.message as string) ?? "Install failed",
           });
-          this.signalInstallComplete();
+          this.signalInstallComplete(false);
           break;
 
         // --- MCP server status (docs/088) ---

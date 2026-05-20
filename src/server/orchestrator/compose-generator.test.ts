@@ -61,6 +61,81 @@ services:
     expect(services[1].shipitPreview).toBe("manual");
   });
 
+  // ---- x-shipit-depends-on-install (docs/137) ----
+
+  it("defaults dependsOnInstall to true for auto-preview services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    x-shipit-preview: auto
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].dependsOnInstall).toBe(true);
+  });
+
+  it("defaults dependsOnInstall to true for services with ports (implicit auto)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    ports: ["5173:5173"]
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].dependsOnInstall).toBe(true);
+  });
+
+  it("defaults dependsOnInstall to false for manual-preview services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  db:
+    image: postgres:16
+    x-shipit-preview: manual
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].dependsOnInstall).toBe(false);
+  });
+
+  it("defaults dependsOnInstall to false for portless services (implicit manual)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  db:
+    image: postgres:16
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].dependsOnInstall).toBe(false);
+  });
+
+  it("honors explicit x-shipit-depends-on-install: false on an auto service", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    x-shipit-preview: auto
+    x-shipit-depends-on-install: false
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].dependsOnInstall).toBe(false);
+  });
+
+  it("honors explicit x-shipit-depends-on-install: true on a manual service", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  worker:
+    image: node:20
+    x-shipit-preview: manual
+    x-shipit-depends-on-install: true
+`);
+    const services = parseComposeFile(p, { dockerSocket: false });
+    expect(services[0].dependsOnInstall).toBe(true);
+  });
+
   it("extracts user-defined profiles", () => {
     const dir = setup();
     const p = writeCompose(dir, `

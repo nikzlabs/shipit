@@ -35,6 +35,14 @@ export interface ServicePollerOptions {
   pollIntervalMs: number;
   /** Build the common compose CLI args (manager owns the file/project flags). */
   composeArgs: (...extra: string[]) => string[];
+  /**
+   * Whether a service is currently held by the install gate (docs/137).
+   * Gated services are skipped entirely by the poll — their `starting`/
+   * `error` status is owned by the gate, so a transient `ps` reading (e.g.
+   * a container exiting during mid-session re-install teardown) must not
+   * clobber it. Optional — defaults to "never gated".
+   */
+  isGated?: (name: string) => boolean;
   /** Look up the current state of a service in the manager's map. */
   getService: (name: string) => PollerService | undefined;
   /** Persist a resolved container IP back to the manager's service entry. */
@@ -75,6 +83,7 @@ export class ServicePoller {
   private readonly composeQuery: ComposeQueryFn;
   private readonly pollIntervalMs: number;
   private readonly composeArgs: (...extra: string[]) => string[];
+  private readonly isGated: (name: string) => boolean;
   private readonly getService: (name: string) => PollerService | undefined;
   private readonly setContainerIp: (serviceName: string, ip: string) => void;
   private readonly updateServiceStatus: ServicePollerOptions["updateServiceStatus"];
@@ -91,6 +100,7 @@ export class ServicePoller {
     this.composeQuery = opts.composeQuery;
     this.pollIntervalMs = opts.pollIntervalMs;
     this.composeArgs = opts.composeArgs;
+    this.isGated = opts.isGated ?? (() => false);
     this.getService = opts.getService;
     this.setContainerIp = opts.setContainerIp;
     this.updateServiceStatus = opts.updateServiceStatus;
@@ -130,6 +140,11 @@ export class ServicePoller {
       }
       const svc = entry.Service ? this.getService(entry.Service) : undefined;
       if (!svc) continue;
+
+      // Skip gated services — the install gate owns their status. A `ps`
+      // reading here (e.g. a container exiting during re-install teardown)
+      // must not overwrite the held `starting`/`error`. See docs/137.
+      if (this.isGated(svc.name)) continue;
 
       // Use container ID for inspect (more reliable than name)
       const containerRef = entry.ID ?? entry.Name;
