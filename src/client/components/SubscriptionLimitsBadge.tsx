@@ -17,10 +17,13 @@ interface SubscriptionLimitsBadgeProps {
 }
 
 /**
- * Header badge group rendering one row per fetchable provider.
- * Each row is `<Label> [5h ▓▓░ NN%] [7d ▓░░ NN%]` — the percentages
- * sit on top of mini pills whose background fill is proportional
- * to the percentage, so urgency is conveyed by both width and color.
+ * Header badge group rendering one **pill per fetchable provider**,
+ * matching the chrome of `UptimeBadge` / `DockerMemoryBadge` (a single
+ * `rounded-full bg-(--color-bg-hover)` pill). Inside each pill: the
+ * provider label followed by up to two meters — `5h NN%` and `7d NN%`.
+ * Each meter is a tier-colored number with a thin underline gauge whose
+ * fill width is proportional to the percentage, so urgency reads from
+ * both color and width without nesting pills inside the pill.
  *
  * See docs/135-subscription-limits-badge/plan.md.
  */
@@ -68,74 +71,74 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
     );
   }
 
-  // Stale = we have data but the most recent refresh failed. We
-  // keep the visual presentation identical (per user request) and
-  // surface the staleness in the tooltip only.
+  // Stale = we have data but the most recent refresh failed. We keep the
+  // visual presentation identical (per user request) and surface the
+  // staleness in the tooltip only.
   const isStale = !!snapshot.error && hasData;
 
   return (
     <span
-      className="hidden sm:inline-flex items-center gap-1.5 text-xs font-medium tabular-nums text-(--color-text-secondary)"
+      className="hidden sm:inline-flex items-center gap-2 text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) font-medium tabular-nums text-(--color-text-secondary)"
       title={buildTooltip(label, snapshot)}
       data-stale={isStale ? "true" : undefined}
     >
       <span>{label}</span>
-      {sessionPct !== null && <MeterPill shortLabel="5h" pct={sessionPct} />}
-      {weeklyPct !== null && <MeterPill shortLabel="7d" pct={weeklyPct} />}
+      {sessionPct !== null && <Meter shortLabel="5h" pct={sessionPct} />}
+      {weeklyPct !== null && <Meter shortLabel="7d" pct={weeklyPct} />}
       {!hasData && <span>—</span>}
     </span>
   );
 }
 
-interface MeterPillProps {
+interface MeterProps {
   shortLabel: string;
   pct: number;
 }
 
 /**
- * A single 5h / 7d meter pill: the percentage text sits on top of
- * a background bar that fills `pct%` of the pill's width. The bar
- * carries the urgency signal via both width and color; the text
- * itself stays at `--color-text-primary` so contrast is guaranteed
- * on both dark and light themes (colored text on a lightly-tinted
- * fill collapsed in light themes — see the earlier iteration).
+ * A single 5h / 7d meter: tier-colored `"5h NN%"` text with a thin
+ * underline gauge beneath it. The gauge's fill bar grows to `pct%` of
+ * the meter's width and carries the same tier color as the text, so
+ * urgency reads from both width and color. Unlike the earlier
+ * full-height fill chip, the bar is a 2px underline — that keeps each
+ * provider as a single pill (matching `UptimeBadge` / `DockerMemoryBadge`)
+ * instead of nesting pills inside the pill. The tier colors come from
+ * the per-theme `--color-context-*` tokens (shared with `ContextDial`),
+ * which are tuned for contrast on both dark and light themes.
  */
-function MeterPill({ shortLabel, pct }: MeterPillProps) {
+function Meter({ shortLabel, pct }: MeterProps) {
   const fillWidth = `${Math.max(0, Math.min(100, pct))}%`;
-  const tier = tierFor(pct);
+  const color = tierColor(pct);
   return (
     <span
-      className="relative inline-flex items-center rounded-full bg-(--color-bg-hover) px-1.5 py-0.5 overflow-hidden text-(--color-text-primary)"
+      className="relative inline-flex items-center whitespace-nowrap pb-0.75"
       data-meter-pct={Math.round(pct)}
+      style={{ color }}
     >
-      <span
-        aria-hidden
-        className={`absolute inset-y-0 left-0 ${tier.fill}`}
-        style={{ width: fillWidth }}
-      />
-      <span className="relative">
-        {shortLabel} {formatPct(pct)}
+      {shortLabel} {formatPct(pct)}
+      <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-(--color-text-secondary)/25">
+        <span
+          aria-hidden
+          className="absolute inset-y-0 left-0 rounded-full"
+          style={{ width: fillWidth, backgroundColor: color }}
+        />
       </span>
     </span>
   );
 }
 
-interface Tier {
-  fill: string;
-}
-
 /**
- * Tier thresholds: neutral → amber → orange → red at 60 / 75 / 90
- * percent. Fill colors use saturated Tailwind palette values at
- * elevated opacity so the bar reads clearly against both the dark
- * `bg-hover` (rgba white 5%) and the light `bg-hover` (rgba black
- * 4%). Text color is decoupled from the tier — see `MeterPill`.
+ * Tier color for a usage percentage: neutral → mid → high → full at
+ * 60 / 75 / 90 percent. Returns a `var(--color-context-*)` string so
+ * the same value drives both the meter text and its fill bar; below
+ * 60% the meter stays at the neutral `--color-text-secondary` so it
+ * reads the same as the provider label.
  */
-export function tierFor(pct: number): Tier {
-  if (pct >= 90) return { fill: "bg-red-500/55" };
-  if (pct >= 75) return { fill: "bg-orange-500/55" };
-  if (pct >= 60) return { fill: "bg-amber-500/55" };
-  return { fill: "bg-(--color-text-secondary)/25" };
+export function tierColor(pct: number): string {
+  if (pct >= 90) return "var(--color-context-full)";
+  if (pct >= 75) return "var(--color-context-high)";
+  if (pct >= 60) return "var(--color-context-mid)";
+  return "var(--color-text-secondary)";
 }
 
 /** Format 0–100 → `"96%"`, rounded to whole-number percent. */
