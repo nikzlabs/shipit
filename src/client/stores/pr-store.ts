@@ -128,6 +128,17 @@ interface PrState {
    */
   postComment: (sessionId: string, body: string) => Promise<string | null>;
 
+  // PR edit actions (docs/133 Phase 2)
+  /**
+   * Edit the PR title and/or body. Optimistically updates the card so the
+   * change shows immediately, then reconciles on the next poll. Reverts the
+   * optimistic change and returns an error message on failure; null on success.
+   */
+  updatePr: (
+    sessionId: string,
+    changes: { title?: string; body?: string },
+  ) => Promise<string | null>;
+
   // Merge actions
   /** Merge the PR with the given method. Returns error message on failure, null on success. */
   merge: (sessionId: string, method?: string) => Promise<string | null>;
@@ -415,6 +426,59 @@ export const usePrStore = create<PrState>((set, get) => ({
     } catch (err) {
       revert();
       return err instanceof Error ? err.message : "Failed to post comment";
+    }
+  },
+
+  // ---- PR edit actions (docs/133 Phase 2) ----
+
+  updatePr: async (sessionId, changes) => {
+    const card = get().cardBySession[sessionId];
+    if (!card?.pr) return "No pull request to update";
+    if (typeof changes.title !== "string" && typeof changes.body !== "string") {
+      return "Provide a title or body to update";
+    }
+    const prNumber = card.pr.number;
+    const prev = { title: card.pr.title, body: card.pr.body };
+
+    const applyPr = (pr: NonNullable<PrCardState["pr"]>) => {
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        if (!existing?.pr) return state;
+        return {
+          cardBySession: {
+            ...state.cardBySession,
+            [sessionId]: { ...existing, pr },
+          },
+        };
+      });
+    };
+
+    // Optimistically apply the edit so it shows immediately; the next poll
+    // reconciles with GitHub's authoritative copy.
+    applyPr({
+      ...card.pr,
+      ...(typeof changes.title === "string" ? { title: changes.title } : {}),
+      ...(typeof changes.body === "string" ? { body: changes.body } : {}),
+    });
+
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/${prNumber}`, {
+        method: "PATCH",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(changes),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        // Revert to the pre-edit title/body.
+        const current = get().cardBySession[sessionId];
+        if (current?.pr) applyPr({ ...current.pr, title: prev.title, body: prev.body });
+        return data.error || "Failed to update pull request";
+      }
+      return null;
+    } catch (err) {
+      const current = get().cardBySession[sessionId];
+      if (current?.pr) applyPr({ ...current.pr, title: prev.title, body: prev.body });
+      return err instanceof Error ? err.message : "Failed to update pull request";
     }
   },
 

@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { PrDetailPanel } from "./PrDetailPanel.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
@@ -8,7 +8,10 @@ beforeEach(() => {
   usePrStore.setState({ statusBySession: {}, cardBySession: {} });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function setCard(sessionId: string, card: PrCardState) {
   usePrStore.setState((s) => ({
@@ -101,5 +104,78 @@ describe("PrDetailPanel", () => {
     setCard("s1", openPrCard);
     render(<PrDetailPanel sessionId="s1" />);
     expect(screen.getByText("View full diff")).toBeInTheDocument();
+  });
+
+  describe("Phase 2 — editing", () => {
+    it("edits the title via PATCH and optimistically updates", async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(new Response(JSON.stringify({ number: 42 }), { status: 200 }));
+      setCard("s1", openPrCard);
+      render(<PrDetailPanel sessionId="s1" />);
+
+      fireEvent.click(screen.getByLabelText("Edit title"));
+      const input = screen.getByLabelText("PR title") as HTMLInputElement;
+      fireEvent.change(input, { target: { value: "A better title" } });
+      fireEvent.click(screen.getByLabelText("Save title"));
+
+      await waitFor(() => {
+        expect(screen.getByText("A better title")).toBeInTheDocument();
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions/s1/pr/42",
+        expect.objectContaining({ method: "PATCH" }),
+      );
+      // Optimistic store update applied.
+      expect(usePrStore.getState().cardBySession.s1.pr?.title).toBe("A better title");
+    });
+
+    it("reverts the title and shows an error banner when the PATCH fails", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ error: "nope" }), { status: 500 }),
+      );
+      setCard("s1", openPrCard);
+      render(<PrDetailPanel sessionId="s1" />);
+
+      fireEvent.click(screen.getByLabelText("Edit title"));
+      fireEvent.change(screen.getByLabelText("PR title"), {
+        target: { value: "Broken title" },
+      });
+      fireEvent.click(screen.getByLabelText("Save title"));
+
+      await waitFor(() => {
+        expect(screen.getByText("nope")).toBeInTheDocument();
+      });
+      // Reverted to the original.
+      expect(usePrStore.getState().cardBySession.s1.pr?.title).toBe("Add inline PR detail panel");
+    });
+
+    it("edits the description body via PATCH", async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(new Response(JSON.stringify({ number: 42 }), { status: 200 }));
+      setCard("s1", openPrCard);
+      render(<PrDetailPanel sessionId="s1" />);
+
+      fireEvent.click(screen.getByLabelText("Edit description"));
+      const textarea = screen.getByPlaceholderText(/Describe this pull request/i);
+      fireEvent.change(textarea, { target: { value: "Updated body text" } });
+      fireEvent.click(screen.getByText("Save"));
+
+      await waitFor(() => {
+        expect(screen.getByText("Updated body text")).toBeInTheDocument();
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions/s1/pr/42",
+        expect.objectContaining({ method: "PATCH" }),
+      );
+    });
+
+    it("does not offer editing affordances for a merged PR", () => {
+      setCard("s1", { ...openPrCard, phase: "merged" });
+      render(<PrDetailPanel sessionId="s1" />);
+      expect(screen.queryByLabelText("Edit title")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Edit description")).not.toBeInTheDocument();
+    });
   });
 });
