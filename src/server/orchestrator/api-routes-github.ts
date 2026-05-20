@@ -10,6 +10,7 @@ import { resolveSessionDir } from "./api-routes.js";
 
 import {
   getPrStatus,
+  getGitCredential,
   searchGitHubRepos,
   createPullRequest,
   quickCreatePr,
@@ -175,6 +176,31 @@ export async function registerGitHubRoutes(
         }
         reply.code(500).send({ error: `Failed to create PR: ${getErrorMessage(err)}` });
       }
+    },
+  );
+
+  // POST /api/sessions/:id/git/credential — broker a git credential to the
+  // in-container `shipit-git-credential` helper (docs/088 finding #5). The
+  // GitHub PAT is never written into the container's gitconfig; the helper
+  // asks for it at git-time over localhost and the token is returned only via
+  // the worker→helper→git stdout channel. Scoped to github.com by the service.
+  app.post<{ Params: { id: string }; Body: { host?: string; protocol?: string } }>(
+    "/api/sessions/:id/git/credential",
+    async (request, reply) => {
+      // Session-scoping: only an existing session may broker a credential.
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const cred = getGitCredential(deps.githubAuthManager, request.body?.host);
+      if (!cred) {
+        // No credential available for this host — tell the helper so git falls
+        // back to anonymous / its other helpers rather than blocking.
+        reply.code(404).send({ error: "No credential available for host" });
+        return;
+      }
+      return cred;
     },
   );
 

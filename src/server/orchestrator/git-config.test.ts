@@ -3,7 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { initGlobalGitConfig, setGlobalCredentialHelper, clearGlobalCredentialHelper } from "./git-config.js";
+import {
+  initGlobalGitConfig,
+  setGlobalCredentialHelper,
+  clearGlobalCredentialHelper,
+  setGitIdentity,
+  writeContainerGitConfig,
+  CONTAINER_CREDENTIAL_HELPER,
+} from "./git-config.js";
 
 describe("git-config: initGlobalGitConfig", () => {
   let tmpDir: string;
@@ -157,5 +164,68 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
     const helper = execSync("git config --global credential.helper", { encoding: "utf-8" }).trim();
     expect(helper).toContain("new-token");
     expect(helper).not.toContain("old-token");
+  });
+});
+
+describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-container-gitconfig-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(tmpDir);
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("writes a token-free gitconfig pointing at the brokering helper", () => {
+    // Orchestrator's own global config has the inline token...
+    setGlobalCredentialHelper("ghp_super_secret_token");
+    setGitIdentity("Ada Lovelace", "ada@example.com");
+
+    const dest = path.join(tmpDir, "container", ".gitconfig");
+    writeContainerGitConfig(dest);
+
+    const contents = fs.readFileSync(dest, "utf-8");
+    // The PAT must NEVER appear in the container's gitconfig.
+    expect(contents).not.toContain("ghp_super_secret_token");
+    // Identity is preserved.
+    expect(contents).toContain("Ada Lovelace");
+    expect(contents).toContain("ada@example.com");
+
+    // credential.helper points at the brokering binary, not an inline token.
+    const helper = execSync(`git config --file ${dest} credential.helper`, {
+      encoding: "utf-8",
+    }).trim();
+    expect(helper).toBe(CONTAINER_CREDENTIAL_HELPER);
+    expect(helper).not.toContain("ghp_");
+  });
+
+  it("disables commit signing", () => {
+    const dest = path.join(tmpDir, "container", ".gitconfig");
+    writeContainerGitConfig(dest);
+    const sign = execSync(`git config --file ${dest} commit.gpgsign`, { encoding: "utf-8" }).trim();
+    expect(sign).toBe("false");
+  });
+
+  it("rewrites fresh each call — no stale token survives a regeneration", () => {
+    const dest = path.join(tmpDir, "container", ".gitconfig");
+    // Simulate a stale token-bearing file lingering at the destination.
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, "[credential]\n\thelper = !echo password=leaked_token\n");
+
+    writeContainerGitConfig(dest);
+
+    const contents = fs.readFileSync(dest, "utf-8");
+    expect(contents).not.toContain("leaked_token");
+    const helper = execSync(`git config --file ${dest} credential.helper`, {
+      encoding: "utf-8",
+    }).trim();
+    expect(helper).toBe(CONTAINER_CREDENTIAL_HELPER);
   });
 });
