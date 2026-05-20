@@ -114,6 +114,22 @@ function formFromServer(server: McpServerConfig): FormState {
   };
 }
 
+/**
+ * If a server's auth is wired to an OAuth connection (its headers reference a
+ * `$platform:<source>` token, as the auto-created "Connect with …" entries
+ * are), return that source id — otherwise `null`. Used to badge the row as
+ * managed by the connection so it doesn't read as a stray duplicate of the
+ * "Connected" provider card above.
+ */
+function oauthSourceForServer(server: McpServerConfig): string | null {
+  if (server.type !== "http" || !server.headers) return null;
+  for (const value of Object.values(server.headers)) {
+    const m = /\$platform:([a-z][a-z0-9_]*)/.exec(value);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 const inputClass =
   "w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-accent)";
 
@@ -400,6 +416,10 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
             const isTesting = result === "loading";
             const isToggling = toggleInFlight[server.name];
             const isDeleting = deleteInFlight[server.name];
+            const oauthSource = oauthSourceForServer(server);
+            const managedBy = oauthSource
+              ? oauthProviders.find((p) => p.id === oauthSource)?.label ?? null
+              : null;
             return (
               <li
                 key={server.name}
@@ -412,6 +432,14 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                       {server.name}
                     </span>
                     <span className="text-xs text-(--color-text-tertiary)">{server.type}</span>
+                    {managedBy && (
+                      <span
+                        className="text-xs text-(--color-text-tertiary)"
+                        title={`Authentication is managed by your ${managedBy} connection above. Use Disconnect there to revoke access.`}
+                      >
+                        · via {managedBy} connection
+                      </span>
+                    )}
                     {!server.enabled && (
                       <span className="text-xs text-(--color-text-tertiary)">(disabled)</span>
                     )}
@@ -435,9 +463,14 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                     >
                       {isTesting ? "Testing…" : "Test"}
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => startEdit(server)} disabled={isDeleting}>
-                      Edit
-                    </Button>
+                    {/* OAuth-managed servers have their URL/auth wired from the
+                        connection — editing them by hand would only desync the
+                        pairing, so the Edit affordance is hidden for them. */}
+                    {!managedBy && (
+                      <Button size="sm" variant="ghost" onClick={() => startEdit(server)} disabled={isDeleting}>
+                        Edit
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="ghost"
