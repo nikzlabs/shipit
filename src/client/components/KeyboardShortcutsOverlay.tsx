@@ -37,7 +37,7 @@ const shortcutGroups: ShortcutGroup[] = [
   {
     title: "Search",
     shortcuts: [
-      { keys: ["Ctrl", "F"], description: "Toggle search bar" },
+      { keys: ["Ctrl", "F"], description: "Toggle chat search (when chat input is focused)" },
       { keys: ["Enter"], description: "Next search match" },
       { keys: ["Shift", "Enter"], description: "Previous search match" },
     ],
