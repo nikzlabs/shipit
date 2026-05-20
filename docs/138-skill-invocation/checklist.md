@@ -53,8 +53,11 @@ headless.
       `name`/`description`, honor `user-invocable: false`)
 - [ ] Update `skills.test.ts` Codex cases for the new directory + `SKILL.md`
       shape
-- [ ] Composer autocomplete inserts `$name ` for Codex (vs `/name ` for Claude);
-      thread the active agent's token prefix into `SkillAutoComplete.tsx`
+- [ ] Composer autocomplete: keep `/` as the universal trigger that opens the
+      menu for both backends; on Codex, **selecting inserts `$name `** (vs
+      `/name ` for Claude). Thread the active agent's insert-prefix into
+      `SkillAutoComplete.tsx` (trigger char stays `/`; only the inserted token
+      differs)
 - [ ] Confirm no `codex-adapter.ts` change is required (catalog injection is
       automatic); leave a code comment / doc note recording the dropped inlining
       design so it isn't re-litigated

@@ -155,10 +155,12 @@ small:
   `.codex/skills/*/SKILL.md` — the same `name`/`description` frontmatter shape
   ShipIt already parses for Claude's `.claude/skills/`, so `listSkills()` can
   reuse almost all of the Claude branch.
-- **Token syntax is `$name`, not `/name`.** The composer autocomplete inserts
-  `$name ` for Codex vs `/name ` for Claude. Even plain text matching a skill
-  description triggers it, so `$` is a discoverability nicety, not a hard
-  requirement.
+- **Token syntax is `$name`, not `/name`.** The composer keeps `/` as the
+  universal trigger that opens the menu for both backends; on Codex,
+  **selecting inserts `$name `** (vs `/name ` for Claude). Only the inserted
+  token is agent-specific — the trigger char stays `/`. Even plain text
+  matching a skill description triggers the skill, so `$` is a discoverability
+  nicety, not a hard requirement.
 - **No `$ARGUMENTS` substitution** — there is no substitution step. The user's
   literal text (including any trailing args) is already in the prompt for the
   model to read alongside the skill body. This closes the open question below.
