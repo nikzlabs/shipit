@@ -132,11 +132,17 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   const patternText = "pattern" in tool.input && tool.input.pattern
     ? (tool.input.pattern as string)
     : null;
+  const queryText = "query" in tool.input && tool.input.query
+    ? (tool.input.query as string)
+    : null;
+  const urlText = "url" in tool.input && tool.input.url
+    ? (tool.input.url as string)
+    : null;
 
   // Full command text for the modal header
   const fullCommandText = "command" in tool.input && tool.input.command
     ? (tool.input.command as string)
-    : filePathText ?? patternText ?? "";
+    : filePathText ?? patternText ?? queryText ?? urlText ?? "";
 
   return (
     <div className="min-w-0 overflow-hidden">
@@ -156,6 +162,16 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         {patternText ? (
           <span className="ml-1 text-(--color-text-secondary) truncate">
             {patternText}
+          </span>
+        ) : null}
+        {queryText ? (
+          <span className="ml-1 text-(--color-text-secondary) truncate">
+            {queryText}
+          </span>
+        ) : null}
+        {urlText ? (
+          <span className="ml-1 text-(--color-text-secondary) truncate">
+            {urlText}
           </span>
         ) : null}
         {hasResult && (
