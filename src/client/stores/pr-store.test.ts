@@ -144,4 +144,44 @@ describe("pr-store", () => {
       expect(card?.errorKind).toBe("generic");
     });
   });
+
+  describe("postComment (docs/133 Phase 4)", () => {
+    beforeEach(() => {
+      usePrStore.getState().updateCard("s1", makeCard("open"));
+    });
+
+    it("returns an error and skips the request for an empty body", async () => {
+      const fetchMock = vi.fn();
+      globalThis.fetch = fetchMock as typeof fetch;
+      const err = await usePrStore.getState().postComment("s1", "   ");
+      expect(err).toBe("Comment cannot be empty");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("optimistically appends the comment and keeps it on success", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ number: 1, commentUrl: "u" }),
+      }) as typeof fetch;
+
+      const err = await usePrStore.getState().postComment("s1", "Looks good");
+      expect(err).toBeNull();
+      const comments = usePrStore.getState().cardBySession.s1?.issueComments ?? [];
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toBe("Looks good");
+    });
+
+    it("reverts the optimistic append when the request fails", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: async () => ({ error: "Not authenticated with GitHub" }),
+      }) as typeof fetch;
+
+      const err = await usePrStore.getState().postComment("s1", "Looks good");
+      expect(err).toBe("Not authenticated with GitHub");
+      expect(usePrStore.getState().cardBySession.s1?.issueComments ?? []).toHaveLength(0);
+    });
+  });
 });

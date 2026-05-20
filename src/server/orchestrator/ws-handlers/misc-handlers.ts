@@ -1,8 +1,9 @@
 import type { WsClientMessage } from "../../shared/types.js";
-import type { ConnectionCtx, RunnerCtx } from "./types.js";
+import type { AppCtx, ConnectionCtx, RunnerCtx } from "./types.js";
 import { resolveRunner } from "./resolve-runner.js";
 
 type WsCancelQueuedMessage = Extract<WsClientMessage, { type: "cancel_queued_message" }>;
+type WsPrTabActive = Extract<WsClientMessage, { type: "pr_tab_active" }>;
 
 export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: WsCancelQueuedMessage): void {
   const runner = resolveRunner(ctx);
@@ -19,6 +20,17 @@ export function handleCancelQueuedMessage(ctx: ConnectionCtx & RunnerCtx, msg: W
     type: "queue_updated",
     queue: queue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
   });
+}
+
+/**
+ * docs/133 Phase 4: the PR detail tab became (in)active for a session. Toggle
+ * the poller's conversation-field gate. App-wide state only — independent of
+ * the WS connection lifecycle, so it reads `msg.sessionId` rather than the
+ * connection's attached runner.
+ */
+export function handlePrTabActive(ctx: AppCtx, msg: WsPrTabActive): void {
+  if (!msg.sessionId) return;
+  ctx.prStatusPoller.setPrTabActive(msg.sessionId, msg.active);
 }
 
 export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx): void {

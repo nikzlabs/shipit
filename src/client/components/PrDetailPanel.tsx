@@ -17,6 +17,7 @@ import { usePrStore } from "../stores/pr-store.js";
 import { PrDetailHeader } from "./pr-detail/PrDetailHeader.js";
 import { PrDescriptionSection } from "./pr-detail/PrDescriptionSection.js";
 import { PrStatusSection } from "./pr-detail/PrStatusSection.js";
+import { PrConversationSection } from "./pr-detail/PrConversationSection.js";
 import { PrFilesSection } from "./pr-detail/PrFilesSection.js";
 
 export function PrDetailPanel({ sessionId }: { sessionId: string }) {
@@ -36,6 +37,11 @@ export function PrDetailPanel({ sessionId }: { sessionId: string }) {
       <PrDetailHeader card={card} />
       <PrDescriptionSection body={card.pr.body} />
       <PrStatusSection sessionId={sessionId} card={card} />
+      <PrConversationSection
+        sessionId={sessionId}
+        issueComments={card.issueComments}
+        reviewThreads={card.reviewThreads}
+      />
       <PrFilesSection sessionId={sessionId} baseBranch={card.pr.baseBranch} />
     </div>
   );

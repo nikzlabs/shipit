@@ -7,11 +7,55 @@
  * can exercise them in isolation.
  */
 
-import type { PrStatusSummary } from "../shared/types/github-types.js";
+import type {
+  PrStatusSummary,
+  PrIssueComment,
+  PrReviewThread,
+  PrReviewThreadComment,
+} from "../shared/types/github-types.js";
 import type { GitHubDeploymentStatus } from "../shared/types/deployment-types.js";
 
 /**
- * GraphQL query: fetch open PRs for a repo with CI status.
+ * Conversation GraphQL selections (docs/133 Phase 4): PR-level issue comments
+ * + review threads. Spliced into the PR node only when the poller knows a
+ * session's PR tab is the active right-panel tab — these fields roughly double
+ * the per-PR payload, so we don't pay for them on every idle poll.
+ *
+ * `comments(last: 30)` mirrors how GitHub renders the conversation timeline
+ * (most recent first matters more than the very first comment). Review-thread
+ * comments are bounded at 50 — threads longer than that are vanishingly rare
+ * and the panel renders read-only, so truncation is harmless.
+ */
+const CONVERSATION_SELECTIONS = `
+        comments(last: 30) {
+          nodes {
+            id
+            body
+            createdAt
+            url
+            author { login avatarUrl }
+          }
+        }
+        reviewThreads(first: 30) {
+          nodes {
+            id
+            isResolved
+            isOutdated
+            path
+            line
+            comments(first: 50) {
+              nodes {
+                id
+                body
+                createdAt
+                author { login avatarUrl }
+              }
+            }
+          }
+        }`;
+
+/**
+ * Build the PR status GraphQL query.
  *
  * The connection sizes (`first: 30` PRs, `first: 10` contexts, `last: 3`
  * deployments) are intentionally bounded to keep the query cost down — at
@@ -26,8 +70,13 @@ import type { GitHubDeploymentStatus } from "../shared/types/deployment-types.js
  * connection rejects any `first` above 100 with an EXCESSIVE_PAGINATION error
  * (the request 200s but the data is dropped). PRs touching more than 100 files
  * get a truncated file list here; do not raise this above 100.
+ *
+ * When `includeConversation` is true the per-PR node also selects issue
+ * comments + review threads (docs/133 Phase 4). Gated by the poller on whether
+ * any tracked session on the repo has its PR tab active.
  */
-export const PR_STATUS_QUERY = `
+export function buildPrStatusQuery(includeConversation = false): string {
+  return `
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     pullRequests(first: 30, states: [OPEN]) {
@@ -45,7 +94,7 @@ query($owner: String!, $name: String!) {
         deletions
         files(first: 100) {
           nodes { path }
-        }
+        }${includeConversation ? CONVERSATION_SELECTIONS : ""}
         commits(last: 1) {
           nodes {
             commit {
@@ -88,6 +137,13 @@ query($owner: String!, $name: String!) {
   }
 }
 `;
+}
+
+/** Light query (no conversation fields) — the default for idle polling. */
+export const PR_STATUS_QUERY = buildPrStatusQuery(false);
+
+/** Heavy query including conversation fields — used when a PR tab is active. */
+export const PR_STATUS_QUERY_WITH_CONVERSATION = buildPrStatusQuery(true);
 
 /** Raw GraphQL response shape. */
 export interface GraphQLPrNode {
@@ -103,6 +159,32 @@ export interface GraphQLPrNode {
   additions: number;
   deletions: number;
   files?: { nodes: { path: string }[] } | null;
+  comments?: {
+    nodes: {
+      id: string;
+      body: string;
+      createdAt: string;
+      url: string;
+      author: { login: string; avatarUrl: string | null } | null;
+    }[];
+  } | null;
+  reviewThreads?: {
+    nodes: {
+      id: string;
+      isResolved: boolean;
+      isOutdated: boolean;
+      path: string | null;
+      line: number | null;
+      comments: {
+        nodes: {
+          id: string;
+          body: string;
+          createdAt: string;
+          author: { login: string; avatarUrl: string | null } | null;
+        }[];
+      };
+    }[];
+  } | null;
   commits: {
     nodes: {
       commit: {
@@ -149,6 +231,46 @@ export function mapDeploymentState(state: string | undefined): GitHubDeploymentS
     case "QUEUED": case "WAITING": return "queued";
     case "PENDING": default: return "pending";
   }
+}
+
+/**
+ * Parse the conversation selections (issue comments + review threads) off a
+ * GraphQL PR node. Returns `undefined` for a field that wasn't selected (the
+ * light query omits them), distinguishing "not fetched" from "fetched, empty".
+ */
+export function parseConversation(node: GraphQLPrNode): {
+  issueComments?: PrIssueComment[];
+  reviewThreads?: PrReviewThread[];
+} {
+  let issueComments: PrIssueComment[] | undefined;
+  if (node.comments?.nodes) {
+    issueComments = node.comments.nodes.map((c) => ({
+      id: c.id,
+      author: { login: c.author?.login ?? "ghost", avatarUrl: c.author?.avatarUrl ?? "" },
+      body: c.body,
+      createdAt: c.createdAt,
+      url: c.url,
+    }));
+  }
+
+  let reviewThreads: PrReviewThread[] | undefined;
+  if (node.reviewThreads?.nodes) {
+    reviewThreads = node.reviewThreads.nodes.map((t) => ({
+      id: t.id,
+      isResolved: t.isResolved,
+      isOutdated: t.isOutdated,
+      path: t.path,
+      line: t.line,
+      comments: (t.comments?.nodes ?? []).map((c): PrReviewThreadComment => ({
+        id: c.id,
+        author: { login: c.author?.login ?? "ghost", avatarUrl: c.author?.avatarUrl ?? "" },
+        body: c.body,
+        createdAt: c.createdAt,
+      })),
+    }));
+  }
+
+  return { issueComments, reviewThreads };
 }
 
 /** Parse a GraphQL PR node into a PrStatusSummary. */
@@ -233,6 +355,7 @@ export function parsePrNode(
       "unknown",
     autoMergeEnabled: node.autoMergeRequest !== null,
     deployments,
+    ...parseConversation(node),
   };
 }
 
@@ -311,8 +434,48 @@ export function prStatusEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
     a.autoMergeEnabled === b.autoMergeEnabled &&
     a.insertions === b.insertions &&
     a.deletions === b.deletions &&
-    deploymentsEqual(a.deployments, b.deployments)
+    deploymentsEqual(a.deployments, b.deployments) &&
+    conversationEqual(a, b)
   );
+}
+
+/**
+ * Compare the conversation (issue comments + review threads) of two summaries.
+ *
+ * `undefined` means "not fetched this poll" (light query). The poller carries
+ * the previous conversation forward onto a light-poll summary before calling
+ * this, so in practice both sides are either both-undefined (never fetched) or
+ * both-defined. We still treat a defined/undefined mismatch as "changed" so
+ * the very first heavy poll — when comments first arrive — broadcasts.
+ */
+export function conversationEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
+  return (
+    issueCommentsEqual(a.issueComments, b.issueComments) &&
+    reviewThreadsEqual(a.reviewThreads, b.reviewThreads)
+  );
+}
+
+function issueCommentsEqual(a?: PrIssueComment[], b?: PrIssueComment[]): boolean {
+  if (a === undefined && b === undefined) return true;
+  if (a === undefined || b === undefined) return false;
+  if (a.length !== b.length) return false;
+  return a.every((c, i) => c.id === b[i].id && c.body === b[i].body);
+}
+
+function reviewThreadsEqual(a?: PrReviewThread[], b?: PrReviewThread[]): boolean {
+  if (a === undefined && b === undefined) return true;
+  if (a === undefined || b === undefined) return false;
+  if (a.length !== b.length) return false;
+  return a.every((t, i) => {
+    const o = b[i];
+    return (
+      t.id === o.id &&
+      t.isResolved === o.isResolved &&
+      t.isOutdated === o.isOutdated &&
+      t.comments.length === o.comments.length &&
+      t.comments.every((c, j) => c.id === o.comments[j].id && c.body === o.comments[j].body)
+    );
+  });
 }
 
 /** Compare deployment arrays for equality. */

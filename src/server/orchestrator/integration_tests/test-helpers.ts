@@ -312,6 +312,16 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._prData;
   }
 
+  /** Records the last issue comment posted (docs/133 Phase 4). */
+  lastIssueComment: { pullNumber: number; body: string } | null = null;
+  async addPullRequestComment(_owner: string, _repo: string, pullNumber: number, body: string) {
+    this.lastIssueComment = { pullNumber, body };
+    return {
+      success: true,
+      url: `https://github.com/owner/repo/pull/${pullNumber}#issuecomment-1`,
+    };
+  }
+
   async mergePullRequest(_owner: string, _repo: string, _pullNumber: number, _method = "merge") {
     return this._mergeResult ?? { success: true, message: "Pull request merged" };
   }

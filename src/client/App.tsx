@@ -525,6 +525,22 @@ export default function App() {
     [],
   );
 
+  // docs/133 Phase 4: tell the server whether the PR tab is the active
+  // right-panel tab for this session, so the poller fetches the heavier
+  // conversation fields (issue comments + review threads) only while the panel
+  // is open. Keyed on connection status so it re-emits across reconnects and
+  // session switches; `send` no-ops when the socket is closed.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  useEffect(() => {
+    if (!wsSessionId || status !== "open") return;
+    const active = rightTab === "pr" && hasPr;
+    if (!active) return;
+    send({ type: "pr_tab_active", sessionId: wsSessionId, active: true });
+    return () => {
+      send({ type: "pr_tab_active", sessionId: wsSessionId, active: false });
+    };
+  }, [rightTab, hasPr, wsSessionId, status, send]);
+
   const handleSettingsOpen = useCallback(async (tab?: "agent" | "github" | "git" | "instructions" | "advanced") => {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);

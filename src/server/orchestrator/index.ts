@@ -1217,6 +1217,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           case "rewind_to_message": return rewindHandlers.handleRewindToMessage(ctx, msg);
           case "cancel_queued_message": { miscHandlers.handleCancelQueuedMessage(ctx, msg); return; }
           case "interrupt_agent": { miscHandlers.handleInterruptAgent(ctx); return; }
+          case "pr_tab_active": { miscHandlers.handlePrTabActive(ctx, msg); return; }
           case "init_preview_config": {
             void sendMessageHandlers.handleSendMessage(ctx, {
               type: "send_message",

@@ -516,6 +516,56 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
+  // docs/133 Phase 4 — Conversation composer
+  describe("POST /api/sessions/:id/pr/comments", () => {
+    it("returns 400 for an empty comment body", async () => {
+      await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/pr/comments",
+        payload: { body: "   " },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("returns 401 when not authenticated", async () => {
+      await createSession("s1", "Session 1");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/pr/comments",
+        payload: { body: "Looks good" },
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it("posts a PR-level comment to the current-branch PR", async () => {
+      await createSession("s1", "Session 1");
+      await githubAuthManager.setToken("ghp_test");
+      // Point origin at a GitHub repo so the remote resolves.
+      await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/git/remotes",
+        payload: { name: "origin", url: "https://github.com/user/repo.git" },
+      });
+      githubAuthManager.setPrData({
+        url: "https://github.com/user/repo/pull/7",
+        number: 7,
+        base: "main",
+        title: "My PR",
+      });
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/s1/pr/comments",
+        payload: { body: "Looks good to me" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ number: 7 });
+      expect(githubAuthManager.lastIssueComment).toEqual({ pullNumber: 7, body: "Looks good to me" });
+    });
+  });
+
   // ---- Git remote mutations ----
 
   describe("POST /api/sessions/:id/git/remotes", () => {
