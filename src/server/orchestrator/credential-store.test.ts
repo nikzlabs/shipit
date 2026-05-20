@@ -315,4 +315,46 @@ describe("CredentialStore", () => {
       expect(store.getMcpOAuthTokens("linear_oauth")).toBeUndefined();
     });
   });
+
+  describe("mcpOAuthClients (docs/139 — RFC 7591 DCR)", () => {
+    it("stores, reads (defensive copy), and persists registered clients", () => {
+      const dir = createTmpDir();
+      const store = new CredentialStore(dir);
+      store.setMcpOAuthClient("notion_oauth", {
+        clientId: "cid",
+        clientSecret: "sec",
+        registeredAt: 123,
+      });
+      const got = store.getMcpOAuthClient("notion_oauth")!;
+      expect(got.clientId).toBe("cid");
+      expect(got.clientSecret).toBe("sec");
+      // Mutating the copy doesn't affect the store.
+      got.clientId = "mutated";
+      expect(store.getMcpOAuthClient("notion_oauth")?.clientId).toBe("cid");
+      // Survives a reload.
+      const reloaded = new CredentialStore(dir);
+      expect(reloaded.getMcpOAuthClient("notion_oauth")?.clientId).toBe("cid");
+    });
+
+    it("returns undefined for an unregistered provider", () => {
+      const store = new CredentialStore(createTmpDir());
+      expect(store.getMcpOAuthClient("notion_oauth")).toBeUndefined();
+    });
+
+    it("deleteMcpOAuthClient removes only the targeted client", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpOAuthClient("notion_oauth", { clientId: "n", registeredAt: 1 });
+      store.setMcpOAuthClient("linear_oauth", { clientId: "l", registeredAt: 1 });
+      store.deleteMcpOAuthClient("notion_oauth");
+      expect(store.getMcpOAuthClient("notion_oauth")).toBeUndefined();
+      expect(store.getMcpOAuthClient("linear_oauth")?.clientId).toBe("l");
+    });
+
+    it("clear() wipes registered clients too", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setMcpOAuthClient("notion_oauth", { clientId: "n", registeredAt: 1 });
+      store.clear();
+      expect(store.getMcpOAuthClient("notion_oauth")).toBeUndefined();
+    });
+  });
 });

@@ -237,10 +237,12 @@ export async function registerMcpRoutes(
         request.body?.redirectUri ??
         deriveCallbackUrl(request.headers);
       try {
-        const result = startOAuthFlow({
+        const result = await startOAuthFlow({
           source,
           stateStore: oauthStateStore,
           redirectUri,
+          credentialStore,
+          ...(oauthFetchImpl !== undefined ? { fetchImpl: oauthFetchImpl } : {}),
         });
         return result;
       } catch (err) {

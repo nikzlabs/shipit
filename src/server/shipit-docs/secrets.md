@@ -98,6 +98,18 @@ compose reconcile, so token rotation is picked up automatically.
 |--------|-------------|
 | `platform:claude_oauth` | The orchestrator's `ANTHROPIC_API_KEY` env var, falling back to the Claude CLI's OAuth access token from `~/.claude/.credentials.json`. Returns empty if neither is configured. |
 | `platform:github_token` | The GitHub PAT the user configured via Settings → GitHub. Returns empty if no token is configured. |
+| `platform:linear_oauth` | The Linear access token from a Settings → MCP Servers → "Connect Linear" OAuth flow. Returns empty until connected. |
+| `platform:notion_oauth` | The Notion access token from a Settings → MCP Servers → "Connect Notion" OAuth flow. Returns empty until connected. |
+
+> **MCP OAuth providers auto-register their client.** Hosted MCP servers that
+> publish RFC 8414 metadata + an RFC 7591 registration endpoint (Notion today)
+> are connected with a single click — ShipIt discovers the provider's OAuth
+> endpoints and dynamically registers a public PKCE client on first connect, so
+> there is **no `<PROVIDER>_OAUTH_CLIENT_ID` prerequisite** for the operator.
+> Providers that don't support dynamic registration (Linear today) still need
+> the operator to set `<PROVIDER>_OAUTH_CLIENT_ID`. The connected token is
+> exposed to declared MCP servers via the `$platform:<id>` placeholder (e.g.
+> `$platform:notion_oauth`), resolved from the `MCP_PLATFORM_<ID>` env var.
 
 If the platform source returns empty, ShipIt falls back to the user-saved
 secret store for the same name — this means a project that declares
@@ -118,7 +130,7 @@ personal credentials into the inner session.
 | `description` | string | Free-form description shown to the user in the secrets panel. Helps them know what to configure. |
 | `required` | boolean | If true, the orchestrator surfaces a "Configure secrets" banner when no value is set. The compose stack still attempts to start — the banner is informational, not a hard block. |
 | `agent` | boolean | Also inject this env var into the agent container. Use for connection strings the agent needs when running CLI tools (`prisma migrate`, `bun test`, codegen). Avoid for true secrets — the agent doesn't usually need API keys. |
-| `source` | string | Resolve from a platform credential instead of user-configured secrets. Recognized values: `platform:claude_oauth`, `platform:github_token`. Falls back to the user-saved secret if the platform source is empty. Useful for ShipIt-in-ShipIt and other meta-tooling. |
+| `source` | string | Resolve from a platform credential instead of user-configured secrets. Recognized values: `platform:claude_oauth`, `platform:github_token`, and the MCP OAuth providers `platform:linear_oauth` / `platform:notion_oauth`. Falls back to the user-saved secret if the platform source is empty. Useful for ShipIt-in-ShipIt and other meta-tooling. |
 
 Unknown fields on the object are ignored. The same secret declared by
 multiple services merges its metadata: `required` and `agent` are OR'd, the

@@ -110,6 +110,28 @@ export interface OAuthTokens {
 }
 
 /**
+ * A dynamically-registered OAuth client (RFC 7591) persisted in
+ * `CredentialStore.mcpOAuthClients` keyed by provider source id (e.g.
+ * "notion_oauth"). Cached so the first connect registers and every
+ * subsequent connect reuses the same `client_id` — no orphan client
+ * registrations accruing provider-side, and resilient to DCR rate limits.
+ *
+ * Kept separate from `OAuthTokens` on purpose: a registered client can exist
+ * before any token does (it's minted during `startOAuthFlow`, before the user
+ * has granted access), and `listMcpOAuthProviders` treats any `OAuthTokens`
+ * record as "connected" — so a client-only `OAuthTokens` record would falsely
+ * show Connected. See docs/139-mcp-dynamic-client-registration.
+ */
+export interface McpOAuthRegisteredClient {
+  /** The issued client_id from the registration response. */
+  clientId: string;
+  /** Client secret if the provider issued one (confidential clients only). */
+  clientSecret?: string;
+  /** Unix epoch ms when the client was registered. */
+  registeredAt: number;
+}
+
+/**
  * Static metadata for an OAuth provider that ShipIt knows how to talk to.
  * The registry in `mcp-oauth-providers.ts` exports one of these per supported
  * provider (Linear, Notion, …). All MCP OAuth providers use PKCE; client
@@ -126,14 +148,28 @@ export interface McpOAuthProviderConfig {
   label: string;
   /** Short marketing copy for the "Connect with X" button row. */
   description?: string;
-  /** OAuth 2.1 authorization endpoint. */
+  /**
+   * OAuth 2.1 authorization endpoint. **Fallback-only:** the live flow drives
+   * this from discovery (RFC 8414) starting at `mcpUrl`; this static value is
+   * only used when discovery is unavailable or fails. See
+   * docs/139-mcp-dynamic-client-registration.
+   */
   authorizationEndpoint: string;
-  /** OAuth 2.1 token endpoint (for code exchange and refresh). */
+  /**
+   * OAuth 2.1 token endpoint (for code exchange and refresh). **Fallback-only**
+   * for the authorize/exchange flow (discovery overrides it), but it is the
+   * source of truth for the refresh path (`refreshOAuthTokens`), so it must
+   * point at the MCP server's *own* authorization server, not a provider's
+   * classic public-integration OAuth server.
+   */
   tokenEndpoint: string;
   /**
-   * Optional dynamic-client-registration endpoint (RFC 7591). When omitted
-   * the provider requires a pre-allocated client_id supplied via env var
-   * (see `clientIdEnv`).
+   * Optional dynamic-client-registration endpoint (RFC 7591). **Fallback-only:**
+   * discovery supplies the registration endpoint from the provider's
+   * authorization-server metadata; this static value is a fallback for
+   * providers that don't publish metadata. When neither is available the
+   * provider requires a pre-allocated client_id supplied via env var (see
+   * `clientIdEnv`).
    */
   registrationEndpoint?: string;
   /**
