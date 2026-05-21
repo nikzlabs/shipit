@@ -112,6 +112,27 @@ describe("session-credentials", () => {
     expect(readTail(sessionFile)).toBe("FRESH");
   });
 
+  it("syncAgentTokenIn does NOT clobber a fresher session token with a staler source", () => {
+    writeClaudeToken(root, "STALE", 1_000); // source is older (e.g. not yet refreshed)
+    fs.mkdirSync(path.join(perSessionCredentialsDir(root, sid), ".claude"), { recursive: true });
+    writeClaudeToken(perSessionCredentialsDir(root, sid), "LOCAL", 5_000); // session refreshed locally
+
+    syncAgentTokenIn(root, sid, "claude");
+
+    const sessionFile = path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json");
+    expect(readTail(sessionFile)).toBe("LOCAL"); // kept its fresher token
+  });
+
+  it("syncAgentTokenIn copies when the session has no token yet", () => {
+    writeClaudeToken(root, "SEED", 5_000);
+    fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
+
+    syncAgentTokenIn(root, sid, "claude");
+
+    const sessionFile = path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json");
+    expect(readTail(sessionFile)).toBe("SEED");
+  });
+
   it("syncAgentTokenBack writes a newer session token back to the source", () => {
     writeClaudeToken(root, "OLD", 1_000);
     provisionAgentCredentials(root, sid, "claude");
