@@ -232,6 +232,62 @@ mapping). Divergence becomes structurally impossible.
 
 ---
 
+## Problem D — a worker HTTP timeout crashed the whole orchestrator
+
+### Root cause (CONFIRMED on prod, 2026-05-21)
+
+The dead token (Problem A) made session-worker calls hang. One of them — a
+`POST /terminal/start` ([worker-http.ts](../../src/server/orchestrator/worker-http.ts))
+— hit the 10s `DEFAULT_WORKER_TIMEOUT_MS` and rejected with a
+`WorkerTimeoutError`. That rejection took down the **entire orchestrator**
+(`RestartCount=1`; Docker restarted it ~2s later), stranding every live session.
+
+Container log around the crash:
+
+```
+15:33:28 [runner:a0ea…] pushAgentSecrets failed: Worker request timed out after 10000ms: /secrets
+15:34:45 SSE error: SSE stream stale (no activity within idle timeout)
+15:35:06 WorkerTimeoutError: Worker request timed out after 10000ms: /terminal/start  → unhandled rejection → exit
+15:35:08 [server] listening … (restart; Rediscovered 5 container(s))
+```
+
+The structural cause is in the WS dispatcher
+([index.ts](../../src/server/orchestrator/index.ts)). Each case did
+`return handler(ctx, msg)` from an `async socket.on("message")` callback that
+**nobody awaits**. So a handler rejection floated out as an unhandled rejection,
+and Node's default (terminate the process) applied. The subtlety that makes this
+easy to reintroduce: a `try/catch` wrapped around `return promise` does **not**
+catch the rejection — the function returns before the promise settles, so the
+`await` has to happen for the `catch` to see it.
+
+This is the same spirit as the CLAUDE.md rule *"WebSocket lifecycle MUST NOT
+affect server behavior"*, extended one layer down: **a single session worker's
+HTTP timeout must never kill the orchestrator that owns every other session.**
+
+### Fix
+
+- **D1 — Await + catch in the WS dispatcher.** The switch is now a local
+  `dispatchSessionMessage(msg)` that the listener `await`s inside a try/catch. A
+  handler rejection (most often a `WorkerTimeoutError`) degrades to a
+  per-session `{type:"error"}` message; the connection and process stay up. This
+  covers every WS handler at once — that was the audit conclusion: the dispatcher
+  was the single floating point for the `return handler(...)` callsites.
+
+- **D2 — Process-level `unhandledRejection` backstop** in `autoStart`
+  ([app-lifecycle.ts](../../src/server/orchestrator/app-lifecycle.ts), production
+  entry point only). Logs loudly and keeps the process alive, so any *future*
+  floating worker call (e.g. an intentional `void handler()` fire-and-forget)
+  can't crash the orchestrator either. `uncaughtException` is deliberately NOT
+  swallowed — a thrown non-promise error can leave state corrupt, so Node's
+  default restart is the right behavior there.
+
+### Key files
+- `src/server/orchestrator/index.ts` — `dispatchSessionMessage` + await/try/catch in the message listener (D1)
+- `src/server/orchestrator/app-lifecycle.ts` — `unhandledRejection` backstop in `autoStart` (D2)
+- `src/server/orchestrator/integration_tests/ws-handler-error-isolation.test.ts` — executable contract (rejecting handler → client error, not a dead process)
+
+---
+
 ## Implementation order
 
 Revised after review:

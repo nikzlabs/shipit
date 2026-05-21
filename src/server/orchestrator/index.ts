@@ -1120,10 +1120,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       }
 
       // Message dispatcher — same as /ws but without new_session and activate_session
-      socket.on("message", async (raw: Buffer) => {
-        let msg: WsClientMessage;
-        try { msg = JSON.parse(raw.toString()) as WsClientMessage; } catch { send({ type: "error", message: "Invalid JSON" }); return; }
-
+      // A single client message → its handler. Kept as a local fn so the
+      // message listener can `await` it inside a try/catch. Subtlety: the cases
+      // below `return handler(...)` a promise; a try/catch wrapped directly
+      // around `return promise` would NOT catch a rejection (the function
+      // returns before the promise settles). Awaiting the returned promise here
+      // is what lets the listener catch it. A handler rejection — most often a
+      // WorkerTimeoutError from a wedged session worker (e.g. /terminal/start) —
+      // must degrade to a per-session error, never escape as an unhandled
+      // rejection that crashes the whole orchestrator.
+      const dispatchSessionMessage = (msg: WsClientMessage): void | Promise<void> => {
         switch (msg.type) {
           case "terminal_start": return terminalHandlers.handleTerminalStart(ctx, msg);
           case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
@@ -1263,6 +1269,23 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
           case "send_message": return sendMessageHandlers.handleSendMessage(ctx, msg);
           case "send_review_message": return sendMessageHandlers.handleSendReviewMessage(ctx, msg);
           case "answer_question": return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
+        }
+      };
+
+      socket.on("message", async (raw: Buffer) => {
+        let msg: WsClientMessage;
+        try { msg = JSON.parse(raw.toString()) as WsClientMessage; } catch { send({ type: "error", message: "Invalid JSON" }); return; }
+        try {
+          await dispatchSessionMessage(msg);
+        } catch (err) {
+          // A handler threw or rejected — degrade to a per-session error.
+          // Never let it bubble to an unhandled rejection: a worker HTTP
+          // timeout (WorkerTimeoutError on /terminal/start) previously took
+          // down the whole orchestrator this way.
+          console.error(`[ws] handler error for "${msg.type}" (session ${sessionId}):`, err);
+          try {
+            send({ type: "error", message: err instanceof Error ? err.message : "Request failed" });
+          } catch { /* socket may already be closed */ }
         }
       });
 
