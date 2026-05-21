@@ -11,6 +11,7 @@ export * from "./skills.js";
 export * from "./session.js";
 export * from "./git.js";
 export * from "./github.js";
+export * from "./github-pr-comments.js";
 export * from "./settings.js";
 export * from "./mcp.js";
 export * from "./mcp-oauth.js";

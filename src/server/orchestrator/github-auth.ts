@@ -6,6 +6,7 @@ import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper 
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
+import { addReviewThreadReply as addReviewThreadReplyImpl, resolveReviewThread as resolveReviewThreadImpl, unresolveReviewThread as unresolveReviewThreadImpl } from "./github-auth-review-threads.js";
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
@@ -550,6 +551,30 @@ export class GitHubAuthManager extends EventEmitter {
     return getJobLogsImpl(this._token, owner, repo, jobId);
   }
 
+  /**
+   * Reply to an existing PR review thread (docs/102). `threadId` is the
+   * GraphQL node id of the thread (as surfaced on `PrReviewThread.id`).
+   */
+  async addReviewThreadReply(
+    threadId: string,
+    body: string,
+  ): Promise<{ success: boolean; message: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated with GitHub" };
+    return addReviewThreadReplyImpl(this._token, threadId, body);
+  }
+
+  /** Mark a PR review thread as resolved (docs/102). */
+  async resolveReviewThread(threadId: string): Promise<{ success: boolean; message: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated with GitHub" };
+    return resolveReviewThreadImpl(this._token, threadId);
+  }
+
+  /** Reopen (unresolve) a previously-resolved review thread (docs/102). */
+  async unresolveReviewThread(threadId: string): Promise<{ success: boolean; message: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated with GitHub" };
+    return unresolveReviewThreadImpl(this._token, threadId);
+  }
+
   /** Snapshot of the most recent rate-limit state seen on the GraphQL API. */
   getRateLimitState(): GitHubRateLimitState {
     return { ...this._rateLimit };
@@ -688,3 +713,4 @@ export class GitHubAuthManager extends EventEmitter {
 export { createRepo, listUserRepos, searchRepos } from "./github-auth-repos.js";
 export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, markPullRequestReady, listPullRequests, viewPullRequest } from "./github-auth-prs.js";
 export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
+export { addReviewThreadReply, resolveReviewThread, unresolveReviewThread } from "./github-auth-review-threads.js";

@@ -188,6 +188,41 @@ function LiveSteeringSettings() {
   );
 }
 
+function PrCommentSyncSettings() {
+  const prCommentSync = useSettingsStore((s) => s.prCommentSync);
+
+  const handleToggle = async (v: boolean) => {
+    useSettingsStore.getState().setPrCommentSync(v);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prCommentSync: v }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      useSettingsStore.getState().setPrCommentSync(!v);
+      useUiStore.getState().setToast({ message: "Failed to update PR comment sync setting" });
+      console.error("[settings] toggle prCommentSync failed:", err);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">PR Comment Sync</h3>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between py-1 gap-4">
+          <div>
+            <span className="text-sm text-(--color-text-primary)">Reply &amp; resolve PR comments from ShipIt</span>
+            <p className="text-xs text-(--color-text-tertiary)">Show reply and resolve controls on PR review threads. Replies and resolutions are written back to GitHub. Experimental — read-side rendering of teammates&apos; comments is always on.</p>
+          </div>
+          <ToggleSwitch enabled={prCommentSync} onToggle={(v) => void handleToggle(v)} testId="settings-pr-comment-sync" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Settings({
   initialContent,
   onSaveInstructions,
@@ -537,6 +572,10 @@ export function Settings({
                   <div className="border-t border-(--color-border-secondary)" />
 
                   <PullRequestSettings />
+
+                  <div className="border-t border-(--color-border-secondary)" />
+
+                  <PrCommentSyncSettings />
                 </div>
               ) : (
                 <GitHubTokenForm onSubmit={async (t) => { await onGitHubTokenSubmit(t); return undefined; }} />

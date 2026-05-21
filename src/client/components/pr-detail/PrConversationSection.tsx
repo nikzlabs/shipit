@@ -1,20 +1,29 @@
 /**
  * PrConversationSection — the "Conversation" block of the PR detail tab
- * (docs/133 Phase 4).
+ * (docs/133 Phase 4 + docs/102).
  *
  * Renders PR-level (issue) comments and review threads inline so the user
  * doesn't leave ShipIt to read or reply to PR discussion. Issue comments are
- * read + post; review threads are read-only in this phase (reply/resolve
- * write-back is deferred to docs/102). Data arrives on the pr-store card via
- * the poller, which only fetches it while this tab is the active right-panel
- * tab (the `pr_tab_active` gate).
+ * read + post (docs/133); review threads gain reply + resolve / reopen
+ * write-back when the `prCommentSync` setting is on (docs/102). When the flag
+ * is off the threads remain read-only — the server route refuses mutations
+ * with a 403 so flipping the flag back off can't strand pending UI state.
+ *
+ * Data arrives on the pr-store card via the poller, which only fetches it
+ * while this tab is the active right-panel tab (the `pr_tab_active` gate).
  */
 
 import { useState } from "react";
-import { ChatCircleIcon, CheckCircleIcon, ClockCounterClockwiseIcon } from "@phosphor-icons/react";
+import {
+  ChatCircleIcon,
+  CheckCircleIcon,
+  ClockCounterClockwiseIcon,
+  ArrowCounterClockwiseIcon,
+} from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { PrIssueComment, PrReviewThread } from "../../../server/shared/types/github-types.js";
 import { usePrStore } from "../../stores/pr-store.js";
+import { useSettingsStore } from "../../stores/settings-store.js";
 import { formatRelativeDate } from "../../utils/dates.js";
 import { MarkdownContent } from "../message-markdown.js";
 import { Button } from "../ui/button.js";
@@ -61,10 +70,51 @@ function IssueComment({ comment }: { comment: PrIssueComment }) {
   );
 }
 
-function ReviewThreadItem({ thread }: { thread: PrReviewThread }) {
+function ReviewThreadItem({
+  sessionId,
+  thread,
+  syncEnabled,
+}: {
+  sessionId: string;
+  thread: PrReviewThread;
+  syncEnabled: boolean;
+}) {
+  const [replyDraft, setReplyDraft] = useState("");
+  const [showReply, setShowReply] = useState(false);
+  const [busy, setBusy] = useState<null | "reply" | "resolve" | "unresolve">(null);
+  const [error, setError] = useState<string | null>(null);
+
   const location = thread.path
     ? `${thread.path}${thread.line !== null ? `:${thread.line}` : ""}`
     : "review thread";
+
+  const handleReply = async () => {
+    const body = replyDraft.trim();
+    if (!body || busy) return;
+    setBusy("reply");
+    setError(null);
+    const err = await usePrStore.getState().replyToThread(sessionId, thread.id, body);
+    setBusy(null);
+    if (err) {
+      setError(err);
+      return;
+    }
+    setReplyDraft("");
+    setShowReply(false);
+  };
+
+  const handleToggleResolved = async () => {
+    if (busy) return;
+    const action = thread.isResolved ? "unresolve" : "resolve";
+    setBusy(action);
+    setError(null);
+    const err = action === "resolve"
+      ? await usePrStore.getState().resolveThread(sessionId, thread.id)
+      : await usePrStore.getState().unresolveThread(sessionId, thread.id);
+    setBusy(null);
+    if (err) setError(err);
+  };
+
   return (
     <li className="rounded-md border border-(--color-border-secondary) p-2">
       <div className="mb-1.5 flex items-center gap-1.5 text-xs">
@@ -95,6 +145,85 @@ function ReviewThreadItem({ thread }: { thread: PrReviewThread }) {
           </li>
         ))}
       </ul>
+
+      {syncEnabled && (
+        <div className="mt-2 flex flex-col gap-2">
+          {error && (
+            <Banner variant="error" className="rounded-md text-left text-xs">
+              {error}
+            </Banner>
+          )}
+
+          <div className="flex items-center justify-end gap-2 text-xs">
+            {!showReply && (
+              <button
+                type="button"
+                onClick={() => setShowReply(true)}
+                disabled={busy !== null}
+                className="text-(--color-text-tertiary) hover:text-(--color-text-primary) disabled:opacity-50"
+                data-testid={`reply-button-${thread.id}`}
+              >
+                Reply
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleToggleResolved()}
+              disabled={busy !== null}
+              className="inline-flex items-center gap-1 text-(--color-text-tertiary) hover:text-(--color-text-primary) disabled:opacity-50"
+              data-testid={`resolve-button-${thread.id}`}
+            >
+              {thread.isResolved ? (
+                <>
+                  <ArrowCounterClockwiseIcon size={ICON_SIZE.XS} />
+                  {busy === "unresolve" ? "Reopening…" : "Reopen"}
+                </>
+              ) : (
+                <>
+                  <CheckCircleIcon size={ICON_SIZE.XS} />
+                  {busy === "resolve" ? "Resolving…" : "Resolve"}
+                </>
+              )}
+            </button>
+          </div>
+
+          {showReply && (
+            <div className="flex flex-col gap-1.5">
+              <textarea
+                value={replyDraft}
+                onChange={(e) => setReplyDraft(e.target.value)}
+                placeholder="Reply…"
+                rows={2}
+                disabled={busy === "reply"}
+                data-testid={`reply-input-${thread.id}`}
+                className="w-full resize-y rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) placeholder:text-(--color-text-tertiary) focus:border-(--color-border-focus) focus:outline-none disabled:opacity-50"
+              />
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  size="md"
+                  onClick={() => {
+                    setShowReply(false);
+                    setReplyDraft("");
+                    setError(null);
+                  }}
+                  disabled={busy === "reply"}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  size="md"
+                  onClick={() => void handleReply()}
+                  disabled={busy === "reply" || replyDraft.trim().length === 0}
+                >
+                  {busy === "reply" ? "Posting…" : "Reply"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </li>
   );
 }
@@ -111,6 +240,7 @@ export function PrConversationSection({
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const syncEnabled = useSettingsStore((s) => s.prCommentSync);
 
   const comments = issueComments ?? [];
   const threads = reviewThreads ?? [];
@@ -156,7 +286,12 @@ export function PrConversationSection({
           {threads.length > 0 && (
             <ul className="flex flex-col gap-2">
               {threads.map((t) => (
-                <ReviewThreadItem key={t.id} thread={t} />
+                <ReviewThreadItem
+                  key={t.id}
+                  sessionId={sessionId}
+                  thread={t}
+                  syncEnabled={syncEnabled}
+                />
               ))}
             </ul>
           )}

@@ -30,6 +30,9 @@ import {
   triggerCIFix,
   toggleAutoMerge,
   updateMergeMethod,
+  replyToReviewThread,
+  resolveReviewThread,
+  unresolveReviewThread,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -352,6 +355,89 @@ export async function registerGitHubRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to comment: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ---- PR review-thread sync (docs/102) ----
+  //
+  // Three mutations targeted at a single review thread by its GraphQL node id.
+  // The session id is in the path so the route can resolve the session's PR
+  // (and, in the future, verify the thread belongs to it). For Phase 1 we
+  // forward straight through to GitHub once the feature flag + auth checks
+  // pass. The next poll tick (5s by default) reconciles the cached state on
+  // the client — no need to optimistically rewrite store state on success.
+
+  // POST /api/sessions/:id/pr/threads/:threadId/reply — reply to a review thread
+  app.post<{ Params: { id: string; threadId: string }; Body: { body: string } }>(
+    "/api/sessions/:id/pr/threads/:threadId/reply",
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const body = request.body?.body ?? "";
+      try {
+        return await replyToReviewThread(
+          deps.credentialStore,
+          deps.githubAuthManager,
+          request.params.threadId,
+          body,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to reply to thread: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/threads/:threadId/resolve — mark thread resolved
+  app.post<{ Params: { id: string; threadId: string } }>(
+    "/api/sessions/:id/pr/threads/:threadId/resolve",
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      try {
+        return await resolveReviewThread(
+          deps.credentialStore,
+          deps.githubAuthManager,
+          request.params.threadId,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to resolve thread: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pr/threads/:threadId/unresolve — reopen a thread
+  app.post<{ Params: { id: string; threadId: string } }>(
+    "/api/sessions/:id/pr/threads/:threadId/unresolve",
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      try {
+        return await unresolveReviewThread(
+          deps.credentialStore,
+          deps.githubAuthManager,
+          request.params.threadId,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to reopen thread: ${getErrorMessage(err)}` });
       }
     },
   );

@@ -1,10 +1,16 @@
 ---
-status: planned
+status: in-progress
 priority: high
 description: Bidirectionally sync GitHub PR review comments with ShipIt's inline diff viewer so teammates' comments appear in-app and replies write back to GitHub.
 ---
 
 # 102 — GitHub PR Review Comment Sync
+
+## Status snapshot
+
+- **Read side** — shipped with docs/133 Phase 4 (poller fetches `reviewThreads`, `PrConversationSection` renders them).
+- **Phase 1 write-back (this doc)** — reply, resolve, and unresolve via GraphQL. Gated by a `prCommentSync` setting (off by default). Live in `PrConversationSection`; no MonacoCommentWidgets integration yet.
+- **Deferred** — MonacoCommentWidgets integration in the diff viewer, "Send review to GitHub (N)" batched pending review flow, the agent auto-loop on new comment.
 
 ## Summary
 
@@ -60,18 +66,36 @@ GitHub reports comments against `originalLine` on the diff (i.e. the snapshot of
 
 ## Key files
 
+Shipped in Phase 1 (write-back via the PR conversation panel):
+
 | File | Change |
 |---|---|
-| `src/server/orchestrator/services/github-pr-comments.ts` | New — wraps GraphQL review-thread mutations |
-| `src/server/orchestrator/pr-status-poller.ts` | Extend query, emit `pr_comments_update` |
-| `src/server/orchestrator/api-routes-github.ts` | New PR-comment routes |
-| `src/shared/types/ws-server-messages.ts` | Add `pr_comments_update` message |
-| `src/client/components/diff/MonacoCommentWidgets.ts` | Render GitHub-sourced threads, resolved state |
-| `src/client/stores/git-store.ts` | `prComments` slice + actions |
-| `src/client/components/PrLifecycleCard.tsx` | "Pending review (3)" pill in `open` phase |
+| `src/server/orchestrator/github-auth-review-threads.ts` | **New** — GraphQL helpers: `addReviewThreadReply`, `resolveReviewThread`, `unresolveReviewThread`. |
+| `src/server/orchestrator/github-auth.ts` | Methods on `GitHubAuthManager` that delegate to the helpers above. |
+| `src/server/orchestrator/services/github-pr-comments.ts` | **New** — service wrapping the mutations behind the feature flag + auth checks. Throws `ServiceError(403, …)` when `prCommentSync` is off. |
+| `src/server/orchestrator/api-routes-github.ts` | New routes: `POST /api/sessions/:id/pr/threads/:threadId/reply`, `…/resolve`, `…/unresolve`. |
+| `src/server/orchestrator/credential-store.ts` | New `prCommentSync` flag (default `false`) with `getPrCommentSync` / `setPrCommentSync`. |
+| `src/server/orchestrator/services/{settings,types}.ts` | Carry the flag through `GlobalSettings` so bootstrap surfaces it to the client. |
+| `src/server/shared/types/ws-server-messages.ts` | Add `prCommentSync` to `WsGlobalSettings`. |
+| `src/client/stores/pr-store.ts` | Actions `replyToThread`, `resolveThread`, `unresolveThread` — optimistic + revert, reconciled by the next poll. |
+| `src/client/stores/settings-store.ts` | `prCommentSync` state slice. |
+| `src/client/components/pr-detail/PrConversationSection.tsx` | Reply box + Resolve/Reopen control on every review thread. Hidden when the flag is off. |
+| `src/client/components/Settings.tsx` | New `PrCommentSyncSettings` toggle in the GitHub tab. |
+| `src/client/utils/session-data.ts`, `src/client/App.tsx` | Pick up `prCommentSync` from the bootstrap payload. |
+| `src/server/orchestrator/integration_tests/test-helpers.ts` | `StubGitHubAuthManager` gains `addReviewThreadReply` / `resolveReviewThread` / `unresolveReviewThread` plus call-log + result-override hooks. |
+
+Deferred to a Phase 2 of this feature:
+
+| File | Change |
+|---|---|
+| `src/client/components/MonacoCommentWidgets.ts` | Render GitHub-sourced threads inline on the diff viewer with `source: 'local' \| 'github'`. |
+| `src/client/components/PrLifecycleCard.tsx` | "Pending review (N)" pill. |
+| `src/server/orchestrator/services/github-pr-comments.ts` | `submitPullRequestReview` to batch-post local line comments as a single pending review. |
 
 ## Future extensions
 
 - **Reactions** — GitHub thumbs/eyes mirrored in the widget.
 - **Suggested changes** — render GitHub's `suggestion` blocks as one-click apply buttons.
 - **Auto-loop on new comment** — when a reviewer leaves a comment, ShipIt can prompt Claude to address it automatically (gated by a per-session setting, similar to `autoFix`).
+- **MonacoCommentWidgets integration** — render GitHub-sourced review threads inline on the diff viewer (the read side currently lives only in the PR detail panel).
+- **Pending-review batching** — accumulate local line comments and post them as a single GraphQL `submitPullRequestReview` rather than one notification per reply.

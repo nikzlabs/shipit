@@ -59,11 +59,12 @@ export async function getGlobalSettings(
   const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
   const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
   const liveSteering = credentialStore?.getLiveSteering() ?? false;
+  const prCommentSync = credentialStore?.getPrCommentSync() ?? false;
   // Render the instructions with the same conditional sections the WS handler would
   // (currently just the auto-create-PR nudge) so the Settings UI accurately reflects
   // what the agent sees on its next turn.
   const agentSystemInstructions = buildAgentSystemInstructions({ autoCreatePr });
-  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering };
+  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, prCommentSync };
 }
 
 // ---- Mutation operations ----
@@ -95,6 +96,7 @@ export async function saveGlobalSettings(
   agentSystemInstructionsEnabled?: boolean,
   autoCreatePr?: boolean,
   liveSteering?: boolean,
+  prCommentSync?: boolean,
 ): Promise<GlobalSettings> {
   // Save git identity if provided
   if (gitIdentity) {
@@ -141,6 +143,11 @@ export async function saveGlobalSettings(
   // Save live steering toggle if provided
   if (liveSteering !== undefined) {
     credentialStore.setLiveSteering(liveSteering);
+  }
+
+  // Save PR comment sync toggle if provided (docs/102)
+  if (prCommentSync !== undefined) {
+    credentialStore.setPrCommentSync(prCommentSync);
   }
 
   return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir, credentialStore);
