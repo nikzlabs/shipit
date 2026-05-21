@@ -36,9 +36,9 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
   }
 
   if (activeAgentId === "codex") {
-    const authenticated = ctx.codexAuthManager.checkCredentials();
     ctx.agentRegistry.refreshAuth("codex");
-    if (!authenticated) {
+    const info = ctx.agentRegistry.get("codex");
+    if (!info?.authConfigured) {
       ctx.send({
         type: "error",
         message: "Codex is not authenticated. Sign in to Codex or add OPENAI_API_KEY in Settings -> Agents.",
