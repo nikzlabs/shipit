@@ -178,20 +178,24 @@ export function sessionCredentialsRoot(credentialsRoot: string): string {
 // the source after the turn IFF it advanced — keeping one authoritative copy
 // without distributing a long-lived refresh token N ways.
 //
-// Scoped to Claude for now: that's the confirmed failure, and the expiry guard
-// below understands the Claude credentials shape. Codex stays on plain
-// write-once provisioning (it has not exhibited the bug); extend when its token
-// file shape is verified.
+// Both agents are covered: Claude is the confirmed failure; Codex has the same
+// latent rotation hazard (rotating refresh token + per-session copy) even
+// though it hadn't been observed in the wild. Each agent declares its token
+// file(s) and a "freshness" reader so the expiry guards compare like with like
+// (Claude: `claudeAiOauth.expiresAt`; Codex: the access-token JWT `exp` claim /
+// `last_refresh`, since its `auth.json` carries no plain expiry field).
 // ---------------------------------------------------------------------------
 
 /**
  * Token files (relative to the credentials root) that carry the rotating OAuth
  * token — distinct from {@link AGENT_CREDENTIAL_PATHS} (the full provisioned
  * subtree). Only these are synced per-turn, so the CLI's other in-place writes
- * under `.claude` (history, projects, settings) are never clobbered.
+ * (Claude: history/projects/settings under `.claude`; Codex: `config.toml`
+ * under `.codex`) are never clobbered.
  */
 const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
   claude: [".claude/.credentials.json", ".claude/credentials.json", ".claude/auth.json"],
+  codex: [".codex/auth.json"],
 };
 
 /** Copy a file via temp + atomic rename so a concurrent reader never sees a partial write. */
@@ -223,6 +227,54 @@ function readClaudeTokenExpiry(file: string): number | null {
 }
 
 /**
+ * "Freshness" (epoch ms) of a Codex `auth.json` — a strictly larger value means
+ * a more-recently-refreshed token. Codex writes no plain `expiresAt`, so we
+ * read, in order: an explicit `expires_at`/`expiresAt` if a future CLI adds
+ * one; else the access/id-token JWT `exp` claim (advances on every refresh);
+ * else the `last_refresh` ISO timestamp. Returns null when none is parseable —
+ * which the guards treat as "can't prove it's newer".
+ */
+function readCodexTokenFreshness(file: string): number | null {
+  try {
+    const o = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    const tokens = (o.tokens && typeof o.tokens === "object" ? o.tokens : {}) as Record<string, unknown>;
+    const explicit = o.expires_at ?? o.expiresAt ?? tokens.expires_at ?? tokens.expiresAt;
+    if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+      return explicit < 10_000_000_000 ? explicit * 1000 : explicit; // seconds → ms
+    }
+    for (const k of ["access_token", "id_token"]) {
+      const jwt = tokens[k] ?? o[k];
+      if (typeof jwt !== "string") continue;
+      const parts = jwt.split(".");
+      if (parts.length < 2) continue;
+      try {
+        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as Record<string, unknown>;
+        if (typeof payload.exp === "number" && Number.isFinite(payload.exp) && payload.exp > 0) {
+          return payload.exp * 1000; // JWT exp is seconds
+        }
+      } catch { /* malformed JWT segment — try the next token */ }
+    }
+    if (typeof o.last_refresh === "string") {
+      const t = Date.parse(o.last_refresh);
+      if (Number.isFinite(t)) return t;
+    }
+  } catch {
+    // missing / invalid JSON
+  }
+  return null;
+}
+
+/**
+ * Per-agent token "freshness" reader (epoch ms). Source and session files for
+ * the *same* agent are always compared with the same reader, so the metrics
+ * never mix across agents.
+ */
+const TOKEN_FRESHNESS: Partial<Record<AgentId, (file: string) => number | null>> = {
+  claude: readClaudeTokenExpiry,
+  codex: readCodexTokenFreshness,
+};
+
+/**
  * Before a turn: copy the freshest token file from the orchestrator source into
  * the session's per-session dir, so the session's CLI starts from the latest
  * token rather than a stale write-once copy. Only the token file is touched.
@@ -231,6 +283,7 @@ function readClaudeTokenExpiry(file: string): number | null {
 export function syncAgentTokenIn(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
+  const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   for (const rel of files) {
     const src = path.join(credentialsRoot, rel);
@@ -244,13 +297,43 @@ export function syncAgentTokenIn(credentialsRoot: string, sessionId: string, age
     // sessions, naming included, while the orchestrator token was expired).
     // Skip only when we can prove the session token is already as fresh or
     // fresher; copy on a missing/corrupt/older session token. (docs/142 A)
-    const dstExp = fs.existsSync(dst) ? readClaudeTokenExpiry(dst) : null;
+    const dstExp = fs.existsSync(dst) ? freshness(dst) : null;
     if (dstExp !== null) {
-      const srcExp = readClaudeTokenExpiry(src);
+      const srcExp = freshness(src);
       if (srcExp === null || srcExp <= dstExp) continue;
     }
     atomicCopyFile(src, dst);
   }
+}
+
+/**
+ * After an explicit re-auth (`auth_complete`): force the freshly-minted source
+ * token into a session's per-session dir, **unconditionally** (no expiry
+ * guard). Distinct from {@link syncAgentTokenIn}, whose guard would skip a
+ * session holding a later-expiry-but-dead token — exactly the state a manual
+ * re-login exists to repair. So a session pinned *before* the re-auth recovers
+ * immediately instead of waiting for its next turn's sync-in. (docs/142 A3)
+ *
+ * Cross-agent safe: only overwrites a token file the session **already has**.
+ * A warm/idle container (no agent creds yet) or a session pinned to the other
+ * agent has no matching token file, so nothing is written — we never create
+ * `.claude` inside a Codex session (docs/138 isolation). Returns true iff a
+ * file was written (the session was an active holder of this agent's token).
+ */
+export function repushAgentToken(credentialsRoot: string, sessionId: string, agentId: AgentId): boolean {
+  const files = AGENT_TOKEN_FILES[agentId];
+  if (!files) return false;
+  const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  let wrote = false;
+  for (const rel of files) {
+    const src = path.join(credentialsRoot, rel);
+    if (!fs.existsSync(src)) continue;
+    const dst = path.join(sessionDir, rel);
+    if (!fs.existsSync(dst)) continue; // don't seed creds into a non-holder
+    atomicCopyFile(src, dst);
+    wrote = true;
+  }
+  return wrote;
 }
 
 /**
@@ -264,14 +347,15 @@ export function syncAgentTokenIn(credentialsRoot: string, sessionId: string, age
 export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
+  const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   for (const rel of files) {
     const sessionFile = path.join(sessionDir, rel);
     if (!fs.existsSync(sessionFile)) continue;
-    const sessionExp = readClaudeTokenExpiry(sessionFile);
+    const sessionExp = freshness(sessionFile);
     if (sessionExp === null) continue; // can't prove it's newer — don't risk a regression
     const sourceFile = path.join(credentialsRoot, rel);
-    const sourceExp = fs.existsSync(sourceFile) ? readClaudeTokenExpiry(sourceFile) : null;
+    const sourceExp = fs.existsSync(sourceFile) ? freshness(sourceFile) : null;
     if (sourceExp !== null && sessionExp <= sourceExp) continue; // source already as fresh or fresher
     atomicCopyFile(sessionFile, sourceFile);
   }

@@ -10,10 +10,12 @@ Tracks remaining work for docs/142. See `plan.md` for design and rationale.
       stale in-memory `activeAgentId` guard)
 - [ ] Verify on prod: a new session shown as Opus actually runs Claude/Opus
       (no silent switch to gpt-5.5)
-- [ ] C2/C3 — server reconciliation (`index.ts` new-session agent/model resolve)
-      left as a defensive guard. Confirm it no longer fires now the client sends
-      a coherent (derived-agent, model) pair; if it still does, invert it to
-      derive the agent from the model for unpinned sessions.
+- [x] C2/C3 — **inverted** the server reconciliation (`index.ts` new-session
+      agent/model resolve): for an unpinned session the **model is
+      authoritative** and the agent is derived from it (`agentRegistry.list()`
+      owner lookup), so even an incoherent client pair (stale `agent=codex` +
+      `model=opus`) runs Claude. Pinned sessions stay agent-authoritative (model
+      conforms). Integration test in `codex-agent.test.ts`.
 
 ## B — stuck-state recovery (done; shipped in PR #576)
 
@@ -62,14 +64,23 @@ intact; closes the write-back loop with an expiry guard).
       token auto-surfaces the re-auth prompt (rather than a silent 401). A
       *proactive* "is the token usable" probe is deliberately NOT built — it
       can't distinguish expired-but-refreshable from dead without rotating.
-- [ ] A3 (follow-up) — on `auth_complete`, push the fresh token into
-      already-pinned Claude sessions. Lower priority now: copy-back's next-turn
-      sync-in already pulls the fresh source token.
-- [ ] Extend the token sync to **Codex** once its `auth.json` token/expiry shape
-      is verified (same latent rotation bug; not yet observed).
+- [x] A3 — on `auth_complete` (Claude & Codex), `repushAgentToken` force-copies
+      the fresh source token into every session pinned to that agent, so an idle
+      pinned session recovers immediately instead of waiting for its next turn's
+      sync-in. Unconditional (ignores the expiry guard — a manual re-login
+      repairs exactly the dead-but-later-expiry case the guard would skip) but
+      cross-agent safe (only overwrites a token file the session already holds).
+- [x] Extend the token sync to **Codex** — `AGENT_TOKEN_FILES.codex =
+      [".codex/auth.json"]` with a Codex freshness reader (access-token JWT
+      `exp` claim → `last_refresh`, since `auth.json` has no plain `expiresAt`).
+      Per-turn sync-in/back wiring was already agent-generic, so it's now active
+      for Codex too. Tests added.
 
 ## Cross-cutting
 
-- [ ] Update `src/server/shipit-docs/` if any agent-facing auth behavior changes.
+- [x] `src/server/shipit-docs/` — audited; no change needed. The token sync,
+      401 classification, A3 re-push and C2/C3 resolve are all
+      orchestrator-internal; the agent inside the container still reads
+      `~/.claude` / `~/.codex` exactly as `environment.md` already describes.
 - [ ] After deploy: confirm B (no stuck "Agent already running") and C (new
       session shown as Opus runs Claude) on prod.

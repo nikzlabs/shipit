@@ -105,10 +105,13 @@ token isn't stranded in one session.
       refresh (same/older expiry) can never clobber a fresher source token, so
       the rare concurrent-refresh case is a self-healing one-off rather than a
       regression.
-    - Scoped to **Claude** (the confirmed failure; the guard understands the
-      Claude credential shape). Codex stays on plain write-once — extend
-      `AGENT_TOKEN_FILES` when its token shape is verified. No-op outside
-      container mode (local/dogfood reads the orchestrator creds directly).
+    - Covers **both agents.** Each declares its token file(s) and a "freshness"
+      reader so the expiry guards compare like with like (Claude:
+      `claudeAiOauth.expiresAt`; Codex: the access-token JWT `exp` claim /
+      `last_refresh`, since `auth.json` carries no plain expiry). Claude was the
+      confirmed failure; Codex has the same latent rotation hazard and is now
+      synced too. The per-turn wiring is agent-generic. No-op outside container
+      mode (local/dogfood reads the orchestrator creds directly).
 
 - **A1 (done) — Classify the runtime 401.** `textIndicatesAuthFailure` /
   `resultEventIndicatesAuthFailure` in
@@ -124,11 +127,16 @@ token isn't stranded in one session.
   state instead falls out of A-copyback (the source stays fresh) + A1 (a real,
   unrecoverable 401 flips the card).
 
-- **A3 — Re-provision on re-auth (follow-up, not yet built).** On
-  `auth_complete` for Claude, push the fresh token into already-pinned Claude
-  sessions so a re-login reaches sessions pinned before it. With A-copyback the
-  next turn's sync-in already pulls the fresh source token, so A3 is now a
-  latency/edge nicety rather than load-bearing.
+- **A3 (done) — Re-push on re-auth.** On `auth_complete` (Claude *and* Codex),
+  `repushAgentToken` ([session-credentials.ts](../../src/server/orchestrator/session-credentials.ts))
+  force-copies the fresh source token into every session pinned to that agent
+  ([app-lifecycle.ts](../../src/server/orchestrator/app-lifecycle.ts)
+  `repushTokenToPinnedSessions`), so an idle pinned session recovers immediately
+  instead of waiting for its next turn's sync-in. It is **unconditional**
+  (ignores the expiry guard on purpose — a manual re-login exists to repair the
+  dead-but-later-expiry token the guard would otherwise skip) but cross-agent
+  safe: it only overwrites a token file the session already holds, so it never
+  seeds `.claude` into a Codex session (docs/138).
 
 > **One-time operational step:** the prod refresh token was already dead
 > (consumed before write-back existed), so a single sign out + sign in is needed
@@ -138,7 +146,7 @@ token isn't stranded in one session.
 - `src/server/orchestrator/session-credentials.ts` — `syncAgentTokenIn` / `syncAgentTokenBack` + expiry guard (A-copyback)
 - `src/server/orchestrator/ws-handlers/agent-execution.ts` — per-turn sync-in (pre-start) + sync-back (post-turn) wiring
 - `src/server/session/claude.ts` — `textIndicatesAuthFailure` / `resultEventIndicatesAuthFailure` (A1)
-- `src/server/orchestrator/api-routes-bootstrap.ts` — re-push on `auth_complete` (A3, follow-up)
+- `src/server/orchestrator/app-lifecycle.ts` — `repushTokenToPinnedSessions` on `auth_complete` (A3)
 
 ---
 
@@ -220,8 +228,15 @@ mapping). Divergence becomes structurally impossible.
   *sources* for what a new session runs. New session → the user's last model
   decides both; existing session → its own persisted model/agent stay
   authoritative (already true server-side).
-- **C3** — Keep the server-side reconciliation as a defensive guard, but it
-  stops firing once the client always sends a coherent pair.
+- **C3 (done)** — **Inverted** the server-side reconciliation
+  ([index.ts](../../src/server/orchestrator/index.ts)) so it's no longer just a
+  passive guard: for an **unpinned** session the model is authoritative and the
+  agent is derived from it (`agentRegistry.list()` owner lookup), so even an
+  incoherent client pair (stale `agent=codex` + `model=opus`) runs Claude. Once
+  the session is pinned (creds provisioned on the first turn) it flips to
+  agent-authoritative and conforms the model. Reconnects still prefer the
+  persisted `session.model` over the query param. Integration-tested in
+  `codex-agent.test.ts`.
 
 ### Key files
 - `src/client/utils/local-storage.ts` — model as source of truth; derive agent (C1)
