@@ -150,6 +150,26 @@ EODJ
   systemctl restart docker
 fi
 
+# --- Raise inotify watcher limits ---
+# inotify limits are enforced per host UID across the whole kernel, NOT
+# per container. Every session container (file-watcher) and every preview
+# dev server (e.g. Vite/chokidar) registers watches against the same host
+# UID 0 pool. The Ubuntu defaults (~65k watches / 128 instances) fall over
+# fast with multiple active sessions — Node's `fs.watch({ recursive: true })`
+# on Linux registers one inotify watch per subdirectory, and node_modules
+# trees can be tens of thousands of dirs each. Bump generously.
+INOTIFY_CONF="/etc/sysctl.d/99-shipit-inotify.conf"
+if [ -f "$INOTIFY_CONF" ]; then
+  echo "==> inotify limits already configured, skipping."
+else
+  echo "==> Raising inotify watcher limits..."
+  cat > "$INOTIFY_CONF" <<'EOI'
+fs.inotify.max_user_watches=524288
+fs.inotify.max_user_instances=512
+EOI
+  sysctl --system >/dev/null
+fi
+
 # --- Install cloudflared ---
 if command -v cloudflared &>/dev/null; then
   echo "==> cloudflared already installed, skipping."
