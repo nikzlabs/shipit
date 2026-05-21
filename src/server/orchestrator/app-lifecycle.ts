@@ -777,6 +777,20 @@ export async function autoStart(buildApp: (deps: AppDeps) => Promise<FastifyInst
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
+  // Backstop against a single async hiccup taking down every session. Node's
+  // default on an unhandled rejection is to terminate the process — and this
+  // orchestrator owns every live session, so one floating promise (e.g. a
+  // WorkerTimeoutError from a wedged session worker that a callsite forgot to
+  // catch) would kill them all. The WS dispatcher already catches handler
+  // rejections; this is the catch-all for anything else. Log loudly and stay
+  // up — same spirit as "WebSocket lifecycle MUST NOT affect server behavior"
+  // in CLAUDE.md, extended to worker HTTP timeouts. We deliberately do NOT
+  // swallow `uncaughtException`: a thrown (non-promise) error can leave state
+  // corrupt, so we let Node's default restart-on-crash handle that case.
+  process.on("unhandledRejection", (reason: unknown) => {
+    console.error("[orchestrator] unhandled promise rejection (kept process alive):", reason);
+  });
+
   const port = Number(process.env.PORT) || 3000;
   await app.listen({ port, host: "0.0.0.0" });
   console.log(`[server] listening on http://0.0.0.0:${port}`);
