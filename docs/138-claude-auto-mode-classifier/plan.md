@@ -231,6 +231,14 @@ The abort only fires after the CLI's 3-consecutive / 20-total threshold, at whic
   shape `{ tool_name, tool_use_id, tool_input }`). The CLI owns the threshold and ends the
   process; we detect the resulting early/empty-result turn in `agent-listeners.ts`
   (`agent_result` handling) — the same place post-turn actions already run.
+- **Gate on `requestedPermissionMode === "guarded"`.** The CLI also populates
+  `permission_denials[]` in non-guarded turns for unrelated reasons (notably: a headless `-p`
+  run auto-resolves an `AskUserQuestion` call because there's no human to answer, and that
+  shows up as a denial). The classifier isn't engaged in `auto`/`plan` mode, so attributing
+  those entries to "Guarded mode blocked" was misleading the user. The notice is gated on the
+  turn having actually requested guarded mode (`opts.requestedPermissionMode === "guarded"` in
+  the listener) — i.e. the post-downgrade effective mode, so a silently-downgraded turn
+  doesn't trigger it either.
 - **Message shape & routing:** emit a single **system-style notice** (reuse the existing
   inline notice/log message kind broadcast via `runner.emitMessage()` — NOT `ctx.send()`, so
   every viewer sees it and it lands in the turn-event buffer for reconnects) summarizing the
