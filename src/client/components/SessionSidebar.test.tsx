@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
@@ -131,9 +132,22 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("cloning")).toBeTruthy();
   });
 
-  it("shows View All button in repo group header", () => {
+  it("shows kebab menu on repo header with View All Sessions and Remove Repository", async () => {
+    const user = userEvent.setup();
     render(<SessionSidebar {...defaultProps} />);
-    expect(screen.getByText("View All")).toBeTruthy();
+    await user.click(screen.getByLabelText("repo repository menu"));
+    expect(screen.getByText("View All Sessions")).toBeTruthy();
+    expect(screen.getByText("Remove Repository")).toBeTruthy();
+  });
+
+  it("requires a second click to confirm Remove Repository", async () => {
+    const user = userEvent.setup();
+    render(<SessionSidebar {...defaultProps} />);
+    await user.click(screen.getByLabelText("repo repository menu"));
+    // First click on Remove keeps the menu open and swaps the label to confirmation.
+    await user.click(screen.getByText("Remove Repository"));
+    expect(screen.getByText("Click again to confirm")).toBeTruthy();
+    expect(screen.queryByText("Remove Repository")).toBeNull();
   });
 
   it("shows 'No sessions' when a repo group has no sessions", () => {

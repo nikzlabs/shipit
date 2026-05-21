@@ -73,16 +73,15 @@ The key insight: the current sidebar already has a sticky "Sessions / View All" 
 - **Multi-repo users** see the pattern repeat for each repo, which reads naturally as a grouped list.
 
 **Behavior:**
-- Each repo gets a collapsible section header showing the repo short name + GitHub icon, with "View All" on the right.
+- Each repo gets a collapsible section header showing the repo short name + GitHub icon, with a kebab menu (`⋮`) on the right.
 - The top bar loses the repo name (it moves into the group header) and gains an "Add Repository" button.
 - Sections are sorted by most-recently-used session within each repo.
 - Clicking a session activates it (and implicitly its repo) — the file tree, preview, and chat all switch.
 - Repo headers are clickable to collapse/expand. Chevron indicates state.
-- Repo headers have a context menu (right-click): remove repo, copy URL, open on GitHub.
+- The kebab menu on each repo header has two items: **View All Sessions** (opens AllSessionsDialog filtered to that repo) and **Remove Repository** (destructive, uses a "Click again to confirm" inline guard — see `Settings.tsx` for the same idiom). Originally specced as a right-click context menu with three items (remove repo, copy URL, open on GitHub); shipped as a left-click kebab with the View All + Remove pair, since "View All" wanted a permanent home and right-click is not discoverable. Copy URL and Open on GitHub are deferred — neither is needed inline once the repo's sessions are already in the sidebar.
 - "New session" button appears at the bottom of each repo group (inline, not the full-width primary button).
 - Repos with no active sessions show collapsed by default.
 - Collapse state is persisted to localStorage.
-- "View All" on a repo header opens the AllSessionsDialog filtered to that repo.
 
 **Pros:**
 - Full visibility across all repos at a glance.
