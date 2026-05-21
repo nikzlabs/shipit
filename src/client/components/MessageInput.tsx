@@ -17,8 +17,8 @@ import { WithTooltip } from "./ui/tooltip.js";
 import { getSavedDraftMessage, saveDraftMessage } from "../utils/local-storage.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
-import type { AgentOption } from "./AgentPicker.js";
-import type { ModelInfo } from "./StatusBar.js";
+import type { AgentOption } from "../agent-types.js";
+import type { ModelInfo } from "../utils/model-info.js";
 
 export function MessageInput({
   onSend,

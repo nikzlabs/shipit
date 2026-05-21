@@ -10,8 +10,8 @@ import { WithTooltip } from "./ui/tooltip.js";
 import { resolveModelAlias } from "../utils/format-model.js";
 import { getSavedModelId } from "../utils/local-storage.js";
 import type { AgentId, PermissionMode } from "../../server/shared/types.js";
-import type { AgentOption } from "./AgentPicker.js";
-import type { ModelInfo } from "./StatusBar.js";
+import type { AgentOption } from "../agent-types.js";
+import type { ModelInfo } from "../utils/model-info.js";
 
 /**
  * docs/138 — three-state, agent-aware permission-mode selector. Replaces the

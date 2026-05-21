@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { AgentOption } from "./AgentPicker.js";
+import type { AgentOption } from "../agent-types.js";
 
 export interface ClaudeAuthCardProps {
   agent: AgentOption | undefined;

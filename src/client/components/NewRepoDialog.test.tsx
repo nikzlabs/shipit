@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NewRepoDialog } from "./NewRepoDialog.js";
-import type { TemplateInfo } from "./TemplateSelector.js";
+import type { TemplateInfo } from "../utils/template-info.js";
 
 afterEach(cleanup);
 

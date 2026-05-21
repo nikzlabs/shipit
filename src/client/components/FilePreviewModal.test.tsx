@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { FilePreviewModal } from "./FilePreviewModal.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
-import type { AgentOption } from "./AgentPicker.js";
+import type { AgentOption } from "../agent-types.js";
 
 // Monaco editor uses dynamic import("monaco-editor") and won't work in jsdom.
 // Mock the module so the CodeEditor sub-component renders a simple div.

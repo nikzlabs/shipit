@@ -33,21 +33,6 @@ export function TypingDots() {
   );
 }
 
-/**
- * Full thinking indicator with dots and activity label.
- * Shown when the agent is processing but no assistant message has arrived yet.
- */
-export function ThinkingIndicator({ activity }: { activity?: StreamingActivity }) {
-  return (
-    <div className="flex justify-start">
-      <div className="bg-(--color-bg-tertiary) rounded-lg px-4 py-3 text-sm text-(--color-text-secondary) flex items-center gap-2">
-        <TypingDots />
-        <span>{activity?.label ?? "Thinking..."}</span>
-      </div>
-    </div>
-  );
-}
-
 /** Small spinner icon for in-progress tool executions. */
 export function ToolSpinner() {
   return (
