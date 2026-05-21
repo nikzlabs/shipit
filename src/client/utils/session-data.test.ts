@@ -62,6 +62,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
   });
 
   it("seeds modelInfo from the most recent turn's model field", async () => {
+    useSessionStore.getState().setSessionId("sess-1");
     expect(useUiStore.getState().modelInfo).toBeNull();
     await loadSessionHistory("sess-1");
     const info = useUiStore.getState().modelInfo;
@@ -72,6 +73,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
   });
 
   it("walks backward to find the most recent turn that recorded a model", async () => {
+    useSessionStore.getState().setSessionId("sess-2");
     fetchSpy.mockImplementation((url: string) => {
       if (url.includes("/history")) {
         return Promise.resolve({
@@ -115,6 +117,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
   });
 
   it("leaves modelInfo null when no turn recorded a model", async () => {
+    useSessionStore.getState().setSessionId("sess-3");
     fetchSpy.mockImplementation((url: string) => {
       if (url.includes("/history")) {
         return Promise.resolve({
@@ -143,5 +146,47 @@ describe("loadSessionHistory — modelInfo seeding", () => {
 
     await loadSessionHistory("sess-3");
     expect(useUiStore.getState().modelInfo).toBeNull();
+  });
+
+  it("ignores history responses for sessions that are no longer active", async () => {
+    useSessionStore.getState().setSessionId("old-session");
+    let resolveHistory!: (value: {
+      messages: { role: string; text: string }[];
+      commits: never[];
+      fileTree: never[];
+      agentRunning: boolean;
+    }) => void;
+    const historyPromise = new Promise<{
+      messages: { role: string; text: string }[];
+      commits: never[];
+      fileTree: never[];
+      agentRunning: boolean;
+    }>((resolve) => {
+      resolveHistory = resolve;
+    });
+    fetchSpy.mockImplementation((url: string) => {
+      if (url.includes("/history")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => historyPromise,
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404 });
+    });
+
+    const load = loadSessionHistory("old-session");
+    useSessionStore.getState().setSessionId("new-session");
+    resolveHistory({
+      messages: [{ role: "assistant", text: "stale" }],
+      commits: [],
+      fileTree: [],
+      agentRunning: false,
+    });
+    await load;
+
+    expect(useSessionStore.getState().messages).toEqual([]);
+    expect(useSessionStore.getState().historyLoaded).toBe(false);
+    expect(useGitStore.getState().commits).toEqual([]);
+    expect(useFileStore.getState().tree).toEqual([]);
   });
 });
