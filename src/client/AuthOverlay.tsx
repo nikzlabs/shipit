@@ -1,6 +1,6 @@
 import { AuthOverlay as AuthOverlayComponent } from "./components/AuthOverlay.js";
 import { OnboardingWizard } from "./components/OnboardingWizard.js";
-import type { AgentOption } from "./components/AgentPicker.js";
+import type { AgentOption } from "./agent-types.js";
 import type { CodexDeviceAuthState } from "./components/CodexAuthCard.js";
 
 interface AuthOverlayContainerProps {

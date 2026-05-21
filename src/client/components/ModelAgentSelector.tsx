@@ -12,8 +12,8 @@ import {
   DropdownMenuLabel,
 } from "./ui/dropdown-menu.js";
 import type { AgentId } from "../../server/shared/types.js";
-import type { AgentOption } from "./AgentPicker.js";
-import type { ModelInfo } from "./StatusBar.js";
+import type { AgentOption } from "../agent-types.js";
+import type { ModelInfo } from "../utils/model-info.js";
 
 interface ModelAgentSelectorProps {
   agents: AgentOption[];

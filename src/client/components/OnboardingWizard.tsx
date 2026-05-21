@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { GithubLogoIcon } from "@phosphor-icons/react";
-import type { AgentOption } from "./AgentPicker.js";
+import type { AgentOption } from "../agent-types.js";
 import { Button } from "./ui/button.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { agentIdForModel } from "./agent-for-model.js";
-import type { AgentOption } from "../components/AgentPicker.js";
+import type { AgentOption } from "../agent-types.js";
 
 const AGENTS: AgentOption[] = [
   { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["sonnet", "opus", "haiku"], supportsReview: true },

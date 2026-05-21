@@ -1,7 +1,7 @@
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import type { SessionInfo, TurnUsage } from "../../server/shared/types.js";
-import { formatTokenCount, getContextLevel, type ModelInfo } from "./StatusBar.js";
+import { formatTokenCount, getContextLevel, type ModelInfo } from "../utils/model-info.js";
 
 export interface SessionUsage {
   sessionId: string;

@@ -1,8 +1,8 @@
 import { useState, useMemo } from "react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
-import type { ModelInfo } from "./StatusBar.js";
-import { formatTokenCount, getContextLevel } from "./StatusBar.js";
+import type { ModelInfo } from "../utils/model-info.js";
+import { formatTokenCount, getContextLevel } from "../utils/model-info.js";
 import type { TurnUsage } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
 

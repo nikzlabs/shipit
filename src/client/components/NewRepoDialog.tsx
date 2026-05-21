@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { TemplateInfo } from "./TemplateSelector.js";
+import type { TemplateInfo } from "../utils/template-info.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 
