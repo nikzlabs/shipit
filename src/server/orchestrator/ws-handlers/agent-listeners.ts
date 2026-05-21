@@ -450,7 +450,19 @@ export function wireAgentListeners(
       // result with these denials populated. Either way we summarize the
       // blocked tool(s) and offer next steps. Model self-refusals are NOT
       // classifier denials and never reach this array.
-      if (event.permissionDenials?.length && turnSessionId) {
+      //
+      // Gate on `requestedPermissionMode === "guarded"`: the CLI can populate
+      // `permission_denials[]` in non-guarded turns too (e.g. headless `-p`
+      // auto-resolves an `AskUserQuestion` call because there's no human to
+      // answer), and attributing those to "Guarded mode" was misleading the
+      // user. In `auto`/`plan` mode the classifier isn't engaged, so any
+      // denials in the result event are not classifier blocks and we don't
+      // surface this notice.
+      if (
+        event.permissionDenials?.length
+        && turnSessionId
+        && opts.requestedPermissionMode === "guarded"
+      ) {
         const blockedTools = [...new Set(event.permissionDenials.map((d) => d.toolName))].join(", ");
         const count = event.permissionDenials.length;
         emitToViewers({

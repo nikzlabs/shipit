@@ -189,6 +189,50 @@ describe("Integration: Permission modes", () => {
     client.close();
   });
 
+  it("does NOT emit a guarded-blocked notice in auto mode when result carries permission_denials", async () => {
+    // Auto mode can still produce `permission_denials[]` for reasons unrelated
+    // to the classifier (e.g. headless `-p` auto-resolves AskUserQuestion when
+    // there's no human to answer). Surfacing those as "Guarded mode blocked"
+    // misattributes the cause — the classifier isn't engaged in auto mode.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // No permissionMode field ⇒ auto mode.
+    client.send({ type: "send_message", text: "Ask me something" });
+    await waitForClaude(() => lastClaude);
+    expect(lastClaude.lastPermissionMode).toBeUndefined();
+
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "auto-with-denials-session",
+      permissionMode: "default",
+    });
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "auto-with-denials-session",
+      permission_denials: [
+        { tool_name: "AskUserQuestion", tool_use_id: "t1", tool_input: {} },
+      ],
+    });
+
+    let sawGuardedNotice = false;
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      try {
+        const msg = await client.receive(200) as { type: string; message?: string };
+        if (msg.type === "system_notice" && msg.message?.includes("Guarded mode blocked")) {
+          sawGuardedNotice = true;
+          break;
+        }
+      } catch { break; }
+    }
+    expect(sawGuardedNotice).toBe(false);
+
+    client.close();
+  });
+
   it("switching mode mid-session changes ClaudeProcess args", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
