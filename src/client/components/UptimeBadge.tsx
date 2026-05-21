@@ -6,14 +6,21 @@ interface UptimeBadgeProps {
   processStartedAt: number;
 }
 
-/**
- * Format an elapsed-millisecond span as total minutes ("Nm"). Sub-minute
- * spans render as "0m". Negative values (clock skew between server and
- * client) clamp to 0.
- */
 export function formatUptime(elapsedMs: number): string {
-  const totalMin = Math.max(0, Math.floor(elapsedMs / 60_000));
-  return `${totalMin}m`;
+  const totalMinutes = Math.max(0, Math.floor(elapsedMs / 60_000));
+  const days = Math.floor(totalMinutes / 1_440);
+  const hours = Math.floor((totalMinutes % 1_440) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  }
+
+  if (hours > 0) {
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+
+  return `${minutes}m`;
 }
 
 /**

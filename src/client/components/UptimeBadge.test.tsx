@@ -19,14 +19,15 @@ describe("formatUptime", () => {
     expect(formatUptime(3_599_000)).toBe("59m");
   });
 
-  it("renders hour-plus spans as total minutes", () => {
-    expect(formatUptime(3_600_000)).toBe("60m");
-    expect(formatUptime(86_399_000)).toBe("1439m");
+  it("renders hour-plus spans with hours and minutes", () => {
+    expect(formatUptime(3_600_000)).toBe("1h");
+    expect(formatUptime(3_600_000 + 5 * 60_000)).toBe("1h 5m");
+    expect(formatUptime(86_399_000)).toBe("23h 59m");
   });
 
-  it("renders day-plus spans as total minutes", () => {
-    expect(formatUptime(86_400_000)).toBe("1440m");
-    expect(formatUptime(3 * 86_400_000 + 5 * 3_600_000)).toBe("4620m");
+  it("renders day-plus spans with days and hours", () => {
+    expect(formatUptime(86_400_000)).toBe("1d");
+    expect(formatUptime(3 * 86_400_000 + 5 * 3_600_000)).toBe("3d 5h");
   });
 
   it("clamps negative deltas (client/server clock skew) to zero", () => {
