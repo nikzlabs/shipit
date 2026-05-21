@@ -1,11 +1,18 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, GithubLogoIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, GithubLogoIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoName } from "../utils/repo-label.js";
 import { Button } from "./ui/button.js";
 import { WithTooltip } from "./ui/tooltip.js";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "./ui/dropdown-menu.js";
 import { RepoSwitcher } from "./RepoSwitcher.js";
 import { PrStateBadge } from "./PrLifecycleCard.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -267,6 +274,7 @@ function RepoGroup({
   onArchive,
   onNewSession,
   onViewAll,
+  onRemoveRepo,
 }: {
   repo: RepoInfo;
   sessions: SessionInfo[];
@@ -278,8 +286,13 @@ function RepoGroup({
   onArchive: (id: string) => void;
   onNewSession: () => void;
   onViewAll: () => void;
+  onRemoveRepo: () => void;
 }) {
   const repoName = parseRepoName(repo.url);
+  // "Click again to confirm" idiom (see Settings.tsx). Kept local to the menu so
+  // it resets whenever the dropdown closes — preventing a stale "confirming" state
+  // from carrying over to the next time the user opens the menu.
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
   return (
     <div className="flex flex-col">
@@ -302,14 +315,47 @@ function RepoGroup({
             <span className="shrink-0 text-[9px] text-(--color-warning) animate-pulse">cloning</span>
           )}
         </button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onViewAll}
-          className="text-[10px] text-(--color-text-tertiary) hover:text-(--color-text-primary) px-1 py-0.5 shrink-0"
+        <DropdownMenu
+          onOpenChange={(open) => {
+            // Reset the destructive-confirm state every time the menu closes,
+            // so a partial confirmation never carries to the next open.
+            if (!open) setConfirmingRemove(false);
+          }}
         >
-          View All
-        </Button>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary) shrink-0"
+              aria-label={`${repoName} repository menu`}
+            >
+              <DotsThreeVerticalIcon size={ICON_SIZE.SM} />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuItem onSelect={onViewAll}>
+              <ListBulletsIcon size={ICON_SIZE.XS} className="shrink-0" />
+              View All Sessions
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={(e) => {
+                if (!confirmingRemove) {
+                  // First click: keep the menu open and switch label to confirmation.
+                  e.preventDefault();
+                  setConfirmingRemove(true);
+                  return;
+                }
+                // Second click: run the action; menu closes via default Radix behavior.
+                onRemoveRepo();
+              }}
+              className="text-(--color-error) hover:text-(--color-error) focus:text-(--color-error)"
+            >
+              <TrashIcon size={ICON_SIZE.XS} className="shrink-0" />
+              {confirmingRemove ? "Click again to confirm" : "Remove Repository"}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Session list — hidden when collapsed */}
@@ -428,6 +474,15 @@ export function SessionSidebar({
     // Mobile drawer: close it so the dialog isn't stacked on top
     if (mobile) onClose?.();
   }, [mobile, onClose]);
+
+  const handleRemoveRepo = useCallback((repoUrl: string) => {
+    // Backend semantics (services/repos.ts + docs/059): the repo entry and its
+    // warm session are removed; existing sessions are preserved on disk but become
+    // invisible in the sidebar until the repo is re-added. The "Click again to
+    // confirm" idiom in the menu item guards against accidental clicks; we don't
+    // need a separate dialog.
+    void useRepoStore.getState().removeRepo(repoUrl);
+  }, []);
 
   // Single repo mode: check if we only have one repo
   const isSingleRepo = repos.length === 1;
@@ -549,6 +604,7 @@ export function SessionSidebar({
               onArchive={onArchive}
               onNewSession={() => onNewSessionForRepo(repo.url)}
               onViewAll={() => handleViewAll(repo.url)}
+              onRemoveRepo={() => handleRemoveRepo(repo.url)}
             />
           ))
         )}
