@@ -116,6 +116,19 @@ Reference documentation about the ShipIt platform is at /shipit-docs/. Consult t
 - /shipit-docs/compose.md — how to write docker-compose.yml for ShipIt
 - /shipit-docs/preview.md — preview system and browser tools
 - /shipit-docs/environment.md — container environment details
+- /shipit-docs/design-docs.md — feature docs under \`docs/\` and their frontmatter
+
+## Design docs
+
+Workspace \`.md\` files (typically under \`docs/NNN-feature/plan.md\`) show up in ShipIt's feature list. When you create or update one, use YAML frontmatter with a \`status\` field. The only typed values are:
+
+- \`planned\` — documented but work hasn't started
+- \`in-progress\` — actively being worked on
+- \`done\` — feature is complete
+- \`paused\` — has a design but not actively planned
+- \`rejected\` — proposal considered and declined; kept for the reasoning
+
+Do NOT invent other statuses like \`proposed\`, \`design\`, \`implemented\`, \`shipped\`, \`wip\`, or \`tbd\`. Any other string still renders but as a neutral badge with no typed UI affordances (priority sorting, Archived collapse, success colouring). See /shipit-docs/design-docs.md for the full schema (priority, title, description, common mistakes).
 
 ## Service logs
 
