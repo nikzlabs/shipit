@@ -1,0 +1,199 @@
+/**
+ * Integration tests for live steering (docs/140).
+ *
+ * Live steering lets the user inject a message while the agent is mid-turn,
+ * routed through `AgentProcess.sendUserMessage()` rather than the per-turn
+ * queue. Only active when:
+ *   1. The active agent's `capabilities.supportsSteering` is true (claude/codex), AND
+ *   2. The user has flipped `liveSteering` on in settings.
+ *
+ * The streaming path also changes the post-turn lifecycle: the agent process
+ * is persistent across turns, so `done` only fires on dispose/crash —
+ * post-turn work (queue drain, `session_agent_finished`, auto-commit) must
+ * hang off `agent_result` instead. These tests pin both contracts.
+ */
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { buildApp } from "../index.js";
+import { GitManager } from "../../shared/git.js";
+import { SessionManager } from "../sessions.js";
+import { ChatHistoryManager } from "../chat-history.js";
+import { AuthManager } from "../auth.js";
+
+import type { FastifyInstance } from "fastify";
+import {
+  TestClient,
+  StubAuthManager,
+  FakeClaudeProcess,
+  waitForClaude,
+  createTestCredentialStore,
+  createTestDatabaseManager,
+} from "./test-helpers.js";
+import type { CredentialStore } from "../credential-store.js";
+import { DatabaseManager } from "../../shared/database.js";
+
+type AnyMsg = any;
+
+describe("Integration: live steering (docs/140)", () => {
+  let app: FastifyInstance;
+  let port: number;
+  let tmpDir: string;
+  let credentialStore: CredentialStore;
+  let lastClaude: FakeClaudeProcess = null as any;
+  let dbManager: DatabaseManager;
+
+  beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
+    lastClaude = null as any;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-steering-"));
+    credentialStore = createTestCredentialStore(tmpDir);
+    // Flip live steering on for every test in this suite. The agent registry's
+    // default `supportsSteering: true` for claude takes care of the capability
+    // side, so this is the only switch the user touches.
+    credentialStore.setLiveSteering(true);
+
+    const sessionManager = new SessionManager(dbManager);
+    const chatHistoryManager = new ChatHistoryManager(dbManager);
+
+    app = await buildApp({
+      credentialStore,
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      chatHistoryManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      agentFactory: () => {
+        lastClaude = new FakeClaudeProcess();
+        return lastClaude as any;
+      },
+      workspaceDir: tmpDir,
+      serveStatic: false,
+    });
+
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = /:(\d+)$/.exec(address);
+    port = match ? Number(match[1]) : 0;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    dbManager.close();
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  /** Drain messages until predicate returns truthy, up to maxMsgs attempts. */
+  async function drainUntil(client: TestClient, predicate: (m: AnyMsg) => boolean, maxMsgs = 30, timeoutMs = 2000): Promise<AnyMsg> {
+    for (let i = 0; i < maxMsgs; i++) {
+      const msg: AnyMsg = await client.receive(timeoutMs);
+      if (predicate(msg)) return msg;
+    }
+    return null;
+  }
+
+  it("starts the agent with useStreaming=true when liveSteering is on and agent supports it", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Hello" });
+    const claude = await waitForClaude(() => lastClaude);
+    // The orchestrator computes useStreaming from registry.supportsSteering
+    // AND credentialStore.liveSteering — both true here.
+    expect((claude as any).lastUseStreaming).toBe(true);
+
+    client.close();
+  });
+
+  it("steers a mid-turn message via sendUserMessage and emits message_steered (not message_queued)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // First turn — kick off the (faked) streaming agent.
+    client.send({ type: "send_message", text: "First message" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("steer-session-1");
+
+    // The orchestrator marks the runner as running once the agent factory has
+    // returned; the next send arrives mid-turn.
+    client.send({ type: "send_message", text: "Steer me" });
+
+    // The steered message should NOT be queued — it should arrive as
+    // `message_steered` on the WS and as a `sendUserMessage()` call on the
+    // agent.
+    const steered = await drainUntil(client, (m) => m.type === "message_steered");
+    expect(steered).toMatchObject({ type: "message_steered", text: "Steer me" });
+
+    // The fake adapter records sendUserMessage calls under `stdinData`
+    // (its default `sendUserMessage` proxies to `writeStdin` for parity with
+    // production adapters).
+    expect(claude.stdinData).toContain("Steer me");
+
+    client.close();
+  });
+
+  it("runs the post-turn flow (session_agent_finished, queue drain) on agent_result without waiting for done — streaming path", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Turn 1: start the streaming agent.
+    client.send({ type: "send_message", text: "Turn one" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("steer-session-2");
+
+    // Emit `agent_result` WITHOUT a follow-up `done`. In streaming mode the
+    // process is persistent — the turn ends on `result`, the process stays
+    // alive. The orchestrator's streaming path must trigger post-turn work
+    // (session_status running=false) here, not wait for a process exit that
+    // never comes.
+    claude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "steer-session-2",
+      duration_ms: 100,
+    });
+
+    // session_status flips to running:false on the result event.
+    const status = await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+    expect(status).toMatchObject({ type: "session_status", running: false });
+
+    // The agent process was NOT killed — for a streaming agent, `done`
+    // belongs to dispose, not to the per-turn lifecycle.
+    expect(claude.killed).toBe(false);
+
+    client.close();
+  });
+
+  it("falls back to the queue path when liveSteering is off, even if the agent supports steering", async () => {
+    // Flip the setting off for this test only.
+    credentialStore.setLiveSteering(false);
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "First" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("queue-session");
+
+    client.send({ type: "send_message", text: "Second" });
+
+    // With steering off, the second message must be queued — not steered.
+    const queued = await drainUntil(client, (m) => m.type === "message_queued");
+    expect(queued).toMatchObject({ type: "message_queued", text: "Second" });
+
+    // And sendUserMessage was NOT called for the queued text (only writeStdin
+    // would record it; the fake's writeStdin captures both writeStdin and
+    // sendUserMessage calls, so just verify the queued message wasn't
+    // delivered to the running agent).
+    expect(claude.stdinData).not.toContain("Second");
+
+    // The agent's useStreaming flag should be false here too.
+    expect((claude as any).lastUseStreaming).toBeFalsy();
+
+    client.close();
+  });
+});

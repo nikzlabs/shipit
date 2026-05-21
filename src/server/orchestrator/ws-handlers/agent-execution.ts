@@ -362,6 +362,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     capturedSessionId,
     requestedPermissionMode: effectivePermissionMode,
     onError: () => drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone),
+    useStreaming,
   });
 
   // Track whether we got a result event
