@@ -186,9 +186,10 @@ export class TestClient {
  */
 export class StubAuthManager extends EventEmitter {
   authenticated = true; // Tests assume auth is already done
-  checkCredentials() { return true; }
+  checkCredentials() { return this.authenticated; }
   startOAuthFlow() { /* no-op */ }
   sendCode(_code: string) { /* no-op */ }
+  signOut() { this.authenticated = false; }
   kill() { /* no-op */ }
 }
 

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readlinkSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readlinkSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
@@ -178,6 +178,13 @@ const CLAUDE_CONFIG_DIR = "/root/.claude";
 /** Path where Claude CLI stores user preferences (onboarding state, theme, etc.). */
 const CLAUDE_USER_CONFIG = "/root/.claude.json";
 
+/**
+ * Credential file names the CLI may write inside `CLAUDE_CONFIG_DIR`,
+ * depending on version. We probe all of them on read and remove all of
+ * them on sign-out.
+ */
+const CLAUDE_CREDENTIAL_FILES = [".credentials.json", "credentials.json", "auth.json"];
+
 /** Trigger phrases that indicate the code-paste URL has been printed. */
 const CODE_PASTE_TRIGGERS = ["Paste code here", "Pastecodehereifprompted"];
 
@@ -286,8 +293,7 @@ export class AuthManager extends EventEmitter {
       return { token: envToken, source: "env", expiresAt: null, plan: null };
     }
 
-    const credentialFiles = [".credentials.json", "credentials.json", "auth.json"];
-    for (const fileName of credentialFiles) {
+    for (const fileName of CLAUDE_CREDENTIAL_FILES) {
       const fullPath = path.join(CLAUDE_CONFIG_DIR, fileName);
       if (!existsSync(fullPath)) continue;
       try {
@@ -332,8 +338,7 @@ export class AuthManager extends EventEmitter {
   checkCredentials(): boolean {
     try {
       // The CLI may store credentials in different files depending on version
-      const credentialFiles = [".credentials.json", "credentials.json", "auth.json"];
-      const hasCredentials = credentialFiles.some((f) => existsSync(path.join(CLAUDE_CONFIG_DIR, f)));
+      const hasCredentials = CLAUDE_CREDENTIAL_FILES.some((f) => existsSync(path.join(CLAUDE_CONFIG_DIR, f)));
       const hasApiKey = !!process.env.ANTHROPIC_API_KEY?.trim();
       const hasAuthToken = !!process.env.ANTHROPIC_AUTH_TOKEN?.trim();
       this._authenticated = hasCredentials || hasApiKey || hasAuthToken;
@@ -544,6 +549,32 @@ export class AuthManager extends EventEmitter {
       clearInterval(this.credentialsPollInterval);
       this.credentialsPollInterval = null;
     }
+  }
+
+  /**
+   * Sign out of the Claude subscription: kill any in-flight login PTY and
+   * remove the OAuth credential files the CLI persisted in
+   * `CLAUDE_CONFIG_DIR`. Idempotent — safe to call when nothing is signed in.
+   *
+   * Does NOT touch `ANTHROPIC_API_KEY` (the route clears that separately) or
+   * `ANTHROPIC_AUTH_TOKEN` (forwarded by the outer orchestrator in dogfooding;
+   * we don't own it). After this returns, `checkCredentials()` re-derives the
+   * authenticated flag from what's left on disk and in the environment.
+   */
+  signOut(): void {
+    this.kill();
+    for (const fileName of CLAUDE_CREDENTIAL_FILES) {
+      const fullPath = path.join(CLAUDE_CONFIG_DIR, fileName);
+      try {
+        if (existsSync(fullPath)) {
+          rmSync(fullPath, { force: true });
+          console.log("[auth] Removed", fullPath);
+        }
+      } catch (err) {
+        console.warn(`[auth] Failed to remove ${fullPath}:`, err instanceof Error ? err.message : err);
+      }
+    }
+    this.checkCredentials();
   }
 
   /** Kill the auth process if running. */

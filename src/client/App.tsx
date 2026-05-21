@@ -959,7 +959,20 @@ export default function App() {
           onGitHubLogout={() => useSettingsStore.getState().gitHubLogout().catch(() => {})}
           authUrl={authUrl}
           onApiKey={(key) => { apiPost("/api/auth/api-key", { key }).catch(() => {}); }}
-          onClearApiKey={() => { apiDel("/api/auth/api-key").catch(() => {}); }}
+          onClearApiKey={async () => {
+            // Full Claude sign-out: clears the stored API key AND the OAuth
+            // credentials on disk. The DELETE response carries the refreshed
+            // agent list; the server also fires an SSE `agent_list` broadcast
+            // so other open tabs repaint too. Mirrors onSignOutCodex.
+            try {
+              const result = await apiDel<{ agents?: AgentOption[] }>("/api/auth/api-key");
+              if (result.agents) {
+                useUiStore.getState().setAgentList(result.agents);
+              }
+            } catch (err) {
+              console.error("[settings] Claude sign-out failed:", err);
+            }
+          }}
           onStartAuth={() => { apiPost("/api/auth/start", {}).catch(() => {}); }}
           onPasteCode={(code) => { apiPost("/api/auth/code", { code }).catch(() => {}); }}
           agentList={agentList}
