@@ -223,6 +223,28 @@ export function newSession(send: (msg: WsClientMessage) => void, navigate: Navig
 
 This collapses the three duplicated reset locations into one `resetSessionState()` call.
 
+### Session URL sync invariant
+
+For `/session/:sessionId`, the route parameter is authoritative over
+`useSessionStore.sessionId`. The URL-sync effect in `App.tsx` intentionally
+depends on both `urlSessionId` and the store `sessionId`, because late async
+writers such as session claims or history loads can update the store after the
+user has already navigated. When this happens, the effect must re-run and call
+`resumeSessionInternal(urlSessionId)` so the visible UI, sidebar selection, and
+per-session WebSocket converge back to the URL.
+
+The `/repo/:owner/:repo/new` route is the exception: it has no session ID in
+the URL until a warm/claimed session is adopted, so it may temporarily use the
+store `sessionId`. Entering a new-session route clears any previously selected
+session once; after the claim resolves, the claimed session is allowed to remain
+active while the URL stays on `/new`.
+
+`loadSessionHistory(sessionId)` must also treat its `sessionId` argument as a
+stale-response token. Before applying history, preview status, or delayed
+preview retries, it verifies that `useSessionStore.sessionId` still matches the
+requested session. This prevents an old HTTP response from repainting messages,
+git/file state, or preview state after a session switch.
+
 ### WebSocket and send()
 
 The `send` function (from `useWebSocket`) and `navigate` (from React Router) cannot live in Zustand stores because they're tied to React hook lifecycle. Two options:

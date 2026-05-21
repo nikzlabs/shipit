@@ -74,6 +74,10 @@ interface BootstrapResponse {
 export async function loadSessionHistory(sessionId: string): Promise<void> {
   const res = await fetch(`/api/sessions/${sessionId}/history`);
   const data = await res.json() as HistoryResponse;
+  const isStillActiveSession = () => useSessionStore.getState().sessionId === sessionId;
+  if (!isStillActiveSession()) {
+    return;
+  }
   const session = useSessionStore.getState();
   session.setMessages(
     data.messages.map((m) => ({
@@ -130,8 +134,10 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   // preview_status message is lost during the initial connection burst.
   try {
     const previewRes = await fetch(`/api/sessions/${sessionId}/preview-status`);
+    if (!isStillActiveSession()) return;
     if (previewRes.ok) {
       const ps = await previewRes.json() as PreviewStatusResponse;
+      if (!isStillActiveSession()) return;
       // Only apply if the store still has no status (WS message may have arrived first)
       if (ps.known && !usePreviewStore.getState().status) {
         usePreviewStore.getState().setStatus({
@@ -147,11 +153,14 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
       // state from the worker and the HTTP endpoint will return known: true.
       if (!ps.known) {
         setTimeout(async () => {
+          if (!isStillActiveSession()) return;
           if (usePreviewStore.getState().status) return; // WS delivered it in the meantime
           try {
             const retryRes = await fetch(`/api/sessions/${sessionId}/preview-status`);
+            if (!isStillActiveSession()) return;
             if (retryRes.ok) {
               const retry = await retryRes.json() as PreviewStatusResponse;
+              if (!isStillActiveSession()) return;
               if (retry.known && !usePreviewStore.getState().status) {
                 usePreviewStore.getState().setStatus({
                   running: retry.running,

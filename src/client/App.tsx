@@ -98,6 +98,7 @@ export default function App() {
   const { send, lastMessage, drainMessages, status, reconnectAttempt, reconnect } = useSessionWebSocket(wsSessionId);
   const { get: apiGet, post: apiPost, put: apiPut, del: apiDel } = useApi();
   const claimAbortRef = useRef<AbortController | null>(null);
+  const previousNewSessionRouteRef = useRef<string | undefined>(undefined);
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
   const isLoading = useSessionStore((s) => s.isLoading);
@@ -302,24 +303,37 @@ export default function App() {
     }
   }, []);
 
-  // Sync session state when URL changes (back/forward navigation)
+  // Sync session state with the URL. Keep `sessionId` in the dependency list:
+  // late async writers (claim-session/history paths) can update the store
+  // after the route is already on a different session, and the URL must win.
   // WS auto-connects/disconnects via useSessionWebSocket(wsSessionId)
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
-    if (urlSessionId && urlSessionId !== useSessionStore.getState().sessionId) {
+    const newSessionRouteKey = isNewSessionRoute ? newSessionRepoSlug : undefined;
+    if (newSessionRouteKey && previousNewSessionRouteRef.current !== newSessionRouteKey) {
+      previousNewSessionRouteRef.current = newSessionRouteKey;
+      if (sessionId) {
+        useSessionStore.getState().setSessionId(undefined);
+        resetSessionState();
+        disableAutoFix();
+      }
+      return;
+    }
+    if (!newSessionRouteKey) {
+      previousNewSessionRouteRef.current = undefined;
+    }
+
+    if (urlSessionId && urlSessionId !== sessionId) {
       resumeSessionInternal(urlSessionId);
       disableAutoFix();
-    } else if (!urlSessionId && useSessionStore.getState().sessionId) {
+    } else if (!urlSessionId && !isNewSessionRoute && sessionId) {
       // Clear stale sessionId — prevents WS from connecting to old session.
-      // On /new route, the auto-claim effect will set the correct sessionId.
       useSessionStore.getState().setSessionId(undefined);
       resetSessionState();
       disableAutoFix();
-      if (!isNewSessionRoute) {
-        useUiStore.getState().setShowTemplates(true);
-      }
+      useUiStore.getState().setShowTemplates(true);
     }
-  }, [urlSessionId, isNewSessionRoute, disableAutoFix]);
+  }, [urlSessionId, sessionId, isNewSessionRoute, newSessionRepoSlug, disableAutoFix]);
 
   // Auto-claim session when landing on /{slug}/new (direct URL navigation or page refresh)
   // eslint-disable-next-line no-restricted-syntax -- existing usage
