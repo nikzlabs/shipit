@@ -6,6 +6,45 @@ import type { ChildProcess } from "node:child_process";
 import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../shared/types.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 
+/**
+ * Phrases that signal an auth failure in CLI output. Used both for non-JSON
+ * stderr lines (startup auth prompts) and for the text of an error `result`
+ * event (a runtime 401). docs/142 A1 added the credential/401 phrasings: a
+ * runtime "API Error: 401 Invalid authentication credentials" arrives as a
+ * structured `result` event with `subtype: "error"`, NOT a stderr line, so it
+ * previously slipped past detection and died as a generic error instead of
+ * flipping the session into the OAuth/re-auth flow.
+ */
+const AUTH_ERROR_PATTERNS = [
+  "not authenticated",
+  "not logged in",
+  "authentication required",
+  "please login",
+  "unauthorized",
+  "oauth",
+  "sign in",
+  "invalid authentication credentials",
+  "authentication_error",
+  "invalid api key",
+  "invalid x-api-key",
+];
+
+/** True when `text` contains any known auth-failure phrase (case-insensitive). */
+export function textIndicatesAuthFailure(text: string): boolean {
+  const lc = text.toLowerCase();
+  return AUTH_ERROR_PATTERNS.some((p) => lc.includes(p));
+}
+
+/**
+ * True when a parsed event is an error `result` whose message indicates an auth
+ * failure (the runtime-401 case). Other event types and successful results are
+ * ignored.
+ */
+export function resultEventIndicatesAuthFailure(event: ClaudeEvent): boolean {
+  if (event.type !== "result" || event.subtype !== "error") return false;
+  return typeof event.result === "string" && textIndicatesAuthFailure(event.result);
+}
+
 export interface ClaudeRunOptions {
   prompt: string;
   sessionId?: string;
@@ -246,20 +285,14 @@ export class ClaudeProcess extends EventEmitter {
       if (!trimmed) continue;
       try {
         const event = JSON.parse(trimmed) as ClaudeEvent;
+        // docs/142 A1 — a runtime 401 arrives as an error `result` event, not a
+        // stderr line; surface it as an auth failure so the session re-auths.
+        if (resultEventIndicatesAuthFailure(event)) this.emit("auth_required");
         this.emit("event", event);
       } catch {
         // Not valid JSON — relay as log output.
         // With a PTY, auth-related messages also arrive here (merged stream).
-        const lc = trimmed.toLowerCase();
-        if (
-          lc.includes("not authenticated") ||
-          lc.includes("not logged in") ||
-          lc.includes("authentication required") ||
-          lc.includes("please login") ||
-          lc.includes("unauthorized") ||
-          lc.includes("oauth") ||
-          lc.includes("sign in")
-        ) {
+        if (textIndicatesAuthFailure(trimmed)) {
           this.emit("auth_required");
         }
         console.warn("[claude] non-JSON line:", trimmed.slice(0, 120));
@@ -469,14 +502,13 @@ export class StreamingClaudeProcess extends EventEmitter {
           // Turn ended — arm watchdog for next potential turn; don't kill process
           this.clearWatchdog();
         }
+        // docs/142 A1 — a runtime 401 comes through as an error `result` event;
+        // surface it as an auth failure so the session re-auths instead of the
+        // turn dying as a generic error.
+        if (resultEventIndicatesAuthFailure(event)) this.emit("auth_required");
         this.emit("event", event);
       } catch {
-        const lc = trimmed.toLowerCase();
-        if (
-          lc.includes("not authenticated") ||
-          lc.includes("not logged in") ||
-          lc.includes("unauthorized")
-        ) {
+        if (textIndicatesAuthFailure(trimmed)) {
           this.emit("auth_required");
         }
         console.warn("[streaming-claude] non-JSON line:", trimmed.slice(0, 120));
