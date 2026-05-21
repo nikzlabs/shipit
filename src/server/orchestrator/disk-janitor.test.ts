@@ -455,9 +455,18 @@ describe("runDiskJanitor", () => {
 
   /**
    * Build a stub GitHubAuthManager-shaped object good enough for the sweep.
-   * `branches` is a per-repo lookup keyed by `owner/repo` returning the
-   * synthetic GraphQL response. The sweep only touches `authenticated` and
-   * `graphqlQuery`.
+   * `branches` is a per-repo lookup keyed by `owner/repo`. Each entry's
+   * `states` are the (synthetic) PR states associated with that branch
+   * from GitHub's side — we explode them into either the refs response or
+   * the pullRequests response depending on which query is being asked.
+   *
+   * The real `fetchShipitBranchesWithPrStates` issues two paginated
+   * queries — one for `refs(refPrefix: …)`, one for
+   * `pullRequests(states: [OPEN, MERGED])`. The stub dispatches on
+   * substring of the query string. CLOSED PR states are filtered out of
+   * the PR response (mirroring production: `states: [OPEN, MERGED]`),
+   * which yields the same outcome as the previous stub since the sweep
+   * treats CLOSED-only and no-PR identically.
    */
   function buildGitHubStub(
     branches: Record<string, { name: string; states: string[] }[]>,
@@ -466,22 +475,37 @@ describe("runDiskJanitor", () => {
     return {
       authenticated: opts.authenticated ?? true,
 
-      async graphqlQuery(_query: string, vars?: Record<string, unknown>) {
+      async graphqlQuery(query: string, vars?: Record<string, unknown>) {
         const owner = vars?.owner as string;
         const repo = vars?.repo as string;
         const key = `${owner}/${repo}`;
-        const nodes = branches[key] ?? [];
+        const repoBranches = branches[key] ?? [];
+
+        if (query.includes("pullRequests(states:")) {
+          const nodes = repoBranches.flatMap((b) =>
+            b.states
+              .filter((s) => s === "OPEN" || s === "MERGED")
+              .map((state) => ({ state, headRefName: `shipit/${b.name}` })),
+          );
+          return {
+            data: {
+              repository: {
+                pullRequests: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes,
+                },
+              },
+            },
+          };
+        }
+
+        // Default: refs enumeration.
         return {
           data: {
             repository: {
               refs: {
                 pageInfo: { hasNextPage: false, endCursor: null },
-                nodes: nodes.map((b) => ({
-                  name: b.name,
-                  associatedPullRequests: {
-                    nodes: b.states.map((state) => ({ state })),
-                  },
-                })),
+                nodes: repoBranches.map((b) => ({ name: b.name })),
               },
             },
           },
@@ -749,6 +773,145 @@ describe("runDiskJanitor", () => {
 
     expect(deleted).toEqual(["shipit/orphan-branch"]);
     expect(result.orphanBranchesRemoved).toBe(1);
+  });
+
+  it("joins refs by PR head ref (regression: associatedPullRequests returned empty)", async () => {
+    // Regression for the bug observed on the real ShipIt repo: 186
+    // `shipit/*` branches existed, 181 had MERGED PRs, but the previous
+    // `Ref.associatedPullRequests` sub-selection returned empty PR lists
+    // for all of them, so the sweep deleted 0. The fix is to enumerate
+    // PRs from the `pullRequests(states: [OPEN, MERGED])` side and join
+    // by `headRefName` instead.
+    //
+    // This test stubs the two queries directly (not via buildGitHubStub)
+    // and proves that a refs query returning a branch *without* PR data
+    // attached is correctly joined to a separate pullRequests query that
+    // does return the MERGED PR for that head ref.
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    const githubAuthManager = {
+      authenticated: true,
+      async graphqlQuery(query: string) {
+        if (query.includes("pullRequests(states:")) {
+          return {
+            data: {
+              repository: {
+                pullRequests: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [
+                    { state: "MERGED", headRefName: "shipit/old-merged" },
+                  ],
+                },
+              },
+            },
+          };
+        }
+        // Refs query — no PR data attached, mirroring how the broken
+        // server-side response looked for the historical backlog.
+        return {
+          data: {
+            repository: {
+              refs: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [{ name: "old-merged" }],
+              },
+            },
+          },
+        };
+      },
+    } as unknown as Parameters<typeof runDiskJanitor>[0]["githubAuthManager"];
+
+    const { factory, deleted } = buildRepoGitFactory();
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(deleted).toEqual(["shipit/old-merged"]);
+    expect(result.orphanBranchesRemoved).toBe(1);
+  });
+
+  it("paginates the pullRequests query across pages", async () => {
+    // A two-page pullRequests response is correctly joined to the refs
+    // query — important because real repos with many PRs will exceed the
+    // 100-per-page limit.
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    let prPage = 0;
+    const githubAuthManager = {
+      authenticated: true,
+      async graphqlQuery(query: string) {
+        if (query.includes("pullRequests(states:")) {
+          prPage += 1;
+          if (prPage === 1) {
+            return {
+              data: {
+                repository: {
+                  pullRequests: {
+                    pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+                    nodes: [{ state: "MERGED", headRefName: "shipit/branch-a" }],
+                  },
+                },
+              },
+            };
+          }
+          return {
+            data: {
+              repository: {
+                pullRequests: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [{ state: "MERGED", headRefName: "shipit/branch-b" }],
+                },
+              },
+            },
+          };
+        }
+        return {
+          data: {
+            repository: {
+              refs: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [{ name: "branch-a" }, { name: "branch-b" }],
+              },
+            },
+          },
+        };
+      },
+    } as unknown as Parameters<typeof runDiskJanitor>[0]["githubAuthManager"];
+
+    const { factory, deleted } = buildRepoGitFactory();
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(deleted.sort()).toEqual(["shipit/branch-a", "shipit/branch-b"]);
+    expect(result.orphanBranchesRemoved).toBe(2);
+    expect(prPage).toBe(2);
   });
 
   it("sweeps per-session credential dirs for archived / untracked sessions only", async () => {
