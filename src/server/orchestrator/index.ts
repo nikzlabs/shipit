@@ -286,7 +286,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- Event wiring (deployment + auth) ----
   wireEventHandlers({
     authManager, codexAuthManager, githubAuthManager, agentRegistry,
-    defaultAgentId, sseBroadcast,
+    defaultAgentId, sseBroadcast, credentialsDir, sessionManager,
   });
 
   // ---- Subscription-limits poller ----
@@ -767,28 +767,39 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // model/agent pick in one session leak into others on reconnect).
       let perConnectionAgentId: AgentId = session.agentId ?? requestedAgent ?? defaultAgentId;
       let selectedModel: string | undefined = session.model ?? requestedModel;
-      // Reconcile the model against the agent. The two are resolved from
-      // INDEPENDENT sources (agent: session/default; model: the
-      // localStorage-derived query param), so they can diverge — most often a
-      // new session defaulting to Claude while a stale "gpt-5.5" rides in on
-      // the model param because the AgentPicker saves the agent without
-      // clearing the model. That would spawn `claude --model gpt-5.5`, which
-      // the Claude CLI rejects with "There's an issue with the selected model
-      // (gpt-5.5)". The agent is authoritative here; conform the model to it
-      // (set_model handles the inverse — an explicit model pick switches the
-      // agent — and set_agent re-runs this same reconciliation).
+      // Reconcile agent ↔ model. They come from INDEPENDENT sources (agent:
+      // session/default/param; model: session or the localStorage-derived
+      // query param), so they can diverge — most often a stale `agent=codex`
+      // riding in alongside the user's real `model=opus` pick. The product
+      // rule (docs/142 C): the model is the user's only real control, so for a
+      // session that is NOT yet pinned to an agent the **model is
+      // authoritative** — derive the agent that owns it. This is the
+      // server-side guard against the Opus→gpt-5.5 switch: the model wins and
+      // the session runs Claude. Once the session is pinned (its agent's creds
+      // were provisioned on the first turn) the agent is locked, so we flip to
+      // agent-authoritative and conform the model to it instead.
       {
-        const agentInfo = agentRegistry.get(perConnectionAgentId);
-        if (selectedModel && agentInfo && !agentInfo.capabilities.models.includes(selectedModel)) {
-          selectedModel = agentInfo.capabilities.models[0];
+        const model = selectedModel;
+        const modelOwner = model
+          ? agentRegistry.list().find((a) => a.capabilities.models.includes(model))
+          : undefined;
+        if (!session.agentPinned && modelOwner) {
+          perConnectionAgentId = modelOwner.id;
+        } else {
+          const agentInfo = agentRegistry.get(perConnectionAgentId);
+          if (selectedModel && agentInfo && !agentInfo.capabilities.models.includes(selectedModel)) {
+            selectedModel = agentInfo.capabilities.models[0];
+          }
         }
       }
-      // Lock in the choices on first connect so future reconnects ignore the
-      // global localStorage values. After this, `session.agent_id` /
-      // `session.model` are the only source of truth. Persist the reconciled
-      // model whenever it differs from what's stored — this also heals a
-      // session whose persisted model predates this reconciliation.
-      if (!session.agentId) {
+      // Lock in the choices on connect so future reconnects ignore the global
+      // localStorage values (`selectedModel` already prefers `session.model`
+      // over the query param). While the session is unpinned, keep the
+      // persisted agent in sync with the model-derived choice — a model change
+      // before the first turn re-derives the agent on the next connect, and an
+      // incoherent legacy (agent, model) pair self-heals. After pinning,
+      // `session.agentId` is immutable.
+      if (!session.agentPinned && perConnectionAgentId !== session.agentId) {
         try { sessionManager.setAgentId(sessionId, perConnectionAgentId); } catch { /* ignore */ }
       }
       if (selectedModel && selectedModel !== session.model) {

@@ -229,6 +229,24 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     client.close();
   });
 
+  it("model param wins over a stale agent param for an unpinned session (docs/142 C)", async () => {
+    // defaultAgentId is codex. The client sends the user's real model (Opus,
+    // Claude-only) alongside a stale agent=codex param. The model is the single
+    // source of truth, so the unpinned session must derive Claude and run it —
+    // this is the server-side guard against the Opus→gpt-5.5 silent switch.
+    const client = await TestClient.connect(port, undefined, { model: "opus", agent: "codex" });
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Hello" });
+
+    const claude = await waitForClaude(() => lastClaude);
+    expect(claude.runCalled).toBe(true);
+    // Codex (the default + the stale param) must NOT have run.
+    expect(lastCodex).toBeNull();
+
+    client.close();
+  });
+
   it("set_model with another agent's model self-heals by switching agent (Codex → Opus)", async () => {
     // Repro: new session defaults to Codex; user picks Opus from the grouped
     // model picker. The picker fires set_agent THEN set_model, but if set_agent

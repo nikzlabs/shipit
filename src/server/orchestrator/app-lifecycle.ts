@@ -13,6 +13,7 @@ import { getErrorMessage } from "./validation.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import type { SessionManager } from "./sessions.js";
+import { repushAgentToken } from "./session-credentials.js";
 import type { RepoGit } from "./repo-git.js";
 import type { AuthManager } from "./auth.js";
 import type { CodexAuthManager, CodexAuthFailedEvent, CodexAuthPendingEvent } from "./codex-auth.js";
@@ -690,11 +691,37 @@ export interface EventWiringDeps {
   agentRegistry: AgentRegistry;
   defaultAgentId: AgentId;
   sseBroadcast: (event: string, data: unknown) => void;
+  /** Source-of-truth credentials root — used to re-push a refreshed token into pinned sessions (A3). */
+  credentialsDir: string;
+  /** Session metadata — used to find sessions pinned to an agent on re-auth (A3). */
+  sessionManager: SessionManager;
 }
 
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { authManager, codexAuthManager, githubAuthManager, agentRegistry, defaultAgentId, sseBroadcast } = eventDeps;
+  const { authManager, codexAuthManager, githubAuthManager, agentRegistry, defaultAgentId, sseBroadcast, credentialsDir, sessionManager } = eventDeps;
+
+  /**
+   * A3 (docs/142): after a Claude/Codex re-auth, force the fresh source token
+   * into every session already pinned to that agent. Without this a session
+   * pinned before the re-login keeps its stale per-session token until its next
+   * turn's sync-in — so an idle pinned session would stay 401'd even though the
+   * user just re-authed. Best-effort and self-limiting: `repushAgentToken` only
+   * overwrites sessions that already hold the agent's token (no cross-agent
+   * leak, no-op in local mode where there are no per-session dirs).
+   */
+  const repushTokenToPinnedSessions = (agentId: AgentId): void => {
+    let healed = 0;
+    for (const session of sessionManager.list()) {
+      if (!session.agentPinned || session.agentId !== agentId) continue;
+      try {
+        if (repushAgentToken(credentialsDir, session.id, agentId)) healed++;
+      } catch (err) {
+        console.error(`[auth] A3 token re-push failed for session ${session.id}:`, err);
+      }
+    }
+    if (healed > 0) console.log(`[auth] re-pushed refreshed ${agentId} token into ${healed} pinned session(s)`);
+  };
 
   /** Snapshot the current agent list in the SSE-friendly shape. */
   const agentListPayload = () => ({
@@ -715,6 +742,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
 
   authManager.on("auth_complete", () => {
     agentRegistry.refreshAuth("claude");
+    repushTokenToPinnedSessions("claude");
     sseBroadcast("auth_complete", {});
     sseBroadcast("agent_list", agentListPayload());
   });
@@ -733,6 +761,9 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
 
   codexAuthManager.on("codex_auth_complete", () => {
     agentRegistry.refreshAuth("codex");
+    // No-op until Codex registers token files in AGENT_TOKEN_FILES; wired now
+    // so extending the token sync to Codex (docs/142) covers A3 automatically.
+    repushTokenToPinnedSessions("codex");
     sseBroadcast("codex_auth_complete", {});
     sseBroadcast("agent_list", agentListPayload());
   });

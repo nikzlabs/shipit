@@ -69,8 +69,10 @@ export class TestClient {
    * Connect to a per-session WebSocket.
    * If sessionId is provided, connects to /ws/sessions/:id directly.
    * If not, creates a new session via the test-only POST /api/_test/sessions endpoint.
+   * `query` appends WS query params (e.g. `{ model, agent }`) — these mirror the
+   * localStorage-derived params the real client sends on connect.
    */
-  static async connect(port: number, sessionId?: string): Promise<TestClient> {
+  static async connect(port: number, sessionId?: string, query?: Record<string, string>): Promise<TestClient> {
     if (!sessionId) {
       const http = await import("node:http");
       const body = JSON.stringify({ title: "Test session" });
@@ -91,8 +93,9 @@ export class TestClient {
       const parsed = JSON.parse(data) as { sessionId: string };
       sessionId = parsed.sessionId;
     }
+    const qs = query && Object.keys(query).length ? `?${new URLSearchParams(query).toString()}` : "";
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`);
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}${qs}`);
       // Create client before open so message listener is attached early
       const client = new TestClient(ws, sessionId);
       ws.on("open", () => resolve(client));
