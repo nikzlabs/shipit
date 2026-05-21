@@ -6,6 +6,7 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../auth.js";
+import type { CodexAuthManager } from "../codex-auth.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
@@ -96,6 +97,7 @@ export interface AppCtx {
   githubAuthManager: GitHubAuthManager;
   usageManager: UsageManager;
   authManager: AuthManager;
+  codexAuthManager: CodexAuthManager;
   agentRegistry: AgentRegistry;
   credentialStore: CredentialStore;
 
@@ -132,5 +134,4 @@ export interface AppCtx {
    */
   credentialsDir: string;
 }
-
 

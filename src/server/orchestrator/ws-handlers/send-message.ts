@@ -20,6 +20,37 @@ type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
 type WsSendReviewMessage = Extract<WsClientMessage, { type: "send_review_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 
+function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
+  const activeAgentId = ctx.getActiveAgentId();
+
+  if (activeAgentId === "claude") {
+    if (!ctx.authManager.authenticated) {
+      ctx.authManager.checkCredentials();
+    }
+    if (!ctx.authManager.authenticated) {
+      ctx.send({ type: "auth_required" });
+      ctx.authManager.startOAuthFlow();
+      return false;
+    }
+    return true;
+  }
+
+  if (activeAgentId === "codex") {
+    const authenticated = ctx.codexAuthManager.checkCredentials();
+    ctx.agentRegistry.refreshAuth("codex");
+    if (!authenticated) {
+      ctx.send({
+        type: "error",
+        message: "Codex is not authenticated. Sign in to Codex or add OPENAI_API_KEY in Settings -> Agents.",
+      });
+      return false;
+    }
+    return true;
+  }
+
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Exported handlers
 // ---------------------------------------------------------------------------
@@ -44,15 +75,8 @@ export async function handleSendMessage(
   msg: WsSendMessage,
   reviewFilePath?: string,
 ): Promise<void> {
-  // Check auth before spawning — the CLI hangs if not authenticated
-  if (!ctx.authManager.authenticated) {
-    ctx.authManager.checkCredentials();
-  }
-  if (!ctx.authManager.authenticated) {
-    ctx.send({ type: "auth_required" });
-    ctx.authManager.startOAuthFlow();
-    return;
-  }
+  // Check auth before spawning — some CLIs hang if not authenticated.
+  if (!ensureActiveAgentAuthenticated(ctx)) return;
 
   // Validate images if provided (do this before queue check so we reject bad images immediately)
   const images: ImageAttachment[] | undefined = msg.images && msg.images.length > 0 ? msg.images : undefined;
@@ -193,10 +217,11 @@ export async function handleSendMessage(
       // Set a placeholder title immediately (replaced async by AI-generated name below)
       ctx.sessionManager.rename(effectiveSessionId, userText.slice(0, 60) || "New session");
 
-      // Generate session name from the message text. Uses the local Claude Code
-      // CLI's OAuth credentials — always available, so no opt-in required. If the
-      // CLI call fails we silently fall through (see finalizeBranchRenamed below).
+      // Generate session name from the message text using the active session
+      // provider. If the CLI call fails we silently fall through (see
+      // finalizeBranchRenamed below).
       if (session.workspaceDir) {
+        const namingAgentId = session.agentId ?? ctx.getActiveAgentId();
         // Helper: mark branch as renamed and emit PR "ready" card
         const finalizeBranchRenamed = async () => {
           ctx.sessionManager.setBranchRenamed(effectiveSessionId, true);
@@ -223,7 +248,7 @@ export async function handleSendMessage(
         };
 
         // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget session naming
-        generateSessionName(userText).then(async (nameResult) => {
+        generateSessionName(userText, namingAgentId).then(async (nameResult) => {
           if (!nameResult) {
             await finalizeBranchRenamed();
             return;
@@ -363,15 +388,8 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     return;
   }
 
-  // Agent has finished — send the answer as a new prompt with --resume
-  if (!ctx.authManager.authenticated) {
-    ctx.authManager.checkCredentials();
-  }
-  if (!ctx.authManager.authenticated) {
-    ctx.send({ type: "auth_required" });
-    ctx.authManager.startOAuthFlow();
-    return;
-  }
+  // Agent has finished — send the answer as a new prompt with --resume.
+  if (!ensureActiveAgentAuthenticated(ctx)) return;
 
   // Ensure a runner exists for this session and attach to it
   {
