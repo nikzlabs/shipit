@@ -374,19 +374,25 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
-  // The retry is one-shot: if the second attempt also 409s, we re-throw so
-  // the agent's `error` handler runs (which feeds the queue-drain path).
-  it("_startAgentViaProxy gives up after one retry if the slot is still busy", async () => {
-    // Pre-occupy and DON'T release — both attempts should 409.
+  // docs/142 (B2): if the retry ALSO 409s, the worker is holding a stale agent
+  // that won't clear on its own (e.g. a persistent streaming process whose turn
+  // errored without exiting). _startAgentViaProxy is only reached when the
+  // orchestrator believes no turn is active, so a lingering worker agent is a
+  // desync — kill it and start fresh rather than stranding the session.
+  it("_startAgentViaProxy kills the stale agent and restarts when the slot stays busy", async () => {
+    // Pre-occupy and DON'T release — both /agent/start attempts will 409, so
+    // recovery must go through the kill path.
     const preStartRes = await fetch(`${workerUrl}/agent/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ agentId: "claude", params: { prompt: "stuck" } }),
     });
     expect(preStartRes.status).toBe(200);
+    const stale = lastAgent;
+    expect(stale).toBeTruthy();
 
     const runner = new ContainerSessionRunner({
-      sessionId: "test-409-give-up",
+      sessionId: "test-409-kill-restart",
       sessionDir: "/tmp/test",
       defaultAgentId: "claude",
       workerUrl,
@@ -394,9 +400,18 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    await expect(
-      runner._startAgentViaProxy("claude", { prompt: "wont-fit", cwd: "/workspace" }),
-    ).rejects.toThrow(/Agent already running/);
+    // First attempt → 409, retry → 409, kill the stale agent (frees the slot),
+    // start fresh → success.
+    await runner._startAgentViaProxy("claude", { prompt: "wont-fit", cwd: "/workspace" });
+
+    // The stale agent was killed, and a brand-new agent started for our prompt.
+    expect(stale.killed).toBe(true);
+    await waitFor(
+      () => lastAgent !== stale && lastAgent.lastParams?.prompt === "wont-fit",
+      3000,
+      "restarted agent",
+    );
+    expect(lastAgent.lastParams?.prompt).toBe("wont-fit");
 
     runner.dispose();
   });

@@ -571,6 +571,29 @@ export function wireAgentListeners(
     console.log("[server] Agent CLI requires authentication, starting OAuth flow");
     emitToViewers({ type: "auth_required" });
     ctx.authManager.startOAuthFlow();
+
+    // Tear the failed turn down. An auth failure ends the turn, but a
+    // persistent streaming agent (live steering) does NOT exit on a failed
+    // result, so the worker never clears `this.agent` and the runner is left
+    // with `running=true` — the next turn then 409s with "Agent already
+    // running". Killing the worker agent + resetting runner state here makes
+    // the failure recoverable without waiting for the defensive kill+restart
+    // path. See docs/142 (Problem B1). Kill is fire-and-forget; the proxy
+    // surfaces any failure via the Logs panel, not the chat.
+    const turnSessionId = opts.capturedSessionId;
+    agent.kill();
+    if (runner) {
+      runner.setAgent(null);
+      runner.running = false;
+      if (turnSessionId) {
+        emitToViewers({
+          type: "session_status",
+          sessionId: turnSessionId,
+          running: false,
+          queueLength: runner.queueLength,
+        });
+      }
+    }
   });
 
   agent.on("error", async (err: Error) => {
