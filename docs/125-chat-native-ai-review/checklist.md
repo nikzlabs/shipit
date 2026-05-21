@@ -125,15 +125,29 @@ the end-to-end "Codex spawns a subagent that calls the bridge" leg needs a
 dogfood run. Same prompt-only-delegation risk as Claude; plus upstream bugs
 openai/codex#18335 (slot leak) and #14841 (repeated spawn).
 
-## Phase 3 — Remove the old path (NOT STARTED)
+## Phase 3 — Remove the old path (DONE)
 
 Cleanup-only PR. Reverting Phase 2 leaves the old path in place; this
 phase is what makes the chat-native path the only path.
 
-- [ ] Delete `generateAiReview` and the `/ai-review` route.
-- [ ] Delete the `generateText` factory and `agentFactory` plumbing
-  in `app-di.ts`.
-- [ ] Delete `AI_REVIEW_PROMPT_TEMPLATE`.
-- [ ] Delete the client `aiReview` action and its tests.
-- [ ] Update `docs/112-unified-review-surface/plan.md` to point at this
+**One deviation from the plan:** `generateText` and `agentFactory` are
+*kept*, not deleted. The plan was written when those were the
+AI-Review-specific factory; in the meantime PR description generation
+(`services/github.ts` → `generatePrDescription`, plus the
+`ws-handlers/agent-execution.ts` harness fallback that backs up the
+agent-driven flow in docs/116) has come to depend on the same factory.
+Removing it would silently break empty-body protection on auto-created
+PRs. The chat-native review path has its own write-back channel
+(`submit_review_comments` → `/review-submit`) and does not touch
+`generateText`, so leaving the factory in place costs nothing.
+
+- [x] Delete `generateAiReview` and the `/ai-review` route.
+- [~] Keep `generateText` / `agentFactory` plumbing in `app-di.ts` — it
+  is no longer used by reviews, but PR description generation still
+  depends on it. See note above.
+- [x] Delete `AI_REVIEW_PROMPT_TEMPLATE`.
+- [x] Delete the client `aiReview` action and its tests. (Already
+  removed during Phase 2 — confirmed no remaining `aiReview` symbol in
+  `src/client/`.)
+- [x] Update `docs/112-unified-review-surface/plan.md` to point at this
   doc as the successor for the AI Review affordance.

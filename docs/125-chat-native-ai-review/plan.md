@@ -1,12 +1,19 @@
 ---
-status: in-progress
+status: done
 priority: medium
 description: Replace the out-of-band AI review endpoint with a chat-native flow where the agent reviews code through the normal message channel with full repo context.
 ---
 
 # 125 — Chat-native AI Review
 
-> **Status note (Phases 1 & 2 landed).** The chat-native flow is live on
+> **Status note (all phases landed).** Phase 3 removed the out-of-band
+> `/ai-review` route, `generateAiReview`, and `AI_REVIEW_PROMPT_TEMPLATE`;
+> the chat-native MCP flow is now the only path to AI review. The
+> `generateText` / `agentFactory` factory was kept (not deleted as the
+> plan originally proposed) because PR description generation depends on
+> it; see `checklist.md` for the rationale.
+>
+> The chat-native flow is live on
 > Claude: an MCP bridge (`mcp-review-bridge.ts`) exposes
 > `submit_review_comments`; the "Ask agent to review" button and the
 > `/review [@file]` slash command compose a delegation prompt and send it

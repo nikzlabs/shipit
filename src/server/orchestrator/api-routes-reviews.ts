@@ -21,7 +21,6 @@ import {
   deleteReviewComment,
   deleteDraftReview,
   sendReview,
-  generateAiReview,
   submitAiReviewComments,
   ServiceError,
 } from "./services/index.js";
@@ -302,31 +301,4 @@ export async function registerReviewRoutes(
     },
   );
 
-  // ----------------------------------------------------------------
-  // AI Review (markdown only)
-  // ----------------------------------------------------------------
-  app.post<{
-    Params: { sessionId: string; reviewId: string };
-  }>(
-    "/api/sessions/:sessionId/file-reviews/:reviewId/ai-review",
-    async (request, reply) => {
-      const dir = resolveSessionDir(deps.sessionManager, request.params.sessionId, reply);
-      if (!dir) return;
-      try {
-        const comments = await generateAiReview(
-          deps.reviewStore!,
-          request.params.reviewId,
-          dir,
-          deps.generateText,
-        );
-        return { comments };
-      } catch (err) {
-        if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
-          return;
-        }
-        reply.code(500).send({ error: `Failed to generate AI review: ${getErrorMessage(err)}` });
-      }
-    },
-  );
 }
