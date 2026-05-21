@@ -10,7 +10,7 @@ describe("generateSessionName", () => {
     vi.doUnmock("node:child_process");
   });
 
-  it("invokes the local claude CLI and parses the output", async () => {
+  it("invokes the local Claude CLI and parses the output", async () => {
     vi.doMock("node:child_process", () => {
       return {
         execFile: (
@@ -32,7 +32,32 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("Add a login page");
+    const result = await mod.generateSessionName("Add a login page", "claude");
+    expect(result).toEqual({ slug: "add-login", title: "Add Login Page" });
+  });
+
+  it("invokes the local Codex CLI when the session uses Codex", async () => {
+    vi.doMock("node:child_process", () => {
+      return {
+        execFile: (
+          file: string,
+          args: string[],
+          _opts: unknown,
+          cb: (err: Error | null, stdout: string, stderr: string) => void,
+        ) => {
+          expect(file).toBe("codex");
+          expect(args[0]).toBe("exec");
+          expect(args[1]).toContain("Add a login page");
+          setImmediate(() => {
+            cb(null, '{"slug": "add-login", "title": "Add Login Page"}\n', "");
+          });
+          return { on: () => {}, stdin: { end: () => {} } } as unknown;
+        },
+      };
+    });
+
+    const mod = await import("./session-namer.js");
+    const result = await mod.generateSessionName("Add a login page", "codex");
     expect(result).toEqual({ slug: "add-login", title: "Add Login Page" });
   });
 
@@ -54,7 +79,7 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("hello");
+    const result = await mod.generateSessionName("hello", "claude");
     expect(result).toBeNull();
   });
 
@@ -76,7 +101,7 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("hello");
+    const result = await mod.generateSessionName("hello", "claude");
     expect(result).toBeNull();
   });
 
@@ -102,7 +127,7 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("x");
+    const result = await mod.generateSessionName("x", "claude");
     expect(result?.slug.length).toBeLessThanOrEqual(40);
     expect(result?.slug).toMatch(/^[a-z0-9-]+$/);
   });
@@ -126,7 +151,7 @@ describe("generateSessionName", () => {
     });
 
     const mod = await import("./session-namer.js");
-    const result = await mod.generateSessionName("x");
+    const result = await mod.generateSessionName("x", "claude");
     expect(result?.title.length).toBeLessThanOrEqual(60);
   });
 });
