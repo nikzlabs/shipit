@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PermissionModeSelector } from "./PermissionModeSelector.js";
-import type { AgentOption } from "./AgentPicker.js";
+import type { AgentOption } from "../agent-types.js";
 
 afterEach(cleanup);
 

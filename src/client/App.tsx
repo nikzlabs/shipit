@@ -57,7 +57,7 @@ import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
-import type { AgentOption } from "./components/AgentPicker.js";
+import type { AgentOption } from "./agent-types.js";
 import type { AgentId, DocEntry } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";

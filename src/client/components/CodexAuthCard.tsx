@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect needed to clear the local "starting device auth" pending flag once SSE delivers deviceAuth/deviceAuthError
 import { useEffect, useState } from "react";
-import type { AgentOption } from "./AgentPicker.js";
+import type { AgentOption } from "../agent-types.js";
 
 /**
  * State for an in-flight `codex login --device-auth` flow. The orchestrator

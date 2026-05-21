@@ -1,5 +1,5 @@
 import type { AgentId } from "../../server/shared/types.js";
-import type { AgentOption } from "../components/AgentPicker.js";
+import type { AgentOption } from "../agent-types.js";
 
 /**
  * Derive the agent that owns a given model.

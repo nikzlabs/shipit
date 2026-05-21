@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import type { AgentOption } from "./AgentPicker.js";
+import type { AgentOption } from "../agent-types.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
