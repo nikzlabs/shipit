@@ -24,6 +24,10 @@ describe("useActivityTracker", () => {
     return result;
   }
 
+  function browserEvent(type: string) {
+    return new window.Event(type);
+  }
+
   it("sends an initial heartbeat on mount", () => {
     mount();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -35,7 +39,7 @@ describe("useActivityTracker", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
     // Simulate user activity
-    window.dispatchEvent(new Event("mousemove"));
+    window.dispatchEvent(browserEvent("mousemove"));
 
     // Advance to next heartbeat interval (15s)
     vi.advanceTimersByTime(15_000);
@@ -67,7 +71,7 @@ describe("useActivityTracker", () => {
     const countAfterIdle = fetchSpy.mock.calls.length;
 
     // User comes back — trigger activity
-    window.dispatchEvent(new Event("keydown"));
+    window.dispatchEvent(browserEvent("keydown"));
 
     // Next heartbeat interval should fire
     vi.advanceTimersByTime(15_000);
@@ -80,7 +84,7 @@ describe("useActivityTracker", () => {
 
     // Simulate tab becoming visible
     Object.defineProperty(document, "hidden", { value: false, writable: true, configurable: true });
-    document.dispatchEvent(new Event("visibilitychange"));
+    document.dispatchEvent(browserEvent("visibilitychange"));
 
     // Should have sent exactly one more heartbeat
     expect(fetchSpy.mock.calls.length).toBe(countAfterMount + 1);
