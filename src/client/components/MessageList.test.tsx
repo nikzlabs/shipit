@@ -461,7 +461,7 @@ describe("MessageList", () => {
       expect(screen.getByText("python")).toBeInTheDocument();
     });
 
-    it("does not show a language label when language is omitted", () => {
+    it("falls back to a generic 'code' label when language is omitted", () => {
       const text = "```\nsome code\n```";
       const { container } = render(
         <MessageList
@@ -471,8 +471,24 @@ describe("MessageList", () => {
       );
       // Code block should exist
       expect(container.querySelectorAll("pre code.hljs")).toHaveLength(1);
-      // No language label div (border-b is only present when language label shown)
-      expect(container.querySelector(".border-b.border-\\(--color-border-primary\\)")).toBeNull();
+      // Header is always rendered (it hosts the Copy button) — the label
+      // reads "code" when no explicit language was given.
+      const headerLabel = container.querySelector(
+        ".border-b.border-\\(--color-border-primary\\) > span"
+      );
+      expect(headerLabel?.textContent).toBe("code");
+    });
+
+    it("renders a Copy button on code blocks", () => {
+      const text = "```js\nconst x = 1;\n```";
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", text)]}
+          isLoading={false}
+        />
+      );
+      const copyBtn = container.querySelector('button[aria-label="Copy code"]');
+      expect(copyBtn).toBeInTheDocument();
     });
 
     it("renders text around code blocks normally", () => {
