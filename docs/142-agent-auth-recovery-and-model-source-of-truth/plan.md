@@ -27,72 +27,118 @@ local/dogfood). The reported failure was in container mode.
 
 ---
 
-## Problem A — the 401 is masked, undetected, and survives re-auth
+## Problem A — rotating refresh token vs. one-directional credential copy
 
-### Root cause
+### Root cause (CONFIRMED on prod, 2026-05-21)
 
-Three separate gaps in the Claude auth path:
+Diagnostic from inside a failing session container (`/root/.claude` →
+`/credentials/.claude` subpath mount):
 
-1. **Existence-only auth check.** `AuthManager.checkCredentials()`
-   ([auth.ts](../../src/server/orchestrator/auth.ts) `checkCredentials`) reports
-   authenticated whenever a credentials file *exists* on disk — it never
-   inspects `expiresAt`, even though the module already has an `extractExpiresAt`
-   helper. A dead OAuth/refresh token therefore still reads as "authenticated"
-   in the UI.
+```
+{ "expiresAt": 1779304803371,  // ~May 21 2026 — a SHORT-LIVED access token, expired
+  "expiredNow": true, "hasAccess": true, "hasRefresh": true, "tokenTail": "Ds9AAA" }
+```
 
-2. **The runtime 401 is never classified as an auth failure.** The auth-error
-   keyword detection in `ClaudeProcess` and `StreamingClaudeProcess`
-   ([claude.ts](../../src/server/session/claude.ts)) matches phrases like
-   `not authenticated`, `unauthorized`, `oauth`, `sign in` — but **not**
-   `invalid authentication credentials` / `401`. Worse, the 401 arrives as a
-   `result` event with `subtype: "error"` (structured JSON), not as a non-JSON
-   stderr line, so it bypasses the keyword scan entirely. The turn dies as a
-   generic error instead of emitting `auth_required`.
+Running `claude -p` in that container 401s and leaves the credential file
+**byte-for-byte unchanged** — the CLI never obtained a working token.
 
-3. **Provisioning is write-once, so re-auth never reaches a pinned session.**
-   `provisionAgentCredentials`
-   ([session-credentials.ts](../../src/server/orchestrator/session-credentials.ts))
-   copies the pinned agent's `.claude` subtree into the per-session credentials
-   dir exactly once, gated on `!session.agentPinned`
-   ([agent-execution.ts](../../src/server/orchestrator/ws-handlers/agent-execution.ts)).
-   Once a session has taken a turn it is pinned, so signing out and back in
-   refreshes the orchestrator's `/credentials/.claude` but the container keeps
-   its stale copy. The user re-authenticates and still gets 401.
+The structural cause (the earlier "≈1 year expiry" premise was wrong — the
+access token is short-lived and meant to be refreshed):
 
-In container mode each session's container holds its own copy of
-`.claude/.credentials.json` and the CLI refreshes that copy in place using the
-refresh token. The 401 occurs when the refresh token itself is dead (revoked /
-expired), which requires a fresh login — but gaps (1)–(3) hide that fact and
-prevent the fresh login from taking effect.
+1. **One-directional copy, never written back.** `provisionAgentCredentials`
+   ([session-credentials.ts](../../src/server/orchestrator/session-credentials.ts)
+   `copyCredentialPath`) does `fs.cpSync(/credentials/.claude →
+   /credentials/sessions/<id>/.claude)`. The session container mounts only its
+   own subdir, so a refresh inside the session writes to
+   `sessions/<id>/.claude/.credentials.json` and **never propagates back** to
+   the orchestrator's source `/credentials/.claude`.
 
-### Fix
+2. **Refresh tokens rotate (single-use).** Each successful refresh returns a new
+   refresh token and invalidates the old one server-side. With N independent
+   copies of the same refresh token, the first session to refresh consumes it;
+   the orchestrator source and every other copy are left holding a dead token.
 
-- **A1 — Classify the runtime 401.** Add `invalid authentication credentials`
-  and `401` to the auth-error matching, and also inspect the text of
-  `result` events whose `subtype` is `error`. A runtime 401 then emits
-  `auth_required` (the same signal a startup auth prompt uses), which the
-  orchestrator already wires to the OAuth flow.
+3. **The orchestrator never refreshes its own source.** It runs the OAuth login
+   (writes `/credentials/.claude`) but never runs a turn, so it never refreshes.
+   The source access token simply expires, and the source refresh token is
+   whatever was last written at login (and is dead once any session rotated it).
+
+Failure chain: source holds `(expiredAccess, R1)` → a session copies it and
+refreshes `R1 → (A2, R2)` into *its own* copy only → R1 is now dead → every new
+session copies the stale source `(expiredAccess, R1)` → refresh rejected → 401
+with the file unchanged. **Re-auth only unblocks until the next rotation/expiry.**
+
+### Secondary masking gaps (still real, still worth fixing)
+
+- **Existence-only auth check.** `AuthManager.checkCredentials()`
+  ([auth.ts](../../src/server/orchestrator/auth.ts)) reports authenticated
+  whenever a credentials file *exists* — so a dead token still shows
+  "authenticated" in the UI.
+- **The runtime 401 is never classified as an auth failure.** The keyword
+  detection in `ClaudeProcess`/`StreamingClaudeProcess`
+  ([claude.ts](../../src/server/session/claude.ts)) matches `unauthorized`,
+  `oauth`, etc. but **not** `invalid authentication credentials` / `401`, and
+  the 401 arrives as a `result` event with `subtype: "error"` (structured JSON),
+  bypassing the scan. The turn dies as a generic error instead of emitting
+  `auth_required`.
+
+### Fix — orchestrator-mediated copy-back (chosen) + 401 classification
+
+Chosen after weighing a shared RW mount (clean but blocked by warm-pool mount
+timing + per-agent isolation) and a central orchestrator-only refresher (rated
+fragile). The copy-back keeps the existing per-session-copy model (so warm pool
+and docs/138 isolation are untouched) and just **closes the loop** so a rotated
+token isn't stranded in one session.
+
+- **A-copyback (primary) — sync the OAuth token in per-turn and write it back
+  when it advances.** Implemented in
+  [session-credentials.ts](../../src/server/orchestrator/session-credentials.ts)
+  (`syncAgentTokenIn` / `syncAgentTokenBack`) and wired into
+  [agent-execution.ts](../../src/server/orchestrator/ws-handlers/agent-execution.ts):
+    - **Before each turn:** copy just the token file
+      (`.claude/.credentials.json`) from the orchestrator source into the
+      session's per-session dir, so the CLI starts from the freshest token (not
+      a stale write-once copy).
+    - **After each turn:** if the session's token now carries a **strictly later
+      expiry** than the source, copy it back (atomic temp+rename). The
+      **expiry guard** is the safety mechanism: a session that *failed* to
+      refresh (same/older expiry) can never clobber a fresher source token, so
+      the rare concurrent-refresh case is a self-healing one-off rather than a
+      regression.
+    - Scoped to **Claude** (the confirmed failure; the guard understands the
+      Claude credential shape). Codex stays on plain write-once — extend
+      `AGENT_TOKEN_FILES` when its token shape is verified. No-op outside
+      container mode (local/dogfood reads the orchestrator creds directly).
+
+- **A1 (done) — Classify the runtime 401.** `textIndicatesAuthFailure` /
+  `resultEventIndicatesAuthFailure` in
+  [claude.ts](../../src/server/session/claude.ts) add `invalid authentication
+  credentials` / `authentication_error` / `invalid (x-)api key` and inspect
+  error `result` events (the 401 arrives as `{type:"result", subtype:"error"}`,
+  not a stderr line). A runtime 401 now emits `auth_required`, which flips the
+  auth card and (via B1) tears the stuck turn down — visible and recoverable
+  instead of a silent 401 + "Agent already running".
 
 - **A2 — DROPPED.** Originally "validate token expiry in `checkCredentials()`".
-  Abandoned after review: the token's `expiresAt` is ≈1 year out, so an expiry
-  check never trips and would be dead code. See "A is not yet root-caused"
-  below — the failure is not expiry. Kept here only to record why it was cut.
+  An expired-but-refreshable token must NOT report unauthenticated; honest auth
+  state instead falls out of A-copyback (the source stays fresh) + A1 (a real,
+  unrecoverable 401 flips the card).
 
-- **A3 — Re-provision on re-auth (the both-modes fix).** On `auth_complete`
-  for Claude ([api-routes-bootstrap.ts](../../src/server/orchestrator/api-routes-bootstrap.ts)),
-  re-copy the fresh `.claude` subtree into the per-session credentials dir of
-  every pinned **Claude** session. The dir is already mounted as a subpath, so a
-  running container sees the new files immediately — no restart or remount. In
-  local mode this is a no-op (the in-process CLI reads the orchestrator's
-  credentials directly), so the same code path is correct in both modes. New
-  helper alongside `provisionAgentCredentials`, e.g.
-  `reprovisionAgentCredentialsForSessions(credentialsRoot, sessionIds, "claude")`.
+- **A3 — Re-provision on re-auth (follow-up, not yet built).** On
+  `auth_complete` for Claude, push the fresh token into already-pinned Claude
+  sessions so a re-login reaches sessions pinned before it. With A-copyback the
+  next turn's sync-in already pulls the fresh source token, so A3 is now a
+  latency/edge nicety rather than load-bearing.
+
+> **One-time operational step:** the prod refresh token was already dead
+> (consumed before write-back existed), so a single sign out + sign in is needed
+> to seed a fresh source token. After that, copy-back keeps it alive.
 
 ### Key files
-- `src/server/session/claude.ts` — auth-error classification (A1)
-- `src/server/orchestrator/auth.ts` — `checkCredentials` expiry validation (A2)
-- `src/server/orchestrator/session-credentials.ts` — re-provision helper (A3)
-- `src/server/orchestrator/api-routes-bootstrap.ts` — call re-provision on `auth_complete` (A3)
+- `src/server/orchestrator/session-credentials.ts` — `syncAgentTokenIn` / `syncAgentTokenBack` + expiry guard (A-copyback)
+- `src/server/orchestrator/ws-handlers/agent-execution.ts` — per-turn sync-in (pre-start) + sync-back (post-turn) wiring
+- `src/server/session/claude.ts` — `textIndicatesAuthFailure` / `resultEventIndicatesAuthFailure` (A1)
+- `src/server/orchestrator/api-routes-bootstrap.ts` — re-push on `auth_complete` (A3, follow-up)
 
 ---
 
@@ -190,53 +236,26 @@ mapping). Divergence becomes structurally impossible.
 
 Revised after review:
 
-1. **C** (model source-of-truth) — **first**, because it unblocks A's diagnosis.
-   While a new session silently routes to Codex/gpt-5.5, you cannot create a
-   clean *Claude* session to test the 401, so the discriminating experiment for
-   A is impossible until C lands.
-2. **B** (kill+restart + auth teardown) — makes the failure recoverable
-   regardless of A's root cause; independent of the rest.
-3. **A** — **deferred until C is in and the experiment is run** (see below).
+1. **C** (model source-of-truth) — **DONE** (PR #576). Also unblocked A's
+   diagnosis: a new session now genuinely runs Claude, surfacing the real 401.
+2. **B** (kill+restart + auth teardown) — **DONE** (PR #576).
+3. **A** — root-caused on prod (see Problem A). Build order:
+   **A1** (classify the 401 → recoverable) → **A-refresh** (orchestrator-owned
+   central refresh) → **A3** (re-push on re-auth). A1 is low-risk and standalone;
+   A-refresh needs the implementation decision below.
 
-Each workstream is a separate commit on the feature branch.
+### A diagnosis — RESOLVED (2026-05-21)
 
-### A is not yet root-caused — diagnose before building
+Confirmed on prod: short-lived access token, expired, refresh token present;
+`claude -p` inside the session 401s and leaves the credential file unchanged.
+Both new and existing Claude sessions fail. Root cause is the rotating refresh
+token vs. one-directional write-once copy (orchestrator never refreshes its own
+source; sessions never write rotated tokens back). See Problem A above.
 
-The original A2 ("validate token expiry") assumed a short-lived access token.
-It isn't: the credential carries a long (≈1 year) `expiresAt`, so a plain
-expiry check would never trip and **A2 is dropped**. ShipIt stores exactly one
-token and never refreshes it itself — the in-container CLI refreshes via
-`refreshToken` (see `auth.ts` `getOAuthToken` docstring).
-
-Because the failure is **existing-session-only** with a long-lived token, the
-leading hypothesis is a **stale/rotated copy**: the session's container holds
-the token captured at provisioning time (write-once), and a later re-auth or
-rotation invalidated it while a fresh session would copy the current, valid
-token. That points at **A3 (re-provision on re-auth / propagate fresh creds)**
-as the real fix.
-
-Discriminating experiment (run once C lands):
-
-- Create a fresh **Claude** session, send one turn.
-  - **Works** → orchestrator token is valid; existing session 401s on a stale
-    copy → **A3 is the fix**, A1 still wanted for recoverability.
-  - **Also 401s** → the orchestrator token itself is dead → one-time re-auth
-    required; **A1 (detect 401 → recover)** is the fix that matters, A3 still
-    needed so the re-auth propagates into already-pinned sessions.
-
-Optional hard confirmation on the box (no secret leakage):
-
-```bash
-for f in /credentials/.claude/.credentials.json \
-         /credentials/sessions/<FAILING_SESSION_ID>/.claude/.credentials.json; do
-  echo "== $f =="
-  jq '{expiresAt: .claudeAiOauth.expiresAt,
-       hasRefresh: (.claudeAiOauth.refreshToken|type=="string"),
-       tokenTail: (.claudeAiOauth.accessToken[-6:])}' "$f"
-done
-```
-
-Differing `tokenTail`/`expiresAt` confirms the stale-copy theory.
+Open decision for **A-refresh**: how the orchestrator performs the refresh —
+(1) direct OAuth token-endpoint call (fragile), or (2) invoke the `claude` CLI
+on a timer to refresh `/credentials/.claude` in place (preferred — the CLI owns
+the protocol). Pick before implementing.
 
 > Operational note: if the experiment shows the orchestrator token is dead, a
 > one-time **sign out + sign in** is required. The A fixes then ensure the state
