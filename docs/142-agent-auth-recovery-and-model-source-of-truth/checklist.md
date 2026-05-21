@@ -41,11 +41,27 @@ intact; closes the write-back loop with an expiry guard).
       into `agent-execution.ts`. Claude-scoped; no-op in local mode.
 - [x] A1 — classify the runtime 401 (`invalid authentication credentials` etc.,
       including error `result` events) → emits `auth_required`.
-- [x] Tests — token sync-in/back + expiry-guard race; A1 detectors.
-- [ ] **One-time prod step:** sign out + sign in to seed a fresh source token
-      (the existing refresh token is already dead). Then verify a new Claude
-      session works AND survives past the access-token TTL (create another
-      session a few hours later — should still work, proving copy-back).
+- [x] Expiry-guard `syncAgentTokenIn` too (not just sync-back) so it never
+      overwrites a session's fresher local token with a staler source — and so a
+      stale/dead source can't be propagated into every session (that uniform
+      propagation is what also broke session naming during the incident).
+- [x] Tests — token sync-in/back + both expiry guards; A1 detectors.
+- [x] **One-time prod step DONE (2026-05-21):** signed out (cleared the dead
+      `Ds9AAA` token) + signed in → fresh token `n7mAAA`, `expiresAt` ~28h out.
+      New + existing sessions work again (#577 live; per-turn sync-in healed the
+      pinned sessions). NOTE: sign-out was required because the UI couldn't tell
+      a dead token from a live one — see the honest-auth-state item below.
+- [ ] **Validate copy-back at the TTL boundary (~28h after re-login):** create a
+      Claude session past the access-token expiry — if it still works, a session
+      refreshed and wrote the rotated token back. If it 401s, move sync-back off
+      the post-turn hook (the CLI may refresh lazily) onto a credential-file
+      watch.
+- [ ] **Honest auth state:** A1 (now live) flips the card reactively on the next
+      runtime 401 → `auth_required` → OAuth flow, so the manual sign-out we
+      needed this time should not recur. Confirm at the TTL boundary that a dead
+      token auto-surfaces the re-auth prompt (rather than a silent 401). A
+      *proactive* "is the token usable" probe is deliberately NOT built — it
+      can't distinguish expired-but-refreshable from dead without rotating.
 - [ ] A3 (follow-up) — on `auth_complete`, push the fresh token into
       already-pinned Claude sessions. Lower priority now: copy-back's next-turn
       sync-in already pulls the fresh source token.
