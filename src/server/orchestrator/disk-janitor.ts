@@ -527,23 +527,42 @@ async function sweepOrphanedCaches(
 }
 
 /**
- * GraphQL response shape for the orphan-branch sweep — declared at module
- * scope so the type stays close to the query that produces it.
+ * GraphQL response shapes for the orphan-branch sweep — declared at module
+ * scope so the types stay close to the queries that produce them.
+ *
+ * The sweep issues two separate paginated queries (see
+ * `fetchShipitBranchesWithPrStates`):
+ *   1. `refs(refPrefix: "refs/heads/shipit/")` — what branches exist.
+ *   2. `pullRequests(states: [OPEN, MERGED])` — head ref → PR states map.
+ *
+ * We deliberately do NOT use `Ref.associatedPullRequests` here: it returned
+ * empty for every branch on ShipIt's own repo whose PR was merged (181 of
+ * 186 affected), while the PR-side `pullRequests(headRefName:)` query
+ * returned them correctly. See the diagnostic write-up referenced from
+ * docs/. The PR-side enumeration is the only reliable join.
  */
-interface ShipitBranchRefsConnection {
+interface ShipitRefsConnection {
   pageInfo: { hasNextPage: boolean; endCursor: string | null };
-  nodes: {
-    name: string;
-    associatedPullRequests: {
-      nodes: { state: "OPEN" | "CLOSED" | "MERGED" }[];
-    };
-  }[];
+  nodes: { name: string }[];
 }
 
-interface ShipitBranchesQueryResult {
+interface ShipitRefsQueryResult {
   data?: {
     repository?: {
-      refs?: ShipitBranchRefsConnection | null;
+      refs?: ShipitRefsConnection | null;
+    } | null;
+  };
+}
+
+interface ShipitPrStatesConnection {
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  nodes: { state: "OPEN" | "MERGED"; headRefName: string }[];
+}
+
+interface ShipitPrStatesQueryResult {
+  data?: {
+    repository?: {
+      pullRequests?: ShipitPrStatesConnection | null;
     } | null;
   };
 }
@@ -659,12 +678,29 @@ async function sweepOrphanMergedBranches(
       return cacheGit;
     };
 
-    for (const branch of branches) {
+    // Pre-compute the eligible set so we can log a complete summary per
+    // repo even when we end up performing 0 deletions. Without this, a repo
+    // whose N branches are all somehow ineligible looks identical in the
+    // logs to a repo with no branches at all — which is exactly how the
+    // `Ref.associatedPullRequests` bug went undetected for so long (every
+    // branch reported empty states, so the sweep silently did nothing for
+    // the entire historical backlog).
+    const eligible = branches.filter((b) => {
+      const fullName = `shipit/${b.shortName}`;
+      if (liveBranches.has(fullName)) return false;
+      const hasMerged = b.states.includes("MERGED");
+      const hasOpen = b.states.includes("OPEN");
+      return hasMerged && !hasOpen;
+    });
+
+    if (branches.length > 0) {
+      console.log(
+        `[disk-janitor] ${parsed.owner}/${parsed.repo}: ${branches.length} branches, ${eligible.length} eligible`,
+      );
+    }
+
+    for (const branch of eligible) {
       const fullName = `shipit/${branch.shortName}`;
-      if (liveBranches.has(fullName)) continue;
-      const hasMerged = branch.states.includes("MERGED");
-      const hasOpen = branch.states.includes("OPEN");
-      if (!hasMerged || hasOpen) continue;
 
       const git = await ensureCacheGit();
       if (!git) break; // No cache → skip remaining branches for this repo.
@@ -688,56 +724,109 @@ async function sweepOrphanMergedBranches(
 }
 
 /**
- * Fetch all `refs/heads/shipit/*` branches for a repo, paginating through
- * the GraphQL response. Each result includes the state of associated PRs
- * so the caller can apply the safety criteria.
+ * Fetch all `refs/heads/shipit/*` branches for a repo together with the
+ * states of their associated pull requests.
  *
- * The query name-prefix filter (`refPrefix: "refs/heads/shipit/"`) means
- * non-shipit branches never enter the response at all — bounding the
- * query cost regardless of repo size.
+ * Implementation: two paginated GraphQL passes joined client-side.
+ *
+ *   Pass 1 enumerates `refs(refPrefix: "refs/heads/shipit/")` — this
+ *   gives us the canonical list of `shipit/*` branches that exist on the
+ *   remote. The refPrefix filter keeps the query cost bounded by branch
+ *   count, not by total repo refs.
+ *
+ *   Pass 2 enumerates `pullRequests(states: [OPEN, MERGED])` and groups
+ *   them by `headRefName`. CLOSED-without-merge PRs are intentionally
+ *   not queried — the sweep's policy treats them identically to "no PR"
+ *   (both buckets are preserved), so dropping them shrinks the response
+ *   without changing any outcome.
+ *
+ * Why not `Ref.associatedPullRequests`? Because empirically it returns
+ * empty for branches whose PR is merged: observed on ShipIt's own repo,
+ * 181 merged PRs had a `Ref → PR` back-link of zero results, while the
+ * `PR → headRefName` forward query returned them correctly. That broke
+ * the sweep silently for the entire historical backlog. The PR-side
+ * enumeration is the only reliable join.
+ *
+ * Pages are hard-capped at 50 per pass (≤5,000 PRs / branches), which
+ * comfortably exceeds anything a real ShipIt user could accumulate. If a
+ * branch's PR happens to fall past the cap it lands in our map as
+ * "absent" → the sweep treats it as no-PR → preserved, which is the safe
+ * direction to err.
  */
 async function fetchShipitBranchesWithPrStates(
   githubAuthManager: GitHubAuthManager,
   owner: string,
   repo: string,
 ): Promise<{ shortName: string; states: string[] }[]> {
-  const query = /* GraphQL */ `
-    query ShipitBranches($owner: String!, $repo: String!, $cursor: String) {
+  // Pass 1: enumerate shipit/* refs. `refs.nodes[].name` is the suffix
+  // after `refPrefix` (i.e. `foo`, not `shipit/foo`).
+  const refsQuery = /* GraphQL */ `
+    query ShipitBranchRefs($owner: String!, $repo: String!, $cursor: String) {
       repository(owner: $owner, name: $repo) {
         refs(refPrefix: "refs/heads/shipit/", first: 100, after: $cursor) {
           pageInfo { hasNextPage endCursor }
-          nodes {
-            name
-            associatedPullRequests(first: 10) {
-              nodes { state }
-            }
-          }
+          nodes { name }
         }
       }
     }
   `;
 
-  const out: { shortName: string; states: string[] }[] = [];
+  const branchNames: string[] = [];
   let cursor: string | null = null;
-  // Hard cap on pages so a misconfigured repo with thousands of stale
-  // shipit branches can't loop forever.
   for (let page = 0; page < 50; page += 1) {
-    const result: ShipitBranchesQueryResult | null = await githubAuthManager.graphqlQuery(
-      query, { owner, repo, cursor },
+    const result: ShipitRefsQueryResult | null = await githubAuthManager.graphqlQuery(
+      refsQuery, { owner, repo, cursor },
     );
-    const refs: ShipitBranchRefsConnection | null | undefined = result?.data?.repository?.refs;
+    const refs: ShipitRefsConnection | null | undefined = result?.data?.repository?.refs;
     if (!refs) break;
-    for (const node of refs.nodes) {
-      out.push({
-        shortName: node.name,
-        states: node.associatedPullRequests.nodes.map((p) => p.state),
-      });
-    }
+    for (const node of refs.nodes) branchNames.push(node.name);
     if (!refs.pageInfo.hasNextPage) break;
     cursor = refs.pageInfo.endCursor;
     if (!cursor) break;
   }
-  return out;
+
+  // Pass 2: enumerate OPEN+MERGED PRs and group their states by
+  // `headRefName`. The headRefName is the full branch name without the
+  // `refs/heads/` prefix (e.g. `shipit/foo`).
+  const prQuery = /* GraphQL */ `
+    query ShipitBranchPRs($owner: String!, $repo: String!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequests(states: [OPEN, MERGED], first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { state headRefName }
+        }
+      }
+    }
+  `;
+
+  const prStatesByHead = new Map<string, Set<string>>();
+  cursor = null;
+  for (let page = 0; page < 50; page += 1) {
+    const result: ShipitPrStatesQueryResult | null = await githubAuthManager.graphqlQuery(
+      prQuery, { owner, repo, cursor },
+    );
+    const prs: ShipitPrStatesConnection | null | undefined = result?.data?.repository?.pullRequests;
+    if (!prs) break;
+    for (const node of prs.nodes) {
+      let set = prStatesByHead.get(node.headRefName);
+      if (!set) {
+        set = new Set();
+        prStatesByHead.set(node.headRefName, set);
+      }
+      set.add(node.state);
+    }
+    if (!prs.pageInfo.hasNextPage) break;
+    cursor = prs.pageInfo.endCursor;
+    if (!cursor) break;
+  }
+
+  // Join: branch's relative name → full `shipit/<name>` → states from map.
+  // Branches with no matching PR get an empty states array, which the
+  // sweep correctly treats as "no MERGED" → preserve.
+  return branchNames.map((shortName) => ({
+    shortName,
+    states: Array.from(prStatesByHead.get(`shipit/${shortName}`) ?? []),
+  }));
 }
 
 /**
