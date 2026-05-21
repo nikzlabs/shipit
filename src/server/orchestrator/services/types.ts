@@ -44,6 +44,11 @@ export interface GlobalSettings {
    * agent instead of being queued. (docs/140)
    */
   liveSteering: boolean;
+  /**
+   * When true, the PR conversation panel surfaces reply/resolve controls that
+   * write back to GitHub. (docs/102)
+   */
+  prCommentSync: boolean;
 }
 
 export interface GitHubStatus {

@@ -4,6 +4,7 @@ import type {
   PrFileStat,
   PrIssueComment,
   PrReviewThread,
+  PrReviewThreadComment,
 } from "../../server/shared/types/github-types.js";
 import { useSettingsStore } from "./settings-store.js";
 
@@ -127,6 +128,25 @@ interface PrState {
    * success.
    */
   postComment: (sessionId: string, body: string) => Promise<string | null>;
+
+  // Review-thread sync actions (docs/102)
+  /**
+   * Reply to a PR review thread. Optimistically appends the reply to the
+   * matching thread on the card and reconciles on the next poll. Returns an
+   * error message on failure (after reverting), null on success.
+   */
+  replyToThread: (sessionId: string, threadId: string, body: string) => Promise<string | null>;
+  /**
+   * Mark a PR review thread as resolved. Optimistically flips `isResolved`
+   * on the card and reconciles on the next poll. Returns an error message
+   * on failure (after reverting), null on success.
+   */
+  resolveThread: (sessionId: string, threadId: string) => Promise<string | null>;
+  /**
+   * Reopen a previously-resolved PR review thread. Same optimistic + revert
+   * pattern as `resolveThread`.
+   */
+  unresolveThread: (sessionId: string, threadId: string) => Promise<string | null>;
 
   // PR edit actions (docs/133 Phase 2)
   /**
@@ -426,6 +446,186 @@ export const usePrStore = create<PrState>((set, get) => ({
     } catch (err) {
       revert();
       return err instanceof Error ? err.message : "Failed to post comment";
+    }
+  },
+
+  // ---- Review-thread sync actions (docs/102) ----
+  //
+  // All three follow the same pattern as `postComment`: optimistically mutate
+  // the matching thread on the card, fire the HTTP call, revert on failure.
+  // The next poll tick (5s by default) reconciles with GitHub's authoritative
+  // state, so success doesn't need to overwrite anything — leaving the
+  // optimistic copy in place avoids a flicker.
+
+  replyToThread: async (sessionId, threadId, body) => {
+    const trimmed = body.trim();
+    if (!trimmed) return "Reply cannot be empty";
+
+    const ghUser = useSettingsStore.getState().githubStatus;
+    const optimisticId = `optimistic-reply-${Date.now()}`;
+    const optimisticComment: PrReviewThreadComment = {
+      id: optimisticId,
+      author: { login: ghUser.username ?? "you", avatarUrl: ghUser.avatarUrl ?? "" },
+      body: trimmed,
+      createdAt: new Date().toISOString(),
+    };
+
+    let snapshot: PrReviewThread[] | undefined;
+    set((state) => {
+      const existing = state.cardBySession[sessionId];
+      if (!existing?.reviewThreads) return state;
+      snapshot = existing.reviewThreads;
+      return {
+        cardBySession: {
+          ...state.cardBySession,
+          [sessionId]: {
+            ...existing,
+            reviewThreads: existing.reviewThreads.map((t) =>
+              t.id === threadId ? { ...t, comments: [...t.comments, optimisticComment] } : t,
+            ),
+          },
+        },
+      };
+    });
+
+    const revert = () => {
+      if (!snapshot) return;
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        if (!existing) return state;
+        return {
+          cardBySession: {
+            ...state.cardBySession,
+            [sessionId]: { ...existing, reviewThreads: snapshot },
+          },
+        };
+      });
+    };
+
+    try {
+      const res = await fetch(
+        `/api/sessions/${sessionId}/pr/threads/${encodeURIComponent(threadId)}/reply`,
+        {
+          method: "POST",
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify({ body: trimmed }),
+        },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        revert();
+        return data.error || "Failed to post reply";
+      }
+      return null;
+    } catch (err) {
+      revert();
+      return err instanceof Error ? err.message : "Failed to post reply";
+    }
+  },
+
+  resolveThread: async (sessionId, threadId) => {
+    let snapshot: PrReviewThread[] | undefined;
+    set((state) => {
+      const existing = state.cardBySession[sessionId];
+      if (!existing?.reviewThreads) return state;
+      snapshot = existing.reviewThreads;
+      return {
+        cardBySession: {
+          ...state.cardBySession,
+          [sessionId]: {
+            ...existing,
+            reviewThreads: existing.reviewThreads.map((t) =>
+              t.id === threadId ? { ...t, isResolved: true } : t,
+            ),
+          },
+        },
+      };
+    });
+
+    const revert = () => {
+      if (!snapshot) return;
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        if (!existing) return state;
+        return {
+          cardBySession: {
+            ...state.cardBySession,
+            [sessionId]: { ...existing, reviewThreads: snapshot },
+          },
+        };
+      });
+    };
+
+    try {
+      const res = await fetch(
+        `/api/sessions/${sessionId}/pr/threads/${encodeURIComponent(threadId)}/resolve`,
+        {
+          method: "POST",
+          headers: { Accept: "application/json" },
+        },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        revert();
+        return data.error || "Failed to resolve thread";
+      }
+      return null;
+    } catch (err) {
+      revert();
+      return err instanceof Error ? err.message : "Failed to resolve thread";
+    }
+  },
+
+  unresolveThread: async (sessionId, threadId) => {
+    let snapshot: PrReviewThread[] | undefined;
+    set((state) => {
+      const existing = state.cardBySession[sessionId];
+      if (!existing?.reviewThreads) return state;
+      snapshot = existing.reviewThreads;
+      return {
+        cardBySession: {
+          ...state.cardBySession,
+          [sessionId]: {
+            ...existing,
+            reviewThreads: existing.reviewThreads.map((t) =>
+              t.id === threadId ? { ...t, isResolved: false } : t,
+            ),
+          },
+        },
+      };
+    });
+
+    const revert = () => {
+      if (!snapshot) return;
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        if (!existing) return state;
+        return {
+          cardBySession: {
+            ...state.cardBySession,
+            [sessionId]: { ...existing, reviewThreads: snapshot },
+          },
+        };
+      });
+    };
+
+    try {
+      const res = await fetch(
+        `/api/sessions/${sessionId}/pr/threads/${encodeURIComponent(threadId)}/unresolve`,
+        {
+          method: "POST",
+          headers: { Accept: "application/json" },
+        },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        revert();
+        return data.error || "Failed to reopen thread";
+      }
+      return null;
+    } catch (err) {
+      revert();
+      return err instanceof Error ? err.message : "Failed to reopen thread";
     }
   },
 

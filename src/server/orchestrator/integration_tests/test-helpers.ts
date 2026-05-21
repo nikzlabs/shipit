@@ -403,6 +403,45 @@ export class StubGitHubAuthManager extends EventEmitter {
   setFindPrAnyStateResult(result: typeof this._findPrAnyStateResult) {
     this._findPrAnyStateResult = result;
   }
+
+  // ---- Review-thread mutations (docs/102) ----
+
+  /** Calls to review-thread mutation methods, in order. Inspect from tests. */
+  public reviewThreadReplyCalls: { threadId: string; body: string }[] = [];
+  public reviewThreadResolveCalls: { threadId: string }[] = [];
+  public reviewThreadUnresolveCalls: { threadId: string }[] = [];
+
+  /**
+   * Per-call result overrides. Set to a non-null value to make the next call
+   * return failure (and subsequent calls keep returning failure until reset).
+   * Default is success — matches what real GitHub would return.
+   */
+  private _reviewThreadResult: { success: boolean; message: string } = {
+    success: true,
+    message: "ok",
+  };
+
+  setReviewThreadResult(result: { success: boolean; message: string }) {
+    this._reviewThreadResult = result;
+  }
+
+  async addReviewThreadReply(threadId: string, body: string) {
+    this.reviewThreadReplyCalls.push({ threadId, body });
+    if (!this._authenticated) return { success: false, message: "Not authenticated with GitHub" };
+    return this._reviewThreadResult;
+  }
+
+  async resolveReviewThread(threadId: string) {
+    this.reviewThreadResolveCalls.push({ threadId });
+    if (!this._authenticated) return { success: false, message: "Not authenticated with GitHub" };
+    return this._reviewThreadResult;
+  }
+
+  async unresolveReviewThread(threadId: string) {
+    this.reviewThreadUnresolveCalls.push({ threadId });
+    if (!this._authenticated) return { success: false, message: "Not authenticated with GitHub" };
+    return this._reviewThreadResult;
+  }
 }
 
 /**
