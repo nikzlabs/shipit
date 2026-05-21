@@ -68,6 +68,26 @@ intact; closes the write-back loop with an expiry guard).
 - [ ] Extend the token sync to **Codex** once its `auth.json` token/expiry shape
       is verified (same latent rotation bug; not yet observed).
 
+## D — worker timeout crashed the orchestrator (done; not yet deployed)
+
+Found on prod (2026-05-21): the dead token made a `POST /terminal/start` worker
+call hit the 10s timeout; the resulting `WorkerTimeoutError` floated out of the
+WS dispatcher's `return handler(...)` as an unhandled rejection and killed the
+whole orchestrator (`RestartCount=1`), taking every live session with it. This
+is also the likely reason the first re-login attempt "didn't go through" — the
+orchestrator restarted mid-flow.
+
+- [x] D1 — WS dispatcher awaits each handler inside a try/catch
+      (`dispatchSessionMessage`); a rejection degrades to a per-session
+      `error`, never an unhandled rejection.
+- [x] D2 — process-level `unhandledRejection` backstop in `autoStart`
+      (production entry point) logs and stays alive; `uncaughtException` left
+      to Node's default on purpose.
+- [x] Test — `ws-handler-error-isolation.test.ts`: a rejecting handler surfaces
+      a client error and the socket/process survive.
+- [ ] Verify on prod after deploy: a wedged worker call no longer restarts the
+      orchestrator (no new `RestartCount` bumps in the crash window).
+
 ## Cross-cutting
 
 - [ ] Update `src/server/shipit-docs/` if any agent-facing auth behavior changes.
