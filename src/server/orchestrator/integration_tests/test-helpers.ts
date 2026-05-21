@@ -434,6 +434,13 @@ export class FakeClaudeProcess extends EventEmitter {
   public lastImages: { data: string; mediaType: string; filename?: string }[] | undefined;
   public lastCwd: string | undefined;
   public lastPermissionMode: string | undefined;
+  /**
+   * docs/140 — captures the `useStreaming` flag the orchestrator passed at
+   * spawn time, so live-steering tests can assert the streaming spawn was
+   * actually requested (without depending on the real streaming process
+   * machinery). The fake itself stays one-shot.
+   */
+  public lastUseStreaming = false;
   public killed = false;
   public interrupted = false;
   public stdinData: string[] = [];
@@ -455,7 +462,7 @@ export class FakeClaudeProcess extends EventEmitter {
     return super.emit(eventName, ...args);
   }
 
-  run(params: { prompt: string; sessionId?: string; systemPrompt?: string; images?: { data: string; mediaType: string; filename?: string }[]; cwd?: string; permissionMode?: string }) {
+  run(params: { prompt: string; sessionId?: string; systemPrompt?: string; images?: { data: string; mediaType: string; filename?: string }[]; cwd?: string; permissionMode?: string; useStreaming?: boolean }) {
     this.runCalled = true;
     this.lastPrompt = params.prompt;
     this.lastSessionId = params.sessionId;
@@ -463,6 +470,7 @@ export class FakeClaudeProcess extends EventEmitter {
     this.lastImages = params.images;
     this.lastCwd = params.cwd;
     this.lastPermissionMode = params.permissionMode;
+    this.lastUseStreaming = params.useStreaming === true;
   }
 
   kill() {

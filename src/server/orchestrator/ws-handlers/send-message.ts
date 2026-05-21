@@ -363,7 +363,32 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   const runnerEarly = resolveRunner(ctx);
   const existingAgent = runnerEarly?.getAgent() ?? null;
   if (existingAgent) {
-    // Claude is still running — write answer to stdin (it may be blocking on input)
+    // docs/140 — live steering: when the persistent streaming agent is blocked
+    // on AskUserQuestion, route the answer through `sendUserMessage` so the
+    // CLI receives a properly framed NDJSON user message on its piped stdin.
+    // `writeStdin` for streaming adapters is a raw passthrough that would emit
+    // a non-JSON line and the CLI would drop it. The legacy headless `-p` path
+    // (non-streaming) still uses raw stdin — that's what the adapter's default
+    // `sendUserMessage` falls back to.
+    const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
+    const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
+    const liveSteering = ctx.credentialStore.getLiveSteering();
+    if (steeringCapable && liveSteering) {
+      const answerSessionId = ctx.getActiveAppSessionId();
+      existingAgent.sendUserMessage(answerText);
+      if (answerSessionId) {
+        ctx.chatHistoryManager.append(answerSessionId, { role: "user", text: answerText });
+        runnerEarly?.emitMessage({
+          type: "message_steered",
+          text: answerText,
+          sessionId: answerSessionId,
+        });
+      }
+      return;
+    }
+    // Non-streaming legacy: write answer to stdin (the CLI is paused after the
+    // orchestrator's AskUserQuestion interrupt, but `--resume` reads stdin on
+    // resume).
     existingAgent.writeStdin(`${answerText  }\n`);
     return;
   }

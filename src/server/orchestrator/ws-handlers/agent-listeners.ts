@@ -113,6 +113,15 @@ export function wireAgentListeners(
      * the error handler.
      */
     onError?: () => Promise<void>;
+    /**
+     * True when this turn is being run on a persistent streaming agent
+     * (live steering active, docs/140). In streaming mode the CLI can
+     * genuinely block on `AskUserQuestion` (the user's answer flows back via
+     * `sendUserMessage`/NDJSON on stdin), so the orchestrator must NOT
+     * interrupt on the tool — that would tear down the running turn instead
+     * of letting the user steer their answer in.
+     */
+    useStreaming?: boolean;
   },
 ): void {
   if (!opts.capturedSessionId) {
@@ -350,7 +359,18 @@ export function wireAgentListeners(
       // agent-execution.ts) suppresses the spurious "exited without result"
       // error and skips the queue drain. Only fires for top-level events —
       // parentToolUseId-carrying (subagent) events have already returned above.
-      if (runner && toolBlocks.some((t) => t.name === "AskUserQuestion")) {
+      //
+      // docs/140 — live steering: in streaming mode the CLI has a bidirectional
+      // stdin channel and CAN genuinely block awaiting the user's answer (the
+      // answer flows back via `sendUserMessage`/NDJSON on stdin instead of a
+      // fresh `--resume` spawn). Interrupting here would tear down a turn that
+      // would otherwise patiently wait — skip the hack and let the user steer
+      // their answer in.
+      if (
+        runner
+        && !opts.useStreaming
+        && toolBlocks.some((t) => t.name === "AskUserQuestion")
+      ) {
         runner.wasInterrupted = true;
         agent.interrupt();
         ctx.broadcastLog("server", "Agent interrupted: waiting for AskUserQuestion answer");
