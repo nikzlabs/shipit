@@ -62,6 +62,8 @@ interface BootstrapResponse {
     agentSystemInstructionsEnabled?: boolean;
     agentSystemInstructions?: string;
     autoCreatePr?: boolean;
+    liveSteering?: boolean;
+    prCommentSync?: boolean;
   };
   /** Orchestrator runtime mode (feature 118). Defaults to "containerized". */
   runtimeMode?: RuntimeMode;
@@ -206,6 +208,8 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(data.settings.agentSystemInstructionsEnabled);
   if (data.settings.agentSystemInstructions) useSettingsStore.getState().setAgentSystemInstructions(data.settings.agentSystemInstructions);
   if (data.settings.autoCreatePr !== undefined) useSettingsStore.getState().setAutoCreatePr(data.settings.autoCreatePr);
+  if (data.settings.liveSteering !== undefined) useSettingsStore.getState().setLiveSteering(data.settings.liveSteering);
+  if (data.settings.prCommentSync !== undefined) useSettingsStore.getState().setPrCommentSync(data.settings.prCommentSync);
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
   useUiStore.getState().setBootstrapLoaded(true);
 }

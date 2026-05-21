@@ -20,6 +20,19 @@ interface CredentialData {
    */
   liveSteering?: boolean;
   /**
+   * Feature flag for GitHub PR review-comment write-back (docs/102). When
+   * true, the PR conversation panel surfaces reply/resolve controls that
+   * write through to GitHub via the GraphQL review-thread mutations. The
+   * read side (rendering threads inline) is always on — that ships with
+   * docs/133 Phase 4 — so flipping this off only hides the write affordances
+   * and the server routes refuse mutations with a 403.
+   *
+   * Defaults to `false` for the initial release; promote to default-on once
+   * the integration test suite is green and a beta cycle has surfaced no
+   * regressions.
+   */
+  prCommentSync?: boolean;
+  /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
    * the `mcp__<server>__<KEY>` namespace, not here.
@@ -306,6 +319,17 @@ export class CredentialStore {
 
   setLiveSteering(enabled: boolean): void {
     this.data.liveSteering = enabled;
+    this.save();
+  }
+
+  // ---- PR comment sync (docs/102) ----
+
+  getPrCommentSync(): boolean {
+    return this.data.prCommentSync ?? false;
+  }
+
+  setPrCommentSync(enabled: boolean): void {
+    this.data.prCommentSync = enabled;
     this.save();
   }
 

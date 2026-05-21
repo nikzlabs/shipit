@@ -1,0 +1,228 @@
+/**
+ * Integration tests for GitHub PR review-comment sync (docs/102).
+ *
+ * Covers the three write-back routes (reply, resolve, unresolve) plus the
+ * `prCommentSync` feature-flag gate. The poller-driven read side ships with
+ * docs/133 Phase 4 and has its own tests; these only exercise mutations.
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { buildApp } from "../index.js";
+import { GitManager } from "../../shared/git.js";
+import {
+  StubAuthManager,
+  StubGitHubAuthManager,
+  FakeClaudeProcess,
+  createTestCredentialStore,
+  createTestDatabaseManager,
+} from "./test-helpers.js";
+import { DatabaseManager } from "../../shared/database.js";
+import { SessionManager } from "../sessions.js";
+import { ChatHistoryManager } from "../chat-history.js";
+import { UsageManager } from "../usage.js";
+import { CredentialStore } from "../credential-store.js";
+import type { FastifyInstance } from "fastify";
+
+let tmpDir: string;
+let app: FastifyInstance;
+let githubAuth: StubGitHubAuthManager;
+let credentialStore: CredentialStore;
+let sessionId: string;
+let sessionDir: string;
+let sessionManager: SessionManager;
+let dbManager: DatabaseManager;
+
+beforeEach(async () => {
+  dbManager = createTestDatabaseManager();
+  tmpDir = fs.mkdtempSync("/tmp/shipit-pr-comment-sync-test-");
+
+  githubAuth = new StubGitHubAuthManager();
+
+  sessionId = crypto.randomUUID();
+  sessionDir = path.join(tmpDir, "sessions", sessionId);
+  fs.mkdirSync(sessionDir, { recursive: true });
+  credentialStore = createTestCredentialStore(tmpDir);
+  const git = new GitManager(sessionDir);
+  await git.init();
+
+  sessionManager = new SessionManager(dbManager);
+  sessionManager.track(sessionId, "Test session", sessionDir);
+
+  app = await buildApp({
+    credentialStore,
+    workspaceDir: tmpDir,
+    createGitManager: (dir: string) => new GitManager(dir),
+    agentFactory: () => new FakeClaudeProcess() as never,
+    authManager: new StubAuthManager() as never,
+    githubAuthManager: githubAuth as never,
+    sessionManager,
+    chatHistoryManager: new ChatHistoryManager(dbManager),
+    usageManager: new UsageManager(dbManager),
+    serveStatic: false,
+  });
+});
+
+afterEach(async () => {
+  await app.close();
+  dbManager.close();
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+describe("PR review-thread sync", () => {
+  describe("feature flag gate", () => {
+    it("rejects reply with 403 when prCommentSync is disabled", async () => {
+      await githubAuth.setToken("test-token");
+      // Flag defaults to false in CredentialStore — no setup needed.
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/threads/THREAD_1/reply`,
+        payload: { body: "hello" },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(githubAuth.reviewThreadReplyCalls).toHaveLength(0);
+    });
+
+    it("rejects resolve with 403 when prCommentSync is disabled", async () => {
+      await githubAuth.setToken("test-token");
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/threads/THREAD_1/resolve`,
+      });
+      expect(res.statusCode).toBe(403);
+      expect(githubAuth.reviewThreadResolveCalls).toHaveLength(0);
+    });
+
+    it("rejects unresolve with 403 when prCommentSync is disabled", async () => {
+      await githubAuth.setToken("test-token");
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/threads/THREAD_1/unresolve`,
+      });
+      expect(res.statusCode).toBe(403);
+      expect(githubAuth.reviewThreadUnresolveCalls).toHaveLength(0);
+    });
+  });
+
+  describe("when flag is enabled", () => {
+    beforeEach(() => {
+      credentialStore.setPrCommentSync(true);
+    });
+
+    it("requires authentication", async () => {
+      // No token set — feature flag enabled but not authenticated.
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/threads/THREAD_1/reply`,
+        payload: { body: "hello" },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(githubAuth.reviewThreadReplyCalls).toHaveLength(0);
+    });
+
+    it("returns 404 for unknown session", async () => {
+      await githubAuth.setToken("test-token");
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/does-not-exist/pr/threads/THREAD_1/reply`,
+        payload: { body: "hello" },
+      });
+      expect(res.statusCode).toBe(404);
+      expect(githubAuth.reviewThreadReplyCalls).toHaveLength(0);
+    });
+
+    it("rejects empty reply body with 400", async () => {
+      await githubAuth.setToken("test-token");
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/threads/THREAD_1/reply`,
+        payload: { body: "   " },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(githubAuth.reviewThreadReplyCalls).toHaveLength(0);
+    });
+
+    it("posts a reply with the trimmed body and the thread id", async () => {
+      await githubAuth.setToken("test-token");
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/threads/PRT_kwDOAB12345/reply`,
+        payload: { body: "  thanks for the review!  " },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ success: true });
+      expect(githubAuth.reviewThreadReplyCalls).toHaveLength(1);
+      expect(githubAuth.reviewThreadReplyCalls[0]).toEqual({
+        threadId: "PRT_kwDOAB12345",
+        body: "thanks for the review!",
+      });
+    });
+
+    it("resolves a thread", async () => {
+      await githubAuth.setToken("test-token");
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/threads/PRT_kwDOAB12345/resolve`,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ success: true });
+      expect(githubAuth.reviewThreadResolveCalls).toEqual([{ threadId: "PRT_kwDOAB12345" }]);
+    });
+
+    it("unresolves a thread", async () => {
+      await githubAuth.setToken("test-token");
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/threads/PRT_kwDOAB12345/unresolve`,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ success: true });
+      expect(githubAuth.reviewThreadUnresolveCalls).toEqual([{ threadId: "PRT_kwDOAB12345" }]);
+    });
+
+    it("propagates GitHub errors as 502", async () => {
+      await githubAuth.setToken("test-token");
+      githubAuth.setReviewThreadResult({
+        success: false,
+        message: "Could not resolve thread: not found",
+      });
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/threads/MISSING/resolve`,
+      });
+      expect(res.statusCode).toBe(502);
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("not found") });
+    });
+  });
+
+  describe("settings round-trip", () => {
+    it("persists and surfaces the prCommentSync flag", async () => {
+      const put = await app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { prCommentSync: true },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(credentialStore.getPrCommentSync()).toBe(true);
+
+      // Bootstrap should now reflect the flag.
+      const boot = await app.inject({ method: "GET", url: "/api/bootstrap" });
+      expect(boot.statusCode).toBe(200);
+      expect(boot.json()).toMatchObject({ settings: { prCommentSync: true } });
+
+      // Toggle back off.
+      const put2 = await app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { prCommentSync: false },
+      });
+      expect(put2.statusCode).toBe(200);
+      expect(credentialStore.getPrCommentSync()).toBe(false);
+    });
+  });
+});
