@@ -117,33 +117,100 @@ Three reasons, the first two echoing the gh-shim rationale:
 
 A future iteration could expose the same operations as an MCP tool if telemetry shows agents struggle with the CLI surface, but it's not the right starting point.
 
-### Allowlist (initial)
+### API surface
 
-| Subcommand | Maps to | Notes |
-|---|---|---|
-| `shipit session create` | `POST /api/sessions/:parentId/spawn` | Required: `--prompt <p>` (initial message). Optional: `--branch <name>`, `--title <t>`, `--base <ref>`. Returns the child session ID and URL on stdout. |
-| `shipit session list` | `GET /api/sessions/:parentId/children` | Lists sessions spawned by this parent (transitively, current turn first). JSON when `--json` is passed. |
-| `shipit session view <id>` | `GET /api/sessions/:parentId/children/:id` | Returns status (`running`, `idle`, `error`), branch, current PR (if any), latest assistant message. |
-| `shipit session message <id>` | `POST /api/sessions/:parentId/children/:id/message` | Send a follow-up prompt. Body is required (`-m "<message>"`). Returns immediately with a queue position; output is not streamed back. |
-| `shipit session wait <id>` | long-poll `GET /children/:id?wait=true` | Block until the child's queue is empty (or timeout). Useful when the parent agent wants to coordinate. |
-| `shipit session archive <id>` | `POST /api/sessions/:parentId/children/:id/archive` | Archive a child the agent itself spawned. Cannot archive sessions the agent didn't spawn. |
-| `shipit session help` | local help | Prints the subcommand list. |
+The shim is the agent-facing surface, but every CLI invocation traverses
+three layers — shim → worker `/agent-ops/session/*` → orchestrator
+`/api/sessions/:parentId/*`. The worker injects `:parentId` from the
+container's bound `SESSION_ID`; the agent cannot influence which parent
+its request lands under.
 
-Explicitly **rejected** with a helpful error and non-zero exit:
+#### Phase 1 (shipped)
 
-- `shipit session create --owner <other>` / `--repo <other>` — child sessions inherit the parent's repo and owner. No cross-repo spawns in v1.
-- `shipit session delete <id>` — destructive, owner-only. Use the UI.
+| Shim subcommand | Worker route (allowlist) | Orchestrator route | Notes |
+|---|---|---|---|
+| `shipit session create -p "PROMPT" [--title T] [--branch NAME] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | `POST /agent-ops/session/create` | `POST /api/sessions/:parentId/spawn` | Spawn a sibling. `-p`/`--prompt` is required and `-m` is an alias. Returns the child id, branch, and status. |
+| `shipit session list [--turn ID] [--json]` | `GET /agent-ops/session/list[?turn=ID]` | `GET /api/sessions/:parentId/children[?turn=ID]` | With `--turn`, children spawned in that turn sort to the top; otherwise most-recently-created first. |
+| `shipit session view <id> [--json]` | `GET /agent-ops/session/view/:childId` | `GET /api/sessions/:parentId/children/:childId` | Returns `{ id, title, status, branch?, queueLength, parentSessionId, spawnedAt, spawnedByTurn? }`. **404 if `<id>` is not a direct descendant of the calling parent** — the orchestrator deliberately doesn't disambiguate "wrong parent" from "not found" so the existence of unrelated sessions is never leaked. |
+| `shipit session help` / `-h` / `--help` | (local) | — | Prints the subcommand list. |
+| `shipit --version` | (local) | — | Prints the shim version. |
+
+Output formatting:
+
+- Without `--json`, the shim prints a stable plain-text rendering (label/value pairs for `create`/`view`; tab-separated tuples for `list`). The text format is what the agent learns to parse.
+- With `--json`, the shim writes the orchestrator's JSON response verbatim followed by a newline. `list` writes just the `children` array.
+- Errors go to stderr; the shim sets a non-zero exit code (see below).
+
+Exit codes:
+
+- `0` — success.
+- `1` — operational error: orchestrator returned non-2xx (quota 429, parent missing, branch checkout failed, etc.). The error message is whatever the orchestrator returned, with a quota-specific suffix on 429.
+- `2` — usage error caught client-side: unknown subcommand, missing `--prompt`, rejected flag (`--repo`/`--owner`), prompt > 50,000 chars, etc.
+
+#### Spawn request/response
+
+`POST /api/sessions/:parentId/spawn` body:
+
+```ts
+{
+  prompt: string;            // required, the child's first user message (≤ 50,000 chars)
+  title?: string;            // session title; defaults to a slug derived from `prompt`
+  branch?: string;           // child branch name; defaults to a generated prefix (`shipit/<slug>`)
+  base?: string;             // git ref to branch off (commit hash, `origin/main`, tag, …); defaults to parent's HEAD
+  agent?: AgentId;           // child's agent id; defaults to `defaultAgentId`
+  model?: string;            // child's model; defaults to the parent's model
+  spawnedByTurn?: string;    // free-form id of the parent turn — used by `list --turn` and the per-turn quota
+}
+```
+
+Successful response (HTTP 200):
+
+```ts
+{
+  sessionId: string;         // the child's new session id
+  branch: string;            // the branch the child was created on
+  status: "running";         // always "running" — the runner has the prompt enqueued
+  session: SessionInfo;      // full child session row (sidebar render data)
+}
+```
+
+Errors:
+
+- `400` — empty/oversize prompt, invalid branch name, parent missing workspace, parent archived, branch checkout failed.
+- `404` — parent not found.
+- `429` — per-turn cap (default 4 when `spawnedByTurn` is set) or per-parent active cap (default 16) exceeded. Both fail-closed.
+- `500` — disk/clone failure, unexpected exception.
+
+#### Rejected subcommands and flags
+
+The shim refuses these explicitly so the agent gets a pointer to
+`/shipit-docs/sessions.md` instead of a generic "unknown command":
+
+- `shipit session delete <id>` — destructive; user-only.
 - `shipit session adopt <id>` — adopting an unrelated session into the parent's tree is not supported.
-- `shipit session message <id>` where `<id>` is not a descendant of the current parent — scoped errors.
-- Anything beyond the table above — generic "command not supported" with a pointer to `/shipit-docs/sessions.md`.
+- `shipit session fork|rename|switch` — owned by the UI, not the agent.
+- `shipit session merge` — future extension; user merges via the existing PR/merge UI today.
+- `shipit session archive|message|wait` — Phase 3 of this doc (see "Phasing"); not yet wired.
+- `--repo <other>` / `--owner <other>` on any subcommand — spawned sessions inherit the parent's repo and owner. No cross-repo spawns in v1.
+- Any other top-level command than `session` — there is no `shipit pr`, `shipit run`, etc.
 
 The error message follows the gh shim's pattern:
 
 ```
-ShipIt's `shipit` shim only supports a subset of session-management operations.
+shipit (ShipIt) does not support `shipit session delete`.
 Tried: shipit session delete xyz123
 See /shipit-docs/sessions.md for the full list.
 ```
+
+#### Phase 3 (planned)
+
+These will extend the same three-layer pattern but are **not** in the shim today:
+
+| Shim subcommand | Maps to | Notes |
+|---|---|---|
+| `shipit session message <id> -m "TEXT"` | `POST /api/sessions/:parentId/children/:childId/message` | Send a follow-up prompt. Returns immediately with a queue position; output is not streamed back. |
+| `shipit session wait <id> [--timeout SECONDS]` | long-poll `GET /api/sessions/:parentId/children/:childId?wait=true` | Block until the child's queue is empty (or timeout). Default timeout 300s; server-capped at 3600s. |
+| `shipit session archive <id>` | `POST /api/sessions/:parentId/children/:childId/archive` | Archive a child the agent itself spawned. Cannot archive sessions the agent didn't spawn. |
 
 ### When the agent should reach for `shipit session create`
 
@@ -183,30 +250,25 @@ The sidebar groups child sessions visually under their parent (a small indent + 
 
 ### Spawn flow
 
-`POST /api/sessions/:parentId/spawn` body:
+The request/response shapes for `POST /api/sessions/:parentId/spawn` are
+documented in "API surface" above. The implementation lives in
+`services/child-sessions.ts` (`spawnChildSession()`), extracted from
+`session.ts` to keep the parent-session module focused on single-session
+reads/mutations.
 
-```ts
-{
-  prompt: string;           // required, the child's first user message
-  title?: string;           // session title; defaults to AI-generated from prompt
-  branch?: string;          // child branch name; defaults to generated prefix
-  base?: string;            // git ref to branch off of; defaults to parent's current HEAD
-  agent?: AgentId;          // optional agent override (claude | codex); defaults to parent's agent
-  model?: string;           // optional model override; defaults to parent's model
-}
-```
+1. **Validate** the parent — must exist, not archived, must have a workspace. (A remote is *not* required — the local-clone fallback below handles remote-less parents, which is the path the integration tests use.)
+2. **Quota check** — fail-closed with HTTP 429:
+   - Per-parent active children: default `16`, exposed as `DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS` and overridable per-call via `maxActiveSpawnedSessions`.
+   - Per-turn (only counted when `spawnedByTurn` is supplied): default `4`, exposed as `DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN` and overridable per-call via `maxSpawnedSessionsPerTurn`.
 
-Implementation in `services/session.ts` (new `spawnChildSession()`):
+   Neither cap reads from `shipit.yaml` today — the constants live in `services/child-sessions.ts`. Self-hosters can patch the constants; a future env-var override (`MAX_SPAWNED_SESSIONS_PER_PARENT`, `MAX_SPAWNED_SESSIONS_PER_TURN`) is tracked in the checklist.
+3. **Clone** — when the parent has a `remoteUrl`, fetch the bare cache and clone from it (same path the home-screen "send" flow uses). When it doesn't, `git clone --local <parent-workspace> <child-workspace>` as a fallback.
+4. **Branch off `base`** — if `base` is provided, check it out before letting the agent start. Default: parent's current HEAD (so the child sees the parent's committed work; uncommitted-and-unstaged work is not visible — the child has its own clone).
+5. **Persist linkage** — `setParentSession(newSessionId, parentSessionId, spawnedByTurn)` writes `parent_session_id` + `spawned_by_turn` to the `sessions` table; `setBranch` / `setBranchRenamed(true)` / `setRemoteUrl` / `setModel` fill in the rest. The child is **not** marked warm.
+6. **Enqueue the prompt** — `runnerRegistry.getOrCreate(...).sendSystemMessage(prompt)`. The runner picks the prompt up as soon as it starts.
+7. **Broadcast `session_list`** — the route emits the updated session list via SSE so the child appears in every connected sidebar immediately. (No parent-chat `SpawnedSessionCard` event is broadcast in Phase 1; that's Phase 2.)
 
-1. **Validate** the parent — must exist, not archived, must have a workspace and a remote.
-2. **Quota check** — fail if the parent already has ≥ N spawned children in this turn (default `4`) or ≥ M total active children (default `16`). Numbers from `shipit.yaml` agent caps if set.
-3. **Reuse the warm/claim path** — call into the existing `/api/repos/:url/claim-session` machinery to get a fresh clone. This is the same code path the home-screen "send" flow uses. We do not write a parallel session-creation path.
-4. **Branch off `base`** — if `base` is provided, check it out before letting the agent start. Default: parent's current HEAD (so the child sees the parent's uncommitted-but-committed work; uncommitted-and-unstaged work is not visible — child gets its own clone).
-5. **Persist linkage** — set `parentSessionId` and `spawnedByTurn` on the new SessionInfo.
-6. **Enqueue the prompt** — via the runner registry, the same way the WS `send_message` handler does. The child runs autonomously from there.
-7. **Emit a system event in the parent** — `runner.emitMessage({ type: "session_spawned", childSessionId, title, branch })`. The parent's chat renders a `SpawnedSessionCard` (new component) showing title, branch, and live status.
-
-Steps 3–6 are mostly already in `services/session.ts` — `forkSession`, `applyTemplate`, and the home-screen flow do similar things. The new function is a composition of existing primitives.
+Steps 3–6 are mostly compositions of existing primitives — the same building blocks `forkSession` and the home-screen flow use.
 
 ### Output formats
 
@@ -216,7 +278,6 @@ To match the agent's existing mental model of CLI tools:
 $ shipit session create --prompt "Port the API to TypeScript" --branch port-api-ts
 session-id: ses_abc123
 branch:     port-api-ts
-sidebar:    https://shipit.../#session=ses_abc123
 status:     running
 ```
 
@@ -228,14 +289,22 @@ $ shipit session view ses_abc123 --json
   "branch": "port-api-ts",
   "status": "running",
   "queueLength": 0,
-  "latestAssistantMessage": "Starting by inventorying the current API surface…",
-  "prUrl": null,
   "parentSessionId": "ses_parent",
-  "spawnedAt": "2026-05-04T14:22:31Z"
+  "spawnedAt": "2026-05-04T14:22:31Z",
+  "spawnedByTurn": "turn-7"
 }
 ```
 
-`--json` always returns a stable shape; the table form is for the agent's eyes (and debugger logs).
+`--json` always returns a stable shape; the plain-text form is for the
+agent's eyes (and debugger logs).
+
+`latestAssistantMessage` and `prUrl` were in the original v1 spec but are
+**deliberately omitted by `buildChildView`** today — pulling them would
+require importing `ChatHistoryManager` into the child-sessions service
+and tracking a "most recent assistant text" projection. The plain-text
+rendering degrades gracefully (the fields just don't print) and the
+Phase 3 work (`wait` / `archive` / `message`) can land them at the same
+time as it adds the long-poll status surface.
 
 ### Trust and scoping
 
@@ -245,7 +314,7 @@ The trust boundary that matters: **the worker's `/agent-ops/session/*` allowlist
 |---|---|
 | Agent spawns a session against a different user's repo | The orchestrator route requires the parent session to be the same as the worker's bound session ID. Cross-tenant routing is impossible. |
 | Agent reads or writes other sessions' files | Spawned sessions get their own container and workspace. The agent has no path to a sibling's filesystem from within its container. |
-| Agent escalates to the orchestrator's full session API | Worker only exposes `/agent-ops/session/{create,list,view,message,wait,archive}`. Generic session CRUD is not reachable. |
+| Agent escalates to the orchestrator's full session API | Worker only exposes `/agent-ops/session/{create,list,view}` today (Phase 3 adds `{message,wait,archive}`). Generic session CRUD is not reachable. |
 | Agent loops creating sessions | Per-turn quota (`maxSpawnedSessionsPerTurn = 4`) + per-parent total cap (`maxActiveSpawnedSessions = 16`). Both fail-closed. |
 | Agent injects credentials into a child session | Children inherit credentials from the orchestrator's `CredentialStore`, not from agent input. The `prompt` field is just a string sent as a user message. |
 | Agent spawns a session and uses it as a backdoor to mutate the parent's repo | Children push to their own branch, never to the parent's. PR creation goes through the same `gh` shim + auth as anything else. |
@@ -309,7 +378,7 @@ shipit session view ses_abc123 --json
 
 ### Resource caps
 
-A spawned session is just a regular session — it gets its own container with the same per-session resource limits as the parent. Spawning N children means N additional containers. The per-parent quota (default 16) prevents accidental container blow-up; admins running self-hosted instances can lower it via env vars (`MAX_SPAWNED_SESSIONS_PER_PARENT`).
+A spawned session is just a regular session — it gets its own container with the same per-session resource limits as the parent. Spawning N children means N additional containers. The per-parent quota (default 16) prevents accidental container blow-up; the values currently live as `DEFAULT_MAX_*` constants in `services/child-sessions.ts`. Self-hosters can patch the constants; surfacing them as env-var overrides (`MAX_SPAWNED_SESSIONS_PER_PARENT`, `MAX_SPAWNED_SESSIONS_PER_TURN`) is tracked in the Phase 3 checklist.
 
 The existing idle-container cleanup (doc 063) applies normally — spawned sessions that go idle for the configured period get their containers stopped, just like any other session.
 
