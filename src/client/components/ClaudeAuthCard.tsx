@@ -26,11 +26,10 @@ export interface ClaudeAuthCardProps {
  *      `sk-ant-…` fallback, visually deprioritized to match Codex's
  *      API-key disclosure.
  *
- * Note: today "Sign out" only clears the stored API key — OAuth credentials
- * persist via the auth manager. Backend wiring for a full sign-out (clear
- * both `~/.claude/.credentials.json` and the stored API key) is tracked
- * separately. Most users only have one credential type, so the button
- * behaves as expected in the common case.
+ * "Sign out" performs a full sign-out: the `DELETE /api/auth/api-key` route
+ * clears both the stored API key and the OAuth credentials on disk
+ * (`~/.claude/.credentials.json` and siblings), then refreshes the agent
+ * registry so this card flips back to the "Sign in" state.
  */
 export function ClaudeAuthCard({
   agent,

@@ -423,7 +423,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   });
 
   describe("DELETE /api/auth/api-key", () => {
-    it("clears API key", async () => {
+    it("signs out: clears the key and returns the refreshed agent list", async () => {
       // Set a key first
       await app.inject({
         method: "POST",
@@ -435,7 +435,15 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         url: "/api/auth/api-key",
       });
       expect(res.statusCode).toBe(200);
-      expect(res.json().success).toBe(true);
+      const body = res.json();
+      expect(body.success).toBe(true);
+      // Mirrors DELETE /api/codex-auth: the response carries the refreshed
+      // agent list so the client can repaint the card immediately. The stub
+      // auth manager flips to unauthenticated on signOut(), so claude should
+      // no longer be auth-configured.
+      expect(Array.isArray(body.agents)).toBe(true);
+      const claude = body.agents.find((a: { id: string }) => a.id === "claude");
+      expect(claude?.authConfigured).toBe(false);
     });
   });
 

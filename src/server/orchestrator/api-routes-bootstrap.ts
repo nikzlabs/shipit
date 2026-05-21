@@ -15,6 +15,7 @@ import {
   setAgentEnv,
   setApiKey,
   clearApiKey,
+  listAgents,
   fullReset,
   startAuth,
   submitAuthCode,
@@ -127,16 +128,24 @@ export async function registerBootstrapRoutes(
     },
   );
 
-  // DELETE /api/auth/api-key — clear API key
+  // DELETE /api/auth/api-key — sign out of Claude. Clears both the stored
+  // API key AND the OAuth credentials on disk, then refreshes the agent
+  // registry so the card flips back to "Sign in". Mirrors DELETE
+  // /api/codex-auth. We deliberately do NOT auto-restart the OAuth flow —
+  // sign-out should leave the user signed out until they click "Sign in".
   app.delete(
     "/api/auth/api-key",
-    async () => {
-      clearApiKey();
-      const stillAuthenticated = deps.authManager.checkCredentials();
-      if (!stillAuthenticated) {
-        deps.authManager.startOAuthFlow();
+    async (_request, reply) => {
+      try {
+        clearApiKey();
+        deps.authManager.signOut();
+        deps.agentRegistry.refreshAuth("claude");
+        const agents = listAgents(deps.agentRegistry);
+        deps.sseBroadcast("agent_list", { agents, defaultAgentId: deps.defaultAgentId });
+        return { success: true, agents };
+      } catch (err) {
+        reply.code(500).send({ error: `Failed to sign out of Claude: ${getErrorMessage(err)}` });
       }
-      return { success: true, stillAuthenticated };
     },
   );
 
