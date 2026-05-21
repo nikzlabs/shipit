@@ -625,13 +625,28 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // but the worker hasn't yet executed `this.agent = null` in its own
       // `agent.on("done")` handler (session-worker.ts wireAgentEvents). The
       // worker rejects with 409 "Agent already running". The window is
-      // microseconds wide; one short retry clears it. If the second attempt
-      // also 409s, that's a genuine duplicate-start bug — re-throw so the
-      // agent's error handler runs (and the drain-on-error path in
-      // agent-listeners.ts keeps the queue flowing).
+      // microseconds wide; one short retry clears it.
+      //
+      // If the retry ALSO 409s, the worker is holding a stale agent that will
+      // not clear on its own — most often a persistent `StreamingClaudeProcess`
+      // (live steering) whose turn errored without the process exiting, so the
+      // worker's `done`/`error` handlers never ran. `_startAgentViaProxy` is
+      // only reached when the orchestrator believes no turn is active, so a
+      // lingering worker agent here is always a desync: kill it and start
+      // fresh rather than stranding the session in "Agent already running"
+      // forever. See docs/142 (Problem B2).
       if (err instanceof Error && err.message === "Agent already running") {
         await new Promise((r) => setTimeout(r, 150));
-        await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
+        try {
+          await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
+        } catch (retryErr) {
+          if (retryErr instanceof Error && retryErr.message === "Agent already running") {
+            await workerPost(this.workerUrl, "/agent/kill").catch(() => { /* may already be gone */ });
+            await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
+          } else {
+            throw retryErr;
+          }
+        }
       } else {
         throw err;
       }

@@ -112,6 +112,31 @@ describe("Integration: prompt queuing", () => {
     client.close();
   });
 
+  // docs/142 (B1): an auth failure mid-turn must tear the turn down — kill the
+  // agent and clear running state — so the next send isn't blocked by a stale
+  // agent. A persistent streaming agent doesn't exit on its own, so without
+  // this the worker would keep "Agent already running".
+  it("tears the turn down on auth_required (kills agent, clears running)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "go" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "agent_init", sessionId: "s-auth", model: "m", tools: [] });
+
+    // The CLI hit an auth failure mid-turn.
+    claude.emit("auth_required");
+
+    // Client is told to re-auth, the agent is killed, and running is cleared.
+    const authMsg = await drainUntil(client, (m) => m.type === "auth_required");
+    expect(authMsg?.type).toBe("auth_required");
+    expect(claude.killed).toBe(true);
+    const status = await drainUntil(client, (m) => m.type === "session_status");
+    expect(status).toMatchObject({ type: "session_status", running: false });
+
+    client.close();
+  });
+
   it("dequeues and executes the next message after Claude finishes", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
