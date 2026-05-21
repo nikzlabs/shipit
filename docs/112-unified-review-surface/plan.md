@@ -4,6 +4,14 @@ status: done
 
 # 112 — Unified Review Surface
 
+> **Successor for the AI Review affordance:** the in-band "AI Review"
+> button described below is gone. Its successor is the chat-native flow
+> in [docs/125-chat-native-ai-review](../125-chat-native-ai-review/plan.md),
+> which replaces the out-of-band agent run with a normal chat turn that
+> writes its findings back via an MCP tool. The rest of this doc (drafts,
+> section/line anchoring, send → history, the `(session, file)` data model,
+> human comment authoring) is still current.
+
 ## Summary
 
 ShipIt has two overlapping ways to leave inline comments on files and send
