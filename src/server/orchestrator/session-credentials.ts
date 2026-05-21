@@ -165,3 +165,100 @@ export function removeSessionCredentials(credentialsRoot: string, sessionId: str
 export function sessionCredentialsRoot(credentialsRoot: string): string {
   return path.join(credentialsRoot, SESSION_CREDENTIALS_SUBDIR);
 }
+
+// ---------------------------------------------------------------------------
+// Per-turn OAuth token sync (docs/142 Problem A — rotating refresh token)
+//
+// The agent CLI rewrites its credentials file in place when it refreshes a
+// rotating (single-use) OAuth token. Because each session has its own *copy*
+// of the credentials (write-once provisioning) and never writes back, the
+// orchestrator's source token goes stale and every new session inherits a dead
+// refresh token → 401. The fix: sync just the token file IN at each turn start
+// (so the session always begins from the freshest token), and write it BACK to
+// the source after the turn IFF it advanced — keeping one authoritative copy
+// without distributing a long-lived refresh token N ways.
+//
+// Scoped to Claude for now: that's the confirmed failure, and the expiry guard
+// below understands the Claude credentials shape. Codex stays on plain
+// write-once provisioning (it has not exhibited the bug); extend when its token
+// file shape is verified.
+// ---------------------------------------------------------------------------
+
+/**
+ * Token files (relative to the credentials root) that carry the rotating OAuth
+ * token — distinct from {@link AGENT_CREDENTIAL_PATHS} (the full provisioned
+ * subtree). Only these are synced per-turn, so the CLI's other in-place writes
+ * under `.claude` (history, projects, settings) are never clobbered.
+ */
+const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
+  claude: [".claude/.credentials.json", ".claude/credentials.json", ".claude/auth.json"],
+};
+
+/** Copy a file via temp + atomic rename so a concurrent reader never sees a partial write. */
+function atomicCopyFile(src: string, dst: string): void {
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  const tmp = `${dst}.tmp-${process.pid}-${Date.now()}`;
+  fs.copyFileSync(src, tmp);
+  fs.renameSync(tmp, dst);
+}
+
+/**
+ * Parse the OAuth expiry (epoch ms) from a Claude credentials file. Tolerant of
+ * the `claudeAiOauth.expiresAt` (ms) and `expires_at` (seconds) shapes; returns
+ * null when the file is missing, unparseable, or carries no expiry — which the
+ * write-back guard treats as "can't prove it's newer, don't risk it".
+ */
+function readClaudeTokenExpiry(file: string): number | null {
+  try {
+    const o = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    const oauth = o.claudeAiOauth as Record<string, unknown> | undefined;
+    const raw = oauth?.expiresAt ?? oauth?.expires_at ?? o.expiresAt ?? o.expires_at;
+    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+      return raw < 10_000_000_000 ? raw * 1000 : raw; // seconds → ms heuristic
+    }
+  } catch {
+    // missing / invalid JSON
+  }
+  return null;
+}
+
+/**
+ * Before a turn: copy the freshest token file from the orchestrator source into
+ * the session's per-session dir, so the session's CLI starts from the latest
+ * token rather than a stale write-once copy. Only the token file is touched.
+ * No-op for agents without a registered token file (e.g. Codex). (docs/142 A)
+ */
+export function syncAgentTokenIn(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+  const files = AGENT_TOKEN_FILES[agentId];
+  if (!files) return;
+  const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  for (const rel of files) {
+    const src = path.join(credentialsRoot, rel);
+    if (!fs.existsSync(src)) continue;
+    atomicCopyFile(src, path.join(sessionDir, rel));
+  }
+}
+
+/**
+ * After a turn: if the session's CLI refreshed the rotating token (its token
+ * file now carries a strictly later expiry than the orchestrator source), write
+ * it back so the source — and every future session — stays fresh. The expiry
+ * guard is what makes the rare concurrent-refresh case safe: a session that
+ * FAILED to refresh (same/older expiry) can never clobber a fresher source
+ * token. No-op for agents without a registered token file. (docs/142 A)
+ */
+export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+  const files = AGENT_TOKEN_FILES[agentId];
+  if (!files) return;
+  const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  for (const rel of files) {
+    const sessionFile = path.join(sessionDir, rel);
+    if (!fs.existsSync(sessionFile)) continue;
+    const sessionExp = readClaudeTokenExpiry(sessionFile);
+    if (sessionExp === null) continue; // can't prove it's newer — don't risk a regression
+    const sourceFile = path.join(credentialsRoot, rel);
+    const sourceExp = fs.existsSync(sourceFile) ? readClaudeTokenExpiry(sourceFile) : null;
+    if (sourceExp !== null && sessionExp <= sourceExp) continue; // source already as fresh or fresher
+    atomicCopyFile(sessionFile, sourceFile);
+  }
+}

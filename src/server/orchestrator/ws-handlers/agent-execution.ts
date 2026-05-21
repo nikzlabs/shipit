@@ -15,7 +15,7 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { CredentialStore } from "../credential-store.js";
 import { collectMcpAgentEnv } from "../secret-resolver.js";
-import { provisionAgentCredentials } from "../session-credentials.js";
+import { provisionAgentCredentials, syncAgentTokenIn, syncAgentTokenBack } from "../session-credentials.js";
 import { refreshExpiredMcpOAuthTokens } from "../services/mcp-oauth.js";
 
 /**
@@ -341,6 +341,20 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     }
   };
 
+  // docs/142 A — after the turn, write the CLI's refreshed OAuth token back to
+  // the orchestrator source if it advanced (expiry-guarded), so the source and
+  // future sessions stay fresh. Safe to call on every post-turn path; no-op
+  // outside container mode or when nothing rotated.
+  const syncTokenBackAfterTurn = () => {
+    if (runner instanceof ContainerSessionRunner && capturedSessionId) {
+      try {
+        syncAgentTokenBack(ctx.credentialsDir, capturedSessionId, currentAgent.agentId);
+      } catch (err) {
+        console.warn("[credentials] token sync-back failed:", getErrorMessage(err));
+      }
+    }
+  };
+
   wireAgentListeners(ctx, currentAgent, {
     isNewSession,
     persistUserMessage,
@@ -370,6 +384,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       if (event.type !== "agent_result") return;
       if (streamingPostTurnFired) return; // guard against multiple result events per turn
       streamingPostTurnFired = true;
+
+      // Capture any OAuth token the CLI refreshed during this turn.
+      syncTokenBackAfterTurn();
 
       // agent-listeners already set runner.running=false on agent_result.
       // Clear the agent ref so the next turn can set a fresh one (or reuse this one
@@ -485,6 +502,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     console.log("[agent] process exited with code", code);
     ctx.broadcastLog("server", `Agent process exited with code ${code}`);
     if (runner) runner.setAgent(null);
+
+    // Capture any OAuth token the CLI refreshed during this turn (non-streaming
+    // path; the streaming path does this in the agent_result handler above).
+    if (!useStreaming) syncTokenBackAfterTurn();
 
     // For streaming agents, post-turn flow (commit, PR card, queue drain) already
     // ran in the agent_result listener above. done fires only on process exit
@@ -762,6 +783,19 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       }
       ctx.sessionManager.setAgentId(capturedSessionId, currentAgent.agentId);
       ctx.sessionManager.setAgentPinned(capturedSessionId);
+    }
+  }
+
+  // docs/142 A — sync the freshest OAuth token from the orchestrator source into
+  // this session's per-session credentials dir BEFORE the turn, so the CLI
+  // starts from the latest token instead of a stale write-once copy. Runs every
+  // turn (not just first), and only touches the token file. The matching
+  // write-back happens post-turn (see the done / agent_result handlers).
+  if (runner instanceof ContainerSessionRunner && capturedSessionId) {
+    try {
+      syncAgentTokenIn(ctx.credentialsDir, capturedSessionId, currentAgent.agentId);
+    } catch (err) {
+      console.warn("[credentials] token sync-in failed:", getErrorMessage(err));
     }
   }
 

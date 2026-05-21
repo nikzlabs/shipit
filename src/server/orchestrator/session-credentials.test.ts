@@ -9,6 +9,8 @@ import {
   ensureSessionCredentialsScaffold,
   provisionAgentCredentials,
   removeSessionCredentials,
+  syncAgentTokenIn,
+  syncAgentTokenBack,
 } from "./session-credentials.js";
 
 /**
@@ -82,6 +84,62 @@ describe("session-credentials", () => {
     expect(fs.existsSync(path.join(dir, ".codex"))).toBe(false);
     // .gitconfig still provisioned.
     expect(fs.existsSync(path.join(dir, ".gitconfig"))).toBe(true);
+  });
+
+  // docs/142 A — per-turn OAuth token sync (rotating refresh token fix)
+
+  const claudeCreds = (accessTail: string, expiresAt: number) =>
+    JSON.stringify({ claudeAiOauth: { accessToken: `tok-${accessTail}`, refreshToken: "r", expiresAt } });
+
+  const writeClaudeToken = (dir: string, accessTail: string, expiresAt: number) => {
+    const p = path.join(dir, ".claude", ".credentials.json");
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, claudeCreds(accessTail, expiresAt));
+  };
+
+  const readTail = (file: string) =>
+    (JSON.parse(fs.readFileSync(file, "utf-8")).claudeAiOauth.accessToken as string).replace("tok-", "");
+
+  it("syncAgentTokenIn copies the freshest source token into the session dir", () => {
+    writeClaudeToken(root, "SOURCE", 2_000);
+    provisionAgentCredentials(root, sid, "claude"); // session starts with the source token
+    // Source rotates to a newer token (simulating a prior write-back).
+    writeClaudeToken(root, "FRESH", 9_000);
+
+    syncAgentTokenIn(root, sid, "claude");
+
+    const sessionFile = path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json");
+    expect(readTail(sessionFile)).toBe("FRESH");
+  });
+
+  it("syncAgentTokenBack writes a newer session token back to the source", () => {
+    writeClaudeToken(root, "OLD", 1_000);
+    provisionAgentCredentials(root, sid, "claude");
+    // The session's CLI refreshed to a later-expiry token.
+    writeClaudeToken(perSessionCredentialsDir(root, sid), "ROTATED", 5_000);
+
+    syncAgentTokenBack(root, sid, "claude");
+
+    expect(readTail(path.join(root, ".claude", ".credentials.json"))).toBe("ROTATED");
+  });
+
+  it("syncAgentTokenBack does NOT clobber a fresher source (failed-refresh race guard)", () => {
+    writeClaudeToken(root, "GOOD", 9_000); // source already advanced (e.g. by another session)
+    fs.mkdirSync(path.join(perSessionCredentialsDir(root, sid), ".claude"), { recursive: true });
+    writeClaudeToken(perSessionCredentialsDir(root, sid), "STALE", 1_000); // this session never refreshed
+
+    syncAgentTokenBack(root, sid, "claude");
+
+    // The stale session token must not regress the fresher source.
+    expect(readTail(path.join(root, ".claude", ".credentials.json"))).toBe("GOOD");
+  });
+
+  it("token sync is a no-op for Codex (no registered token file)", () => {
+    provisionAgentCredentials(root, sid, "codex");
+    const before = fs.readFileSync(path.join(root, ".codex", "auth.json"), "utf-8");
+    expect(() => syncAgentTokenIn(root, sid, "codex")).not.toThrow();
+    expect(() => syncAgentTokenBack(root, sid, "codex")).not.toThrow();
+    expect(fs.readFileSync(path.join(root, ".codex", "auth.json"), "utf-8")).toBe(before);
   });
 
   it("removeSessionCredentials drops the subtree and is idempotent", () => {
