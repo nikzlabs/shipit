@@ -11,6 +11,7 @@ import {
   removeSessionCredentials,
   syncAgentTokenIn,
   syncAgentTokenBack,
+  repushAgentToken,
 } from "./session-credentials.js";
 
 /**
@@ -155,12 +156,79 @@ describe("session-credentials", () => {
     expect(readTail(path.join(root, ".claude", ".credentials.json"))).toBe("GOOD");
   });
 
-  it("token sync is a no-op for Codex (no registered token file)", () => {
+  // docs/142 A — Codex token sync (auth.json carries no plain expiry; freshness
+  // comes from the access-token JWT `exp` claim).
+
+  const b64url = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const fakeJwt = (exp: number) => `${b64url({ alg: "none" })}.${b64url({ exp })}.sig`;
+  const codexAuth = (exp: number) =>
+    JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: fakeJwt(exp), refresh_token: "r" } });
+  const writeCodexToken = (dir: string, exp: number) => {
+    const p = path.join(dir, ".codex", "auth.json");
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, codexAuth(exp));
+  };
+  const readCodexExp = (file: string): number => {
+    const jwt = (JSON.parse(fs.readFileSync(file, "utf8")).tokens.access_token as string).split(".")[1];
+    return JSON.parse(Buffer.from(jwt, "base64url").toString("utf8")).exp as number;
+  };
+  const sessionCodexFile = () => path.join(perSessionCredentialsDir(root, sid), ".codex", "auth.json");
+
+  it("syncAgentTokenIn copies a fresher source Codex token (by JWT exp) into the session", () => {
+    writeCodexToken(root, 2_000);
     provisionAgentCredentials(root, sid, "codex");
-    const before = fs.readFileSync(path.join(root, ".codex", "auth.json"), "utf-8");
-    expect(() => syncAgentTokenIn(root, sid, "codex")).not.toThrow();
-    expect(() => syncAgentTokenBack(root, sid, "codex")).not.toThrow();
-    expect(fs.readFileSync(path.join(root, ".codex", "auth.json"), "utf-8")).toBe(before);
+    writeCodexToken(root, 9_000); // source rotated to a later-expiry token
+
+    syncAgentTokenIn(root, sid, "codex");
+
+    expect(readCodexExp(sessionCodexFile())).toBe(9_000);
+  });
+
+  it("syncAgentTokenIn does NOT clobber a fresher session Codex token", () => {
+    writeCodexToken(root, 1_000); // staler source
+    fs.mkdirSync(path.join(perSessionCredentialsDir(root, sid), ".codex"), { recursive: true });
+    writeCodexToken(perSessionCredentialsDir(root, sid), 5_000); // session refreshed locally
+
+    syncAgentTokenIn(root, sid, "codex");
+
+    expect(readCodexExp(sessionCodexFile())).toBe(5_000);
+  });
+
+  it("syncAgentTokenBack writes a newer session Codex token back to the source", () => {
+    writeCodexToken(root, 1_000);
+    provisionAgentCredentials(root, sid, "codex");
+    writeCodexToken(perSessionCredentialsDir(root, sid), 5_000); // session's CLI refreshed
+
+    syncAgentTokenBack(root, sid, "codex");
+
+    expect(readCodexExp(path.join(root, ".codex", "auth.json"))).toBe(5_000);
+  });
+
+  // docs/142 A3 — force-push a refreshed source token into pinned sessions on re-auth.
+
+  it("repushAgentToken forces the source token in even when the session token has a LATER expiry", () => {
+    // The session holds a later-expiry-but-DEAD token (the exact state a manual
+    // re-login repairs) — the expiry-guarded sync-in would skip it, repush must not.
+    writeClaudeToken(root, "FRESH", 1_000);
+    provisionAgentCredentials(root, sid, "claude");
+    writeClaudeToken(perSessionCredentialsDir(root, sid), "DEAD", 9_000);
+
+    const wrote = repushAgentToken(root, sid, "claude");
+
+    expect(wrote).toBe(true);
+    const sessionFile = path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json");
+    expect(readTail(sessionFile)).toBe("FRESH"); // forced despite the staler expiry
+  });
+
+  it("repushAgentToken does NOT seed a token into a session that never held one (no cross-agent leak)", () => {
+    writeClaudeToken(root, "SRC", 5_000);
+    // A Codex session: provisioned WITHOUT .claude.
+    provisionAgentCredentials(root, sid, "codex");
+
+    const wrote = repushAgentToken(root, sid, "claude");
+
+    expect(wrote).toBe(false);
+    expect(fs.existsSync(path.join(perSessionCredentialsDir(root, sid), ".claude"))).toBe(false);
   });
 
   it("removeSessionCredentials drops the subtree and is idempotent", () => {
