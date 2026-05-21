@@ -132,5 +132,3 @@ export interface AppCtx {
    */
   credentialsDir: string;
 }
-
-
