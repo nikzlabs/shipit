@@ -235,7 +235,21 @@ export function syncAgentTokenIn(credentialsRoot: string, sessionId: string, age
   for (const rel of files) {
     const src = path.join(credentialsRoot, rel);
     if (!fs.existsSync(src)) continue;
-    atomicCopyFile(src, path.join(sessionDir, rel));
+    const dst = path.join(sessionDir, rel);
+    // Expiry guard (mirrors syncAgentTokenBack): only pull when the source is
+    // strictly newer than the session's current token. Without this, an
+    // unconditional copy clobbers a token the session refreshed locally with a
+    // staler source — and, when the source itself is stale/dead, propagates
+    // that dead token into every session (which is what uniformly broke
+    // sessions, naming included, while the orchestrator token was expired).
+    // Skip only when we can prove the session token is already as fresh or
+    // fresher; copy on a missing/corrupt/older session token. (docs/142 A)
+    const dstExp = fs.existsSync(dst) ? readClaudeTokenExpiry(dst) : null;
+    if (dstExp !== null) {
+      const srcExp = readClaudeTokenExpiry(src);
+      if (srcExp === null || srcExp <= dstExp) continue;
+    }
+    atomicCopyFile(src, dst);
   }
 }
 
