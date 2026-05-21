@@ -67,13 +67,18 @@ export function ModelAgentSelector({
 
   const handleModelSelect = useCallback(
     (agentId: AgentId, model: string) => {
-      if (agentId !== activeAgentId) {
-        onAgentChange(agentId);
-      }
+      // Always persist the picked model's agent — never gate this on the
+      // in-memory `activeAgentId`, which gets mirrored from whatever session
+      // was last viewed and can disagree with the persisted agent. Gating here
+      // was the bug that let a stale `vibe-agent-id` survive a model pick and
+      // override the selection on the next new session. The dropdown is only
+      // interactive before a session is pinned (canOpen requires
+      // !hasActiveSession), so re-sending set_agent is safe. See docs/142 (C).
+      onAgentChange(agentId);
       setPendingModel(model);
       onModelChange?.(model);
     },
-    [activeAgentId, onAgentChange, onModelChange],
+    [onAgentChange, onModelChange],
   );
 
   // Clear pending model once the CLI confirms it (inline during render)
