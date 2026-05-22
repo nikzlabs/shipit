@@ -75,53 +75,11 @@ All four WS handlers (`handleRewindToMessage`, `handleRollbackCode`, `handleRoll
 
 ## UX problems
 
-### U1 — You can't fork from the current state
+### U1, U2, U3 — Resolved by the new "rewind point" design
 
-This is the headline UX complaint. Today's controls only let you fork *backwards* from a past turn:
+The three biggest UX problems all stem from the same root: rewind/fork controls are attached to *messages* instead of to *points in time*. Today's controls only let you fork *backwards* from a past turn (so there's no way to fork from the current state without sacrificing the latest exchange), and because each control is attached to a message it's never obvious whether that message is on the kept side or the discarded side. On top of that, the two dropdowns use different vocabularies for the same operations, and the floating `-top-3 -right-3` chip is invisible on touch and clips behind the scrollbar on narrow viewports.
 
-- Rewind dropdown on a user message X → forks from *before* X.
-- Rollback dropdown on assistant message Y → forks from *before* Y.
-
-There is no "fork from here, keep everything" affordance. To branch the current conversation onto a side experiment, the user must sacrifice the latest exchange. The mental model the user actually wants is "open a copy of this session, including everything up to right now, on its own branch."
-
-**Fix.** Add a top-level "Fork session" action that doesn't take a message index — it forks from `HEAD` with the full history. Two reasonable surfaces:
-- Item in the session topbar's overflow menu.
-- Dedicated entry at the *bottom* of the chat ("Fork from current state") near the message input, mirroring the way GitHub surfaces "Create branch from this PR."
-
-The existing per-message fork stays (forking from a past state is still useful) but stops being the only entry point.
-
-### U2 — Two dropdowns, two vocabularies, one feature
-
-The split between RewindDropdown (user messages) and RollbackDropdown (assistant messages) has no real basis. The same goal — "go back" — has different verbs and partially-overlapping options:
-
-| RewindDropdown (user msg)           | RollbackDropdown (assistant msg) | Real effect                |
-|-------------------------------------|----------------------------------|----------------------------|
-| Fork conversation from here         | —                                | Truncate chat, keep code   |
-| Rewind code to here                 | Rollback code                    | Reset files, keep chat     |
-| Fork conversation and rewind code   | Rollback code + chat             | Reset files + truncate chat|
-| —                                   | Fork as new session              | New worktree from this pt  |
-
-Six menu items collapse to **three real actions plus fork**. The "Fork conversation from here" label is the worst trap: it's not actually a fork (no new session created), it just truncates the current chat.
-
-**Fix.** Replace both dropdowns with a single component, shown on every message (user or assistant), with this menu:
-
-- **Rewind chat** — Discard messages from this point onward. Code unchanged.
-- **Rewind code** — Reset files to before this turn. Chat unchanged.
-- **Rewind both** — Reset files and discard messages.
-- *(separator)*
-- **Fork as new session** — Create a sibling session at this point with truncated history.
-
-Server figures out the target commit from the message index (walk backward for the last assistant commit). One mental model, one vocabulary.
-
-### U3 — Hover-only trigger, easy to clip
-
-Both dropdowns use `hidden group-hover:flex` plus absolute `-top-3 -right-3` (`MessageList.tsx:417,428`). Consequences:
-
-- Touch devices have no way to surface it.
-- On the rightmost edge of a narrow column, `-right-3` clips behind the scrollbar.
-- New users have no clue the feature exists.
-
-**Fix.** Move the trigger inline with the message metadata (timestamp, copy button, etc.) so it's always present at low contrast on every message. Bump opacity on hover/focus. On touch, expose via long-press. Lose the `-top-3 -right-3` floating chip.
+The new design — described in the "Proposed design" section below — replaces all three of these with a single control anchored to the **gap between turns** (and after the last turn). It eliminates the message-attachment ambiguity by construction, gives us a natural surface for fork-from-current (the gap after the last message *is* the current-state rewind point), and lets us drop the floating-chip placement entirely.
 
 ### U4 — No confirmation, no undo
 
@@ -155,20 +113,47 @@ Rewinding to message index 0 truncates the chat to an empty array with no marker
 
 **Fix.** Include a compact summary of tool results and a manifest of attached files/images (paths, not content) in the replay. Behind a settings toggle or model-budget guard if we're worried about tokens.
 
-## Proposed design — single mental model
+## Proposed design — rewind points between turns
 
-Replace the per-message dropdowns with **one** menu, named **"Go back"**, available on every message and as a top-level "Fork session" affordance. The four actions:
+Replace both per-message dropdowns with **one** control, anchored to the **gap between turn boundaries** (not to any individual message). The control also appears after the last turn — that placement is what gives us "fork from the current state" for free, with no separate top-level affordance.
 
-1. **Rewind chat** (chat ← this point, code unchanged)
-2. **Rewind code** (code ← state before this turn, chat unchanged but stale turns dimmed)
-3. **Rewind both** (chat + code, fresh agent session, replay built from kept turns)
-4. **Fork as new session** (new worktree from this point, optionally including the latest exchange when invoked from the top-level affordance)
+### Why between turns
 
-All four:
+When the control is attached to a message, the question "is this message kept or discarded?" has to be answered by the menu label ("…from here" vs "…to here" vs "…before this") and the user has to read carefully every time. When the control sits in the gap, the answer is geometric: **everything above the line is kept, everything below it is gone.** No verbal disambiguation needed.
+
+This also resolves fork-from-current naturally: the gap after the last assistant turn *is* a rewind point. Clicking its menu's "Fork as new session" forks from `HEAD` with the full history — same operation as any other gap, just at the last position.
+
+### Visual treatment
+
+The gap renders as an empty 16-24px row between turn groups. At rest it's blank. On hover or keyboard focus, a hairline divider fades in across the full width of the chat column with a small chevron icon centered on it; clicking the chevron (or pressing Space/Enter when focused) opens the menu. The control is always present in the DOM so it's reachable by Tab and by long-press on touch.
+
+A separate, slightly larger gap is reserved after the last turn so that placement reads as the primary fork-from-current surface even before the user discovers the menu.
+
+### The menu
+
+Single component, single vocabulary. Four actions:
+
+1. **Rewind chat to here** — Discard turns below this point. Code unchanged.
+2. **Rewind code to here** — Reset files to the commit at this point. Chat unchanged; turns below this point are dimmed.
+3. **Rewind chat and code** — Both. Fresh agent session with replay built from kept turns.
+4. *(separator)*
+5. **Fork as new session** — New worktree at this point, with the turns above this point copied into the fork's chat history.
+
+The server resolves the target commit from the gap's position (the latest assistant commit hash at or before the gap).
+
+### Behavior
+
+All four actions:
 - Require `!runner.running` server-side (B4).
-- Confirm with a summary before firing (U4).
+- Show a confirmation summary before firing (U4): "Discard 3 turns and reset 5 files. Continue?" — exact counts derived from the gap position.
 - Emit an "Undo (10s)" toast after firing (U4).
-- Are accessible via the per-message gutter button and via keyboard shortcut on the focused message (Cmd/Ctrl+Z opens the menu).
+- Are reachable by keyboard: Tab focuses each gap, Space/Enter opens the menu. Cmd/Ctrl+Z on a focused gap opens the menu directly.
+
+### Implications
+
+- RewindDropdown and RollbackDropdown both go away. So does their floating-chip placement.
+- The fork action lives in the gap menu, not at the topbar — the gap-after-last-message *is* the entry point. The doc previously proposed a topbar overflow item for fork-from-current; the gap design subsumes it. Drop that surface.
+- The "Fork conversation from here" label trap (a "fork" that wasn't actually a fork, just a chat truncation) disappears — the menu items now describe their actual effect.
 
 ## Implementation plan
 
@@ -182,20 +167,21 @@ Three landings.
 - [ ] B4: server-side `runner.running` guard on all four handlers.
 - [ ] B5: integration test file covering all branches.
 
-### Landing 2 — Collapse the two dropdowns and add fork-from-current
+### Landing 2 — Replace per-message dropdowns with between-turn rewind points
 
-- [ ] U1: top-level "Fork session" entry (topbar overflow + below-input affordance).
-- [ ] U2: single "Go back" menu component, replaces RewindDropdown + RollbackDropdown.
-- [ ] U3: move the trigger out of `-top-3 -right-3`, surface as inline gutter icon, always visible at low contrast.
-- [ ] U4: confirmation dialog + undo toast with snapshot restore.
+- [ ] Build `RewindPoint` component (gap-anchored hairline + chevron + menu).
+- [ ] Render a `RewindPoint` between every pair of consecutive turn groups in `MessageList`, plus one after the last turn (the fork-from-current surface).
+- [ ] Implement the four actions in the menu (rewind chat, rewind code, rewind both, fork). Server resolves target commit from the gap position; the existing WS handlers stay, the client just changes which `messageIndex` it passes.
+- [ ] Delete `RewindDropdown.tsx` and `RollbackDropdown.tsx` and their per-message wiring in `MessageList.tsx:415-437`. Cover with regression tests so the old chip can't sneak back.
+- [ ] U4: confirmation dialog with a summary derived from the gap position (turn count + file count) + undo toast with snapshot restore.
 - [ ] U6: empty-chat marker after full rewind.
 
 ### Landing 3 — Polish
 
 - [ ] U5: dim stale assistant turns after rewind-code.
-- [ ] U7: name input on fork.
+- [ ] U7: name input on fork (inline single-line field in the gap menu).
 - [ ] U8: richer replay (tool result summary + attachment manifest).
-- [ ] Keyboard shortcut (Cmd/Ctrl+Z opens "Go back" menu on focused message).
+- [ ] Keyboard accessibility for `RewindPoint` (Tab focus, Space/Enter open, Cmd/Ctrl+Z on focused gap).
 
 ## Key files
 
@@ -227,5 +213,6 @@ Three landings.
 
 1. **Does B1 also affect non-fork sessions?** If a repo is removed (`repos` cleared) but its sessions persist on disk, they'd be invisible by the same logic. Confirm and fix once. Could be a separate doc if scope creeps.
 2. **Undo snapshot retention.** 5 minutes feels right for chat; for the working tree we have `git reflog` for free and don't need a second mechanism. Worth confirming.
-3. **Fork-from-current scope.** Should the top-level fork action live in the topbar, below the input, or both? Recommend the topbar overflow first, with a small "Fork" button next to the existing PR card once we ship the rest.
-4. **Replay token cost.** U8 widens replay; we should measure on a representative session before deciding whether to gate behind a setting.
+3. **Gap granularity.** Render a `RewindPoint` between every consecutive pair of *turn groups* (the boundary the chat-history layer already tracks via `agent_tool_result`), not between raw messages. Worth confirming this matches user intuition — in particular, whether the gap between a user message and its immediate assistant response is useful, or whether it should collapse into one boundary at the end of each round trip.
+4. **Last-gap discoverability.** The gap-after-last is the entry point for fork-from-current, but it's still a small chevron in an empty row. Consider rendering it slightly more prominently (faint label "Fork from here" inline, or a persistent low-contrast hairline) until the user has used it once.
+5. **Replay token cost.** U8 widens replay; we should measure on a representative session before deciding whether to gate behind a setting.
