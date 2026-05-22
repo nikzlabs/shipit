@@ -13,6 +13,7 @@ import { StatusDot } from "./ui/status-dot.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import { StartupSteps } from "./StartupSteps.js";
 import { ServiceList } from "./ServiceList.js";
 import { DeviceSelector } from "./DeviceSelector.js";
@@ -834,8 +835,8 @@ export function PreviewFrame({
  */
 function SecretsMissingBanner() {
   const missingRequired = usePreviewStore((s) => s.secrets.missingRequired);
-  const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
-  const setSettingsTab = useUiStore((s) => s.setSettingsTab);
+  const setProjectSettingsRepoUrl = useUiStore((s) => s.setProjectSettingsRepoUrl);
+  const repoUrl = useSessionStore((s) => s.sessions.find((sess) => sess.id === s.sessionId)?.remoteUrl);
   if (missingRequired.length === 0) return null;
 
   const label = missingRequired.length === 1
@@ -843,8 +844,9 @@ function SecretsMissingBanner() {
     : `${missingRequired.length} required secrets are missing`;
 
   const openSecrets = () => {
-    setSettingsTab("secrets");
-    setSettingsOpen(true);
+    if (!repoUrl) return;
+    // Open the per-repo Project Settings dialog straight to the Secrets tab.
+    setProjectSettingsRepoUrl(repoUrl, "secrets");
   };
 
   return (

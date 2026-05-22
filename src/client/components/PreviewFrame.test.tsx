@@ -772,8 +772,19 @@ describe("PreviewFrame", () => {
     expect(screen.getByTestId("secrets-missing-banner")).toHaveTextContent("3 required secrets are missing");
   });
 
-  it("Configure button opens the Settings → Secrets tab", async () => {
+  it("Configure button opens the per-repo Project Settings → Secrets tab", async () => {
     const { useUiStore } = await import("../stores/ui-store.js");
+    const { useSessionStore } = await import("../stores/session-store.js");
+    useSessionStore.setState({
+      sessionId: "sess-1",
+      sessions: [{
+        id: "sess-1",
+        title: "s",
+        createdAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+        remoteUrl: "https://github.com/org/repo.git",
+      }],
+    });
     usePreviewStore.getState().setSecrets({
       declared: [],
       missingByService: {},
@@ -781,8 +792,10 @@ describe("PreviewFrame", () => {
     });
     render(<PreviewFrame preview={null} {...defaultProps} />);
     await userEvent.click(screen.getByTestId("secrets-missing-configure"));
-    expect(useUiStore.getState().settingsOpen).toBe(true);
-    expect(useUiStore.getState().settingsTab).toBe("secrets");
+    expect(useUiStore.getState().projectSettingsRepoUrl).toBe("https://github.com/org/repo.git");
+    expect(useUiStore.getState().projectSettingsTab).toBe("secrets");
+    useUiStore.getState().setProjectSettingsRepoUrl(null);
+    useSessionStore.setState({ sessionId: undefined, sessions: [] });
   });
 
   // ---- Auth-block detection: cached-slot regression ----
