@@ -302,6 +302,20 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const currentAgent = existingAgent ?? ctx.agentFactory(ctx.getActiveAgentId());
   if (!existingAgent && runner) runner.setAgent(currentAgent);
 
+  // docs/140 — when reusing a persistent streaming agent, the previous turn
+  // attached listeners that close over per-turn state (capturedSessionId,
+  // persistUserMessage, the `streamingPostTurnFired` flag, etc.). Drop them
+  // before this turn re-wires its own, otherwise every `agent_result` /
+  // `agent_init` fires N times after N turns — the symptom that prompted this
+  // fix (multiple "Agent process started" entries in the log panel). The
+  // orchestrator-side `AgentProcess` EventEmitter has no other subscribers —
+  // events flow in from the worker SSE relay (proxy) or the local adapter and
+  // out to wireAgentListeners + the per-turn handlers in this function — so a
+  // blanket removeAllListeners is safe.
+  if (existingAgent) {
+    existingAgent.removeAllListeners();
+  }
+
   // Notify via SSE for sidebar activity dots
   if (capturedSessionId) {
     ctx.sseBroadcast("session_agent_started", { sessionId: capturedSessionId });
@@ -391,11 +405,16 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       syncTokenBackAfterTurn();
 
       // agent-listeners already set runner.running=false on agent_result.
-      // Clear the agent ref so the next turn can set a fresh one (or reuse this one
-      // via the existingAgent path above). For streaming, the process stays alive;
-      // we just release the runner's reference so the next turn's setAgent call
-      // doesn't conflict.
-      if (runner) runner.setAgent(null);
+      // DO NOT clear the agent reference here: the streaming CLI process
+      // stays alive across turns, and the next top-level turn reuses it via
+      // the `existingAgent` branch at the top of `runAgentWithMessage`
+      // (which then carries the user message in via `sendUserMessage`).
+      // Clearing the ref here was the bug: the next turn would call
+      // `/agent/start` against the still-running worker agent, get a 409,
+      // fall back to `/agent/kill` + restart (SIGTERM, exit 143), and spam
+      // the log panel with a fresh "Agent process started" every turn.
+      // Crash / error / dispose paths still clear the ref (agent.on("error"),
+      // agent.on("auth_required"), agent.on("done"), runner.dispose).
       stopRunner(runner);
 
       // Drain queue (may start next turn immediately via the existingAgent path)
@@ -807,18 +826,30 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     );
   }
 
-  currentAgent.run({
-    prompt,
-    sessionId: agentSessionId,
-    systemPrompt,
-    cwd: activeDir,
-    permissionMode: effectivePermissionMode,
-    model: ctx.getSelectedModel(),
-    settingsPath,
-    autoCreatePr: autoCreatePrActive,
-    mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
-    useStreaming,
-  });
+  if (existingAgent) {
+    // docs/140 — persistent streaming agent reuse. The CLI is already alive
+    // and was configured with this session's system prompt / model /
+    // permission mode / MCP servers on its initial spawn. Carry the next
+    // user message in via `sendUserMessage` (NDJSON on the existing stdin
+    // for Claude streaming, `turn/steer`-style JSON-RPC for Codex) instead
+    // of issuing another `/agent/start` — the worker would 409 against the
+    // still-running process and the orchestrator would fall back to a
+    // `/agent/kill` + `/agent/start` cycle (SIGTERM, exit 143).
+    existingAgent.sendUserMessage(prompt);
+  } else {
+    currentAgent.run({
+      prompt,
+      sessionId: agentSessionId,
+      systemPrompt,
+      cwd: activeDir,
+      permissionMode: effectivePermissionMode,
+      model: ctx.getSelectedModel(),
+      settingsPath,
+      autoCreatePr: autoCreatePrActive,
+      mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
+      useStreaming,
+    });
+  }
   // "Agent process started" is now emitted from agent-listeners.ts
   // when the agent_init event arrives, so the log reflects an actual
   // successful start (worker accepted /agent/start) rather than every
