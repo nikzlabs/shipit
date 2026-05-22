@@ -222,6 +222,75 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("reuses the persistent streaming agent for the next top-level turn (no new process, no SIGTERM)", async () => {
+    // Regression: under live steering the orchestrator USED TO clear the
+    // runner's agent reference on `agent_result`, so the next top-level
+    // send_message spawned a brand-new agent process. For container sessions
+    // the worker still held the previous streaming process, so the new
+    // `/agent/start` 409'd, the orchestrator fell back to `/agent/kill`
+    // (SIGTERM → exit 143) + `/agent/start`, and the user saw multiple
+    // "Agent process started" entries plus mid-turn-looking exit-143 errors.
+    //
+    // The fix keeps the agent reference across turns and feeds the next
+    // top-level message in via `sendUserMessage` instead of `run()`.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Turn 1: spawn the streaming agent via run().
+    client.send({ type: "send_message", text: "Turn one" });
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.initSession("reuse-session");
+    expect(claude1.runCalled).toBe(true);
+    expect(claude1.lastUseStreaming).toBe(true);
+
+    // End turn 1 — process stays alive (streaming).
+    claude1.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "reuse-session",
+      duration_ms: 100,
+    });
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+
+    // Crucial invariants before turn 2:
+    //  - agent ref is preserved on the runner (basis for reuse),
+    //  - the process was NOT killed by the agent_result handler.
+    expect(claude1.killed).toBe(false);
+
+    // Turn 2: another top-level send_message. With the fix, this must reuse
+    // claude1 (no new factory call) and deliver "Turn two" via sendUserMessage.
+    client.send({ type: "send_message", text: "Turn two" });
+
+    // Wait for sendUserMessage to land — the fake's default sendUserMessage
+    // proxies to writeStdin, so stdinData picks up the turn-2 prompt.
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (claude1.stdinData.some((d) => d.includes("Turn two"))) {
+          resolve();
+          return;
+        }
+        if (Date.now() - start > 2000) {
+          reject(new Error("Turn two was never delivered via sendUserMessage"));
+          return;
+        }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+
+    // Same process, no kill, no fresh factory spawn.
+    expect(lastClaude).toBe(claude1);
+    expect(claude1.killed).toBe(false);
+    // run() must NOT have been called a second time — the fake's `runCalled`
+    // is a one-way latch, so we assert the lastPrompt didn't get clobbered
+    // by a second run({prompt: "Turn two"}) call. Turn 1's prompt should
+    // still be sitting there.
+    expect(claude1.lastPrompt).toBe("Turn one");
+
+    client.close();
+  });
+
   it("falls back to the queue path when liveSteering is off, even if the agent supports steering", async () => {
     // Flip the setting off for this test only.
     credentialStore.setLiveSteering(false);

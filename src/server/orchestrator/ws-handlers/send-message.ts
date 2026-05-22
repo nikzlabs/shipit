@@ -148,10 +148,25 @@ export async function handleSendMessage(
     // turn for this message.
   }
 
-  // Kill any stale process (safety net — normally null if not running)
+  // Kill any stale process (safety net — normally null if not running).
+  //
+  // docs/140 — EXCEPT for persistent streaming agents (live steering): the
+  // runner intentionally keeps its agent reference across turns so the next
+  // top-level turn can carry its message in via `sendUserMessage` (the
+  // `existingAgent` reuse branch in `runAgentWithMessage`). Killing it here
+  // would tear down the process the next turn is about to talk to and force
+  // the new send back through the 409 → `/agent/kill` → SIGTERM recovery
+  // path. Crash / error / auth paths in `agent-listeners.ts` still clear
+  // the ref, so a genuinely stale ref here can only appear when streaming
+  // is off.
   const staleAgent = runnerForQueue?.getAgent() ?? null;
   if (staleAgent) {
-    staleAgent.kill();
+    const staleAgentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
+    const persistentStreaming = (staleAgentInfo?.capabilities.supportsSteering ?? false)
+      && ctx.credentialStore.getLiveSteering();
+    if (!persistentStreaming) {
+      staleAgent.kill();
+    }
   }
 
   // Validate and read file attachments from disk if provided
