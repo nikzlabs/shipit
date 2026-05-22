@@ -182,15 +182,28 @@ export function PreviewFrame({
   // The injected script (see preview-proxy.ts HMR_WS_PATCH) posts a "loaded"
   // message when the iframe finishes parsing the response HTML. If no message
   // arrives within MAX_AUTH_TIMEOUT_MS, we suspect the preview is auth-gated
-  // (e.g. Cloudflare Zero Trust) — but slow dev-server boots and missed
-  // postMessages on revisited iframe slots also produce false positives.
-  // To avoid showing the auth overlay for those transient cases, we silently
-  // retry a few times by bumping refreshKey (which force-reloads the iframe)
-  // before surfacing the overlay.
+  // (e.g. Cloudflare Zero Trust). When the timer expires with no "loaded"
+  // signal, the effect silently bumps refreshKey to force-reload the iframe
+  // a couple of times before surfacing the overlay — most false positives
+  // clear on a single retry.
+  //
+  // Per-slot tracking note: `loadedSlotsRef` records which iframe-pool slots
+  // have already sent a successful "loaded" postMessage. Without this, the
+  // detection mis-fires when the user switches back to a previously visited
+  // session: the cached iframe doesn't re-fetch (its `src` is unchanged and
+  // visibility-toggling doesn't trigger a reload), so no fresh postMessage
+  // arrives, the timer expires, and the iframe gets force-reloaded — losing
+  // all in-iframe state (scroll, form inputs, SPA route). Keying loaded
+  // state per slot lets us skip the timer for slots we've already confirmed
+  // came up cleanly.
   const [authBlocked, setAuthBlocked] = useState(false);
-  const previewLoadedRef = useRef(false);
+  const loadedSlotsRef = useRef<Set<string>>(new Set());
   const authRetryRef = useRef(0);
   const lastAuthUrlRef = useRef<string | null>(null);
+  // Mirror `activeSlotKey` into a ref so the postMessage listener (registered
+  // once on mount) can read the current active slot without re-subscribing.
+  const activeSlotKeyRef = useRef<string | null>(activeSlotKey);
+  activeSlotKeyRef.current = activeSlotKey;
   const MAX_AUTH_TIMEOUT_MS = 5000;
   const MAX_AUTH_RETRIES = 2;
 
@@ -198,15 +211,26 @@ export function PreviewFrame({
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       const data = event.data as { source?: string; type?: string } | undefined;
-      if (data?.source === "shipit-preview" && data?.type === "loaded") {
-        previewLoadedRef.current = true;
-        authRetryRef.current = 0;
-        setAuthBlocked(false);
+      if (data?.source !== "shipit-preview" || data?.type !== "loaded") return;
+      // Identify which pool slot the message came from by matching
+      // `event.source` against each iframe's contentWindow. We can't trust
+      // the message contents for this — the injected script doesn't know
+      // the slot key, and we wouldn't trust user-controllable content for
+      // it anyway.
+      for (const [key, el] of iframeRefs.current.entries()) {
+        if (el?.contentWindow && el.contentWindow === event.source) {
+          loadedSlotsRef.current.add(key);
+          if (key === activeSlotKeyRef.current) {
+            authRetryRef.current = 0;
+            setAuthBlocked(false);
+          }
+          return;
+        }
       }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, []);
+  }, [iframeRefs]);
 
   const isLocalPreview = /^(localhost|127\.\d+\.\d+\.\d+|::1)(:|$)/i.test(apiHost);
   const previewSubdomainUrl = isContainerMode && sessionId ? buildSubdomainUrl(sessionId, activePort, apiHost) : null;
@@ -214,16 +238,25 @@ export function PreviewFrame({
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!activeSlotUrl || !previewSubdomainUrl || isLocalPreview) return;
+    if (!activeSlotKey) return;
+    // Slot already confirmed loaded — e.g. revisiting a cached iframe in the
+    // pool. Skip the timer entirely; we know the URL is reachable and the
+    // injected script ran the first time around, so there's nothing to detect.
+    // Without this guard the timer would expire (no fresh postMessage on
+    // revisit), force-reload the iframe, and discard the user's in-iframe state.
+    if (loadedSlotsRef.current.has(activeSlotKey)) {
+      setAuthBlocked(false);
+      return;
+    }
     // Reset the retry budget when the user navigates to a different preview URL.
     // refreshKey changes (manual or auto retry) keep the existing budget.
     if (lastAuthUrlRef.current !== activeSlotUrl) {
       lastAuthUrlRef.current = activeSlotUrl;
       authRetryRef.current = 0;
     }
-    previewLoadedRef.current = false;
     setAuthBlocked(false);
     const timer = setTimeout(() => {
-      if (previewLoadedRef.current) return;
+      if (loadedSlotsRef.current.has(activeSlotKey)) return;
       if (authRetryRef.current < MAX_AUTH_RETRIES) {
         // Silent auto-reload: the refreshKey effect below will set el.src
         // again, which forces the iframe to re-fetch and re-run the injected
@@ -235,7 +268,7 @@ export function PreviewFrame({
       setAuthBlocked(true);
     }, MAX_AUTH_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [activeSlotUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
+  }, [activeSlotKey, activeSlotUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
 
   // Force-reload the active iframe on refresh click
   const lastRefreshKey = useRef(refreshKey);
@@ -243,16 +276,20 @@ export function PreviewFrame({
   useEffect(() => {
     if (refreshKey !== lastRefreshKey.current) {
       lastRefreshKey.current = refreshKey;
-      previewLoadedRef.current = false;
       setAuthBlocked(false);
       if (activeSlotKey) {
+        // A manual refresh (or the auth-retry escalation) intentionally
+        // throws away the cached "loaded" state for this slot so the
+        // detection timer re-arms and a genuinely auth-blocked response
+        // can be re-detected.
+        loadedSlotsRef.current.delete(activeSlotKey);
         const el = iframeRefs.current.get(activeSlotKey);
         if (el && activeSlotUrl) {
           el.src = activeSlotUrl;
         }
       }
     }
-  }, [refreshKey, activeSlotKey, activeSlotUrl]);
+  }, [refreshKey, activeSlotKey, activeSlotUrl, iframeRefs]);
 
   // Remember the last port label so the top bar doesn't flash "Preview" during session switch
   const lastPortLabel = useRef<string | null>(null);
