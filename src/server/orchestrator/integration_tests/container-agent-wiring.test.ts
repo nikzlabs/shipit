@@ -190,6 +190,63 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
+  // Regression for the spawn-path SSE race: when an agent spawns a child
+  // session via `shipit session create`, the orchestrator calls
+  // `runner.sendSystemMessage(prompt)` synchronously after creating the
+  // runner — no viewer is attached, so `attachViewer()` has not connected
+  // SSE first. If `/agent/start` is POSTed before SSE is connected, the
+  // worker's first agent events stream to a channel with no listener and
+  // are dropped (the worker's `GET /events` does not replay agent events).
+  // The runner is stuck at running=true with no output forever.
+  //
+  // Without the fix in `_startAgentViaProxy` (await SSE before POST),
+  // this test races and intermittently misses the first event.
+  it("proxy.run() receives events when called without prior attachViewer (spawn-path)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-proxy-no-attach",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+
+    // Deliberately do NOT call attachViewer — exercises the spawn path
+    // where sendSystemMessage runs before any viewer connects.
+    const proxy = runner.createAgent("claude");
+
+    const events: { type: string }[] = [];
+    proxy.on("event", (event: { type: string }) => events.push(event));
+
+    const donePromise = new Promise<number>((resolve) => {
+      proxy.on("done", (code: number) => resolve(code));
+    });
+
+    proxy.run({ prompt: "Spawn-path test", cwd: "/workspace" });
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+
+    // Emit events on the worker side immediately — these would be lost
+    // if SSE were connected only after the POST returned.
+    lastAgent.emit("event", {
+      type: "agent_init",
+      agentId: "claude",
+      sessionId: "s1",
+      model: "claude-sonnet-4-6",
+      tools: ["Read"],
+    });
+    lastAgent.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "s1",
+    });
+    lastAgent.emit("done", 0);
+
+    const exitCode = await donePromise;
+    expect(exitCode).toBe(0);
+    expect(events.some((e) => e.type === "agent_init")).toBe(true);
+    expect(events.some((e) => e.type === "agent_result")).toBe(true);
+
+    runner.dispose();
+  });
+
   // ---- proxy.interrupt() ----
 
   it("proxy.interrupt() POSTs to worker /agent/interrupt", async () => {
