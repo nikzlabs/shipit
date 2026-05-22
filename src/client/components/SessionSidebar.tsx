@@ -305,7 +305,7 @@ function RepoGroup({
       )}
       {/* Repo header row */}
       <div
-        className="flex items-center gap-1 px-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10 group/header"
+        className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10 group/header"
         draggable={draggable}
         onDragStart={draggable ? onDragStart : undefined}
         onDragEnd={draggable ? onDragEnd : undefined}
@@ -313,10 +313,13 @@ function RepoGroup({
         {/* Drag handle — visible on header hover when reordering is enabled.
             Kept outside the collapse-toggle <button> so grabbing it doesn't
             also fire onToggleCollapse on click. The actual drag event lives on
-            the parent header div, so this is purely a visual affordance. */}
+            the parent header div, so this is purely a visual affordance.
+            Absolutely positioned so it overlays the left gutter without
+            consuming layout width — that keeps the collapse caret aligned with
+            the session rows below instead of being pushed right by the handle. */}
         {draggable && (
           <span
-            className="shrink-0 text-(--color-text-tertiary) opacity-0 group-hover/header:opacity-100 transition-opacity cursor-grab active:cursor-grabbing -ml-1"
+            className="absolute left-0.5 top-1/2 -translate-y-1/2 text-(--color-text-tertiary) opacity-0 group-hover/header:opacity-100 transition-opacity pointer-events-none"
             aria-hidden
             title="Drag to reorder"
           >
@@ -328,10 +331,14 @@ function RepoGroup({
           className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
           aria-label={isCollapsed ? `Expand ${repoName}` : `Collapse ${repoName}`}
         >
-          {isCollapsed
-            ? <CaretRightIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary) group-hover:text-(--color-text-secondary)" />
-            : <CaretDownIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary) group-hover:text-(--color-text-secondary)" />
-          }
+          {/* Centering box matches the New-session "+" icon's w-5 box so the
+              caret's visual center lines up with the plus below it. */}
+          <span className="w-5 h-5 flex items-center justify-center shrink-0 text-(--color-text-tertiary) group-hover:text-(--color-text-secondary)">
+            {isCollapsed
+              ? <CaretRightIcon size={ICON_SIZE.XS} />
+              : <CaretDownIcon size={ICON_SIZE.XS} />
+            }
+          </span>
           <GithubLogoIcon size={ICON_SIZE.XS} weight="fill" className="shrink-0 text-(--color-text-secondary)" />
           <span className="text-xs font-semibold text-(--color-text-secondary) truncate tracking-wide group-hover:text-(--color-text-primary) transition-colors">
             {repoName}
