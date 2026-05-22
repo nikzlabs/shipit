@@ -158,7 +158,10 @@ function buildTooltip(label: string, snap: SubscriptionLimits): string {
   if (snap.weeklyOpus) {
     lines.push(`Weekly Opus: ${formatPct(snap.weeklyOpus.usedPct)} used (resets ${formatReset(snap.weeklyOpus.resetAt)})`);
   }
-  if (snap.error && (snap.session || snap.weekly || snap.weeklyOpus)) {
+  if (snap.weeklySonnet) {
+    lines.push(`Weekly Sonnet: ${formatPct(snap.weeklySonnet.usedPct)} used (resets ${formatReset(snap.weeklySonnet.resetAt)})`);
+  }
+  if (snap.error && (snap.session || snap.weekly || snap.weeklyOpus || snap.weeklySonnet)) {
     lines.push(`Last refresh failed (${snap.error}) — showing data from ${formatRelative(snap.fetchedAt)}.`);
   }
   return lines.join("\n");

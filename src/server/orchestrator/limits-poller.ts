@@ -350,7 +350,8 @@ export class LimitsPoller {
       prev.plan !== effective.plan ||
       !windowEqual(prev.session, effective.session) ||
       !windowEqual(prev.weekly, effective.weekly) ||
-      !windowEqual(prev.weeklyOpus ?? null, effective.weeklyOpus ?? null);
+      !windowEqual(prev.weeklyOpus ?? null, effective.weeklyOpus ?? null) ||
+      !windowEqual(prev.weeklySonnet ?? null, effective.weeklySonnet ?? null);
 
     this.cache.set(agentId, effective);
     state.lastSnapshot = effective;
@@ -402,5 +403,10 @@ function windowEqual(
 }
 
 function hasData(s: SubscriptionLimits): boolean {
-  return s.session !== null || s.weekly !== null || (s.weeklyOpus ?? null) !== null;
+  return (
+    s.session !== null ||
+    s.weekly !== null ||
+    (s.weeklyOpus ?? null) !== null ||
+    (s.weeklySonnet ?? null) !== null
+  );
 }

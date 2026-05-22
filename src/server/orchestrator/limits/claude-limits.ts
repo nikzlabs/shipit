@@ -220,6 +220,7 @@ export class ClaudeLimitsProvider implements LimitsProvider {
       session: null,
       weekly: null,
       weeklyOpus: null,
+      weeklySonnet: null,
       fetchedAt,
       error: userFacing,
     };
@@ -262,8 +263,14 @@ export function parseClaudeUsage(body: unknown, fetchedAt: number): Subscription
     "weeklyOpus",
     "opus_weekly",
   ]);
+  const weeklySonnet = readWindow(obj, [
+    "seven_day_sonnet",
+    "weekly_sonnet",
+    "weeklySonnet",
+    "sonnet_weekly",
+  ]);
 
-  if (!session && !weekly && !weeklyOpus) return null;
+  if (!session && !weekly && !weeklyOpus && !weeklySonnet) return null;
 
   return {
     agentId: "claude",
@@ -271,6 +278,7 @@ export function parseClaudeUsage(body: unknown, fetchedAt: number): Subscription
     session,
     weekly,
     weeklyOpus,
+    weeklySonnet,
     fetchedAt,
   };
 }
