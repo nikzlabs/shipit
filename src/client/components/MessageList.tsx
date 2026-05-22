@@ -359,8 +359,8 @@ export function MessageList({
                 !useMarkdown && !hasCodeBlocks ? "whitespace-pre-wrap" : ""
               } ${
                 msg.role === "user"
-                  ? "max-w-full rounded-lg px-4 py-3"
-                  : "w-full"
+                  ? "max-w-full rounded-lg px-4 py-3 break-words min-w-0"
+                  : "w-full min-w-0"
               } ${
                 msg.isError
                   ? "bg-(--color-error-subtle) text-(--color-error) border border-(--color-error)/50"

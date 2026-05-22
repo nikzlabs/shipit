@@ -514,6 +514,20 @@ describe("MessageList", () => {
       expect(bubble?.className).toContain("whitespace-pre-wrap");
     });
 
+    it("applies break-words to user message bubble so long unbroken strings wrap", () => {
+      // Reproduces overflow seen when a user pastes a long JSON/error blob with no whitespace.
+      const longBlob = "a".repeat(500);
+      render(
+        <MessageList
+          messages={[msg("user", longBlob)]}
+          isLoading={false}
+        />
+      );
+      const bubble = screen.getByText(longBlob).closest("div[class*='bg-']");
+      expect(bubble?.className).toContain("break-words");
+      expect(bubble?.className).toContain("min-w-0");
+    });
+
     it("removes whitespace-pre-wrap from parent when code blocks are present", () => {
       const text = "text\n```js\ncode\n```";
       const { container } = render(
