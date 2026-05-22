@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
 import { getSavedModelId } from "../utils/local-storage.js";
@@ -21,6 +21,14 @@ interface ModelAgentSelectorProps {
   onAgentChange: (agentId: AgentId) => void;
   onModelChange?: (model: string) => void;
   modelInfo: ModelInfo | null;
+  /**
+   * Whether the picker is being shown inside an active session view. Kept for
+   * call-site symmetry with the rest of the composer (which uses the same
+   * flag to gate other affordances). The picker itself no longer derives any
+   * behavior from it — the cross-agent lock is driven by the session's
+   * persisted `agentPinned` flag so that mid-session model changes within
+   * the pinned agent stay available.
+   */
   hasActiveSession?: boolean;
   disabled?: boolean;
 }
@@ -31,7 +39,7 @@ export function ModelAgentSelector({
   onAgentChange,
   onModelChange,
   modelInfo,
-  hasActiveSession = false,
+  hasActiveSession: _hasActiveSession = false,
   disabled,
 }: ModelAgentSelectorProps) {
   const [pendingModel, setPendingModel] = useState<string | undefined>(getSavedModelId);
@@ -48,37 +56,57 @@ export function ModelAgentSelector({
   const currentSession = sessionId ? sessions.find((s) => s.id === sessionId) : undefined;
   const sessionModel = currentSession?.model;
 
+  // docs/138: once the session has taken its first turn the agent is locked
+  // for life (per-agent credential isolation). The model, however, can still
+  // change across turns within the same agent. We use `agentPinned` from the
+  // session record — not `hasActiveSession`, which is just "the picker has
+  // ever shown a session" — to decide which rows are locked.
+  const pinnedAgentId = currentSession?.agentPinned ? currentSession.agentId : undefined;
+
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   // Resolve the CLI's raw model ID (e.g. "claude-sonnet-4-6") to an alias ("sonnet")
   const resolvedModel = modelInfo?.model ? resolveModelAlias(modelInfo.model) : undefined;
   // The effective model fallback chain:
-  //   1. Live CLI report from this turn (resolvedModel)
-  //   2. Pending UI selection (only meaningful before the session has started)
+  //   1. Pending UI selection — wins so mid-session model changes are
+  //      reflected in the trigger label immediately, before the next turn's
+  //      agent_init confirms the new model. Cleared (below) once a fresh
+  //      resolvedModel arrives, after which resolvedModel takes over.
+  //   2. Live CLI report from the last turn (resolvedModel)
   //   3. The session's own persisted model — wins over localStorage so switching
   //      sessions doesn't bleed the last-selected model into other sessions
   //   4. localStorage's last selection (used for the new-session view)
   //   5. First model the active agent supports
   const savedModel = getSavedModelId();
   const effectiveModel =
-    resolvedModel ?? pendingModel ?? sessionModel ?? savedModel ?? activeAgent?.models[0];
+    pendingModel ?? resolvedModel ?? sessionModel ?? savedModel ?? activeAgent?.models[0];
   const displayName = formatModelName(effectiveModel ?? "");
-  // Only allow opening before first message AND not in a loading transition
-  const canOpen = !hasActiveSession && !disabled;
+  // The picker is interactive whenever it isn't in a loading transition.
+  // Mid-session, the dropdown still opens — only cross-agent rows are locked
+  // (see `isAgentLocked` in the row render below).
+  const canOpen = !disabled;
 
   const handleModelSelect = useCallback(
     (agentId: AgentId, model: string) => {
+      // Defense-in-depth: the dropdown row is already disabled when this would
+      // cross a pinned agent boundary, but bail anyway so a programmatic call
+      // can't bypass the lock.
+      if (pinnedAgentId && agentId !== pinnedAgentId) return;
       // Always persist the picked model's agent — never gate this on the
       // in-memory `activeAgentId`, which gets mirrored from whatever session
       // was last viewed and can disagree with the persisted agent. Gating here
       // was the bug that let a stale `vibe-agent-id` survive a model pick and
-      // override the selection on the next new session. The dropdown is only
-      // interactive before a session is pinned (canOpen requires
-      // !hasActiveSession), so re-sending set_agent is safe. See docs/142 (C).
-      onAgentChange(agentId);
+      // override the selection on the next new session. See docs/142 (C).
+      // Once the session is pinned, the agent can't move, so we skip the
+      // redundant set_agent (the server would also no-op it). Pre-pin, we
+      // still send both so the grouped picker can switch agent + model
+      // together.
+      if (!pinnedAgentId) {
+        onAgentChange(agentId);
+      }
       setPendingModel(model);
       onModelChange?.(model);
     },
-    [onAgentChange, onModelChange],
+    [onAgentChange, onModelChange, pinnedAgentId],
   );
 
   // Clear pending model once the CLI confirms it (inline during render)
@@ -108,6 +136,10 @@ export function ModelAgentSelector({
             {agents.map((agent) => {
               const isActiveAgent = agent.id === activeAgentId;
               const isAvailable = agent.installed && agent.authConfigured;
+              // docs/138: when the session has pinned an agent, models from
+              // other agents are locked (the agent can't be swapped). Pre-pin
+              // there is no restriction.
+              const isAgentLocked = !!pinnedAgentId && agent.id !== pinnedAgentId;
 
               return (
                 <div key={agent.id}>
@@ -120,17 +152,24 @@ export function ModelAgentSelector({
                     {agent.installed && !agent.authConfigured && (
                       <span className="text-(--color-warning) normal-case tracking-normal font-normal">needs auth</span>
                     )}
+                    {isAgentLocked && (
+                      <span className="flex items-center gap-1 text-(--color-text-tertiary) normal-case tracking-normal font-normal" title="The agent is locked for this session after the first message. You can switch models within the active agent only.">
+                        <LockIcon size={ICON_SIZE.XS} />
+                        <span>locked</span>
+                      </span>
+                    )}
                   </DropdownMenuLabel>
 
                   {/* Model rows */}
                   {agent.models.map((model) => {
                     const isCurrentModel = isActiveAgent && effectiveModel === model;
+                    const rowDisabled = !isAvailable || isAgentLocked;
 
                     return (
                       <DropdownMenuItem
                         key={`${agent.id}-${model}`}
                         onSelect={() => handleModelSelect(agent.id as AgentId, model)}
-                        disabled={!isAvailable}
+                        disabled={rowDisabled}
                         className={`pl-5 pr-3 py-1.5 text-sm ${
                           isCurrentModel
                             ? "bg-(--color-accent-subtle) text-(--color-text-link)"
