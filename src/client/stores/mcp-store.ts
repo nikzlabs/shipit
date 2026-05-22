@@ -92,6 +92,13 @@ interface McpState {
   testServer: (id: string) => Promise<McpTestResult>;
   /** Apply a per-server status update from a `mcp_server_status` WS message. */
   applyStatus: (name: string, state: McpServerState, reason?: string) => void;
+  /**
+   * Drop the cached runtime status for a server. Used after a Reconnect of
+   * an OAuth-managed server so the stale `failed — authentication required`
+   * entry doesn't keep the UI red while we wait for the next CLI init event
+   * to re-emit the real status.
+   */
+  clearStatus: (name: string) => void;
   /** Reset store state (session switch / full reset). */
   reset: () => void;
 
@@ -189,6 +196,14 @@ export const useMcpStore = create<McpState>((set, get) => ({
 
   applyStatus: (name, state, reason) => {
     set((s) => ({ statuses: { ...s.statuses, [name]: { state, reason } } }));
+  },
+
+  clearStatus: (name) => {
+    set((s) => {
+      if (!(name in s.statuses)) return s;
+      const { [name]: _dropped, ...rest } = s.statuses;
+      return { statuses: rest };
+    });
   },
 
   reset: () =>
