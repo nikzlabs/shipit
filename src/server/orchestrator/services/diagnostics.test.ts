@@ -227,11 +227,11 @@ describe("getSessionDiagnostics", () => {
 
     it("surfaces warnings for legacy `resources:` keys instead of silently using their values", async () => {
       // Regression: the old parser silently dropped `resources.memory: 3072`
-      // to a 1 GiB default and the container OOM'd. Now the user sees both
-      // the warning AND the actual default the container booted on.
+      // to the library default and the container OOM'd. Now the user sees
+      // both the warning AND the actual default the container booted on.
       const dir = workspace("resources:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n");
       const result = await diagnose(dir);
-      expect(result.parsedConfig?.agent.memory).toBe(1024); // library default
+      expect(result.parsedConfig?.agent.memory).toBe(1536); // library default
       expect(result.parsedConfig?.warnings.join("\n")).toMatch(/`resources` block has been replaced/);
     });
 

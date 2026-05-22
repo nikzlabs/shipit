@@ -40,7 +40,7 @@ Configures the agent container (runs the AI coding agent — Claude Code or Code
 
 ```yaml
 agent:
-  memory: 2048        # Memory in MB (default: 1024, max: 4096)
+  memory: 2048        # Memory in MB (default: 1536, max: 4096)
   cpu: 1.0            # CPU cores as float (default: 0.5, max: 4)
   pids: 512           # Max processes (default: 256, max: 2048)
   install:            # Install commands, run sequentially
@@ -50,7 +50,7 @@ agent:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `memory` | integer | 1024 | Memory limit in MB |
+| `memory` | integer | 1536 | Memory limit in MB |
 | `cpu` | float | 0.5 | CPU cores |
 | `pids` | integer | 256 | Max processes |
 | `install` | string or string[] | none | Install commands, run sequentially |

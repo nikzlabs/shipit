@@ -430,7 +430,7 @@ describe("SessionContainerManager", () => {
       });
 
       expect(config.imageName).toBe("shipit-session-worker:test");
-      expect(config.memoryLimit).toBe(1024 * 1024 * 1024);
+      expect(config.memoryLimit).toBe(1536 * 1024 * 1024);
       expect(config.cpuQuota).toBe(50_000);
       expect(config.pidsLimit).toBe(256);
     });
@@ -668,12 +668,12 @@ describe("readAgentConfig (W4a)", () => {
     const config = readAgentConfig(tmpDir);
 
     // Fallback is preserved — a broken config must not block the session.
-    expect(config.agent.memory).toBe(1024);
+    expect(config.agent.memory).toBe(1536);
     expect(config.agent.cpu).toBe(0.5);
     expect(config.agent.pids).toBe(256);
 
     // ...but it is NOT silent: the catch logs the workspace dir + the cause
-    // so a 1 GiB container never appears with zero trace.
+    // so a default-sized container never appears with zero trace.
     expect(errSpy).toHaveBeenCalledTimes(1);
     const logged = String(errSpy.mock.calls[0]?.[0] ?? "");
     expect(logged).toContain(tmpDir);
@@ -687,7 +687,7 @@ describe("readAgentConfig (W4a)", () => {
 
     const config = readAgentConfig(tmpDir); // no shipit.yaml written
 
-    expect(config.agent.memory).toBe(1024);
+    expect(config.agent.memory).toBe(1536);
     // Absent file resolves to defaults *without* hitting the catch — only a
     // genuinely broken file is loud.
     expect(errSpy).not.toHaveBeenCalled();
