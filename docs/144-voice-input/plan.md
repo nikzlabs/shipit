@@ -1,7 +1,7 @@
 ---
 status: planned
 priority: medium
-description: Native push-to-talk dictation in the message input. BYO STT key stored server-side; transcript lands in the textarea for the user to review and edit before sending.
+description: Native push-to-talk dictation. Mode A inserts the transcript into the current input; Mode B routes it into the quick-capture overlay (doc 145) to spawn a background session. BYO STT key, server-stored.
 ---
 
 # Voice input (push-to-talk dictation)
@@ -10,21 +10,61 @@ description: Native push-to-talk dictation in the message input. BYO STT key sto
 
 Let the user dictate a chat message instead of typing it, without leaving
 ShipIt and without running a second app on their machine. The transcript
-appears in the message input as if they had typed it, and they review and
-edit it before pressing Send.
+appears in a textarea — the current session's input *or* a quick-capture
+overlay's input — and the user reviews and edits it before pressing Send.
 
 **Scope is deliberately narrow.** This is dictation, not a voice assistant:
 
-- **In:** speech-to-text into the message input, push-to-talk, manual review
-  and edit, BYO API key.
+- **In:** speech-to-text into a chat-input textarea, push-to-talk, manual
+  review and edit, BYO API key.
 - **Out (v1):** text-to-speech responses, voice commands ("stop", "submit"),
-  wake-word activation, auto-submit on release, always-on streaming, mid-utterance
-  partials in the textarea.
+  wake-word activation, auto-submit on release, always-on streaming,
+  mid-utterance partials displayed in the textarea.
 
 The product principles in `CLAUDE.md` §5 govern the cut. Dictation is just an
 alternate keyboard — the chat is still the input surface, and the user still
 hits Send. Voice *commands* would be a shell-shaped affordance and are
 explicitly out of scope.
+
+## Two modes (relationship to doc 145)
+
+Dictation has two natural endpoints, both of which this feature wires up:
+
+- **Mode A — into the current session's MessageInput.** Hold the PTT
+  hotkey while the main textarea is focused (or while the app is
+  otherwise idle), the transcript appends at the cursor of the
+  MessageInput.
+- **Mode B — into the quick-capture overlay** introduced in
+  `docs/145-quick-capture-overlay/plan.md`. A second hotkey opens that
+  overlay *and* immediately starts mic capture. The transcript lands in
+  the overlay's textarea; pressing Enter creates a new background
+  session with that prompt.
+
+Mode B depends on doc 145 (the overlay must exist). The voice feature
+**ships after** the overlay; both modes land together when this feature
+ships. Mode A on its own without Mode B would be incomplete — the killer
+case is "I notice a bug while reviewing PR feedback in session X, I want
+to dictate a prompt that spawns a different session to fix it, without
+losing my place." That's Mode B.
+
+### Why no mid-utterance partials in the textarea
+
+The doc previously listed live partials as a deferred enhancement. They
+are now a permanent non-feature, for two reasons:
+
+1. **They complicate the edit-cursor model.** Partials updating in place
+   while the user might also be editing the textarea is a race that
+   neither user nor implementer can reason about cleanly. Whole-utterance
+   insert is simpler and correct.
+2. **LLM clean-up is a likely follow-up.** A future pass can route the
+   raw transcript through a small LLM call to fix obvious mis-hearings,
+   capitalisation, and disfluencies before it lands in the textarea.
+   That pass is whole-utterance by nature — partial streaming would be
+   throwaway work that we'd then post-process anyway.
+
+So the design is: capture the whole utterance, optionally clean it up,
+insert once. Streaming partials never appear in v1 or in the planned
+roadmap.
 
 ## Why this matters
 
@@ -144,16 +184,31 @@ Deferred for follow-ups:
   integration point would be the same browser-side `useVoiceInput` hook with
   a "no upload" code path.
 
-### Hotkey: avoiding the macOS minefield
+### Hotkeys: avoiding the macOS minefield
 
 `Cmd+M` minimizes the browser window on macOS — the page never sees the
-keydown. The original draft picked it as default; it is unusable. v1 uses:
+keydown. The original draft picked it as default; it is unusable. v1 uses
+**two** hotkeys, one per mode:
 
-- **Desktop default:** hold **`Ctrl+Shift+Space`** (push-to-talk). Captured
-  cleanly by the page on macOS, Linux, and Windows. Rebindable in settings
-  with conflict-detection against existing app hotkeys.
-- **Mobile default:** the mic button is the only affordance — no hotkey
-  equivalent.
+- **Mode A (Mic into current MessageInput) — desktop default: hold
+  `Ctrl+Shift+Space`.** Push-to-talk. Captured cleanly by the page on
+  macOS, Linux, and Windows. Rebindable in settings.
+- **Mode B (Quick-capture overlay with mic auto-on) — desktop default:
+  `Ctrl+Shift+M`.** Press to open the doc-145 overlay *and* immediately
+  start mic capture; release to stop the mic; press Enter on the overlay
+  to submit, Esc to cancel. Rebindable. Distinct from doc 145's text-only
+  hotkey (`Ctrl+Shift+N`) so users can opt into voice without surrendering
+  the text path. Verify during build that `Ctrl+Shift+M` doesn't conflict
+  with a browser or desktop-environment shortcut on the supported
+  platforms (Firefox on some Linux DEs binds it to bookmarks-bar toggle;
+  pick a backup if so).
+- **Mobile:** no hotkey equivalents. The mic button in MessageInput is
+  the Mode-A entry point; the overlay (when opened via its own mobile
+  affordance from doc 145) gets a mic button for Mode B.
+
+Both hotkeys go through the same conflict-detection logic, and both
+default values must be verified against the existing app shortcut map
+during implementation.
 
 ### Push-to-talk state machine
 
@@ -178,14 +233,23 @@ not edge cases.
 
 ### UX
 
-**Mic button** in MessageInput, placed next to the existing send/stop
-buttons, only rendered when voice input is enabled in settings. States:
+**Mic button** appears in **two places** (same component, same hook
+state), only rendered when voice input is enabled in settings:
 
-- **idle** — outlined mic icon, tooltip "Hold Ctrl+Shift+Space to record"
+- Next to the send/stop buttons in **MessageInput** — Mode A entry point.
+- Inside the **QuickCaptureOverlay** (doc 145) — Mode B entry point.
+
+States (shared across both mic instances):
+
+- **idle** — outlined mic icon, tooltip shows the appropriate hotkey
 - **recording** — filled red mic + pulsing dot, elapsed timer (`00:03`)
 - **transcribing** — spinner over the mic icon, "Transcribing…"
 - **error** — red exclamation, click reveals detail (no mic, denied
   permission, provider error, key invalid) and a "Fix in settings" shortcut
+
+The mic UI is a single component (`MicButton`) parameterised by the
+target textarea ref. The hook itself is mode-agnostic — it captures
+audio and emits a transcript; the *consumer* decides where to insert it.
 
 **Gestures (resolved):** desktop and mobile use *different* primary
 gestures, picked for what each device does well, and we accept the small
@@ -263,14 +327,19 @@ New section in `Settings.tsx` titled "Voice input":
   Status shown as "Key configured ✓" or "Not set" — the key itself is
   never read back. A "Test" button does a short mic capture + transcribe
   round-trip and reports success or the provider's error message.
-- **Hotkey** — key-capture input, default `Ctrl+Shift+Space`. Rebindable.
-  Conflict-detection against existing app hotkeys.
+- **Mode A hotkey (mic into current input)** — key-capture input, default
+  `Ctrl+Shift+Space`. Rebindable. Conflict-detection against existing app
+  hotkeys.
+- **Mode B hotkey (open overlay with mic on)** — key-capture input, default
+  `Ctrl+Shift+M`. Rebindable. Disabled until the doc-145 overlay has
+  shipped; settings UI shows a helpful "Available once the quick-capture
+  overlay ships" string if 145 has not yet landed at runtime.
 - **Language** — dropdown (default: browser locale). Passed to the
   provider as a language hint where supported.
 
-Non-credential settings (enabled, provider name, hotkey, language) live in
-the existing client `settings-store.ts` (Zustand + localStorage). Only the
-credential itself is server-side.
+Non-credential settings (enabled, provider name, both hotkeys, language)
+live in the existing client `settings-store.ts` (Zustand + localStorage).
+Only the credential itself is server-side.
 
 ### Client implementation sketch
 
@@ -358,11 +427,10 @@ Captured here so future readers know they were considered, not forgotten:
 - **Auto-submit on release.** Explicitly rejected by the user's workflow.
 - **Wake-word activation.** Always-on mic is a privacy surface we won't
   commit to in v1.
-- **Streaming partials into the textarea while still recording.** Possible
-  with Deepgram or Web Speech; deferred because it complicates the
-  edit-cursor model (where does the cursor go if the user edits while
-  partials are still arriving?). Whole-utterance insert on release is
-  simpler and the v1 user can review the result before sending anyway.
+- **Streaming partials into the textarea while still recording.** Now a
+  permanent non-feature, not a deferred one — see "Two modes" above for
+  reasoning (edit-cursor races and the planned LLM clean-up pass both
+  make whole-utterance insert the correct shape).
 - **Local on-device STT** (WebGPU Whisper). Deferred until provider
   abstraction has proven the integration point is clean.
 - **Web Speech API provider.** Available in the architecture but not in v1
@@ -390,8 +458,10 @@ Captured here so future readers know they were considered, not forgotten:
 
 ### Client (modified)
 
-- `src/client/components/MessageInput.tsx` — embed MicButton, wire the hook, route transcript to `setText`
-- `src/client/stores/settings-store.ts` — add `voiceInputEnabled`, `sttProvider`, `voiceHotkey`, `voiceLanguage` fields and setters (no `sttApiKey` — that's server-side)
+- `src/client/components/MessageInput.tsx` — embed MicButton, wire the Mode-A hook instance, route transcript to `setText`
+- `src/client/components/QuickCaptureOverlay.tsx` (from doc 145) — embed MicButton, wire a Mode-B hook instance, route transcript to the overlay's own `setText`. Auto-start capture when opened via the Mode-B hotkey.
+- `src/client/hooks/useQuickCaptureHotkey.ts` (from doc 145) — add a sibling Mode-B variant that opens the overlay *and* signals the overlay to auto-start mic capture
+- `src/client/stores/settings-store.ts` — add `voiceInputEnabled`, `sttProvider`, `voiceHotkeyModeA`, `voiceHotkeyModeB`, `voiceLanguage` fields and setters (no `sttApiKey` — that's server-side)
 - `src/client/utils/local-storage.ts` — persisters for the new non-credential settings
 - `src/client/components/Settings.tsx` — new "Voice input" section
 
@@ -425,12 +495,17 @@ Vitest (unit / integration):
 - **`voice-routes.test.ts`** — integration test for `/api/voice/credentials` (set/clear/status round-trip), `/api/voice/transcribe` (multipart audio → fake provider → returned text), error paths (no key, provider failure).
 - **`MicButton.test.tsx`** — render in each state, click behaviour.
 
+Add a Mode-B integration test:
+
+- **`quick-capture-voice.test.tsx`** — open overlay via Mode-B hotkey, verify mic auto-starts, drive a fake transcript, verify it lands in the overlay textarea (not the MessageInput textarea), verify Enter submits and creates a background session.
+
 Manual QA covers the parts Vitest can't:
 
 - Real mic capture in Chrome / Firefox / Safari on desktop.
 - Whisper round-trip with a real OpenAI key.
 - Android WebView mic permission flow on a physical device (Pixel + a mid-tier device).
-- Hotkey conflict scenarios on macOS / Windows / Linux (Cmd+Tab during recording, alt-tab, screen lock).
+- Hotkey conflict scenarios on macOS / Windows / Linux for *both* hotkeys (Cmd+Tab during recording, alt-tab, screen lock, the Mode-A and Mode-B hotkeys pressed in quick succession).
+- Mode B end-to-end: from any view, press Mode-B hotkey → overlay opens with mic recording → release hotkey → transcript lands → press Enter → background session created → original view preserved.
 
 ## Open questions to settle during build
 
@@ -446,17 +521,20 @@ Manual QA covers the parts Vitest can't:
 
 ## Effort estimate
 
+Assumes doc 145 (quick-capture overlay) has already shipped.
+
 | Step | Effort |
 |---|---|
-| Server: credentials store + routes + Whisper proxy + tests | 1.5 days |
-| Client: `voice/` module, MediaRecorder capture, state machine, hotkey, tests | 2.5 days |
-| Client: MicButton, MessageInput wiring | 0.5 day |
-| Client: Settings UI + localStorage settings | 0.5 day |
+| Server: credential field + routes + service + Whisper provider + tests | 1.5 days |
+| Client: `voice/` module, MediaRecorder capture, state machine, Mode-A hotkey, tests | 2.5 days |
+| Client: MicButton, MessageInput wiring (Mode A) | 0.5 day |
+| Client: QuickCaptureOverlay wiring + Mode-B hotkey + auto-start (Mode B) | 0.5 day |
+| Client: Settings UI + localStorage settings (both hotkeys, provider, language) | 0.5 day |
 | Android: manifest + WebChromeClient permission | 0.5 day |
 | Cross-browser manual QA (Chrome / Firefox / Safari / Android) | 1 day |
 | Polish: timer, error states, edge-case state-machine bugs found in QA | 1.5 days |
 
-**Total: ~1.5 weeks for v1 as designed.** This is the realistic floor; the
-state-machine edge cases (blur during recording, autorepeat, session
-switch mid-utterance) are exactly the kind of thing that absorbs an extra
-day or two in QA.
+**Total: ~1.5–2 weeks for v1 as designed.** This is the realistic floor;
+the state-machine edge cases (blur during recording, autorepeat, session
+switch mid-utterance, Mode-B hotkey pressed while a Mode-A capture is in
+flight) absorb an extra day or two in QA.
