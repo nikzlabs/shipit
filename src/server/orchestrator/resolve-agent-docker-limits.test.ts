@@ -17,7 +17,7 @@ import { resolveAgentDockerLimits, applyEnvCaps } from "./session-container.js";
 import { AGENT_DEFAULTS } from "../shared/shipit-config.js";
 
 const MIB = 1024 * 1024;
-const DEFAULT_MEMORY_BYTES = 1024 * MIB; // shipit-config.ts AGENT_DEFAULTS.memory
+const DEFAULT_MEMORY_BYTES = 1536 * MIB; // shipit-config.ts AGENT_DEFAULTS.memory
 const DEFAULT_CPU_QUOTA = Math.round(0.5 * 100_000);
 const DEFAULT_PIDS = 256;
 

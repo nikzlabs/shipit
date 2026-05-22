@@ -176,8 +176,8 @@ export function createWarmPool(
             // container is provisioned with the user's declared agent
             // resources (memory/cpu/pids) and docker-access capability.
             // Without this entry point, plain `buildConfig` falls back to
-            // the manager's defaults (1 GB / 0.5 CPU / 256 pids) — so a
-            // repo declaring `agent.memory: 3072` would get a 1 GB
+            // the manager's defaults (1.5 GB / 0.5 CPU / 256 pids) — so a
+            // repo declaring `agent.memory: 3072` would get a 1.5 GB
             // container from the warm pool, OOMing on first turn when
             // npm install + claude both run inside the under-provisioned
             // cgroup.

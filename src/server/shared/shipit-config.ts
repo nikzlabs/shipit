@@ -66,7 +66,7 @@ export class ShipitConfigError extends Error {
 // ---------------------------------------------------------------------------
 
 export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
-  memory: 1024,
+  memory: 1536,
   cpu: 0.5,
   pids: 256,
   install: [],

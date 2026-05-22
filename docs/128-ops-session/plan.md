@@ -70,7 +70,7 @@ declares the privileged mounts).
 | Other host paths — **NOT mounted** | `/etc`, `/root`, `/home`, etc. stay out | — |
 
 The agent's container itself runs with the same resource limits as
-any session container (1 GB RAM, 0.5 CPU, no Docker access via the
+any session container (1.5 GB RAM, 0.5 CPU, no Docker access via the
 proxy). The privilege escalation is **only** the read-only socket
 and journal — not Docker socket write access, not docker-proxy
 elevation, not capability grants.
