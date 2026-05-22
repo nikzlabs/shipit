@@ -62,7 +62,9 @@ function callAgentCli(agentId: AgentId, prompt: string): Promise<string | null> 
     case "claude":
       return callCli("claude", ["-p", prompt, "--output-format", "text"], agentId);
     case "codex":
-      return callCli("codex", ["exec", prompt], agentId);
+      // We run from /tmp (a one-shot prompt unrelated to any repo). Codex >=0.130
+      // refuses `exec` outside a trusted git repo unless this flag is passed.
+      return callCli("codex", ["exec", "--skip-git-repo-check", prompt], agentId);
   }
 }
 
