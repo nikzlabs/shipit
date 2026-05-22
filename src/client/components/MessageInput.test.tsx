@@ -198,7 +198,9 @@ describe("MessageInput", () => {
     it("DOES reclaim focus when blur leaves activeElement=iframe (focus theft)", async () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
+      const focusSpy = vi.spyOn(textarea, "focus");
       textarea.focus();
+      focusSpy.mockClear();
 
       // Inject an iframe and move focus into it to simulate cross-origin focus theft.
       const iframe = document.createElement("iframe");
@@ -214,9 +216,45 @@ describe("MessageInput", () => {
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
 
       // The handler should have called textarea.focus() to reclaim focus from
-      // the iframe. We can't easily observe document.activeElement after the
-      // override, so assert via spy on the textarea's focus method.
+      // the iframe (no user click on the iframe preceded the focus loss).
+      expect(focusSpy).toHaveBeenCalled();
       // (Reset the property override so other tests aren't affected.)
+      delete (document as unknown as Record<string, unknown>).activeElement;
+      iframe.remove();
+    });
+
+    it("does NOT reclaim focus when the user clicked the iframe (canvas/WebGL games)", async () => {
+      // Regression: when the user clicks the preview iframe — e.g. to play a
+      // WebGL/Canvas game where the canvas does not natively grab focus — the
+      // browser focuses the iframe element and blurs the textarea. The old
+      // reclaim logic yanked focus back to the textarea, so subsequent keystrokes
+      // typed into the chat input instead of reaching the game. The fix uses a
+      // capture-phase pointerdown listener to detect intentional iframe clicks
+      // and skip the reclaim in that case.
+      render(<MessageInput onSend={vi.fn()} disabled={false} />);
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
+      const focusSpy = vi.spyOn(textarea, "focus");
+      textarea.focus();
+      focusSpy.mockClear();
+
+      // Simulate the user clicking on a preview iframe.
+      const iframe = document.createElement("iframe");
+      document.body.appendChild(iframe);
+      iframe.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+
+      // ...which then steals focus from the textarea (same DOM path as the
+      // focus-theft test above).
+      iframe.focus();
+      Object.defineProperty(document, "activeElement", { configurable: true, get: () => iframe });
+      fireEvent.blur(textarea, { relatedTarget: null });
+
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+
+      // Reclaim must NOT fire — focus stays in the iframe so the game receives
+      // subsequent keystrokes.
+      expect(focusSpy).not.toHaveBeenCalled();
+
       delete (document as unknown as Record<string, unknown>).activeElement;
       iframe.remove();
     });
