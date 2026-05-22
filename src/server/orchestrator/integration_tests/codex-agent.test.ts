@@ -590,6 +590,55 @@ describe("Integration: Codex agent — validation and default agent", () => {
     client.close();
   });
 
+  it("set_model within the pinned agent's lineup succeeds mid-session", async () => {
+    // After a session pins claude (first turn), the user can still pick a
+    // different *claude* model (sonnet → opus). The change persists to the
+    // session record and doesn't error — only cross-agent picks are blocked.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // First turn pins the agent (claude, the default).
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+    const sid = client.sessionId;
+    expect(sessionManager.get(sid)?.agentPinned).toBe(true);
+
+    // Now switch to a different claude model mid-session. No error expected.
+    client.send({ type: "set_model", model: "opus" });
+    // Give the handler a tick to persist.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(sessionManager.get(sid)?.model).toBe("opus");
+    // Agent must stay claude — set_model within the same agent never moves it.
+    expect(sessionManager.get(sid)?.agentId).toBe("claude");
+
+    client.close();
+  });
+
+  it("set_model is rejected mid-session when the model belongs to a different agent", async () => {
+    // After pin, picking a model from another agent (e.g. claude session →
+    // gpt-5.5) is rejected: the auto-heal that swaps agents is only valid
+    // pre-pin, since the pinned agent's credentials are the only ones present.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Pin claude with the first turn.
+    client.send({ type: "send_message", text: "Hello" });
+    await waitForClaude(() => lastClaude);
+    const sid = client.sessionId;
+    expect(sessionManager.get(sid)?.agentPinned).toBe(true);
+
+    // Try to pick a codex model. Must error and not mutate session state.
+    client.send({ type: "set_model", model: "gpt-5.5" });
+    const err = await receiveByType(client, "error");
+    expect((err as { message: string }).message).toContain("locked to Claude Code");
+    expect((err as { message: string }).message).toContain("gpt-5.5");
+    // Agent and model unchanged.
+    expect(sessionManager.get(sid)?.agentId).toBe("claude");
+    expect(sessionManager.get(sid)?.model).not.toBe("gpt-5.5");
+
+    client.close();
+  });
+
   it("Codex capabilities report correct feature support", () => {
     const codex = new FakeCodexProcess();
     expect(codex.capabilities.supportsImages).toBe(false);

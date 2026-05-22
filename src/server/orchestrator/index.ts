@@ -1231,6 +1231,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
                 return;
               }
               if (owner.id !== currentAgentId) {
+                // docs/138 — after the session has taken its first turn the
+                // agent is pinned for life (per-agent credential isolation).
+                // The model can still move freely within the pinned agent's
+                // lineup, but a cross-agent model is rejected here rather
+                // than triggering the silent auto-switch the unpinned flow
+                // uses. The UI mirrors this by greying out cross-agent rows
+                // in the picker; this branch is the authoritative guard.
+                if (activeAppSessionId) {
+                  const pinnedSession = sessionManager.get(activeAppSessionId);
+                  if (pinnedSession?.agentPinned) {
+                    send({
+                      type: "error",
+                      message: `This session is locked to ${activeAgent.name}. Model "${msg.model}" requires ${owner.name}, which can't be selected after the first message. Switch models within ${activeAgent.name} instead.`,
+                    });
+                    return;
+                  }
+                }
                 ctx.setActiveAgentId(owner.id);
                 if (activeAppSessionId) {
                   sessionManager.setAgentId(activeAppSessionId, owner.id);
