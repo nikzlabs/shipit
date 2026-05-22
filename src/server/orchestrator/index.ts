@@ -590,6 +590,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   if (!isTestMode) {
     const archivedWorkspaceDays = parseFloat(process.env.DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS ?? "0");
     const cacheDays = parseFloat(process.env.DISK_JANITOR_CACHE_DAYS ?? "30");
+    const nmStoreDays = parseFloat(process.env.DISK_JANITOR_NM_STORE_DAYS ?? "14");
     // Fire-and-forget — we don't want the sweep to block first-request
     // latency, and `runDiskJanitor` swallows its own errors (see the
     // module docstring) so there's nothing to await for safety.
@@ -600,6 +601,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       credentialsDir,
       archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
       cacheDays: Number.isFinite(cacheDays) ? cacheDays : 30,
+      nmStoreDays: Number.isFinite(nmStoreDays) ? nmStoreDays : 14,
       githubAuthManager,
       createRepoGit,
       getBareCacheDir,

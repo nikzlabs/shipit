@@ -37,6 +37,11 @@
  *   - **Orphan `repo-cache/<hash>` and `dep-cache/<hash>` directories**
  *     whose repo URL has no `repos` row or whose `last_used_at` is older
  *     than `DISK_JANITOR_CACHE_DAYS` (default 30).
+ *   - **Stale `dep-cache/<hash>/nm-store/<storeKey>` snapshots** for live
+ *     repos whose `<storeKey>` directory mtime is older than
+ *     `DISK_JANITOR_NM_STORE_DAYS` (default 14). These materialized
+ *     `node_modules` trees accumulate as lockfiles bump; mtime-only
+ *     pruning is enough because a spurious miss is one slow install.
  *
  * Why startup-only (no timer): every item above is recovering from a
  * failure earlier in the lifecycle — orphan volumes only exist if archive
@@ -66,6 +71,9 @@
  *   - DISK_JANITOR_CACHE_DAYS: age in days at which `repo-cache/<hash>`
  *     and `dep-cache/<hash>` directories whose repo has no `repos` row are
  *     deleted. Default `30`.
+ *   - DISK_JANITOR_NM_STORE_DAYS: age in days at which individual
+ *     `dep-cache/<hash>/nm-store/<storeKey>` snapshots for tracked repos
+ *     are deleted by mtime. Default `14`.
  *   - DISK_JANITOR_ORPHAN_BRANCHES: when `"false"`, disables the
  *     orphan-`shipit/*`-branch sweep. Default enabled (set the env var to
  *     `"false"` to opt out). The sweep no-ops anyway without GitHub auth.
@@ -90,6 +98,12 @@ export interface DiskJanitorDeps {
   archivedWorkspaceDays?: number;
   /** Age threshold (days) for unreferenced repo/dep cache directories. */
   cacheDays?: number;
+  /**
+   * docs/148 — age threshold (days) for individual `nm-store/<storeKey>`
+   * snapshots under tracked repos. Old materialized `node_modules` trees pile
+   * up as lockfiles bump; this prunes them by mtime. Default 14.
+   */
+  nmStoreDays?: number;
   /**
    * docs/138 — source-of-truth credentials root (e.g. `/credentials`). When
    * provided, the janitor sweeps per-session credential subtrees under
@@ -126,6 +140,8 @@ export interface DiskJanitorResult {
   orphanNetworksRemoved: number;
   workspacesRemoved: number;
   cachesRemoved: number;
+  /** docs/148 — stale `nm-store/<storeKey>` snapshots removed by mtime. */
+  nmStoresRemoved: number;
   /** Remote `shipit/*` branches whose PR is merged and no live session uses them. */
   orphanBranchesRemoved: number;
   /** Per-session credential subtrees removed (archived or untracked sessions). */
@@ -133,6 +149,7 @@ export interface DiskJanitorResult {
 }
 
 const DEFAULT_CACHE_DAYS = 30;
+const DEFAULT_NM_STORE_DAYS = 14;
 
 /**
  * Run the disk-janitor sweep once. Each sub-step is wrapped in try/catch
@@ -146,6 +163,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     orphanNetworksRemoved: 0,
     workspacesRemoved: 0,
     cachesRemoved: 0,
+    nmStoresRemoved: 0,
     orphanBranchesRemoved: 0,
     credentialDirsRemoved: 0,
   };
@@ -183,6 +201,14 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
   }
 
+  try {
+    result.nmStoresRemoved = await sweepStaleNmStores(
+      deps.stateDir, deps.repoStore, deps.nmStoreDays ?? DEFAULT_NM_STORE_DAYS,
+    );
+  } catch (err) {
+    console.warn("[disk-janitor] nm-store sweep failed:", getMessage(err));
+  }
+
   if (deps.credentialsDir) {
     try {
       result.credentialDirsRemoved = await sweepOrphanCredentialDirs(
@@ -217,6 +243,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     + `orphan-networks=${result.orphanNetworksRemoved} `
     + `workspaces=${result.workspacesRemoved} `
     + `caches=${result.cachesRemoved} `
+    + `nm-stores=${result.nmStoresRemoved} `
     + `orphan-branches=${result.orphanBranchesRemoved} `
     + `credential-dirs=${result.credentialDirsRemoved}`,
   );
@@ -518,6 +545,68 @@ async function sweepOrphanedCaches(
         await fs.rm(full, { recursive: true, force: true });
         removed += 1;
         console.log(`[disk-janitor] removed orphan cache ${full}`);
+      } catch (err) {
+        console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
+      }
+    }
+  }
+  return removed;
+}
+
+/**
+ * docs/148 — under each tracked `dep-cache/<repoHash>/nm-store/`, drop
+ * `<storeKey>` directories whose mtime is older than `days` so unused
+ * materialized `node_modules` snapshots don't pile up. A storeKey
+ * automatically becomes "unused" the moment its repo's lockfile bumps —
+ * the next install computes a fresh storeKey, and the old one is never
+ * touched again until this sweep reclaims it.
+ *
+ * Mtime-only — we deliberately don't track which sessions reference which
+ * storeKey (it would require a manifest the worker writes back to the
+ * orchestrator). A spurious miss (the user pinned their lockfile, sat
+ * idle 30 days, then rebooted) is one slow `npm install`, the cost of
+ * which is bounded by the same install we were trying to skip.
+ *
+ * Tracked repos only: the parent `sweepOrphanedCaches` already removes
+ * the entire `dep-cache/<hash>` when the repo isn't live, so this only
+ * needs to handle the "still-tracked repo, stale storeKey" case.
+ */
+async function sweepStaleNmStores(
+  stateDir: string,
+  repoStore: RepoStore,
+  days: number,
+): Promise<number> {
+  if (days <= 0) return 0;
+  const cutoffMs = Date.now() - days * 86_400_000;
+  const liveHashes = new Set(repoStore.list().map((r) => repoUrlToHash(r.url)));
+
+  let removed = 0;
+  for (const repoHash of liveHashes) {
+    const nmRoot = path.join(stateDir, "dep-cache", repoHash, "nm-store");
+    let entries: string[];
+    try {
+      entries = await fs.readdir(nmRoot);
+    } catch {
+      continue; // No nm-store for this repo — nothing to do.
+    }
+    for (const entry of entries) {
+      // Skip in-progress populates (`.tmp-...`). They'll either rename
+      // into place or be orphaned by a worker crash; orphan temp dirs are
+      // tiny and the next populate will overwrite anyway, so we leave them.
+      if (entry.startsWith(".tmp-")) continue;
+      const full = path.join(nmRoot, entry);
+      let mtimeMs: number;
+      try {
+        const st = await fs.stat(full);
+        mtimeMs = st.mtimeMs;
+      } catch {
+        continue;
+      }
+      if (mtimeMs >= cutoffMs) continue;
+      try {
+        await fs.rm(full, { recursive: true, force: true });
+        removed += 1;
+        console.log(`[disk-janitor] removed stale nm-store ${full}`);
       } catch (err) {
         console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
       }
