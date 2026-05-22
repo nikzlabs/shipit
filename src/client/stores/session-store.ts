@@ -139,6 +139,16 @@ interface SessionState {
   archiveSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
+
+  /**
+   * docs/117 Phase 2 — return all sessions whose `parentSessionId` matches
+   * the supplied id. Used by the sidebar grouping (children rendered
+   * indented under their parent) and by the SpawnedSessionCard's
+   * "missing-child fallback" check. The selector reads from the current
+   * `sessions` snapshot synchronously; callers that need reactivity should
+   * subscribe via `useSessionStore((s) => s.getChildren(parentId))`.
+   */
+  getChildren: (parentSessionId: string) => SessionInfo[];
 }
 
 const initialResettableState = {
@@ -160,7 +170,7 @@ const initialResettableState = {
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
 
-export const useSessionStore = create<SessionState>((set) => ({
+export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: undefined,
   ...initialResettableState,
   sessions: [] as SessionInfo[],
@@ -335,4 +345,7 @@ export const useSessionStore = create<SessionState>((set) => ({
     const data = await res.json() as { sessions: SessionInfo[] };
     set({ sessions: data.sessions });
   },
+
+  getChildren: (parentSessionId) =>
+    get().sessions.filter((s) => s.parentSessionId === parentSessionId),
 }));

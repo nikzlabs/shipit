@@ -25,27 +25,26 @@ Phase 2.
 - [x] `src/server/shipit-docs/sessions.md` + index — agent-facing reference.
 - [x] `src/server/orchestrator/integration_tests/agent-spawned-session.test.ts` — spawn happy path, linkage persistence, per-turn quota, list ordering, cross-tenancy 404 (7 cases).
 
-## Phase 2 — Agent prompts + parent-chat surface (NOT STARTED)
+## Phase 2 — Agent prompts + parent-chat surface (DONE)
 
-Until this ships, the only way to invoke the shim is for the user to
-type the exact command into chat. Phase 2 lets the agent reach for it
-on its own when the user asks for "another session" / "a parallel
-branch," and renders a card in the parent chat so the user sees what
-happened without leaving the conversation.
+The agent now learns when to reach for `shipit session create` (per-agent
+guidance in the system prompt), and the parent's chat renders a
+`SpawnedSessionCard` inline at the moment of the spawn. The sidebar groups
+spawned children indented under their parent.
 
-- [ ] `src/server/orchestrator/agent-instructions.ts` — append the per-agent guidance from the plan:
+- [x] `src/server/orchestrator/agent-instructions.ts` — appends the per-agent "Parallel sessions" guidance:
   - Claude branch: "Use `Task` for in-turn fan-out; `shipit session create` only when the user has asked for a separate session / PR."
   - Codex branch: "`shipit session create` is your only fan-out primitive — only spawn when the user signaled they want parallel work, not as an optimization."
-- [ ] `src/server/shared/types/ws-server-messages.ts` — add `session_spawned` event payload (`{ childSessionId, title, branch, spawnedAt }`).
-- [ ] `src/server/orchestrator/api-routes-session.ts` (or a hook in `spawnChildSession`) — emit `session_spawned` on the parent's runner via `runner.emitMessage(...)` so the event is buffered into the turn-event log (so reconnecting viewers see the card).
-- [ ] `src/server/orchestrator/ws-handlers/agent-listeners.ts` — forward `session_spawned` through the existing message-group machinery so it renders inline with surrounding agent output.
-- [ ] `src/client/components/SpawnedSessionCard.tsx` — new in-chat card: title, branch, status pill (running/idle/error), "open" button that switches the active session.
-- [ ] `src/client/components/MessageList.tsx` — render `SpawnedSessionCard` when a `session_spawned` event appears in the message group.
-- [ ] `src/client/components/SessionList.tsx` — render spawned children indented under their parent (reuse the worktree-sibling affordance).
-- [ ] `src/client/stores/session-store.ts` — surface `parentSessionId`; add a `getChildren(parentId)` selector.
-- [ ] Unit tests for the new agent-instructions paragraph (assert both branches emit the right text).
-- [ ] Component tests for `SpawnedSessionCard` (status transitions, open button, missing-child fallback).
-- [ ] Integration coverage: agent emits a tool call running `shipit session create`; parent's chat receives a `session_spawned` event; sidebar SSE includes the child grouped under the parent.
+- [x] `src/server/shared/types/ws-server-messages.ts` — adds `WsSessionSpawned` (`{ sessionId, childSessionId, title, branch?, spawnedAt }`).
+- [x] `src/server/orchestrator/api-routes-session.ts` — after `spawnChildSession` returns, looks up the parent's runner in the registry and emits `session_spawned` via `runner.emitMessage(...)` so every attached viewer sees it and it lands in the turn-event buffer for reconnecting viewers.
+- [x] `src/client/components/SpawnedSessionCard.tsx` — new in-chat card with title, branch, status pill (running/idle/archived/missing), "Open" button.
+- [x] `src/client/components/MessageList.tsx` — renders `SpawnedSessionCard` when an assistant message carries `spawnedSession` metadata (skipped past the bubble-rendering path).
+- [x] `src/client/hooks/message-handlers/session-spawned.ts` — new handler that converts the `session_spawned` WS event into a ChatMessage with `spawnedSession` populated; registered in `message-handlers/index.ts`.
+- [x] `src/client/components/SessionSidebar.tsx` — renders spawned children indented under their parent inside the existing RepoGroup; falls back to top-level rendering when the parent isn't visible in the same repo group (archived, cross-repo, etc.).
+- [x] `src/client/stores/session-store.ts` — adds a `getChildren(parentSessionId)` selector. `parentSessionId` was already plumbed onto `SessionInfo` in Phase 1.
+- [x] Unit tests for the agent-instructions per-agent text (Claude branch contrasts Task vs. shipit; Codex branch says "only fan-out primitive"; baseline no-options rendering still omits the section).
+- [x] Component tests for `SpawnedSessionCard` (idle/running/archived/missing-child statuses, Open button click handler, branch omission, disabled Open when missing).
+- [x] Integration coverage: `POST /api/sessions/:parentId/spawn` emits a `session_spawned` event on the parent's WS — verified in `agent-spawned-session.test.ts`.
 
 ## Phase 3 — `message`, `wait`, `archive` (NOT STARTED)
 

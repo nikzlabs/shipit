@@ -26,12 +26,14 @@ import { DatabaseManager } from "../../shared/database.js";
 import {
   StubAuthManager,
   FakeClaudeProcess,
+  TestClient,
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
 
 describe("Integration: agent-spawned sessions (docs/117)", () => {
   let app: FastifyInstance;
+  let port: number;
   let tmpDir: string;
   let sessionManager: SessionManager;
   let dbManager: DatabaseManager;
@@ -52,7 +54,9 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       serveStatic: false,
     });
 
-    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = /:(\d+)$/.exec(address);
+    port = match ? Number(match[1]) : 0;
   });
 
   afterEach(async () => {
@@ -256,5 +260,48 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       url: `/api/sessions/${parentBId}/children/${childId}`,
     });
     expect(blockedView.statusCode).toBe(404);
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 2: session_spawned WS broadcast on the parent runner
+  // -------------------------------------------------------------------------
+
+  it("broadcasts a `session_spawned` event on the parent's runner after a successful spawn", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+
+    // Attach a WS to the parent session — this is what creates a runner in
+    // the registry. Without an attached viewer the spawn route would still
+    // succeed but the `session_spawned` emit would have nowhere to go.
+    const parentClient = await TestClient.connect(port, parentId);
+
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "Port API to TS", title: "Port API", branch: "port-api-ts" },
+      });
+      expect(res.statusCode).toBe(200);
+      const { sessionId: childId } = res.json() as { sessionId: string };
+
+      // Wait for the spawn event. Earlier messages may include `preview_status`
+      // / session-list flutter from the WS attach — `receiveType` skips
+      // anything that isn't the type we want.
+      const spawnedMsg = await parentClient.receiveType("session_spawned", 5000) as {
+        type: "session_spawned";
+        sessionId: string;
+        childSessionId: string;
+        title: string;
+        branch?: string;
+        spawnedAt: string;
+      };
+
+      expect(spawnedMsg.sessionId).toBe(parentId);
+      expect(spawnedMsg.childSessionId).toBe(childId);
+      expect(spawnedMsg.title).toBe("Port API");
+      expect(spawnedMsg.branch).toBe("port-api-ts");
+      expect(typeof spawnedMsg.spawnedAt).toBe("string");
+    } finally {
+      parentClient.close();
+    }
   });
 });

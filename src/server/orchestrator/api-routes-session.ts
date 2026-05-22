@@ -424,6 +424,25 @@ export async function registerSessionRoutes(
         // Broadcast the updated session list so the parent's sidebar shows
         // the new child immediately — same pattern as `fork` / `unarchive`.
         deps.sseBroadcast("session_list", { sessions: result.sessions });
+
+        // docs/117 Phase 2 — surface the spawn inline in the parent's chat
+        // via a `session_spawned` event. Routed through the parent runner's
+        // `emitMessage` so every attached viewer sees it AND it lands in the
+        // turn-event buffer (so a viewer that reconnects mid-turn sees the
+        // card too). The child shows up in the sidebar regardless via the
+        // session_list broadcast above; this event is the in-chat affordance.
+        const parentRunner = deps.runnerRegistry.get(request.params.parentId);
+        if (parentRunner) {
+          parentRunner.emitMessage({
+            type: "session_spawned",
+            sessionId: request.params.parentId,
+            childSessionId: result.sessionId,
+            title: result.session.title,
+            ...(result.branch ? { branch: result.branch } : {}),
+            spawnedAt: result.session.createdAt,
+          });
+        }
+
         return {
           sessionId: result.sessionId,
           branch: result.branch,

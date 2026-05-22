@@ -688,6 +688,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     ? buildAgentSystemInstructions({
         previewUrl,
         autoCreatePr: autoCreatePrActive,
+        // docs/117 Phase 2 — teach the running agent when to reach for
+        // `shipit session create`. The guidance differs per agent because
+        // Claude has the in-process `Task` tool (the right fan-out primitive
+        // for in-turn work) and Codex does not.
+        agentId: currentAgent.agentId,
       })
     : undefined;
   const userSystemPrompt = await ctx.readSystemPrompt();

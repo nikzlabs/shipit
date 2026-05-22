@@ -106,6 +106,13 @@ interface SessionItemProps {
   onRestore?: (id: string) => void;
   repoLabel?: string;
   disabled?: boolean;
+  /**
+   * docs/117 Phase 2 — when true, this session row is rendered indented to
+   * indicate it was spawned by another session in the same group (the
+   * parent appears immediately above). Visual-only; the click target and
+   * archive controls are identical to a regular row.
+   */
+  indented?: boolean;
 }
 
 /** Returns the highest-priority attention reason for a session, or null if no attention needed. */
@@ -191,7 +198,7 @@ function SessionStatusDot({ sessionId }: { sessionId: string }) {
   return null;
 }
 
-export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, repoLabel, disabled }: SessionItemProps) {
+export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, repoLabel, disabled, indented }: SessionItemProps) {
   const isArchived = session.archived === true;
 
   const attentionReason = useAttentionInfo(session.id);
@@ -199,7 +206,10 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
 
   return (
     <div
+      data-testid={indented ? "session-item-indented" : "session-item"}
       className={`group flex items-start gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 ${
+        indented ? "ml-5" : ""
+      } ${
         needsAttention ? "border-x-2 border-x-(--color-attention)" : "border-x-2 border-x-transparent"
       } ${
         isArchived ? "opacity-60" : ""
@@ -381,15 +391,57 @@ function RepoGroup({
           {sessions.length === 0 ? (
             <p className="text-[10px] text-(--color-text-tertiary) px-3 py-1 text-center">No sessions</p>
           ) : (
-            sessions.map((s) => (
-              <SessionItem
-                key={s.id}
-                session={s}
-                isCurrent={s.id === currentSessionId}
-                onResume={onResume}
-                onArchive={onArchive}
-              />
-            ))
+            // docs/117 Phase 2 — render agent-spawned children indented under
+            // their parent. We bucket children by `parentSessionId`, iterate
+            // top-level sessions in the existing stable order, then immediately
+            // follow each parent with its children (also in stable order). A
+            // child whose parent isn't visible in this repo group (archived
+            // out of the list, cross-repo, etc.) is rendered at top level as
+            // a fallback so it never silently disappears from the sidebar.
+            (() => {
+              const childrenByParent = new Map<string, SessionInfo[]>();
+              const orphanedChildren = new Set<string>();
+              for (const s of sessions) {
+                if (!s.parentSessionId) continue;
+                const parentInGroup = sessions.some((p) => p.id === s.parentSessionId);
+                if (!parentInGroup) {
+                  orphanedChildren.add(s.id);
+                  continue;
+                }
+                const list = childrenByParent.get(s.parentSessionId) ?? [];
+                list.push(s);
+                childrenByParent.set(s.parentSessionId, list);
+              }
+              const rendered: React.ReactElement[] = [];
+              for (const s of sessions) {
+                // Skip children that we'll render beneath their parent below.
+                if (s.parentSessionId && !orphanedChildren.has(s.id)) continue;
+                rendered.push(
+                  <SessionItem
+                    key={s.id}
+                    session={s}
+                    isCurrent={s.id === currentSessionId}
+                    onResume={onResume}
+                    onArchive={onArchive}
+                  />,
+                );
+                const children = childrenByParent.get(s.id);
+                if (!children) continue;
+                for (const child of children) {
+                  rendered.push(
+                    <SessionItem
+                      key={child.id}
+                      session={child}
+                      isCurrent={child.id === currentSessionId}
+                      onResume={onResume}
+                      onArchive={onArchive}
+                      indented
+                    />,
+                  );
+                }
+              }
+              return rendered;
+            })()
           )}
         </div>
       )}

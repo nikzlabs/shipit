@@ -115,4 +115,71 @@ describe("buildAgentSystemInstructions", () => {
     // Pointer to the full schema doc.
     expect(out).toContain("/shipit-docs/design-docs.md");
   });
+
+  // docs/117 Phase 2 — per-agent "Parallel sessions" guidance.
+
+  it("omits the Parallel sessions section when no agentId is supplied", () => {
+    const out = buildAgentSystemInstructions();
+    expect(out).not.toContain("## Parallel sessions");
+    expect(out).not.toContain("shipit session create");
+  });
+
+  it("Claude branch tells the agent to prefer `Task` for in-turn fan-out", () => {
+    const out = buildAgentSystemInstructions({ agentId: "claude" });
+    expect(out).toContain("## Parallel sessions");
+    // Claude has Task — the section must contrast Task vs shipit session create.
+    expect(out).toContain("`Task` tool");
+    expect(out).toContain("in-turn fan-out");
+    expect(out).toContain("shipit session create");
+    expect(out).toContain("NOT interchangeable");
+    // Decision rule: only spawn when the user has signaled they want a
+    // separate session / branch / PR.
+    expect(out).toContain("another session");
+    expect(out).toContain("a separate branch");
+    expect(out).toContain("a parallel workspace");
+    expect(out).toContain("review independently as its own pull request");
+    // Pointer to the platform doc so the agent can read the full surface.
+    expect(out).toContain("/shipit-docs/sessions.md");
+  });
+
+  it("Codex branch tells the agent shipit session create is its ONLY fan-out primitive", () => {
+    const out = buildAgentSystemInstructions({ agentId: "codex" });
+    expect(out).toContain("## Parallel sessions");
+    // Codex has no Task tool — the section must NOT recommend it.
+    expect(out).not.toContain("`Task` tool");
+    // It must say this is Codex's only fan-out primitive.
+    expect(out).toContain("only fan-out primitive");
+    expect(out).toContain("shipit session create");
+    // Same "only when the user asked" decision rule.
+    expect(out).toContain("another session");
+    expect(out).toContain("a separate branch");
+    expect(out).toContain("review independently as its own pull request");
+    // Same caution about cost.
+    expect(out).toContain("heavy and user-visible");
+    // Pointer to the platform doc.
+    expect(out).toContain("/shipit-docs/sessions.md");
+  });
+
+  it("Claude and Codex variants are distinct (different fan-out story)", () => {
+    const claudeOut = buildAgentSystemInstructions({ agentId: "claude" });
+    const codexOut = buildAgentSystemInstructions({ agentId: "codex" });
+    expect(claudeOut).not.toBe(codexOut);
+    // The Claude variant talks about Task; the Codex one does not.
+    expect(claudeOut).toContain("`Task` tool");
+    expect(codexOut).not.toContain("`Task` tool");
+    // The Codex variant emphasizes "only fan-out primitive"; the Claude one frames it as a choice between two.
+    expect(codexOut).toContain("only fan-out primitive");
+    expect(claudeOut).toContain("two fan-out primitives");
+  });
+
+  it("composes parallel-sessions with previewUrl and autoCreatePr", () => {
+    const out = buildAgentSystemInstructions({
+      previewUrl: "http://preview.example/",
+      autoCreatePr: true,
+      agentId: "claude",
+    });
+    expect(out).toContain("The preview is running at:");
+    expect(out).toContain("## Pull requests");
+    expect(out).toContain("## Parallel sessions");
+  });
 });
