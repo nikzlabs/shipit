@@ -11,7 +11,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { fetchAndResolveDefaultBranch, isGitAuthError } from "./git-utils.js";
+import {
+  fetchAndResolveDefaultBranch,
+  isGitAuthError,
+  isWorkspaceCloneInSyncWithCache,
+} from "./git-utils.js";
 
 function git(cwd: string, args: string): string {
   return execSync(`git ${args}`, { cwd, stdio: ["ignore", "pipe", "ignore"] })
@@ -109,6 +113,79 @@ describe("fetchAndResolveDefaultBranch", () => {
     // Still resolves — to the snapshot's commit (c1), the pre-W2 behavior.
     expect(resetTarget).toBeDefined();
     expect(git(cloneDir, `rev-parse ${resetTarget}`)).toBe(c1);
+  });
+});
+
+describe("isWorkspaceCloneInSyncWithCache", () => {
+  let tmpDir: string;
+  let remoteDir: string;
+  let cacheDir: string;
+  let workspaceDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-clone-sync-"));
+    remoteDir = path.join(tmpDir, "remote");
+    cacheDir = path.join(tmpDir, "cache");
+    workspaceDir = path.join(tmpDir, "workspace");
+
+    fs.mkdirSync(remoteDir, { recursive: true });
+    git(remoteDir, "init");
+    git(remoteDir, "checkout -b main");
+    git(remoteDir, "config user.email test@test");
+    git(remoteDir, "config user.name test");
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch { /* ignore */ }
+  });
+
+  it("returns true when the clone was just cut from the bare cache (HEADs agree)", async () => {
+    commitFile(remoteDir, "README.md", "# c1\n", "c1");
+
+    // Bare cache cloned from the remote at c1, then workspace cloned from the
+    // cache — mirrors the warm-pool flow at warm time.
+    git(tmpDir, `clone --bare "${remoteDir}" "${cacheDir}"`);
+    git(tmpDir, `clone --local "${cacheDir}" "${workspaceDir}"`);
+
+    expect(await isWorkspaceCloneInSyncWithCache(workspaceDir, cacheDir)).toBe(true);
+  });
+
+  it("returns false after the cache advances past the warm clone (the long-idle-pool regression)", async () => {
+    commitFile(remoteDir, "README.md", "# c1\n", "c1");
+    git(tmpDir, `clone --bare "${remoteDir}" "${cacheDir}"`);
+    // Warm session cut here — workspace's `origin/HEAD` is frozen at c1.
+    git(tmpDir, `clone --local "${cacheDir}" "${workspaceDir}"`);
+
+    // Prefetcher advances the bare cache by fetching the remote's new commits.
+    commitFile(remoteDir, "README.md", "# c2\n", "c2");
+    git(cacheDir, "fetch --force origin main:main");
+
+    // The workspace clone's `origin/HEAD` still points at c1, but the cache
+    // is now at c2 — the agreement check must catch this so the claim path
+    // falls back to a real refresh instead of branching from c1.
+    expect(await isWorkspaceCloneInSyncWithCache(workspaceDir, cacheDir)).toBe(false);
+  });
+
+  it("returns false when the cache directory is missing", async () => {
+    commitFile(remoteDir, "README.md", "# c1\n", "c1");
+    git(tmpDir, `clone "${remoteDir}" "${workspaceDir}"`);
+    // No cache dir at all — a half-set-up state must degrade to the refresh
+    // path, never to a silent skip.
+    expect(await isWorkspaceCloneInSyncWithCache(workspaceDir, path.join(tmpDir, "missing-cache"))).toBe(false);
+  });
+
+  it("falls back to origin/main when the clone has no origin/HEAD symbolic ref", async () => {
+    commitFile(remoteDir, "README.md", "# c1\n", "c1");
+    git(tmpDir, `clone --bare "${remoteDir}" "${cacheDir}"`);
+    git(tmpDir, `clone --local "${cacheDir}" "${workspaceDir}"`);
+
+    // Older / hand-crafted clones may lack the `origin/HEAD` symbolic ref —
+    // the helper must still resolve via `origin/main` / `origin/master`.
+    try { git(workspaceDir, "symbolic-ref -d refs/remotes/origin/HEAD"); } catch { /* ok */ }
+
+    expect(await isWorkspaceCloneInSyncWithCache(workspaceDir, cacheDir)).toBe(true);
   });
 });
 
