@@ -80,7 +80,8 @@ function NotificationSettings() {
     <div className="space-y-3">
       <h3 className="text-sm font-medium text-(--color-text-primary)">Notifications</h3>
       <p className="text-sm text-(--color-text-secondary)">
-        Get notified when the agent finishes a turn.
+        Get notified when a session needs your attention &mdash; the agent stops and is waiting on you,
+        CI fails, or a PR has merge conflicts. The same conditions that highlight a session in the sidebar.
       </p>
       <div className="space-y-2">
         <div className="flex items-center justify-between py-1">
@@ -93,7 +94,7 @@ function NotificationSettings() {
         <div className="flex items-center justify-between py-1">
           <div>
             <span className="text-sm text-(--color-text-primary)">Sound</span>
-            <p className="text-xs text-(--color-text-tertiary)">Play a chime when the agent finishes</p>
+            <p className="text-xs text-(--color-text-tertiary)">Play a chime when a session needs attention</p>
           </div>
           <ToggleSwitch enabled={soundOnFinish} onToggle={setSoundOnFinish} testId="settings-sound-on-finish" />
         </div>

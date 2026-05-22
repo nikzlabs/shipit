@@ -61,14 +61,14 @@ describe("useNotification", () => {
     const { result } = renderHook(() => useNotification());
     act(() => setHidden(true));
     act(() => result.current.notify("done"));
-    expect(document.title).toBe("\u2713 Agent finished \u2014 ShipIt");
+    expect(document.title).toBe("\u25cf Needs attention \u2014 ShipIt");
   });
 
   it("restores title when user returns to the tab", () => {
     const { result } = renderHook(() => useNotification());
     act(() => setHidden(true));
     act(() => result.current.notify("done"));
-    expect(document.title).toBe("\u2713 Agent finished \u2014 ShipIt");
+    expect(document.title).toBe("\u25cf Needs attention \u2014 ShipIt");
 
     act(() => setHidden(false));
     expect(document.title).toBe("ShipIt");
@@ -88,9 +88,9 @@ describe("useNotification", () => {
 
     const { result } = renderHook(() => useNotification());
     act(() => setHidden(true));
-    act(() => result.current.notify("The agent has finished responding."));
+    act(() => result.current.notify("Waiting for your input"));
 
-    expect(mockNotification).toHaveBeenCalledWith("ShipIt", { body: "The agent has finished responding." });
+    expect(mockNotification).toHaveBeenCalledWith("ShipIt", { body: "Waiting for your input" });
     vi.unstubAllGlobals();
   });
 
@@ -100,15 +100,15 @@ describe("useNotification", () => {
 
     const { result } = renderHook(() => useNotification());
     act(() => setHidden(true));
-    act(() => result.current.notify("The agent has finished responding.", {
+    act(() => result.current.notify("Waiting for your input", {
       sessionName: "Fix login bug",
       repoLabel: "acme/app",
     }));
 
     expect(mockNotification).toHaveBeenCalledWith("ShipIt · acme/app", {
-      body: "[Fix login bug] The agent has finished responding.",
+      body: "[Fix login bug] Waiting for your input",
     });
-    expect(document.title).toBe("✓ Fix login bug — ShipIt");
+    expect(document.title).toBe("● Fix login bug — ShipIt");
     vi.unstubAllGlobals();
   });
 

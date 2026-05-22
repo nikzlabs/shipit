@@ -5,8 +5,8 @@ import { useSettingsStore } from "../stores/settings-store.js";
 const DEFAULT_TITLE = "ShipIt";
 
 function doneTitle(sessionName?: string): string {
-  if (sessionName) return `\u2713 ${sessionName} \u2014 ShipIt`;
-  return "\u2713 Agent finished \u2014 ShipIt";
+  if (sessionName) return `\u25cf ${sessionName} \u2014 ShipIt`;
+  return "\u25cf Needs attention \u2014 ShipIt";
 }
 
 export interface NotifyContext {
