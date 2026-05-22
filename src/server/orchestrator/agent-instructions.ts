@@ -130,6 +130,8 @@ Workspace \`.md\` files (typically under \`docs/NNN-feature/plan.md\`) show up i
 
 Do NOT invent other statuses like \`proposed\`, \`design\`, \`implemented\`, \`shipped\`, \`wip\`, or \`tbd\`. Any other string still renders but as a neutral badge with no typed UI affordances (priority sorting, Archived collapse, success colouring). See /shipit-docs/design-docs.md for the full schema (priority, title, description, common mistakes).
 
+Track remaining work in a sibling \`checklist.md\` file next to \`plan.md\` (e.g. \`docs/NNN-feature/checklist.md\`) — not as a \`## Checklist\` section inside \`plan.md\`. Mark items complete with \`[x]\`. When you set \`status: done\`, all items in \`checklist.md\` should be checked off.
+
 ## Service logs
 
 You can check the status and logs of Docker Compose services via the ShipIt API:
