@@ -200,4 +200,49 @@ export function registerAgentOpsRoutes(
     async (request, reply) =>
       relay("GET", `/children/${encodeURIComponent(request.params.childId)}`, undefined, reply),
   );
+
+  // POST /agent-ops/session/message/:childId — Phase 3 follow-up prompt
+  app.post<{
+    Params: { childId: string };
+    Body: { text?: string };
+  }>(
+    "/agent-ops/session/message/:childId",
+    async (request, reply) =>
+      relay(
+        "POST",
+        `/children/${encodeURIComponent(request.params.childId)}/message`,
+        request.body ?? {},
+        reply,
+      ),
+  );
+
+  // GET /agent-ops/session/wait/:childId[?timeout=N] — Phase 3 long-poll
+  app.get<{
+    Params: { childId: string };
+    Querystring: { timeout?: string };
+  }>(
+    "/agent-ops/session/wait/:childId",
+    async (request, reply) => {
+      const timeout = request.query.timeout;
+      const qs = `?wait=true${timeout ? `&timeout=${encodeURIComponent(timeout)}` : ""}`;
+      return relay(
+        "GET",
+        `/children/${encodeURIComponent(request.params.childId)}${qs}`,
+        undefined,
+        reply,
+      );
+    },
+  );
+
+  // POST /agent-ops/session/archive/:childId — Phase 3 archive
+  app.post<{ Params: { childId: string } }>(
+    "/agent-ops/session/archive/:childId",
+    async (request, reply) =>
+      relay(
+        "POST",
+        `/children/${encodeURIComponent(request.params.childId)}/archive`,
+        {},
+        reply,
+      ),
+  );
 }

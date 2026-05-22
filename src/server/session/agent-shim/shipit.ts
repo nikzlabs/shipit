@@ -35,6 +35,9 @@ Supported subcommands:
                           [--turn ID] [--json]
   shipit session list    [--turn ID] [--json]
   shipit session view    <id> [--json]
+  shipit session message <id> -m "TEXT" [--json]
+  shipit session wait    <id> [--timeout SECONDS] [--json]
+  shipit session archive <id> [--json]
   shipit session help
 
 The shim brokers session operations through the ShipIt orchestrator. The
@@ -240,15 +243,19 @@ interface RunDeps {
  */
 const REJECTED_SESSION_SUBCOMMANDS = new Set([
   "delete",   // destructive; user-only.
-  "archive",  // Phase 3 of doc 117 — not yet wired.
-  "message",  // Phase 3 of doc 117 — not yet wired.
-  "wait",     // Phase 3 of doc 117 — not yet wired.
   "adopt",    // not supported by design (cross-parent reparenting).
   "merge",    // future extension; user merges via the PR/merge UI today.
   "fork",     // separate primitive owned by the UI.
   "rename",   // user-driven; not part of the agent's surface.
   "switch",   // user navigation; not the agent's affordance.
 ]);
+
+/**
+ * Server-enforced cap on `shipit session wait --timeout`. The shim mirrors
+ * the orchestrator's `MAX_WAIT_FOR_CHILD_IDLE_MS` so a flag-side check can
+ * reject obvious typos (`--timeout 99999h`) without a round-trip.
+ */
+const MAX_WAIT_TIMEOUT_SECS = 60 * 60; // 1 hour
 
 async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
@@ -406,6 +413,160 @@ async function handleSessionView(args: string[], deps: RunDeps): Promise<void> {
   success(deps.io, lines.join("\n"));
 }
 
+async function handleSessionMessage(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "-m": "text", "--message": "text",
+      "-p": "text", "--prompt": "text",
+    },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session message: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const id = parsed.positional[0];
+  if (!id) {
+    fail(deps.io, "shipit session message: child session id is required.");
+  }
+  const text = parsed.values.text;
+  if (!text) {
+    fail(deps.io, "shipit session message: -m/--message is required (the prompt text to send).");
+  }
+  if (text.length > 50_000) {
+    fail(deps.io, "shipit session message: --message exceeds 50,000 characters.");
+  }
+
+  const res = await deps.call(
+    "POST",
+    `/agent-ops/session/message/${encodeURIComponent(id)}`,
+    { text },
+    deps.env,
+  );
+  if (res.status === 404) {
+    fail(deps.io, "Spawned session not found, or not a descendant of this parent.", 1);
+  }
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to send message to spawned session"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const queuePosition = Number(res.body.queuePosition ?? 0);
+  const enqueued = res.body.enqueued === true;
+  const lines = [
+    `session-id: ${id}`,
+    `delivered:  ${enqueued ? `queued (position ${queuePosition})` : "starting turn"}`,
+  ];
+  success(deps.io, lines.join("\n"));
+}
+
+async function handleSessionWait(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--timeout": "timeout", "-T": "timeout" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session wait: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const id = parsed.positional[0];
+  if (!id) {
+    fail(deps.io, "shipit session wait: child session id is required.");
+  }
+  // Defense-in-depth client-side validation. The orchestrator also enforces.
+  let timeoutSecs: number | undefined;
+  if (parsed.values.timeout) {
+    const n = Number(parsed.values.timeout);
+    if (!Number.isFinite(n) || n <= 0) {
+      fail(deps.io, "shipit session wait: --timeout must be a positive number of seconds.");
+    }
+    timeoutSecs = Math.min(Math.floor(n), MAX_WAIT_TIMEOUT_SECS);
+  }
+
+  const qs = timeoutSecs ? `?timeout=${timeoutSecs}` : "";
+  const res = await deps.call(
+    "GET",
+    `/agent-ops/session/wait/${encodeURIComponent(id)}${qs}`,
+    undefined,
+    deps.env,
+  );
+  if (res.status === 404) {
+    fail(deps.io, "Spawned session not found, or not a descendant of this parent.", 1);
+  }
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to wait on spawned session"), 1);
+  }
+
+  const child = res.body.child as Record<string, unknown> | null;
+  const timedOut = res.body.timedOut === true;
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    // Non-zero on timeout so coordination scripts can detect it without
+    // parsing the JSON. Matches the plan's "non-zero exit on timeout".
+    deps.io.exit(timedOut ? 1 : 0);
+    return;
+  }
+
+  if (!child) {
+    fail(deps.io, "Spawned session not found.", 1);
+  }
+
+  const lines = [
+    `${asString(child.title)} (${asString(child.id)})`,
+    `status:     ${asString(child.status) || "idle"}`,
+    `branch:     ${asString(child.branch) || "(no branch)"}`,
+    `queue:      ${asString(child.queueLength) || "0"}`,
+    `idle:       ${!timedOut}`,
+    `timed-out:  ${timedOut}`,
+  ];
+  if (child.latestAssistantMessage) {
+    lines.push("", asString(child.latestAssistantMessage));
+  }
+  if (timedOut) {
+    deps.io.stdout(`${lines.join("\n")}\n`);
+    deps.io.exit(1);
+    return;
+  }
+  success(deps.io, lines.join("\n"));
+}
+
+async function handleSessionArchive(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {},
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session archive: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const id = parsed.positional[0];
+  if (!id) {
+    fail(deps.io, "shipit session archive: child session id is required.");
+  }
+
+  const res = await deps.call(
+    "POST",
+    `/agent-ops/session/archive/${encodeURIComponent(id)}`,
+    {},
+    deps.env,
+  );
+  if (res.status === 404) {
+    fail(deps.io, "Spawned session not found, or not a descendant of this parent.", 1);
+  }
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to archive spawned session"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  success(deps.io, `session-id: ${id}\narchived:   true`);
+}
+
 /** Format a broker/orchestrator error response as a single-line message. */
 function formatError(
   res: { status: number; body: Record<string, unknown> },
@@ -433,6 +594,9 @@ const SESSION_HANDLERS: Record<
   create: handleSessionCreate,
   list: handleSessionList,
   view: handleSessionView,
+  message: handleSessionMessage,
+  wait: handleSessionWait,
+  archive: handleSessionArchive,
 };
 
 /**

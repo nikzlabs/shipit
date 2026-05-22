@@ -67,7 +67,10 @@ override the parent.
 |---|---|
 | `shipit session create -p "PROMPT" [--title T] [--branch NAME] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | Spawn a sibling session with `PROMPT` as its first user message. Returns the child's id, branch, and status on stdout. |
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
-| `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp. |
+| `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available. |
+| `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt; exit is `0` either way and the response prints the queue position. |
+| `shipit session wait <id> [--timeout SECONDS] [--json]` | Long-poll until the child is idle (`running=false && queueLength=0`) or the timeout elapses. Default 5 minutes, capped at 1 hour. Exits non-zero on timeout. |
+| `shipit session archive <id> [--json]` | Archive a child this parent spawned. Refuses with a clear error when the child is still running — use `shipit session wait` first. |
 | `shipit session help` | Print the subcommand reference. |
 
 ### Example
@@ -103,9 +106,6 @@ the user, not the agent), or because it widens the surface in ways doc 117
 explicitly declined to ship in v1:
 
 - `shipit session delete <id>` — destructive; user-only.
-- `shipit session archive <id>` — Phase 3; not yet wired.
-- `shipit session message <id>` — Phase 3; not yet wired.
-- `shipit session wait <id>` — Phase 3; not yet wired.
 - `shipit session fork|rename|switch` — owned by the UI, not the agent.
 - `shipit session adopt <id>` — adopting an unrelated session into the
   parent's tree is not supported.
@@ -114,6 +114,33 @@ explicitly declined to ship in v1:
 
 If you try one, the shim exits non-zero with an error pointing back to this
 file.
+
+### Coordinating with a spawned session
+
+After spawning, you have three coordination levers — all read or write the
+child via the parent → child linkage; you cannot operate on sessions you
+didn't spawn.
+
+```sh
+# Spawn a long-running task on a separate branch.
+shipit session create -p "Migrate the API to Drizzle" --branch drizzle
+# session-id: ses_abc
+
+# Block until the child is idle (or the timeout fires).
+shipit session wait ses_abc --timeout 1800
+# When the wait times out, the shim exits non-zero — handle in scripts.
+
+# Send a follow-up prompt without the user switching sessions.
+shipit session message ses_abc -m "Also update the README to mention Drizzle"
+
+# Archive an idle child that's done its job. Refuses while the child is
+# still running — `wait` first if you want a deterministic teardown.
+shipit session archive ses_abc
+```
+
+Be conservative with `message` — every prompt you push lands in the
+child's chat, visible to the user. Use it for coordination, not for
+chattering at the child agent.
 
 ## What spawning a session does
 

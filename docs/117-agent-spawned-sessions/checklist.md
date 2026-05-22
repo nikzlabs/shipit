@@ -46,22 +46,21 @@ spawned children indented under their parent.
 - [x] Component tests for `SpawnedSessionCard` (idle/running/archived/missing-child statuses, Open button click handler, branch omission, disabled Open when missing).
 - [x] Integration coverage: `POST /api/sessions/:parentId/spawn` emits a `session_spawned` event on the parent's WS — verified in `agent-spawned-session.test.ts`.
 
-## Phase 3 — `message`, `wait`, `archive` (NOT STARTED)
+## Phase 3 — `message`, `wait`, `archive` (DONE)
 
-Once telemetry shows the agent uses Phase 1 reliably (i.e. spawn rate
-roughly tracks user-prompted parallel work, no spam), wire the
-coordination subcommands. These three add the "agent can drive a child
-to completion without the user babysitting it" pattern.
+The coordination subcommands are live. The parent agent can now drive a
+child to completion without the user babysitting it: spawn → message
+follow-ups → wait → archive.
 
-- [ ] Drop `message`, `wait`, `archive` from `REJECTED_SESSION_SUBCOMMANDS` in `shipit.ts`; add their handlers.
-- [ ] `shipit session message <id> -m "TEXT" [--json]` — `POST /agent-ops/session/message/:childId` → `POST /api/sessions/:parentId/children/:childId/message`. Returns `{ queuePosition }`.
-- [ ] `shipit session wait <id> [--timeout SECONDS] [--json]` — `GET /agent-ops/session/wait/:childId?timeout=N` → long-poll `GET /api/sessions/:parentId/children/:childId?wait=true&timeout=N`. Default 300s, cap 3600s. Non-zero exit when the timeout fires.
-- [ ] `shipit session archive <id>` — `POST /agent-ops/session/archive/:childId` → `POST /api/sessions/:parentId/children/:childId/archive`. Only archives children the parent itself spawned; refuses when the child is running.
-- [ ] `services/child-sessions.ts` — add `sendChildMessage`, `waitForChildIdle`, `archiveChild`; preserve the cross-tenancy 404 contract.
-- [ ] Extend `ChildSessionView` with `latestAssistantMessage` and `prUrl` now that the wait/view surface has a reason to consume them; plumb through a `ChatHistoryManager` "latest assistant text" projection (or accept the simple full-history scan).
-- [ ] Env-var overrides for the quota constants — `MAX_SPAWNED_SESSIONS_PER_PARENT`, `MAX_SPAWNED_SESSIONS_PER_TURN`. Read once at process start, fall back to the existing defaults.
-- [ ] Unit tests for the three new shim handlers (happy path, 404, 429 surfacing, timeout exit).
-- [ ] Integration tests: message enqueues on the child runner; wait blocks until `running=false && queueLength=0`; archive moves the child to archived and refuses when it's running.
+- [x] Drop `message`, `wait`, `archive` from `REJECTED_SESSION_SUBCOMMANDS` in `shipit.ts`; add their handlers.
+- [x] `shipit session message <id> -m "TEXT" [--json]` — `POST /agent-ops/session/message/:childId` → `POST /api/sessions/:parentId/children/:childId/message`. Returns `{ queuePosition, enqueued }`.
+- [x] `shipit session wait <id> [--timeout SECONDS] [--json]` — `GET /agent-ops/session/wait/:childId?timeout=N` → long-poll `GET /api/sessions/:parentId/children/:childId?wait=true&timeout=N`. Default 300s, cap 3600s. Non-zero exit when the timeout fires.
+- [x] `shipit session archive <id>` — `POST /agent-ops/session/archive/:childId` → `POST /api/sessions/:parentId/children/:childId/archive`. Only archives children the parent itself spawned; refuses when the child is running (HTTP 409).
+- [x] `services/child-sessions.ts` — added `sendChildMessage`, `waitForChildIdle`, `assertArchivableChild`; preserve the cross-tenancy 404 contract via `assertChildOfParent`. (The archive route then calls the existing `archiveSession` service for the heavy lifting, sidestepping a module cycle.)
+- [x] Extended `ChildSessionView` with `latestAssistantMessage` and `prUrl` via the new `ChildViewProjections` plumbing. `ChatHistoryManager.loadLatestAssistantText()` is the read-only projection for the latest assistant text; `PrStatusPoller.getStatus()` provides the PR URL.
+- [x] Env-var overrides for the quota constants — `MAX_SPAWNED_SESSIONS_PER_PARENT`, `MAX_SPAWNED_SESSIONS_PER_TURN`. Read once at module init; bad values (non-integer or ≤ 0) log a warning and fall back to the compile-time default.
+- [x] Unit tests for the three new shim handlers (happy path, 404, 409/429 surfacing, timeout exit).
+- [x] Integration tests: message enqueues on the child runner; wait blocks until `running=false && queueLength=0` (both the "already idle" fast path and the "register listener then finish" path); archive moves the child to archived and refuses with 409 when it's running.
 
 ## Phase 4 — Cross-repo spawns *(OPTIONAL)*
 

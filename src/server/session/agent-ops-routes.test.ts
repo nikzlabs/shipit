@@ -231,6 +231,77 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toBe("Spawned session not found");
   });
 
+  // ---- Agent-spawned sessions: Phase 3 (docs/117) ----
+
+  it("POST /agent-ops/session/message/:childId forwards to /children/:childId/message", async () => {
+    client.setResponse("POST", "/children/ses_a/message", {
+      ok: true, status: 200,
+      body: { queuePosition: 1, enqueued: true },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/session/message/ses_a",
+      payload: { text: "do X" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ queuePosition: 1, enqueued: true });
+    expect(client.calls[0].method).toBe("POST");
+    expect(client.calls[0].path).toBe("/children/ses_a/message");
+    expect(client.calls[0].body).toEqual({ text: "do X" });
+  });
+
+  it("POST /agent-ops/session/message/:childId surfaces a 404 verbatim", async () => {
+    client.setResponse("POST", "/children/ses_other/message", {
+      ok: false, status: 404, body: { error: "Spawned session not found" },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/session/message/ses_other",
+      payload: { text: "x" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("GET /agent-ops/session/wait/:childId forwards ?wait=true&timeout=", async () => {
+    client.setResponse("GET", "/children/ses_a", {
+      ok: true, status: 200,
+      body: { child: { id: "ses_a" }, idle: true, timedOut: false },
+    });
+    await app.inject({ method: "GET", url: "/agent-ops/session/wait/ses_a?timeout=120" });
+    expect(client.calls[0].path).toBe("/children/ses_a?wait=true&timeout=120");
+  });
+
+  it("GET /agent-ops/session/wait/:childId without timeout still requests wait=true", async () => {
+    client.setResponse("GET", "/children/ses_a", {
+      ok: true, status: 200,
+      body: { child: { id: "ses_a" }, idle: true, timedOut: false },
+    });
+    await app.inject({ method: "GET", url: "/agent-ops/session/wait/ses_a" });
+    expect(client.calls[0].path).toBe("/children/ses_a?wait=true");
+  });
+
+  it("POST /agent-ops/session/archive/:childId forwards to /children/:childId/archive", async () => {
+    client.setResponse("POST", "/children/ses_a/archive", {
+      ok: true, status: 200, body: { archived: true, sessions: [] },
+    });
+    const res = await app.inject({ method: "POST", url: "/agent-ops/session/archive/ses_a" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].method).toBe("POST");
+    expect(client.calls[0].path).toBe("/children/ses_a/archive");
+    expect(client.calls[0].body).toEqual({});
+  });
+
+  it("POST /agent-ops/session/archive/:childId surfaces a 409 (still running) verbatim", async () => {
+    client.setResponse("POST", "/children/ses_a/archive", {
+      ok: false, status: 409, body: { error: "Cannot archive a running child session" },
+    });
+    const res = await app.inject({ method: "POST", url: "/agent-ops/session/archive/ses_a" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toContain("Cannot archive");
+  });
+
   it("POST /agent-ops/git/credential forwards host/protocol to /git/credential", async () => {
     client.setResponse("POST", "/git/credential", {
       ok: true, status: 200,
