@@ -231,7 +231,7 @@ primary turns and reviewer jobs both:
 | Primary mid-turn, user runs `/review-with X` | Reviewer job enqueued. UI shows a pending bubble: "Codex review queued — waiting for current turn." |
 | Reviewer mid-execution, user sends a primary message | Primary message enters the existing `runner.messageQueue`. Drained after the reviewer finishes. |
 | Reviewer mid-execution, user runs another `/review-with X` | Second reviewer job enqueued behind the first. |
-| User cancels (existing stop button) | `/agent/interrupt` to whichever invocation is active. If `activeInvocation === "reviewer"`, the cleanup of §1 still fires. Queued reviewer jobs are dropped on user-issued cancel-all. |
+| User cancels (existing stop button) | `/agent/interrupt` to whichever invocation is active. If `activeInvocation === "reviewer"`, the cleanup of §1 still fires. **The queue is preserved** — cancel acts on the current invocation only, matching today's "cancel the current turn" semantics. A queued primary message behind a cancelled reviewer drains as normal; a queued reviewer behind a cancelled primary drains as normal. The user did not ask to abandon queued work, only to skip the current invocation. |
 | Reviewer crashes (worker error, OOM, timeout) | `runCrossAgentReview` catches, surfaces an error message in chat with `kind: "cross-agent-review-error"`, runs cleanup, processes the next queued job. |
 | Reviewer takes a long time | Soft cap of **N minutes wall-clock** and **M tokens output** (initial values: 5 min, 8K output tokens; tunable). Hitting either truncates with a system note ("Review cut short at 8K tokens"). The hard reasoning: a runaway reviewer prompt could otherwise read the entire repo to "understand the diff" and burn the user's quota with no ceiling. |
 
@@ -276,8 +276,8 @@ adapter's current capability list at implementation time):
   `Task`. Enforced by `claude --allowedTools <subset>` at spawn — a
   real allowlist primitive in the CLI today.
 
-**Codex asymmetry — load-bearing for v1 scoping.** Codex's CLI (`codex
-app-server`) has **no per-spawn tool-restriction flag** today. The
+**Codex asymmetry — symmetric ship, asymmetric enforcement.** Codex's CLI
+(`codex app-server`) has **no per-spawn tool-restriction flag** today. The
 worker-side MCP guard rejects ShipIt's *own* MCP tools
 (`submit_review_comments` from a reviewer; `submit_diff_review` from a
 primary) but does NOT prevent Codex's built-in `file_write` / `file_edit` /
@@ -290,13 +290,17 @@ primary) but does NOT prevent Codex's built-in `file_write` / `file_edit` /
 - **No CLI-level write-tool block.** A misbehaving Codex reviewer *could*
   call `file_edit` and the worker would not prevent it.
 
-This is a real asymmetry, not a wording gap, and it forces a product
-decision (see Open question 1). The doc does not silently ship "read-only"
-with a hole in it for Codex; either we accept prompt-only enforcement for
-v1 with the asymmetry documented in user-facing copy ("Codex review is
-advisory — Codex may, against instructions, attempt to edit files; commits
-are still blocked by the no-post-turn-flow rule"), or we defer
-Codex-as-reviewer to a follow-up.
+**V1 decision: ship symmetric with prompt-only enforcement for Codex.** A
+Codex reviewer in a Claude-pinned session is allowed in v1, with the
+asymmetry surfaced in user-facing copy on the `/review-with codex`
+affordance — verbatim suggestion: *"Codex review is advisory. Codex may,
+against instructions, attempt to edit files; commits and pushes are still
+blocked by the no-post-turn-flow rule."* This is the right call given the
+dogfood population: most users who care about cross-agent review have both
+authed, and shipping Claude-only would cut the feature in half for Codex-
+pinned users specifically. Tighten to symmetric CLI-level enforcement in
+v2 once Codex grows the primitive, or earlier if a misbehaving reviewer
+becomes a real failure mode.
 
 The "no sub-subagents from a reviewer" rule is enforced by the allowlist
 itself (omitting `Task` for Claude). For Codex, `spawn_agent` falls into the
@@ -500,36 +504,22 @@ on-disk locations the reviewer cannot read even while running, e.g. via an
 egress broker) is the same broker work docs/138 explicitly punted as "out of
 scope" — that decision still holds and is not re-opened here.
 
-## Open questions
+## Resolved decisions
 
-These are real product decisions that should not be punted to
-implementation.
+The three product decisions the design surfaced have been made and are
+baked into the sections above. Recorded here for traceability:
 
-1. **Codex-as-reviewer in v1: ship with prompt-only enforcement, or
-   defer?** Codex's CLI has no `--allowedTools` equivalent today (§4).
-   Three options:
-   - **(a) Ship symmetric, accept asymmetric enforcement.** Codex can
-     review Claude-pinned sessions in v1; the read-only guarantee for a
-     Codex reviewer is prompt + worker-MCP-guard only (no CLI-level block
-     on `file_edit` / `file_write` / `shell`). User-facing copy names the
-     asymmetry honestly. Codex hardens to allowlist parity in v2.
-   - **(b) Ship Claude-as-reviewer only in v1.** Codex-pinned sessions get
-     `/review-with claude` (read-only via `--allowedTools`); Claude-pinned
-     sessions do not get `/review-with codex` until Codex grows the
-     primitive. Symmetric and safe but cuts the feature in half.
-   - **(c) Ship symmetric and add an in-container egress shim that
-     intercepts Codex's mutating CLI tools.** Robust but expensive — same
-     bucket as the egress broker docs/138 punted.
-2. **Cancel-all semantics.** When the user hits stop while a reviewer is
-   active and a primary message is queued behind it, do we (a) cancel only
-   the active reviewer and run the queued primary, or (b) cancel everything
-   and clear the queue? Today's stop button is "cancel the current turn"
-   which suggests (a). User-validation needed.
-3. **Tool-allowlist exact subset per agent.** The Claude subset (`Read`,
-   `Glob`, `Grep`, `submit_diff_review`) is committed in §4. Specifically:
-   is **no `Bash` at all** acceptable for a reviewer that might want to
-   `git log` a file's history? The conservative answer (yes, no Bash) is
-   the doc's current commitment; revisit if v1 users hit the limit often.
+1. **Codex-as-reviewer in v1: ship symmetric with prompt-only
+   enforcement.** See §4. User-facing copy on `/review-with codex` names
+   the asymmetry. Tighten to CLI-level enforcement when Codex grows the
+   primitive.
+2. **Stop button cancels the current invocation only, preserves the
+   queue.** See §3 queue table. Matches today's "cancel the current turn"
+   semantics; queued work is the user's, not the agent's, and we don't
+   discard it on a stop.
+3. **No Bash for the Claude reviewer in v1.** See §4. The diff is in the
+   prompt; `git log`-style read-only shell is a v2 enhancement if users
+   hit the limit.
 
 ## Out of scope
 
