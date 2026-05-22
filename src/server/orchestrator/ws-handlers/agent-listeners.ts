@@ -63,6 +63,20 @@ export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
 const MCP_TOOL_NAME_RE = /^mcp__([a-z][a-z0-9]*)__/;
 
 /**
+ * True when an AskUserQuestion tool_use carries a non-empty `questions` array.
+ * Used to gate the "interrupt the CLI so it can't auto-resolve the call"
+ * behavior: an input without `questions` is rejected by the CLI's own input
+ * validator (InputValidationError flows back as a tool_result), and the client
+ * can't render the card without it either — so interrupting on a malformed
+ * call would just kill the turn before the model can self-correct.
+ */
+function isWellFormedAskUserQuestion(t: ClaudeContentBlockToolUse): boolean {
+  if (t.name !== "AskUserQuestion") return false;
+  const questions = (t.input as { questions?: unknown }).questions;
+  return Array.isArray(questions) && questions.length > 0;
+}
+
+/**
  * Truncate a tool-result error payload for inclusion in the per-server
  * `crashed` reason string. Tool errors can be megabytes (stack traces,
  * dumped JSON), and we forward the reason verbatim to the UI badge —
@@ -360,6 +374,16 @@ export function wireAgentListeners(
       // error and skips the queue drain. Only fires for top-level events —
       // parentToolUseId-carrying (subagent) events have already returned above.
       //
+      // Gate on well-formed input: when the model emits an AskUserQuestion
+      // call with missing/malformed `questions` (e.g. an empty input object,
+      // which the CLI's input validator rejects with InputValidationError),
+      // the AskUserQuestion card can't render at all — the client checks
+      // `Array.isArray(tool.input.questions)` before rendering. Interrupting
+      // here would kill the turn before the model gets the validation error
+      // back, stranding the user with no card and no progress. Skip the
+      // interrupt for malformed calls so the CLI's auto-resolved error reaches
+      // the model and it can retry within the same turn.
+      //
       // docs/140 — live steering: in streaming mode the CLI has a bidirectional
       // stdin channel and CAN genuinely block awaiting the user's answer (the
       // answer flows back via `sendUserMessage`/NDJSON on stdin instead of a
@@ -369,7 +393,7 @@ export function wireAgentListeners(
       if (
         runner
         && !opts.useStreaming
-        && toolBlocks.some((t) => t.name === "AskUserQuestion")
+        && toolBlocks.some(isWellFormedAskUserQuestion)
       ) {
         runner.wasInterrupted = true;
         agent.interrupt();

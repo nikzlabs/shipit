@@ -213,6 +213,54 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     client.close();
   });
 
+  it("does not interrupt when AskUserQuestion is emitted with missing/empty questions", async () => {
+    // The model occasionally emits AskUserQuestion with malformed input (no
+    // `questions` field, or an empty array). The Claude CLI's input validator
+    // rejects this with InputValidationError, which flows back to the model
+    // as a tool_result so it can self-correct within the same turn. The
+    // client also can't render the question card without a `questions` array.
+    // Interrupting on a malformed call would kill the turn before the model
+    // gets the error back, stranding the user with no card and no progress.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Pick one" });
+    await waitForClaude(() => lastClaude);
+    expect(lastClaude.interrupted).toBe(false);
+
+    // Missing `questions` entirely (the actual production failure mode).
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "ask-malformed-1",
+          name: "AskUserQuestion",
+          input: {},
+        }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(lastClaude.interrupted).toBe(false);
+
+    // Empty `questions` array — also malformed (schema requires minItems: 1).
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "ask-malformed-2",
+          name: "AskUserQuestion",
+          input: { questions: [] },
+        }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(lastClaude.interrupted).toBe(false);
+
+    client.close();
+  });
+
   it("interrupts the agent when it emits an AskUserQuestion tool_use", async () => {
     // Without the interrupt, the Claude CLI in `-p` mode would auto-resolve
     // the AskUserQuestion call (no interactive terminal to wait on) and the
