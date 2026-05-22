@@ -11,7 +11,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: one-shot fetch of account-level MCP servers on panel mount (external system sync)
 import { useEffect, useState } from "react";
 import { Button } from "./ui/button.js";
-import { useMcpStore } from "../stores/mcp-store.js";
+import { useMcpStore, type McpServerStatusEntry } from "../stores/mcp-store.js";
 import type {
   McpServerConfig,
   McpStdioServerConfig,
@@ -152,6 +152,25 @@ function StatusBadge({ name }: { name: string }) {
   );
 }
 
+/**
+ * The OAuth provider's "Connected" flag and the MCP server's runtime status
+ * are independent signals — the former just means we have stored tokens, the
+ * latter is what the provider's MCP server answered when the CLI actually
+ * tried to use them. They can disagree: tokens get revoked at the provider
+ * side, expire without a working refresh token, or fall out of scope. Detect
+ * that case so the UI can downgrade "Connected" to "Authentication required"
+ * and offer Reconnect.
+ *
+ * The auth-required reason string is set by the Claude adapter
+ * (`mapCliMcpStatus`) as a stable literal — match on `auth` so a future
+ * "auth required" / "needs auth" variant still trips this.
+ */
+function isAuthRequired(status: McpServerStatusEntry | undefined): boolean {
+  if (status?.state !== "failed") return false;
+  const reason = status.reason?.toLowerCase() ?? "";
+  return reason.includes("auth");
+}
+
 export function McpServerSettings({ hasActiveSession }: { hasActiveSession: boolean }) {
   const servers = useMcpStore((s) => s.servers);
   const loading = useMcpStore((s) => s.loading);
@@ -166,6 +185,12 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
   const fetchOAuthProviders = useMcpStore((s) => s.fetchOAuthProviders);
   const startOAuthFlow = useMcpStore((s) => s.startOAuthFlow);
   const disconnectOAuth = useMcpStore((s) => s.disconnectOAuth);
+  // Pulled in so the provider cards re-render when a `mcp_server_status`
+  // event flips an OAuth-managed server to/from auth-required (used by
+  // `isAuthRequired` below to decide whether "Connected" needs downgrading
+  // to a Reconnect CTA).
+  const statuses = useMcpStore((s) => s.statuses);
+  const clearStatus = useMcpStore((s) => s.clearStatus);
 
   const [form, setForm] = useState<FormState | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -211,6 +236,13 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
             // the OAuth token is still saved and the UI shows "Connected",
             // so this is best-effort.
           }
+        }
+        // Reconnect path: drop the stale `failed — authentication required`
+        // status that's keeping the card red. The next CLI init event will
+        // emit the real status; until then we show plain "Connected" rather
+        // than lie about being `loaded`.
+        if (provider) {
+          clearStatus(provider.defaultServerName);
         }
       }
     } finally {
@@ -358,45 +390,141 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
             {oauthProviders.map((provider) => {
               const inFlight = oauthInFlight === provider.id;
               const connected = provider.status.connected;
+              // When connected, fold the auto-created MCP server row into this
+              // card so the user sees one element per provider instead of a
+              // duplicated provider card + server row pair.
+              const managedServer = connected
+                ? servers.find(
+                    (s) => oauthSourceForServer(s) === provider.id,
+                  )
+                : undefined;
+              const result = managedServer ? testResults[managedServer.name] : undefined;
+              const isTesting = result === "loading";
+              const isToggling = managedServer
+                ? toggleInFlight[managedServer.name]
+                : false;
+              // Stored tokens exist (`connected`) but the MCP server rejected
+              // them (`failed — authentication required`). The two signals
+              // are otherwise independent — without this reconciliation the
+              // card would say "● Connected" while the server row says
+              // "● failed — authentication required", which is what the user
+              // hit. Downgrade the badge and surface a Reconnect CTA.
+              const serverStatus: McpServerStatusEntry | undefined = managedServer
+                ? statuses[managedServer.name]
+                : undefined;
+              const authExpired = connected && isAuthRequired(serverStatus);
               return (
                 <li
                   key={provider.id}
-                  className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 flex items-center justify-between gap-3"
+                  className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 flex flex-col gap-2"
                   data-testid={`mcp-oauth-${provider.id}`}
                 >
-                  <div className="flex flex-col gap-0.5 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-(--color-text-primary)">
-                        {provider.label}
-                      </span>
-                      {connected && (
-                        <span className="text-xs text-(--color-success)">● Connected</span>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium text-(--color-text-primary)">
+                          {provider.label}
+                        </span>
+                        {connected && !authExpired && (
+                          <span className="text-xs text-(--color-success)">● Connected</span>
+                        )}
+                        {authExpired && (
+                          <span
+                            className="text-xs text-(--color-error)"
+                            title={serverStatus?.reason}
+                          >
+                            ● Authentication required — reconnect
+                          </span>
+                        )}
+                        {/* When auth is expired the dedicated badge above
+                            already says what's wrong; rendering the generic
+                            StatusBadge too would just duplicate the text. */}
+                        {managedServer && !authExpired && (
+                          <StatusBadge name={managedServer.name} />
+                        )}
+                        {managedServer && !managedServer.enabled && (
+                          <span className="text-xs text-(--color-text-tertiary)">(disabled)</span>
+                        )}
+                      </div>
+                      {provider.description && (
+                        <p className="text-xs text-(--color-text-tertiary)">
+                          {provider.description}
+                        </p>
                       )}
                     </div>
-                    {provider.description && (
-                      <p className="text-xs text-(--color-text-tertiary)">
-                        {provider.description}
-                      </p>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {managedServer && !authExpired && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => void toggleEnabled(managedServer)}
+                            disabled={isToggling || inFlight}
+                          >
+                            {isToggling ? "…" : managedServer.enabled ? "Disable" : "Enable"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => void runTest(managedServer)}
+                            disabled={!hasActiveSession || isTesting || inFlight}
+                            title={hasActiveSession ? undefined : "Start a session to test"}
+                          >
+                            {isTesting ? "Testing…" : "Test"}
+                          </Button>
+                        </>
+                      )}
+                      {authExpired ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            disabled={inFlight}
+                            onClick={() => void connectProvider(provider.id)}
+                          >
+                            {inFlight ? "Connecting…" : "Reconnect"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={inFlight}
+                            onClick={() => void disconnectProvider(provider.id)}
+                          >
+                            Disconnect
+                          </Button>
+                        </>
+                      ) : connected ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={inFlight}
+                          onClick={() => void disconnectProvider(provider.id)}
+                        >
+                          {inFlight ? "…" : "Disconnect"}
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          disabled={inFlight}
+                          onClick={() => void connectProvider(provider.id)}
+                        >
+                          {inFlight ? "Connecting…" : `Connect ${provider.label}`}
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                  {connected ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={inFlight}
-                      onClick={() => void disconnectProvider(provider.id)}
-                    >
-                      {inFlight ? "…" : "Disconnect"}
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      disabled={inFlight}
-                      onClick={() => void connectProvider(provider.id)}
-                    >
-                      {inFlight ? "Connecting…" : `Connect ${provider.label}`}
-                    </Button>
+                  {result === "loading" && (
+                    <p className="text-xs text-(--color-text-tertiary)">Testing…</p>
+                  )}
+                  {result && result !== "loading" && result.ok && (
+                    <p className="text-xs text-(--color-success)">
+                      Connected — {result.tools.length} tool(s):{" "}
+                      {result.tools.map((t) => t.name).join(", ") || "none"}
+                    </p>
+                  )}
+                  {result && result !== "loading" && !result.ok && (
+                    <p className="text-xs text-(--color-error)">Test failed: {result.error}</p>
                   )}
                 </li>
               );
@@ -405,22 +533,41 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
         </div>
       )}
 
-      {loading && servers.length === 0 ? (
-        <p className="text-sm text-(--color-text-tertiary)">Loading…</p>
-      ) : servers.length === 0 && !form ? (
-        <p className="text-sm text-(--color-text-tertiary)">No MCP servers configured yet.</p>
-      ) : (
-        <ul className="flex flex-col gap-2">
-          {servers.map((server) => {
-            const result = testResults[server.name];
-            const isTesting = result === "loading";
-            const isToggling = toggleInFlight[server.name];
-            const isDeleting = deleteInFlight[server.name];
-            const oauthSource = oauthSourceForServer(server);
-            const managedBy = oauthSource
-              ? oauthProviders.find((p) => p.id === oauthSource)?.label ?? null
-              : null;
-            return (
+      {(() => {
+        // Hide OAuth-managed servers from the standalone list — their
+        // controls (Test / Enable / Disable / status) are now folded into
+        // the connection card above. We still render the row if the
+        // provider isn't connected (e.g. tokens revoked at provider side)
+        // so the user can still see/delete the orphan entry.
+        const connectedSources = new Set(
+          oauthProviders.filter((p) => p.status.connected).map((p) => p.id),
+        );
+        const visibleServers = servers.filter((s) => {
+          const src = oauthSourceForServer(s);
+          return !src || !connectedSources.has(src);
+        });
+        if (loading && visibleServers.length === 0) {
+          return <p className="text-sm text-(--color-text-tertiary)">Loading…</p>;
+        }
+        if (visibleServers.length === 0 && !form) {
+          return (
+            <p className="text-sm text-(--color-text-tertiary)">
+              No MCP servers configured yet.
+            </p>
+          );
+        }
+        return (
+          <ul className="flex flex-col gap-2">
+            {visibleServers.map((server) => {
+              const result = testResults[server.name];
+              const isTesting = result === "loading";
+              const isToggling = toggleInFlight[server.name];
+              const isDeleting = deleteInFlight[server.name];
+              const oauthSource = oauthSourceForServer(server);
+              const managedBy = oauthSource
+                ? oauthProviders.find((p) => p.id === oauthSource)?.label ?? null
+                : null;
+              return (
               <li
                 key={server.name}
                 className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 flex flex-col gap-2"
@@ -499,10 +646,11 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                   <p className="text-xs text-(--color-error)">Test failed: {result.error}</p>
                 )}
               </li>
-            );
-          })}
-        </ul>
-      )}
+              );
+            })}
+          </ul>
+        );
+      })()}
 
       {form ? (
         <div
