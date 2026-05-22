@@ -98,8 +98,8 @@ describe("GET /api/sessions/:id/diagnostics", () => {
     // No shipit.yaml in the workspace → parsedConfig falls back to defaults
     // (the same shape the parser returns for an empty file).
     expect(body.parsedConfig).toMatchObject({
-      agent: { memory: 1024, cpu: 0.5, pids: 256, install: [] },
-      effectiveAgent: { memory: 1024, cpu: 0.5, pids: 256, dockerAccess: false },
+      agent: { memory: 1536, cpu: 0.5, pids: 256, install: [] },
+      effectiveAgent: { memory: 1536, cpu: 0.5, pids: 256, dockerAccess: false },
       warnings: [],
     });
   });
