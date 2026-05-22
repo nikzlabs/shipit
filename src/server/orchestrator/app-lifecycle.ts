@@ -279,7 +279,9 @@ async function createContainerForRunner(opts: {
       credentialsDir: opts.credentialsDir,
       depCacheDir: opts.depCacheDir,
     });
+    const createStart = Date.now();
     const sc = await mgr.create(config);
+    console.log(`[timing] container.create for ${sessionId} took ${Date.now() - createStart}ms`);
     console.log(`[container] Container ready for ${sessionId} at ${sc.workerUrl}`);
     runner.setWorkerUrl(sc.workerUrl);
     mgr.clearCreateError(sessionId);

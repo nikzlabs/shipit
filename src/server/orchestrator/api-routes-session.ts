@@ -668,6 +668,8 @@ export async function registerSessionRoutes(
         if (deps.warmSessionForRepo) void deps.warmSessionForRepo(url, { withStandby: true });
       };
 
+      const claimStart = Date.now();
+      let claimPath = "unknown";
       try {
         const result = await serializeClaim(url, async () => {
           const inFlightWarming = deps.waitForWarmSession?.(url);
@@ -677,6 +679,7 @@ export async function registerSessionRoutes(
           // Check for .git/ directory (full clone) to ensure the clone is ready.
           const reusable = sessionManager.findUngraduatedWarm(url, repo.warmSessionId ?? undefined);
           if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
+            claimPath = "reuse";
             const fetchDurationMs = await refreshClaimedSession(reusable.id, reusable.workspaceDir);
             return { sessionId: reusable.id, sessionDir: reusable.workspaceDir, fetchDurationMs };
           }
@@ -686,6 +689,7 @@ export async function registerSessionRoutes(
           if (currentRepo?.warmSessionId) {
             const warmSession = sessionManager.get(currentRepo.warmSessionId);
             if (warmSession?.workspaceDir) {
+              claimPath = "warm";
               const sessionId = currentRepo.warmSessionId;
               deps.repoStore.setWarmSessionId(url, undefined);
               const fetchDurationMs = await refreshClaimedSession(sessionId, warmSession.workspaceDir);
@@ -702,6 +706,7 @@ export async function registerSessionRoutes(
             if (freshRepo?.warmSessionId) {
               const warmSession = sessionManager.get(freshRepo.warmSessionId);
               if (warmSession?.workspaceDir) {
+                claimPath = "waiting";
                 const sessionId = freshRepo.warmSessionId;
                 deps.repoStore.setWarmSessionId(url, undefined);
                 const fetchDurationMs = await refreshClaimedSession(sessionId, warmSession.workspaceDir);
@@ -712,6 +717,7 @@ export async function registerSessionRoutes(
           }
 
           // Slow path: clone from bare cache synchronously.
+          claimPath = "slow-clone";
           if (request.raw.destroyed) return undefined;
           const cacheDir = deps.getSharedRepoDir(url);
           const branchPrefix = generateBranchPrefix();
@@ -797,6 +803,10 @@ export async function registerSessionRoutes(
         if (result?.sessionId) {
           sessionManager.markStarted(result.sessionId);
         }
+        console.log(
+          `[timing] claim-session for ${url} path=${claimPath} ` +
+            `total=${Date.now() - claimStart}ms fetch=${result?.fetchDurationMs ?? 0}ms`,
+        );
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
