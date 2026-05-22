@@ -12,15 +12,18 @@ interface QueueIndicatorProps {
 }
 
 /**
- * Shows the current prompt queue below the chat and above the input.
- * Displays a count badge with each queued item's truncated text,
- * and lets the user cancel individual items or clear the whole queue.
+ * Shows the current prompt queue just below the dialogue, sitting inside the
+ * bottom stack alongside the PR card and rebase banner. The card uses `mx-4`
+ * so it visually aligns with the MessageInput box below it, rather than
+ * stretching to the full panel width and breaking the stack's silhouette.
+ * Displays a count badge with each queued item's truncated text, and lets the
+ * user cancel individual items or clear the whole queue.
  */
 export function QueueIndicator({ queue, onCancel }: QueueIndicatorProps) {
   if (queue.length === 0) return null;
 
   return (
-    <div className="border-t border-(--color-border-primary) px-4 py-2 bg-(--color-bg-secondary)">
+    <div className="mx-4 rounded-xl border border-(--color-border-primary) bg-(--color-bg-secondary)/20 px-4 py-2">
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-xs font-medium text-(--color-text-secondary) flex items-center gap-1.5">
           <PlayCircleIcon size={ICON_SIZE.XS} weight="fill" className="animate-pulse text-(--color-accent)" />
