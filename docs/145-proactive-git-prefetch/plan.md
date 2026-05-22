@@ -127,8 +127,40 @@ resource limits consistent with the clone (no HEAD move ⇒ no re-provision).
 warm time from a real-remote fetch, and every claim re-warms (cutting a fresh
 clone from the now-pre-fetched cache). `coveredRecently` is the "pre-fetch is
 actively maintaining this repo" signal; combined with re-warm-on-claim the pool
-clones stay recent. Worst-case staleness for a long-idle warm session is bounded
-and accepted per the tradeoff above.
+clones stay recent.
+
+### Follow-up (2026-05-22): the long-idle-pool regression
+
+The "bounded-by-minutes" framing in the section above held only for pools that
+turn over. A warm session that sits idle in the pool while the prefetcher keeps
+advancing the bare cache develops a frozen `origin/HEAD` — and
+`coveredRecently` on its own would still let the claim skip the workspace
+fetch, branching the new session from the months-stale snapshot. The first
+real claim observed was 2 months behind `origin/main`.
+
+Fix: gate the claim-path skip on a **second** check —
+[`isWorkspaceCloneInSyncWithCache`](../../src/server/orchestrator/git-utils.ts).
+It does two local `rev-parse`s (cache `HEAD` vs clone `origin/HEAD`, falling
+back to `origin/main` / `origin/master`) and returns `true` only when they
+agree. Wired into
+[`refreshClaimedSession`](../../src/server/orchestrator/api-routes-session.ts):
+
+```ts
+if (deps.shouldSkipClaimFetch?.(url)
+    && await isWorkspaceCloneInSyncWithCache(workspaceDir, deps.getSharedRepoDir(url))) {
+  return 0;
+}
+```
+
+The common case (recently warmed pool, clone matches cache) still pays only
+two sub-millisecond local reads, preserving the docs/145 win. A drifted warm
+clone falls through to `refreshCloneToLatestMain` — the same code path the
+original design relied on. No fast-forward of a live clone happens after the
+agent has started; the agreement check is purely pre-claim.
+
+Worst-case staleness for a long-idle warm session is now genuinely bounded
+by minutes — the prefetcher interval — rather than by however long the
+session sat unclaimed.
 
 ## Open questions (deferred)
 
@@ -141,8 +173,8 @@ and accepted per the tradeoff above.
 | File | Role |
 |------|------|
 | [repo-prefetch.ts](../../src/server/orchestrator/repo-prefetch.ts) | **New.** `createRepoPrefetcher` — periodic + on-change bare-cache fetch, `coveredRecently` freshness gate |
-| [api-routes-session.ts](../../src/server/orchestrator/api-routes-session.ts) | `refreshClaimedSession` / slow-clone path skip the fetch when `shouldSkipClaimFetch` |
-| [git-utils.ts](../../src/server/orchestrator/git-utils.ts) | `fetchAndResolveDefaultBranch({ skipFetch })` — resolve from local refs, no network |
+| [api-routes-session.ts](../../src/server/orchestrator/api-routes-session.ts) | `refreshClaimedSession` / slow-clone path skip the fetch when `shouldSkipClaimFetch` **and** the warm clone's `origin/HEAD` matches the cache HEAD |
+| [git-utils.ts](../../src/server/orchestrator/git-utils.ts) | `fetchAndResolveDefaultBranch({ skipFetch })` — resolve from local refs, no network. `isWorkspaceCloneInSyncWithCache` — long-idle-warm-pool agreement check |
 | [repo-git.ts](../../src/server/orchestrator/repo-git.ts) | `lastFetchAgeMs()` reads the `.shipit-last-fetch` marker; `fetchCache` (60s TTL) |
 | [pr-status-poller.ts](../../src/server/orchestrator/pr-status-poller.ts) / [app-lifecycle.ts](../../src/server/orchestrator/app-lifecycle.ts) | on-change trigger: `onRepoMainAdvanced` → `prefetchRepo` on merge |
 

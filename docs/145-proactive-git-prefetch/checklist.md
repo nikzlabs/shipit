@@ -66,3 +66,14 @@
 - [ ] Manual: claim immediately after a push lands → session is fresh or
       gracefully bounded-stale, never broken. (Bounded-stale by design — the
       merge→`prefetchRepo` hook refreshes the cache; not separately exercised.)
+
+## Follow-up (2026-05-22): long-idle-pool regression
+
+- [x] Repro: live claim cut a branch at a commit ~2 months behind `origin/main`.
+      Root cause: `coveredRecently` proves the **bare cache** is fresh but says
+      nothing about a warm clone whose `origin/HEAD` was frozen at warm time.
+- [x] Fix: add second gate `isWorkspaceCloneInSyncWithCache(workspaceDir,
+      cacheDir)` to `refreshClaimedSession` — two local `rev-parse`s, no
+      network. Both gates must hold for the claim to skip the fetch.
+- [x] Unit: `git-utils.test.ts` — in-sync, drifted (long-idle regression),
+      missing cache, fallback to `origin/main`.
