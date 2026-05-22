@@ -670,28 +670,20 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     }
   });
 
-  // Preview URL — compose services are accessed via the preview proxy
-  const previewUrl: string | undefined = undefined;
-
-  // Auto-create-PR gate: drives both the system-prompt nudge and the Stop-hook
-  // enforcement that lives in the session container at
-  // /etc/shipit/managed-settings.json. Single source of truth — the harness
-  // fallback in post-turn.ts uses the same predicate.
+  // Auto-create-PR gate: drives the Stop-hook enforcement in the session
+  // container (/etc/shipit/managed-settings.json) and the harness fallback in
+  // post-turn.ts. The system-prompt nudge is unconditional — keeping the
+  // prompt static preserves the Anthropic prompt cache across turns.
   const autoCreatePrActive = ctx.credentialStore.getAutoCreatePr()
     && ctx.githubAuthManager.authenticated;
 
-  // Build the system prompt, incorporating agent system instructions and conversation replay.
-  // The auto-create-PR nudge is gated on the same `autoCreatePr` setting that drives the
-  // harness-side fallback in post-turn.ts — so users who turn off auto-PR don't get the
-  // prompt either. See docs/116-fake-gh-cli-shim/plan.md (Phase 2).
   const agentInstructions = ctx.credentialStore.getAgentSystemInstructionsEnabled()
     ? buildAgentSystemInstructions({
-        previewUrl,
-        autoCreatePr: autoCreatePrActive,
         // docs/117 Phase 2 — teach the running agent when to reach for
         // `shipit session create`. The guidance differs per agent because
         // Claude has the in-process `Task` tool (the right fan-out primitive
-        // for in-turn work) and Codex does not.
+        // for in-turn work) and Codex does not. `agentId` is fixed for the
+        // session's lifetime, so this stays the only branching axis.
         agentId: currentAgent.agentId,
       })
     : undefined;
@@ -820,7 +812,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     systemPrompt,
     cwd: activeDir,
     permissionMode: effectivePermissionMode,
-    previewUrl,
     model: ctx.getSelectedModel(),
     settingsPath,
     autoCreatePr: autoCreatePrActive,

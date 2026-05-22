@@ -852,7 +852,7 @@ export class CodexAdapter
     // appended to the model's base instructions rather than replacing them
     // (that's `baseInstructions`, which we deliberately leave alone). Without
     // this, Codex sessions had no idea they were running inside ShipIt, unlike
-    // Claude (which gets the same text via `--system-prompt`).
+    // Claude (which gets the same text via `--append-system-prompt`).
     const threadBase: Record<string, unknown> = {};
     if (params.systemPrompt) {
       threadBase.developerInstructions = params.systemPrompt;
