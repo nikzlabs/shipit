@@ -19,6 +19,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useAttentionInfo } from "../hooks/useAttentionInfo.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
 const SIDEBAR_MIN = 180;
@@ -114,50 +115,6 @@ interface SessionItemProps {
    * archive controls are identical to a regular row.
    */
   indented?: boolean;
-}
-
-/** Returns the highest-priority attention reason for a session, or null if no attention needed. */
-function useAttentionInfo(sessionId: string): string | null {
-  const card = usePrStore((s) => s.cardBySession[sessionId]);
-  const status = usePrStore((s) => s.statusBySession[sessionId]);
-  const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
-
-  const checks = card?.checks;
-  const autoFix = card?.autoFix;
-  const autoMerge = card?.autoMerge;
-  const prState = status?.prState;
-  const mergeable = status?.mergeable;
-
-  // No attention needed while the agent is working
-  if (isAgentRunning) return null;
-
-  // Priority 1: CI failed, auto-fix not running
-  if (checks?.state === "failure" && autoFix?.status !== "running") {
-    if (autoFix?.status === "exhausted") {
-      return "CI fix failed after 3 attempts";
-    }
-    return "CI checks failed";
-  }
-
-  // Priority 2: Merge conflicts. Only "conflicting" raises attention — "unknown"
-  // is the transient post-push computation window and shouldn't flag the session.
-  if (prState === "open" && mergeable === "conflicting") {
-    return "PR has merge conflicts";
-  }
-
-  // Priority 3: Auto-merge error
-  if (autoMerge?.error) {
-    return "Auto-merge needs repo configuration";
-  }
-
-  // Priority 4: CI pending — wait for results before flagging
-  if (checks?.state === "pending") return null;
-
-  // Priority 5: PR merged/closed — no action needed
-  if (prState === "merged" || prState === "closed") return null;
-
-  // Agent is idle and session is not resolved — user needs to act
-  return "Waiting for your input";
 }
 
 /** Consolidated status dot replacing separate AgentDot + CiDot. */

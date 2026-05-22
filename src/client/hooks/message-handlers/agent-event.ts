@@ -4,7 +4,7 @@ import { activityFromTool } from "../../components/StreamingIndicator.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
-export const handleAgentEvent: Handler<WsAgentEvent> = (ctx, data) => {
+export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
   const session = useSessionStore.getState();
   // Guard: skip agent events until HTTP history is loaded. On WS reconnect,
   // events arrive immediately while loadSessionHistory() is still in-flight.
@@ -35,10 +35,6 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (ctx, data) => {
     } else if (toolUseBlocks.length > 0) {
       const lastTool = toolUseBlocks[toolUseBlocks.length - 1];
       session.setActivity(activityFromTool(lastTool.name, lastTool.input));
-
-      if (toolUseBlocks.some((b) => b.name === "ExitPlanMode")) {
-        ctx.notify("The agent has a plan ready for review.", ctx.buildNotifyContext());
-      }
     } else if (textBlocks) {
       session.setActivity({ label: "Thinking..." });
     }
@@ -136,7 +132,6 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (ctx, data) => {
   if (event.type === "agent_result") {
     session.setIsLoading(false);
     session.setActivity(undefined);
-    ctx.notify("The agent has finished responding.", ctx.buildNotifyContext());
     session.setMessages((prev) =>
       prev.map((m) =>
         m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m

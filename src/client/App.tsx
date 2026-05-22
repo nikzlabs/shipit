@@ -9,6 +9,7 @@ import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { useSearch } from "./hooks/useSearch.js";
 import { useIsMobile } from "./hooks/useMediaQuery.js";
 import { useNotification } from "./hooks/useNotification.js";
+import { useAttentionNotifications } from "./hooks/useAttentionNotifications.js";
 import { useTheme } from "./hooks/useTheme.js";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
@@ -252,6 +253,7 @@ export default function App() {
   }, [newSessionRepoSlug, repos]);
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
+  useAttentionNotifications(notify);
   const { theme, setTheme } = useTheme();
   const { errors: previewErrors, clearErrors: clearPreviewErrors } = usePreviewErrors();
 
@@ -292,7 +294,6 @@ export default function App() {
     drainMessages,
     send,
     terminalRef,
-    notify,
   });
 
   // Initialize sessionId from URL on mount
