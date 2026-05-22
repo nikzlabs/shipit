@@ -73,7 +73,7 @@ function BashResult({ content, isError, maxLines }: { content: string; isError?:
       <pre
         className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${
           isError ? "text-(--color-error)" : "text-(--color-text-primary)"
-        } ${!expanded && truncated ? "max-h-[20rem]" : ""}`}
+        } ${!expanded && truncated ? "max-h-[20rem] overflow-hidden" : ""}`}
       >
         {displayText}
       </pre>
@@ -82,7 +82,7 @@ function BashResult({ content, isError, maxLines }: { content: string; isError?:
           variant="ghost"
           size="sm"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50"
+          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
@@ -116,7 +116,7 @@ function ReadResult({ content, maxLines }: { content: string; maxLines?: number 
 
   return (
     <div className="mt-1 rounded overflow-hidden border border-(--color-border-secondary)/50 bg-(--color-bg-primary)">
-      <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${!expanded && truncated ? "max-h-[16rem]" : ""}`}>
+      <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${!expanded && truncated ? "max-h-[16rem] overflow-hidden" : ""}`}>
         {highlighted ? (
           <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} />
         ) : (
@@ -128,7 +128,7 @@ function ReadResult({ content, maxLines }: { content: string; maxLines?: number 
           variant="ghost"
           size="sm"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50"
+          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
@@ -153,7 +153,7 @@ function GrepResult({ content, maxLines }: { content: string; maxLines?: number 
 
   return (
     <div className="mt-1 rounded overflow-hidden border border-(--color-border-secondary)/50 bg-(--color-bg-primary)">
-      <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${!expanded && truncated ? "max-h-[16rem]" : ""}`}>
+      <pre className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${!expanded && truncated ? "max-h-[16rem] overflow-hidden" : ""}`}>
         {lines.map((line, i) => {
           // Match ripgrep-style output: file:line:content or file:line-content
           const match = /^([^:]+):(\d+)[:-](.*)/.exec(line);
@@ -188,7 +188,7 @@ function GrepResult({ content, maxLines }: { content: string; maxLines?: number 
           variant="ghost"
           size="sm"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50"
+          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
@@ -219,7 +219,7 @@ function GenericResult({ content, isError, maxLines }: { content: string; isErro
       <pre
         className={`p-2 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed ${
           isError ? "text-(--color-error)" : "text-(--color-text-primary)"
-        } ${!expanded && truncated ? "max-h-[12rem]" : ""}`}
+        } ${!expanded && truncated ? "max-h-[12rem] overflow-hidden" : ""}`}
       >
         {displayText}
       </pre>
@@ -228,7 +228,7 @@ function GenericResult({ content, isError, maxLines }: { content: string; isErro
           variant="ghost"
           size="sm"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary)/50 hover:bg-(--color-bg-tertiary)/50 border-t border-(--color-border-secondary)/50"
+          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
