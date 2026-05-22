@@ -203,7 +203,7 @@ describe("CodexAdapter", () => {
   });
 
   it("passes systemPrompt as developerInstructions on thread/start", async () => {
-    // ShipIt's environment instructions reach Claude via `--system-prompt`;
+    // ShipIt's environment instructions reach Claude via `--append-system-prompt`;
     // Codex's equivalent is `developerInstructions` on thread/start. Without
     // this, Codex sessions had no idea they were running inside ShipIt.
     adapter = new CodexAdapter();

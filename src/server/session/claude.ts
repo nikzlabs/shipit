@@ -155,7 +155,15 @@ export class ClaudeProcess extends EventEmitter {
     const effectiveSystemPrompt = systemPrompt;
 
     if (effectiveSystemPrompt) {
-      args.push("--system-prompt", effectiveSystemPrompt);
+      // `--append-system-prompt` (not `--system-prompt`) so the CLI's default
+      // system prompt is preserved — that gives us Anthropic's cross-user
+      // prompt-cache benefits on the stable preamble, and lets
+      // `--exclude-dynamic-system-prompt-sections` move per-machine sections
+      // (cwd, git status, env, memory paths) out of the cached prefix and into
+      // the first user message. `--exclude-dynamic-system-prompt-sections` is
+      // a no-op with `--system-prompt`, which is why we don't use that flag.
+      args.push("--append-system-prompt", effectiveSystemPrompt);
+      args.push("--exclude-dynamic-system-prompt-sections");
     }
 
     console.log("[claude] spawning:", "claude", args.join(" ").slice(0, 200), "| cwd:", cwd);
@@ -348,7 +356,12 @@ export class StreamingClaudeProcess extends EventEmitter {
     if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
     if (model) args.push("--model", model);
     if (settingsPath) args.push("--settings", settingsPath);
-    if (systemPrompt) args.push("--system-prompt", systemPrompt);
+    if (systemPrompt) {
+      // See the PTY-spawn branch above for why we use --append-system-prompt
+      // and --exclude-dynamic-system-prompt-sections instead of --system-prompt.
+      args.push("--append-system-prompt", systemPrompt);
+      args.push("--exclude-dynamic-system-prompt-sections");
+    }
 
     const spawnEnv: Record<string, string> = {
       ...process.env,

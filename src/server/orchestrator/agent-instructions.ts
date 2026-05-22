@@ -3,19 +3,18 @@
  * These help the agent understand the ShipIt environment it operates in.
  *
  * Visible and toggleable in Settings > Instructions for transparency.
+ *
+ * The output is intentionally static within a session — the only axis is
+ * `agentId`, which is fixed for a session's lifetime — so the Anthropic
+ * prompt cache stays warm across turns. Dynamic per-machine context (cwd,
+ * git status, env, memory paths) is moved into the first user message by
+ * the CLI's `--exclude-dynamic-system-prompt-sections` flag, not added to
+ * this prompt.
  */
 
 import type { AgentId } from "../shared/types.js";
 
 export interface AgentSystemInstructionOptions {
-  /** Optional live preview URL — when present, the agent gets browser tools. */
-  previewUrl?: string;
-  /**
-   * When true, append a section instructing the agent to run `gh pr create`
-   * at end-of-turn. Gated on the same `autoCreatePr` setting that controls
-   * the harness-side fallback (see docs/116-fake-gh-cli-shim/plan.md, Phase 2).
-   */
-  autoCreatePr?: boolean;
   /**
    * Identity of the agent the prompt is being assembled for. Drives the
    * per-agent "when to reach for `shipit session create`" guidance in the
@@ -24,7 +23,10 @@ export interface AgentSystemInstructionOptions {
    * in-process subagent primitive — is told `shipit session create` is its
    * only fan-out primitive but is still heavy and user-visible. Omit to skip
    * the Parallel sessions section entirely (the default rendering used by
-   * the Settings UI baseline and the no-options test fixture).
+   * the no-options test fixture).
+   *
+   * `agentId` is fixed for a session's lifetime, so making it the only
+   * branching axis preserves prompt-cache stability within a session.
    *
    * See docs/117-agent-spawned-sessions/plan.md.
    */
@@ -32,76 +34,21 @@ export interface AgentSystemInstructionOptions {
 }
 
 /**
- * Build the agent system instructions, optionally including the preview URL
- * for browser tool access and an auto-create-PR nudge.
- *
- * Backwards-compatible: passing a string is treated as `previewUrl` for the
- * benefit of older callers.
+ * Build the agent system instructions. The only conditional axis is
+ * `agentId` — everything else (Pull requests, Browser access) is
+ * unconditional so the rendered string is stable across turns.
  */
 export function buildAgentSystemInstructions(
-  optionsOrPreviewUrl?: AgentSystemInstructionOptions | string,
+  options: AgentSystemInstructionOptions = {},
 ): string {
-  const options: AgentSystemInstructionOptions =
-    typeof optionsOrPreviewUrl === "string"
-      ? { previewUrl: optionsOrPreviewUrl }
-      : optionsOrPreviewUrl ?? {};
-  const { previewUrl, autoCreatePr, agentId } = options;
-
-  const browserSection = previewUrl
-    ? `\
-## Browser access
-
-You have a built-in browser you can use to see and interact with the live preview. The preview is running at:
-
-  ${previewUrl}
-
-**Use the browser proactively** to verify your work — especially after UI changes, styling fixes, or building new features. Don't wait for the user to ask you to check. A quick browser_snapshot after a meaningful change catches bugs early.
-
-Available tools:
-- **browser_navigate** — open a URL
-- **browser_snapshot** — read the page content (accessibility tree, preferred over screenshots for understanding layout)
-- **browser_click** / **browser_type** — interact with elements
-- **browser_take_screenshot** — capture a visual screenshot when layout/styling matters
-
-**Save screenshots to /tmp/**, not the workspace directory. Screenshots saved to /workspace end up in git commits and pollute the repo.
-
-If the project serves on multiple ports, adjust the port number as needed.
-If you get a connection error, the dev server may still be starting — wait a moment and retry.
-`
-    : `\
-## Browser access
-
-You have a built-in browser you can use to interact with web pages. The preview is not running yet — you can still use browser tools to navigate to external URLs. Once the user starts a preview, the URL will be provided in a subsequent turn.
-`;
-
-  const pullRequestSection = autoCreatePr
-    ? `
-## Pull requests
-
-This falls under action-oriented: do, don't ask.
-
-When you finish a turn that changed any file in the repo and there isn't already an open PR for this branch, open one. Do not ask first. Run \`gh pr create -t "<title>" -b "<body>"\` as the next action after the work is done. Do NOT create or switch branches first — you are already on the session branch, and \`gh pr create\` pushes it for you.
-
-Asking "want me to open a PR?" is wrong — by the time you're considering it, the answer is yes. The only times you skip are (a) a PR already exists for the branch, or (b) the user explicitly said not to. There is no "this change is too small" exception — typo fixes, config tweaks, one-line bug fixes, comment-only edits all get a PR. If you wrote any change at all, open the PR.
-
-Write a clear, descriptive title and a markdown body with the following sections:
-
-- \`## Summary\` — 1-2 sentences explaining *why* this change exists.
-- \`## Changes\` — bullet list of the key changes.
-- \`## Test plan\` — how to verify the change works.
-
-\`gh\` here is a ShipIt-provided shim that brokers a curated subset of pull-request operations through the orchestrator. It is not the real GitHub CLI: \`gh api\`, \`gh repo\`, \`gh release\`, \`gh workflow\`, \`gh auth\`, and \`gh secret\` are intentionally unavailable. See /shipit-docs/github.md for the full list of supported subcommands.
-
-Use \`gh pr create\` once per session — repeated calls short-circuit if a PR already exists for the branch.
-`
-    : "";
+  const { agentId } = options;
 
   // Per-agent "when to reach for `shipit session create`" guidance. The
   // section is only emitted when an `agentId` is supplied — the no-options
-  // rendering used by the Settings UI baseline keeps the previous shape.
-  // The wording differs by agent because Claude has the in-process `Task`
-  // primitive (the right tool for in-turn fan-out) and Codex does not.
-  // See docs/117-agent-spawned-sessions/plan.md.
+  // rendering used by the Settings UI baseline and the no-options test
+  // fixture skips it. The wording differs by agent because Claude has the
+  // in-process `Task` primitive (the right tool for in-turn fan-out) and
+  // Codex does not. See docs/117-agent-spawned-sessions/plan.md.
   const parallelSessionsSection = agentId === "claude"
     ? `
 ## Parallel sessions
@@ -154,7 +101,38 @@ If you need to install dependencies, they should be listed in \`agent.install\` 
 
 Users can upload files from their browser. Uploaded files are available at /uploads/ inside the container. This directory is outside the git repo (/workspace/) so files there are never committed. Use /tmp for temporary scratch work (e.g., unpacking archives).
 
-${browserSection}${pullRequestSection}${parallelSessionsSection}
+## Browser access
+
+You have a built-in browser you can use to see and interact with web pages, including the live preview when one is running. **Use the browser proactively** to verify your work — especially after UI changes, styling fixes, or building new features. Don't wait for the user to ask you to check. A quick browser_snapshot after a meaningful change catches bugs early.
+
+Available tools:
+- **browser_navigate** — open a URL
+- **browser_snapshot** — read the page content (accessibility tree, preferred over screenshots for understanding layout)
+- **browser_click** / **browser_type** — interact with elements
+- **browser_take_screenshot** — capture a visual screenshot when layout/styling matters
+
+**Save screenshots to /tmp/**, not the workspace directory. Screenshots saved to /workspace end up in git commits and pollute the repo.
+
+If you get a connection error, the dev server may still be starting — wait a moment and retry.
+
+## Pull requests
+
+This falls under action-oriented: do, don't ask.
+
+When you finish a turn that changed any file in the repo and there isn't already an open PR for this branch, open one. Do not ask first. Run \`gh pr create -t "<title>" -b "<body>"\` as the next action after the work is done. Do NOT create or switch branches first — you are already on the session branch, and \`gh pr create\` pushes it for you.
+
+Asking "want me to open a PR?" is wrong — by the time you're considering it, the answer is yes. The only times you skip are (a) a PR already exists for the branch, or (b) the user explicitly said not to. There is no "this change is too small" exception — typo fixes, config tweaks, one-line bug fixes, comment-only edits all get a PR. If you wrote any change at all, open the PR.
+
+Write a clear, descriptive title and a markdown body with the following sections:
+
+- \`## Summary\` — 1-2 sentences explaining *why* this change exists.
+- \`## Changes\` — bullet list of the key changes.
+- \`## Test plan\` — how to verify the change works.
+
+\`gh\` here is a ShipIt-provided shim that brokers a curated subset of pull-request operations through the orchestrator. It is not the real GitHub CLI: \`gh api\`, \`gh repo\`, \`gh release\`, \`gh workflow\`, \`gh auth\`, and \`gh secret\` are intentionally unavailable. See /shipit-docs/github.md for the full list of supported subcommands.
+
+Use \`gh pr create\` once per session — repeated calls short-circuit if a PR already exists for the branch.
+${parallelSessionsSection}
 ## ShipIt platform docs
 
 Reference documentation about the ShipIt platform is at /shipit-docs/. Consult these docs when you need to configure shipit.yaml, write docker-compose.yml for previews, troubleshoot services, or answer questions about platform capabilities (deployment, GitHub integration, environment details). Key docs:
@@ -204,9 +182,9 @@ The user has access to an interactive terminal in the UI. You can run shell comm
 }
 
 /**
- * Default rendering of the agent system instructions — no preview URL, no
- * auto-create PR nudge. Used by the Settings UI as a baseline reference.
- * The actual prompt assembled in `agent-execution.ts` is computed per-turn
- * and may include the auto-create PR section when the setting is on.
+ * Cached rendering of the agent system instructions with no agentId. Used by
+ * the Settings UI baseline. The per-turn rendering in agent-execution.ts
+ * passes the session's actual `agentId` so the running agent sees the
+ * matching Parallel sessions section.
  */
 export const AGENT_SYSTEM_INSTRUCTIONS = buildAgentSystemInstructions();
