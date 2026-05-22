@@ -47,7 +47,8 @@ describe("generateSessionName", () => {
         ) => {
           expect(file).toBe("codex");
           expect(args[0]).toBe("exec");
-          expect(args[1]).toContain("Add a login page");
+          expect(args).toContain("--skip-git-repo-check");
+          expect(args[args.length - 1]).toContain("Add a login page");
           setImmediate(() => {
             cb(null, '{"slug": "add-login", "title": "Add Login Page"}\n', "");
           });
