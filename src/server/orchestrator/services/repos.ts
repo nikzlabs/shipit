@@ -45,3 +45,27 @@ export function removeRepo(
   }
   return true;
 }
+
+/**
+ * Reorder repos in the sidebar. The `urls` list is the new top-down order.
+ * The list may be a subset of the known repos — unknown urls are ignored
+ * (the client could be slightly out-of-date after a concurrent remove).
+ * Returns the updated repo list in the new order.
+ */
+export function reorderRepos(
+  repoStore: RepoStore,
+  urls: string[],
+): RepoInfo[] {
+  if (!Array.isArray(urls)) {
+    throw new ServiceError(400, "urls must be an array");
+  }
+  // Reject non-string entries before touching the DB — protects against a
+  // bad client payload corrupting display_order with non-string url params.
+  for (const u of urls) {
+    if (typeof u !== "string" || !u.trim()) {
+      throw new ServiceError(400, "Each url must be a non-empty string");
+    }
+  }
+  repoStore.setOrder(urls);
+  return repoStore.list();
+}

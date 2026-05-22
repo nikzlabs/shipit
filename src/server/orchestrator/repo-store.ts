@@ -62,12 +62,43 @@ export class RepoStore {
     return result.changes > 0;
   }
 
-  /** List all repos sorted by lastUsedAt descending. */
+  /**
+   * List all repos. Sort order:
+   *   1. `display_order` ASC when set (user-chosen order from drag-and-drop).
+   *   2. `last_used_at` DESC for repos that have never been reordered (NULL
+   *      display_order sorts last via the CASE WHEN expression).
+   *   3. `rowid` DESC as a stable tiebreaker.
+   * Once the user reorders, `setOrder` assigns a non-NULL value to every repo,
+   * so display_order becomes fully authoritative from that point on.
+   */
   list(): RepoInfo[] {
     const rows = this.db.prepare(
-      "SELECT * FROM repos ORDER BY last_used_at DESC, rowid DESC",
+      `SELECT * FROM repos
+       ORDER BY CASE WHEN display_order IS NULL THEN 1 ELSE 0 END,
+                display_order ASC,
+                last_used_at DESC,
+                rowid DESC`,
     ).all() as RepoRow[];
     return rows.map((r) => this.fromRow(r));
+  }
+
+  /**
+   * Assign explicit ordering to the given urls (0-based index). Repos not
+   * present in the urls list keep their existing display_order (or NULL if
+   * never set) — they'll continue to sort after the ordered set.
+   *
+   * Runs in a transaction so concurrent reorders don't see a half-applied
+   * state. Unknown urls are silently ignored — the client can submit a list
+   * that's slightly out-of-date without erroring out.
+   */
+  setOrder(urls: string[]): void {
+    const update = this.db.prepare("UPDATE repos SET display_order = ? WHERE url = ?");
+    const tx = this.db.transaction((urls: string[]) => {
+      for (let i = 0; i < urls.length; i++) {
+        update.run(i, urls[i]);
+      }
+    });
+    tx(urls);
   }
 
   /** Get a single repo by URL. */
