@@ -276,6 +276,94 @@ describe("Integration: warm session lifecycle", () => {
       expect(newSession).toBeDefined();
       expect(newSession!.warm).toBe(true);
     }, 25000);
+
+    it("rapid back-to-back claims each yield a usable session (docs/144 fix #1)", async () => {
+      // Invariant: creating sessions in immediate succession — a user clicking
+      // "New Session" repeatedly — must ALWAYS produce a usable session, even
+      // though the next-session re-warm is now fire-and-forget (not awaited). It
+      // may be slower under load (follow-ups take the waiting / slow-clone
+      // path), but never fails or returns a half-built session.
+      //
+      // Note on distinctness: claims that are never graduated (no message sent)
+      // intentionally COLLAPSE onto the same session via the reuse path —
+      // that's how abandoned "New Session" navigations avoid leaking warm
+      // sessions. So the invariant here is "every claim is usable", not "every
+      // claim is unique"; replenishment-into-a-new-session is covered by the
+      // "triggers re-warming after claim" test above and the graduate case below.
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "first warm session",
+      );
+
+      const encodedUrl = encodeURIComponent(REPO_URL);
+      const N = 5;
+      // Fire all claims concurrently — the per-repo serializeClaim chain plus
+      // each claim's leading `await waitForWarmSession` must keep them correct.
+      const responses = await Promise.all(
+        Array.from({ length: N }, () =>
+          app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` }),
+        ),
+      );
+
+      for (const res of responses) {
+        expect(res.statusCode).toBe(200);
+        const body = res.json();
+        // Every claim returns a session id + dir...
+        expect(body.sessionId).toBeTruthy();
+        expect(body.sessionDir).toBeTruthy();
+
+        // ...and that session is actually usable: the workspace exists on disk
+        // with the repo's files (a real clone, not a half-built stub).
+        const session = sessionManager.get(body.sessionId);
+        expect(session?.workspaceDir).toBeTruthy();
+        expect(fs.existsSync(session!.workspaceDir!)).toBe(true);
+        expect(fs.existsSync(path.join(session!.workspaceDir!, "README.md"))).toBe(true);
+      }
+    }, 30000);
+
+    it("claim → graduate → claim yields a fresh, distinct usable session (docs/144 fix #1)", async () => {
+      // The complement to the collapse case: once a claimed session graduates
+      // (the user sends a message), the next claim must NOT reuse it — it gets a
+      // freshly replenished warm session. This confirms the fire-and-forget
+      // re-warm actually repopulates the pool.
+      await waitFor(
+        () => !!repoStore.get(REPO_URL)?.warmSessionId,
+        10000,
+        "first warm session",
+      );
+      const encodedUrl = encodeURIComponent(REPO_URL);
+
+      const claim1 = await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
+      expect(claim1.statusCode).toBe(200);
+      const first = claim1.json().sessionId as string;
+
+      // Graduate it (drop the warm flag) so the reuse path can't hand it back.
+      const client = await TestClient.connect(port, first);
+      await client.receive(); // preview_status
+      client.send({ type: "send_message", text: "Build something", sessionId: first });
+      await waitForClaude(() => lastClaude);
+      expect(sessionManager.get(first)!.warm).not.toBe(true);
+      lastClaude.finish("test-session");
+      client.close();
+
+      // Wait for the pool to replenish, then claim again.
+      await waitFor(
+        () => {
+          const w = repoStore.get(REPO_URL)?.warmSessionId;
+          return !!w && w !== first;
+        },
+        10000,
+        "replenished warm session",
+      );
+      const claim2 = await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
+      expect(claim2.statusCode).toBe(200);
+      const second = claim2.json().sessionId as string;
+
+      expect(second).not.toBe(first);
+      const session = sessionManager.get(second);
+      expect(fs.existsSync(path.join(session!.workspaceDir!, "README.md"))).toBe(true);
+    }, 30000);
   });
 
   describe("claim-session skips reinstall when HEAD unchanged", () => {

@@ -110,6 +110,15 @@ export function isGitAuthError(err: unknown): boolean {
  *   the stored GitHub token invalid; not used for any other failure
  *   mode. See `isGitAuthError`.
  *
+ * @param opts.skipFetch — when `true`, skip the network fetch entirely and
+ *   resolve `resetTarget` from whatever `origin/*` refs the clone already
+ *   has. The claim slow-path passes this when the bare cache was just
+ *   pre-fetched in the background (docs/145): the freshly-cloned workspace's
+ *   local `origin/HEAD` already reflects the latest commit, so the round-trip
+ *   is pure overhead. `fetched` is reported `false` (no network happened) but
+ *   this is a *deliberate* skip, not a failure — callers that pass `skipFetch`
+ *   must not surface a stale-clone warning on the strength of `!fetched`.
+ *
  * @returns the resolved ref (a SHA from `origin/HEAD`, or the
  *   `origin/main` / `origin/master` ref name), or `undefined` if none
  *   resolved; `fetched` is whether the network fetch actually succeeded;
@@ -125,6 +134,7 @@ export async function fetchAndResolveDefaultBranch(
   // below intentionally does not await the result — the fetch path doesn't
   // need to block on credential invalidation.
   onAuthError?: (err: Error) => unknown,
+  opts?: { skipFetch?: boolean },
 ): Promise<{ resetTarget: string | undefined; fetched: boolean; fetchDurationMs: number; authError: boolean }> {
   const t0 = Date.now();
   // `GIT_TERMINAL_PROMPT=0` makes git fail fast instead of prompting on the
@@ -136,8 +146,13 @@ export async function fetchAndResolveDefaultBranch(
   let fetched = false;
   let authError = false;
   try {
-    await sg.fetch("origin");
-    fetched = true;
+    if (opts?.skipFetch) {
+      // Deliberate skip — the bare cache was pre-fetched in the background,
+      // so the clone's local refs are already current (docs/145).
+    } else {
+      await sg.fetch("origin");
+      fetched = true;
+    }
   } catch (err) {
     // Remote unreachable / timed out — fall through to local-ref resolution.
     console.warn(

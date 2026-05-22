@@ -33,27 +33,52 @@ This skill covers Docker container management, session runners, idle disposal, a
 
 ### Runner Factory (Production)
 
-The factory in `buildApp()` handles three cases:
+`buildRunnerFactory()` (in `app-lifecycle.ts`) handles three cases, keyed on the
+container's current `status`. A pre-booted **standby** container (warm pool —
+see the `session-lifecycle` skill) shows up here as an `existing` container that
+is `running` or `starting`, so it's just a data condition on these same cases —
+there is no separate "warm" code path.
 
 ```
 factory(opts):
   existing = containerManager.get(opts.sessionId)
 
-  CASE 1: existing && status === "running"
+  CASE 1: existing && status === "running"          (incl. a ready standby)
+    -> mgr.claimStandby(sessionId)                  (clears standby flag if set)
     -> Reconnect: new ContainerSessionRunner({ workerUrl: existing.workerUrl })
-    -> No container creation needed -- SSE replay delivers current state
+    -> No container creation -- SSE replay delivers current state. Instant.
 
-  CASE 2: existing && status !== "running" (stale)
+  CASE 2: existing && status === "starting"         (standby still booting)
     -> runner = new ContainerSessionRunner({ workerUrl: "http://0.0.0.0:0" })
-    -> mgr.destroy(sessionId).then(() => mgr.create(config))
-      .then((sc) => runner.setWorkerUrl(sc.workerUrl))
+    -> poll up to 30s (500ms): once running -> claimStandby + setWorkerUrl
+       if it never becomes ready -> fall through to a fresh create
+    (returns runner immediately; the poll runs in a fire-and-forget async block)
 
-  CASE 3: no existing container
+  CASE 3: no existing container, OR stale (stopping/stopped)
     -> runner = new ContainerSessionRunner({ workerUrl: "http://0.0.0.0:0" })
-    -> mgr.create(config).then((sc) => runner.setWorkerUrl(sc.workerUrl))
+    -> createContainerForRunner({ destroyExisting: !!existing })
+       (destroys the stale one first, then mgr.create + runner.setWorkerUrl)
 ```
 
-The factory is **synchronous** — it returns the runner immediately. Container creation happens async; the runner queues all operations behind `_workerReady` (a promise resolved by `setWorkerUrl()`).
+The factory is **synchronous** — it returns the runner immediately. Container
+creation/standby-poll happens async; the runner queues all operations behind
+`_workerReady` (a promise resolved by `setWorkerUrl()`).
+
+### Standby containers
+
+A standby is a normal session container pre-created by the warm pool and tagged
+`shipit-standby=true`, tracked in `standbySessionIds`:
+
+- **`createStandby(config)`** — `create()` + standby label + track. Called from
+  `warmSessionForRepo(..., { withStandby: true })` when there's idle headroom.
+- **`claimStandby(sessionId)`** — drops the standby flag and returns the
+  container so the runner factory reuses it (cases 1 & 2). After claiming it's
+  an ordinary container.
+- **`isStandby(sessionId)`** — used by the idle/missing-container reconciler and
+  startup validation to avoid treating an unclaimed standby as an orphan.
+
+Standby containers are excluded from the "real" count when the pool decides
+whether to create another (`size - standbyCount < maxIdleContainers`).
 
 ## ContainerSessionRunner Internals
 

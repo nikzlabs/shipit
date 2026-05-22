@@ -56,6 +56,7 @@ import {
 } from "./app-lifecycle.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
+import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes } from "./disk-janitor.js";
 
@@ -274,6 +275,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
   registryHolder.ref = runnerRegistry;
 
+  // ---- Proactive bare-cache git pre-fetch (docs/145) ----
+  // Keeps each ready repo's bare cache close to `origin/main` in the
+  // background so the claim path can skip its synchronous ~650ms fetch.
+  // Disabled in test mode so integration tests stay deterministic (they
+  // exercise the synchronous-fetch fallback, which the fakes drive).
+  const repoPrefetcher: RepoPrefetcher | null = isTestMode ? null : createRepoPrefetcher({
+    repoStore, getBareCacheDir, createRepoGit, githubAuthManager,
+  });
+  repoPrefetcher?.start();
+
   // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({
     deps, githubAuthManager, sessionManager, sseBroadcast,
@@ -281,6 +292,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // Skip the volume-prune fallback in test mode so the poller's
     // auto-archive-on-merge path doesn't shell out to docker from tests.
     pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,
+    // On-change pre-fetch: a detected merge moved `main`, so refresh the
+    // bare cache now (off the request path) — see docs/145.
+    ...(repoPrefetcher ? { onRepoMainAdvanced: (url: string) => repoPrefetcher.prefetchRepo(url) } : {}),
   });
 
   // ---- Event wiring (deployment + auth) ----
@@ -619,6 +633,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     sessionsRoot,
     warmSessionForRepo,
     waitForWarmSession: (repoUrl: string) => waitForWarmSession(repoUrl),
+    ...(repoPrefetcher ? { shouldSkipClaimFetch: (url: string) => repoPrefetcher.coveredRecently(url) } : {}),
     createSessionDirFull: createSessionDir,
     containerManager: containerManager ?? undefined,
     prStatusPoller,
@@ -1322,6 +1337,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
     if (limitsPoller) limitsPoller.stop();
+    if (repoPrefetcher) repoPrefetcher.stop();
   });
   registerShutdownHook(app, {
     startupTimer, authManager, codexAuthManager, runnerRegistry,

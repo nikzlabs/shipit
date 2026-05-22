@@ -648,6 +648,61 @@ export async function registerSessionRoutes(
         return;
       }
 
+      // Shared tail of the reuse / warm / waiting sub-paths: refresh the
+      // claimed session's clone to latest main, surface a stale-fetch warning,
+      // and re-provision the standby if a HEAD move invalidated its booted
+      // limits. Returns the fetch duration (for timing). Deliberately does NOT
+      // re-warm the pool — that's the caller's concern (reuse must not, since it
+      // never consumed a pool slot; warm/waiting must). Errors are logged and
+      // swallowed so a transient fetch failure never blocks the claim.
+      const refreshClaimedSession = async (sessionId: string, workspaceDir: string): Promise<number> => {
+        // docs/145: skip the synchronous fetch when the bare cache was
+        // pre-fetched in the background recently. The warm/reuse clone was
+        // already cut from a real-remote fetch, and the pre-fetcher keeps the
+        // cache (hence re-warms cut from it) close to `origin/main`, so the
+        // branch point is bounded-stale by minutes — an explicitly accepted
+        // tradeoff (docs/145). This removes the ~650ms RTT that dominated
+        // claim latency. We do NOT run it fire-and-forget instead: that path
+        // ends in a hard reset (`rollback`) which, racing the agent's first
+        // edits, would violate "never fast-forward a live clone after start."
+        // Skipping leaves HEAD untouched, so the standby's booted resource
+        // limits stay consistent with the clone — no re-provision needed.
+        if (deps.shouldSkipClaimFetch?.(url)) {
+          return 0;
+        }
+        try {
+          const r = await refreshCloneToLatestMain(
+            workspaceDir,
+            createGitManager,
+            deps.githubAuthManager,
+            (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
+          );
+          warnIfStaleClaimFetch(r.fetched, url);
+          if (r.headChanged) {
+            // HEAD moved — the standby container may have booted with limits
+            // from a now-stale shipit.yaml. Re-provision if so. (Compose stack
+            // restart is handled by ServiceManager on config change.)
+            await reprovisionStandbyIfLimitsChanged(sessionId, workspaceDir);
+          }
+          return r.fetchDurationMs;
+        } catch (err) {
+          console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
+          return 0;
+        }
+      };
+
+      // Re-warm the pool for the *next* session — fire-and-forget so this
+      // claim's response isn't blocked on prep work for a future user
+      // (docs/144 fix #1). Pool/standby tracking all happens inside the promise
+      // body regardless of the caller; `warmingInProgress` / `warmingPromises`
+      // (awaited at the top of every claim) keep a concurrent claim from racing
+      // on the bare cache.
+      const rewarmPool = () => {
+        if (deps.warmSessionForRepo) void deps.warmSessionForRepo(url, { withStandby: true });
+      };
+
+      const claimStart = Date.now();
+      let claimPath = "unknown";
       try {
         const result = await serializeClaim(url, async () => {
           const inFlightWarming = deps.waitForWarmSession?.(url);
@@ -657,26 +712,8 @@ export async function registerSessionRoutes(
           // Check for .git/ directory (full clone) to ensure the clone is ready.
           const reusable = sessionManager.findUngraduatedWarm(url, repo.warmSessionId ?? undefined);
           if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
-            let fetchDurationMs = 0;
-            try {
-              const result = await refreshCloneToLatestMain(
-                reusable.workspaceDir,
-                createGitManager,
-                deps.githubAuthManager,
-                (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
-              );
-              fetchDurationMs = result.fetchDurationMs;
-              warnIfStaleClaimFetch(result.fetched, url);
-              if (result.headChanged) {
-                // HEAD moved — the standby container may have booted with
-                // limits from a now-stale shipit.yaml. Re-provision if so.
-                // (Compose stack restart is handled by ServiceManager on
-                // config change.)
-                await reprovisionStandbyIfLimitsChanged(reusable.id, reusable.workspaceDir);
-              }
-            } catch (err) {
-              console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
-            }
+            claimPath = "reuse";
+            const fetchDurationMs = await refreshClaimedSession(reusable.id, reusable.workspaceDir);
             return { sessionId: reusable.id, sessionDir: reusable.workspaceDir, fetchDurationMs };
           }
 
@@ -685,27 +722,11 @@ export async function registerSessionRoutes(
           if (currentRepo?.warmSessionId) {
             const warmSession = sessionManager.get(currentRepo.warmSessionId);
             if (warmSession?.workspaceDir) {
+              claimPath = "warm";
               const sessionId = currentRepo.warmSessionId;
               deps.repoStore.setWarmSessionId(url, undefined);
-              let fetchDurationMs = 0;
-              try {
-                const result = await refreshCloneToLatestMain(
-                  warmSession.workspaceDir,
-                  createGitManager,
-                  deps.githubAuthManager,
-                  (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
-                );
-                fetchDurationMs = result.fetchDurationMs;
-                warnIfStaleClaimFetch(result.fetched, url);
-                if (result.headChanged) {
-                  // HEAD moved — re-provision the standby if its booted
-                  // limits no longer match the now-current shipit.yaml.
-                  await reprovisionStandbyIfLimitsChanged(sessionId, warmSession.workspaceDir);
-                }
-              } catch (err) {
-                console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
-              }
-              if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
+              const fetchDurationMs = await refreshClaimedSession(sessionId, warmSession.workspaceDir);
+              rewarmPool();
               return { sessionId, sessionDir: warmSession.workspaceDir, fetchDurationMs };
             }
           }
@@ -718,33 +739,18 @@ export async function registerSessionRoutes(
             if (freshRepo?.warmSessionId) {
               const warmSession = sessionManager.get(freshRepo.warmSessionId);
               if (warmSession?.workspaceDir) {
+                claimPath = "waiting";
                 const sessionId = freshRepo.warmSessionId;
                 deps.repoStore.setWarmSessionId(url, undefined);
-                let fetchDurationMs = 0;
-                try {
-                  const result = await refreshCloneToLatestMain(
-                    warmSession.workspaceDir,
-                    createGitManager,
-                    deps.githubAuthManager,
-                    (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
-                  );
-                  fetchDurationMs = result.fetchDurationMs;
-                  warnIfStaleClaimFetch(result.fetched, url);
-                  if (result.headChanged) {
-                    // HEAD moved — re-provision the standby if its booted
-                    // limits no longer match the now-current shipit.yaml.
-                    await reprovisionStandbyIfLimitsChanged(sessionId, warmSession.workspaceDir);
-                  }
-                } catch (err) {
-                  console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
-                }
-                if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
+                const fetchDurationMs = await refreshClaimedSession(sessionId, warmSession.workspaceDir);
+                rewarmPool();
                 return { sessionId, sessionDir: warmSession.workspaceDir, fetchDurationMs };
               }
             }
           }
 
           // Slow path: clone from bare cache synchronously.
+          claimPath = "slow-clone";
           if (request.raw.destroyed) return undefined;
           const cacheDir = deps.getSharedRepoDir(url);
           const branchPrefix = generateBranchPrefix();
@@ -795,11 +801,22 @@ export async function registerSessionRoutes(
           // workspace clone so the branch is cut from the genuine latest
           // commit — otherwise the container's memory limit is derived from
           // a frozen `shipit.yaml`.
+          //
+          // docs/145: when the bare cache was pre-fetched in the background
+          // recently, the snapshot we just cloned is already current, so we
+          // resolve the branch point from the clone's local refs and skip the
+          // network round-trip. `fetchCache` above is TTL-coalesced to a
+          // no-op in that case too, so the whole slow path stays off the wire.
+          const skipFetch = deps.shouldSkipClaimFetch?.(url) ?? false;
           const { resetTarget, fetched, fetchDurationMs, authError } = await fetchAndResolveDefaultBranch(
             workspaceDir,
             (err) => deps.githubAuthManager.markTokenInvalid(`claim-session fetch failed for ${url}: ${err.message}`),
+            { skipFetch },
           );
-          if (!fetched && !authError) {
+          // Only warn on a *failed* fetch — a deliberate `skipFetch` is not a
+          // stale-clone hazard (the cache was just refreshed), so it must not
+          // trip the W2 breadcrumb.
+          if (!skipFetch && !fetched && !authError) {
             // Workspace-clone fetch failed — the branch is being cut from
             // the (possibly stale) bare-cache snapshot. Surface it: a silent
             // no-op fetch here is the W2 root cause.
@@ -818,7 +835,7 @@ export async function registerSessionRoutes(
           sessionManager.setBranch(appSessionId, branchPrefix);
           sessionManager.setWarm(appSessionId, true);
 
-          if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
+          rewarmPool();
 
           return { sessionId: appSessionId, sessionDir, fetchDurationMs };
         });
@@ -830,6 +847,10 @@ export async function registerSessionRoutes(
         if (result?.sessionId) {
           sessionManager.markStarted(result.sessionId);
         }
+        console.log(
+          `[timing] claim-session for ${url} path=${claimPath} ` +
+            `total=${Date.now() - claimStart}ms fetch=${result?.fetchDurationMs ?? 0}ms`,
+        );
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {

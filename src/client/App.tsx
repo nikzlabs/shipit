@@ -432,9 +432,8 @@ export default function App() {
           void navigate(`/session/${currentSessionId}`, { replace: true });
         }
 
-        // Send directly over WS
-        send({
-          type: "send_message",
+        const message = {
+          type: "send_message" as const,
           text,
           sessionId: currentSessionId,
           files: settings.pendingFiles.length > 0 ? settings.pendingFiles : undefined,
@@ -443,7 +442,20 @@ export default function App() {
             const pm = settings.getPermissionMode(currentSessionId);
             return pm !== "auto" ? pm : undefined;
           })(),
-        });
+        };
+
+        if (status === "open") {
+          // Send directly over WS
+          send(message);
+        } else {
+          // The session exists but the WS isn't open yet — e.g. we just claimed
+          // a session on /{slug}/new and the socket is still connecting. Calling
+          // send() here would silently drop the message (useWebSocket.send only
+          // writes when readyState === OPEN), leaving the user with an optimistic
+          // bubble + spinner and no response. Stash it so useConnectionSync
+          // flushes it the moment the WS opens. (docs/144 fix #2)
+          useSessionStore.getState().setPendingWsMessage(message);
+        }
       } else {
         // No session — can't send without one (sessions are created via claim-session)
         console.warn("[session] No active session — cannot send message");
@@ -453,7 +465,7 @@ export default function App() {
       settings.clearPendingFiles();
       clearUploads();
     },
-    [send, requestPermission, disableAutoFix, navigate, isNewSessionRoute, getUploadRefs, clearUploads, uploads],
+    [send, status, requestPermission, disableAutoFix, navigate, isNewSessionRoute, getUploadRefs, clearUploads, uploads],
   );
 
   const handleRewind = useCallback(

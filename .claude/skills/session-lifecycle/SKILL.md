@@ -21,7 +21,7 @@ This skill covers session creation, warm-up, activation, switching, and graduati
 
 1. **Standalone session** — no repo, fresh git repo initialized in the session directory. Created via `POST /api/sessions`.
 2. **Worktree session** — backed by a shared repo clone. Session directory is a git worktree branching from the repo's default branch. Created via warm pool or `claim-session`.
-3. **Warm session** — a worktree session pre-created in the background (worktree + metadata only, no container). Invisible in the sidebar until the user sends their first message ("graduated"). The container is created on-demand when the WebSocket connects.
+3. **Warm session** — a worktree session pre-created in the background (worktree + metadata, and — on `withStandby` re-warms with idle headroom — a pre-booted **standby container**). Invisible in the sidebar until the user sends their first message ("graduated"). When no standby exists, the container is created on-demand when the WebSocket connects.
 
 ## Session Creation
 
@@ -69,17 +69,19 @@ Client                          Server
   |                               |     YES -> return it (no new claim)
   |                               |  2. repo.warmSessionId exists?
   |                               |     YES -> clear warmSessionId
-  |                               |     start warming next session (lightweight)
-  |<- {sessionId} -----------------  (instant -- no container created)
+  |                               |     refreshCloneToLatestMain (git fetch)
+  |                               |     re-warm next session (FIRE-AND-FORGET,
+  |                               |       withStandby -- not awaited; docs/144)
+  |<- {sessionId, fetchDurationMs}-  (returns after refresh; re-warm runs async)
   |                               |
   |  store pendingWsMessage       |
   |  navigate(/session/{id})      |
   |                               |
   |  WS /ws/sessions/{id} -------> activateSession(id)
   |                               |   runnerRegistry.getOrCreate()
-  |                               |     -> reuse existing or create container
+  |                               |     -> claim standby (instant) or create
   |                               |   attachToRunner()
-  |<- WS preview_status ----------   (once container boots + preview starts)
+  |<- WS preview_status ----------   (instant if standby; else once it boots)
   |                               |
   |  send pendingWsMessage        |
   +- WS send_message ------------> graduates warm session
@@ -92,13 +94,15 @@ Same as Path B but `claim-session` creates the worktree synchronously (~1-2s).
 If the client disconnected before work starts (`request.raw.destroyed`), the
 endpoint short-circuits to avoid creating abandoned sessions.
 
-1. `createSessionDir(title, { skipGitInit: true })`
-2. Create git worktree from shared repo clone
+1. `createSessionDirFull("Warm session")`
+2. Clone from bare cache + fetch real remote + `checkout -b` (branch from latest)
 3. Configure credentials
-4. Return session ID to client (no container created)
+4. Fire-and-forget re-warm of the next session (`withStandby`)
+5. Return session ID + `fetchDurationMs` to client (no container created on this path)
 
 The container is created on-demand when the WebSocket connects (`activateSession`
--> `getOrCreate` -> factory creates container).
+-> `getOrCreate` -> factory creates container), since the slow path had no
+standby to claim.
 
 The client passes an `AbortSignal` to the claim fetch. Navigating away (clicking
 another session or "New Session" again) aborts the request, which the server
@@ -116,27 +120,43 @@ Two mechanisms prevent cascade during rapid "New Session" clicks:
 
 ### Warm-Up Sequence
 
-Warm-up is **lightweight** — it creates the worktree and metadata only, with no runner or container. The container is created on-demand when a WebSocket connects to the session.
+Warm-up always creates the worktree + metadata. It **may additionally pre-boot a
+standby container** — `warmSessionForRepo(repoUrl, { withStandby: true })`. The
+standby is created (via `containerManager.createStandby`) only when `withStandby`
+is set AND there is idle-container headroom (`realCount < maxIdleContainers`).
+The runner factory `claimStandby`s it on activation, so a warm hit reconnects to
+an already-running worker instead of building one — see the `session-containers`
+skill.
 
 ```
-warmSessionForRepo(repoUrl):
+warmSessionForRepo(repoUrl, { withStandby? }):
   1. Check repo.status === "ready", no existing warm session, no warming in progress
-  2. createSessionDir("Warm session", { skipGitInit: true })
-  3. sessionManager.setWarm(appSessionId, true)
-  4. Remove empty dir (worktree add needs it absent)
-  5. repoGit.createWorktree(sessionDir, branchPrefix, startPoint)
+  2. createSessionDir("Warm session")
+  3. sessionManager.setWarm(appSessionId, true); setRemoteUrl(...)
+  4. Remove workspace subdir (clone needs it absent)
+  5. cloneFromCache + fetchAndResolveDefaultBranch + checkout -b (real-remote
+     fetch so the branch is cut from genuine latest — see W2)
   6. Configure git credentials
   7. repoStore.setWarmSessionId(repoUrl, appSessionId)
-  8. sseBroadcast("repo_warm_ready", ...)
+  8. if withStandby && headroom: containerManager.createStandby(...) [fire-and-forget]
+  9. sseBroadcast("repo_warm_ready", ...)
 ```
+
+**Who passes `withStandby`:** the claim re-warm (`claim-session`) and graduation
+(`send-message`) — i.e. when a warm session is consumed and the pool replenishes.
+The **initial** warm of a freshly-added repo and **startup** re-warms do NOT pass
+it, so those warm sessions are container-less until a WebSocket connects (runner
+factory falls to the fresh-create path). The claim re-warm is **fire-and-forget**
+(not awaited) so it never sits on the claiming user's critical path — see
+`docs/144-session-switch-latency`.
 
 ### Startup Validation + Re-Warm
 
-On server restart, the startup sequence (deferred via `setTimeout(0)`) validates existing warm sessions and creates new ones where needed. No containers or runners are created at startup — they are created on-demand when a WebSocket connects.
+On server restart, the startup sequence (deferred via `setTimeout(0)`) validates existing warm sessions and creates new ones where needed. Startup re-warms are container-less (they call `warmSessionForRepo()` without `withStandby`) — the standby/container is created on-demand when a WebSocket connects. (A stale warm session whose clone vanished does have its old standby container destroyed before re-warming, if one was tracked.)
 
-1. **Validate**: For each repo with a `warmSessionId` and `status: "ready"`, check that the warm session's worktree directory still exists on disk. If missing, clear `warmSessionId` and re-warm (lightweight — worktree + metadata only).
+1. **Validate**: For each repo with a `warmSessionId` and `status: "ready"`, check that the warm session's worktree directory still exists on disk. If missing, destroy any tracked standby container, clear `warmSessionId`, and re-warm (worktree + metadata only).
 
-2. **Re-warm**: For repos that have no warm session at all, create a fresh warm session via `warmSessionForRepo()` (lightweight).
+2. **Re-warm**: For repos that have no warm session at all, create a fresh warm session via `warmSessionForRepo()` (worktree + metadata only — no standby).
 
 ### Graduation
 
