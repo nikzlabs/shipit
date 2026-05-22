@@ -3,7 +3,7 @@ import type { WsClientMessage, WsServerMessage, ImageAttachment, FileAttachment,
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
 import { generateSessionName } from "../session-namer.js";
-import { wireAgentListeners } from "./agent-listeners.js";
+import { wireAgentListeners, recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.js";
 import { runAgentWithMessage, drainNextQueuedMessage } from "./agent-execution.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
@@ -114,9 +114,13 @@ export async function handleSendMessage(
         if (steeringAgent) {
           const capturedSessionId = ctx.getActiveAppSessionId();
           steeringAgent.sendUserMessage(msg.text);
-          // Persist the steered message to chat history
+          // Persist the steered message to chat history. Anchor it after the
+          // assistant groups that exist *now* and fold it into the in-progress
+          // set, so on reload it stays at the spot the user sent it instead of
+          // collapsing up next to the turn's first user message (docs/140).
           if (capturedSessionId) {
-            ctx.chatHistoryManager.append(capturedSessionId, { role: "user", text: msg.text });
+            recordSteeredMessage(runnerForQueue, msg.text);
+            persistTurnInProgress(ctx.chatHistoryManager, runnerForQueue, capturedSessionId);
           }
           // Broadcast message_steered so all viewers (including other tabs) see it
           if (capturedSessionId) {
@@ -376,9 +380,13 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     if (steeringCapable && liveSteering) {
       const answerSessionId = ctx.getActiveAppSessionId();
       existingAgent.sendUserMessage(answerText);
-      if (answerSessionId) {
-        ctx.chatHistoryManager.append(answerSessionId, { role: "user", text: answerText });
-        runnerEarly?.emitMessage({
+      if (answerSessionId && runnerEarly) {
+        // Same ordering fix as live steering: the answer is a mid-turn user
+        // message, so anchor + fold it into the in-progress set rather than
+        // appending it out-of-band (docs/140).
+        recordSteeredMessage(runnerEarly, answerText);
+        persistTurnInProgress(ctx.chatHistoryManager, runnerEarly, answerSessionId);
+        runnerEarly.emitMessage({
           type: "message_steered",
           text: answerText,
           sessionId: answerSessionId,
@@ -441,6 +449,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     answerRunner.accumulatedToolUse = [];
     answerRunner.chatMessageGroups = [];
     answerRunner.needsNewMessageGroup = true;
+    answerRunner.steeredMessages = [];
   }
   const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
   if (answerRunner) answerRunner.setAgent(currentAgent);

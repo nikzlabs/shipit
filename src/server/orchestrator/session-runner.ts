@@ -52,6 +52,21 @@ export interface ChatMessageGroup {
   subagentEvents?: SubagentEvent[];
 }
 
+/**
+ * A user message injected mid-turn via live steering (docs/140). Unlike the
+ * turn-opening user message (persisted once via `append`), a steered message
+ * lands *between* assistant message groups. `afterGroupIndex` records how many
+ * persistable assistant groups existed when the steer arrived, so the message
+ * can be re-interleaved at its true position every time `replaceInProgress`
+ * rebuilds the in-progress set. Without this anchor the steered row keeps its
+ * early id while assistant rows are deleted+reinserted at higher ids, and on
+ * reload the steer collapses up next to the turn's first user message.
+ */
+export interface SteeredMessage {
+  afterGroupIndex: number;
+  text: string;
+}
+
 export interface QueuedMessage {
   text: string;
   images?: ImageAttachment[];
@@ -253,6 +268,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   turnSummary: string;
   chatMessageGroups: ChatMessageGroup[];
   needsNewMessageGroup: boolean;
+  steeredMessages: SteeredMessage[];
   agentId: AgentId;
 
   getAgent(): AgentProcess | null;
@@ -398,6 +414,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _turnSummary = "";
   private _chatMessageGroups: ChatMessageGroup[] = [];
   private _needsNewMessageGroup = true;
+  private _steeredMessages: SteeredMessage[] = [];
   private _messageQueue: QueuedMessage[] = [];
   private _terminal: TerminalProcess | null = null;
   private _terminalOutputBuffer = "";
@@ -440,6 +457,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set chatMessageGroups(groups: ChatMessageGroup[]) { this._chatMessageGroups = groups; }
   get needsNewMessageGroup(): boolean { return this._needsNewMessageGroup; }
   set needsNewMessageGroup(v: boolean) { this._needsNewMessageGroup = v; }
+  get steeredMessages(): SteeredMessage[] { return this._steeredMessages; }
+  set steeredMessages(m: SteeredMessage[]) { this._steeredMessages = m; }
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
   getAgent(): AgentProcess | null { return this.agent; }

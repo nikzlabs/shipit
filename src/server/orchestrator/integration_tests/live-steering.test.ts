@@ -43,6 +43,7 @@ describe("Integration: live steering (docs/140)", () => {
   let credentialStore: CredentialStore;
   let lastClaude: FakeClaudeProcess = null as any;
   let dbManager: DatabaseManager;
+  let chatHistoryManager: ChatHistoryManager;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -55,7 +56,7 @@ describe("Integration: live steering (docs/140)", () => {
     credentialStore.setLiveSteering(true);
 
     const sessionManager = new SessionManager(dbManager);
-    const chatHistoryManager = new ChatHistoryManager(dbManager);
+    chatHistoryManager = new ChatHistoryManager(dbManager);
 
     app = await buildApp({
       credentialStore,
@@ -164,6 +165,59 @@ describe("Integration: live steering (docs/140)", () => {
     // The agent process was NOT killed — for a streaming agent, `done`
     // belongs to dispose, not to the per-turn lifecycle.
     expect(claude.killed).toBe(false);
+
+    client.close();
+  });
+
+  it("persists a steered message at its true transcript position, not collapsed up next to the turn's first user message (docs/140)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Turn opens with the user's first message.
+    client.send({ type: "send_message", text: "Implement monsters", sessionId: client.sessionId });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("steer-order-session");
+
+    // First assistant group: text + a tool call, then its tool result. The
+    // tool result closes the group (needsNewMessageGroup) and persists it as
+    // in-progress.
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [
+        { type: "text", text: "Adding goblins" },
+        { type: "tool_use", id: "tu-1", name: "Write", input: {} },
+      ] },
+    });
+    claude.emit("event", {
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "tu-1", content: "ok" }] },
+    });
+
+    // Steer mid-turn — exactly one assistant group exists at this point, so the
+    // steer must land AFTER it (index 2 overall), not next to the first user
+    // message (index 1).
+    client.send({ type: "send_message", text: "no, bullet pierce", sessionId: client.sessionId });
+    const steered = await drainUntil(client, (m) => m.type === "message_steered");
+    expect(steered).toMatchObject({ type: "message_steered", text: "no, bullet pierce" });
+
+    // Second assistant group responds to the steer, then the turn ends.
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Adding bullet pierce" }] },
+    });
+    claude.emit("event", { type: "result", subtype: "success", session_id: "steer-order-session" });
+
+    // Wait for the turn to finalize before reading persisted history.
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+
+    const history = chatHistoryManager.load(client.sessionId);
+    const shape = history.map((m) => ({ role: m.role, text: m.text }));
+    expect(shape).toEqual([
+      { role: "user", text: "Implement monsters" },
+      { role: "assistant", text: "Adding goblins" },
+      { role: "user", text: "no, bullet pierce" },
+      { role: "assistant", text: "Adding bullet pierce" },
+    ]);
 
     client.close();
   });
