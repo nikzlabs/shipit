@@ -425,6 +425,7 @@ export async function registerSessionRoutes(
             ...(body.spawnedByTurn !== undefined ? { spawnedByTurn: body.spawnedByTurn } : {}),
           },
           deps.defaultAgentId,
+          deps.credentialsDir,
         );
         // Broadcast the updated session list so the parent's sidebar shows
         // the new child immediately — same pattern as `fork` / `unarchive`.
