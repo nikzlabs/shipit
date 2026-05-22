@@ -38,7 +38,11 @@ import {
 } from "./services/index.js";
 import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
-import { generateBranchPrefix, fetchAndResolveDefaultBranch } from "./git-utils.js";
+import {
+  generateBranchPrefix,
+  fetchAndResolveDefaultBranch,
+  isWorkspaceCloneInSyncWithCache,
+} from "./git-utils.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { ensureBareCache } from "./repo-git.js";
 
@@ -686,17 +690,24 @@ export async function registerSessionRoutes(
       // swallowed so a transient fetch failure never blocks the claim.
       const refreshClaimedSession = async (sessionId: string, workspaceDir: string): Promise<number> => {
         // docs/145: skip the synchronous fetch when the bare cache was
-        // pre-fetched in the background recently. The warm/reuse clone was
-        // already cut from a real-remote fetch, and the pre-fetcher keeps the
-        // cache (hence re-warms cut from it) close to `origin/main`, so the
-        // branch point is bounded-stale by minutes — an explicitly accepted
-        // tradeoff (docs/145). This removes the ~650ms RTT that dominated
-        // claim latency. We do NOT run it fire-and-forget instead: that path
-        // ends in a hard reset (`rollback`) which, racing the agent's first
-        // edits, would violate "never fast-forward a live clone after start."
-        // Skipping leaves HEAD untouched, so the standby's booted resource
-        // limits stay consistent with the clone — no re-provision needed.
-        if (deps.shouldSkipClaimFetch?.(url)) {
+        // pre-fetched in the background recently AND this clone's
+        // `origin/HEAD` already matches the cache's current HEAD. The second
+        // gate is what makes the skip safe for long-idle warm sessions: a
+        // warm clone cut weeks ago from a then-current cache will have a
+        // stale `origin/HEAD` even if the cache is fresh today, and skipping
+        // on cache-freshness alone would branch from that frozen snapshot.
+        //
+        // When this gate holds, we remove the ~650ms RTT that dominated
+        // claim latency (docs/145). We do NOT run the refresh
+        // fire-and-forget instead: that path ends in a hard reset
+        // (`rollback`) which, racing the agent's first edits, would
+        // violate "never fast-forward a live clone after start." Skipping
+        // leaves HEAD untouched, so the standby's booted resource limits
+        // stay consistent with the clone — no re-provision needed.
+        if (
+          deps.shouldSkipClaimFetch?.(url) &&
+          (await isWorkspaceCloneInSyncWithCache(workspaceDir, deps.getSharedRepoDir(url)))
+        ) {
           return 0;
         }
         try {

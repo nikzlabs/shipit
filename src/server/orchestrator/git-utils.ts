@@ -198,6 +198,63 @@ export async function fetchAndResolveDefaultBranch(
   return { resetTarget, fetched, fetchDurationMs: Date.now() - t0, authError };
 }
 
+/**
+ * Cheap local agreement check: does the workspace clone's `origin/HEAD`
+ * (or `origin/main` / `origin/master`) point to the same commit as the
+ * bare cache's HEAD?
+ *
+ * This is the gate that pairs with `RepoPrefetcher.coveredRecently()` on
+ * the claim path. `coveredRecently` only proves the *bare cache* was
+ * fetched in the background recently — it says nothing about a warm
+ * session clone whose `origin/*` refs were frozen at warm time. A warm
+ * session that sat idle in the pool for hours/days/months has a stale
+ * `origin/HEAD` even while the prefetcher keeps the cache advancing.
+ * Skipping the claim-time fetch on the strength of `coveredRecently`
+ * alone then branches the new session from that frozen snapshot — the
+ * regression behind the 2-month-stale claim observed on 2026-05-22.
+ *
+ * Both reads are local `rev-parse` invocations (sub-millisecond on a
+ * warm filesystem), so the docs/145 win is preserved for the common
+ * "recently warmed pool" case. Only a long-idle warm clone trips the
+ * mismatch and falls back to `refreshCloneToLatestMain`.
+ *
+ * Defaults to `false` (i.e. "not in sync — do the refresh") on any
+ * error: a missing cache, an unresolvable ref, or a half-built clone
+ * should all degrade to the correct (slower) full-refresh path, not
+ * to a silent skip.
+ *
+ * Notes:
+ *   - The bare cache's `HEAD` is a symbolic ref to its default branch
+ *     (set by `git clone --bare`), so `rev-parse HEAD` in the cache
+ *     dir is exactly "the commit the prefetcher last advanced `main`
+ *     to" — the same commit a fresh `--local` clone would see as its
+ *     `origin/HEAD`.
+ *   - The workspace clone is read via `simpleGit(workspaceDir)` rather
+ *     than through `RepoGit`, since `RepoGit` models the bare-cache
+ *     side. We try `origin/HEAD` first (`cloneFromCache` preserves it)
+ *     and fall back to `origin/main` / `origin/master` for older
+ *     clones that may not have an `origin/HEAD` symbolic ref.
+ */
+export async function isWorkspaceCloneInSyncWithCache(
+  workspaceDir: string,
+  cacheDir: string,
+): Promise<boolean> {
+  try {
+    const cacheHead = (await simpleGit(cacheDir).raw(["rev-parse", "HEAD"])).trim();
+    if (!cacheHead) return false;
+    const sg = simpleGit(workspaceDir);
+    for (const ref of ["origin/HEAD", "origin/main", "origin/master"]) {
+      try {
+        const cloneHead = (await sg.raw(["rev-parse", ref])).trim();
+        if (cloneHead) return cloneHead === cacheHead;
+      } catch { /* try next ref */ }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /** Parse owner/repo from a GitHub remote URL. */
 export function parseGitHubRemote(url: string): { owner: string; repo: string } | null {
   // Handle HTTPS: https://github.com/owner/repo.git
