@@ -56,7 +56,8 @@ interface SubscriptionLimitPillProps {
 export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPillProps) {
   const sessionPct = snapshot.session?.usedPct ?? null;
   const weeklyPct = snapshot.weekly?.usedPct ?? null;
-  const hasData = sessionPct !== null || weeklyPct !== null;
+  const weeklySonnetPct = snapshot.weeklySonnet?.usedPct ?? null;
+  const hasData = sessionPct !== null || weeklyPct !== null || weeklySonnetPct !== null;
 
   // No data ever (or sign-out / never-fetched) → keep the neutral
   // em-dash form. The error reason lives in the tooltip.
@@ -85,6 +86,7 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
       <span>{label}</span>
       {sessionPct !== null && <Meter shortLabel="5h" pct={sessionPct} />}
       {weeklyPct !== null && <Meter shortLabel="7d" pct={weeklyPct} />}
+      {weeklySonnetPct !== null && <Meter shortLabel="Snt" pct={weeklySonnetPct} />}
       {!hasData && <span>—</span>}
     </span>
   );
@@ -158,7 +160,10 @@ function buildTooltip(label: string, snap: SubscriptionLimits): string {
   if (snap.weeklyOpus) {
     lines.push(`Weekly Opus: ${formatPct(snap.weeklyOpus.usedPct)} used (resets ${formatReset(snap.weeklyOpus.resetAt)})`);
   }
-  if (snap.error && (snap.session || snap.weekly || snap.weeklyOpus)) {
+  if (snap.weeklySonnet) {
+    lines.push(`Weekly Sonnet: ${formatPct(snap.weeklySonnet.usedPct)} used (resets ${formatReset(snap.weeklySonnet.resetAt)})`);
+  }
+  if (snap.error && (snap.session || snap.weekly || snap.weeklyOpus || snap.weeklySonnet)) {
     lines.push(`Last refresh failed (${snap.error}) — showing data from ${formatRelative(snap.fetchedAt)}.`);
   }
   return lines.join("\n");

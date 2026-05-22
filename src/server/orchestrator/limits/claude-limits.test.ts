@@ -80,6 +80,17 @@ describe("parseClaudeUsage", () => {
     expect(result?.weeklyOpus?.usedPct).toBe(80);
   });
 
+  it("preserves weeklySonnet when present", () => {
+    const result = parseClaudeUsage(
+      {
+        seven_day: { used_pct: 30, resets_at: "2026-05-26T00:00:00Z" },
+        seven_day_sonnet: { used_pct: 45, resets_at: "2026-05-26T00:00:00Z" },
+      },
+      0,
+    );
+    expect(result?.weeklySonnet?.usedPct).toBe(45);
+  });
+
   // Real Anthropic /api/oauth/usage capture (Phase 0). Locks in the
   // exact shape verified against a Max-20x account on 2026-05-19. If
   // upstream changes this shape, the parser regression shows up here
@@ -97,6 +108,12 @@ describe("parseClaudeUsage", () => {
     it("returns null for weeklyOpus when the response carries null (Max 20x has no Opus-only quota right now)", () => {
       const result = parseClaudeUsage(MAX_20X_FIXTURE, 0);
       expect(result?.weeklyOpus).toBeNull();
+    });
+
+    it("parses weeklySonnet from the captured body (Max 20x carries a Sonnet quota)", () => {
+      const result = parseClaudeUsage(MAX_20X_FIXTURE, 0);
+      expect(result?.weeklySonnet?.usedPct).toBe(0);
+      expect(result?.weeklySonnet?.resetAt).toBe("2026-05-24T17:00:00.805Z");
     });
 
     it("does not include a plan field (Anthropic /usage omits it — plan comes from the credentials file)", () => {

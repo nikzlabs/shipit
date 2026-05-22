@@ -34,6 +34,11 @@ export interface SubscriptionLimits {
    * otherwise (and absent for non-Claude providers).
    */
   weeklyOpus?: SubscriptionLimitsWindow | null;
+  /**
+   * Optional weekly Sonnet-only sub-quota — present on some Claude
+   * plans. Null otherwise (and absent for non-Claude providers).
+   */
+  weeklySonnet?: SubscriptionLimitsWindow | null;
   /** Epoch ms when this snapshot was fetched. */
   fetchedAt: number;
   /**
