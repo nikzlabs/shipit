@@ -234,7 +234,7 @@ describe("McpServerSettings (docs/088)", () => {
     expect((valueInputs[0] as HTMLInputElement).value).toBe("");
   });
 
-  it("badges an OAuth-managed server and hides its Edit button", async () => {
+  it("folds an OAuth-managed server into the connection card and hides the duplicate row", async () => {
     const notionServer: McpServerConfig = {
       name: "notion",
       type: "http",
@@ -260,15 +260,56 @@ describe("McpServerSettings (docs/088)", () => {
 
     render(<McpServerSettings hasActiveSession={true} />);
     await waitFor(() => {
+      expect(screen.getByTestId("mcp-oauth-notion_oauth")).toBeInTheDocument();
+    });
+
+    // The duplicate standalone row is gone — its Test/Disable controls now
+    // live inside the provider card so the user sees one element, not two.
+    expect(screen.queryByTestId("mcp-server-notion")).toBeNull();
+
+    const card = screen.getByTestId("mcp-oauth-notion_oauth");
+    expect(within(card).getByText(/● Connected/)).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Test" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Disable" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+  });
+
+  it("still shows an orphan OAuth-managed row when the provider is disconnected", async () => {
+    // Token revoked at provider side — server config still exists locally,
+    // so we surface it in the standalone list (with the via-connection badge)
+    // so the user can delete it.
+    const notionServer: McpServerConfig = {
+      name: "notion",
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer $platform:notion_oauth" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [notionServer] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({
+      providers: [
+        {
+          id: "notion_oauth",
+          label: "Notion",
+          description: "Connect to your Notion workspace.",
+          mcpUrl: "https://mcp.notion.com/mcp",
+          defaultServerName: "notion",
+          status: { source: "notion_oauth", connected: false },
+        },
+      ],
+    }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={true} />);
+    await waitFor(() => {
       expect(screen.getByTestId("mcp-server-notion")).toBeInTheDocument();
     });
 
-    // The row identifies itself as managed by the connection above…
-    expect(screen.getByText(/via Notion connection/)).toBeInTheDocument();
-    // …and hides Edit (the URL/auth are wired from the connection), while
-    // keeping Test usable now that $platform: resolves correctly.
+    // The row identifies itself as managed by the connection above and
+    // hides Edit, but is still visible so the user can delete it.
     const row = screen.getByTestId("mcp-server-notion");
+    expect(within(row).getByText(/via Notion connection/)).toBeInTheDocument();
     expect(within(row).queryByRole("button", { name: "Edit" })).toBeNull();
-    expect(within(row).getByRole("button", { name: "Test" })).toBeInTheDocument();
   });
 });

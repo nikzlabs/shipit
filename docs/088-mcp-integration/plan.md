@@ -52,10 +52,15 @@ description: Connect user MCP servers (Linear, Notion, Sentry, etc.) to the inne
 > even though the agent could use the server fine (the agent path,
 > `resolveMcpServer`, always handled both forms). The two resolvers now share
 > one exported helper, `substituteMcpPlaceholders()` in `mcp-resolve.ts`, so
-> they can't drift again. The Settings UI also badges OAuth-managed servers
-> ("· via <provider> connection") and hides their Edit button so the
-> auto-created entry doesn't read as a stray duplicate of the "Connected"
-> provider card.
+> they can't drift again. The Settings UI also folds OAuth-managed servers
+> into their connection card — when the provider is connected, the
+> auto-created `notion` / `linear` entry's status badge and
+> Test/Enable/Disable controls render inside the one-click card and the
+> standalone row is suppressed, so the user sees a single element per
+> provider instead of a duplicated card + row pair. Orphan entries (token
+> revoked at provider side → provider shows Disconnected, server config
+> still local) keep showing in the standalone list with the "· via
+> <provider> connection" badge so the user can still delete them.
 >
 > **Mid-session `crashed` detection landed.** `agent-listeners.ts` records
 > every tool_use it sees within a turn and, on `agent_tool_result` with
