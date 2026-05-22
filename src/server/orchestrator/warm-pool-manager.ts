@@ -9,6 +9,8 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { generateBranchPrefix, fetchAndResolveDefaultBranch } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
+import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { workerInstall, workerGet } from "./worker-http.js";
 
 // ---- Warm session pool ----
 
@@ -191,7 +193,15 @@ export function createWarmPool(
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
             containerManager.createStandby(config).then(async (sc) => {
               console.log(`[warm] Standby container ready for ${appSessionId} at ${sc.workerUrl}`);
-              // Pre-run install so the user doesn't wait for it on activation.
+              // Pre-run agent.install so the user doesn't wait for it on activation.
+              // The standby's workspace is bind-mounted from `workspaceDir`, so the
+              // success marker (`.shipit/.install-done`) persists for the future
+              // runner: on activation, `runner.runInstall()` hits the worker, sees
+              // the marker, and short-circuits with `{ skipped: true }`. If the
+              // user activates *during* pre-install, the worker's /install endpoint
+              // joins the in-flight run (no longer 409s) and the orchestrator-side
+              // SSE listener resolves on the same `install_done`/`install_error`.
+              await runPreInstall(workspaceDir, sc.workerUrl, appSessionId);
               // Preview endpoints live on the preview container, not the session container.
               // Warm container ready — compose stack startup handled by ServiceManager
             }).catch((err: unknown) => {
@@ -220,4 +230,61 @@ export function createWarmPool(
   };
 
   return { warmSessionForRepo, waitForWarmSession };
+}
+
+/**
+ * Pre-run `agent.install` on a freshly-booted standby worker so the user
+ * doesn't pay install latency on activation. Reads shipit.yaml from the
+ * warm workspace, fires the install on the standby's worker, and polls
+ * `/install/status` until it settles.
+ *
+ * Best-effort: any failure here just means the on-activation install runs
+ * as it does today — we log and return rather than break the warm flow.
+ *
+ * Exported for the focused unit test in `warm-pool-preinstall.test.ts`,
+ * which exercises the helper against a real Fastify worker stub instead of
+ * standing up the full warm-pool + Docker path.
+ */
+export async function runPreInstall(workspaceDir: string, workerUrl: string, sessionId: string): Promise<void> {
+  let commands: string[];
+  try {
+    commands = resolveShipitConfig(workspaceDir).agent.install;
+  } catch (err) {
+    console.warn(`[warm:install:${sessionId}] Skipping pre-install — could not parse shipit.yaml: ${getErrorMessage(err)}`);
+    return;
+  }
+  if (commands.length === 0) return;
+
+  try {
+    const res = await workerInstall(workerUrl, commands) as { skipped?: boolean; started?: boolean };
+    if (res.skipped) {
+      console.log(`[warm:install:${sessionId}] Pre-install skipped (marker present)`);
+      return;
+    }
+    if (!res.started) return;
+
+    // Worker returned 202-ish "started" — poll /install/status until done. The
+    // worker writes the `.shipit/.install-done` marker on success itself; we
+    // just need to know when it's no longer running so we can log the outcome.
+    // Pre-install is bounded by a hard ceiling so a wedged `npm install` can't
+    // leak a polling loop for the entire orchestrator lifetime.
+    const POLL_INTERVAL_MS = 2_000;
+    const MAX_WAIT_MS = 15 * 60 * 1000;
+    const start = Date.now();
+    while (Date.now() - start < MAX_WAIT_MS) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      const status = await workerGet(workerUrl, "/install/status").catch(() => null) as
+        | { running?: boolean; lastResult?: { ok: boolean; message?: string } | null }
+        | null;
+      if (!status) continue;
+      if (!status.running) {
+        const ok = status.lastResult?.ok !== false;
+        console.log(`[warm:install:${sessionId}] Pre-install ${ok ? "complete" : "failed"}${status.lastResult?.message ? `: ${status.lastResult.message}` : ""}`);
+        return;
+      }
+    }
+    console.warn(`[warm:install:${sessionId}] Pre-install still running after ${MAX_WAIT_MS}ms — leaving worker to finish; on-activation runInstall will join it via /install`);
+  } catch (err) {
+    console.warn(`[warm:install:${sessionId}] Pre-install request failed: ${getErrorMessage(err)}`);
+  }
 }

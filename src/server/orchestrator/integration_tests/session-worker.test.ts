@@ -700,7 +700,12 @@ describe("Integration: Session Worker install endpoint", () => {
     expect(body.lastResult.command).toBe("sh -c 'exit 7'");
   });
 
-  it("rejects a second install while one is running (409)", async () => {
+  it("joins an in-flight install instead of failing the second caller", async () => {
+    // The warm-pool pre-install and the on-activation install can race on the
+    // same worker (standby claimed mid pre-install). The second POST must NOT
+    // 409 — that surfaced `install_status: error` on a perfectly healthy run.
+    // Instead the worker reports `started: true, joined: true` so the
+    // orchestrator awaits the SSE-delivered completion event.
     // `sleep 1` keeps the install in flight long enough to race a second POST.
     await installWorker.getApp().inject({
       method: "POST",
@@ -712,8 +717,8 @@ describe("Integration: Session Worker install endpoint", () => {
       url: "/install",
       payload: { commands: ["sleep 1"] },
     });
-    expect(second.statusCode).toBe(409);
-    expect(second.json().error).toContain("already running");
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual({ started: true, joined: true });
   });
 
   it("ContainerSessionRunner.runInstall is idempotent under concurrent callers", async () => {
