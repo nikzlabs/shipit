@@ -219,7 +219,7 @@ export interface SessionContainerManagerOpts {
 
 const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE;
 const DEFAULT_NETWORK = process.env.DOCKER_NETWORK;
-const DEFAULT_MEMORY_LIMIT = 1024 * 1024 * 1024; // 1 GB (agent container)
+const DEFAULT_MEMORY_LIMIT = 1536 * 1024 * 1024; // 1.5 GB (agent container)
 const DEFAULT_CPU_QUOTA = 50_000; // 0.5 CPU (50000 µs per 100ms period)
 const DEFAULT_PIDS_LIMIT = 256;
 const DEFAULT_WORKER_PORT = 9100;
@@ -253,7 +253,7 @@ export interface AgentDockerLimits {
  * This is the single place that translates the user's declared resources
  * into Docker units. Every container creation path (fresh, standby fallback,
  * warm-pool standby, rediscover) must derive its limits from here — anything
- * else silently falls back to the manager's compiled-in defaults (1 GiB /
+ * else silently falls back to the manager's compiled-in defaults (1.5 GiB /
  * 0.5 CPU / 256 pids), under-provisioning containers that declared more.
  *
  * Old-format shipit.yaml (`resources:` / `capabilities:` blocks) is no longer

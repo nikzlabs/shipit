@@ -77,7 +77,7 @@ Today ShipIt has two disconnected ways to run services:
 version: 1                      # Optional. Schema version for future-proofing.
 
 agent:
-  memory: 2048                   # Memory in MB (default: 1024, max: 4096)
+  memory: 2048                   # Memory in MB (default: 1536, max: 4096)
   cpu: 1.0                       # CPU cores (default: 0.5, max: 4)
   pids: 512                      # Max processes (default: 256, max: 2048)
   install:                       # Dependency installation commands
@@ -237,7 +237,7 @@ interface ShipitConfig {
 }
 
 interface AgentConfig {
-  memory?: number;                      // default: 1024
+  memory?: number;                      // default: 1536
   cpu?: number;                         // default: 0.5
   pids?: number;                        // default: 256
   install?: string[];                   // default: [] (no install steps)

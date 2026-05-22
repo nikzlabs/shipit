@@ -44,7 +44,7 @@ Docker Compose containers managed by ShipIt. Define them in
 
 ## Resource limits
 
-Agent containers have default limits (1024 MB memory, 0.5 CPU, 256 PIDs) that
+Agent containers have default limits (1536 MB memory, 0.5 CPU, 256 PIDs) that
 can be increased via the `agent` section in `shipit.yaml`. See
 [shipit-yaml.md](shipit-yaml.md) for details. Service containers have their
 own resource limits set in `docker-compose.yml`.

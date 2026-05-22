@@ -262,7 +262,7 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
   }, 30000);
 
   it("W3: claim destroys a standby whose booted limits no longer match the refreshed workspace", async () => {
-    // Real remote starts at c1 with NO shipit.yaml → defaults (1 GiB).
+    // Real remote starts at c1 with NO shipit.yaml → defaults (1.5 GiB).
     const { remoteDir } = await setup({ "README.md": "# test\n" });
 
     await waitFor(() => !!repoStore.get(repoUrl)?.warmSessionId, 10000, "warm #1");
@@ -271,19 +271,19 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     expect(warmSession.workspaceDir).toBeDefined();
 
     // Manually stand up a container for the warm session at the *current*
-    // (default, 1 GiB) limits — this is the standby that booted off c1.
+    // (default, 1.5 GiB) limits — this is the standby that booted off c1.
     await containerManager.createStandby(
       containerManager.buildConfig({
         sessionId: warmId,
         sessionDir: path.dirname(warmSession.workspaceDir!),
         workspaceDir: warmSession.workspaceDir!,
         credentialsDir: tmpDir,
-        memoryLimit: 1024 * 1024 * 1024,
+        memoryLimit: 1536 * 1024 * 1024,
         cpuQuota: 50_000,
         pidsLimit: 256,
       }),
     );
-    expect(containerManager.get(warmId)?.bootedLimits?.memoryLimit).toBe(1024 * 1024 * 1024);
+    expect(containerManager.get(warmId)?.bootedLimits?.memoryLimit).toBe(1536 * 1024 * 1024);
 
     // The remote advances: c2 declares 3 GiB. The standby is now stale.
     advanceRemote(remoteDir, { "shipit.yaml": "agent:\n  memory: 3072\n" });

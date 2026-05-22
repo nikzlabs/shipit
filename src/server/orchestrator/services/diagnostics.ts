@@ -24,6 +24,7 @@ import type { WsLogEntry } from "../../shared/types.js";
 import { getContainerHealth, type ContainerHealth } from "./health.js";
 import { ServiceError } from "./types.js";
 import {
+  AGENT_DEFAULTS,
   resolveShipitConfig,
   ShipitConfigError,
   type AgentConfig,
@@ -240,7 +241,7 @@ function readParsedConfig(workspaceDir: string): ParsedShipitConfig {
     const message = err instanceof ShipitConfigError || err instanceof Error
       ? err.message
       : String(err);
-    const defaultAgent = { memory: 1024, cpu: 0.5, pids: 256, install: [] };
+    const defaultAgent = { ...AGENT_DEFAULTS, install: [] };
     return {
       agent: defaultAgent,
       warnings: [],
