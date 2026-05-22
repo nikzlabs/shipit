@@ -251,6 +251,15 @@ export class CodexAdapter
   private turnStartTime = 0;
 
   /**
+   * Id of the turn currently in flight, captured from the `turn/started`
+   * event (and the `turn/start` response as a fallback). `turn/steer` requires
+   * it as `expectedTurnId` — the app-server validates it is non-empty and
+   * matches the active turn, and silently drops the steer otherwise. Cleared
+   * on `turn/completed`. Without this, live steering of Codex was a no-op.
+   */
+  private currentTurnId: string | null = null;
+
+  /**
    * itemIds whose text we already streamed via `item/agentMessage/delta`.
    * On the matching `item/completed` we skip re-emitting the full text — the
    * orchestrator APPENDS each `agent_assistant` text block (`accumulatedText
@@ -377,17 +386,38 @@ export class CodexAdapter
   readonly isStreaming = false;
 
   writeStdin(data: string): void {
-    // For Codex, user input during a turn is sent via turn/steer.
+    // For Codex, user input during a turn (live steering) is sent via
+    // `turn/steer`. Getting this to actually take required two non-obvious
+    // pieces — both verified by driving the real app-server (0.130/0.132):
     //
-    // `input` is an array of content blocks, not a string. The Codex
-    // app-server tightened its schema in CLI 0.131.x — sending a bare
-    // string now fails with JSON-RPC -32600 "invalid type: string,
-    // expected a sequence". See `initializeAndRun` for the matching
-    // `turn/start` shape.
-    if (this.proc && this.threadId) {
-      this.sendNotification("turn/steer", {
+    // 1. `turn/steer` is a JSON-RPC **request**, not a notification. It has a
+    //    `TurnSteerResponse` (returns `{turnId}`). The app-server silently
+    //    DROPS a `turn/steer` sent without an `id` — no error, the turn just
+    //    runs to completion ignoring the message. So we must use
+    //    `sendRequest`, not `sendNotification`. (This was the bug behind
+    //    "Codex ignores live-steer messages sent mid-turn".)
+    //
+    // 2. `expectedTurnId` is mandatory (`TurnSteerParams`): validated
+    //    non-empty and must match the currently active turn, else the request
+    //    is rejected. We capture `currentTurnId` from the `turn/started`
+    //    event (and the `turn/start` response as a fallback); if it isn't set
+    //    there's no active turn to steer, so we skip.
+    //
+    // `input` is an array of content blocks, not a bare string — the same
+    // shape as `turn/start` (see `initializeAndRun`); a string is rejected
+    // with -32600 "invalid type: string, expected a sequence".
+    if (this.proc && this.threadId && this.currentTurnId) {
+      this.sendRequest("turn/steer", {
         threadId: this.threadId,
+        expectedTurnId: this.currentTurnId,
         input: [{ type: "text", text: data.trim() }],
+      }).catch((err: unknown) => {
+        // A rejection here (e.g. ActiveTurnNotSteerable during a
+        // review/compaction turn, or the turn ending as we send) means the
+        // steer didn't land. Surface it for diagnostics; the orchestrator
+        // already optimistically rendered the message. Falling back to the
+        // queue on rejection is tracked in docs/140.
+        this.emit("log", "codex", `turn/steer rejected: ${err instanceof Error ? err.message : String(err)}`);
       });
     }
   }
@@ -565,7 +595,11 @@ export class CodexAdapter
       }
 
       case "turn/started": {
-        // Turn has begun — nothing to emit yet
+        // Turn has begun — capture its id so live steering can pass it as
+        // `expectedTurnId` on `turn/steer`. The v2 shape nests it under
+        // `turn.id`; accept a top-level `turnId` defensively.
+        const turn = params.turn as { id?: string } | undefined;
+        this.currentTurnId = turn?.id ?? (params.turnId as string) ?? this.currentTurnId;
         break;
       }
 
@@ -787,6 +821,9 @@ export class CodexAdapter
       error: status !== "completed" ? `Turn ended with status: ${status}` : undefined,
     } as AgentEvent);
 
+    // Turn is over — no active turn to steer until the next one starts.
+    this.currentTurnId = null;
+
     // Kill the app-server process after the turn completes
     // (matching the one-shot-per-turn pattern of ClaudeAdapter)
     this.kill();
@@ -936,7 +973,12 @@ export class CodexAdapter
       turnParams.model = params.model;
     }
 
-    // Step 4: Start the turn (this triggers streaming notifications)
-    await this.sendRequest("turn/start", turnParams);
+    // Step 4: Start the turn (this triggers streaming notifications).
+    // TurnStartResponse carries the turn id — capture it as a fallback in
+    // case the `turn/started` event is missed, so live steering always has
+    // an `expectedTurnId` to send.
+    const turnResult = await this.sendRequest("turn/start", turnParams);
+    const turnData = turnResult as { turnId?: string; turn?: { id?: string } } | undefined;
+    this.currentTurnId = turnData?.turn?.id ?? turnData?.turnId ?? this.currentTurnId;
   }
 }

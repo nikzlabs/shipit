@@ -35,8 +35,12 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 ## Phase 3 — Codex adapter
 
 - [x] Expose `sendUserMessage()` (wraps existing `turn/steer` path)
+- [x] **Make `turn/steer` actually take** — two fixes, both verified by driving the real app-server (0.130 in-container and 0.132 on host):
+  1. **Send `turn/steer` as a JSON-RPC request, not a notification.** It has a `TurnSteerResponse` (returns `{turnId}`); the app-server silently DROPS a `turn/steer` with no `id` — the turn runs to completion ignoring the message, no error. The adapter used `sendNotification`; now uses `sendRequest`. Probe proof: as a notification the model ran all three queued commands and ignored the steer; as a request it obeyed mid-turn.
+  2. **Send mandatory `expectedTurnId`.** `TurnSteerParams` requires it (validated non-empty, must match the active turn). Captured from the `turn/started` event (`turn.id`) with the `turn/start` response as fallback, stored in `currentTurnId`, cleared on `turn/completed`.
+  Either fix alone is insufficient — both are required. Covered by `codex-adapter.test.ts` (asserts `expectedTurnId` present and the call carries an `id`).
 - [ ] Upgrade `interrupt()` from hard `kill()` to `turn/interrupt` (graceful, `turn/completed status:"interrupted"`) — adapter still uses `kill()`; documented in `codex-adapter.ts:interrupt`
-- [ ] **Decide steer-rejection detection mechanism** — `turn/steer` is fire-and-forget today (no reply); detecting a review/compaction rejection likely needs steer-as-`sendRequest` (with id) or watching for an error notification
+- [x] **Decide steer-rejection detection mechanism** — resolved: `turn/steer` is now sent as a `sendRequest` (with id), so the app-server's response/error is observable. The adapter logs a rejection (`turn/steer rejected: …`); wiring that into a queue fallback is the next item.
 - [ ] Detect/surface `turn/steer` rejection during review/compaction turns → fall back to queue
 - [ ] Tests: `turn/steer` request/notification shape, interrupt path, rejection fallback
 

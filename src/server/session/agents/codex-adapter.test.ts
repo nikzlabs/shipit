@@ -673,6 +673,47 @@ describe("CodexAdapter", () => {
     expect((steer!.params as any).input).toEqual([
       { type: "text", text: "user reply text" },
     ]);
+    // `expectedTurnId` is mandatory — the app-server validates it is
+    // non-empty and matches the active turn, and silently drops the steer
+    // otherwise. `createAndInit` responds to turn/start with turnId:"turn-001",
+    // captured as the fallback turn id.
+    expect((steer!.params as any).expectedTurnId).toBe("turn-001");
+    // Must be a JSON-RPC *request* (has an id), not a notification — the
+    // app-server silently discards a turn/steer sent without an id, which is
+    // what made Codex live steering a no-op. Verified against the real
+    // app-server (0.130/0.132).
+    expect(steer!.id).toBeDefined();
+  });
+
+  it("captures expectedTurnId from the turn/started event", async () => {
+    await createAndInit("Hello");
+
+    // A later turn/started supersedes the turn/start-response fallback.
+    fakeProc.sendNotification("turn/started", { turn: { id: "turn-042" } });
+    await vi.waitFor(() => {
+      // give the notification a tick to be processed
+      expect(true).toBe(true);
+    });
+
+    adapter.writeStdin("steer me\n");
+    const steer = fakeProc.getRequests().find((r) => r.method === "turn/steer");
+    expect((steer!.params as any).expectedTurnId).toBe("turn-042");
+  });
+
+  it("drops steer when no turn is active (no expectedTurnId to send)", async () => {
+    await createAndInit("Hello");
+
+    // Complete the turn — clears currentTurnId. The process is killed on
+    // turn/completed, but the guard on `currentTurnId` is what protects us.
+    fakeProc.sendNotification("turn/completed", { turn: { status: "completed" } });
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_result")).toBe(true);
+    });
+
+    const before = fakeProc.getRequests().filter((r) => r.method === "turn/steer").length;
+    adapter.writeStdin("too late\n");
+    const after = fakeProc.getRequests().filter((r) => r.method === "turn/steer").length;
+    expect(after).toBe(before);
   });
 
   it("handles malformed JSON tool arguments gracefully", async () => {
