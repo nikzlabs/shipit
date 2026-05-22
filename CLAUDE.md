@@ -354,6 +354,15 @@ The browser uses two parallel channels:
 - **Styling** — Tailwind CSS v4 utility classes. Dark-mode-only color scheme (gray-950 backgrounds).
 - **Strict TypeScript** — `strict: true` in tsconfig. Target ES2022, module ESNext with bundler resolution.
 
+## Dependency policy
+
+Two rules govern what goes into `package.json`. Both are enforced by `npm run check-deps` (`scripts/check-dependency-age.ts`); wire it into CI.
+
+1. **Pin to exact versions.** Every entry in `dependencies` and `devDependencies` must be an exact semver like `"react": "19.2.4"` — never `^19.2.4`, `~19.2.4`, `latest`, a range, a tag, or a git/tarball URL. Floating ranges turn `npm install` into a moving target and let a fresh checkout silently pick up a version nobody on the team has run. Bumps are deliberate edits to `package.json`, not a side effect of someone re-running install.
+2. **Minimum age of 7 days.** A version may only be added once it has been published to the npm registry for at least seven days. The window gives the community, scanners, and the registry's own abuse pipeline time to catch a compromised release before it lands in our build. If you genuinely need a same-day release (security fix in a transitive, for example), call it out in the PR description and get explicit sign-off — don't bypass the check silently.
+
+When bumping a dependency, edit `package.json` to the new exact version, run `npm install` to refresh the lockfile, then run `npm run check-deps` before opening the PR.
+
 ## Docs structure
 
 ```
