@@ -629,6 +629,45 @@ export async function registerSessionRoutes(
         return;
       }
 
+      // Shared tail of the reuse / warm / waiting sub-paths: refresh the
+      // claimed session's clone to latest main, surface a stale-fetch warning,
+      // and re-provision the standby if a HEAD move invalidated its booted
+      // limits. Returns the fetch duration (for timing). Deliberately does NOT
+      // re-warm the pool — that's the caller's concern (reuse must not, since it
+      // never consumed a pool slot; warm/waiting must). Errors are logged and
+      // swallowed so a transient fetch failure never blocks the claim.
+      const refreshClaimedSession = async (sessionId: string, workspaceDir: string): Promise<number> => {
+        try {
+          const r = await refreshCloneToLatestMain(
+            workspaceDir,
+            createGitManager,
+            deps.githubAuthManager,
+            (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
+          );
+          warnIfStaleClaimFetch(r.fetched, url);
+          if (r.headChanged) {
+            // HEAD moved — the standby container may have booted with limits
+            // from a now-stale shipit.yaml. Re-provision if so. (Compose stack
+            // restart is handled by ServiceManager on config change.)
+            await reprovisionStandbyIfLimitsChanged(sessionId, workspaceDir);
+          }
+          return r.fetchDurationMs;
+        } catch (err) {
+          console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
+          return 0;
+        }
+      };
+
+      // Re-warm the pool for the *next* session — fire-and-forget so this
+      // claim's response isn't blocked on prep work for a future user
+      // (docs/144 fix #1). Pool/standby tracking all happens inside the promise
+      // body regardless of the caller; `warmingInProgress` / `warmingPromises`
+      // (awaited at the top of every claim) keep a concurrent claim from racing
+      // on the bare cache.
+      const rewarmPool = () => {
+        if (deps.warmSessionForRepo) void deps.warmSessionForRepo(url, { withStandby: true });
+      };
+
       try {
         const result = await serializeClaim(url, async () => {
           const inFlightWarming = deps.waitForWarmSession?.(url);
@@ -638,26 +677,7 @@ export async function registerSessionRoutes(
           // Check for .git/ directory (full clone) to ensure the clone is ready.
           const reusable = sessionManager.findUngraduatedWarm(url, repo.warmSessionId ?? undefined);
           if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
-            let fetchDurationMs = 0;
-            try {
-              const result = await refreshCloneToLatestMain(
-                reusable.workspaceDir,
-                createGitManager,
-                deps.githubAuthManager,
-                (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
-              );
-              fetchDurationMs = result.fetchDurationMs;
-              warnIfStaleClaimFetch(result.fetched, url);
-              if (result.headChanged) {
-                // HEAD moved — the standby container may have booted with
-                // limits from a now-stale shipit.yaml. Re-provision if so.
-                // (Compose stack restart is handled by ServiceManager on
-                // config change.)
-                await reprovisionStandbyIfLimitsChanged(reusable.id, reusable.workspaceDir);
-              }
-            } catch (err) {
-              console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
-            }
+            const fetchDurationMs = await refreshClaimedSession(reusable.id, reusable.workspaceDir);
             return { sessionId: reusable.id, sessionDir: reusable.workspaceDir, fetchDurationMs };
           }
 
@@ -668,25 +688,8 @@ export async function registerSessionRoutes(
             if (warmSession?.workspaceDir) {
               const sessionId = currentRepo.warmSessionId;
               deps.repoStore.setWarmSessionId(url, undefined);
-              let fetchDurationMs = 0;
-              try {
-                const result = await refreshCloneToLatestMain(
-                  warmSession.workspaceDir,
-                  createGitManager,
-                  deps.githubAuthManager,
-                  (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
-                );
-                fetchDurationMs = result.fetchDurationMs;
-                warnIfStaleClaimFetch(result.fetched, url);
-                if (result.headChanged) {
-                  // HEAD moved — re-provision the standby if its booted
-                  // limits no longer match the now-current shipit.yaml.
-                  await reprovisionStandbyIfLimitsChanged(sessionId, warmSession.workspaceDir);
-                }
-              } catch (err) {
-                console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
-              }
-              if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
+              const fetchDurationMs = await refreshClaimedSession(sessionId, warmSession.workspaceDir);
+              rewarmPool();
               return { sessionId, sessionDir: warmSession.workspaceDir, fetchDurationMs };
             }
           }
@@ -701,25 +704,8 @@ export async function registerSessionRoutes(
               if (warmSession?.workspaceDir) {
                 const sessionId = freshRepo.warmSessionId;
                 deps.repoStore.setWarmSessionId(url, undefined);
-                let fetchDurationMs = 0;
-                try {
-                  const result = await refreshCloneToLatestMain(
-                    warmSession.workspaceDir,
-                    createGitManager,
-                    deps.githubAuthManager,
-                    (err) => deps.githubAuthManager.markTokenInvalid(`claim-session refresh failed for ${url}: ${err.message}`),
-                  );
-                  fetchDurationMs = result.fetchDurationMs;
-                  warnIfStaleClaimFetch(result.fetched, url);
-                  if (result.headChanged) {
-                    // HEAD moved — re-provision the standby if its booted
-                    // limits no longer match the now-current shipit.yaml.
-                    await reprovisionStandbyIfLimitsChanged(sessionId, warmSession.workspaceDir);
-                  }
-                } catch (err) {
-                  console.error(`[claim-session] Failed to refresh clone to latest main:`, getErrorMessage(err));
-                }
-                if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
+                const fetchDurationMs = await refreshClaimedSession(sessionId, warmSession.workspaceDir);
+                rewarmPool();
                 return { sessionId, sessionDir: warmSession.workspaceDir, fetchDurationMs };
               }
             }
@@ -799,7 +785,7 @@ export async function registerSessionRoutes(
           sessionManager.setBranch(appSessionId, branchPrefix);
           sessionManager.setWarm(appSessionId, true);
 
-          if (deps.warmSessionForRepo) await deps.warmSessionForRepo(url, { withStandby: true });
+          rewarmPool();
 
           return { sessionId: appSessionId, sessionDir, fetchDurationMs };
         });
