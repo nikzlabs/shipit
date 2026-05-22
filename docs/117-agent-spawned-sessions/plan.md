@@ -6,9 +6,9 @@ description: CLI shim letting agents create and manage sibling ShipIt sessions f
 
 # 117 — Agent-Spawned ShipIt Sessions
 
-## Phase 1 ship notes
+## Phase 1 + 2 ship notes
 
-Phase 1 is live as of this revision. What works today:
+Phases 1 and 2 are live as of this revision. What works today:
 
 - `shipit session create -p "PROMPT" [...]` spawns a sibling session with
   parent linkage persisted; the orchestrator clones the workspace, cuts a
@@ -18,14 +18,25 @@ Phase 1 is live as of this revision. What works today:
   didn't spawn (404, no leakage of "wrong parent" vs "not found").
 - Per-turn (`spawnedByTurn`) and per-parent (active children) quotas are
   enforced fail-closed; both surface as HTTP 429.
+- **(Phase 2.)** The running agent gets per-agent guidance on when to reach
+  for `shipit session create`: Claude is told to prefer `Task` for in-turn
+  fan-out and reserve the shim for user-prompted parallel work; Codex is
+  told the shim is its only fan-out primitive but still heavy and
+  user-visible.
+- **(Phase 2.)** Successful spawns emit a `session_spawned` WS event on the
+  parent's runner. The parent's chat renders a `SpawnedSessionCard` inline
+  with the title, branch, live status (running / idle / archived / missing),
+  and an "Open" button that switches the active session to the child.
+- **(Phase 2.)** Spawned children render indented under their parent in the
+  sidebar's repo group, matching the existing worktree-sibling affordance.
 
-What is **not** in Phase 1 (see the table below for tracking):
+What is **not** in Phase 1 + 2 (see the table below for tracking):
 
-- No agent-prompt nudge — Claude/Codex still need to be told to use it.
-- No `SpawnedSessionCard` in the parent chat and no sidebar grouping; the
-  child shows up as a normal session in the user's sidebar via the existing
-  `session_list` SSE broadcast.
 - No `wait` / `message` / `archive` subcommands (Phase 3).
+- No persistence of the `SpawnedSessionCard` in chat history — the card is
+  re-rendered live via the turn-event buffer, and the child remains visible
+  in the sidebar via the existing `session_list` broadcast. Phase 3 may add
+  persistence alongside the `wait` / `message` follow-up surface.
 
 ## Summary
 
@@ -387,7 +398,7 @@ The existing idle-container cleanup (doc 063) applies normally — spawned sessi
 | Phase | Scope | Status |
 |---|---|---|
 | **1** | Build the shim + worker `/agent-ops/session/*` routes + `POST /api/sessions/:parentId/spawn` + `parentSessionId` field. Update `shipit-docs/sessions.md`. **No agent prompt changes.** Sidebar grouping is *not* shipped in Phase 1 (deferred to Phase 2 alongside the SpawnedSessionCard rendering). | done |
-| **2** | Update `agent-instructions.ts` to teach the agent when to reach for `shipit session create` vs `Task`. Sidebar grouping enabled. SpawnedSessionCard rendered in parent chats. | planned |
+| **2** | Update `agent-instructions.ts` to teach the agent when to reach for `shipit session create` vs `Task`. Sidebar grouping enabled. SpawnedSessionCard rendered in parent chats. | done |
 | **3** | Add `wait`, `archive`, and follow-up `message` flows once telemetry shows the agent uses Phase 1 reliably. | planned |
 | **4** *(optional)* | Cross-repo spawns (different `--repo`) for advanced workflows. Probably gated by a per-account setting. | planned |
 
@@ -424,17 +435,20 @@ In addition to the per-threat table above, two systemic notes:
 | `src/server/orchestrator/sessions.ts` | Added `parent_session_id` and `spawned_by_turn` columns to the SQL row mapping; new `setParentSession()` and `findChildren()` query. | done |
 | `src/server/shared/database.ts` | Migration 11 — adds `parent_session_id`, `spawned_by_turn` columns + `idx_sessions_parent` index. | done |
 | `src/server/shared/types/domain-types.ts` | Added `parentSessionId` and `spawnedByTurn` to `SessionInfo`. | done |
-| `src/server/shared/types/ws-server-messages.ts` | *(Phase 2.)* Add `session_spawned` event — deferred until Phase 2 ships the parent-chat `SpawnedSessionCard`. | planned |
-| `src/server/orchestrator/ws-handlers/agent-listeners.ts` | *(Phase 2.)* Forward `session_spawned` events to the parent's WS clients. | planned |
-| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* Append agent-specific guidance: Claude branch gets the "Task vs shipit session create" rule; Codex branch gets the "only spawn when the user asked" rule. | planned |
+| `src/server/shared/types/ws-server-messages.ts` | **(Phase 2.)** Added `WsSessionSpawned` (`{ sessionId, childSessionId, title, branch?, spawnedAt }`) and wired it into the `WsServerMessage` discriminated union. | done |
+| `src/server/orchestrator/ws-handlers/agent-listeners.ts` | *(Phase 2.)* No change needed — emission lives in the spawn route, which already runs on the orchestrator side of the connection. | done |
+| `src/server/orchestrator/agent-instructions.ts` | **(Phase 2.)** Adds an `agentId` option; when set, appends the "Parallel sessions" section with the Claude (Task-first) or Codex (only fan-out primitive) variant. `agent-execution.ts` passes `currentAgent.agentId` per turn; `services/settings.ts` renders the Settings preview with `defaultAgentId`. | done |
 | `src/server/shipit-docs/sessions.md` | **New.** Documents the shim, the supported subcommands, the rejected ones, and the `Task` vs `shipit session create` decision rule (per-agent). | done |
 | `src/server/shipit-docs/README.md` | Added `sessions.md` to the index. | done |
 | `docker/Dockerfile.session-worker.{dev,prod,dogfood}` | Install the shim at `/usr/local/bin/shipit`, owned by root, mode 0755. (`.docker` inherits via `BASE_IMAGE`.) | done |
-| `src/client/components/SessionList.tsx` | *(Phase 2.)* Render spawned children indented under their parent. | planned |
-| `src/client/components/SpawnedSessionCard.tsx` | *(Phase 2.)* **New.** In-chat card showing a spawned child's status. | planned |
-| `src/client/components/MessageList.tsx` | *(Phase 2.)* Render `SpawnedSessionCard` when a `session_spawned` event appears in the message group. | planned |
-| `src/client/stores/session-store.ts` | *(Phase 2.)* Surface `parentSessionId` and a `getChildren(parentId)` selector. | planned |
-| `src/server/orchestrator/integration_tests/agent-spawned-session.test.ts` | **New.** End-to-end coverage of the spawn happy path, parent-linkage persistence, per-turn quota 429, list ordering, and cross-tenancy 404 on `view`. 7 cases. | done |
+| `src/client/components/SessionSidebar.tsx` | **(Phase 2.)** Indents spawned children under their parent inside `RepoGroup`. Orphaned children (parent not in the same repo group) render at top level as a fallback so they never silently disappear. `SessionItem` gained an `indented` prop with a `data-testid` for tests. | done |
+| `src/client/components/SpawnedSessionCard.tsx` | **(Phase 2.)** **New.** In-chat card showing a spawned child's title, branch, status pill (running / idle / archived / session-not-found), and an "Open" button. Reads live status from `useSessionStore`. | done |
+| `src/client/components/MessageList.tsx` | **(Phase 2.)** Detects `spawnedSession` on a `ChatMessage` and renders `SpawnedSessionCard` instead of the bubble. | done |
+| `src/client/hooks/message-handlers/session-spawned.ts` | **(Phase 2.)** **New.** Handler that converts the `session_spawned` WS event into a `ChatMessage` with `spawnedSession` populated. Registered in `message-handlers/index.ts`. | done |
+| `src/client/stores/session-store.ts` | **(Phase 2.)** Adds a `getChildren(parentSessionId)` selector. `parentSessionId` was already plumbed onto `SessionInfo` in Phase 1. | done |
+| `src/server/orchestrator/integration_tests/agent-spawned-session.test.ts` | **New.** End-to-end coverage of the spawn happy path, parent-linkage persistence, per-turn quota 429, list ordering, cross-tenancy 404 on `view`, AND the Phase 2 `session_spawned` WS emission on the parent runner. 8 cases. | done |
+| `src/client/components/SpawnedSessionCard.test.tsx` | **(Phase 2.)** **New.** Component tests covering all four status states (idle / running / archived / missing), reactive transitions, Open button click handling (custom `onOpen` + store fallback), the disabled Open when the child is missing, and branch omission. | done |
+| `src/server/orchestrator/agent-instructions.test.ts` | **(Phase 2.)** Extended with five new cases covering the per-agent "Parallel sessions" section: Claude variant contrasts `Task` vs `shipit session create`, Codex variant says "only fan-out primitive," baseline rendering still omits the section, and composes correctly with `previewUrl` + `autoCreatePr`. | done |
 
 ## Open questions
 

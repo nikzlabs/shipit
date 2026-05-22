@@ -43,6 +43,7 @@ import { handleServiceLog } from "./service-log.js";
 import { handleServiceStatus } from "./service-status.js";
 import { handleSessionForked } from "./session-forked.js";
 import { handleSessionMemoryExhausted } from "./session-memory-exhausted.js";
+import { handleSessionSpawned } from "./session-spawned.js";
 import { handleSessionStarted } from "./session-started.js";
 import { handleSessionStatus } from "./session-status.js";
 import { handleSystemNotice } from "./system-notice.js";
@@ -124,6 +125,7 @@ export const messageHandlers: MessageHandlerMap = {
   service_status: handleServiceStatus,
   session_forked: handleSessionForked,
   session_memory_exhausted: handleSessionMemoryExhausted,
+  session_spawned: handleSessionSpawned,
   session_started: handleSessionStarted,
   session_status: handleSessionStatus,
   system_notice: handleSystemNotice,

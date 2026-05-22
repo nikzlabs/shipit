@@ -5,6 +5,8 @@
  * Visible and toggleable in Settings > Instructions for transparency.
  */
 
+import type { AgentId } from "../shared/types.js";
+
 export interface AgentSystemInstructionOptions {
   /** Optional live preview URL — when present, the agent gets browser tools. */
   previewUrl?: string;
@@ -14,6 +16,19 @@ export interface AgentSystemInstructionOptions {
    * the harness-side fallback (see docs/116-fake-gh-cli-shim/plan.md, Phase 2).
    */
   autoCreatePr?: boolean;
+  /**
+   * Identity of the agent the prompt is being assembled for. Drives the
+   * per-agent "when to reach for `shipit session create`" guidance in the
+   * Parallel sessions section: Claude gets a "Task-first" rule (since the
+   * `Task` tool already covers in-turn fan-out), while Codex — which has no
+   * in-process subagent primitive — is told `shipit session create` is its
+   * only fan-out primitive but is still heavy and user-visible. Omit to skip
+   * the Parallel sessions section entirely (the default rendering used by
+   * the Settings UI baseline and the no-options test fixture).
+   *
+   * See docs/117-agent-spawned-sessions/plan.md.
+   */
+  agentId?: AgentId;
 }
 
 /**
@@ -30,7 +45,7 @@ export function buildAgentSystemInstructions(
     typeof optionsOrPreviewUrl === "string"
       ? { previewUrl: optionsOrPreviewUrl }
       : optionsOrPreviewUrl ?? {};
-  const { previewUrl, autoCreatePr } = options;
+  const { previewUrl, autoCreatePr, agentId } = options;
 
   const browserSection = previewUrl
     ? `\
@@ -81,6 +96,37 @@ Use \`gh pr create\` once per session — repeated calls short-circuit if a PR a
 `
     : "";
 
+  // Per-agent "when to reach for `shipit session create`" guidance. The
+  // section is only emitted when an `agentId` is supplied — the no-options
+  // rendering used by the Settings UI baseline keeps the previous shape.
+  // The wording differs by agent because Claude has the in-process `Task`
+  // primitive (the right tool for in-turn fan-out) and Codex does not.
+  // See docs/117-agent-spawned-sessions/plan.md.
+  const parallelSessionsSection = agentId === "claude"
+    ? `
+## Parallel sessions
+
+ShipIt sessions are persistent, sidebar-visible workspaces. Each one has its own container, branch, and chat history. The user can open them, switch between them, and review each as its own pull request.
+
+You have two fan-out primitives. They are NOT interchangeable:
+
+- Use the **\`Task\` tool** for in-turn fan-out: parallel research, parallel codegen on different files, anything where you will synthesize the results in your current reply. \`Task\` subagents run in this container, against this workspace, and disappear when your turn ends.
+- Use **\`shipit session create -p "<prompt>"\`** ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Spawned sessions persist in the user's sidebar across turns — they are not for short-lived fan-out.
+
+Spawning a session is heavy and user-visible: a new container, a new branch, a new sidebar entry. If you are unsure, ask the user. See /shipit-docs/sessions.md for the full CLI surface and the rejected subcommands.
+`
+    : agentId === "codex"
+      ? `
+## Parallel sessions
+
+ShipIt sessions are persistent, sidebar-visible workspaces. Each one has its own container, branch, and chat history. The user can open them, switch between them, and review each as its own pull request.
+
+You can spawn a sibling session via \`shipit session create -p "<prompt>"\`. This is your only fan-out primitive — there is no in-process subagent tool available to you.
+
+Reach for it ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Do not use it as a generic optimization for your own work — spawning a session is heavy and user-visible (a new container, a new branch, a new sidebar entry). See /shipit-docs/sessions.md for the full CLI surface and the rejected subcommands.
+`
+      : "";
+
   return `\
 You are an expert software engineer working inside ShipIt, a browser-based IDE for building software through conversation. The user sees your responses in a chat panel alongside a live file tree, preview pane, and terminal. Your goal is to help the user build, debug, and ship software efficiently.
 
@@ -108,7 +154,7 @@ If you need to install dependencies, they should be listed in \`agent.install\` 
 
 Users can upload files from their browser. Uploaded files are available at /uploads/ inside the container. This directory is outside the git repo (/workspace/) so files there are never committed. Use /tmp for temporary scratch work (e.g., unpacking archives).
 
-${browserSection}${pullRequestSection}
+${browserSection}${pullRequestSection}${parallelSessionsSection}
 ## ShipIt platform docs
 
 Reference documentation about the ShipIt platform is at /shipit-docs/. Consult these docs when you need to configure shipit.yaml, write docker-compose.yml for previews, troubleshoot services, or answer questions about platform capabilities (deployment, GitHub integration, environment details). Key docs:

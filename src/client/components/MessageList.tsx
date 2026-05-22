@@ -16,6 +16,7 @@ import { parseMessageSegments, MarkdownContent, MarkdownTooltip, CodeBlock } fro
 import { getSegmentMatches, HighlightedText } from "./message-highlighting.js";
 import { MessageFileAttachments, MessageImages } from "./message-media.js";
 import { SubagentCall } from "./SubagentCall.js";
+import { SpawnedSessionCard } from "./SpawnedSessionCard.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
 
@@ -100,6 +101,21 @@ export interface ChatMessage {
    * displays them as a nested tree under the parent Task call (109).
    */
   subagentEvents?: SubagentEvent[];
+  /**
+   * docs/117 Phase 2 — when set, this message renders a `SpawnedSessionCard`
+   * inline in the parent's chat. Populated from `session_spawned` WS events
+   * (and, eventually, from chat-history reload). The card surfaces the
+   * child's title, branch, and an "Open" button that switches the active
+   * session. We deliberately do not persist this in v1: the child is also
+   * visible in the sidebar via the existing `session_list` broadcast, which
+   * survives reload, so a missing card after refresh is not data-loss.
+   */
+  spawnedSession?: {
+    childSessionId: string;
+    title: string;
+    branch?: string;
+    spawnedAt: string;
+  };
 }
 
 export interface TextSegment {
@@ -338,6 +354,25 @@ export function MessageList({
         const i = el.index;
         const hideTools = el.hideTools;
         const msg = messages[i];
+
+        // docs/117 Phase 2 — spawned-session marker carries no chat content
+        // of its own; render the inline card and skip the bubble path. The
+        // card itself reads live session state from the session store.
+        if (msg.spawnedSession) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <SpawnedSessionCard
+                  childSessionId={msg.spawnedSession.childSessionId}
+                  title={msg.spawnedSession.title}
+                  {...(msg.spawnedSession.branch ? { branch: msg.spawnedSession.branch } : {})}
+                  spawnedAt={msg.spawnedSession.spawnedAt}
+                />
+              </div>
+            </div>
+          );
+        }
+
         const msgMatches = matchesByMessage.get(i) ?? [];
         const segments = parseMessageSegments(msg.text);
         const hasCodeBlocks = segments.some((s) => s.type === "code");
