@@ -28,14 +28,22 @@ export { forkSession, mergeSession } from "./session-fork-merge.js";
 export {
   DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS,
   DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN,
+  DEFAULT_WAIT_FOR_CHILD_IDLE_MS,
+  MAX_WAIT_FOR_CHILD_IDLE_MS,
   spawnChildSession,
   listSpawnedChildren,
   getSpawnedChild,
+  sendChildMessage,
+  waitForChildIdle,
+  assertArchivableChild,
 } from "./child-sessions.js";
 export type {
   SpawnChildSessionOptions,
   SpawnChildSessionResult,
   ChildSessionView,
+  ChildViewProjections,
+  SendChildMessageResult,
+  WaitForChildIdleResult,
 } from "./child-sessions.js";
 
 // ---- Read operations ----

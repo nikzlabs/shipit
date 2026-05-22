@@ -158,9 +158,6 @@ describe("runShim — allowlist", () => {
 
   it.each([
     "delete",
-    "archive",
-    "message",
-    "wait",
     "fork",
     "adopt",
     "merge",
@@ -472,5 +469,264 @@ describe("shipit session view", () => {
     });
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("Spawned session not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit session message  (docs/117 Phase 3)
+// ---------------------------------------------------------------------------
+
+describe("shipit session message", () => {
+  it("requires a child session id", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "-m", "hi"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("child session id is required");
+  });
+
+  it("requires -m/--message", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "ses_a"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--message is required");
+  });
+
+  it("rejects an oversized message client-side", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "ses_a", "-m", "x".repeat(50_001)]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("exceeds 50,000");
+  });
+
+  it("posts to /agent-ops/session/message/:childId and prints queue position when enqueued", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "message", "ses_a", "-m", "Also do X"],
+      {
+        "POST /agent-ops/session/message/ses_a": {
+          status: 200,
+          body: { queuePosition: 2, enqueued: true },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("session-id: ses_a");
+    expect(out.stdout).toContain("queued (position 2)");
+    expect(out.calls).toHaveLength(1);
+    expect(out.calls[0].method).toBe("POST");
+    expect(out.calls[0].path).toBe("/agent-ops/session/message/ses_a");
+    expect(out.calls[0].body).toEqual({ text: "Also do X" });
+  });
+
+  it("prints 'starting turn' when the runner accepts the message directly", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "message", "ses_a", "-m", "Hi"],
+      {
+        "POST /agent-ops/session/message/ses_a": {
+          status: 200,
+          body: { queuePosition: 0, enqueued: false },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("starting turn");
+  });
+
+  it("--json prints the broker response verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "message", "ses_a", "-m", "Hi", "--json"],
+      {
+        "POST /agent-ops/session/message/ses_a": {
+          status: 200, body: { queuePosition: 1, enqueued: true },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual({ queuePosition: 1, enqueued: true });
+  });
+
+  it("surfaces a 404 'not a descendant' verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "message", "ses_other", "-m", "x"],
+      {
+        "POST /agent-ops/session/message/ses_other": {
+          status: 404, body: { error: "Spawned session not found" },
+        },
+      },
+    );
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("not a descendant of this parent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit session wait  (docs/117 Phase 3)
+// ---------------------------------------------------------------------------
+
+describe("shipit session wait", () => {
+  it("requires a child session id", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "wait"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("child session id is required");
+  });
+
+  it("rejects a non-numeric or non-positive --timeout client-side", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "wait", "ses_a", "--timeout", "abc"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--timeout must be a positive number");
+
+    const out2 = await run(["session", "wait", "ses_a", "--timeout", "0"]);
+    expect(out2.exitCode).not.toBe(0);
+    expect(out2.stderr).toContain("--timeout must be a positive number");
+  });
+
+  it("posts to /agent-ops/session/wait/:childId, prints idle status on success", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "wait", "ses_a", "--timeout", "120"],
+      {
+        "GET /agent-ops/session/wait/ses_a": {
+          status: 200,
+          body: {
+            child: { id: "ses_a", title: "T", status: "idle", queueLength: 0, branch: "br" },
+            idle: true,
+            timedOut: false,
+          },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("/agent-ops/session/wait/ses_a");
+    expect(out.calls[0].path).toContain("timeout=120");
+    expect(out.stdout).toContain("idle:       true");
+    expect(out.stdout).toContain("timed-out:  false");
+  });
+
+  it("exits non-zero with idle=false when the wait times out", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "wait", "ses_a"],
+      {
+        "GET /agent-ops/session/wait/ses_a": {
+          status: 200,
+          body: {
+            child: { id: "ses_a", title: "T", status: "running", queueLength: 2 },
+            idle: false,
+            timedOut: true,
+          },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(1);
+    expect(out.stdout).toContain("timed-out:  true");
+  });
+
+  it("--json --timeout exits non-zero on timeout", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "wait", "ses_a", "--json"],
+      {
+        "GET /agent-ops/session/wait/ses_a": {
+          status: 200,
+          body: {
+            child: { id: "ses_a", title: "T", status: "running" },
+            idle: false,
+            timedOut: true,
+          },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(1);
+    expect(JSON.parse(out.stdout)).toMatchObject({ timedOut: true });
+  });
+
+  it("surfaces a 404 'not a descendant' verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "wait", "ses_other"],
+      {
+        "GET /agent-ops/session/wait/ses_other": {
+          status: 404, body: { error: "Spawned session not found" },
+        },
+      },
+    );
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("not a descendant of this parent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit session archive  (docs/117 Phase 3)
+// ---------------------------------------------------------------------------
+
+describe("shipit session archive", () => {
+  it("requires a child session id", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "archive"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("child session id is required");
+  });
+
+  it("posts to /agent-ops/session/archive/:childId on success", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "archive", "ses_a"],
+      {
+        "POST /agent-ops/session/archive/ses_a": {
+          status: 200, body: { archived: true },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].method).toBe("POST");
+    expect(out.calls[0].path).toBe("/agent-ops/session/archive/ses_a");
+    expect(out.stdout).toContain("archived:   true");
+  });
+
+  it("--json prints the broker response verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "archive", "ses_a", "--json"],
+      {
+        "POST /agent-ops/session/archive/ses_a": {
+          status: 200, body: { archived: true, sessions: [] },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toMatchObject({ archived: true });
+  });
+
+  it("surfaces a 409 'session is running' error from the orchestrator", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "archive", "ses_a"],
+      {
+        "POST /agent-ops/session/archive/ses_a": {
+          status: 409, body: { error: "Cannot archive a running child session" },
+        },
+      },
+    );
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Cannot archive a running child session");
+  });
+
+  it("surfaces a 404 'not a descendant' verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "archive", "ses_other"],
+      {
+        "POST /agent-ops/session/archive/ses_other": {
+          status: 404, body: { error: "Spawned session not found" },
+        },
+      },
+    );
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("not a descendant of this parent");
   });
 });
