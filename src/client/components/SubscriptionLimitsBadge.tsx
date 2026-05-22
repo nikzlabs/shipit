@@ -56,8 +56,7 @@ interface SubscriptionLimitPillProps {
 export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPillProps) {
   const sessionPct = snapshot.session?.usedPct ?? null;
   const weeklyPct = snapshot.weekly?.usedPct ?? null;
-  const weeklySonnetPct = snapshot.weeklySonnet?.usedPct ?? null;
-  const hasData = sessionPct !== null || weeklyPct !== null || weeklySonnetPct !== null;
+  const hasData = sessionPct !== null || weeklyPct !== null;
 
   // No data ever (or sign-out / never-fetched) → keep the neutral
   // em-dash form. The error reason lives in the tooltip.
@@ -86,7 +85,6 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
       <span>{label}</span>
       {sessionPct !== null && <Meter shortLabel="5h" pct={sessionPct} />}
       {weeklyPct !== null && <Meter shortLabel="7d" pct={weeklyPct} />}
-      {weeklySonnetPct !== null && <Meter shortLabel="Snt" pct={weeklySonnetPct} />}
       {!hasData && <span>—</span>}
     </span>
   );
