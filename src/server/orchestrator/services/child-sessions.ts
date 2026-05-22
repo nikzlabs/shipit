@@ -13,8 +13,10 @@ import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { RepoGit } from "../repo-git.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { SessionInfo, AgentId } from "../../shared/types.js";
 import { generateBranchPrefix } from "../git-utils.js";
+import { provisionAgentCredentials } from "../session-credentials.js";
 import { ServiceError } from "./types.js";
 
 /** Default per-parent quota for active spawned child sessions. */
@@ -110,6 +112,7 @@ export async function spawnChildSession(
   parentSessionId: string,
   opts: SpawnChildSessionOptions,
   defaultAgentId: AgentId,
+  credentialsDir: string | undefined,
 ): Promise<SpawnChildSessionResult> {
   const trimmedPrompt = opts.prompt?.trim();
   if (!trimmedPrompt) {
@@ -245,6 +248,24 @@ export async function spawnChildSession(
   // agent id through.)
   const childAgentId: AgentId = opts.agent ?? defaultAgentId;
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, childAgentId);
+
+  // docs/138 — the first turn on a child session is kicked off by
+  // `sendSystemMessage` below, which bypasses the WS `runAgentWithMessage`
+  // handler that normally pins the agent and copies its credential subtree
+  // into the per-session credentials dir. Without this, the freshly-spawned
+  // container has an empty `/credentials/sessions/<id>` and the Claude CLI
+  // reports "Not logged in · Please run /login" on its first turn. Mirror
+  // the WS handler's first-turn block here so the spawn path is at parity.
+  if (runner instanceof ContainerSessionRunner && credentialsDir) {
+    try {
+      provisionAgentCredentials(credentialsDir, newSessionId, childAgentId);
+    } catch (err) {
+      console.warn("[spawn-child] credentials provisioning failed:", String(err));
+    }
+  }
+  sessionManager.setAgentId(newSessionId, childAgentId);
+  sessionManager.setAgentPinned(newSessionId);
+
   runner.sendSystemMessage(trimmedPrompt);
 
   console.log(
