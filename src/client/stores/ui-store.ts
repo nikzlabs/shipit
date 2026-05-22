@@ -35,9 +35,9 @@ type SettingsTab =
   | "instructions"
   | "mcp"
   | "advanced"
-  | "deployments"
-  | "secrets"
   | undefined;
+
+type ProjectSettingsTab = "deployments" | "secrets";
 
 interface UiState {
   // State
@@ -73,6 +73,15 @@ interface UiState {
   cumulativeOutputTokens: number;
   settingsOpen: boolean;
   settingsTab: SettingsTab;
+  /**
+   * URL of the repo whose Project Settings dialog is open, or `null` when
+   * closed. Project settings (deployments, secrets) are per-repo and live in
+   * their own dialog, invoked from the per-repo menu in the sidebar — not the
+   * workspace-wide Settings dialog.
+   */
+  projectSettingsRepoUrl: string | null;
+  /** Which tab the Project Settings dialog opens on. */
+  projectSettingsTab: ProjectSettingsTab;
   sidebarCollapsed: boolean;
   mobileSidebarOpen: boolean;
   toast: ToastData | null;
@@ -117,6 +126,12 @@ interface UiState {
   setCumulativeTokens: (input: number, output: number) => void;
   setSettingsOpen: (open: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
+  /**
+   * Open (or close, with `null`) the per-repo Project Settings dialog. Pass a
+   * tab to deep-link; defaults to `"secrets"` — the actionable tab, since
+   * Deployments is just setup instructions.
+   */
+  setProjectSettingsRepoUrl: (url: string | null, tab?: ProjectSettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setMobileSidebarOpen: (open: boolean) => void;
   setToast: (toast: ToastData | null) => void;
@@ -147,6 +162,8 @@ const initialState = {
   cumulativeOutputTokens: 0,
   settingsOpen: false,
   settingsTab: undefined as SettingsTab,
+  projectSettingsRepoUrl: null as string | null,
+  projectSettingsTab: "secrets" as ProjectSettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
   mobileSidebarOpen: false,
   toast: null as ToastData | null,
@@ -199,6 +216,9 @@ export const useUiStore = create<UiState>((set) => ({
 
   setSettingsTab: (settingsTab) => set({ settingsTab }),
 
+  setProjectSettingsRepoUrl: (projectSettingsRepoUrl, tab = "secrets") =>
+    set({ projectSettingsRepoUrl, projectSettingsTab: tab }),
+
   setSidebarCollapsed: (collapsed) => {
     saveSidebarCollapsed(collapsed);
     set({ sidebarCollapsed: collapsed });
@@ -221,6 +241,7 @@ export const useUiStore = create<UiState>((set) => ({
   reset: () =>
     set({
       settingsOpen: false,
+      projectSettingsRepoUrl: null,
       currentSessionUsage: null,
       allUsageStats: null,
       modelInfo: null,

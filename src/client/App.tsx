@@ -29,6 +29,7 @@ import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js
 import { GitHistory } from "./components/GitHistory.js";
 import { AuthOverlayContainer } from "./AuthOverlay.js";
 import { Settings } from "./components/Settings.js";
+import { ProjectSettings } from "./components/ProjectSettings.js";
 import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { FileTree } from "./components/FileTree.js";
@@ -197,6 +198,8 @@ export default function App() {
   const modelInfo = useUiStore((s) => s.modelInfo);
   const contextTokens = useUiStore((s) => s.contextTokens);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
+  const projectSettingsRepoUrl = useUiStore((s) => s.projectSettingsRepoUrl);
+  const projectSettingsTab = useUiStore((s) => s.projectSettingsTab);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const mobileSidebarOpen = useUiStore((s) => s.mobileSidebarOpen);
   const toast = useUiStore((s) => s.toast);
@@ -1031,10 +1034,17 @@ export default function App() {
           agentSystemInstructions={agentSystemInstructions}
           onToggleAgentSystemInstructions={async (enabled) => { try { const raw = await apiPut("/api/settings", { agentSystemInstructionsEnabled: enabled }); const res = raw as Record<string, unknown>; if (res.agentSystemInstructionsEnabled !== undefined) useSettingsStore.getState().setAgentSystemInstructionsEnabled(!!res.agentSystemInstructionsEnabled); } catch (err) { console.error("[settings] Failed to toggle agent system instructions:", err); } }}
           hasActiveSession={!!sessionId}
-          repoUrl={currentRepoUrl}
+          onClose={() => { useUiStore.getState().setSettingsOpen(false); useUiStore.getState().setSettingsTab(undefined); }}
+        />
+      )}
+      {projectSettingsRepoUrl && (
+        <ProjectSettings
+          repoUrl={projectSettingsRepoUrl}
+          repoName={parseRepoLabel(projectSettingsRepoUrl)}
+          initialTab={projectSettingsTab}
           onSecretsLoad={async (repoUrl) => { const data = await apiGet<{ secrets: Record<string, string> }>(`/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`); return data.secrets; }}
           onSecretsSave={(repoUrl, secrets) => { apiPut("/api/secrets", { repoUrl, secrets }).catch(() => {}); }}
-          onClose={() => { useUiStore.getState().setSettingsOpen(false); useUiStore.getState().setSettingsTab(undefined); }}
+          onClose={() => { useUiStore.getState().setProjectSettingsRepoUrl(null); }}
         />
       )}
       {showUsageModal && <UsageModal currentSessionUsage={currentSessionUsage} allUsage={allUsageStats} sessions={sessions} onClose={() => useUiStore.getState().setShowUsageModal(false)} modelInfo={modelInfo} contextTokens={contextTokens} turnUsage={turnUsageForActiveSession} />}

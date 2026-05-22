@@ -7,7 +7,6 @@ import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 import { McpServerSettings } from "./McpServerSettings.js";
-import { SecretsTab } from "./SecretsTab.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 
@@ -18,7 +17,7 @@ const MAX_LENGTH = 50_000;
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "mcp" | "advanced" | "deployments" | "secrets";
+type Tab = "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "mcp" | "advanced";
 
 export interface SettingsProps {
   initialContent: string;
@@ -48,9 +47,6 @@ export interface SettingsProps {
   agentSystemInstructions: string;
   onToggleAgentSystemInstructions: (enabled: boolean) => void;
   hasActiveSession: boolean;
-  repoUrl?: string;
-  onSecretsSave?: (repoUrl: string, secrets: Record<string, string>) => void;
-  onSecretsLoad?: (repoUrl: string) => Promise<Record<string, string>>;
   onClose: () => void;
 }
 
@@ -250,9 +246,6 @@ export function Settings({
   agentSystemInstructions,
   onToggleAgentSystemInstructions,
   hasActiveSession,
-  repoUrl,
-  onSecretsSave,
-  onSecretsLoad,
   onClose,
 }: SettingsProps) {
   const activeTab = useUiStore((s) => s.settingsTab) ?? "agent-claude";
@@ -325,8 +318,6 @@ export function Settings({
       case "instructions": return "Instructions";
       case "mcp": return "MCP Servers";
       case "advanced": return "Advanced";
-      case "deployments": return "Deployments";
-      case "secrets": return "Secrets";
     }
   };
 
@@ -354,7 +345,6 @@ export function Settings({
         {/* Body: sidebar tabs + content (vertical sidebar on desktop, horizontal scroll strip on mobile) */}
         <Tabs value={activeTab} onValueChange={(v) => {
           const tab = v as Tab;
-          if (tab === "secrets" && !hasActiveSession) return;
           setActiveTab(tab);
           if (tab === "instructions") {
             requestAnimationFrame(() => textareaRef.current?.focus());
@@ -382,22 +372,6 @@ export function Settings({
                 {tabLabel(tab)}
               </TabsTrigger>
             ))}
-
-            <div className="px-4 py-1.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-(--color-text-tertiary) max-md:hidden">
-              Project
-            </div>
-            <TabsTrigger value="deployments" data-testid="settings-tab-deployments" className={mobileTabClass}>
-              Deployments
-            </TabsTrigger>
-            <TabsTrigger
-              value="secrets"
-              disabled={!hasActiveSession}
-              title={!hasActiveSession ? "Requires active session" : undefined}
-              data-testid="settings-tab-secrets"
-              className={mobileTabClass}
-            >
-              Secrets
-            </TabsTrigger>
           </TabsList>
 
           {/* Right content area */}
@@ -813,63 +787,6 @@ export function Settings({
                   {resetting ? "Resetting..." : confirmingReset ? "Click again to confirm reset" : "Reset Everything"}
                 </button>
               </div>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="deployments">
-            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="deployments-tab">
-              <div className="space-y-1">
-                <h3 className="text-sm font-medium text-(--color-text-primary)">Automatic Deployments</h3>
-                <p className="text-xs text-(--color-text-secondary)">
-                  Connect your repo to a hosting platform for automatic deploys on every push. ShipIt auto-pushes after every Claude turn, so your site stays in sync.
-                </p>
-              </div>
-
-              <div className="space-y-3">
-                <h4 className="text-xs font-medium text-(--color-text-secondary) uppercase tracking-wider">Connect your repo</h4>
-                {[
-                  { name: "Vercel", url: "https://vercel.com/new", description: "Best for Next.js, React, and static sites" },
-                  { name: "Cloudflare Pages", url: "https://dash.cloudflare.com/?to=/:account/pages/new/provider/github", description: "Fast global CDN with edge functions" },
-                  { name: "Netlify", url: "https://app.netlify.com/start", description: "Simple deploys with form handling and functions" },
-                ].map((platform) => (
-                  <a
-                    key={platform.name}
-                    href={platform.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block p-3 rounded-lg border border-(--color-border-secondary) hover:border-(--color-border-focus) transition-colors"
-                  >
-                    <div className="text-sm font-medium text-(--color-text-primary)">{platform.name}</div>
-                    <div className="text-xs text-(--color-text-secondary) mt-0.5">{platform.description}</div>
-                  </a>
-                ))}
-              </div>
-
-              <div className="space-y-1 mt-2">
-                <h4 className="text-xs font-medium text-(--color-text-secondary) uppercase tracking-wider">How it works</h4>
-                <ol className="text-xs text-(--color-text-secondary) space-y-1.5 list-decimal list-inside">
-                  <li>Import your GitHub repo on the platform above</li>
-                  <li>ShipIt pushes code after every Claude turn</li>
-                  <li>The platform builds and deploys automatically</li>
-                  <li>Deploy status appears in the PR card</li>
-                </ol>
-              </div>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="secrets">
-            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="secrets-tab">
-              <div className="space-y-1">
-                <h3 className="text-sm font-medium text-(--color-text-primary)">Environment Variables</h3>
-                <p className="text-xs text-(--color-text-secondary)">
-                  Secrets are injected into the services that declare them in <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>. The agent only sees values you explicitly mark with <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">agent: true</code>.
-                </p>
-              </div>
-              <SecretsTab
-                repoUrl={repoUrl}
-                onSecretsSave={onSecretsSave}
-                onSecretsLoad={onSecretsLoad}
-              />
             </div>
           </TabsContent>
 

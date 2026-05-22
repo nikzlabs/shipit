@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
 afterEach(() => {
@@ -11,6 +12,7 @@ afterEach(() => {
   // Reset cross-test state so SessionStatusDot tests don't leak into others.
   useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
   usePrStore.setState({ cardBySession: {}, statusBySession: {} });
+  useUiStore.getState().setProjectSettingsRepoUrl(null);
 });
 
 const baseSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -132,12 +134,21 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("cloning")).toBeTruthy();
   });
 
-  it("shows kebab menu on repo header with View All Sessions and Remove Repository", async () => {
+  it("shows kebab menu on repo header with View All Sessions, Project Settings and Remove Repository", async () => {
     const user = userEvent.setup();
     render(<SessionSidebar {...defaultProps} />);
     await user.click(screen.getByLabelText("repo repository menu"));
     expect(screen.getByText("View All Sessions")).toBeTruthy();
+    expect(screen.getByText("Project Settings")).toBeTruthy();
     expect(screen.getByText("Remove Repository")).toBeTruthy();
+  });
+
+  it("opens the per-repo Project Settings dialog from the menu", async () => {
+    const user = userEvent.setup();
+    render(<SessionSidebar {...defaultProps} />);
+    await user.click(screen.getByLabelText("repo repository menu"));
+    await user.click(screen.getByText("Project Settings"));
+    expect(useUiStore.getState().projectSettingsRepoUrl).toBe(repoA.url);
   });
 
   it("requires a second click to confirm Remove Repository", async () => {

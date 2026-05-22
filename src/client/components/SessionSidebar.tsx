@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, DotsSixVerticalIcon, GithubLogoIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, DotsSixVerticalIcon, GithubLogoIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoName } from "../utils/repo-label.js";
@@ -18,6 +18,7 @@ import { PrStateBadge } from "./PrLifecycleCard.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { usePrStore } from "../stores/pr-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
 const SIDEBAR_MIN = 180;
@@ -287,6 +288,7 @@ function RepoGroup({
   onArchive,
   onNewSession,
   onViewAll,
+  onProjectSettings,
   onRemoveRepo,
   // Drag-and-drop reordering
   draggable,
@@ -308,6 +310,7 @@ function RepoGroup({
   onArchive: (id: string) => void;
   onNewSession: () => void;
   onViewAll: () => void;
+  onProjectSettings: () => void;
   onRemoveRepo: () => void;
   // Drag-and-drop reordering — only enabled when there's more than one repo.
   draggable: boolean;
@@ -401,6 +404,10 @@ function RepoGroup({
             <DropdownMenuItem onSelect={onViewAll}>
               <ListBulletsIcon size={ICON_SIZE.XS} className="shrink-0" />
               View All Sessions
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onProjectSettings}>
+              <SlidersHorizontalIcon size={ICON_SIZE.XS} className="shrink-0" />
+              Project Settings
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -585,6 +592,13 @@ export function SessionSidebar({
     useRepoStore.getState().setActiveRepoUrl(repoUrl);
     useSessionStore.getState().setAllSessionsDialogOpen(true);
     // Mobile drawer: close it so the dialog isn't stacked on top
+    if (mobile) onClose?.();
+  }, [mobile, onClose]);
+
+  const handleProjectSettings = useCallback((repoUrl: string) => {
+    // Per-repo project settings (deployments, secrets) live in their own dialog,
+    // separate from the workspace-wide Settings. Scoped to the clicked repo.
+    useUiStore.getState().setProjectSettingsRepoUrl(repoUrl);
     if (mobile) onClose?.();
   }, [mobile, onClose]);
 
@@ -808,6 +822,7 @@ export function SessionSidebar({
               onArchive={onArchive}
               onNewSession={() => onNewSessionForRepo(repo.url)}
               onViewAll={() => handleViewAll(repo.url)}
+              onProjectSettings={() => handleProjectSettings(repo.url)}
               onRemoveRepo={() => handleRemoveRepo(repo.url)}
               draggable={reorderEnabled}
               isBeingDragged={draggedRepoUrl === repo.url}
