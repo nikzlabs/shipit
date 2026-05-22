@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, DotsSixVerticalIcon, GithubLogoIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoName } from "../utils/repo-label.js";
@@ -287,6 +288,11 @@ function RepoGroup({
   // from carrying over to the next time the user opens the menu.
   const [confirmingRemove, setConfirmingRemove] = useState(false);
 
+  // FLIP animation for session rows reordering (PR merged sinks to bottom) or
+  // exiting (archive). Library defaults — single duration/easing per parent,
+  // respects prefers-reduced-motion automatically. See docs/148.
+  const [listRef] = useAutoAnimate<HTMLDivElement>();
+
   return (
     <div
       className={`flex flex-col relative ${isBeingDragged ? "opacity-40" : ""}`}
@@ -396,7 +402,7 @@ function RepoGroup({
 
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
-        <div className="flex flex-col gap-0.5 pb-2">
+        <div ref={listRef} className="flex flex-col gap-0.5 pb-2">
           {/* New session row — matches SessionItem shape so it can render as selected */}
           <button
             type="button"
