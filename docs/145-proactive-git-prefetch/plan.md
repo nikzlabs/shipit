@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 priority: high
 description: Eliminate the synchronous claim-time git fetch (~650ms, ~95% of claim latency) by keeping repos pre-fetched in the background and skipping the fetch on the claim path.
 ---
@@ -95,23 +95,55 @@ the slightly-stale clone and let the fetch catch up concurrently.
   against a stale snapshot, the existing "may be based on stale code" surface
   still applies.
 
-## Open questions
+## Implementation (2026-05-22)
 
-- Periodic interval N — fixed, or adaptive to repo activity?
-- Should the on-change trigger be webhook-driven (lower latency, needs webhook
-  plumbing) or ride the existing poller (simpler, coarser)?
-- Per-repo fetch concurrency / rate-limit budget against GitHub when many repos
-  are tracked.
-- Interaction with `disk-janitor` and unreferenced `repo-cache/<hash>` cleanup —
-  don't keep fetching caches for repos no session will use.
+The two parts shipped together:
+
+1. **Background pre-fetch** —
+   [repo-prefetch.ts](../../src/server/orchestrator/repo-prefetch.ts)
+   `createRepoPrefetcher` runs a 3-minute periodic sweep of every `ready` repo's
+   **bare cache** (`fetchCache`, 60s-TTL-coalesced, per-repo `inFlight` guard),
+   plus an on-change `prefetchRepo()` fired from the PR poller when a merge moves
+   `main`. It touches the bare cache only — never a live session clone. Wired in
+   [index.ts](../../src/server/orchestrator/index.ts) (`start()`/`stop()` on the
+   shutdown hook); disabled in test mode.
+
+2. **Skip the claim-time fetch** — the claim handler
+   ([api-routes-session.ts](../../src/server/orchestrator/api-routes-session.ts))
+   skips the synchronous `refreshCloneToLatestMain` (warm/reuse/waiting paths)
+   and passes `skipFetch` to `fetchAndResolveDefaultBranch` (slow-clone path)
+   when `shouldSkipClaimFetch(url)` — i.e. the bare cache was fetched within
+   `CLAIM_SKIP_WINDOW_MS` (`RepoPrefetcher.coveredRecently`). This is what
+   removes the ~650ms; the freshness gate is the correctness floor (a cold /
+   pre-fetch-disabled repo falls back to the synchronous fetch).
+
+**Why skip and not fire-and-forget:** `refreshCloneToLatestMain` ends in a hard
+`rollback` reset. Running it fire-and-forget would race the agent's first edits
+and could blow them away — violating "never fast-forward a live clone after
+start." Skipping leaves HEAD untouched, which also keeps the standby's booted
+resource limits consistent with the clone (no HEAD move ⇒ no re-provision).
+
+**Why bare-cache freshness gates the warm path too:** a warm clone is cut at
+warm time from a real-remote fetch, and every claim re-warms (cutting a fresh
+clone from the now-pre-fetched cache). `coveredRecently` is the "pre-fetch is
+actively maintaining this repo" signal; combined with re-warm-on-claim the pool
+clones stay recent. Worst-case staleness for a long-idle warm session is bounded
+and accepted per the tradeoff above.
+
+## Open questions (deferred)
+
+- Webhook-driven on-change trigger (lower latency than the poller) — not needed
+  yet; the poller already sees merges.
+- Adaptive periodic interval keyed to repo activity — fixed 3 min is fine for now.
 
 ## Key files
 
 | File | Role |
 |------|------|
-| [api-routes-session.ts](../../src/server/orchestrator/api-routes-session.ts) | `refreshCloneToLatestMain` — becomes a no-op when cache is fresh |
-| [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts) | `cacheGit.fetchCache` (60s TTL), warm-session branch cutting |
-| [pr-status-poller.ts](../../src/server/orchestrator/pr-status-poller.ts) | on-change trigger candidate (merge/push detection) |
-| [repo-git.ts](../../src/server/orchestrator/repo-git.ts) | bare-cache fetch primitives |
+| [repo-prefetch.ts](../../src/server/orchestrator/repo-prefetch.ts) | **New.** `createRepoPrefetcher` — periodic + on-change bare-cache fetch, `coveredRecently` freshness gate |
+| [api-routes-session.ts](../../src/server/orchestrator/api-routes-session.ts) | `refreshClaimedSession` / slow-clone path skip the fetch when `shouldSkipClaimFetch` |
+| [git-utils.ts](../../src/server/orchestrator/git-utils.ts) | `fetchAndResolveDefaultBranch({ skipFetch })` — resolve from local refs, no network |
+| [repo-git.ts](../../src/server/orchestrator/repo-git.ts) | `lastFetchAgeMs()` reads the `.shipit-last-fetch` marker; `fetchCache` (60s TTL) |
+| [pr-status-poller.ts](../../src/server/orchestrator/pr-status-poller.ts) / [app-lifecycle.ts](../../src/server/orchestrator/app-lifecycle.ts) | on-change trigger: `onRepoMainAdvanced` → `prefetchRepo` on merge |
 
 See [checklist.md](checklist.md) for the work breakdown.

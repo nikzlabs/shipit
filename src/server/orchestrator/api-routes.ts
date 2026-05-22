@@ -86,6 +86,15 @@ export interface ApiDeps {
   warmSessionForRepo?: (repoUrl: string, opts?: { withStandby?: boolean }) => Promise<void>;
   /** Returns the in-flight warming promise for a repo, if any. */
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
+  /**
+   * docs/145 — true when the repo's bare cache was pre-fetched in the
+   * background recently enough that the claim path can skip its synchronous
+   * `git fetch` to GitHub (the ~650ms that dominated claim latency). When
+   * omitted (test mode, pre-fetch disabled) the claim always does the
+   * synchronous fetch — the correct, slower fallback. Wired to
+   * `RepoPrefetcher.coveredRecently`.
+   */
+  shouldSkipClaimFetch?: (repoUrl: string) => boolean;
   /** Create session dir (same as createSessionDir — alias for claim-session). */
   createSessionDirFull: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
   /** Container manager — needed for standby cleanup on repo delete. */

@@ -69,6 +69,30 @@ describe("fetchAndResolveDefaultBranch", () => {
     expect(git(cloneDir, `rev-parse ${resetTarget}`)).toBe(c2);
   });
 
+  it("skipFetch resolves from local refs without hitting the network (docs/145)", async () => {
+    const c1 = commitFile(remoteDir, "shipit.yaml", "agent:\n  memory: 1024\n", "c1");
+    git(tmpDir, `clone "${remoteDir}" "${cloneDir}"`);
+    expect(git(cloneDir, "rev-parse HEAD")).toBe(c1);
+
+    // Remote advances, but with skipFetch the clone must NOT learn about it —
+    // it resolves to its local snapshot (the freshly-pre-fetched cache state).
+    const c2 = commitFile(remoteDir, "shipit.yaml", "agent:\n  memory: 3072\n", "c2");
+    expect(c2).not.toBe(c1);
+
+    const { resetTarget, fetched, authError } = await fetchAndResolveDefaultBranch(
+      cloneDir,
+      undefined,
+      { skipFetch: true },
+    );
+
+    // No network happened: fetched is false but this is a deliberate skip,
+    // not a failure (authError stays false). Resolves to the local snapshot.
+    expect(fetched).toBe(false);
+    expect(authError).toBe(false);
+    expect(resetTarget).toBeDefined();
+    expect(git(cloneDir, `rev-parse ${resetTarget}`)).toBe(c1);
+  });
+
   it("falls back to local origin refs when the remote is unreachable (fetched: false)", async () => {
     const c1 = commitFile(remoteDir, "shipit.yaml", "agent:\n  memory: 1024\n", "c1");
     git(tmpDir, `clone "${remoteDir}" "${cloneDir}"`);

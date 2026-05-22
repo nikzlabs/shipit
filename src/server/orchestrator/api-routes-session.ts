@@ -637,6 +637,20 @@ export async function registerSessionRoutes(
       // never consumed a pool slot; warm/waiting must). Errors are logged and
       // swallowed so a transient fetch failure never blocks the claim.
       const refreshClaimedSession = async (sessionId: string, workspaceDir: string): Promise<number> => {
+        // docs/145: skip the synchronous fetch when the bare cache was
+        // pre-fetched in the background recently. The warm/reuse clone was
+        // already cut from a real-remote fetch, and the pre-fetcher keeps the
+        // cache (hence re-warms cut from it) close to `origin/main`, so the
+        // branch point is bounded-stale by minutes — an explicitly accepted
+        // tradeoff (docs/145). This removes the ~650ms RTT that dominated
+        // claim latency. We do NOT run it fire-and-forget instead: that path
+        // ends in a hard reset (`rollback`) which, racing the agent's first
+        // edits, would violate "never fast-forward a live clone after start."
+        // Skipping leaves HEAD untouched, so the standby's booted resource
+        // limits stay consistent with the clone — no re-provision needed.
+        if (deps.shouldSkipClaimFetch?.(url)) {
+          return 0;
+        }
         try {
           const r = await refreshCloneToLatestMain(
             workspaceDir,
@@ -768,11 +782,22 @@ export async function registerSessionRoutes(
           // workspace clone so the branch is cut from the genuine latest
           // commit — otherwise the container's memory limit is derived from
           // a frozen `shipit.yaml`.
+          //
+          // docs/145: when the bare cache was pre-fetched in the background
+          // recently, the snapshot we just cloned is already current, so we
+          // resolve the branch point from the clone's local refs and skip the
+          // network round-trip. `fetchCache` above is TTL-coalesced to a
+          // no-op in that case too, so the whole slow path stays off the wire.
+          const skipFetch = deps.shouldSkipClaimFetch?.(url) ?? false;
           const { resetTarget, fetched, fetchDurationMs, authError } = await fetchAndResolveDefaultBranch(
             workspaceDir,
             (err) => deps.githubAuthManager.markTokenInvalid(`claim-session fetch failed for ${url}: ${err.message}`),
+            { skipFetch },
           );
-          if (!fetched && !authError) {
+          // Only warn on a *failed* fetch — a deliberate `skipFetch` is not a
+          // stale-clone hazard (the cache was just refreshed), so it must not
+          // trip the W2 breadcrumb.
+          if (!skipFetch && !fetched && !authError) {
             // Workspace-clone fetch failed — the branch is being cut from
             // the (possibly stale) bare-cache snapshot. Surface it: a silent
             // no-op fetch here is the W2 root cause.

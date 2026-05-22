@@ -570,6 +570,14 @@ export interface PrPollerDeps {
    * Omitted in test mode.
    */
   pruneSessionVolumes?: (sessionId: string) => Promise<void>;
+  /**
+   * docs/145 on-change pre-fetch trigger. Called with a repo URL when the
+   * poller detects that the repo's `main` advanced (a PR merged) — the
+   * precise moment the bare cache goes stale. The pre-fetcher refreshes the
+   * cache off the request path so the next claim can skip its synchronous
+   * fetch. Optional — omitted in test mode / when pre-fetch is disabled.
+   */
+  onRepoMainAdvanced?: (repoUrl: string) => void;
 }
 
 /**
@@ -581,6 +589,7 @@ export function createPrStatusPoller(
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
     runnerRegistry, createRepoGit, getBareCacheDir, pruneSessionVolumes,
+    onRepoMainAdvanced,
   } = pollerDeps;
 
   const prStatusPoller = deps.prStatusPoller ?? new PrStatusPoller({
@@ -608,6 +617,11 @@ export function createPrStatusPoller(
         );
         sseBroadcast("session_list", { sessions: result.sessions });
         console.log(`[pr-poller] Post-merge: marked ${sessionId} as merged`);
+        // docs/145: a merge moved `main`, so the bare cache is now stale.
+        // Refresh it off the request path so the next claim can skip its
+        // synchronous fetch. Best-effort — the pre-fetcher coalesces/swallows.
+        const repoUrl = sessionManager.get(sessionId)?.remoteUrl;
+        if (repoUrl) onRepoMainAdvanced?.(repoUrl);
       } catch (err) {
         console.error(`[pr-poller] Post-merge handling failed for ${sessionId}:`, err);
       }
