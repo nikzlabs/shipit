@@ -6,9 +6,9 @@ description: CLI shim letting agents create and manage sibling ShipIt sessions f
 
 # 117 — Agent-Spawned ShipIt Sessions
 
-## Phase 1 + 2 ship notes
+## Phase 1 + 2 + 3 ship notes
 
-Phases 1 and 2 are live as of this revision. What works today:
+Phases 1, 2, and 3 are live as of this revision. What works today:
 
 - `shipit session create -p "PROMPT" [...]` spawns a sibling session with
   parent linkage persisted; the orchestrator clones the workspace, cuts a
@@ -17,7 +17,9 @@ Phases 1 and 2 are live as of this revision. What works today:
   text. The orchestrator denies `view` for sessions the calling parent
   didn't spawn (404, no leakage of "wrong parent" vs "not found").
 - Per-turn (`spawnedByTurn`) and per-parent (active children) quotas are
-  enforced fail-closed; both surface as HTTP 429.
+  enforced fail-closed; both surface as HTTP 429. The defaults
+  (`MAX_SPAWNED_SESSIONS_PER_PARENT=16`,
+  `MAX_SPAWNED_SESSIONS_PER_TURN=4`) are overridable via env vars.
 - **(Phase 2.)** The running agent gets per-agent guidance on when to reach
   for `shipit session create`: Claude is told to prefer `Task` for in-turn
   fan-out and reserve the shim for user-prompted parallel work; Codex is
@@ -29,14 +31,26 @@ Phases 1 and 2 are live as of this revision. What works today:
   and an "Open" button that switches the active session to the child.
 - **(Phase 2.)** Spawned children render indented under their parent in the
   sidebar's repo group, matching the existing worktree-sibling affordance.
+- **(Phase 3.)** `shipit session message <id> -m "TEXT"` sends a follow-up
+  prompt to a child this parent spawned. The orchestrator either starts a
+  turn directly (when the child is idle) or enqueues behind the running
+  turn; the shim prints the queue position.
+- **(Phase 3.)** `shipit session wait <id> [--timeout SECONDS]` long-polls
+  the orchestrator until the child reports idle
+  (`running=false && queueLength=0`) or the timeout fires. Default 5
+  minutes, server-capped at 1 hour. Exits non-zero on timeout.
+- **(Phase 3.)** `shipit session archive <id>` archives a child the parent
+  spawned. Refuses while the child is running (HTTP 409 + clear stderr).
+- **(Phase 3.)** `shipit session view` (and `wait`) now surface the
+  child's `latestAssistantMessage` and `prUrl` so the parent agent can
+  get a snapshot without scraping the child's chat history.
 
-What is **not** in Phase 1 + 2 (see the table below for tracking):
+What is **not** in Phase 1 + 2 + 3 (see the table below for tracking):
 
-- No `wait` / `message` / `archive` subcommands (Phase 3).
 - No persistence of the `SpawnedSessionCard` in chat history — the card is
   re-rendered live via the turn-event buffer, and the child remains visible
-  in the sidebar via the existing `session_list` broadcast. Phase 3 may add
-  persistence alongside the `wait` / `message` follow-up surface.
+  in the sidebar via the existing `session_list` broadcast.
+- No cross-repo spawns (`--repo other/name`) — Phase 4 (optional).
 
 ## Summary
 
@@ -201,7 +215,6 @@ The shim refuses these explicitly so the agent gets a pointer to
 - `shipit session adopt <id>` — adopting an unrelated session into the parent's tree is not supported.
 - `shipit session fork|rename|switch` — owned by the UI, not the agent.
 - `shipit session merge` — future extension; user merges via the existing PR/merge UI today.
-- `shipit session archive|message|wait` — Phase 3 of this doc (see "Phasing"); not yet wired.
 - `--repo <other>` / `--owner <other>` on any subcommand — spawned sessions inherit the parent's repo and owner. No cross-repo spawns in v1.
 - Any other top-level command than `session` — there is no `shipit pr`, `shipit run`, etc.
 
@@ -213,15 +226,21 @@ Tried: shipit session delete xyz123
 See /shipit-docs/sessions.md for the full list.
 ```
 
-#### Phase 3 (planned)
+#### Phase 3 (shipped)
 
-These will extend the same three-layer pattern but are **not** in the shim today:
+These extend the same three-layer pattern shipped in Phase 1:
 
-| Shim subcommand | Maps to | Notes |
-|---|---|---|
-| `shipit session message <id> -m "TEXT"` | `POST /api/sessions/:parentId/children/:childId/message` | Send a follow-up prompt. Returns immediately with a queue position; output is not streamed back. |
-| `shipit session wait <id> [--timeout SECONDS]` | long-poll `GET /api/sessions/:parentId/children/:childId?wait=true` | Block until the child's queue is empty (or timeout). Default timeout 300s; server-capped at 3600s. |
-| `shipit session archive <id>` | `POST /api/sessions/:parentId/children/:childId/archive` | Archive a child the agent itself spawned. Cannot archive sessions the agent didn't spawn. |
+| Shim subcommand | Worker route | Orchestrator route | Notes |
+|---|---|---|---|
+| `shipit session message <id> -m "TEXT" [--json]` | `POST /agent-ops/session/message/:childId` | `POST /api/sessions/:parentId/children/:childId/message` | Sends a follow-up prompt. Body `{ text }`. Returns `{ queuePosition, enqueued }` — `enqueued=true` means the prompt landed behind a running turn; `enqueued=false` means the orchestrator started a turn immediately. |
+| `shipit session wait <id> [--timeout SECONDS] [--json]` | `GET /agent-ops/session/wait/:childId?timeout=N` | `GET /api/sessions/:parentId/children/:childId?wait=true&timeout=N` | Long-polls until the child reports idle (`running=false && queueLength=0`) or the timeout fires. Default 300s, server-capped at 3600s. Response includes the child snapshot, `idle`, and `timedOut`. The shim exits non-zero on timeout. |
+| `shipit session archive <id> [--json]` | `POST /agent-ops/session/archive/:childId` | `POST /api/sessions/:parentId/children/:childId/archive` | Archives a child the parent itself spawned. Refuses (HTTP 409) when the child is still running. Reuses the existing `archiveSession` service for workspace + container teardown. |
+
+Environment-variable overrides for the quota constants are also live in
+Phase 3: `MAX_SPAWNED_SESSIONS_PER_PARENT` (positive integer; default
+`16`) and `MAX_SPAWNED_SESSIONS_PER_TURN` (positive integer; default
+`4`). Both are read once at module init and an invalid value (non-integer
+or ≤ 0) logs a warning and falls back to the compile-time default.
 
 ### When the agent should reach for `shipit session create`
 
@@ -399,7 +418,7 @@ The existing idle-container cleanup (doc 063) applies normally — spawned sessi
 |---|---|---|
 | **1** | Build the shim + worker `/agent-ops/session/*` routes + `POST /api/sessions/:parentId/spawn` + `parentSessionId` field. Update `shipit-docs/sessions.md`. **No agent prompt changes.** Sidebar grouping is *not* shipped in Phase 1 (deferred to Phase 2 alongside the SpawnedSessionCard rendering). | done |
 | **2** | Update `agent-instructions.ts` to teach the agent when to reach for `shipit session create` vs `Task`. Sidebar grouping enabled. SpawnedSessionCard rendered in parent chats. | done |
-| **3** | Add `wait`, `archive`, and follow-up `message` flows once telemetry shows the agent uses Phase 1 reliably. | planned |
+| **3** | Add `wait`, `archive`, and follow-up `message` flows once telemetry shows the agent uses Phase 1 reliably. Surface `latestAssistantMessage` + `prUrl` on the `view` snapshot. Env-var overrides for quota constants. | done |
 | **4** *(optional)* | Cross-repo spawns (different `--repo`) for advanced workflows. Probably gated by a per-account setting. | planned |
 
 Phase 1 is fully backwards-compatible: nothing nudges the agent to use the new tool; the user can still spawn sessions manually. Phase 2 is when it starts paying for itself.
@@ -425,13 +444,15 @@ In addition to the per-threat table above, two systemic notes:
 
 | File | Change | Status |
 |---|---|---|
-| `src/server/session/agent-shim/shipit.ts` | **New.** The shim entry point. Mirrors `gh.ts` from doc 116. Parses `shipit session create/list/view`, brokers via the worker. | done |
-| `src/server/session/agent-shim/shipit.test.ts` | **New.** Unit tests — argument parsing, allowlist (every rejected subcommand), happy paths for create/list/view, quota 429 + 400 error formatting, JSON output. 38 cases. | done |
-| `src/server/session/agent-ops-routes.ts` | Added `/agent-ops/session/create`, `/agent-ops/session/list`, `/agent-ops/session/view/:childId`. | done |
-| `src/server/session/agent-ops-routes.test.ts` | Added 6 cases covering the new `/agent-ops/session/*` relay routes and 404/429 status pass-through. | done |
+| `src/server/session/agent-shim/shipit.ts` | **New.** The shim entry point. Mirrors `gh.ts` from doc 116. Parses `shipit session create/list/view/message/wait/archive`, brokers via the worker. | done |
+| `src/server/session/agent-shim/shipit.test.ts` | **New.** Unit tests — argument parsing, allowlist (every rejected subcommand), happy paths for create/list/view/message/wait/archive, quota 429 + 400 error formatting, JSON output. | done |
+| `src/server/session/agent-ops-routes.ts` | Added `/agent-ops/session/{create,list,view,message,wait,archive}` routes. | done |
+| `src/server/session/agent-ops-routes.test.ts` | Cases covering the `/agent-ops/session/*` relay routes and 404/409/429 status pass-through. | done |
 | `src/server/session/orchestrator-client.ts` | No change — the existing client already covers session-scoped routes. | done |
-| `src/server/orchestrator/api-routes-session.ts` | Added `POST /api/sessions/:parentId/spawn`, `GET /api/sessions/:parentId/children`, `GET /api/sessions/:parentId/children/:childId`. *(Phase 3: `/message`, `/archive`.)* | done (Phase 1 subset) |
-| `src/server/orchestrator/services/session.ts` | New `spawnChildSession()` composes existing primitives (`fetchCache` / `cloneFromCache` / `git checkout -b` / `runner.sendSystemMessage`). New read helpers `listSpawnedChildren()`, `getSpawnedChild()`. Quota constants exported for tests. | done |
+| `src/server/orchestrator/api-routes-session.ts` | Added `POST /api/sessions/:parentId/spawn`, `GET /api/sessions/:parentId/children`, `GET /api/sessions/:parentId/children/:childId` (with optional `?wait=true&timeout=N`), `POST /api/sessions/:parentId/children/:childId/message`, `POST /api/sessions/:parentId/children/:childId/archive`. | done |
+| `src/server/orchestrator/services/session.ts` | Re-exports the child-sessions service surface (`spawnChildSession`, `listSpawnedChildren`, `getSpawnedChild`, `sendChildMessage`, `waitForChildIdle`, `assertArchivableChild`, plus the quota / wait constants). | done |
+| `src/server/orchestrator/services/child-sessions.ts` | Implementation of all child-session service functions. Phase 3 added `sendChildMessage`, `waitForChildIdle`, `assertArchivableChild`, `ChildViewProjections`, and env-var overrides for the quota constants. | done |
+| `src/server/orchestrator/chat-history.ts` | Added `loadLatestAssistantText(sessionId)` — read-only helper for the `view`/`wait` snapshot. | done |
 | `src/server/orchestrator/sessions.ts` | Added `parent_session_id` and `spawned_by_turn` columns to the SQL row mapping; new `setParentSession()` and `findChildren()` query. | done |
 | `src/server/shared/database.ts` | Migration 11 — adds `parent_session_id`, `spawned_by_turn` columns + `idx_sessions_parent` index. | done |
 | `src/server/shared/types/domain-types.ts` | Added `parentSessionId` and `spawnedByTurn` to `SessionInfo`. | done |

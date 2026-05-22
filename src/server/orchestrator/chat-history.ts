@@ -160,6 +160,20 @@ export class ChatHistoryManager {
     return rows.map((r) => this.fromRow(r));
   }
 
+  /**
+   * docs/117 Phase 3 — Return the text of the most-recent assistant message
+   * for a session, or `undefined` if there is none. Used by
+   * `shipit session view` / `shipit session wait` to surface a preview of the
+   * child's latest assistant output without loading the full history into
+   * memory.
+   */
+  loadLatestAssistantText(sessionId: string): string | undefined {
+    const row = this.db.prepare(
+      "SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' AND content != '' ORDER BY id DESC LIMIT 1",
+    ).get(sessionId) as { content: string } | undefined;
+    return row?.content;
+  }
+
   /** Update the last message in a session's history by merging fields. */
   updateLastMessage(sessionId: string, update: Partial<PersistedMessage>): void {
     this.db.transaction(() => {

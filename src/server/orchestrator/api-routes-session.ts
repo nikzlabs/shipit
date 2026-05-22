@@ -34,6 +34,11 @@ import {
   spawnChildSession,
   listSpawnedChildren,
   getSpawnedChild,
+  sendChildMessage,
+  waitForChildIdle,
+  assertArchivableChild,
+  DEFAULT_WAIT_FOR_CHILD_IDLE_MS,
+  MAX_WAIT_FOR_CHILD_IDLE_MS,
   ServiceError,
 } from "./services/index.js";
 import type { AgentId } from "../shared/types.js";
@@ -465,6 +470,15 @@ export async function registerSessionRoutes(
     },
   );
 
+  // Projections passed to listSpawnedChildren / getSpawnedChild / waitForChildIdle
+  // so the `view` snapshot can include the child's latest assistant text and PR
+  // URL. Phase 3 (docs/117) — Phase 1 omitted these deliberately; the agent now
+  // has follow-up surfaces (`wait`, `message`) that benefit from seeing them.
+  const childProjections = {
+    chatHistoryManager: deps.chatHistoryManager,
+    prStatusPoller: deps.prStatusPoller,
+  };
+
   // GET /api/sessions/:parentId/children — list children spawned by this parent
   app.get<{
     Params: { parentId: string };
@@ -482,23 +496,48 @@ export async function registerSessionRoutes(
         deps.runnerRegistry,
         request.params.parentId,
         request.query.turn,
+        childProjections,
       );
       return { children };
     },
   );
 
-  // GET /api/sessions/:parentId/children/:childId — view one child session
+  // GET /api/sessions/:parentId/children/:childId[?wait=true&timeout=N]
+  //
+  // Without `wait` — returns the snapshot.
+  // With `wait=true` — long-polls until the child is idle (running=false &&
+  // queueLength=0) or `timeout` (in seconds, clamped to MAX_WAIT_FOR_CHILD_IDLE_MS)
+  // elapses. The response always includes the child snapshot. `timedOut: true`
+  // signals the long-poll hit its deadline; the shim maps that to a non-zero
+  // exit code.
   app.get<{
     Params: { parentId: string; childId: string };
+    Querystring: { wait?: string; timeout?: string };
   }>(
     "/api/sessions/:parentId/children/:childId",
     async (request, reply) => {
       try {
+        if (request.query.wait === "true") {
+          const requestedTimeoutSecs = Number(request.query.timeout);
+          const timeoutMs = Number.isFinite(requestedTimeoutSecs) && requestedTimeoutSecs > 0
+            ? Math.min(Math.floor(requestedTimeoutSecs * 1000), MAX_WAIT_FOR_CHILD_IDLE_MS)
+            : DEFAULT_WAIT_FOR_CHILD_IDLE_MS;
+          const result = await waitForChildIdle(
+            sessionManager,
+            deps.runnerRegistry,
+            request.params.parentId,
+            request.params.childId,
+            timeoutMs,
+            childProjections,
+          );
+          return { child: result.child, idle: result.idle, timedOut: result.timedOut };
+        }
         const child = getSpawnedChild(
           sessionManager,
           deps.runnerRegistry,
           request.params.parentId,
           request.params.childId,
+          childProjections,
         );
         return { child };
       } catch (err) {
@@ -507,6 +546,72 @@ export async function registerSessionRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to read child session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:parentId/children/:childId/message — Phase 3 follow-up
+  // prompt. Routed via the `shipit session message` shim subcommand. The body
+  // is a free-form user message; the orchestrator enqueues it on the child's
+  // runner (or starts a turn directly when idle). Returns a queue position so
+  // the shim can show "queued behind N turns" to the agent.
+  app.post<{
+    Params: { parentId: string; childId: string };
+    Body: { text?: string };
+  }>(
+    "/api/sessions/:parentId/children/:childId/message",
+    async (request, reply) => {
+      try {
+        const result = sendChildMessage(
+          sessionManager,
+          deps.runnerRegistry,
+          request.params.parentId,
+          request.params.childId,
+          request.body?.text ?? "",
+          deps.defaultAgentId,
+        );
+        return { queuePosition: result.queuePosition, enqueued: result.enqueued };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to send child message: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:parentId/children/:childId/archive — Phase 3 archive.
+  // Only archives children the parent itself spawned, and refuses when the
+  // child is still running. The actual archive work (workspace cleanup, cache
+  // sweep, container disposal) reuses the existing `archiveSession` service.
+  app.post<{
+    Params: { parentId: string; childId: string };
+  }>(
+    "/api/sessions/:parentId/children/:childId/archive",
+    async (request, reply) => {
+      try {
+        assertArchivableChild(
+          sessionManager,
+          deps.runnerRegistry,
+          request.params.parentId,
+          request.params.childId,
+        );
+        const result = await archiveSession(
+          sessionManager,
+          deps.runnerRegistry,
+          deps.getSharedRepoDir,
+          request.params.childId,
+          deps.pruneSessionVolumes,
+        );
+        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        return { archived: true, sessions: result.sessions };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to archive child session: ${getErrorMessage(err)}` });
       }
     },
   );
