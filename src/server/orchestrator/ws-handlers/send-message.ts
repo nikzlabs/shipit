@@ -470,6 +470,10 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   if (answerRunner) answerRunner.setAgent(currentAgent);
 
   const persistUserMessage = (sessionId: string) => {
+    // docs/140 diag — see comment in agent-execution.ts persistUserMessage.
+    console.log(
+      `[persist-user] handleAnswerQuestion session=${sessionId} text=${JSON.stringify(answerText.slice(0, 60))}`,
+    );
     ctx.chatHistoryManager.append(sessionId, { role: "user", text: answerText });
   };
 

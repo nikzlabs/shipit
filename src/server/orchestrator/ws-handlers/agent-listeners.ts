@@ -117,6 +117,13 @@ export function recordSteeredMessage(
 ): void {
   const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
   runner.steeredMessages = [...runner.steeredMessages, { afterGroupIndex, text }];
+  // docs/140 diag — capture the steered-message inject point. Pairs with the
+  // `[persist-user]` logs to confirm whether the same user text was both
+  // appended (via persistUserMessage) and injected into the in-progress batch
+  // (via this path) during one user-send — the suspected double-bubble cause.
+  console.log(
+    `[steered] recordSteeredMessage afterGroupIndex=${afterGroupIndex} steered.len=${runner.steeredMessages.length} text=${JSON.stringify(text.slice(0, 60))}`,
+  );
 }
 
 /**
@@ -333,6 +340,8 @@ export function wireAgentListeners(
         ctx.sseBroadcast("session_started", { session });
       }
       if (opts.isNewSession) {
+        // docs/140 diag — see comment in agent-execution.ts persistUserMessage.
+        console.log(`[persist-user] agent_init session=${turnSessionId} (isNewSession branch)`);
         opts.persistUserMessage(turnSessionId);
       }
 
