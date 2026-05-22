@@ -180,6 +180,27 @@ export function MessageInput({
   // to start a text selection. Reclaiming on body-blur would refocus the textarea
   // mid-drag and cancel the in-progress selection — see issue: text in conversation
   // wasn't selectable while the textarea was focused.
+  //
+  // ALSO never reclaim when the focus loss followed a user click on an iframe
+  // — that's the user intentionally clicking the preview (e.g. to play a WebGL/
+  // Canvas game where the canvas doesn't itself take focus). Reclaiming there
+  // means subsequent keystrokes type into this textarea instead of reaching the
+  // game. We track the most-recent iframe pointerdown via a capture-phase
+  // listener on the document.
+  const lastIframePointerDownRef = useRef(0);
+  // eslint-disable-next-line no-restricted-syntax -- global listener for iframe-click detection
+  useEffect(() => {
+    const handler = (e: PointerEvent) => {
+      const target = e.target as Element | null;
+      if (target?.tagName === "IFRAME") {
+        lastIframePointerDownRef.current = Date.now();
+      }
+    };
+    // Capture phase so we see the event even if the iframe stops propagation.
+    document.addEventListener("pointerdown", handler, true);
+    return () => document.removeEventListener("pointerdown", handler, true);
+  }, []);
+
   const handleBlur = useCallback((e: React.FocusEvent<HTMLTextAreaElement>) => {
     // relatedTarget is set when focus moves to another focusable element in the
     // same document (e.g. a button click). When an iframe steals focus, or when
@@ -191,9 +212,11 @@ export function MessageInput({
       // active element means the user clicked outside any focusable widget
       // (typically to start a text selection); leave focus alone there.
       const active = document.activeElement;
-      if (active?.tagName === "IFRAME") {
-        textareaRef.current?.focus();
-      }
+      if (active?.tagName !== "IFRAME") return;
+      // User just clicked the iframe → leave focus in the iframe so keystrokes
+      // reach the preview (canvas/WebGL games, embedded apps, etc.).
+      if (Date.now() - lastIframePointerDownRef.current < 500) return;
+      textareaRef.current?.focus();
     });
   }, []);
 
