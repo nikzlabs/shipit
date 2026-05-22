@@ -37,6 +37,8 @@ Piggyback on the existing per-repo poll (`pr-status-poller.ts`, 5s cadence). Ins
 
 No new polling, no new API calls. The mergeable field is already in the GraphQL query (`pr-status-parser.ts:89`) and the rate-limit budget already absorbs it.
 
+**`mergeable === "unknown"` handling.** GitHub returns `UNKNOWN` while it's computing mergeability — common right after a push (`pr-status-parser.ts:352-355` maps it to `"unknown"`). If we naively edge-detect, a single sticky conflict will oscillate `conflicting → unknown → conflicting` and re-fire on every flop-back. The manager carries forward the **last non-unknown value** of `mergeable` per session and runs the edge test against *that*, not the raw `prev` summary. An `unknown` poll is treated as "no change" and never triggers, never resets.
+
 ### Manager: `AutoConflictResolveManager`
 
 Mirrors `AutoFixManager` in shape so future readers map between them on sight. Lives in `src/server/orchestrator/auto-conflict-resolve-manager.ts`.
@@ -61,70 +63,121 @@ export interface AutoConflictResolveState {
 export class AutoConflictResolveManager {
   /** sessionId → state */
   private states = new Map<string, AutoConflictResolveState>();
+  /** sessionId → last non-unknown mergeable value (UNKNOWN polls are ignored) */
+  private lastKnownMergeable = new Map<string, "mergeable" | "conflicting">();
 
   constructor(
     private readonly onChange: (sessionId: string) => void,
-    private readonly isAgentRunning: (sessionId: string) => boolean,
+    /**
+     * Returns the live runner for a tracked session, or undefined if the
+     * session has no runner (evicted, archived, never activated). The poller
+     * tracks any session with an open PR — there is no guarantee a runner
+     * exists. See the "Runner availability" subsection below.
+     */
+    private readonly getRunner: (sessionId: string) => SessionRunner | undefined,
     private rebaseAndResolveCb?: RebaseAndResolveCb,
   ) {}
 
-  setEnabled(sessionId: string, enabled: boolean): AutoConflictResolveState { ... }
+  setEnabled(sessionId: string, enabled: boolean): AutoConflictResolveState;
 
   /** Called from PrStatusPoller after each poll's summary is built. */
   handleTransition(
     sessionId: string,
     current: PrStatusSummary,
-    prev: PrStatusSummary | undefined,
     baseBranch: string,
     headSha: string,
-    baseSha: string,
   ): void;
+
+  /**
+   * Called when a session's agent turn ends. Lets a `deferred` state
+   * re-evaluate without waiting for another mergeable transition (which
+   * won't come — the conflict is sticky). See issue #5 in the design
+   * review for why this hook is required.
+   */
+  onAgentTurnEnd(sessionId: string): void;
 }
 ```
 
 `handleTransition` logic:
 
 1. State must be `enabled`. If not, drop.
-2. If head SHA changed since last attempt → reset `attemptCount = 0`, `status = "idle"`.
-3. If mergeable didn't transition from non-conflicting → conflicting, return. We only fire on the *edge*, not on every poll that sees a sticky conflict.
-4. If `attemptCount >= MAX_AUTO_RESOLVE_ATTEMPTS` → `status = "exhausted"`, emit, return.
-5. If `isAgentRunning(sessionId)` → set `status = "deferred"`, emit, return. The next poll after the agent finishes will see the same conflict and re-evaluate (without re-incrementing, because we never moved past step 5).
-6. Otherwise → `status = "running"`, `attemptCount++`, fire `rebaseAndResolveCb(sessionId, baseBranch)` async.
+2. If `current.mergeable === "unknown"`: do nothing, do not update `lastKnownMergeable`. Return.
+3. Read `prevKnown = lastKnownMergeable.get(sessionId)`; then `lastKnownMergeable.set(sessionId, current.mergeable)`.
+4. If head SHA changed since last attempt → reset `attemptCount = 0`, `status = "idle"`.
+5. If `prevKnown === "conflicting"` (sticky) or `current.mergeable !== "conflicting"` → return. We only fire on the *edge* mergeable→conflicting.
+6. If `attemptCount >= MAX_AUTO_RESOLVE_ATTEMPTS` → `status = "exhausted"`, emit, return.
+7. If no runner for the session (`getRunner(sessionId) === undefined`) or `runner.running === true` → set `status = "deferred"`, emit, return. The next poll after the runner is up and idle, OR the `onAgentTurnEnd` hook, will re-evaluate.
+8. Otherwise → `status = "running"`, `attemptCount++`, fire `rebaseAndResolveCb(sessionId, baseBranch)` async.
 
-The `deferred` state is the key idle-gate primitive. We don't queue or schedule anything — we just record "we wanted to fire but the agent was busy." The next poll naturally retries. This means an attempt counts only when we actually attempt; a long-running turn doesn't burn the budget.
+`onAgentTurnEnd(sessionId)`:
+
+1. Read `state = states.get(sessionId)`. If not `enabled` or status is not `deferred`, return.
+2. Read `mergeable = lastKnownMergeable.get(sessionId)`. If not `"conflicting"`, the conflict resolved itself — set `status = "idle"`, return.
+3. Otherwise re-run the gate from step 6 of `handleTransition` (cap, runner, cooldown). On pass, fire the callback.
+
+The `deferred` state is the key idle-gate primitive. We don't queue, schedule, or set timers — we record "we wanted to fire but the agent was busy" and rely on two re-evaluation triggers: the next poll *that sees an edge transition* (rare — usually the conflict is sticky) and the `onAgentTurnEnd` hook (the normal case). Attempts count only when we actually attempt; a long-running turn doesn't burn the budget.
+
+### Runner availability
+
+`PrStatusPoller` tracks any session with an open PR. There is no requirement that the session has a live container or runner — sessions get evicted by the idle enforcer, archived, or simply never activated since the last orchestrator restart. The poller talking to a session it can't drive is normal.
+
+For auto-resolve, "no runner" is treated as identical to "agent running": go to `deferred`. We do **not** wake the container just to run an auto-resolve. Rationale:
+
+- Spinning up a container costs Docker resources and counts against the idle cap. Auto-resolve is a background nicety, not worth burning a container slot for.
+- The user's normal interaction path (clicking the session, sending a message, etc.) activates the runner. At that point `onAgentTurnEnd` (or the first poll cycle after activation) re-evaluates and fires the auto-resolve.
+- Restricting to "runner already up" means auto-resolve only ever fires for sessions the user (or another foreground action) recently touched — exactly the population most likely to be looking at the PR.
+
+This is documented in the `getRunner` injection contract above. The poller injects `(id) => this.runnerRegistry.get(id)`, which returns `undefined` for sessions without a live runner.
 
 ### The rebase + resolve callback
 
-The `rebaseAndResolveCb` reuses doc 094's `rebaseOntoBase()` service end-to-end. New service function in `services/git.ts`:
+**Reuse `runRebaseFlow` from `src/server/orchestrator/services/rebase-driver.ts:81` end-to-end.** That function already implements every step described in doc 094: fetch → rebase → if conflicts, prompt the agent → stage → `rebaseContinue()` → loop → force push. It also already sets `runner.running = true/false` around the agent invocation (`rebase-driver.ts:230, 260, 273`) and throws `ServiceError(409)` if `runner.running` is already true at entry (`rebase-driver.ts:87-89`). We do not write a parallel implementation.
+
+What we add is a thin wrapper, `runAutoResolveAttempt`, alongside `runRebaseFlow` in `services/rebase-driver.ts` (same module so it shares helpers):
 
 ```typescript
 /**
- * Drives the full rebase-then-resolve loop, including agent invocation for
- * conflict files and force-push on completion. Used by auto-conflict-resolve;
- * not exposed as an HTTP endpoint (the user-initiated path stays the existing
- * step-by-step endpoints from doc 094).
+ * Wraps `runRebaseFlow` for the auto-conflict-resolve path:
+ *   - Adds a 10-minute wall-clock timeout. On timeout, calls
+ *     `git.rebaseAbort()` and resolves with { outcome: "error", lastError:
+ *     "timeout" }.
+ *   - Translates a `ServiceError(409)` from runRebaseFlow's
+ *     `runner.running` guard into { outcome: "deferred" } rather than
+ *     bubbling. This is the TOCTOU backstop: the manager's gate may pass
+ *     but the runner could have started a turn between the gate and the
+ *     driver entry. Treat as deferred, not error — no attempt counted.
+ *   - Maps other failures (dirty tree, no GitHub auth, lease failure,
+ *     other ServiceErrors) to { outcome: "error", lastError: <reason> }.
+ *   - Emits `auto_resolve_started` / `auto_resolve_result` envelopes via
+ *     `runner.emitMessage` (NOT `ctx.send`). emitMessage broadcasts to
+ *     every attached viewer and buffers into the turn-event log, so a
+ *     viewer reconnecting after the auto-resolve completes still sees
+ *     the result. This is the pattern CLAUDE.md's WS-lifecycle section
+ *     requires for any state mutation that must outlive a single socket.
  *
- * Emits status WS events through the runner so the user sees what happened
- * when they return: rebase_started, rebase_conflicts (with agent message
- * group), rebase_complete, or rebase_aborted with reason.
+ * Does NOT emit the inner `rebase_started` / `rebase_conflicts` /
+ * `rebase_complete` events itself — those are emitted by runRebaseFlow
+ * as a side effect, so the existing UI from doc 094 lights up exactly
+ * as it would on a user-initiated rebase.
  */
-export async function rebaseAndResolveAuto(
+export async function runAutoResolveAttempt(
   runner: SessionRunner,
   git: GitManager,
   githubAuth: GitHubAuthManager,
   baseBranch: string,
   agentFactory: AgentFactory,
-): Promise<RebaseAutoResult>;
+): Promise<AutoResolveResult>;
 ```
 
-Implementation walks the same orchestrator-driven steps doc 094 spec'd: `fetch` → `rebase(baseRef)` → if conflicts, prompt the agent → on agent turn completion, `git add` + `rebaseContinue()` → loop until clean or aborted → `forcePush()`.
+Pre-flight gates (run before `runRebaseFlow` is invoked, so they don't burn an attempt):
 
-Key differences from the user-initiated path:
+- **GitHub auth check.** No auth → return `{ outcome: "error", lastError: "no_github_auth" }`. Not retried — the user needs to fix auth, and the existing auth prompt elsewhere in the UI surfaces that.
+- **Dirty tree check.** `git.statusPorcelain()` non-empty → return `{ outcome: "error", lastError: "dirty_tree" }`. Defensive; shouldn't happen for an idle session, but we never stash silently on auto-paths.
 
-- **Quieter chat output.** The agent's resolution message group is the same compact summary doc 094 already produces; we don't add an extra "auto-resolve started" preamble. Less chatty when the user reopens.
-- **Hard timeout.** 10-minute wall clock across the whole loop. On timeout: `rebaseAbort()`, set `status = "exhausted"`, emit a failure card. Prevents a stuck agent turn from holding state indefinitely.
-- **Dirty tree check before starting.** If the working tree is dirty (uncommitted edits that aren't ours — shouldn't happen for an idle session, but defensive), skip with `lastError = "dirty_tree"`. We never stash silently on auto-paths.
-- **GitHub auth check first.** No auth → set `lastError = "no_github_auth"`, no attempt counted (this isn't a resolvable failure). The card shows the auth prompt the user already knows from elsewhere.
+After-the-fact handling:
+
+- **Lease failure on force push.** `runRebaseFlow` will throw; we map to `lastError: "lease_failed"` and never retry — the user did something on the branch and we shouldn't fight them.
+- **Quieter chat output.** No extra preamble. The user's first signal that auto-resolve ran is the existing doc 094 compact message group.
 
 ### Setting: `autoResolveConflicts`
 
@@ -156,7 +209,7 @@ The retry button just toggles `attemptCount` back to 0 and waits for the next po
 
 - **Per-repo concurrency cap.** Only one auto-resolve run per repo at a time. If a second session on the same repo flips to conflicting while one is mid-loop, the second goes to `deferred` and retries on a later poll. Prevents two sessions thrashing on top of each other's force-pushes (rare but possible during cascading lands).
 - **Cooldown after a failed attempt.** 5 minutes before the same session retries. Implemented as a `nextEligibleAt` timestamp on the state, checked at step 5 of `handleTransition`.
-- **Reset on user activity.** If the user sends a chat message to the session, reset `attemptCount` to 0. The user re-engaging with the session implies they're now driving; if they need auto-resolve again afterward, they get a fresh budget. Hook this in `send-message.ts` (or the post-turn handler — wherever we already know "the user just spoke").
+- **Reset on user activity.** If the user sends a chat message to the session, reset `attemptCount` to 0. The user re-engaging with the session implies they're now driving; if they need auto-resolve again afterward, they get a fresh budget. Hook this in `send-message.ts` (or the post-turn handler — wherever we already know "the user just spoke"). Note that "viewing the failure banner" does not reset the counter — the explicit retry button on the banner is the only other reset path. This is intentional: a passive page load shouldn't quietly re-arm a loop that just exhausted itself.
 
 ### WS messages
 
@@ -184,18 +237,19 @@ The existing `rebase_started` / `rebase_conflicts` / `rebase_complete` / `rebase
 
 - **PR was just merged.** If `current.mergeable === "conflicting"` but `current.state === "MERGED"` (race), don't fire. The poller already drops merged sessions before this point (`mergedSessions` set in `pr-status-poller.ts`), so this falls out for free.
 - **Session has no PR yet.** `mergeable` is undefined; trivially no transition.
-- **Base branch isn't `main`.** Use `summary.baseRefName` from the GraphQL response, not a hardcoded `"main"`. Doc 094's `rebaseOntoBase` already takes the base branch as a parameter.
+- **Base branch isn't `main`.** Use `summary.baseBranch` from `PrStatusSummary` (`github-types.ts:249`), not a hardcoded `"main"`. `runRebaseFlow` already takes the base branch as a parameter.
+- **PR is closed (not merged).** A closed-without-merge PR is not a merge candidate; don't auto-resolve. Gate at the same point we check `mergedSessions` — if `current.state === "CLOSED"`, drop the session from the manager's state map and return.
 - **Conflicts in `package-lock.json` only.** The agent's resolution prompt from doc 094 covers this — it just edits the file. No special-casing here. If we later want a lockfile fast-path (regenerate instead of resolving textually), it lives in doc 094, not here.
 - **The auto-commit on session boot creates the conflict.** Possible but rare. The same loop applies; the agent will resolve its own auto-commit's conflict if the base diverged in the same region. The attempt counter caps the damage.
 - **Force-push race with a parallel manual rebase.** `--force-with-lease` handles this (doc 094 already specifies it). The auto-loop surfaces the lease failure as `lastError = "lease_failed"` and stops; no retries — the user clearly did something on the branch and we shouldn't fight them.
-- **Setting toggled off mid-run.** Currently-running attempts complete (we don't abort mid-rebase — interrupting a rebase mid-flight is worse than letting it finish). New attempts won't start. The state map's `enabled` flag is checked at `handleTransition` entry only.
+- **Setting toggled off mid-run.** Currently-running attempts complete (we don't abort mid-rebase — interrupting a rebase mid-flight is worse than letting it finish). New attempts won't start. The state map's `enabled` flag is checked at `handleTransition` entry only. When `setEnabled(false)` is called while `status === "running"`, the manager records `pendingDisable = true` on the state; the running attempt's completion handler reads that flag and flips `status` directly to `idle` (mirrors `AutoFixManager.setEnabled` in `auto-fix-manager.ts:59-61`). Without this, the status would remain stuck at `running` after the disable.
 - **Multiple browser tabs.** The manager lives on the orchestrator; per-WS-connection state is not involved. Tabs receive the same WS events from the runner's broadcast (per CLAUDE.md's "WebSocket lifecycle MUST NOT affect server behavior").
 
 ## Implementation order
 
 1. **`AutoConflictResolveManager`** (`auto-conflict-resolve-manager.ts`) — pure bookkeeping, unit-test in isolation.
-2. **`rebaseAndResolveAuto` service** in `services/git.ts` — wraps doc 094's rebase + resolve loop with the timeout and emit envelope.
-3. **Wire into `PrStatusPoller`** — instantiate manager in the poller's constructor, call `handleTransition` after the existing `autoFix.handleTransition`.
+2. **`runAutoResolveAttempt` wrapper** in `services/rebase-driver.ts` — sits next to `runRebaseFlow` and adds the 10-min timeout, the 409→`deferred` translation, the pre-flight gates (GitHub auth, dirty tree), and the `auto_resolve_started` / `auto_resolve_result` envelope via `runner.emitMessage`.
+3. **Wire into `PrStatusPoller`** — instantiate manager in the poller's constructor, call `handleTransition` after the existing `autoFix.handleTransition`. Also wire `onAgentTurnEnd(sessionId)` into the post-turn flow (`ws-handlers/post-turn.ts` or `agent-execution.ts` "done" event) so a sticky-conflict + previously-deferred state re-evaluates the moment the agent finishes its current work, without waiting for an unlikely mergeable edge transition.
 4. **Global setting** — extend `credentialStore`, `services/settings.ts`, and the client `settings-store.ts` for `autoResolveConflicts`.
 5. **Settings UI** — single checkbox in the existing Settings panel.
 6. **Failure banner on PR card** — render `auto_resolve_result` with `outcome: "exhausted" | "error"` as a PR-card sub-banner with retry.
@@ -207,11 +261,12 @@ The existing `rebase_started` / `rebase_conflicts` / `rebase_complete` / `rebase
 |---|---|
 | `src/server/orchestrator/auto-conflict-resolve-manager.ts` | New manager (mirrors `auto-fix-manager.ts`) |
 | `src/server/orchestrator/pr-status-poller.ts` | Instantiate manager; call `handleTransition` |
-| `src/server/orchestrator/services/git.ts` | `rebaseAndResolveAuto()` — wraps the doc 094 loop with timeout + emit |
+| `src/server/orchestrator/services/rebase-driver.ts` | New `runAutoResolveAttempt()` wrapper around the existing `runRebaseFlow` (timeout, 409→deferred translation, pre-flight gates, `auto_resolve_*` envelope) |
 | `src/server/orchestrator/credential-store.ts` | `getAutoResolveConflicts()` / `setAutoResolveConflicts()` |
 | `src/server/orchestrator/services/settings.ts` | Read/write `autoResolveConflicts` in get/update |
 | `src/server/orchestrator/services/types.ts` | Add `autoResolveConflicts: boolean` to settings type |
 | `src/server/orchestrator/ws-handlers/send-message.ts` | On user message, reset `attemptCount` |
+| `src/server/orchestrator/ws-handlers/post-turn.ts` | Call `autoConflictResolve.onAgentTurnEnd(sessionId)` on agent turn completion |
 | `src/shared/types/ws-server-messages.ts` | `WsAutoResolveStarted`, `WsAutoResolveResult` |
 | `src/client/stores/settings-store.ts` | `autoResolveConflicts` + setter |
 | `src/client/components/SettingsPanel.tsx` | New toggle row |
@@ -225,12 +280,16 @@ The existing `rebase_started` / `rebase_conflicts` / `rebase_complete` / `rebase
 
 1. Transition non-conflicting → conflicting with `enabled=true`, agent idle → callback fires once.
 2. Transition conflicting → conflicting (sticky) → callback does NOT re-fire.
-3. Agent running → state = `deferred`, callback does NOT fire. Next poll with agent idle fires.
-4. `attemptCount` resets when head SHA changes.
-5. Hit `MAX_AUTO_RESOLVE_ATTEMPTS` → `status = "exhausted"`, no more fires.
-6. Cooldown: failure → second transition within 5 min does NOT fire.
-7. `setEnabled(false)` while `status="running"` → status unchanged (don't abort mid-run); future transitions don't fire.
-8. User message hook → `attemptCount` reset, status returns to idle.
+3. Agent running (or no runner) → state = `deferred`, callback does NOT fire.
+4. From step 3's `deferred` state: `onAgentTurnEnd` fires while `lastKnownMergeable === "conflicting"` → callback fires.
+5. From step 3's `deferred` state: `onAgentTurnEnd` fires after the conflict resolved on its own (`lastKnownMergeable === "mergeable"`) → status flips to `idle`, callback does NOT fire.
+6. `mergeable: "unknown"` poll between two `conflicting` polls → does NOT count as a new edge, callback fires only once.
+7. `attemptCount` resets when head SHA changes.
+8. Hit `MAX_AUTO_RESOLVE_ATTEMPTS` → `status = "exhausted"`, no more fires.
+9. Cooldown: failure → second transition within 5 min does NOT fire.
+10. `setEnabled(false)` while `status="running"` → `pendingDisable` recorded; completion flips status to `idle`. Future transitions don't fire.
+11. User message hook → `attemptCount` reset, status returns to idle.
+12. PR transitions to `state: "CLOSED"` (no merge) → manager drops the session's state entirely.
 
 ### Integration tests (`auto-resolve-conflicts.test.ts`)
 
