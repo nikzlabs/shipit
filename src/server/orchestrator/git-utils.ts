@@ -141,7 +141,20 @@ export async function fetchAndResolveDefaultBranch(
   // controlling terminal; the `timeout.block` plugin kills the child if it
   // stalls (e.g. a credential helper that itself blocks). Both are needed —
   // neither alone covers every "fetch hangs forever" mode.
-  const sg = simpleGit(workspaceDir, { timeout: { block: FETCH_STALL_TIMEOUT_MS } })
+  //
+  // We forward our own `process.env` so the child inherits PATH, HOME, and —
+  // critically — `GIT_CONFIG_GLOBAL` / `GIT_EDITOR`, both of which the
+  // orchestrator deliberately sets in `initGlobalGitConfig` so all git
+  // operations pick up identity from `/credentials/.gitconfig` and never
+  // open an interactive editor on `rebase --continue`. simple-git v3 treats
+  // those two vars as "unsafe" by default (they could carry user-supplied
+  // paths to arbitrary configs/binaries) and refuses to spawn — so we opt in
+  // explicitly. The env here is ours, not user-controlled, so the protection
+  // is a false positive for this code path.
+  const sg = simpleGit(workspaceDir, {
+    timeout: { block: FETCH_STALL_TIMEOUT_MS },
+    unsafe: { allowUnsafeConfigPaths: true, allowUnsafeEditor: true },
+  })
     .env({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
   let fetched = false;
   let authError = false;
