@@ -742,6 +742,34 @@ export interface WsSessionForked {
 }
 
 /**
+ * Server → Client: the parent agent successfully spawned a sibling session
+ * via the `shipit session create` shim (docs/117 Phase 2).
+ *
+ * Emitted on the *parent's* runner via `runner.emitMessage(...)` so every
+ * attached viewer sees it and it lands in the turn-event buffer for
+ * reconnecting viewers. The client renders a `SpawnedSessionCard` inline in
+ * the parent's chat — title, branch, status pill, and an "Open" button that
+ * switches the active session to the child.
+ *
+ * The child session itself shows up in the user's sidebar via the existing
+ * `session_list` SSE broadcast that the spawn route already emits; this
+ * event is purely the chat-side affordance.
+ */
+export interface WsSessionSpawned {
+  type: "session_spawned";
+  /** Parent session id — the runner that this event is emitted on. */
+  sessionId: string;
+  /** The newly-created child session's id. */
+  childSessionId: string;
+  /** Child session title (matches the sidebar row). */
+  title: string;
+  /** Branch the child was cut on (matches the sidebar row's branch). */
+  branch?: string;
+  /** ISO8601 timestamp the child was created at. */
+  spawnedAt: string;
+}
+
+/**
  * Server → Client: a file review's comment set changed out-of-band (docs/125).
  * Emitted when the chat-native review subagent writes anchored comments via the
  * `submit_review_comments` tool. Carries the full updated draft so the file
@@ -815,6 +843,7 @@ export type WsServerMessage =
   | WsRollbackComplete
   | WsRewindComplete
   | WsSessionForked
+  | WsSessionSpawned
   | WsServiceStatus
   | WsServiceList
   | WsServiceLog

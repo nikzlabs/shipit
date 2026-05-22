@@ -20,7 +20,14 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
-import { AGENT_SYSTEM_INSTRUCTIONS } from "../agent-instructions.js";
+import { AGENT_SYSTEM_INSTRUCTIONS, buildAgentSystemInstructions } from "../agent-instructions.js";
+
+// docs/117 Phase 2 — `agent-execution.ts` now passes `currentAgent.agentId`
+// into `buildAgentSystemInstructions`, so the runtime prompt includes the
+// per-agent "Parallel sessions" section. FakeClaudeProcess reports
+// `agentId === "claude"`, so the expected baseline for these tests is the
+// Claude-flavoured rendering.
+const CLAUDE_AGENT_INSTRUCTIONS = buildAgentSystemInstructions({ agentId: "claude" });
 
 describe("Integration: System prompt", () => {
   let app: FastifyInstance;
@@ -79,7 +86,7 @@ describe("Integration: System prompt", () => {
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
 
-    expect(lastClaude.lastSystemPrompt).toBe(`${AGENT_SYSTEM_INSTRUCTIONS}\n\nBe concise.`);
+    expect(lastClaude.lastSystemPrompt).toBe(`${CLAUDE_AGENT_INSTRUCTIONS}\n\nBe concise.`);
 
     client.close();
   });
@@ -91,7 +98,10 @@ describe("Integration: System prompt", () => {
     client.send({ type: "send_message", text: "Hello" });
     await waitForClaude(() => lastClaude);
 
-    expect(lastClaude.lastSystemPrompt).toBe(AGENT_SYSTEM_INSTRUCTIONS);
+    expect(lastClaude.lastSystemPrompt).toBe(CLAUDE_AGENT_INSTRUCTIONS);
+    // Sanity: keep AGENT_SYSTEM_INSTRUCTIONS referenced so the no-options
+    // baseline stays imported (the Settings UI snapshot still uses it).
+    expect(typeof AGENT_SYSTEM_INSTRUCTIONS).toBe("string");
 
     client.close();
   });
