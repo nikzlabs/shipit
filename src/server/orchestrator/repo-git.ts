@@ -105,6 +105,22 @@ export class RepoGit {
   }
 
   /**
+   * Milliseconds since this cache's last successful `fetchCache`, or `null`
+   * if it has never been fetched (no marker). Reads the `.shipit-last-fetch`
+   * marker that `fetchCache` writes. Used by the proactive pre-fetcher to
+   * decide whether the bare cache is fresh enough for the claim path to skip
+   * its synchronous workspace fetch (docs/145).
+   */
+  lastFetchAgeMs(): number | null {
+    const markerPath = path.join(this.repoDir, ".shipit-last-fetch");
+    try {
+      return Date.now() - fs.statSync(markerPath).mtimeMs;
+    } catch {
+      return null; // Never fetched
+    }
+  }
+
+  /**
    * Fetch all refs in the bare cache from origin.
    * Skips if the last fetch was less than `ttlMs` ago.
    *

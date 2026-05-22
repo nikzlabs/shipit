@@ -9,6 +9,9 @@ dist/
 .update-requested
 .shipit
 
+# Playwright MCP browser-driven debugging output (snapshots, console logs)
+.playwright-mcp/
+
 # ShipIt-in-ShipIt (feature 118 — dogfooding mode).
 # When the orchestrator runs with RUNTIME_MODE=local inside a ShipIt session,
 # inner-session clones land under `sessions/` and the inner orch's state
