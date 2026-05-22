@@ -784,6 +784,114 @@ describe("PreviewFrame", () => {
     expect(useUiStore.getState().settingsOpen).toBe(true);
     expect(useUiStore.getState().settingsTab).toBe("secrets");
   });
+
+  // ---- Auth-block detection: cached-slot regression ----
+
+  it("does not arm the auth-block reload timer when the user returns to a previously-loaded session", async () => {
+    // Repro for the "preview reloads ~5s after switching back to a session"
+    // bug. Before the per-slot `loadedSlotsRef`, the auth-block detector
+    // assumed every `activeSlotUrl` change implied a fresh HTML fetch and
+    // a fresh "loaded" postMessage. Re-visiting a cached iframe satisfies
+    // neither (src is unchanged, the iframe's contentWindow keeps running
+    // the previously-loaded page), so the timer expired with no signal
+    // and force-reloaded the iframe — destroying in-iframe state (scroll
+    // position, form inputs, SPA route).
+    //
+    // Rather than wait the real 5s for the timer to fire (or wrestle with
+    // fake-timer ordering vs. the poll loop's microtasks), we observe the
+    // mechanism directly: when the user returns to a slot we've already
+    // marked as loaded, the auth-block effect must NOT schedule the
+    // `setTimeout(MAX_AUTH_TIMEOUT_MS)` whose expiry is what triggers the
+    // reload.
+    //
+    // We need `isLocalPreview` to be false for the detection to run, so we
+    // override VITE_API_HOST to a non-loopback hostname. And we need the
+    // container-mode health probe to report ready immediately so the iframe
+    // slot is actually created — the default `new Response()` mock returns
+    // an empty body that `resp.json()` rejects on.
+    vi.stubEnv("VITE_API_HOST", "example.com:3001");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ready: true }), { status: 200 })),
+    );
+
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const MAX_AUTH_TIMEOUT_MS = 5000;
+    const authTimers = () =>
+      setTimeoutSpy.mock.calls.filter(
+        ([, delay]) => typeof delay === "number" && delay === MAX_AUTH_TIMEOUT_MS,
+      );
+
+    try {
+      const previewA: PreviewStatus = {
+        running: true,
+        port: 3000,
+        url: "/preview/session-a/3000/",
+        source: "detected",
+      };
+      const { rerender } = render(
+        <PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />,
+      );
+      const iframeA = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+
+      // The auth-block detector runs for the first time once the slot is
+      // created (it gates on `activeSlotUrl`). This first run *should*
+      // schedule a timer — we haven't received the "loaded" postMessage
+      // yet, so there's something real to detect. waitFor handles the
+      // microtask gap between the slot being added and the effect firing.
+      await vi.waitFor(() => {
+        expect(authTimers().length).toBeGreaterThanOrEqual(1);
+      });
+
+      // The injected proxy script (HMR_WS_PATCH) postMessages "loaded" from
+      // inside the iframe once HTML is parsed. Simulate that — the handler
+      // matches `event.source` against each pool iframe's contentWindow.
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { source: "shipit-preview", type: "loaded" },
+          source: iframeA.contentWindow,
+        }),
+      );
+
+      // Reset the spy now; from here on, any auth-block timer arming is
+      // a regression for *this* test's scenario.
+      setTimeoutSpy.mockClear();
+
+      // User switches to session B for a moment...
+      const previewB: PreviewStatus = {
+        running: true,
+        port: 5173,
+        url: "/preview/session-b/5173/",
+        source: "detected",
+      };
+      rerender(
+        <PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />,
+      );
+      // Session B's slot doesn't exist yet (poll hasn't run for its
+      // session/port), so `activeSlotUrl` is null and the auth-block
+      // effect early-returns. No timer is armed.
+
+      // ...and switches back to session A. The iframe pool keeps slot A's
+      // iframe alive; its contentWindow has not been torn down. With the
+      // per-slot loaded tracking in place, the auth-block effect sees
+      // slot A in `loadedSlotsRef` and does NOT arm a new timer. Without
+      // the tracking (the bug), it would arm a 5s timer whose expiry
+      // would force-reload the cached iframe.
+      rerender(
+        <PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />,
+      );
+
+      // Let any pending effects flush.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(authTimers()).toHaveLength(0);
+      expect(screen.queryByText("Preview authentication required")).not.toBeInTheDocument();
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe("formatErrorForMessage", () => {
