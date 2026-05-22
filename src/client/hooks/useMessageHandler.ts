@@ -2,10 +2,6 @@
 import { useEffect, useMemo, useRef, type RefObject } from "react";
 import type { InteractiveTerminalHandle } from "../components/InteractiveTerminal.js";
 import type { WsServerMessage, WsClientMessage } from "../../server/shared/types.js";
-import { useSessionStore } from "../stores/session-store.js";
-import { useRepoStore } from "../stores/repo-store.js";
-import type { NotifyContext } from "./useNotification.js";
-import { parseRepoLabel } from "../utils/repo-label.js";
 import {
   createQueuedMessageStash,
   dispatchMessage,
@@ -17,32 +13,18 @@ export function useMessageHandler(params: {
   drainMessages: () => MessageEvent[];
   send: (msg: WsClientMessage) => void;
   terminalRef: RefObject<InteractiveTerminalHandle | null>;
-  notify: (msg: string, context?: NotifyContext) => void;
 }): void {
-  const { lastMessage, drainMessages, send, terminalRef, notify } = params;
+  const { lastMessage, drainMessages, send, terminalRef } = params;
 
   // The queued-message stash must survive re-renders so a `queue_updated`
   // arriving after `message_queued` can find the stashed entry. A module-level
   // Map would also work but a ref scopes it to this hook instance.
   const queuedMessageStashRef = useRef(createQueuedMessageStash());
 
-  // Build the shared context once per render. The `buildNotifyContext`
-  // closure intentionally reads store state lazily (at notify-time, not
-  // build-time) so it always reflects the latest session/repo.
   const ctx: HandlerContext = useMemo(() => ({
     terminalRef,
-    notify,
-    buildNotifyContext: (): NotifyContext => {
-      const session = useSessionStore.getState();
-      const currentSession = session.sessions.find((s) => s.id === session.sessionId);
-      const repoUrl = currentSession?.remoteUrl ?? useRepoStore.getState().activeRepoUrl;
-      return {
-        sessionName: currentSession?.title,
-        repoLabel: repoUrl ? parseRepoLabel(repoUrl) : undefined,
-      };
-    },
     queuedMessageStash: queuedMessageStashRef.current,
-  }), [terminalRef, notify]);
+  }), [terminalRef]);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {

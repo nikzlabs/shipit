@@ -2,7 +2,6 @@ import type { RefObject } from "react";
 import type { InteractiveTerminalHandle } from "../../components/InteractiveTerminal.js";
 import type { WsServerMessage } from "../../../server/shared/types.js";
 import type { ChatMessage } from "../../components/MessageList.js";
-import type { NotifyContext } from "../useNotification.js";
 
 /**
  * Stash for queued messages removed from the conversation.
@@ -27,9 +26,6 @@ export type QueuedMessageStash = Map<string, ChatMessage>;
  */
 export interface HandlerContext {
   terminalRef: RefObject<InteractiveTerminalHandle | null>;
-  notify: (msg: string, context?: NotifyContext) => void;
-  /** Build a NotifyContext from the current session + repo state. */
-  buildNotifyContext: () => NotifyContext;
   /** Shared stash for queued user messages — see `QueuedMessageStash`. */
   queuedMessageStash: QueuedMessageStash;
 }
