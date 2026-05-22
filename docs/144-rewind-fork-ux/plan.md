@@ -208,7 +208,8 @@ The gap renders a **persistent very-low-contrast hairline** (≈10% opacity) at 
 
 It's the fork-from-current entry point and the doc has explicitly dropped the topbar surface for that, so its discoverability matters. The gap-after-last is rendered with:
 - ~50% taller than intermediate gaps (so it reads as a dedicated row),
-- A persistent low-opacity "+" icon in addition to the hairline,
+- A persistent, fully-visible pill containing both the rewind icon and a "+" icon (in contrast to intermediate gaps, where the pill only appears on hover/focus),
+- Hairline at full opacity at rest,
 - Aria-label "Fork from current state or rewind further."
 
 No first-run cookie. The treatment is unconditional.
@@ -231,21 +232,14 @@ Replace both per-message dropdowns with **one** control, anchored to the **gap b
 
 When the control is attached to a message, the question "is this message kept or discarded?" has to be answered by the menu label and the user has to read carefully every time. When the control sits in the gap, the answer is geometric: **everything above the line is kept, everything below it is gone.** The modal in D4 exists for the file count, not for the chat geometry.
 
-### Visual treatment
+### Visual treatment and menu
 
-- Intermediate gaps: 16-24px row with a persistent very-low-contrast hairline (D5). On hover/focus, the hairline goes full opacity and a small chevron centers on it; click opens the menu.
-- Gap-after-last: 50% taller, persistent low-opacity "+" icon (D6), full hairline always visible.
+See the "UI spec" section below for sketches of each surface (intermediate gap at rest, on hover, the menu, confirmation modal, undo toast, recover-overflow item). High-level rules:
+
+- Intermediate gaps: 16-24px row with a persistent very-low-contrast hairline (D5). Hover/focus brings the hairline to full opacity and reveals a small pill with the rewind icon.
+- Gap-after-last: ~50% taller, pill always visible, hairline always at full opacity (D6).
 - Streaming: gap-after-last hidden; intermediate gaps disabled with tooltip (D3).
-
-### The menu
-
-Single component, single vocabulary. Four actions:
-
-1. **Rewind chat to here** — Discard turns below this point. Code unchanged. No modal (D4), just the undo toast.
-2. **Rewind code to here** — Reset files to the commit at this point. Chat unchanged; turns below this point dimmed (depends on B2 + U5). Modal with counts; then toast.
-3. **Rewind chat and code** — Both. Fresh agent session with replay built from kept turns. Modal; then toast.
-4. *(separator)*
-5. **Fork as new session** — New worktree at this point with the turns above this point copied (and their uploads, per B3). Modal with optional name input (U7); then auto-switch + breadcrumb (D7).
+- Menu: four actions (rewind chat / rewind code / rewind both / fork). Code-touching actions open the confirmation modal first (D4). Counts in the modal come from `rewind_preview` (U4).
 
 The server resolves the target commit from `gapPosition` by walking the kept-side suffix for the latest assistant message with a `commitHash`. For `gapPosition === messages.length` the target is `HEAD` (the most recent auto-commit).
 
@@ -266,6 +260,155 @@ All actions:
 - The "Fork conversation from here" label trap disappears — the new menu items describe their actual effect, and the only thing called "Fork" creates a real new session.
 - `session-forked.ts`'s "Switch from sidebar" text is gone (B6).
 
+## UI spec
+
+Concrete visual targets for the `RewindPoint` component and its associated surfaces (confirmation modal, undo toast, recover-overflow item). Sketches are ASCII-only; the implementer should follow the design tokens in `src/client/design-tokens.ts` for sizing/spacing and the existing `--color-*` CSS variables for color.
+
+### Intermediate gap — at rest
+
+A 16-24px row between every role transition. A hairline runs across the chat column at ~10% opacity (use `--color-border-secondary` faded, or `--color-border-primary` at low alpha). No button, no text — the hairline is the only affordance hint.
+
+```
+┌──────────────────────────────────────┐
+│  How do I add a debounce here?       │
+└──────────────────────────────────────┘
+
+   ╶───────────────────────────────╴      ← ≈10% opacity hairline, 16px row
+
+┌──────────────────────────────────────┐
+│  I'll wrap the handler in lodash…    │
+│  [tool: Edit src/App.tsx]            │
+└──────────────────────────────────────┘
+```
+
+### Intermediate gap — hover or keyboard focus
+
+Hairline goes to full opacity. A small pill appears centered on the line, ~20px tall × ~32px wide, containing an `ArrowCounterClockwise` icon at `ICON_SIZE.XS` (12px) — matches the icon the existing RewindDropdown already uses, so the affordance reads as "rewind point," not as a brand-new control. Background `--color-bg-secondary`; border matches the hairline so the pill looks like it's *on* the line.
+
+```
+   ───────────────  ⟲  ───────────────    ← full-opacity hairline + pill
+```
+
+Focus ring on the pill when reached via Tab. Cmd/Ctrl+Z while focused opens the menu directly (skips the click step).
+
+### Gap-after-last
+
+Same `RewindPoint` component, different styling tokens. ~50% taller (24-36px). Hairline always full opacity. Pill always visible, with both the rewind icon and a `Plus` icon — the second icon signals "this is also where new sessions branch off." Aria-label "Fork from current state or rewind further."
+
+```
+┌──────────────────────────────────────┐
+│  Done — your handler is debounced.   │
+└──────────────────────────────────────┘
+
+   ──────────────  ⟲ +  ──────────────    ← taller row, both icons, always visible
+
+[  Type your next message…              ]
+```
+
+### Streaming states
+
+- Gap-after-last during a streaming turn: **completely hidden.** No row, no hairline, no pill. There's no committed "current state" to fork from until the auto-commit fires.
+- Intermediate gaps during streaming: hairline drops to ≈5% opacity; pill rendered but disabled (greyed; no hover effect). Tooltip on the row: "Wait for the current turn to finish."
+
+When the turn ends, the after-last gap reappears with a fresh `commitHash` and intermediate gaps re-enable.
+
+### The menu
+
+Opens from the pill, prefers opening upward since the gap is inline in scrolling chat. Width ~280px. Item layout mirrors the existing dropdowns (label + 1-line muted subtitle):
+
+```
+┌──────────────────────────────────────────────┐
+│  ⟲  Rewind chat to here                       │
+│     Discard 2 turn-groups. Code unchanged.    │
+├──────────────────────────────────────────────┤
+│  ⟲  Rewind code to here                       │
+│     Reset 5 files. Chat kept, stale turns     │
+│     dimmed.                                   │
+├──────────────────────────────────────────────┤
+│  ⟲  Rewind chat and code                      │
+│     Discard turns and reset files.            │
+├─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┤
+│  +  Fork as new session                       │
+│     New worktree from this point.             │
+└──────────────────────────────────────────────┘
+```
+
+Turn-group / file counts in the subtitles come from `rewind_preview` (requested when the menu opens). Until the response arrives, subtitles render with no numbers ("Discard turn-groups" / "Reset files") and upgrade in place when the count lands. The "Rewind chat to here" subtitle never has a file count; the "Rewind code" subtitle never has a turn-group count.
+
+### Confirmation modal (code-touching actions)
+
+For "Rewind code", "Rewind chat and code", and "Fork as new session" the menu item opens a modal before firing. Reuse the existing `Dialog` component. The action button uses the destructive/accent variant.
+
+```
+┌──────────────────────────────────────────────┐
+│  Rewind chat and code                         │
+│                                               │
+│  This will:                                   │
+│    • Discard 2 turn-groups                    │
+│    • Reset 5 files to commit a1b2c3d         │
+│                                               │
+│  You have 1 queued message that will also     │
+│  be discarded.                                │
+│                                               │
+│                       [ Cancel ]  [ Rewind ]  │
+└──────────────────────────────────────────────┘
+```
+
+The queue line only renders when `runner.messageQueue.length > 0` (B4). The chat-only "Rewind chat to here" path stays modal-free *unless* the queue is non-empty; in that case it shows a smaller single-purpose modal ("Discard N queued messages and rewind?"). The Fork modal swaps the body for an inline name input:
+
+```
+┌──────────────────────────────────────────────┐
+│  Fork as new session                          │
+│                                               │
+│  Name: [ debounce-experiment        ]         │
+│                                               │
+│  Includes 4 turn-groups and the current       │
+│  files at commit a1b2c3d.                     │
+│                                               │
+│                       [ Cancel ]  [ Fork ]    │
+└──────────────────────────────────────────────┘
+```
+
+Name is pre-filled by the session-namer slug (U7); the user can edit before confirming.
+
+### Undo toast
+
+Appears bottom-center after any rewind (including the chat-only path that skipped the modal). 10-second timer with a thin progress bar; clicking **Undo** restores from `rewind_snapshots` (D8) — both files and chat in one transaction.
+
+```
+┌─────────────────────────────────────────┐
+│  ✓ Rewound chat and code.    [ Undo ]   │
+│  ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱   │
+└─────────────────────────────────────────┘
+```
+
+For Fork, the toast text is "Forked to *debounce-experiment*" and the **Undo** button removes the new session + restores the parent's chat/files.
+
+### "Recover recent rewind" — topbar overflow
+
+For up to ~5 minutes after the toast expires, the session topbar overflow menu shows a discreet entry. Disappears once the snapshot's TTL passes (D8). Time shown is relative.
+
+```
+…
+─────────────────
+↶  Recover recent rewind (3m ago)
+─────────────────
+…
+```
+
+Clicking it triggers the same restore path as the toast's **Undo**.
+
+### Tokens at a glance
+
+| Surface | Height | Opacity at rest | Opacity on hover | Notes |
+|---|---|---|---|---|
+| Intermediate gap | 16-24px | hairline 10% | hairline 100%, pill visible | Pill: `--color-bg-secondary`, 20×32px |
+| Intermediate gap (streaming) | 16-24px | hairline 5% | n/a (disabled) | Tooltip on row |
+| Gap-after-last | 24-36px | hairline 100%, pill visible | (same) | Both icons in pill |
+| Gap-after-last (streaming) | 0px | hidden | n/a | Row removed entirely |
+| Modal | dialog default | n/a | n/a | Reuses existing `Dialog` |
+| Toast | bottom-center | 100% | n/a | 10s timer + Undo |
+
 ## Implementation plan
 
 Three landings. Landing 1 is fully independent. Landing 2 depends on B1+B5 from Landing 1 (sidebar fix + unified WS message). Landing 3 depends on B2 (persisted `rolled_back`) for U5; everything else in Landing 3 can ship in any order.
@@ -282,10 +425,10 @@ Three landings. Landing 1 is fully independent. Landing 2 depends on B1+B5 from 
 
 ### Landing 2 — Replace per-message dropdowns with between-turn rewind points
 
-- [ ] Build `RewindPoint` component (gap-anchored hairline + chevron + menu, per D5/D6 styling).
+- [ ] Build `RewindPoint` component per the "UI spec" section above (intermediate gap, gap-after-last, streaming states, menu).
 - [ ] Render `RewindPoint` between every role transition in `MessageList`, plus the prominent gap-after-last (D6). Hide/disable per D3.
 - [ ] Implement the four menu actions, all routing through `rewind_at_gap` (D2).
-- [ ] Add `rewind_preview_request` / `rewind_preview` WS pair; populate confirmation modal counts (U4).
+- [ ] Add `rewind_preview_request` / `rewind_preview` WS pair; populate menu subtitles and modal counts (U4 + UI spec).
 - [ ] Confirmation modal (selective, per D4) + undo toast + "Recover recent rewind" topbar overflow item.
 - [ ] `rewind_snapshots` SQLite table + restore endpoint (D8).
 - [ ] Delete `RewindDropdown.tsx`, `RollbackDropdown.tsx`, the four old WS message types and their handlers. Cover with regression tests so the old chip can't sneak back.
