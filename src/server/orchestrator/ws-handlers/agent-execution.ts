@@ -281,6 +281,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     runner.accumulatedToolUse = [];
     runner.chatMessageGroups = [];
     runner.needsNewMessageGroup = true;
+    runner.steeredMessages = [];
     runner.wasInterrupted = false;
     // docs/125 — authorize the review tool for exactly this turn's file (or
     // clear the allow-list for a normal turn). Setting it at turn start — the

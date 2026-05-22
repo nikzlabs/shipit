@@ -27,7 +27,7 @@
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
-import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage } from "./session-runner.js";
 import { runSystemTurn } from "./session-runner.js";
 import type { SSEEvent } from "./sse-client.js";
 import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage } from "./worker-http.js";
@@ -229,6 +229,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get needsNewMessageGroup(): boolean { return this.turn.needsNewMessageGroup; }
   set needsNewMessageGroup(v: boolean) { this.turn.needsNewMessageGroup = v; }
+
+  get steeredMessages(): SteeredMessage[] { return this.turn.steeredMessages; }
+  set steeredMessages(m: SteeredMessage[]) { this.turn.steeredMessages = m; }
 
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }

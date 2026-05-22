@@ -1,7 +1,8 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
-import type { ChatMessageGroup, ToolResultEntry } from "../session-runner.js";
+import type { ChatMessageGroup, ToolResultEntry, SteeredMessage } from "../session-runner.js";
+import type { PersistedMessage } from "../chat-history.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
 
@@ -49,6 +50,89 @@ export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
         : JSON.stringify(b.content),
       isError: (b.is_error as boolean) ?? false,
     }));
+}
+
+/**
+ * Build the ordered list of in-progress messages for a turn, interleaving any
+ * live-steered user messages (docs/140) at their true position among the
+ * assistant message groups.
+ *
+ * `replaceInProgress` deletes every `in_progress=1` row and re-inserts this
+ * list, so the assistant rows are reborn with fresh (higher) ids on every
+ * call. A steered user message persisted out-of-band (via `append`) keeps its
+ * original early id and therefore collapses up next to the turn's first user
+ * message on reload. Folding the steers into the same rebuilt batch — anchored
+ * by `afterGroupIndex` (the count of persistable groups when the steer
+ * arrived) — keeps them at the exact spot the user sent them.
+ *
+ * When `inProgress` is true the rows participate in the next delete/reinsert
+ * cycle; the final (agent_result) call passes false so the rows are written
+ * permanently before `finalizeInProgress`.
+ */
+export function buildTurnMessages(
+  groups: ChatMessageGroup[],
+  steered: SteeredMessage[],
+  opts: { inProgress: boolean },
+): PersistedMessage[] {
+  const persistable = groups.filter((g) => g.text || g.toolUse.length > 0);
+  const out: PersistedMessage[] = [];
+  const flag = opts.inProgress ? { inProgress: true as const } : {};
+
+  const emitSteersAt = (index: number) => {
+    for (const s of steered) {
+      if (s.afterGroupIndex === index) out.push({ role: "user", text: s.text, ...flag });
+    }
+  };
+
+  for (let i = 0; i < persistable.length; i++) {
+    emitSteersAt(i);
+    const g = persistable[i];
+    out.push({
+      role: "assistant",
+      text: g.text,
+      toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
+      toolResults: g.toolResults?.length ? g.toolResults : undefined,
+      subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
+      ...flag,
+    });
+  }
+  // Steers anchored at or beyond the final group count land after everything.
+  // The `>=` clamp guards against an anchor that outran the persistable groups
+  // (e.g. the anchoring group never produced persistable content).
+  for (const s of steered) {
+    if (s.afterGroupIndex >= persistable.length) out.push({ role: "user", text: s.text, ...flag });
+  }
+  return out;
+}
+
+/**
+ * Record a live-steered user message on the runner, anchored after the
+ * assistant groups that have produced persistable content so far. The anchor
+ * is what `buildTurnMessages` uses to re-interleave the message at its true
+ * transcript position on every in-progress rebuild (docs/140).
+ */
+export function recordSteeredMessage(
+  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
+  text: string,
+): void {
+  const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
+  runner.steeredMessages = [...runner.steeredMessages, { afterGroupIndex, text }];
+}
+
+/**
+ * Persist the current turn's groups + steered messages as the in-progress set.
+ * Shared by the steer handler (so a mid-turn injection is saved immediately)
+ * and the tool-result boundary in `wireAgentListeners`.
+ */
+export function persistTurnInProgress(
+  chatHistoryManager: { replaceInProgress(sessionId: string, messages: PersistedMessage[]): void },
+  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
+  sessionId: string,
+): void {
+  chatHistoryManager.replaceInProgress(
+    sessionId,
+    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, { inProgress: true }),
+  );
 }
 
 /**
@@ -440,20 +524,15 @@ export function wireAgentListeners(
         }
       }
 
-      // Persist all accumulated message groups as in-progress
+      // Persist all accumulated message groups as in-progress, interleaving any
+      // live-steered user messages at their recorded position (docs/140).
       const usageSessionId = opts.capturedSessionId;
       if (usageSessionId) {
-        const groups = runner?.chatMessageGroups ?? [];
-        const inProgressMessages = groups
-          .filter((g) => g.text || g.toolUse.length > 0)
-          .map((g) => ({
-            role: "assistant" as const,
-            text: g.text,
-            toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
-            toolResults: g.toolResults?.length ? g.toolResults : undefined,
-            subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
-            inProgress: true,
-          }));
+        const inProgressMessages = buildTurnMessages(
+          runner?.chatMessageGroups ?? [],
+          runner?.steeredMessages ?? [],
+          { inProgress: true },
+        );
         ctx.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
         if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
       }
@@ -591,15 +670,11 @@ export function wireAgentListeners(
       // streaming. Per-turn usage is no longer attached to the last group —
       // the per-turn cost/token series lives in `usage_turns` and is fetched
       // alongside chat history by the `/history` HTTP endpoint.
-      const groups = runner?.chatMessageGroups ?? [];
-      const persistableGroups = groups.filter((g) => g.text || g.toolUse.length > 0);
-      const finalMessages = persistableGroups.map((g) => ({
-        role: "assistant" as const,
-        text: g.text,
-        toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
-        toolResults: g.toolResults?.length ? g.toolResults : undefined,
-        subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
-      }));
+      const finalMessages = buildTurnMessages(
+        runner?.chatMessageGroups ?? [],
+        runner?.steeredMessages ?? [],
+        { inProgress: false },
+      );
       ctx.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);
       ctx.chatHistoryManager.finalizeInProgress(usageSessionId);
       if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
