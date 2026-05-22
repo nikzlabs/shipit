@@ -933,14 +933,24 @@ export class SessionWorker extends EventEmitter {
       this.broadcastSSE({ type: "agent_event", data: event });
     });
 
+    // Capture `agent` in the closure so the done/error handlers compare against
+    // the specific instance they were wired to. Without this guard, a late
+    // `done` from an OLD streaming process (killed by /agent/kill during the
+    // 409-retry dance in container-session-runner.ts) would null out the
+    // freshly-spawned NEW agent that already replaced `this.agent`, stranding
+    // the worker with no agent reference while the new CLI keeps running.
     agent.on("done", (exitCode: number) => {
       this.broadcastSSE({ type: "agent_done", data: { exitCode } });
-      this.agent = null;
+      if (this.agent === agent) {
+        this.agent = null;
+      }
     });
 
     agent.on("error", (err: Error) => {
       this.broadcastSSE({ type: "agent_error", data: { message: err.message } });
-      this.agent = null;
+      if (this.agent === agent) {
+        this.agent = null;
+      }
     });
 
     agent.on("auth_required", () => {

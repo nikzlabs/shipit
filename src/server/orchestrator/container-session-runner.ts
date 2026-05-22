@@ -1066,6 +1066,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "agent_event":
           if (this._agent) {
             this._agent.emit("event", data as unknown as AgentEvent);
+          } else {
+            // docs/140 diag — events arriving with no orchestrator-side agent
+            // ref typically mean a stale streaming process in the worker is
+            // still emitting after the orchestrator already finalized the
+            // turn (setAgent(null) on agent_result). Drop is correct, but the
+            // log lets us correlate with the double-spawn / double-bubble repro.
+            const eventType = (data as { type?: string }).type ?? "unknown";
+            console.warn(`[sse-drop:${this.sessionId}] agent_event type=${eventType} dropped (no _agent)`);
           }
           break;
 

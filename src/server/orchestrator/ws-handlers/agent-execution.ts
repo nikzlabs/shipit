@@ -338,6 +338,12 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     : undefined;
 
   const persistUserMessage = (sessionId: string) => {
+    // docs/140 diag — tag persist sites so a double-bubble repro shows which
+    // call paths fired. Pair this with the `[steered]` and `[sse-drop]` logs
+    // in agent-listeners.ts / container-session-runner.ts.
+    console.log(
+      `[persist-user] runAgentWithMessage session=${sessionId} isNewSession=${isNewSession} text=${JSON.stringify(userText.slice(0, 60))}`,
+    );
     ctx.chatHistoryManager.append(sessionId, {
       role: "user",
       text: userText,
