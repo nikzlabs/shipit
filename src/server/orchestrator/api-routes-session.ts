@@ -29,6 +29,7 @@ import {
   listRepos,
   addRepo,
   removeRepo,
+  reorderRepos,
   createRepoWithTemplate,
   spawnChildSession,
   listSpawnedChildren,
@@ -599,6 +600,34 @@ export async function registerSessionRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to create repo: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // PUT /api/repos/order — reorder repos in the sidebar
+  // Registered before DELETE /api/repos/:url so "order" isn't captured as a
+  // URL-encoded :url parameter (defensive — fastify routes by method, but the
+  // explicit ordering makes the intent obvious to readers).
+  app.put<{ Body: { urls: string[] } }>(
+    "/api/repos/order",
+    async (request, reply) => {
+      try {
+        const urls = request.body?.urls;
+        if (!Array.isArray(urls)) {
+          reply.code(400).send({ error: "Request body must include a 'urls' array" });
+          return;
+        }
+        const repos = reorderRepos(deps.repoStore, urls);
+        // Broadcast so other connected tabs/clients pick up the new order
+        // immediately — same pattern as add/remove.
+        deps.sseBroadcast("repo_list", { repos });
+        return { repos };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to reorder repos: ${getErrorMessage(err)}` });
       }
     },
   );
