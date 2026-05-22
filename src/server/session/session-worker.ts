@@ -567,15 +567,22 @@ export class SessionWorker extends EventEmitter {
         return reply.code(400).send({ error: "commands array is required" });
       }
 
-      if (this._installRunning) {
-        return reply.code(409).send({ error: "Install already running" });
-      }
-
-      // Check marker file — skip if install already completed
+      // Check marker file — skip if install already completed. Check before
+      // the `running` guard so a pre-install that finished + wrote the marker
+      // (warm-pool path) but hasn't yet flipped `_installRunning` to false on
+      // a racy caller still short-circuits cleanly.
       const markerDir = path.join(this.workspaceDir, ".shipit");
       const markerFile = path.join(markerDir, ".install-done");
       if (fs.existsSync(markerFile)) {
         return { skipped: true, reason: "marker" };
+      }
+
+      if (this._installRunning) {
+        // Join the in-flight install instead of failing. The caller awaits the
+        // SSE-delivered `install_done` / `install_error` event for completion,
+        // so reporting `started: true` (vs the previous 409) lets the warm-pool
+        // pre-install and the on-activation install converge on the same run.
+        return { started: true, joined: true };
       }
 
       // Return immediately — progress streams via SSE
