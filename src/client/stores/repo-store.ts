@@ -25,6 +25,14 @@ interface RepoState {
   // Async actions
   addRepo: (url: string) => Promise<RepoInfo | null>;
   removeRepo: (url: string) => Promise<boolean>;
+  /**
+   * Reorder repos in the sidebar. Applies the new order optimistically to
+   * the local list (so the drop feels instant) and persists to the server.
+   * Server then broadcasts `repo_list` over SSE — that re-sets the list
+   * from the authoritative source, which is a no-op when our optimistic
+   * update was correct.
+   */
+  reorderRepos: (urls: string[]) => Promise<boolean>;
   claimSession: (url: string, signal?: AbortSignal) => Promise<{ sessionId: string; sessionDir: string } | null>;
 }
 
@@ -124,6 +132,50 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     } catch (err) {
       console.error("[repo-store] addRepo failed:", err);
       return null;
+    }
+  },
+
+  reorderRepos: async (urls) => {
+    const prevRepos = get().repos;
+    // Optimistic update: reorder the list locally so the drop feels instant.
+    // We rebuild the array by mapping urls → existing RepoInfo (skipping any
+    // unknown urls), then appending any repos that weren't in the urls list
+    // (defensive: a concurrent add could land an extra repo locally before
+    // the drop completes).
+    const byUrl = new Map(prevRepos.map((r) => [r.url, r]));
+    const reordered: RepoInfo[] = [];
+    const seen = new Set<string>();
+    for (const u of urls) {
+      const r = byUrl.get(u);
+      if (r) {
+        reordered.push(r);
+        seen.add(u);
+      }
+    }
+    for (const r of prevRepos) {
+      if (!seen.has(r.url)) reordered.push(r);
+    }
+    set({ repos: reordered });
+
+    try {
+      const res = await fetch("/api/repos/order", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ urls }),
+      });
+      if (!res.ok) {
+        // Revert optimistic update on failure
+        set({ repos: prevRepos });
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error("[repo-store] reorderRepos failed:", err);
+      set({ repos: prevRepos });
+      return false;
     }
   },
 

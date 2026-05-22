@@ -95,4 +95,83 @@ describe("RepoStore", () => {
     store.add("https://github.com/owner/repo.git");
     expect(store.has("https://github.com/owner/repo.git")).toBe(true);
   });
+
+  describe("setOrder", () => {
+    it("orders repos by display_order when set", () => {
+      store.add("https://github.com/a/repo.git");
+      store.add("https://github.com/b/repo.git");
+      store.add("https://github.com/c/repo.git");
+      // Default order is lastUsedAt desc — c, b, a.
+      // Reverse to a, b, c.
+      store.setOrder([
+        "https://github.com/a/repo.git",
+        "https://github.com/b/repo.git",
+        "https://github.com/c/repo.git",
+      ]);
+      const list = store.list();
+      expect(list.map((r) => r.url)).toEqual([
+        "https://github.com/a/repo.git",
+        "https://github.com/b/repo.git",
+        "https://github.com/c/repo.git",
+      ]);
+    });
+
+    it("repos with NULL display_order sort after those with one", () => {
+      store.add("https://github.com/a/repo.git");
+      store.add("https://github.com/b/repo.git");
+      store.add("https://github.com/c/repo.git");
+      // Only set order for c — a and b should come after by lastUsedAt desc.
+      store.setOrder(["https://github.com/c/repo.git"]);
+      const list = store.list();
+      expect(list[0].url).toBe("https://github.com/c/repo.git");
+      // Then b (more recent) before a.
+      expect(list[1].url).toBe("https://github.com/b/repo.git");
+      expect(list[2].url).toBe("https://github.com/a/repo.git");
+    });
+
+    it("ignores unknown urls without throwing", () => {
+      store.add("https://github.com/a/repo.git");
+      store.setOrder([
+        "https://github.com/unknown/repo.git",
+        "https://github.com/a/repo.git",
+      ]);
+      expect(store.list()).toHaveLength(1);
+      expect(store.list()[0].url).toBe("https://github.com/a/repo.git");
+    });
+
+    it("can reorder repeatedly", () => {
+      store.add("https://github.com/a/repo.git");
+      store.add("https://github.com/b/repo.git");
+      store.setOrder([
+        "https://github.com/a/repo.git",
+        "https://github.com/b/repo.git",
+      ]);
+      expect(store.list().map((r) => r.url)).toEqual([
+        "https://github.com/a/repo.git",
+        "https://github.com/b/repo.git",
+      ]);
+      store.setOrder([
+        "https://github.com/b/repo.git",
+        "https://github.com/a/repo.git",
+      ]);
+      expect(store.list().map((r) => r.url)).toEqual([
+        "https://github.com/b/repo.git",
+        "https://github.com/a/repo.git",
+      ]);
+    });
+
+    it("persists order across store instances", () => {
+      store.add("https://github.com/a/repo.git");
+      store.add("https://github.com/b/repo.git");
+      store.setOrder([
+        "https://github.com/a/repo.git",
+        "https://github.com/b/repo.git",
+      ]);
+      const store2 = new RepoStore(dbManager);
+      expect(store2.list().map((r) => r.url)).toEqual([
+        "https://github.com/a/repo.git",
+        "https://github.com/b/repo.git",
+      ]);
+    });
+  });
 });

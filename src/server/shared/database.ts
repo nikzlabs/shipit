@@ -229,6 +229,13 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN agent_pinned INTEGER DEFAULT 0");
   },
+  // Migration 15: user-controllable repo ordering in the sidebar. `display_order`
+  // is NULL for repos that have never been reordered — those still sort by
+  // `last_used_at DESC` (existing behavior). Once the user drags a repo, every
+  // repo gets a non-NULL integer so the chosen order is fully determined.
+  (db) => {
+    db.exec("ALTER TABLE repos ADD COLUMN display_order INTEGER");
+  },
 ];
 
 export class DatabaseManager {

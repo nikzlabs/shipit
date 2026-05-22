@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, GithubLogoIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, DotsSixVerticalIcon, GithubLogoIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoName } from "../utils/repo-label.js";
@@ -272,6 +272,9 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
   );
 }
 
+/** Drop indicator: "before" puts the dragged repo above this one, "after" below. */
+type DropPosition = "before" | "after";
+
 /** A collapsible group of sessions for a single repo. */
 function RepoGroup({
   repo,
@@ -285,6 +288,15 @@ function RepoGroup({
   onNewSession,
   onViewAll,
   onRemoveRepo,
+  // Drag-and-drop reordering
+  draggable,
+  isBeingDragged,
+  dropIndicator,
+  onDragStart,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+  onDragEnd,
 }: {
   repo: RepoInfo;
   sessions: SessionInfo[];
@@ -297,6 +309,17 @@ function RepoGroup({
   onNewSession: () => void;
   onViewAll: () => void;
   onRemoveRepo: () => void;
+  // Drag-and-drop reordering — only enabled when there's more than one repo.
+  draggable: boolean;
+  /** True when this group is the source of the active drag. */
+  isBeingDragged: boolean;
+  /** Where to render the drop indicator line; null when this group is not a target. */
+  dropIndicator: DropPosition | null;
+  onDragStart: (e: React.DragEvent) => void;
+  onDragOver: (e: React.DragEvent) => void;
+  onDragLeave: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent) => void;
+  onDragEnd: (e: React.DragEvent) => void;
 }) {
   const repoName = parseRepoName(repo.url);
   // "Click again to confirm" idiom (see Settings.tsx). Kept local to the menu so
@@ -305,9 +328,41 @@ function RepoGroup({
   const [confirmingRemove, setConfirmingRemove] = useState(false);
 
   return (
-    <div className="flex flex-col">
+    <div
+      className={`flex flex-col relative ${isBeingDragged ? "opacity-40" : ""}`}
+      onDragOver={draggable ? onDragOver : undefined}
+      onDragLeave={draggable ? onDragLeave : undefined}
+      onDrop={draggable ? onDrop : undefined}
+    >
+      {/* Drop indicator: a horizontal line at the top or bottom of the group.
+          Rendered absolutely so it doesn't shift the layout, which would cause
+          the dragenter target to jump out from under the cursor mid-drag. */}
+      {dropIndicator === "before" && (
+        <div className="absolute left-2 right-2 -top-px h-0.5 bg-(--color-success) z-20 rounded-full pointer-events-none" />
+      )}
+      {dropIndicator === "after" && (
+        <div className="absolute left-2 right-2 -bottom-px h-0.5 bg-(--color-success) z-20 rounded-full pointer-events-none" />
+      )}
       {/* Repo header row */}
-      <div className="flex items-center gap-1 px-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10">
+      <div
+        className="flex items-center gap-1 px-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10 group/header"
+        draggable={draggable}
+        onDragStart={draggable ? onDragStart : undefined}
+        onDragEnd={draggable ? onDragEnd : undefined}
+      >
+        {/* Drag handle — visible on header hover when reordering is enabled.
+            Kept outside the collapse-toggle <button> so grabbing it doesn't
+            also fire onToggleCollapse on click. The actual drag event lives on
+            the parent header div, so this is purely a visual affordance. */}
+        {draggable && (
+          <span
+            className="shrink-0 text-(--color-text-tertiary) opacity-0 group-hover/header:opacity-100 transition-opacity cursor-grab active:cursor-grabbing -ml-1"
+            aria-hidden
+            title="Drag to reorder"
+          >
+            <DotsSixVerticalIcon size={ICON_SIZE.SM} />
+          </span>
+        )}
         <button
           onClick={onToggleCollapse}
           className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
@@ -468,6 +523,12 @@ export function SessionSidebar({
 
   const collapsedRepos = useRepoStore((s) => s.collapsedRepos);
   const toggleRepoCollapsed = useRepoStore((s) => s.toggleRepoCollapsed);
+  const reorderRepos = useRepoStore((s) => s.reorderRepos);
+
+  // Drag-and-drop reorder state. Lives at the sidebar level so all groups
+  // share a single drag context — only one group can be "over" at a time.
+  const [draggedRepoUrl, setDraggedRepoUrl] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ url: string; position: "before" | "after" } | null>(null);
 
   // Group sessions by repo URL with a STABLE sort within each group.
   // Sessions are intentionally NOT sorted by `lastUsedAt`: that field updates on every
@@ -475,7 +536,11 @@ export function SessionSidebar({
   // cause mis-clicks. Instead:
   //   - Non-merged sessions sort by `createdAt` desc (newest first) — never changes.
   //   - Merged sessions sink to the bottom, sorted by `mergedAt` desc (most recently merged first).
-  // Repos are sorted by `addedAt` desc — also stable — so the whole layout stays put.
+  // Repo order is whatever the server returns — `display_order` first, then
+  // `last_used_at` desc for repos the user has never reordered. We deliberately
+  // do NOT re-sort here: it would override the user's drag-and-drop choice and
+  // also break the optimistic UI update (which mutates the list order before
+  // the server response).
   const repoGroups = useMemo(() => {
     const grouped = new Map<string, SessionInfo[]>();
 
@@ -507,12 +572,8 @@ export function SessionSidebar({
       });
     }
 
-    // Build sorted repo list — stable order, by repo addedAt desc.
-    const repoOrder = repos.slice().sort((a, b) => {
-      return (b.addedAt ?? "").localeCompare(a.addedAt ?? "");
-    });
-
-    return repoOrder.map((repo) => ({
+    // Preserve the server-provided order — see comment block above.
+    return repos.map((repo) => ({
       repo,
       sessions: grouped.get(repo.url) ?? [],
     }));
@@ -538,6 +599,97 @@ export function SessionSidebar({
 
   // Single repo mode: check if we only have one repo
   const isSingleRepo = repos.length === 1;
+
+  // Reordering is only meaningful when there's more than one repo to swap.
+  const reorderEnabled = repos.length > 1;
+
+  const handleDragStart = useCallback(
+    (repoUrl: string) => (e: React.DragEvent) => {
+      // dataTransfer payload — we read it back on drop. Using a custom MIME
+      // type so a stray drag of plain text from the page can't accidentally
+      // look like a repo reorder.
+      e.dataTransfer.setData("application/x-shipit-repo", repoUrl);
+      e.dataTransfer.effectAllowed = "move";
+      setDraggedRepoUrl(repoUrl);
+    },
+    [],
+  );
+
+  const handleDragOver = useCallback(
+    (repoUrl: string) => (e: React.DragEvent) => {
+      // Bail out early when not in a repo-reorder drag — lets file drops etc.
+      // bubble up naturally without preventDefault muting them.
+      if (!draggedRepoUrl) return;
+      // Required so the drop actually fires; without preventDefault on
+      // dragover, the browser treats the element as a non-target and skips
+      // onDrop entirely.
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      if (repoUrl === draggedRepoUrl) {
+        // Drop on self is a no-op — don't render an indicator either.
+        setDropTarget(null);
+        return;
+      }
+      // Top half → "before", bottom half → "after". Uses the bounding rect of
+      // the currentTarget (the wrapper div on the group, not the header), so
+      // the indicator switches correctly when the user moves between the
+      // upper and lower halves of an expanded group's session list too.
+      const rect = e.currentTarget.getBoundingClientRect();
+      const midpoint = rect.top + rect.height / 2;
+      const position: "before" | "after" = e.clientY < midpoint ? "before" : "after";
+      setDropTarget((prev) =>
+        prev?.url === repoUrl && prev.position === position ? prev : { url: repoUrl, position },
+      );
+    },
+    [draggedRepoUrl],
+  );
+
+  const handleDragLeave = useCallback(
+    (repoUrl: string) => (e: React.DragEvent) => {
+      // Only clear when leaving the group entirely. Without the relatedTarget
+      // check, hovering over a child element fires dragleave and flickers the
+      // indicator off and on as the cursor moves.
+      const next = e.relatedTarget as Node | null;
+      if (next && e.currentTarget.contains(next)) return;
+      setDropTarget((prev) => (prev?.url === repoUrl ? null : prev));
+    },
+    [],
+  );
+
+  const handleDrop = useCallback(
+    (targetUrl: string) => (e: React.DragEvent) => {
+      e.preventDefault();
+      const sourceUrl = e.dataTransfer.getData("application/x-shipit-repo") || draggedRepoUrl;
+      const position = dropTarget?.position;
+      setDraggedRepoUrl(null);
+      setDropTarget(null);
+      if (!sourceUrl || sourceUrl === targetUrl || !position) return;
+
+      // Compute the new url order: remove the source from its current slot,
+      // then insert it relative to the target.
+      const current = repos.map((r) => r.url);
+      const sourceIdx = current.indexOf(sourceUrl);
+      if (sourceIdx === -1) return;
+      current.splice(sourceIdx, 1);
+      let targetIdx = current.indexOf(targetUrl);
+      if (targetIdx === -1) return;
+      if (position === "after") targetIdx += 1;
+      current.splice(targetIdx, 0, sourceUrl);
+
+      // No-op when the order didn't change (drop landed back in place).
+      const prevOrder = repos.map((r) => r.url).join("\n");
+      const nextOrder = current.join("\n");
+      if (prevOrder === nextOrder) return;
+
+      void reorderRepos(current);
+    },
+    [draggedRepoUrl, dropTarget, repos, reorderRepos],
+  );
+
+  const handleDragEnd = useCallback(() => {
+    setDraggedRepoUrl(null);
+    setDropTarget(null);
+  }, []);
 
   if (collapsed && !mobile) {
     return (
@@ -657,6 +809,14 @@ export function SessionSidebar({
               onNewSession={() => onNewSessionForRepo(repo.url)}
               onViewAll={() => handleViewAll(repo.url)}
               onRemoveRepo={() => handleRemoveRepo(repo.url)}
+              draggable={reorderEnabled}
+              isBeingDragged={draggedRepoUrl === repo.url}
+              dropIndicator={dropTarget?.url === repo.url ? dropTarget.position : null}
+              onDragStart={handleDragStart(repo.url)}
+              onDragOver={handleDragOver(repo.url)}
+              onDragLeave={handleDragLeave(repo.url)}
+              onDrop={handleDrop(repo.url)}
+              onDragEnd={handleDragEnd}
             />
           ))
         )}
