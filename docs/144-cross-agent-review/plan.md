@@ -17,15 +17,17 @@ themselves.
 
 This doc proposes keeping the primary-agent pin exactly as it is, and adding a
 **chat-driven, one-shot, read-only review** primitive that invokes the *other*
-agent against the current diff. The reviewing agent never becomes the session's
-agent. It can't edit files, can't commit, and doesn't take over the runner. Its
-output appears inline in the chat as a review message, threaded into the same
-session.
+agent against the current branch diff. The reviewing agent never becomes the
+session's agent. It can't edit files, can't commit, can't take over the runner,
+and its credentials are wiped from the container the moment the review finishes.
+Its output appears inline in the chat as a review message, threaded into the
+same session.
 
-The primitive composes with docs/125 (chat-native AI review) — that work already
-established the `submit_review_comments` MCP tool and the "ask the agent to
-review" composition path. Cross-agent review is a generalization: instead of
-spawning the *primary* agent as the reviewer, spawn the *other* agent.
+The primitive composes with docs/125 (chat-native AI review) — same review
+modal, same chat history surface — but uses a **separate** MCP write-back tool
+(`submit_diff_review`) because docs/125's `submit_review_comments` is allow-
+listed per single open file via `runner.activeReviewFilePath`, and cross-agent
+review writes against a *set* of files.
 
 ## Motivation
 
@@ -45,197 +47,498 @@ is what good engineering teams do informally every day.
   guarantees docs/138 was built to provide. Pin one. The other is a tool, not a
   co-driver.
 - **Cross-agent editing.** The reviewing agent is read-only. If the user wants
-  the review's suggestions applied, the *primary* agent applies them in a normal
-  follow-up turn. This keeps every file write attributed to the pinned agent.
+  the review's suggestions applied, the *primary* agent applies them in a
+  normal follow-up turn. This keeps every file write attributed to the pinned
+  agent.
 - **Multi-agent orchestration / "agent A then agent B then agent A".** Out of
-  scope. The primitive is a single review pass, model-invocable, single result.
-- **Replacing the existing intra-agent review (docs/125).** That stays. When the
-  user wants the *primary* to review (cheaper, same context), they still get it.
-  Cross-agent is opt-in for when they want a different model's eyes.
+  scope. The primitive is a single review pass, model-invocable, single
+  result.
+- **Concurrent execution of primary and reviewer.** The worker has one agent
+  slot (`session-worker.ts` 409s a second `/agent/start`); doubling that slot
+  is more work than this feature is worth in v1. Reviews queue.
+- **Replacing the existing intra-agent review (docs/125).** That stays. When
+  the user wants the *primary* to review (cheaper, same context), they still
+  get it. Cross-agent is opt-in for when they want a different model's eyes.
 
 ## Current architectural constraints
 
-The constraints we have to work with:
+Confirmed by reading the code, not extrapolated:
 
 - **Per-session credential isolation (docs/138).** A Claude session's container
   never has `.codex` on disk, and a Codex session never has `.claude`.
   `provisionAgentCredentials()` (`session-credentials.ts`) is *write-once* on
   first turn, copying only the pinned agent's subtree.
-- **Single agent per runner.** `ContainerSessionRunner` has one `_agentId` and
-  one `_agent` field; `ProxyAgentProcess` is identified by a single `agentId`.
-  The session worker runs one agent at a time.
+- **One agent process per worker.** `session-worker.ts` returns 409 on a second
+  `/agent/start` while `this.agent` is non-null. The orchestrator must
+  serialize.
+- **One agent slot per runner, SSE has no agent identifier.**
+  `ContainerSessionRunner` has a single `_agent: ProxyAgentProcess | null` and
+  the SSE event handler (`handleSSEEvent`) demuxes every `agent_event`/`done`/
+  `error`/`auth_required`/`log` straight onto that one field. Swapping
+  `_agent` mid-stream or running two would silently route reviewer events into
+  the primary's accumulators (`accumulatedText`, `chatMessageGroups`,
+  `turnSummary`).
 - **`set_agent` is locked after pinning.** `index.ts` rejects a switch to a
   different agent once `agentPinned` is set. This stays.
 - **First-turn agent resolution.** The agent is chosen from
-  `ctx.activeAgentId()` and the runner's `_agentId` is set then; subsequent
-  turns always use the pinned agent.
+  `ctx.activeAgentId()` and `runner._agentId` + `agentPinned` are set then;
+  subsequent turns always use the pinned agent.
 
 ## Design
 
-The whole feature decomposes into three orthogonal changes:
+Four orthogonal pieces. The first three are load-bearing; the fourth is UX.
 
-### 1. Provision *all authed* agents' credentials, not just the pinned one
+### 1. Lazy, scoped, post-review-wiped cross-agent credentials
 
-`provisionAgentCredentials()` currently copies only `AGENT_CREDENTIAL_PATHS[agentId]`
-into the session's per-session credentials dir. Change it to also copy *every
-other agent's* subtree the user has authed with — gated on
-`AgentRegistry.getAuthStatus(agentId)` reporting an authenticated state for
-that other agent.
+The previous draft of this doc proposed eagerly provisioning *all* authed
+agents' subtrees at first turn. That's a meaningful security regression for
+exactly the dogfood/power-user population most likely to have valuable creds:
+under docs/138 today, a supply-chain compromise of the Claude CLI inside a
+container can only exfiltrate `.claude`; eager provisioning would also expose
+`.codex` in every session where the user had both authed, regardless of
+whether they ever asked for a cross-agent review. **Doubling the blast radius
+unconditionally is not acceptable for a feature most users will never invoke.**
 
-Concretely:
+The replacement is lazy, scoped, and reversible:
 
-- The pin still happens (docs/138 stays). The pinned agent's subtree lands as
-  before.
-- For each other registered agent that has an authed credential at the source
-  root, copy its subtree too. (So a Claude-primary session with Codex authed
-  ends up with both `.claude/` and `.codex/` in `/credentials`; a Claude-only
-  user is unchanged from today.)
-- This is *additive* — it only relaxes docs/138's guarantee in the case where
-  the user has explicitly authed both agents and a cross-agent review is
-  therefore possible at all. The user-facing isolation invariant becomes:
-  *"a session container only ever holds credentials for agents the user has
-  themselves logged into,"* which is what they'd reasonably expect.
-- **Activation-time top-up.** Today provisioning is purely write-once at first
-  turn, so a user who authes the second agent *after* a session has started
-  would never see the new creds land. Add a cheap top-up step on session
-  activation that re-runs the *cross-agent* portion of provisioning (never
-  re-touches the pinned agent's subtree — the CLI writes to it in place and we
-  don't want to clobber). This is a small extension of the existing per-turn
-  token-sync code path in `session-credentials.ts`.
+- **Lazy.** The other agent's subtree is provisioned *only* the first time the
+  user invokes `/review-with <agent>` in a given session. Pre-review,
+  per-session credential isolation holds exactly as docs/138 specifies.
+- **Just-in-time, just-before-spawn.** `runCrossAgentReview` calls a new
+  `provisionReviewerCredentials(credentialsRoot, sessionId, reviewerAgentId)`
+  synchronously before the worker `/agent/start`. The function copies *only*
+  `AGENT_CREDENTIAL_PATHS[reviewerAgentId]` plus a refresh of the token-sync
+  files; it must never touch `AGENT_CREDENTIAL_PATHS[pinnedAgentId]` (would
+  clobber the CLI's in-place writes per docs/138 §"write-once").
+- **Wiped on review completion.** The companion
+  `removeReviewerCredentials(credentialsRoot, sessionId, reviewerAgentId)` runs
+  in a `finally` after the review ends (success, failure, crash, or user
+  cancel). It deletes only the reviewer's subtree from the per-session dir.
+  The pinned agent's subtree is untouched.
+- **Cumulative reviews skip re-copy if creds were re-provisioned since the
+  last wipe** (it costs nothing to re-copy, but a guard avoids spurious
+  filesystem churn during a queued sequence of reviews).
+- **The activation-time top-up from the previous draft is deleted.** It's
+  obsolete under lazy provisioning, and was the source of the activation /
+  first-turn race the previous reviewer flagged.
+- **Wipe is best-effort.** The reviewer CLI may still be flushing writes to
+  its subtree (e.g. an exit-time token refresh) at the instant we `rm -rf`
+  it. That's tolerable: any interrupted write is the reviewer's *own*
+  transient state, and the next `provisionReviewerCredentials` re-copies
+  cleanly from the orchestrator's source-of-truth. The pinned agent's
+  subtree is never touched by either path.
+- **Sign-out propagation.** When the user signs out of an agent
+  (`AgentRegistry` emits a sign-out for `agentX`), the orchestrator runs
+  `removeReviewerCredentials(root, sid, agentX)` for every session where
+  `agentX` is *not* the pinned agent — sweeping any in-flight cross-agent
+  creds that would otherwise outlive the user's authorization. Cheap loop;
+  no-op for sessions that never invoked cross-agent review.
+- **Codex review MCP config provisioning.** For a Codex reviewer in a
+  Claude-pinned session, the per-session `.codex/config.toml` needs the
+  `[mcp_servers.shipit-review]` block (same registration docs/125 wrote
+  via `ensureCodexReviewMcpConfig`) so the reviewer can call
+  `submit_diff_review`. Under docs/138's symlink scheme `~/.codex/` in the
+  container resolves into the per-session credentials subtree, so the
+  append lands inside the wipe scope: the block is added in the same step
+  as `provisionReviewerCredentials` and is removed along with the rest of
+  `.codex/` on review completion — no special cleanup path needed.
 
-### 2. A new "review job" primitive in the orchestrator
+Net guarantee: docs/138's invariant is preserved word-for-word *except* during
+the lifetime of an in-flight `/review-with` invocation, and the relaxation is
+gated on an explicit user action.
 
-The existing `runAgentWithMessage` flow ties an agent invocation to *the
-session's pinned agent*. Cross-agent review needs a sibling primitive that
-takes the target agent as a parameter and runs a constrained, short-lived
-invocation against the current diff.
+### 2. ReviewerSession: a separate accumulator alongside the primary runner
 
-Shape:
+The runner cannot multiplex two agent processes onto its single `_agent` field
+and single accumulator set. The design instead introduces a `ReviewerSession`
+that lives on the runner but owns its own state and its own listeners:
 
-- **Endpoint:** WS message `start_review_with` (or a slash command — see §3),
-  parameters `{ reviewerAgentId: AgentId, scope?: "branch" | "uncommitted" }`.
-- **Server entry point:** a new function in `services/reviews.ts` (or alongside
-  it) — `runCrossAgentReview({ sessionId, reviewerAgentId, scope })` — that:
-  1. Verifies `reviewerAgentId` is registered, authed, and **different from**
-     the session's pinned agent. Reject otherwise with a typed error message
-     that the UI can render gracefully ("Codex is not signed in").
-  2. Resolves the diff text (reuse the existing diff service that powers the
-     diff panel — no new git plumbing needed).
-  3. Spawns the reviewer through the same `ProxyAgentProcess` machinery as the
-     primary, but with `agentId = reviewerAgentId`, a constrained system prompt
-     ("review-only: you may not edit files, you may not commit; submit findings
-     via `submit_review_comments`"), and the diff pre-loaded into the prompt.
-  4. Wires the reviewer's events into the chat history as a dedicated
-     **review message group** (distinct visual treatment so the user can see
-     "this turn came from Codex, not from your primary agent"). The grouping
-     follows the same tool-result boundary rules as normal turns
-     (`agent-listeners.ts`).
-  5. Persists the resulting comments through the existing
-     `submit_review_comments` path (docs/125) so the unified review surface
-     (docs/112) shows them like any other AI review.
-  6. **Does not** trigger the post-turn flow (no auto-commit, no auto-push, no
-     PR card update). Cross-agent review is purely advisory.
-- **Concurrency:** the reviewer runs *alongside* the primary if the primary is
-  mid-turn? Or is it queued? Recommendation: queue it. The session worker runs
-  one agent at a time today (single PTY, single agent process), so the simplest
-  correct behavior is "wait until the primary's turn finishes, then run the
-  review." Surface the queued state in the chat as a pending bubble.
+```
+ContainerSessionRunner
+  _agent: ProxyAgentProcess | null            // primary, unchanged
+  _agentId: AgentId                            // pinned, unchanged
+  reviewer: ReviewerSession | null             // NEW
+```
 
-### 3. UX entry points
+`ReviewerSession` carries:
 
-Two surfaces, both following CLAUDE.md §5 (chat is the input, agent is the
-actor):
+- `reviewerAgentId: AgentId` — the *other* agent.
+- `proxyAgent: ProxyAgentProcess` — distinct instance, constructed with
+  `reviewerAgentId`.
+- `accumulator: ReviewerAccumulator` — separate `accumulatedText`,
+  `messageGroups`, comments staging. Never written into the runner's primary
+  accumulators.
+- `costRecorder` — records usage against `reviewerAgentId`.
+- `cancel(): Promise<void>` — calls `/agent/interrupt` and resolves
+  `runner.reviewer = null`.
 
-- **Primary: chat-driven.** The user types `/review-with codex` (or
-  `/review-with claude`) — a new slash command in the registry
-  (docs/132). The composer expands this into a `start_review_with` WS
-  message. This is the on-ramp the principles favor: no new button surface, no
-  category mistake (§5).
-- **Secondary: contextual shortcut.** The existing "Ask agent to review" button
-  in the file-preview modal (docs/125) grows a small overflow / split-button
-  affordance — e.g. a chevron that opens "Review with Claude" / "Review with
-  Codex" when both are authed. Single button (no chevron, no menu) when only
-  the primary is authed — i.e. exactly today's behavior. The shortcut composes
-  the same WS message; the button is not a separate action surface, just an
-  alternate composition path for the modal's draft state (the same reasoning
-  docs/125 used to keep that button at all).
+**Event demux: swap `runner._agent` for the duration.** The orchestrator's
+existing SSE handler dispatches on `this._agent.emit(...)` — there is no
+agent identifier on the SSE event itself, and threading one through would
+mean a worker protocol change plus a message-shape change. Instead, exploit
+strict serialization (§3): while a reviewer is running, *replace* the
+runner's `_agent` slot with the reviewer's `ProxyAgentProcess`, restore the
+primary's slot on cleanup. Concretely:
 
-The agent picker / model selector stays as-is — it's about the *pinned*
-session agent, which is still write-once after turn 1.
+- `runCrossAgentReview` saves `prevPrimary = runner._agent` (almost always
+  `null`, since the queue ensures the primary is idle first), assigns
+  `runner._agent = reviewer.proxyAgent`, runs the invocation, awaits
+  completion **and SSE drain**, then restores `runner._agent = prevPrimary`
+  inside the `finally`.
+- A companion field `runner.activeInvocation: "primary" | "reviewer" | null`
+  is set/cleared at the same boundaries. It exists for UI (the queued-state
+  bubble, disabling the composer's "send" affordance during reviewer
+  execution) and for the dispose guard (§3) — *not* for SSE routing, which
+  is naturally handled by the swap.
+- **SSE drain is awaited in cleanup.** The SSE stream is owned by the
+  *runner* (`ContainerSessionRunner.handleSSEEvent`), not the proxy —
+  `ProxyAgentProcess` is a thin event-relay with no SSE awareness. Late
+  reviewer events (`agent_log`, `auth_required` retries arriving after
+  `agent_done`) therefore drain through the runner's SSE handler, not the
+  proxy. `runCrossAgentReview` awaits the reviewer proxy's terminal event
+  AND a runner-level drain (a new `runner.drainSse(): Promise<void>` that
+  resolves once the SSE handler has no in-flight events for a short
+  quiescence window) before swapping `_agent` back and running the wipe.
+  Without the drain, a late reviewer event would arrive after the swap and
+  emit on the restored primary proxy, corrupting primary accumulators —
+  exactly the bug round 2 of review caught. The drain hook is load-bearing.
 
-### 4. Usage attribution
+The worker stays oblivious — it just runs one agent at a time, exactly as
+today.
 
-Review turns burn the user's *reviewer* agent quota, not the primary's. The
-existing `UsageManager` keys cost by agent already; the new path just needs to
-make sure it records cost against `reviewerAgentId`, not the runner's pinned
-`agentId`. Surface the breakdown in the existing usage UI so it's clear which
-agent spent what.
+**Message-group persistence.** `ReviewerAccumulator` flushes into
+`ChatHistoryManager` as message groups with `kind: "cross-agent-review"` and
+`reviewerAgentId`. They are appended *after* whatever the most recent
+primary group was when the review completed. UI renders them with a header
+("Codex review" / "Claude review") and a distinct chrome so the user can never
+mistake reviewer output for primary output.
+
+**No post-turn side effects.** `runCrossAgentReview` never calls
+`postTurnCommit`, `scheduleAutoPush`, or `emitPrLifecycleCard`. The pin-skip
+rule is explicit: the reviewer code path *never* touches
+`session.agent_pinned` or `session.agent_id`. The pinning logic is structurally
+in `runAgentWithMessage` (which the reviewer path does not call), so the
+guarantee falls out of the call-graph rather than a runtime check.
+
+### 3. Strict-sequential queue
+
+The runner gains a `reviewQueue: ReviewerJob[]`. Ordering is FIFO across
+primary turns and reviewer jobs both:
+
+| Event | Behavior |
+|---|---|
+| Primary idle, user runs `/review-with X` | Reviewer starts immediately. |
+| Primary mid-turn, user runs `/review-with X` | Reviewer job enqueued. UI shows a pending bubble: "Codex review queued — waiting for current turn." |
+| Reviewer mid-execution, user sends a primary message | Primary message enters the existing `runner.messageQueue`. Drained after the reviewer finishes. |
+| Reviewer mid-execution, user runs another `/review-with X` | Second reviewer job enqueued behind the first. |
+| User cancels (existing stop button) | `/agent/interrupt` to whichever invocation is active. If `activeInvocation === "reviewer"`, the cleanup of §1 still fires. Queued reviewer jobs are dropped on user-issued cancel-all. |
+| Reviewer crashes (worker error, OOM, timeout) | `runCrossAgentReview` catches, surfaces an error message in chat with `kind: "cross-agent-review-error"`, runs cleanup, processes the next queued job. |
+| Reviewer takes a long time | Soft cap of **N minutes wall-clock** and **M tokens output** (initial values: 5 min, 8K output tokens; tunable). Hitting either truncates with a system note ("Review cut short at 8K tokens"). The hard reasoning: a runaway reviewer prompt could otherwise read the entire repo to "understand the diff" and burn the user's quota with no ceiling. |
+
+Queue ownership lives on the runner (not in a global manager). The dispose
+guard must protect reviewer invocations from idle eviction the same way it
+protects primary turns: change the guard from `_isRunning && !force` to
+`(activeInvocation !== null || reviewQueue.length > 0) && !force`. Without
+this, idle eviction (60s grace, see container-session-runner) could kill a
+container mid-reviewer-execution — credentials un-wiped, reviewer output
+lost, queued primary messages lost. Queued reviews and the active invocation
+both pin the runner alive; on `{ force: true }` disposal (archive, full
+reset) the queue is dropped and the credential wipe still runs in `finally`.
+
+### 4. Tool-allowlist enforcement of read-only
+
+System prompt instructions are necessary but not sufficient. The reviewer's
+agent process is spawned with an *explicit per-spawn allowlist*. This
+parameter **does not exist today** — `AgentCapabilities.toolNames` is a
+static capability advertisement (the full set of tools the CLI exposes), and
+`AgentRunParams` has no `allowedTools` field. The feature requires plumbing
+a new optional `allowedTools?: string[]` parameter end-to-end:
+
+1. `AgentRunParams.allowedTools?: string[]` on the type.
+2. `ProxyAgentProcess.run` forwards it in the `/agent/start` body.
+3. The worker passes it to each adapter's `.run()`.
+4. Each adapter translates it to the CLI's flag (Claude:
+   `--allowedTools`; Codex: the equivalent, confirm at implementation
+   time).
+5. **Worker-side enforcement for *our* MCP tools.** The CLI's
+   `--allowedTools` flag governs the agent's built-in tools. The orchestrator
+   additionally enforces, on the `/review-submit-diff` route (§5), that the
+   caller's runner is in the reviewer-active state. The symmetric guard on
+   `/review-submit` (docs/125) hard-rejects calls from a reviewer
+   invocation. Belt and suspenders.
+
+The read-only subset per agent (exact tool names verified against each
+adapter's current capability list at implementation time):
+
+- **Claude reviewer:** `Read`, `Glob`, `Grep`, plus `submit_diff_review`. No
+  `Bash` for v1 (the diff is in the prompt; if a reviewer needs `git log` of
+  a specific file, that's a v2 enhancement). No `Edit`, no `Write`, no
+  `Task`. Enforced by `claude --allowedTools <subset>` at spawn — a
+  real allowlist primitive in the CLI today.
+
+**Codex asymmetry — load-bearing for v1 scoping.** Codex's CLI (`codex
+app-server`) has **no per-spawn tool-restriction flag** today. The
+worker-side MCP guard rejects ShipIt's *own* MCP tools
+(`submit_review_comments` from a reviewer; `submit_diff_review` from a
+primary) but does NOT prevent Codex's built-in `file_write` / `file_edit` /
+`shell` tools from firing — those are CLI built-ins, not MCP. For Codex
+*as the reviewer*, the read-only guarantee therefore degrades to:
+
+- **Strong system prompt** that explicitly forbids edits, commits, and
+  shell-based mutations.
+- **Worker MCP guard** on the two ShipIt tools (intact).
+- **No CLI-level write-tool block.** A misbehaving Codex reviewer *could*
+  call `file_edit` and the worker would not prevent it.
+
+This is a real asymmetry, not a wording gap, and it forces a product
+decision (see Open question 1). The doc does not silently ship "read-only"
+with a hole in it for Codex; either we accept prompt-only enforcement for
+v1 with the asymmetry documented in user-facing copy ("Codex review is
+advisory — Codex may, against instructions, attempt to edit files; commits
+are still blocked by the no-post-turn-flow rule"), or we defer
+Codex-as-reviewer to a follow-up.
+
+The "no sub-subagents from a reviewer" rule is enforced by the allowlist
+itself (omitting `Task` for Claude). For Codex, `spawn_agent` falls into the
+same prompt-only bucket.
+
+### 5. `submit_diff_review`: a sibling, not a reuse, of `submit_review_comments`
+
+Docs/125's `submit_review_comments` MCP tool gates the write-back on
+`runner.activeReviewFilePath` — a single file path set by the modal opening
+that file. Cross-agent review writes against a *set* of files (the diff), so
+reusing that tool would either require generalizing the allow-list to a set
+(touching docs/125's WS-reconnect-safe allow-list lifecycle) or accepting an
+allow-list bypass for cross-agent.
+
+Add a parallel tool *and* a parallel orchestrator route — concretely sibling,
+not dispatch-on-tool-name on one route:
+
+- **MCP tool name:** `submit_diff_review`.
+- **Registration:** added to the existing `mcp-review-bridge.ts` as a second
+  exposed tool alongside `submit_review_comments`. Same Unix socket / HTTP
+  bridge plumbing, same lifecycle. Both Claude (per-run `mcpConfigPath`) and
+  Codex (`ensureCodexReviewMcpConfig` appending to `~/.codex/config.toml`)
+  pick up the new tool with no protocol change.
+- **Payload:** `{ comments: [{ filePath, anchor, body, severity }, ...] }`.
+  Anchors follow docs/125's anchoring rules.
+- **Orchestrator route:** `POST /review-submit-diff` (sibling of docs/125's
+  `/review-submit`). Bridge forwards to worker which forwards to
+  orchestrator, mirroring docs/125's three-hop relay exactly.
+- **Authorization:** valid only when `runner.activeInvocation === "reviewer"`
+  and the caller's `agentId` matches `runner.reviewer.reviewerAgentId`. Both
+  fields are server-side; the agent cannot spoof them. The docs/125
+  `/review-submit` route adds a symmetric guard rejecting calls when
+  `activeInvocation === "reviewer"`.
+- **Persisted comments:** `source: "ai"`, `reviewerAgentId` recorded on each
+  comment so the unified review surface (docs/112) can attribute them.
+
+Two routes, two tools, no shared mutable state — keeps docs/125's
+WS-reconnect-safe allow-list lifecycle untouched.
+
+### 6. UX: slash command only
+
+`/review-with <agent>` is the single entry point for v1.
+
+- **Slash command registry** (docs/132) gains `/review-with`. Tab completion
+  enumerates agents that are (a) authed and (b) not the pinned agent. If no
+  agent qualifies, the command is hidden.
+- **AgentRegistry refresh.** The registry caches per-agent auth state from
+  boot. Before offering `/review-with` in the completion list, the composer
+  triggers `AgentRegistry.refreshAuth(otherAgentId)` (or relies on a periodic
+  refresh that already exists — verify). Stale "Codex is signed in" claims
+  that resolve to a 401 at spawn time should be a rare race, not a routine
+  failure.
+- **No split-button in the file-preview modal.** The previous draft proposed
+  one; the reviewer correctly flagged it as a creeping per-action agent
+  picker that quietly duplicates the session-level pin's purpose, and the
+  docs/125 carve-out for that button rested on draft-state composition which
+  doesn't apply here. Removed.
+- **Turn-0 behavior.** `/review-with` is rejected before the session is
+  pinned. There is no diff to review and no coherent primary identity for the
+  reviewer's output to render against. Naturally surfaced by the completion
+  filter (a session that hasn't pinned has no other-agent-to-pin-against
+  yet), but the server also enforces it.
+
+### 7. Default review scope: branch diff vs. base
+
+The previous draft suggested defaulting to uncommitted + most-recent commit,
+"matching docs/125." That comparison is wrong: docs/125 reviews a single open
+file. Cross-agent review's value proposition is "second opinion on the work
+I'm about to ship," which is the branch diff against its base. Default to
+that.
+
+- **Default:** `scope: "branch"` — diff of `HEAD` vs. `mergeBase(HEAD, baseBranch)`.
+- **Opt-in:** `/review-with codex uncommitted` for working-copy-only review.
+- **Token cap.** Diffs larger than the per-review token cap (§3) are
+  truncated with a note. The reviewer gets the first N tokens of the diff
+  plus a list of omitted file paths. (Future work: chunked review.)
+
+## Usage attribution
+
+`UsageManager` already keys cost by agent. Cross-agent review records cost
+against `reviewerAgentId`, not the runner's pinned `agentId`. The existing
+usage UI must surface the breakdown so the user can see which agent spent
+what. No new column — just a separate row per agent in the existing
+per-session usage view.
+
+## Local / dogfood mode
+
+Docs/138 notes that in `RUNTIME_MODE=local`, credential provisioning is a
+no-op because the agent runs in-process and reads credentials straight from
+the host. Cross-agent review in local mode therefore inherits both agents'
+creds for free; the lazy-provisioning and wipe steps short-circuit
+(`provisionReviewerCredentials` becomes a no-op in local mode, mirroring
+docs/138's existing pattern). The rest of the design — queueing, tool
+allowlist, `submit_diff_review` — applies identically. Document this in the
+shipped plan.
 
 ## Touchpoints
 
-- **`session-credentials.ts`** — `provisionAgentCredentials()` grows a
-  cross-agent copy pass (gated on `AgentRegistry` auth state for each other
-  agent). New `topUpCrossAgentCredentials()` called on session activation when
-  the cross-agent auth state has changed since the last provision.
-- **`AgentRegistry`** — already exposes per-agent auth state; no API change
-  needed, but the new code consumes it from inside the orchestrator's
-  credential-provisioning path.
-- **New `services/cross-agent-review.ts`** (or extend `services/reviews.ts`) —
-  `runCrossAgentReview()`. Composes diff + reviewer agent + constrained system
-  prompt; spawns via `ProxyAgentProcess`; wires events into chat history;
-  pipes comments through `submit_review_comments`.
+- **`session-credentials.ts`** — add `provisionReviewerCredentials()` and
+  `removeReviewerCredentials()` (lazy + scoped + reversible per §1). Delete
+  the activation-time top-up from the previous draft.
+- **`AgentRegistry`** — confirm `refreshAuth(agentId)` exists; if it doesn't,
+  add it. The slash-command completion path calls it before listing.
+  Additionally, `AgentRegistry` becomes an `EventEmitter` (it isn't today —
+  this is a new public API) and emits `sign-out` (`agentId`) from the
+  existing sign-out HTTP routes. `services/cross-agent-review.ts` subscribes
+  to that event for the sign-out-propagation sweep (§1).
+- **`AgentRunParams` / `ProxyAgentProcess` / worker `/agent/start` / each
+  adapter** — add an optional `allowedTools?: string[]` parameter and thread
+  it end-to-end into the CLI spawn args (Claude `--allowedTools`, Codex
+  equivalent). This is **new plumbing**, not a reuse of existing capability
+  data — `AgentCapabilities.toolNames` is a static advertisement, not a
+  per-spawn restriction. The worker and orchestrator additionally enforce
+  ShipIt's own MCP tools (`submit_diff_review` vs `submit_review_comments`)
+  via the runner-state checks in §5.
+- **`ContainerSessionRunner.drainSse(): Promise<void>`** — new method on the
+  runner (NOT on `ProxyAgentProcess`; the SSE stream is owned by the runner,
+  the proxy is a thin event-relay). Resolves once the SSE handler has had a
+  short quiescence window with no in-flight events. `runCrossAgentReview`
+  awaits this before swapping `runner._agent` back. Without it, late SSE
+  events emit on the restored primary proxy and corrupt primary
+  accumulators (§2).
+- **New `services/cross-agent-review.ts`** — `runCrossAgentReview()`.
+  Provisions creds; spawns reviewer via `ProxyAgentProcess`; constructs
+  `ReviewerSession`; swaps `runner._agent` for the duration; wires events
+  into the reviewer accumulator; awaits SSE drain; restores `_agent`; wipes
+  creds in `finally`. Does not touch the primary turn or pinning.
+- **`ContainerSessionRunner`** — adds `reviewer: ReviewerSession | null`,
+  `activeInvocation: "primary" | "reviewer" | null`, and `reviewQueue`.
+  Changes the dispose guard from `_isRunning && !force` to
+  `(activeInvocation !== null || reviewQueue.length > 0) && !force` so
+  reviewer-only execution and queued reviews pin the runner alive against
+  idle eviction (§3).
 - **New WS message `start_review_with`** — `ws-client-messages.ts` +
-  `ws-server-messages.ts` (for the result events) + a handler in
-  `ws-handlers/` (likely a new `cross-agent-review.ts` to keep it isolated
-  from the primary `send-message.ts` path). See the `add-endpoint` skill.
-- **Slash command registry** — register `/review-with`. Tab completion offers
-  only currently-authed-and-different agent ids.
-- **`AgentPicker` / file-preview modal** — split-button affordance when the
-  user has two authed agents; otherwise unchanged.
-- **`UsageManager`** — confirm cost recording handles a `reviewerAgentId`
-  distinct from the runner's `agentId`. Likely a small parameter plumbing
+  `ws-server-messages.ts` (queued/started/done/error events) + handler in
+  `ws-handlers/cross-agent-review.ts`. See the `add-endpoint` skill.
+- **Slash command registry** — register `/review-with`. Completion filters by
+  auth state + not-pinned-agent + session-is-pinned.
+- **New MCP tool `submit_diff_review`** + new orchestrator route
+  **`POST /review-submit-diff`** — sibling tool/route to docs/125's
+  `submit_review_comments` / `/review-submit`. Registered in the existing
+  `mcp-review-bridge.ts` (single bridge, two exposed tools). Distinct
+  authorization rule: requires `runner.activeInvocation === "reviewer"`.
+  The docs/125 route gains a symmetric guard rejecting reviewer-source
+  calls. No shared mutable state with docs/125's allow-list lifecycle.
+- **`UsageManager`** — confirm cost recording accepts a `reviewerAgentId`
+  parameter distinct from the runner's `agentId`. Likely a small plumbing
   change.
-- **Chat history rendering** — a new message-group "kind" for cross-agent
-  review so it's visually distinct ("Codex review" header on a Claude-primary
-  session). The existing tool-result boundary logic (`agent-listeners.ts`) is
-  the right place to anchor the group.
-- **Integration tests** — `integration_tests/cross-agent-review.test.ts` with
-  fakes for both agents and a scripted diff; assert read-only enforcement
-  (the reviewer cannot trigger `submit_file_edit` or commit), correct chat
-  history grouping, correct usage attribution, no post-turn side effects.
+- **Chat history rendering** — new message-group kinds
+  `cross-agent-review` and `cross-agent-review-error`; queued-state bubble
+  while a job is pending in the queue.
+- **Integration tests** — `integration_tests/cross-agent-review.test.ts`
+  covering:
+  - Tool allowlist enforcement (reviewer spawned with `--allowedTools`
+    excluding `Edit`/`Write`, and worker MCP guard rejects
+    `submit_review_comments` from a reviewer invocation).
+  - Authorization: a reviewer invocation cannot call
+    `submit_review_comments`; a primary invocation cannot call
+    `submit_diff_review`.
+  - Queue ordering: primary mid-turn + reviewer-enqueue + primary-enqueue
+    drains in FIFO.
+  - Lazy provisioning + wipe: `.codex` does not exist in the per-session
+    credentials dir before or after a `/review-with codex` run on a
+    Claude-pinned session.
+  - SSE-drain race: a late `agent_log` arriving after `agent_done` is
+    consumed by the reviewer accumulator, not the (restored) primary's.
+  - Crash path: reviewer process killed mid-review → error message in chat,
+    `reviewer` is `null`, queue continues, creds wiped.
+  - Cancel path: user-issued stop while reviewer is active → interrupt,
+    creds wiped, queue drained or cancelled per UX decision.
+  - Dispose guard: idle eviction does not kill a container with a queued or
+    active reviewer.
+  - Sign-out propagation: signing out of the reviewer agent wipes its
+    subtree from sessions where it was provisioned for review.
+  - Cost cap: synthetic 10K-token reviewer output truncated at the cap, note
+    appended to the chat group.
+  - No-post-turn-side-effects: no auto-commit, no auto-push, no PR card.
+  - Local mode: review runs, provisioning helpers no-op.
+
+## Security regression: named explicitly
+
+For users who have authenticated *both* Claude and Codex, this feature
+introduces windows during which a session container holds both agents'
+credentials. The window is bounded — opened by `provisionReviewerCredentials`
+immediately before reviewer spawn, closed by `removeReviewerCredentials` in
+`finally` — but it exists.
+
+Specifically: during that window, a compromise of *either* agent CLI's
+process inside the container could exfiltrate *both* agents' tokens. Without
+this feature, that compromise can exfiltrate one. The blast radius of a
+single agent-CLI supply-chain compromise *doubles* for dual-authed users
+during the review window.
+
+The mitigation is the lazy + scoped + wiped design itself — the window
+exists only on explicit user action and only for the duration of one review.
+Users who never invoke `/review-with` see zero change from docs/138. Users
+who do are making an informed tradeoff for the feature's value.
+
+A fuller mitigation (separating credential storage per agent into distinct
+on-disk locations the reviewer cannot read even while running, e.g. via an
+egress broker) is the same broker work docs/138 explicitly punted as "out of
+scope" — that decision still holds and is not re-opened here.
 
 ## Open questions
 
-- **Constrained system prompt vs. tool allowlist.** Should "review-only" be
-  enforced by prompting alone, or by stripping write tools from the reviewer's
-  allowed tool list at spawn time? Allowlist is the safer answer — prompt
-  enforcement is a strong norm but not a guarantee. Both agents' adapters
-  already support tool restriction; verify which subset is the right one to
-  expose to a reviewer.
-- **Branch scope vs. uncommitted scope.** Default to reviewing the uncommitted
-  + most-recent-commit diff (matches what the user just did and is what
-  docs/125 reviews today), with `scope: "branch"` for a full branch review on
-  request.
-- **What happens if the user cross-agent-reviews on turn 0** (before the
-  primary pin)? Easiest answer: reject until the session is pinned, because
-  before then there isn't a diff to review and the chat history doesn't yet
-  have a coherent agent identity to render the result against. Verify this
-  matches the UI's natural flow — likely yes, since the entry points only
-  appear once there's something to review.
-- **Should the reviewer's MCP tool surface be the same `submit_review_comments`
-  bridge docs/125 built, or a separate one?** Recommendation: reuse it. Same
-  payload shape, same allow-listing logic, same write-back path through the
-  orchestrator. The reviewer agent just doesn't get write tools.
-- **Auth-state drift during a session.** If the user *signs out* of the
-  reviewer agent mid-session, do we leave the now-orphaned credentials in the
-  per-session dir until the container is recycled? Probably yes — the
-  activation-time top-up is the natural cleanup point and forcing a mid-session
-  scrub buys little. Document it as a known limitation in line with docs/138's
-  similar `.gitconfig` token-freshness caveat.
+These are real product decisions that should not be punted to
+implementation.
+
+1. **Codex-as-reviewer in v1: ship with prompt-only enforcement, or
+   defer?** Codex's CLI has no `--allowedTools` equivalent today (§4).
+   Three options:
+   - **(a) Ship symmetric, accept asymmetric enforcement.** Codex can
+     review Claude-pinned sessions in v1; the read-only guarantee for a
+     Codex reviewer is prompt + worker-MCP-guard only (no CLI-level block
+     on `file_edit` / `file_write` / `shell`). User-facing copy names the
+     asymmetry honestly. Codex hardens to allowlist parity in v2.
+   - **(b) Ship Claude-as-reviewer only in v1.** Codex-pinned sessions get
+     `/review-with claude` (read-only via `--allowedTools`); Claude-pinned
+     sessions do not get `/review-with codex` until Codex grows the
+     primitive. Symmetric and safe but cuts the feature in half.
+   - **(c) Ship symmetric and add an in-container egress shim that
+     intercepts Codex's mutating CLI tools.** Robust but expensive — same
+     bucket as the egress broker docs/138 punted.
+2. **Cancel-all semantics.** When the user hits stop while a reviewer is
+   active and a primary message is queued behind it, do we (a) cancel only
+   the active reviewer and run the queued primary, or (b) cancel everything
+   and clear the queue? Today's stop button is "cancel the current turn"
+   which suggests (a). User-validation needed.
+3. **Tool-allowlist exact subset per agent.** The Claude subset (`Read`,
+   `Glob`, `Grep`, `submit_diff_review`) is committed in §4. Specifically:
+   is **no `Bash` at all** acceptable for a reviewer that might want to
+   `git log` a file's history? The conservative answer (yes, no Bash) is
+   the doc's current commitment; revisit if v1 users hit the limit often.
 
 ## Out of scope
 
 - A general "co-pilot two agents on every turn" mode — see Non-goals.
-- Removing or relaxing the docs/138 isolation guarantee for users who have only
-  authed one agent. They see no change.
 - Cross-agent *editing*. Out of scope, by design.
+- Concurrent (non-serialized) primary and reviewer execution — would require
+  a second agent slot in the worker, SSE event tagging, and a second PTY.
+  Not worth it for v1.
+- Egress-broker mitigation of the dual-cred window — same out-of-scope as
+  docs/138's matching "out of scope" item.
+- Chunked / multi-pass review for diffs larger than the token cap. Truncate
+  for v1, revisit if users hit the cap often.
