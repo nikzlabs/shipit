@@ -14,6 +14,7 @@ import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -35,6 +36,17 @@ import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
+import {
+  computeStoreKey,
+  fastInstallDisabled,
+  findLockfile,
+  isCacheableInstall,
+  materialize,
+  nmStoreRoot,
+  populateStore,
+  runtimeKey,
+  tuneNpmInstall,
+} from "./nm-store.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
@@ -764,10 +776,36 @@ export class SessionWorker extends EventEmitter {
   /**
    * Run install commands sequentially, streaming output via SSE.
    * Writes a marker file on success to skip redundant re-runs.
+   *
+   * Fast path (docs/148): for a single bare `npm install|ci|i`, `yarn
+   * [install]`, or `pnpm install|i` against a workspace with exactly one
+   * lockfile, look up a previously-materialized `node_modules` keyed by
+   * lockfile content + runtime + tuned command. On hit, copy the tree in
+   * via tar/cp and write the marker — no install runs. On miss, run the
+   * (optionally tuned) install as today, then publish the resulting tree
+   * to the store via temp-dir + atomic rename. Any failure on the fast
+   * path falls through to a plain real install (the populate is best-effort).
    */
   private async runInstallCommands(commands: string[], markerDir: string, markerFile: string): Promise<void> {
     try {
-      for (const cmd of commands) {
+      const fast = this.computeFastPath(commands);
+      if (fast) {
+        const materialized = await this.tryMaterializeFromStore(fast);
+        if (materialized) {
+          this.writeMarker(markerDir, markerFile);
+          this._lastInstallResult = { ok: true };
+          this._installRunning = false;
+          this._installProcess = null;
+          this.broadcastSSE({ type: "install_done", data: {} });
+          return;
+        }
+      }
+
+      // Real-install path. For the fast-path candidate we substitute the
+      // tuned command (Option E flags) so the populated store reflects what
+      // was actually built.
+      const resolvedCommands = fast ? [fast.tunedCommand] : commands;
+      for (const cmd of resolvedCommands) {
         const exitCode = await this.runSingleInstallCommand(cmd);
         if (exitCode !== 0) {
           const message = `Command "${cmd}" exited with code ${exitCode}`;
@@ -785,9 +823,20 @@ export class SessionWorker extends EventEmitter {
         }
       }
 
+      // Populate the store after a successful real install. Best-effort —
+      // a populate failure must not fail the install (the workspace already
+      // has a working `node_modules`).
+      if (fast) {
+        await this.tryPopulateStore(fast).catch((err: unknown) => {
+          console.warn(
+            `[install] populateStore failed for ${fast.storeKey}:`,
+            getErrorMessage(err),
+          );
+        });
+      }
+
       // All commands succeeded — write marker
-      fs.mkdirSync(markerDir, { recursive: true });
-      fs.writeFileSync(markerFile, new Date().toISOString());
+      this.writeMarker(markerDir, markerFile);
 
       this._lastInstallResult = { ok: true };
       // See above — flip `running` to false before the success broadcast so
@@ -805,6 +854,117 @@ export class SessionWorker extends EventEmitter {
         data: { message },
       });
     }
+  }
+
+  /**
+   * Decide whether the install request is a fast-path candidate. Returns
+   * the resolved store path + tuned command on success, or null when any
+   * gate fails (kill switch, non-cacheable command, multi-command sequence,
+   * 0 or multiple lockfiles).
+   */
+  private computeFastPath(
+    commands: string[],
+  ): { storeKey: string; storeDir: string; tunedCommand: string } | null {
+    if (fastInstallDisabled()) {
+      console.log("[install] fast path disabled via SHIPIT_FAST_INSTALL=disabled");
+      return null;
+    }
+    if (commands.length !== 1) return null;
+    const raw = commands[0];
+    if (!isCacheableInstall(raw)) return null;
+    const lockfile = findLockfile(this.workspaceDir);
+    if (!lockfile) return null;
+    const tunedCommand = tuneNpmInstall(raw);
+    const storeKey = computeStoreKey({
+      lockfile,
+      runtimeKey: runtimeKey(),
+      installCommand: tunedCommand,
+    });
+    const storeDir = path.join(nmStoreRoot(), storeKey);
+    return { storeKey, storeDir, tunedCommand };
+  }
+
+  /**
+   * Look up the store and materialize on hit. Returns true on a successful
+   * materialize (`node_modules` is ready, caller writes the marker).
+   * Returns false when there is no store, or when every rung of the
+   * materialize ladder fails — in either case the caller drops to a real
+   * install, which also self-heals by repopulating the store.
+   */
+  private async tryMaterializeFromStore(
+    fast: { storeKey: string; storeDir: string; tunedCommand: string },
+  ): Promise<boolean> {
+    let exists = false;
+    try {
+      const st = fs.statSync(fast.storeDir);
+      exists = st.isDirectory();
+    } catch {
+      exists = false;
+    }
+    if (!exists) {
+      console.log(`[install] fast-path miss storeKey=${fast.storeKey.slice(0, 12)}`);
+      return false;
+    }
+    const t0 = Date.now();
+    const dest = path.join(this.workspaceDir, "node_modules");
+    const result = await materialize(fast.storeDir, dest);
+    if (!result.ok) {
+      console.warn(
+        `[install] materialize failed storeKey=${fast.storeKey.slice(0, 12)} ` +
+          `error=${result.error ?? "unknown"} — falling back to real install`,
+      );
+      return false;
+    }
+    const ms = Date.now() - t0;
+    console.log(
+      `[install] fast-path hit storeKey=${fast.storeKey.slice(0, 12)} ` +
+        `strategy=${result.strategy} took=${ms}ms`,
+    );
+    this.broadcastSSE({
+      type: "install_log",
+      data: {
+        text: `[fast-install] restored node_modules from cache (${result.strategy}, ${ms}ms)\n`,
+        stream: "stdout",
+      },
+    });
+    return true;
+  }
+
+  /**
+   * Publish the freshly-installed `node_modules` to the store after a
+   * successful real install. No-op when `node_modules` doesn't exist
+   * (Yarn Berry/PnP layouts use `.pnp.cjs` instead).
+   */
+  private async tryPopulateStore(
+    fast: { storeKey: string; storeDir: string },
+  ): Promise<void> {
+    const src = path.join(this.workspaceDir, "node_modules");
+    try {
+      const st = await fsp.stat(src);
+      if (!st.isDirectory()) return;
+    } catch {
+      // No `node_modules` — Yarn Berry/PnP, or a lockfile-only no-op install.
+      return;
+    }
+    const t0 = Date.now();
+    const { published } = await populateStore(src, fast.storeDir);
+    const ms = Date.now() - t0;
+    if (published) {
+      console.log(
+        `[install] populated nm-store storeKey=${fast.storeKey.slice(0, 12)} took=${ms}ms`,
+      );
+    } else {
+      console.log(
+        `[install] nm-store already published for storeKey=${fast.storeKey.slice(0, 12)} ` +
+          `(raced another populate)`,
+      );
+    }
+  }
+
+  /** Write the `.shipit/.install-done` marker. */
+  private writeMarker(markerDir: string, markerFile: string): void {
+    fs.mkdirSync(markerDir, { recursive: true });
+    fs.writeFileSync(markerFile, new Date().toISOString());
   }
 
   /**

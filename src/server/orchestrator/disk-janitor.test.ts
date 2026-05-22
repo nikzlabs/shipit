@@ -423,6 +423,75 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(tmpDir, "dep-cache", staleHash))).toBe(false);
   });
 
+  it("prunes stale nm-store snapshots by mtime under tracked repos (docs/148)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const liveRepo = "https://github.com/example/live.git";
+    const liveHash = repoUrlToHash(liveRepo);
+    repoStore.add(liveRepo);
+    repoStore.setReady(liveRepo);
+
+    const nmRoot = path.join(tmpDir, "dep-cache", liveHash, "nm-store");
+    fs.mkdirSync(nmRoot, { recursive: true });
+
+    // Fresh storeKey — within retention.
+    const freshDir = path.join(nmRoot, "fresh-store-key");
+    fs.mkdirSync(freshDir, { recursive: true });
+
+    // Stale storeKey — mtime backdated past the cutoff.
+    const staleDir = path.join(nmRoot, "stale-store-key");
+    fs.mkdirSync(staleDir, { recursive: true });
+    const backdated = new Date(Date.now() - 30 * 86_400_000);
+    fs.utimesSync(staleDir, backdated, backdated);
+
+    // In-progress populate temp dir — should be preserved regardless of age.
+    const tmpPopulate = path.join(nmRoot, ".tmp-deadbeef-store-key");
+    fs.mkdirSync(tmpPopulate, { recursive: true });
+    fs.utimesSync(tmpPopulate, backdated, backdated);
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      nmStoreDays: 14,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.nmStoresRemoved).toBe(1);
+    expect(fs.existsSync(freshDir)).toBe(true);
+    expect(fs.existsSync(staleDir)).toBe(false);
+    expect(fs.existsSync(tmpPopulate)).toBe(true);
+  });
+
+  it("nm-store pruning is disabled when nmStoreDays <= 0", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const liveRepo = "https://github.com/example/live.git";
+    const liveHash = repoUrlToHash(liveRepo);
+    repoStore.add(liveRepo);
+    repoStore.setReady(liveRepo);
+
+    const staleDir = path.join(tmpDir, "dep-cache", liveHash, "nm-store", "ancient");
+    fs.mkdirSync(staleDir, { recursive: true });
+    const backdated = new Date(Date.now() - 365 * 86_400_000);
+    fs.utimesSync(staleDir, backdated, backdated);
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      nmStoreDays: 0,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.nmStoresRemoved).toBe(0);
+    expect(fs.existsSync(staleDir)).toBe(true);
+  });
+
   it("continues with workspace + cache sweeps when the volume sweep fails", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);

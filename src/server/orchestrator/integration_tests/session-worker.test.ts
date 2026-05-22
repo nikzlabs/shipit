@@ -762,6 +762,113 @@ describe("Integration: Session Worker install endpoint", () => {
     runner.dispose();
   });
 
+  // docs/148 — fast-install path. When the worker sees a cacheable command
+  // (`npm install` & friends), a single lockfile, and a pre-populated
+  // store keyed off the lockfile content, it must copy the store into
+  // `node_modules` and write the marker WITHOUT shelling out to npm. The
+  // test environment doesn't have a working `npm ci`, so the hit path is
+  // the only way this would terminate successfully — proving the fast
+  // path engaged.
+  it("fast path: pre-populated nm-store materializes node_modules without running npm", async () => {
+    // Point the store root at a temp dir we can pre-populate.
+    const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-nm-store-"));
+    process.env.SHIPIT_NM_STORE_DIR = storeRoot;
+    try {
+      // Lay down a lockfile so the fast path engages.
+      fs.writeFileSync(
+        path.join(installWorkspaceDir, "package-lock.json"),
+        '{"name":"x","lockfileVersion":3,"packages":{}}',
+      );
+
+      // Compute the storeKey the same way the worker will, then pre-populate.
+      const { computeStoreKey, findLockfile, runtimeKey, tuneNpmInstall } =
+        await import("../../session/nm-store.js");
+      const lockfile = findLockfile(installWorkspaceDir)!;
+      const tuned = tuneNpmInstall("npm install");
+      const storeKey = computeStoreKey({
+        lockfile,
+        runtimeKey: runtimeKey(),
+        installCommand: tuned,
+      });
+      const storeDir = path.join(storeRoot, storeKey);
+      fs.mkdirSync(path.join(storeDir, "left-pad"), { recursive: true });
+      fs.writeFileSync(path.join(storeDir, "left-pad", "index.js"), "module.exports = () => {};\n");
+
+      // Fire the install — the worker should materialize from the store
+      // and write the marker. If it fell through to a real install, `npm
+      // install` would fail in the test environment and we'd never see
+      // `lastResult.ok === true`.
+      const res = await installWorker.getApp().inject({
+        method: "POST",
+        url: "/install",
+        payload: { commands: ["npm install"] },
+      });
+      expect(res.statusCode).toBe(200);
+
+      await waitFor(async () => {
+        const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+        const body = s.json() as { running: boolean; lastResult: { ok: boolean } | null };
+        return !body.running && body.lastResult?.ok === true;
+      }, 5_000, "fast-path install completed");
+
+      // node_modules is materialized from the store.
+      expect(fs.existsSync(path.join(installWorkspaceDir, "node_modules", "left-pad", "index.js"))).toBe(true);
+      // Marker is written so subsequent installs short-circuit.
+      expect(fs.existsSync(path.join(installWorkspaceDir, ".shipit", ".install-done"))).toBe(true);
+    } finally {
+      delete process.env.SHIPIT_NM_STORE_DIR;
+      fs.rmSync(storeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fast path: kill switch (SHIPIT_FAST_INSTALL=disabled) bypasses the cache", async () => {
+    const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-nm-store-"));
+    process.env.SHIPIT_NM_STORE_DIR = storeRoot;
+    process.env.SHIPIT_FAST_INSTALL = "disabled";
+    try {
+      fs.writeFileSync(
+        path.join(installWorkspaceDir, "package-lock.json"),
+        '{"name":"x","lockfileVersion":3,"packages":{}}',
+      );
+      // Even with a pre-populated store available, the kill switch must
+      // force the plain command — which we substitute with `true` so the
+      // test deterministically succeeds without invoking npm.
+      const { computeStoreKey, findLockfile, runtimeKey, tuneNpmInstall } =
+        await import("../../session/nm-store.js");
+      const lockfile = findLockfile(installWorkspaceDir)!;
+      const tuned = tuneNpmInstall("npm install");
+      const storeKey = computeStoreKey({
+        lockfile,
+        runtimeKey: runtimeKey(),
+        installCommand: tuned,
+      });
+      const storeDir = path.join(storeRoot, storeKey);
+      fs.mkdirSync(storeDir, { recursive: true });
+      fs.writeFileSync(path.join(storeDir, "should-not-appear"), "x");
+
+      // Use `true` so the real-install path completes successfully.
+      const res = await installWorker.getApp().inject({
+        method: "POST",
+        url: "/install",
+        payload: { commands: ["true"] },
+      });
+      expect(res.statusCode).toBe(200);
+
+      await waitFor(async () => {
+        const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+        const body = s.json() as { running: boolean; lastResult: { ok: boolean } | null };
+        return !body.running && body.lastResult?.ok === true;
+      }, 3_000, "kill-switch install completed");
+
+      // The store contents must NOT have been copied into node_modules.
+      expect(fs.existsSync(path.join(installWorkspaceDir, "node_modules", "should-not-appear"))).toBe(false);
+    } finally {
+      delete process.env.SHIPIT_NM_STORE_DIR;
+      delete process.env.SHIPIT_FAST_INSTALL;
+      fs.rmSync(storeRoot, { recursive: true, force: true });
+    }
+  });
+
   it("SSE replays last install_done to a late-connecting client", async () => {
     // First, run an install to completion with no SSE clients attached.
     await installWorker.getApp().inject({
