@@ -3,9 +3,12 @@
  *
  * Three things must hold:
  *
- * 1. When `autoCreatePr` is on and GitHub is connected, the agent's system
- *    prompt nudges it to run `gh pr create -t … -b …`. The shim path is
- *    structurally testable (this is what the agent sees on its turn).
+ * 1. The agent's system prompt unconditionally nudges it to run
+ *    `gh pr create -t … -b …`. (The nudge used to be gated on
+ *    `autoCreatePr && githubAuthManager.authenticated`, but we made the prompt
+ *    static so the Anthropic prompt cache stays warm across turns. The
+ *    `autoCreatePr` setting still gates the post-turn harness fallback and the
+ *    Stop hook env var — just not the prompt itself.)
  *
  * 2. When the agent calls `gh pr create` (which the shim brokers as an HTTP
  *    request to `POST /api/sessions/:id/pr/agent-create`), the orchestrator
@@ -177,12 +180,12 @@ async function drainMessages(timeoutMs = 2500): Promise<WsServerMessage[]> {
 
 describe("agent-driven PR creation (Phase 2)", () => {
   it(
-    "agent system prompt nudges `gh pr create` when autoCreatePr is on and GitHub is connected",
+    "agent system prompt unconditionally nudges `gh pr create`",
     { timeout: 15_000 },
     async () => {
-      await githubAuth.setToken("test-token");
-      credentialStore.setAutoCreatePr(true);
-
+      // No setToken, no setAutoCreatePr — the prompt is static now, so neither
+      // the GitHub auth state nor the user setting affects what the agent sees.
+      // (The setting still gates the harness fallback / Stop hook downstream.)
       client.send({ type: "send_message", text: "hello" });
       const claude = await waitForClaude(() => latestClaude);
 
@@ -192,42 +195,6 @@ describe("agent-driven PR creation (Phase 2)", () => {
       expect(claude.lastSystemPrompt).toContain("gh pr create");
       expect(claude.lastSystemPrompt).toContain("## Summary");
       expect(claude.lastSystemPrompt).toContain("## Test plan");
-
-      claude.finish("agent-session-1");
-    },
-  );
-
-  it(
-    "agent system prompt does NOT nudge `gh pr create` when autoCreatePr is off",
-    { timeout: 15_000 },
-    async () => {
-      await githubAuth.setToken("test-token");
-      credentialStore.setAutoCreatePr(false);
-
-      client.send({ type: "send_message", text: "hello" });
-      const claude = await waitForClaude(() => latestClaude);
-
-      expect(claude.lastSystemPrompt).toBeTruthy();
-      expect(claude.lastSystemPrompt).not.toContain("## Pull requests");
-      expect(claude.lastSystemPrompt).not.toContain("gh pr create");
-
-      claude.finish("agent-session-1");
-    },
-  );
-
-  it(
-    "agent system prompt does NOT nudge `gh pr create` when GitHub is not connected (even if autoCreatePr is on)",
-    { timeout: 15_000 },
-    async () => {
-      // Note: no setToken() call. Without GitHub auth, the gh shim would fail
-      // at runtime — so we don't ask the agent to use it.
-      credentialStore.setAutoCreatePr(true);
-
-      client.send({ type: "send_message", text: "hello" });
-      const claude = await waitForClaude(() => latestClaude);
-
-      expect(claude.lastSystemPrompt).toBeTruthy();
-      expect(claude.lastSystemPrompt).not.toContain("gh pr create");
 
       claude.finish("agent-session-1");
     },

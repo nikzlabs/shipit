@@ -5,46 +5,24 @@ import {
 } from "./agent-instructions.js";
 
 describe("buildAgentSystemInstructions", () => {
-  it("returns the default no-options output by default", () => {
+  it("is static — every call returns the same string as AGENT_SYSTEM_INSTRUCTIONS", () => {
     expect(buildAgentSystemInstructions()).toBe(AGENT_SYSTEM_INSTRUCTIONS);
+    expect(buildAgentSystemInstructions()).toBe(buildAgentSystemInstructions());
   });
 
-  it("treats a string argument as previewUrl for backwards compatibility", () => {
-    const a = buildAgentSystemInstructions("http://preview.example/");
-    const b = buildAgentSystemInstructions({ previewUrl: "http://preview.example/" });
-    expect(a).toBe(b);
-  });
-
-  it("includes the preview URL when provided", () => {
-    const out = buildAgentSystemInstructions({ previewUrl: "http://preview.example/" });
-    expect(out).toContain("The preview is running at:");
-    expect(out).toContain("http://preview.example/");
-    expect(out).not.toContain("The preview is not running yet");
-  });
-
-  it("uses the no-preview wording when previewUrl is omitted", () => {
+  it("describes the browser tools unconditionally", () => {
     const out = buildAgentSystemInstructions();
-    expect(out).toContain("The preview is not running yet");
-    expect(out).not.toContain("The preview is running at:");
+    expect(out).toContain("## Browser access");
+    expect(out).toContain("browser_navigate");
+    expect(out).toContain("browser_snapshot");
+    expect(out).toContain("/tmp/");
   });
 
-  it("does NOT include the gh pr create nudge by default", () => {
+  it("includes the gh pr create nudge unconditionally", () => {
     const out = buildAgentSystemInstructions();
-    expect(out).not.toContain("gh pr create");
-    expect(out).not.toContain("## Pull requests");
-  });
-
-  it("does NOT include the gh pr create nudge when autoCreatePr is false", () => {
-    const out = buildAgentSystemInstructions({ autoCreatePr: false });
-    expect(out).not.toContain("gh pr create");
-    expect(out).not.toContain("## Pull requests");
-  });
-
-  it("includes the gh pr create nudge when autoCreatePr is true", () => {
-    const out = buildAgentSystemInstructions({ autoCreatePr: true });
     expect(out).toContain("## Pull requests");
     expect(out).toContain("gh pr create");
-    // Required sections that the agent should write in the body.
+    // Required sections the agent should write in the body.
     expect(out).toContain("## Summary");
     expect(out).toContain("## Changes");
     expect(out).toContain("## Test plan");
@@ -53,8 +31,8 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("/shipit-docs/github.md");
   });
 
-  it("uses imperative language and an explicit anti-pattern for autoCreatePr", () => {
-    const out = buildAgentSystemInstructions({ autoCreatePr: true });
+  it("uses imperative language and an explicit anti-pattern in the PR section", () => {
+    const out = buildAgentSystemInstructions();
     // Pulls the action-oriented principle into this section.
     expect(out).toContain("action-oriented");
     // Imperative — do, don't ask — and the explicit anti-pattern.
@@ -73,28 +51,12 @@ describe("buildAgentSystemInstructions", () => {
     const out = buildAgentSystemInstructions();
     expect(out).toContain("git checkout -b");
     expect(out).toMatch(/do not create.*branch/i);
-  });
-
-  it("repeats the no-branch guidance in the autoCreatePr section", () => {
-    const out = buildAgentSystemInstructions({ autoCreatePr: true });
     expect(out).toMatch(/do not create or switch branches/i);
   });
 
-  it("composes preview + autoCreatePr sections together", () => {
-    const out = buildAgentSystemInstructions({
-      previewUrl: "http://preview.example/",
-      autoCreatePr: true,
-    });
-    expect(out).toContain("The preview is running at:");
-    expect(out).toContain("http://preview.example/");
-    expect(out).toContain("## Pull requests");
-    expect(out).toContain("gh pr create");
-  });
-
-  it("AGENT_SYSTEM_INSTRUCTIONS is the no-options rendering", () => {
+  it("AGENT_SYSTEM_INSTRUCTIONS contains the ShipIt preamble and the PR nudge", () => {
     expect(AGENT_SYSTEM_INSTRUCTIONS).toContain("ShipIt");
-    expect(AGENT_SYSTEM_INSTRUCTIONS).not.toContain("gh pr create");
-    expect(AGENT_SYSTEM_INSTRUCTIONS).not.toContain("The preview is running at:");
+    expect(AGENT_SYSTEM_INSTRUCTIONS).toContain("gh pr create");
   });
 
   it("documents the typed design-doc status values and points at the full doc", () => {
@@ -172,13 +134,9 @@ describe("buildAgentSystemInstructions", () => {
     expect(claudeOut).toContain("two fan-out primitives");
   });
 
-  it("composes parallel-sessions with previewUrl and autoCreatePr", () => {
-    const out = buildAgentSystemInstructions({
-      previewUrl: "http://preview.example/",
-      autoCreatePr: true,
-      agentId: "claude",
-    });
-    expect(out).toContain("The preview is running at:");
+  it("renders the unconditional sections alongside the per-agent Parallel sessions section", () => {
+    const out = buildAgentSystemInstructions({ agentId: "claude" });
+    expect(out).toContain("## Browser access");
     expect(out).toContain("## Pull requests");
     expect(out).toContain("## Parallel sessions");
   });

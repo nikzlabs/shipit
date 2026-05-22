@@ -60,13 +60,13 @@ export async function getGlobalSettings(
   const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
   const liveSteering = credentialStore?.getLiveSteering() ?? false;
   const prCommentSync = credentialStore?.getPrCommentSync() ?? false;
-  // Render the instructions with the same conditional sections the WS handler would
-  // (currently just the auto-create-PR nudge) so the Settings UI accurately reflects
-  // what the agent sees on its next turn. We pass `defaultAgentId` so the
-  // Settings preview shows the same per-agent "Parallel sessions" guidance the
-  // running agent gets (docs/117 Phase 2). A session that picks a non-default
-  // agent will see that agent's variant at turn time.
-  const agentSystemInstructions = buildAgentSystemInstructions({ autoCreatePr, agentId: defaultAgentId });
+  // Pass `defaultAgentId` so the Settings preview shows the same per-agent
+  // "Parallel sessions" guidance the running agent gets (docs/117 Phase 2).
+  // A session that picks a non-default agent will see that agent's variant at
+  // turn time. `agentId` is the only conditional axis — the PR nudge and
+  // browser-tools section are unconditional, which keeps the rendered prompt
+  // stable across turns so the Anthropic prompt cache stays warm.
+  const agentSystemInstructions = buildAgentSystemInstructions({ agentId: defaultAgentId });
   return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, prCommentSync };
 }
 

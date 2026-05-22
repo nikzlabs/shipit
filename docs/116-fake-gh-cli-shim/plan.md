@@ -214,17 +214,16 @@ Phase 1 coverage shipped:
 Phase 2 coverage shipped:
 
 - **[done] Agent-instructions unit tests** —
-  `src/server/orchestrator/agent-instructions.test.ts` covers the
-  `autoCreatePr` branch of `buildAgentSystemInstructions`, the no-options
-  default (used by `AGENT_SYSTEM_INSTRUCTIONS`), the preview-URL branch, and
-  the backwards-compatible string-arg form. 9 cases.
+  `src/server/orchestrator/agent-instructions.test.ts` covers the static
+  rendering of `buildAgentSystemInstructions` (the PR nudge, browser-tools
+  section, branch guidance, and design-doc statuses). The earlier
+  `autoCreatePr` / `previewUrl` / string-arg-form tests were removed when the
+  builder was made unconditional to preserve the Anthropic prompt cache.
 - **[done] Integration test** —
   `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts` covers
-  - System prompt contains the `gh pr create` nudge when `autoCreatePr` is on
-    AND GitHub is connected.
-  - System prompt does NOT contain the nudge when `autoCreatePr` is off.
-  - System prompt does NOT contain the nudge when GitHub is not connected
-    (even with `autoCreatePr` on).
+  - The agent's system prompt unconditionally contains the `gh pr create`
+    nudge — neither GitHub auth state nor the `autoCreatePr` setting gates it.
+    (The earlier negative-gating tests were removed alongside the conditional.)
   - `POST /api/sessions/:id/pr/agent-create` (the orchestrator end of the
     shim chain) routes through to `GitHubAuthManager.createPullRequest` with
     the agent-supplied title and body — not a harness-derived description.
@@ -248,11 +247,11 @@ Phase 2 coverage shipped:
 | `src/server/orchestrator/github-auth.ts` | Wrapper methods on `GitHubAuthManager` for the new PR operations. | done |
 | `docker/Dockerfile.session-worker.{dev,prod}` | Install shim at `/usr/local/bin/gh` as a small `sh` wrapper that runs `/app/node_modules/.bin/tsx …/gh.ts`. The `.docker` image inherits via `BASE_IMAGE`. The shim invokes tsx by absolute path rather than `node --import tsx`, because the bare specifier resolves against cwd's `node_modules` — fine in the ShipIt repo (which depends on tsx) but fails with `Cannot find package 'tsx'` from /workspace in any user repo that doesn't. | done |
 | `src/server/shipit-docs/github.md` | Documents the shim — supported / rejected subcommands, push semantics, auth model. | done |
-| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* When `autoCreatePr` is on, append the "use `gh pr create`" instruction. Refactored to take an options object (`{ previewUrl, autoCreatePr }`) while preserving the legacy `string` form for backwards-compat. | done |
-| `src/server/orchestrator/agent-instructions.test.ts` | *(Phase 2)* Unit tests for the new `autoCreatePr` branch and the existing branches. | done |
-| `src/server/orchestrator/ws-handlers/claude-execution.ts` | *(Phase 2)* Pass `autoCreatePr = credentialStore.getAutoCreatePr() && githubAuthManager.authenticated` into the agent-instructions builder, so the nudge is gated on the same surface that drives the harness fallback. | done |
-| `src/server/orchestrator/services/settings.ts` | *(Phase 2)* Render `agentSystemInstructions` for the Settings UI through `buildAgentSystemInstructions({ autoCreatePr })` so the displayed copy matches what the agent actually receives. | done |
-| `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts` | *(Phase 2)* End-to-end coverage of the agent-driven path: system-prompt gating, orchestrator → `GitHubAuthManager` wiring, harness dedup. | done |
+| `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* Includes the "use `gh pr create`" instruction unconditionally. The builder takes no arguments — keeping the rendered prompt static preserves the Anthropic prompt cache across turns. | done |
+| `src/server/orchestrator/agent-instructions.test.ts` | *(Phase 2)* Unit tests for the static rendering (PR section, browser tools, branch guidance, design-doc statuses). | done |
+| `src/server/orchestrator/ws-handlers/agent-execution.ts` | *(Phase 2)* Calls `buildAgentSystemInstructions()` with no arguments. The `autoCreatePr` setting still drives the post-turn harness fallback and the Stop hook env var — just not the prompt itself. | done |
+| `src/server/orchestrator/services/settings.ts` | *(Phase 2)* Renders `agentSystemInstructions` for the Settings UI via the static `buildAgentSystemInstructions()`. | done |
+| `src/server/orchestrator/integration_tests/agent-driven-pr.test.ts` | *(Phase 2)* End-to-end coverage of the agent-driven path: system-prompt nudge, orchestrator → `GitHubAuthManager` wiring, harness dedup. | done |
 | `src/server/orchestrator/integration_tests/test-helpers.ts` | *(Phase 2)* `StubGitHubAuthManager` now records `createPullRequest` calls in `createPullRequestCalls`, so tests can assert on the title/body the orchestrator sent. | done |
 
 ## Future extensions
