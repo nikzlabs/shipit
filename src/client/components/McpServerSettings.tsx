@@ -11,7 +11,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: one-shot fetch of account-level MCP servers on panel mount (external system sync)
 import { useEffect, useState } from "react";
 import { Button } from "./ui/button.js";
-import { useMcpStore } from "../stores/mcp-store.js";
+import { useMcpStore, type McpServerStatusEntry } from "../stores/mcp-store.js";
 import type {
   McpServerConfig,
   McpStdioServerConfig,
@@ -152,6 +152,25 @@ function StatusBadge({ name }: { name: string }) {
   );
 }
 
+/**
+ * The OAuth provider's "Connected" flag and the MCP server's runtime status
+ * are independent signals — the former just means we have stored tokens, the
+ * latter is what the provider's MCP server answered when the CLI actually
+ * tried to use them. They can disagree: tokens get revoked at the provider
+ * side, expire without a working refresh token, or fall out of scope. Detect
+ * that case so the UI can downgrade "Connected" to "Authentication required"
+ * and offer Reconnect.
+ *
+ * The auth-required reason string is set by the Claude adapter
+ * (`mapCliMcpStatus`) as a stable literal — match on `auth` so a future
+ * "auth required" / "needs auth" variant still trips this.
+ */
+function isAuthRequired(status: McpServerStatusEntry | undefined): boolean {
+  if (status?.state !== "failed") return false;
+  const reason = status.reason?.toLowerCase() ?? "";
+  return reason.includes("auth");
+}
+
 export function McpServerSettings({ hasActiveSession }: { hasActiveSession: boolean }) {
   const servers = useMcpStore((s) => s.servers);
   const loading = useMcpStore((s) => s.loading);
@@ -166,6 +185,12 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
   const fetchOAuthProviders = useMcpStore((s) => s.fetchOAuthProviders);
   const startOAuthFlow = useMcpStore((s) => s.startOAuthFlow);
   const disconnectOAuth = useMcpStore((s) => s.disconnectOAuth);
+  // Pulled in so the provider cards re-render when a `mcp_server_status`
+  // event flips an OAuth-managed server to/from auth-required (used by
+  // `isAuthRequired` below to decide whether "Connected" needs downgrading
+  // to a Reconnect CTA).
+  const statuses = useMcpStore((s) => s.statuses);
+  const clearStatus = useMcpStore((s) => s.clearStatus);
 
   const [form, setForm] = useState<FormState | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -211,6 +236,13 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
             // the OAuth token is still saved and the UI shows "Connected",
             // so this is best-effort.
           }
+        }
+        // Reconnect path: drop the stale `failed — authentication required`
+        // status that's keeping the card red. The next CLI init event will
+        // emit the real status; until then we show plain "Connected" rather
+        // than lie about being `loaded`.
+        if (provider) {
+          clearStatus(provider.defaultServerName);
         }
       }
     } finally {
@@ -371,6 +403,16 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
               const isToggling = managedServer
                 ? toggleInFlight[managedServer.name]
                 : false;
+              // Stored tokens exist (`connected`) but the MCP server rejected
+              // them (`failed — authentication required`). The two signals
+              // are otherwise independent — without this reconciliation the
+              // card would say "● Connected" while the server row says
+              // "● failed — authentication required", which is what the user
+              // hit. Downgrade the badge and surface a Reconnect CTA.
+              const serverStatus: McpServerStatusEntry | undefined = managedServer
+                ? statuses[managedServer.name]
+                : undefined;
+              const authExpired = connected && isAuthRequired(serverStatus);
               return (
                 <li
                   key={provider.id}
@@ -383,10 +425,23 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                         <span className="text-sm font-medium text-(--color-text-primary)">
                           {provider.label}
                         </span>
-                        {connected && (
+                        {connected && !authExpired && (
                           <span className="text-xs text-(--color-success)">● Connected</span>
                         )}
-                        {managedServer && <StatusBadge name={managedServer.name} />}
+                        {authExpired && (
+                          <span
+                            className="text-xs text-(--color-error)"
+                            title={serverStatus?.reason}
+                          >
+                            ● Authentication required — reconnect
+                          </span>
+                        )}
+                        {/* When auth is expired the dedicated badge above
+                            already says what's wrong; rendering the generic
+                            StatusBadge too would just duplicate the text. */}
+                        {managedServer && !authExpired && (
+                          <StatusBadge name={managedServer.name} />
+                        )}
                         {managedServer && !managedServer.enabled && (
                           <span className="text-xs text-(--color-text-tertiary)">(disabled)</span>
                         )}
@@ -398,7 +453,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                       )}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
-                      {managedServer && (
+                      {managedServer && !authExpired && (
                         <>
                           <Button
                             size="sm"
@@ -419,7 +474,26 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                           </Button>
                         </>
                       )}
-                      {connected ? (
+                      {authExpired ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            disabled={inFlight}
+                            onClick={() => void connectProvider(provider.id)}
+                          >
+                            {inFlight ? "Connecting…" : "Reconnect"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={inFlight}
+                            onClick={() => void disconnectProvider(provider.id)}
+                          >
+                            Disconnect
+                          </Button>
+                        </>
+                      ) : connected ? (
                         <Button
                           size="sm"
                           variant="ghost"

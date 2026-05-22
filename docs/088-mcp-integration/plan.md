@@ -60,7 +60,18 @@ description: Connect user MCP servers (Linear, Notion, Sentry, etc.) to the inne
 > provider instead of a duplicated card + row pair. Orphan entries (token
 > revoked at provider side → provider shows Disconnected, server config
 > still local) keep showing in the standalone list with the "· via
-> <provider> connection" badge so the user can still delete them.
+> <provider> connection" badge so the user can still delete them. The two
+> sources of truth feeding the card — `listMcpOAuthProviders`'s
+> `connected` (tokens exist) and the CLI init event's `mcp_server_status`
+> (tokens *work*) — are independent and can disagree (tokens revoked,
+> expired without working refresh, scope changed). When the managed
+> server reports `failed — authentication required` the card downgrades
+> the green "● Connected" to a red "● Authentication required —
+> reconnect" badge, swaps the primary action from **Disconnect** to
+> **Reconnect** (re-runs the OAuth popup; on success the stale status is
+> cleared via `mcpStore.clearStatus` so the card flips back to plain
+> "Connected" without waiting for the next CLI init), and keeps
+> Disconnect available as a secondary action.
 >
 > **Mid-session `crashed` detection landed.** `agent-listeners.ts` records
 > every tool_use it sees within a turn and, on `agent_tool_result` with

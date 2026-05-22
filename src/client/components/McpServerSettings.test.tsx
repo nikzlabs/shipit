@@ -274,6 +274,72 @@ describe("McpServerSettings (docs/088)", () => {
     expect(within(card).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
   });
 
+  it("reconciles stale tokens: auth-required status downgrades 'Connected' to Reconnect", async () => {
+    // Stored tokens exist (so listMcpOAuthProviders flags Connected) but the
+    // MCP server rejected them (CLI init reported needs-auth → "authentication
+    // required"). Without reconciliation the user would see two contradictory
+    // statuses on the same provider — green "Connected" up top, red "failed —
+    // authentication required" down below. The reconciled card shows a single
+    // "Authentication required" badge and a Reconnect CTA.
+    const linearServer: McpServerConfig = {
+      name: "linear",
+      type: "http",
+      url: "https://mcp.linear.app/mcp",
+      headers: { Authorization: "Bearer $platform:linear_oauth" },
+      enabled: true,
+    };
+    const fake = new FakeFetch();
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [linearServer] }));
+    fake.on("GET", /\/oauth\/providers$/, () => ({
+      providers: [
+        {
+          id: "linear_oauth",
+          label: "Linear",
+          description: "Connect to your Linear workspace.",
+          mcpUrl: "https://mcp.linear.app/mcp",
+          defaultServerName: "linear",
+          status: { source: "linear_oauth", connected: true },
+        },
+      ],
+    }));
+    fake.install();
+
+    render(<McpServerSettings hasActiveSession={true} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-oauth-linear_oauth")).toBeInTheDocument();
+    });
+
+    // Simulate the worker emitting needs-auth for the managed server.
+    useMcpStore.getState().applyStatus("linear", "failed", "authentication required");
+
+    const card = await waitFor(() => screen.getByTestId("mcp-oauth-linear_oauth"));
+    await waitFor(() => {
+      expect(within(card).getByText(/Authentication required/)).toBeInTheDocument();
+    });
+    // Green "Connected" is suppressed.
+    expect(within(card).queryByText(/● Connected/)).toBeNull();
+    // Reconnect is the primary action; Disconnect is still available so the
+    // user can opt out instead of refreshing.
+    expect(within(card).getByRole("button", { name: "Reconnect" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+    // Test / Enable / Disable are hidden — they'd fail until tokens are fresh.
+    expect(within(card).queryByRole("button", { name: "Test" })).toBeNull();
+  });
+
+  it("clearStatus drops the stale auth-required entry (used after Reconnect)", () => {
+    // White-box: connectProvider() calls clearStatus(defaultServerName) after a
+    // successful OAuth round-trip so the card flips back to plain "Connected"
+    // immediately instead of waiting for the next CLI init event.
+    useMcpStore.getState().applyStatus("linear", "failed", "authentication required");
+    expect(useMcpStore.getState().statuses.linear).toBeDefined();
+
+    useMcpStore.getState().clearStatus("linear");
+    expect(useMcpStore.getState().statuses.linear).toBeUndefined();
+
+    // Clearing a name that isn't tracked is a no-op (no throw).
+    useMcpStore.getState().clearStatus("never-existed");
+  });
+
   it("still shows an orphan OAuth-managed row when the provider is disconnected", async () => {
     // Token revoked at provider side — server config still exists locally,
     // so we surface it in the standalone list (with the via-connection badge)
