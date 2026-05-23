@@ -109,8 +109,9 @@ provisioning:
 4. Skip accounts known to be exhausted until their reset time.
 5. Prefer accounts with the most remaining weekly quota; use short-window quota
    as the tiebreaker.
-6. If all eligible accounts are exhausted, show a chat-visible system message
-   with reset times and leave the turn queued/not-started.
+6. If all eligible accounts are exhausted, put the prompt into a delayed
+   recoverable state with a wake-up time, show a chat-visible system message
+   with reset times, and do not start the agent.
 
 Eligibility is checked before quota ranking. A fallback account that cannot run
 the selected model, requested permission mode, image support, MCP/review
@@ -120,6 +121,22 @@ plans, enterprise policy, regional access, beta flags, or model availability.
 Failover must not silently downgrade behavior. If no account can satisfy the
 current turn's feature requirements, ShipIt surfaces that as an account/model
 availability problem instead of trying a lower-capability subscription.
+
+An exhausted turn cannot use the existing in-memory message queue by itself.
+Today queued messages drain from agent completion paths; if no agent starts,
+there is no completion event to wake the queue after a quota reset. Delayed
+quota waits therefore need their own persisted/scheduled state:
+
+- persist the blocked prompt and target provider in a delayed-turn table or
+  session field,
+- schedule an orchestrator timer for the earliest eligible reset,
+- re-check account eligibility/quota at wake time before starting,
+- broadcast the delayed state so reconnecting clients show why the prompt is not
+  running,
+- allow the user to cancel or replace the delayed prompt from chat.
+
+If the process restarts before the reset, startup tasks reload delayed turns and
+re-arm their timers.
 
 ### Mid-turn failover
 
@@ -136,6 +153,21 @@ Automatic retry is conservative:
 
 This mirrors the existing product stance: the agent is the actor, but ShipIt does
 not silently duplicate side effects.
+
+Safe retry is a same-turn retry, not a new user message. The implementation must
+avoid duplicating chat history:
+
+- persist the user's prompt once for the turn,
+- clear or replace failed in-progress assistant output before the retry,
+- record the account failover as a system event attached to the same turn,
+- restart the agent with the same assembled prompt and updated account metadata,
+- skip the normal `persistUserMessage` path on the retry attempt.
+
+This matters because `runAgentWithMessage` currently persists the user message
+around the `agent_init` path and may already have in-progress assistant rows.
+Failover retry needs explicit attempt state (`turnAttempt`, `isRetry`,
+`originalMessageId` or equivalent) so it updates the existing turn instead of
+creating a second copy of the same prompt.
 
 ### Existing pinned sessions
 
@@ -509,12 +541,15 @@ This intentionally favors correctness over seamless failover.
 Existing sessions without `provider_account_id` are split by pin state:
 
 - **Unpinned sessions:** use the provider primary account on their next turn.
-- **Pinned sessions with an existing per-session credential subtree:** create a
-  migrated account row bound to that session's current credential source, set
-  `provider_account_id` to it, and keep using the existing provider-side
-  `agentSessionId`. Do not route these sessions to the current primary account,
-  because the user may have changed primary after migration and a silent switch
-  would violate the process/thread reset rules above.
+- **Pinned sessions with an existing per-session credential subtree:** do not
+  treat `/credentials/sessions/<id>` as an account source of truth. That
+  subtree is a derived runtime copy and is removed by archive/reset/janitor
+  paths. Instead, if its token can be matched to a root/default provider account,
+  set `provider_account_id` to that account and keep using the existing
+  provider-side `agentSessionId`. If it cannot be matched, copy the token into a
+  new account-qualified source under `/credentials/provider-accounts/...` only
+  after validating it as a usable provider credential; otherwise require re-auth.
+  The per-session subtree remains only a consumer of account credentials.
 - **Pinned sessions whose credential source cannot be identified:** mark the
   session as needing re-auth/account selection before the next turn. The recovery
   path must kill any persistent process, clear `agentSessionId`, provision the
