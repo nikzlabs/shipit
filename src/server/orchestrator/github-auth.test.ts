@@ -520,6 +520,36 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
     expect(mgr.getRateLimitState().limited).toBe(true);
   });
 
+  it("treats 200 + errors[].type RATE_LIMIT (graphql_rate_limit) as a failure", async () => {
+    // The shape prod actually sees when the primary GraphQL budget is exhausted:
+    // GitHub returns `type:"RATE_LIMIT"` (singular) with `code:"graphql_rate_limit"`,
+    // not the `RATE_LIMITED` label the docs hint at. Previously this slipped
+    // through the predicate and the poller hammered GitHub at full cadence.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        data: null,
+        errors: [{ type: "RATE_LIMIT", code: "graphql_rate_limit", message: "API rate limit already exceeded for user ID 1146358." }],
+      }), { status: 200, headers: { "x-ratelimit-remaining": "0" } }),
+    );
+    const result = await mgr.graphqlQuery("query{ x }");
+    expect(result).toBeNull();
+    expect(mgr.getRateLimitState().limited).toBe(true);
+  });
+
+  it("falls back to errors[].code graphql_rate_limit when type is unfamiliar", async () => {
+    // Defense in depth: if GitHub renames the type yet again, the `code` field
+    // should still trip the predicate.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        data: null,
+        errors: [{ type: "SOME_NEW_TYPE", code: "graphql_rate_limit", message: "rate limited" }],
+      }), { status: 200 }),
+    );
+    const result = await mgr.graphqlQuery("query{ x }");
+    expect(result).toBeNull();
+    expect(mgr.getRateLimitState().limited).toBe(true);
+  });
+
   it("treats 200 + errors[].type SECONDARY_RATE_LIMITED similarly", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({
