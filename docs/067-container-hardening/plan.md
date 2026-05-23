@@ -1,7 +1,7 @@
 ---
 status: planned
 priority: low
-description: Remaining security hardening deferred from containerization: non-root worker, network egress allowlist, read-only credential mounts, and cross-platform validation.
+description: Remaining security hardening deferred from containerization: non-root worker runtime, network egress allowlist, read-only credential mounts, and cross-platform validation.
 ---
 
 # 067 — Container Hardening & Cross-Platform Validation
@@ -40,7 +40,13 @@ macOS (Docker Desktop, Apple Silicon, virtiofs) is fully validated. Linux and WS
 
 ### Non-root worker
 
-- [ ] Run worker process as non-root user (uid 1000)
+- [ ] Run the session worker runtime as a non-root user. Detailed design:
+  `docs/150-non-root-session-worker/plan.md`.
+
+This is now split into its own feature doc because it touches Dockerfiles,
+runtime environment, Claude/Codex auth paths, terminal spawning, install hooks,
+MCP config, cache ownership, and capability tightening. Doc 067 remains the
+umbrella hardening tracker.
 
 ### Network egress restriction
 
