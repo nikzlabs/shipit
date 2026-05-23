@@ -142,13 +142,14 @@ first two and the rest are deferred — see Build order for the split.
 1. **Discover (v1)** — browse the active agent's catalogs. Search bar at top.
    Cards show name, description, source marketplace, **context-cost estimate**,
    last-updated date, and a "Contains: 3 skills, 1 MCP server" capsule.
-2. **Installed (v1)** — what's already in the workspace. Each row: enable
-   toggle, marketplace + plugin chip, uninstall overflow. v1 lists only
-   plugins ShipIt itself installed (identified by the install marker — see
+2. **Installed (v1)** — what's already in the workspace. Each row:
+   marketplace + plugin chip, uninstall overflow. v1 lists only plugins
+   ShipIt itself installed (identified by the install marker — see
    "Backend-agnostic at the surface; agent-specific at the writer"). Skills
    the user wrote by hand under `.claude/skills/` show up in the existing
    `/`-autocomplete (doc 138) but are not listed here, since this surface is
-   "what's installed *from a marketplace*."
+   "what's installed *from a marketplace*." **No enable/disable in v1** —
+   only install/uninstall (see "Enable/disable deferred to v3" below).
 3. **Marketplaces (v2)** — add (paste GitHub shorthand, Git URL, or local
    path), list, refresh, remove, toggle auto-update. The official
    Anthropic/OpenAI catalogs come pre-added per active agent.
@@ -243,10 +244,16 @@ running agent:
    for the git-commit flow generally; the install path follows the same rule.
 3. **Two-tab race in the same repo.** Two browser tabs on different sessions
    in the same repo both clicking Install at the same time would race on the
-   git index and on the `.claude/skills/` directory. Resolution: a
-   per-repo install lock (in the orchestrator's `RepoStore`, alongside the
-   existing per-repo state) serializes installs across sessions of the same
-   repo. Second install waits for the first to commit, then runs.
+   git index and on the `.claude/skills/` directory. Resolution: an
+   in-process per-workspace install mutex inside `services/marketplace.ts`,
+   shaped like the canonical `Map<key, Promise<...>>` pattern used by
+   `_mcpInstallMutex` in `src/server/session/session-worker.ts:133` —
+   concurrent callers coalesce on the in-flight promise; the entry is
+   deleted in `.finally()`. This is runtime state, not persistent state
+   (surviving a process restart with the lock held would be a bug), so it
+   belongs in the service module, NOT in `RepoStore` (which is SQLite).
+   Keyed by `workspaceDir` because two sessions on the same repo share the
+   same workspace volume.
 
 ### Install scope — repo-only
 
@@ -332,18 +339,27 @@ interface PluginInfo {
 New backend service `src/server/orchestrator/services/marketplace.ts`:
 
 ```ts
+// v1:
 listMarketplaces(agentId): MarketplaceInfo[]
-addMarketplace(source, agentId): MarketplaceInfo
-removeMarketplace(id): void
-refreshMarketplace(id): MarketplaceInfo
 listPlugins(marketplaceId): PluginInfo[]
 installPlugin(workspaceDir, marketplaceId, pluginName): InstallResult
 uninstallPlugin(workspaceDir, marketplaceId, pluginName): void
-enablePlugin / disablePlugin
+
+// v2 adds custom-marketplace verbs:
+addMarketplace(source, agentId): MarketplaceInfo
+removeMarketplace(id): void
+refreshMarketplace(id): MarketplaceInfo
+
+// v3 adds enable/disable, once we have a persistence target for the flag.
 ```
 
 These are pure functions in the §services layer pattern (CLAUDE.md), consumed
 by both the HTTP route and a future WS message for live install progress.
+Enable/disable is deferred to v3 because the flag has nowhere to persist in
+v1: writing to `.claude/settings.json` is explicitly out of scope (see
+"Settings-file ownership"), and a sidecar-only flag would be invisible to
+the agent CLI on next spawn. v3 lands the settings-file merge layer that
+also unlocks this.
 
 ### Routes
 
@@ -368,15 +384,21 @@ GET    /api/marketplaces/:id/plugins
 # Session-scoped (api-routes-files.ts):
 POST   /api/sessions/:id/plugins/install   { marketplaceId, pluginName }
 DELETE /api/sessions/:id/plugins/:marketplaceId/:pluginName
-PATCH  /api/sessions/:id/plugins/:marketplaceId/:pluginName   { enabled: bool }
+
+# v3 adds:
+# PATCH  /api/sessions/:id/plugins/:marketplaceId/:pluginName   { enabled: bool }
 ```
 
 App-wide marketplace state persists in a new
 `src/server/orchestrator/marketplace-store.ts` following the existing
-patterns of `repo-store.ts` and `secret-store.ts` — JSON file in the
-orchestrator data dir. v1 may seed it with the official Claude/Codex
-catalogs and never write to it (since v1 doesn't expose add/remove); the
-store still exists from day one so v2 can layer on without restructuring.
+patterns of `repo-store.ts` and `secret-store.ts` — **SQLite via
+`DatabaseManager`**, class wrapping prepared statements (not a JSON file —
+the orchestrator has no JSON-file persistence stores). A new
+`marketplaces` table holds `id`, `source` (JSON-encoded), `agent_id`,
+`auto_update`, `last_fetched_at`, `status`. v1 seeds it with the official
+Claude/Codex catalogs at orchestrator startup and never writes to it again
+(since v1 doesn't expose add/remove); the table still exists from day one
+so v2 can layer on without restructuring or a schema migration.
 
 ### Backend-agnostic at the surface; agent-specific at the writer
 
@@ -388,14 +410,22 @@ layout would not be picked up by the existing scanner; the `/`-autocomplete
 would not list plugin skills and invocation would break. So:
 
 - **Claude** → write to `.claude/skills/<plugin>__<skill>/SKILL.md` (double
-  underscore as the in-directory delimiter; the file's frontmatter `name`
-  field is set to `<plugin>:<skill>` to match Claude's canonical invocation
-  token). Existing scanner picks it up unchanged.
+  underscore as the in-directory delimiter, filesystem-safe). Frontmatter
+  `name` is set to `<plugin>:<skill>` to match Claude's canonical
+  invocation token. **This requires a small amendment to doc 138's regexes**
+  — both `MessageInput.tsx:265` (`/^\/([a-zA-Z0-9._-]*)$/`) and
+  `agent-execution.ts:115` (`/^\/[a-zA-Z0-9._-]+/`) currently exclude `:`,
+  so the autocomplete would close on the `:` and the leading-slash detector
+  would miss the full token. Widen both regexes to allow `:` (e.g.
+  `/^\/([a-zA-Z0-9._:-]*)$/`); call out as a v1-scoped doc 138 amendment
+  in Key files.
 - **Codex** → write to `.codex/skills/<plugin>__<skill>/SKILL.md` (or
   `.agents/skills/` per the directory-layout note; write to whichever the
   user's existing skills already use, defaulting to `.codex/skills/` until
   `.agents/skills/` is confirmed canonical). Frontmatter `name` set to
-  `<plugin>:<skill>`; invocation token is `$<plugin>:<skill>`.
+  `<plugin>:<skill>`; invocation token is `$<plugin>:<skill>`. Codex's
+  catalog-injection model reads `SKILL.md` directly (per doc 138) so the
+  regex amendment doesn't bind there, but it's harmless for Codex too.
 
 The catalog *fetch* logic is shared (Git clone or HTTP download + JSON parse
 of the manifest). Only the *write* step branches per agent.
@@ -438,32 +468,42 @@ must MERGE into the existing file, scoping its edits to a known
 hand-written rule in another block survives. The merge design lives in v3,
 not here.
 
-### Pick up new skills — restart the agent process
+### Pick up new skills — pick the lightest primitive per backend
 
-After install/uninstall, ShipIt restarts the session's agent process via the
-existing `restartAgent` flow (doc 127). This applies to **both** backends —
-ShipIt runs Claude non-interactively via `claude -p`, where `/reload-plugins`
-is process-state CLI machinery that doesn't flow through the prompt stream
-(per doc 132: built-in slash commands are CLI process-state, not prompts).
-Sending `/reload-plugins` as a chat message would either be echoed as prose
-or, worse, hit doc 138's `Skill` allowlist as a malformed skill invocation.
+Two facts decide the right primitive:
+
+- ShipIt runs Claude non-interactively via `claude -p`. `/reload-plugins`
+  is CLI process-state machinery that doesn't flow through the prompt stream
+  (per doc 132: built-in slash commands are CLI process-state, not
+  prompts). Sending `/reload-plugins` as a chat message would either be
+  echoed as prose or hit doc 138's `Skill` allowlist as a malformed
+  invocation.
+- `restartAgent` (doc 127) destroys and recreates the entire agent
+  container — a seconds-scale operation that doc 127 itself calls out as
+  overkill when a lighter alternative suffices.
+
+So we pick by backend, using the lightest thing that works:
+
+| Backend | Process model | What we do on install |
+|---|---|---|
+| Claude `claude -p` (default) | New process spawned per turn from `src/server/session/claude.ts:317` | **Nothing.** The next user prompt naturally spawns a fresh `claude -p`, which re-scans `.claude/skills/` on startup. |
+| Streaming Claude (doc 140 live-steering, if/when enabled) | Persistent worker-side process | Call `killAgent` (`services/recovery.ts:139`) — SIGKILLs the CLI process on the worker. Next turn respawns and re-scans. No container destroy. |
+| Codex (`codex app-server`) | Persistent worker-side process | Same — `killAgent`. Next `codex exec` re-injects `<skills_instructions>`. |
+
+`restartAgent` is explicitly NOT used here — it's the wrong tool for this
+job. `killAgent` is the right primitive when one is needed at all.
 
 Concrete sequence:
 
 1. Install commits to the workspace (per the concurrency rules above).
-2. If a turn is in flight, the install button was already disabled, so
-   there's nothing to interrupt.
-3. ShipIt calls the existing `restartAgent` path. The agent process exits and
-   the next user prompt spawns a fresh one that picks up the new files
-   (Claude re-scans `.claude/skills/`; Codex re-injects
-   `<skills_instructions>`).
-4. The user sees a status row in the install sheet: "Installed.
-   New skills are available for your next message." No chat-level
-   notification — installs are configuration, not conversation.
-
-This makes Claude and Codex symmetric, costs one cold-start per install
-(milliseconds), and avoids the "what does the CLI actually do in headless
-mode" trap.
+2. The install button was disabled while `runner.running`, so there's
+   nothing to interrupt.
+3. For one-shot `claude -p`: no further action; the next turn picks it up.
+   For persistent backends: call `killAgent` on the runner; next turn
+   respawns and picks up the new files.
+4. The user sees a status row in the install sheet: "Installed. New skills
+   are available for your next message." No chat-level notification —
+   installs are configuration, not conversation.
 
 ### Trust posture
 
@@ -534,7 +574,9 @@ day one, assuming v0 didn't surface anything that requires the v1a/v1b split.
    `anthropics/claude-plugins-official` (Claude) and OpenAI's official Codex
    catalog. Fetch + parse shared; *writer* branches on `agentId` (paths in the
    Divergences table). Install marker (`.shipit-installed.json`) on every
-   managed directory. Per-repo install lock via `RepoStore`.
+   managed directory. Per-workspace install mutex
+   (`Map<workspaceDir, Promise<InstallResult>>`) in the service module —
+   NOT in any persistence store; this is runtime state only.
 2. **Routes** — split across two files from day one
    (`api-routes-marketplace.ts` for app-wide, `api-routes-files.ts` for
    session-scoped; see Routes section). Marketplace collection persists in a
@@ -549,11 +591,17 @@ day one, assuming v0 didn't surface anything that requires the v1a/v1b split.
 4. **Per-agent rendering** — the active agent (from session config) decides
    which catalog and which token convention (`/name` vs `$name`) the UI
    shows. No agent-picker in the Skills tab itself; it follows the session.
-5. **Pick up new skills** — restart the agent process via the existing
-   `restartAgent` flow for both backends after a successful install. No
+5. **Pick up new skills** — no agent restart for one-shot `claude -p` (next
+   turn naturally respawns); `killAgent` (`services/recovery.ts:139`) for
+   persistent backends (Streaming Claude, Codex). No `restartAgent`, no
    `/reload-plugins` injection (see "Pick up new skills" section).
 6. **Install/turn concurrency** — Install button disabled while
-   `runner.running` is true; path-scoped `git add`; per-repo lock.
+   `runner.running` is true; path-scoped `git add`; per-workspace install
+   mutex in `services/marketplace.ts`.
+7. **Doc 138 regex amendment** — widen the `/`-slash regexes in
+   `MessageInput.tsx` and `agent-execution.ts` to allow `:`, so
+   `/<plugin>:<skill>` (Claude's canonical namespace token) works through
+   the autocomplete and the leading-slash detector.
 
 Acceptance: a user on Claude *or* Codex can open Settings → Skills, browse the
 agent's official catalog, see a skill's `SKILL.md` rendered inline in Monaco,
@@ -604,15 +652,18 @@ cover:
 | File | Change |
 |---|---|
 | `src/server/orchestrator/services/marketplace.ts` | New — marketplace + plugin listing, install/uninstall, install-marker writes |
-| `src/server/orchestrator/marketplace-store.ts` | New — app-wide marketplace state (JSON file in the orchestrator data dir, following `repo-store.ts` / `secret-store.ts`) |
+| `src/server/orchestrator/marketplace-store.ts` | New — app-wide marketplace state (SQLite via `DatabaseManager`, prepared statements, following `repo-store.ts` / `secret-store.ts`). New `marketplaces` table. |
+| `src/server/shared/database.ts` | Add the `marketplaces` table to the schema |
 | `src/server/shared/skill-scan.ts` | **No change.** v1 uses the flat `<skillsDir>/<plugin>__<skill>/SKILL.md` layout so the existing scanner (which scans exactly one level deep) picks installed skills up unchanged. |
 | `src/server/shared/types/domain-types.ts` | Add `MarketplaceSource`, `MarketplaceInfo`, `PluginInfo`, `SkillRef`, `InstallResult`, `InstallMarker` |
 | `src/server/orchestrator/api-routes-marketplace.ts` | New — app-wide marketplace routes (GET/POST/DELETE `/api/marketplaces`, refresh, plugin listing) |
 | `src/server/orchestrator/api-routes-files.ts` | Add session-scoped install/uninstall/enable routes alongside the existing `GET /api/sessions/:id/skills` from doc 138 |
-| `src/server/orchestrator/repo-store.ts` | Extend with per-repo install lock state |
-| `src/server/orchestrator/ws-handlers/...` | Wire the post-install agent-restart trigger through the existing `restartAgent` flow (doc 127) |
+| `src/server/orchestrator/services/marketplace.ts` *(install mutex)* | In-process `Map<workspaceDir, Promise<InstallResult>>` for the per-workspace install lock; same shape as `_mcpInstallMutex` in `src/server/session/session-worker.ts:133`. NOT in `RepoStore` (which is SQLite — wrong layer for runtime locks). |
+| `src/server/orchestrator/services/recovery.ts` | Install service calls `killAgent` directly when a persistent agent is running (Streaming Claude / Codex). No `restartAgent`. One-shot `claude -p` needs no kill — next turn respawns. |
 | `src/client/components/Settings.tsx` | Add `skills` tab; make the `DialogContent` `className` conditional on active tab (Skills → `max-w-5xl` + `md:h-[80vh]`, others stay at current `max-w-2xl` + `md:h-120`) |
 | `src/client/components/SkillsTab.tsx` | New — Discover/Installed (v1) → Marketplaces/Errors (v2) sub-tabs; lives inside Settings |
+| `src/client/components/MessageInput.tsx` *(doc 138 amendment)* | Widen the slash-trigger regex at line 265 from `/^\/([a-zA-Z0-9._-]*)$/` to allow `:` so `/<plugin>:<skill>` keeps the autocomplete open through the namespace separator. |
+| `src/server/orchestrator/ws-handlers/agent-execution.ts` *(doc 138 amendment)* | Widen the slash-detection regex at line 115 from `/^\/[a-zA-Z0-9._-]+/` to allow `:`, so `assembleAgentPrompt` keeps the full `<plugin>:<skill>` token at index 0 when attachments are present. |
 | `src/client/components/SkillInstallSheet.tsx` | New — install sheet with inline Monaco `SKILL.md` preview |
 | `src/client/stores/skills-store.ts` | New Zustand store for marketplace/plugin state |
 | `src/client/hooks/useMarketplace.ts` | New API hooks |
