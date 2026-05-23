@@ -1,12 +1,11 @@
 # ShipIt-in-ShipIt session-worker image (feature 118 — dogfooding mode).
 #
-# This image extends the production session-worker image with a baked-in
-# copy of ShipIt's node_modules at /opt/shipit-prebake/. The ShipIt repo's
-# `agent.install` (scripts/agent-install.sh) hardlink-seeds
-# /workspace/node_modules from this directory, which cuts the cold-start
-# `npm install` for the outer agent container from 60-180s to ~5-10s
-# (mostly a `npm install` lockfile-verify pass over an already-populated
-# tree).
+# This legacy image extends the production session-worker image with a baked-in
+# copy of ShipIt's node_modules at /opt/shipit-prebake/. It was originally used
+# with scripts/agent-install.sh to seed /workspace/node_modules before running
+# `npm install`, cutting the cold-start install for the outer agent container
+# from 60-180s to ~5-10s. The checked-in shipit.yaml now uses bare
+# `npm install` so the generic feature-148 fast-install cache can engage.
 #
 # When dogfooding ShipIt-in-ShipIt: build this image and point the outer
 # orchestrator at it via `SESSION_WORKER_IMAGE=shipit-session-worker:dogfood`.
@@ -40,8 +39,8 @@ WORKDIR /opt/shipit-prebake
 
 COPY package.json package-lock.json ./
 # `npm ci` not `npm install` — we want a deterministic install matching
-# the lockfile baked into the image. Drift between this and the user's
-# branch is reconciled by `npm install` in scripts/agent-install.sh.
+# the lockfile baked into the image. Drift between this and the user's branch
+# must be reconciled by any manual test flow that still uses the legacy wrapper.
 # `--prefer-offline` lets the build cache survive registry hiccups.
 RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
 
@@ -98,8 +97,8 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/tsconfig.json ./
 COPY --from=build /app/src ./src
 
-# The dogfood-only addition: copy the baked ShipIt node_modules tree to
-# a path scripts/agent-install.sh knows to look for.
+# The dogfood-only addition: copy the baked ShipIt node_modules tree to the
+# legacy wrapper's prebake path.
 COPY --from=prebake /opt/shipit-prebake/node_modules /opt/shipit-prebake/node_modules
 COPY --from=prebake /opt/shipit-prebake/package.json /opt/shipit-prebake/package.json
 COPY --from=prebake /opt/shipit-prebake/package-lock.json /opt/shipit-prebake/package-lock.json

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# Agent-install hook for the ShipIt repo (used as `agent.install` in
-# shipit.yaml).
+# Legacy agent-install hook for the ShipIt repo. This is kept for manually
+# testing the dogfood-only prebake image, but the checked-in shipit.yaml uses a
+# bare `npm install` so the generic feature-148 fast-install cache can engage.
 #
 # Plain `npm install` against ShipIt's package.json is a 60-180s job — it
 # fetches Playwright + Chromium, builds better-sqlite3 / node-pty native
@@ -23,11 +24,11 @@
 #     already in place this is a fast "up to date" verify in the common
 #     case.
 #
-# When the prebake isn't present (any non-dogfood image), we fall through
-# to plain `npm install` — same behaviour as the previous shipit.yaml
-# entry. So this script is safe to ship as the default install command;
-# it only speeds things up when an ABI-matching prebake happens to be
-# available.
+# When the prebake isn't present (any non-dogfood image), this falls through to
+# plain `npm install`. Do not wire this back into shipit.yaml unless the worker
+# fast-install gate is updated too: shell wrappers are intentionally treated as
+# arbitrary side-effectful commands and bypass the materialized node_modules
+# cache.
 
 set -euo pipefail
 

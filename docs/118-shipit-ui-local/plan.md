@@ -324,22 +324,19 @@ This means: in local mode, an inner session opening a *different* repo (not Ship
 - **Inner-session features that "work" in production but silently no-op in local mode.** We need clear UI surfacing — a banner in the inner orch saying "running in local mode; container features disabled" — so the developer doesn't think they're testing functionality they aren't. v1 includes this banner.
 - **Confusion about what's running where.** The developer is editing files in the *outer session container*'s view of `/workspace`, the inner orch is in the dev compose service's view of the same directory, and inner sessions are worktrees underneath. The mental model is no worse than production (outer orch / session container / worktree) but the visualization in the UI should not pretend an inner session has its own container.
 
-## Outer-agent install pre-bake (dogfood-only image)
+## Outer-agent install cache
 
 The outer agent container's `agent.install` (`npm install` on the ShipIt repo) is a 60-180s job — it fetches Playwright + Chromium, builds `better-sqlite3` / `node-pty`, and extracts ~600MB of `node_modules`. That wait shows up as the "Installing dependencies..." overlay in the outer preview panel and dominates session creation latency for dogfooding.
 
-`docker/Dockerfile.session-worker.dogfood` is a session-worker variant that pre-installs ShipIt's `node_modules` at `/opt/shipit-prebake/node_modules` (Node 24, ABI-matched to the runtime). The repo's `agent.install` is `bash scripts/agent-install.sh`, which:
+Feature 148 replaces the repo-specific wrapper with the generic worker-side fast-install path: ShipIt's [shipit.yaml](../../shipit.yaml) uses a bare `npm install`, and the session worker can materialize `node_modules` from `/dep-cache/nm-store/<storeKey>` when the lockfile/runtime/install-command key has already been populated. This matters because shell wrappers are intentionally treated as arbitrary side-effectful install commands and bypass the cache.
 
-1. Hardlink-copies `/opt/shipit-prebake/node_modules` to `/workspace/node_modules` when the workspace tree is missing — sub-second on a same-filesystem image, since `cp -al` shares inodes.
-2. Then runs `npm install` to reconcile any lockfile drift between the baked tree and the current branch.
+`docker/Dockerfile.session-worker.dogfood` remains as an older dogfood-only image variant that bakes ShipIt's `node_modules` at `/opt/shipit-prebake/node_modules`, but the default ShipIt repo install no longer calls `scripts/agent-install.sh`. The generic cache is the production path and is safe for all repos that use a bare package-manager install command.
 
-When dogfooding, build the image once and point the outer orchestrator at it:
+When testing that legacy dogfood image manually, build it once and point the outer orchestrator at it:
 
 ```bash
 docker build -t shipit-session-worker:dogfood -f docker/Dockerfile.session-worker.dogfood .
 SESSION_WORKER_IMAGE=shipit-session-worker:dogfood npm run dev   # or set in deployment compose
 ```
-
-The script falls through to plain `npm install` when `/opt/shipit-prebake` doesn't exist, so it's safe to ship as the default `agent.install` even for non-dogfood deployments — they just don't get the speed-up.
 
 This is intentionally **not** wired into the production session-worker images: the prebake adds ~600MB of ShipIt-specific deps that user repos don't use. Dogfood is the only consumer.

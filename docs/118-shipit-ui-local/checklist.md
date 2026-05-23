@@ -117,10 +117,10 @@ Items intentionally cut from v1 but small enough to add later if the dogfooding 
 
 ## Outer-agent install pre-bake (landed)
 
-Wires the dogfood install loop end-to-end: the outer agent container hardlink-seeds `/workspace/node_modules` from a baked image layer, so `agent.install` collapses from 60-180s to ~5-10s.
+Legacy dogfood install loop: the outer agent container could hardlink-seed `/workspace/node_modules` from a baked image layer, so `agent.install` collapsed from 60-180s to ~5-10s. Feature 148 supersedes this as the default path: `shipit.yaml` now stays on bare `npm install` so the generic worker-side `node_modules` cache can engage in production.
 
-- [x] `scripts/agent-install.sh` — opportunistic prebake-seed wrapper around `npm install`. Falls through to plain `npm install` when no prebake is present, so it's safe as the default `agent.install` everywhere.
-- [x] `shipit.yaml` — `agent.install: bash scripts/agent-install.sh`.
+- [x] `scripts/agent-install.sh` — legacy opportunistic prebake-seed wrapper around `npm install`. It is no longer the default because shell wrappers bypass the feature-148 fast-install cache.
+- [x] `shipit.yaml` — reverted to bare `agent.install: npm install` for the feature-148 fast-install cache.
 - [x] `docker/Dockerfile.session-worker.dogfood` — new session-worker variant that bakes ShipIt's `node_modules` at `/opt/shipit-prebake/`. Documented build / `SESSION_WORKER_IMAGE` invocation in `plan.md`.
 - [x] `.dockerignore` — exclude the new dogfood Dockerfile from build contexts (parity with the other session-worker variants).
 

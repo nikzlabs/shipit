@@ -36,4 +36,5 @@
 ## After ship
 
 - [x] Update `docs/148-fast-npm-install/plan.md` status `planned → in-progress` while wiring
-- [ ] On merge, flip to `done` and check off the items above
+- [x] Keep ShipIt's own `shipit.yaml` on bare `npm install` so the worker fast path can engage
+- [x] On merge, flip to `done` and check off the items above
