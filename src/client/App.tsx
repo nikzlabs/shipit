@@ -495,6 +495,24 @@ export default function App() {
     [send, requestPermission],
   );
 
+  // "Create PR" on the PR lifecycle card sends a turn to the agent instead of
+  // calling the orchestrator's quick-create route directly. The agent has the
+  // turn-by-turn context (what changed, why, which files), so it picks a better
+  // title and writes a more accurate Summary/Changes/Test plan body than the
+  // server-side LLM call could from chat history alone.
+  const handleCreatePr = useCallback(() => {
+    const text = "Please create a pull request for the changes in this session.";
+    requestPermission();
+    useUiStore.getState().setShowTemplates(false);
+    const session = useSessionStore.getState();
+    session.setMessages((prev) => [...prev, { role: "user", text }]);
+    session.setIsLoading(true);
+    session.setActivity({ label: "Creating PR..." });
+    const sid = session.sessionId;
+    const pm = useSettingsStore.getState().getPermissionMode(sid);
+    send({ type: "send_message", text, sessionId: sid, permissionMode: pm !== "auto" ? pm : undefined });
+  }, [send, requestPermission]);
+
   const handleSendComposeErrorToAgent = useCallback(() => {
     const { composeError } = usePreviewStore.getState();
     if (!composeError) return;
@@ -935,7 +953,7 @@ export default function App() {
             {isLoading && <AgentStatusBar activity={activity} />}
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
             {queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-            {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} onOpenDetails={() => handleTabChange("pr")} />}
+            {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} onOpenDetails={() => handleTabChange("pr")} onCreatePr={handleCreatePr} />}
           </div>
         </div>
       )}
