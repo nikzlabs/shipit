@@ -134,9 +134,38 @@ Sessions need two persisted fields:
 - `provider_account_id` — new selected account for that provider.
 
 `agent_pinned` remains the first-turn boundary. On first turn, ShipIt pins both
-the agent and the provider account. Later turns may switch provider account only
-through the account router when the current account is unavailable/exhausted. The
-agent itself does not change.
+the agent and the provider account. The agent itself does not change.
+
+Provider-account switching after pinning is **not** a credential-only operation.
+The existing runtime has account-bound process and thread state:
+
+- Live steering reuses an existing worker-side process via
+  `existingAgent.sendUserMessage(...)` rather than calling `/agent/start`.
+- `agentSessionId` is persisted on the ShipIt session and passed back to adapters
+  for provider-side resume/thread continuation.
+- The mounted per-session credential subtree contains files for the previously
+  selected account.
+
+So an account switch for an already-pinned session must be a full runtime
+transition:
+
+1. Stop the persistent agent process, if one exists, before switching accounts.
+   Reusing the old process would keep sending requests with account A.
+2. Clear the stored `agentSessionId` unless the provider explicitly supports
+   cross-account conversation migration. Claude and Codex should be treated as
+   **not** supporting it: account B cannot resume account A's Claude session or
+   Codex thread.
+3. Replace the provider credential subtree in the session credential directory
+   with account B's subtree before the next `/agent/start`.
+4. Start a new provider-side conversation and reconstruct context from ShipIt's
+   local chat history / current workspace state, not from provider resume.
+5. Record a chat-visible system event that the session moved from account A to
+   account B and provider-side resume was reset.
+
+Automatic account switching is therefore allowed only at a turn boundary or in a
+safe pre-tool retry path. If a persistent process is alive, the router first
+terminates it and restarts from local context. Token sync-in alone is never
+sufficient for account switching.
 
 ## Data model
 
@@ -208,8 +237,39 @@ signOut({ accountId, credentialDir })
 getAccessToken({ accountId, credentialDir })
 ```
 
-Claude and Codex auth flows still use the upstream CLI/device/OAuth flow. The
-only change is where the resulting files are persisted.
+This requires more than changing read paths. The current `AuthManager` and
+`CodexAuthManager` spawn provider CLIs that write to hardcoded default locations
+inside the orchestrator container (`/root/.claude`, `/root/.claude.json`,
+`/root/.codex/auth.json`). The account-scoped implementation must explicitly
+force each auth subprocess to write to the target account directory.
+
+Implementation options, in preferred order:
+
+1. **Per-flow temporary HOME/config root.** Spawn the provider CLI with a
+   temporary `HOME` whose `.claude` / `.codex` paths are symlinks to
+   `provider-accounts/<provider>/<accountId>/...`. This avoids mutating the
+   orchestrator's real root symlinks and permits concurrent auth flows for
+   different accounts.
+2. **Provider config env vars, if stable.** If a provider CLI exposes a supported
+   config-dir override, use it instead of `HOME`.
+3. **Serialized symlink rebinding.** Temporarily repoint `/root/.claude` or
+   `/root/.codex` at the account directory while the login process runs. This is
+   a fallback only because it must be globally serialized per provider and is
+   risky while other code reads root paths.
+
+Each auth flow's pending state becomes keyed by `{ provider, accountId }`:
+
+- in-flight process handle,
+- last pending URL/code event,
+- timeout,
+- output buffer,
+- completion/failure state.
+
+Starting auth for account A must not block or overwrite the pending event for
+account B, except where a provider-specific global CLI constraint forces
+serialization. Existing singleton events (`auth_url`, `codex_auth_pending`,
+`auth_complete`) become account-qualified SSE payloads so the Settings row for
+the correct account updates.
 
 ### Credential provisioning
 
@@ -270,6 +330,31 @@ type SubscriptionLimitsMap = Record<
 Claude can poll quota per account using that account's OAuth token. Codex remains
 event-fed where possible; its rate-limit event must be associated with the
 account used by the current runner.
+
+Codex needs an explicit unknown-quota state because the current implementation
+has no reliable out-of-band usage fetch. A Codex account may be authenticated and
+ready while `quota` is still unknown until a turn emits
+`account/rateLimits/updated`.
+
+Selection policy with unknown quota:
+
+1. Never treat unknown quota as exhausted.
+2. Prefer a ready account with fresh known quota over unknown quota when both are
+   otherwise equivalent.
+3. Prefer the user's primary account over a non-primary unknown account.
+4. If every eligible Codex subscription account has unknown quota, choose the
+   primary account and record that the first turn will hydrate its quota.
+5. Once a Codex snapshot arrives, update only the account used by that runner.
+
+The `OPENAI_API_KEY` fallback from doc 119 is **not** a subscription account and
+does not participate in subscription quota ranking. Model it separately as a
+provider auth fallback:
+
+- It may make `codex` runnable when no ChatGPT subscription account exists.
+- It does not render a subscription-limits pill.
+- It is never selected for "switch to another subscription" failover.
+- If both a Codex subscription account and `OPENAI_API_KEY` exist, subscription
+  credentials remain preferred so Platform API billing is not used silently.
 
 Hard exhaustion signals:
 
@@ -357,6 +442,11 @@ turn-level sync-in refreshes it from the selected account before start.
   files by `{ provider, accountId }`.
 - `src/server/orchestrator/ws-handlers/agent-execution.ts` — select account,
   pin account, detect safe retry, and perform failover.
+- `src/server/orchestrator/services/child-sessions.ts` — agent-spawned sessions
+  bypass `runAgentWithMessage` and directly provision credentials before
+  `sendSystemMessage`; they must select or inherit a provider account, persist
+  `provider_account_id`, and provision account-qualified credentials before
+  setting `agent_pinned`.
 - `src/server/orchestrator/limits/*` and `limits-poller.ts` — move from
   agent-keyed snapshots to provider-account snapshots.
 - `src/server/shared/types/agent-types.ts` — add optional provider-account
@@ -415,6 +505,10 @@ turn-level sync-in refreshes it from the selected account before start.
   account has more remaining quota.
 - **Warm pool timing:** confirm account selection happens before credential
   provisioning for every runner path, including claimed warm sessions.
+- **Child-session inheritance policy:** decide whether spawned sessions inherit
+  the parent's provider account by default or run the same account router used by
+  normal new sessions. Inheritance is more predictable; routing is better for
+  quota spreading.
 
 ## Test plan
 
@@ -430,6 +524,15 @@ turn-level sync-in refreshes it from the selected account before start.
 - Integration: mid-turn exhaustion before side effects retries on secondary once.
 - Integration: mid-turn exhaustion after side effects emits a confirmation prompt
   and does not auto-retry.
+- Integration: switching a pinned session from account A to account B kills any
+  persistent agent, clears provider resume state, reprovisions account B's
+  credentials, and starts from local context.
+- Integration: agent-spawned child sessions persist `provider_account_id` and
+  provision account-qualified credentials before their first `sendSystemMessage`
+  turn.
+- Integration: Codex unknown-quota accounts are selectable but do not outrank
+  equivalent accounts with fresh known quota; `OPENAI_API_KEY` fallback is not
+  rendered or ranked as a subscription account.
 - Client: Settings renders multiple provider accounts and can make one primary.
 - Client: subscription limits render multiple accounts per provider without
   layout overlap.
