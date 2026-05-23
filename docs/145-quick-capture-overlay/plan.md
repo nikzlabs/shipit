@@ -79,14 +79,36 @@ auto-height, dropped over a dimmed backdrop. Contents top-to-bottom:
    session will be created: e.g. "New session in `shipit`" or "New
    session in `shipit` from branch `main`." Clicking the badge opens the
    existing repo picker so the user can change targets before submitting.
-2. **Prompt input** — a single textarea, autofocused, matching the
-   MessageInput visual style. Supports the same affordances where they
-   make sense:
-   - `@`-autocomplete for files (in the chosen repo)
-   - `/`-autocomplete for skills
-   - Multi-line via Shift+Enter
-   - The existing draft-persistence helper, scoped to the overlay (not
-     per-session, since there is no session yet)
+2. **Prompt input** — the existing `MessageInput` component
+   (`src/client/components/MessageInput.tsx`), reused verbatim. Not a
+   lookalike, not a refactor-into-a-shared-shell — the same
+   `<MessageInput />` that renders inside the chat panel. That buys us,
+   for free, exactly the affordances the overlay needs to feel
+   continuous with the rest of the app:
+   - `@`-autocomplete against the chosen repo's file tree
+   - `/`-autocomplete for skills (Codex `$`-prefix swap included)
+   - Multi-line via Shift+Enter, Enter to submit, autosize, paste, drag-drop
+   - Attachment chips, file picker, permission-mode selector, agent /
+     model selector
+   - Draft persistence via the existing `focusKey` plumbing — pass a
+     sentinel like `"__quick_capture__"` and the overlay gets its own
+     entry in `shipit-draft-message:*` localStorage, isolated from any
+     session's draft. No new persister, no new helper.
+
+   The overlay supplies the props `MessageInput` already expects
+   (`onSend`, `disabled`, `fileTree`, `skills`, `agents`, `activeAgentId`,
+   `modelInfo`, `pendingFiles`, `uploads`, …) sourced from the chosen
+   repo and the global bootstrap state. Overlay-context props are
+   stubbed: `isLoading=false` (no agent in flight yet),
+   `hasActiveSession=false`, `contextTokens=0`, `hasPrCard=false`,
+   `liveSteeringActive=false`. The stop button and live-steering UI
+   hide automatically when `isLoading=false`; the context dial hides
+   when `contextTokens===0` and `modelInfo` is null. No MessageInput
+   change is required to host it in the overlay.
+
+   This is a hard constraint, not a starting point. If a future change
+   tempts a contributor to fork the component "just for the overlay,"
+   that's the signal that MessageInput needs a prop, not a clone.
 3. **Hint row** — small text: "Enter to send · Shift+Enter for newline ·
    Esc to dismiss."
 4. **Send button** — optional; Enter is the primary path.
@@ -247,9 +269,14 @@ Client-heavy, but with real server work for the headless-start primitive.
 
 **Client (new):**
 
-- `src/client/components/QuickCaptureOverlay.tsx` — the modal component.
-  Mounted once at `AppLayout` level, visibility controlled by a UI store
-  field. Owns its own input state and the repo/branch selection.
+- `src/client/components/QuickCaptureOverlay.tsx` — the modal shell:
+  backdrop, centered card, repo/branch badge, error state, dismiss
+  wiring, and a `<MessageInput />` instance for the prompt. Mounted
+  once at `AppLayout` level, visibility controlled by a UI store
+  field. This file does *not* re-implement a textarea — it composes
+  `MessageInput` as-is. The overlay owns the repo/branch selection,
+  submission orchestration, and submitting/error state; `MessageInput`
+  owns the text, draft, attachments, autocomplete, and toolbar.
 - `src/client/hooks/useQuickCaptureHotkey.ts` — global key listener that
   toggles the overlay. Conflict-detected against existing hotkeys at
   registration time.
@@ -389,10 +416,16 @@ moving code between files.
 
 Vitest (client):
 
-- **`QuickCaptureOverlay.test.tsx`** — open/close behaviour, Enter submits,
-  Esc dismisses with draft preserved, Shift+Enter newline, error state
-  rendering, repo badge defaults including the "bootstrap not yet loaded"
-  spinner state.
+- **`QuickCaptureOverlay.test.tsx`** — overlay-specific concerns only:
+  open/close behaviour, repo badge default + click-to-pick, error state
+  rendering, the "bootstrap not yet loaded" spinner state, and that
+  the overlay's `onSend` wiring posts to `POST /api/sessions/headless`
+  and closes on success without navigating. Input-internal behaviour
+  (Enter submits, Shift+Enter newline, `@`/`/` autocomplete, draft
+  persistence, attachments) is already covered by
+  `MessageInput.test.tsx`; do not re-test it here — the overlay test
+  should verify it *renders* `<MessageInput />`, not duplicate its
+  behavioural suite.
 - **`useQuickCaptureHotkey.test.ts`** — hotkey fires with modifier
   regardless of focus, settings rejects no-modifier hotkeys, cleanup on
   unmount.
