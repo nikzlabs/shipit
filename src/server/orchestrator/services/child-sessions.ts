@@ -12,12 +12,14 @@ import fs from "node:fs/promises";
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { RepoGit } from "../repo-git.js";
+import type { RepoStore } from "../repo-store.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { SessionInfo, AgentId } from "../../shared/types.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { provisionAgentCredentials } from "../session-credentials.js";
 import { ServiceError } from "./types.js";
+import type { ClaimSessionService } from "./claim-session.js";
 
 /**
  * Read a positive-integer env var override. Returns `undefined` when the var
@@ -135,6 +137,8 @@ export async function spawnChildSession(
   getBareCacheDir: (repoUrl: string) => string,
   sessionsRoot: string,
   githubAuthManager: { authenticated: boolean; configureGitCredentials: (dir: string) => void },
+  claimService: ClaimSessionService,
+  repoStore: RepoStore,
   parentSessionId: string,
   opts: SpawnChildSessionOptions,
   defaultAgentId: AgentId,
@@ -183,75 +187,116 @@ export async function spawnChildSession(
   assertValidBranchName(branchName);
   const title = opts.title?.trim() || trimmedPrompt.slice(0, 60) || "Spawned session";
 
-  // Compute the child's session dir.
-  const crypto = await import("node:crypto");
-  const newSessionId = crypto.randomUUID();
-  const newSessionDir = path.join(sessionsRoot, newSessionId);
-  const newWorkspaceDir = path.join(newSessionDir, "workspace");
-  await fs.mkdir(newSessionDir, { recursive: true });
+  // When the parent's repo is registered and ready, route through the same
+  // warm-pool-aware claim path the home screen uses (`claimSessionService`).
+  // The claim gives us a workspace branched off a freshly-fetched
+  // `origin/main`, so the child's "Changes vs main" diff is accurate from
+  // the moment it appears — instead of inheriting whatever stale `origin/main`
+  // snapshot the parent's bare cache happened to have, plus the parent's
+  // committed-but-not-merged WIP on top.
+  //
+  // The fallback path below is preserved for parents without a registered
+  // remote (integration tests, ad-hoc local repos) — there's no `origin/main`
+  // to branch off, so we keep the original "branch off parent's HEAD" behavior.
+  const useClaim = !!(parent.remoteUrl && repoStore.get(parent.remoteUrl)?.status === "ready");
 
-  // Resolve the branch start point. When the caller omits `--base`, we use the
-  // parent's current HEAD so the child sees the parent's *committed* state.
-  // Uncommitted/unstaged work in the parent's working tree is intentionally
-  // not visible — the child has its own clone.
-  let startPoint = opts.base?.trim();
-  if (!startPoint) {
-    try {
-      const parentHead = await simpleGit(parent.workspaceDir).revparse(["HEAD"]);
-      startPoint = parentHead.trim();
-    } catch {
-      // Empty repo or detached HEAD with no commits — let `git checkout -b`
-      // fall back to the current branch tip.
-      startPoint = undefined;
-    }
-  }
+  let newSessionId: string;
+  let newWorkspaceDir: string;
 
-  // Clone path mirrors `forkSession`: bare-cache → workspace when the parent
-  // has a remote; local clone of the parent's session dir otherwise.
-  if (parent.remoteUrl) {
-    const cacheDir = getBareCacheDir(parent.remoteUrl);
-    const cacheGit = createRepoGit(cacheDir);
+  if (useClaim && parent.remoteUrl) {
+    const claimed = await claimService.claim(parent.remoteUrl);
+    newSessionId = claimed.sessionId;
+    newWorkspaceDir = claimed.workspaceDir;
+
+    // The claim cut a warm-prefix branch (`shipit/<random>`). Rename it to
+    // the spawn's chosen name so the child appears with the right branch
+    // from the start.
     try {
-      await cacheGit.fetchCache();
+      const currentBranch = (await simpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
+      if (currentBranch && currentBranch !== branchName) {
+        await simpleGit(newWorkspaceDir).raw(["branch", "-m", currentBranch, branchName]);
+      }
     } catch (err) {
-      // Non-fatal: a stale bare cache should not block spawn. The branch is
-      // cut from `startPoint`, which we resolved against the parent's
-      // workspace clone (or `git checkout -b` falls back to current HEAD).
-      console.warn("[spawn-child] fetchCache failed (non-fatal):", String(err));
+      throw new ServiceError(400, `Failed to rename branch to '${branchName}': ${String(err)}`);
     }
-    await cacheGit.cloneFromCache(newWorkspaceDir, parent.remoteUrl);
+
+    // Honor an explicit `--base`. The claim placed HEAD at `origin/HEAD`; a
+    // caller-supplied base needs a hard reset to take effect. Safe because
+    // the claim's workspace has no user changes yet.
+    if (opts.base) {
+      try {
+        await simpleGit(newWorkspaceDir).raw(["reset", "--hard", opts.base]);
+      } catch (err) {
+        throw new ServiceError(400, `Failed to reset to base '${opts.base}': ${String(err)}`);
+      }
+    }
+
+    // Graduate the warm session into a user-visible spawn and override the
+    // claim-assigned title / branch. Credentials, gc.auto config, and the
+    // remoteUrl row were all set during the claim itself.
+    sessionManager.rename(newSessionId, title);
+    sessionManager.setBranch(newSessionId, branchName);
+    sessionManager.setBranchRenamed(newSessionId, true);
+    sessionManager.setWarm(newSessionId, false);
   } else {
-    // Local-repo fallback (used by integration tests that don't set up a remote).
-    await simpleGit().raw(["clone", "--local", parent.workspaceDir, newWorkspaceDir]);
-    await simpleGit(newWorkspaceDir).raw(["config", "gc.auto", "0"]);
+    // Local-repo fallback: parent isn't backed by a registered remote (tests,
+    // ad-hoc repos). Branch off parent's HEAD so the child sees the parent's
+    // committed state — preserves the docs/117 v1 behavior for this path.
+    const crypto = await import("node:crypto");
+    newSessionId = crypto.randomUUID();
+    const newSessionDir = path.join(sessionsRoot, newSessionId);
+    newWorkspaceDir = path.join(newSessionDir, "workspace");
+    await fs.mkdir(newSessionDir, { recursive: true });
+
+    let startPoint = opts.base?.trim();
+    if (!startPoint) {
+      try {
+        const parentHead = await simpleGit(parent.workspaceDir).revparse(["HEAD"]);
+        startPoint = parentHead.trim();
+      } catch {
+        // Empty repo / detached HEAD — fall through.
+        startPoint = undefined;
+      }
+    }
+
+    if (parent.remoteUrl) {
+      // Remote URL exists but the repo isn't registered (yet/anymore) —
+      // mirror the original bare-cache clone for graceful degradation.
+      const cacheDir = getBareCacheDir(parent.remoteUrl);
+      const cacheGit = createRepoGit(cacheDir);
+      try {
+        await cacheGit.fetchCache();
+      } catch (err) {
+        console.warn("[spawn-child] fetchCache failed (non-fatal):", String(err));
+      }
+      await cacheGit.cloneFromCache(newWorkspaceDir, parent.remoteUrl);
+    } else {
+      await simpleGit().raw(["clone", "--local", parent.workspaceDir, newWorkspaceDir]);
+      await simpleGit(newWorkspaceDir).raw(["config", "gc.auto", "0"]);
+    }
+
+    const branchArgs = ["checkout", "-b", branchName];
+    if (startPoint) branchArgs.push(startPoint);
+    try {
+      await simpleGit(newWorkspaceDir).raw(branchArgs);
+    } catch (err) {
+      await fs.rm(newSessionDir, { recursive: true, force: true }).catch(() => {});
+      throw new ServiceError(400, `Failed to create branch '${branchName}': ${String(err)}`);
+    }
+
+    if (githubAuthManager.authenticated) {
+      githubAuthManager.configureGitCredentials(newWorkspaceDir);
+    }
+
+    sessionManager.track(newSessionId, title, newWorkspaceDir);
+    sessionManager.setBranch(newSessionId, branchName);
+    sessionManager.setBranchRenamed(newSessionId, true);
+    if (parent.remoteUrl) {
+      sessionManager.setRemoteUrl(newSessionId, parent.remoteUrl);
+    }
   }
 
-  // Cut the child's branch off `startPoint` (or HEAD when undefined).
-  const branchArgs = ["checkout", "-b", branchName];
-  if (startPoint) branchArgs.push(startPoint);
-  try {
-    await simpleGit(newWorkspaceDir).raw(branchArgs);
-  } catch (err) {
-    // Best-effort cleanup; the next garbage sweep will reclaim the empty dir.
-    await fs.rm(newSessionDir, { recursive: true, force: true }).catch(() => {});
-    throw new ServiceError(400, `Failed to create branch '${branchName}': ${String(err)}`);
-  }
-
-  if (githubAuthManager.authenticated) {
-    githubAuthManager.configureGitCredentials(newWorkspaceDir);
-  }
-
-  // Persist the session row + parent linkage + model. We deliberately do NOT
-  // mark the session warm — it's an explicit, user-visible session from the
-  // moment it appears in the sidebar.
-  sessionManager.track(newSessionId, title, newWorkspaceDir);
-  sessionManager.setBranch(newSessionId, branchName);
-  // Branch is already a deliberate name (either user-supplied or a generated
-  // prefix) — we don't need the warm-session "rename on first message" dance.
-  sessionManager.setBranchRenamed(newSessionId, true);
-  if (parent.remoteUrl) {
-    sessionManager.setRemoteUrl(newSessionId, parent.remoteUrl);
-  }
+  // Common metadata (both paths).
   sessionManager.setParentSession(newSessionId, parentSessionId, opts.spawnedByTurn);
   const modelToSet = opts.model ?? parent.model;
   if (modelToSet) {

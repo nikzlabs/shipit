@@ -17,14 +17,19 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
+import { RepoStore } from "../repo-store.js";
+import { repoUrlToHash } from "../git-utils.js";
 import { AuthManager } from "../auth.js";
+import type { GitHubAuthManager } from "../github-auth.js";
 import { DatabaseManager } from "../../shared/database.js";
 import {
   StubAuthManager,
+  StubGitHubAuthManager,
   FakeClaudeProcess,
   TestClient,
   createTestCredentialStore,
@@ -526,5 +531,217 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       url: `/api/sessions/${parentBId}/children/${childId}/archive`,
     });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+// -------------------------------------------------------------------------
+// Remote-path spawn: when the parent's repo is registered, the spawn flow
+// routes through the same claim service as the home-screen "send with repo"
+// flow. The child's workspace is branched off freshly-fetched `origin/main`,
+// not off the parent's HEAD — so the "Changes vs main" diff is empty even
+// when the parent has accumulated committed work on its own branch.
+// -------------------------------------------------------------------------
+
+const SPAWN_REPO_URL = "https://github.com/owner/spawn-remote-test.git";
+
+function getSpawnRepoCacheDir(workspaceDir: string, repoUrl: string): string {
+  return path.join(workspaceDir, "repo-cache", repoUrlToHash(repoUrl));
+}
+
+/**
+ * Create a fake bare cache with a single commit on `main` and an
+ * `origin/main` ref pointing at HEAD. The fake `origin` URL won't resolve,
+ * but `fetchAndResolveDefaultBranch` falls back to local refs on fetch
+ * failure — so the claim path still cuts the branch off this commit.
+ */
+function createCachedRepo(repoDir: string): void {
+  fs.mkdirSync(repoDir, { recursive: true });
+  execSync("git init", { cwd: repoDir, stdio: "ignore" });
+  execSync("git checkout -b main", { cwd: repoDir, stdio: "ignore" });
+  fs.writeFileSync(path.join(repoDir, "README.md"), "# spawn-remote-test\n");
+  execSync("git add .", { cwd: repoDir, stdio: "ignore" });
+  execSync('git -c user.email=t@t.com -c user.name=Test commit -m init --no-gpg-sign', { cwd: repoDir, stdio: "ignore" });
+  execSync(`git remote add origin ${SPAWN_REPO_URL}`, { cwd: repoDir, stdio: "ignore" });
+  execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: repoDir, stdio: "ignore" });
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 10000, label = "condition"): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`waitFor("${label}") timed out`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+describe("Integration: spawn from registered remote (claim path, docs/117 + this fix)", () => {
+  let app: FastifyInstance;
+  let tmpDir: string;
+  let sessionManager: SessionManager;
+  let repoStore: RepoStore;
+  let dbManager: DatabaseManager;
+  let origGitTerminalPrompt: string | undefined;
+
+  beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-spawn-remote-"));
+
+    origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
+    process.env.GIT_TERMINAL_PROMPT = "0";
+
+    sessionManager = new SessionManager(dbManager);
+    repoStore = new RepoStore(dbManager);
+
+    // Pre-create the bare cache so the warm pool and the claim path both
+    // find a usable repo at startup.
+    createCachedRepo(getSpawnRepoCacheDir(tmpDir, SPAWN_REPO_URL));
+
+    repoStore.add(SPAWN_REPO_URL);
+    repoStore.setReady(SPAWN_REPO_URL);
+
+    app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      repoStore,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      agentFactory: () => new FakeClaudeProcess() as never,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+    });
+
+    await app.listen({ port: 0, host: "127.0.0.1" });
+  });
+
+  afterEach(async () => {
+    await app.close();
+    dbManager.close();
+    if (origGitTerminalPrompt === undefined) {
+      delete process.env.GIT_TERMINAL_PROMPT;
+    } else {
+      process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+
+  /**
+   * Stand up a parent session via claim, then simulate it having received
+   * its first message — i.e. `warm = false`. Without this graduation step
+   * the claim path's `findUngraduatedWarm` would lookup the parent itself
+   * as a reusable warm session and the spawn would alias to the parent's
+   * own workspace. In production the parent has always been used (the
+   * spawn arrives during an agent turn that started from a user message),
+   * so warm is already false by the time spawn fires.
+   */
+  async function claimGraduatedParent(): Promise<{ parentId: string; workspaceDir: string }> {
+    await waitFor(() => !!repoStore.get(SPAWN_REPO_URL)?.warmSessionId, 10000, "warm session");
+    const claimRes = await app.inject({
+      method: "POST",
+      url: `/api/repos/${encodeURIComponent(SPAWN_REPO_URL)}/claim-session`,
+    });
+    expect(claimRes.statusCode).toBe(200);
+    const { sessionId: parentId } = claimRes.json() as { sessionId: string };
+    sessionManager.setWarm(parentId, false);
+    const parent = sessionManager.get(parentId)!;
+    return { parentId, workspaceDir: parent.workspaceDir! };
+  }
+
+  it("spawns the child branched off origin/main, NOT off parent's HEAD", { timeout: 30_000 }, async () => {
+    const { parentId, workspaceDir: parentWorkspace } = await claimGraduatedParent();
+
+    // Capture origin/main BEFORE the parent diverges from it.
+    const mainSha = execSync("git rev-parse origin/main", {
+      cwd: parentWorkspace,
+      encoding: "utf8",
+    }).trim();
+
+    // Simulate parent doing committed-but-unmerged work — the scenario that
+    // used to leak into spawned children's "Changes vs main".
+    fs.writeFileSync(path.join(parentWorkspace, "wip.txt"), "parent WIP\n");
+    execSync(
+      'git add wip.txt && git -c user.email=t@t.com -c user.name=Test commit -m "parent wip" --no-gpg-sign',
+      { cwd: parentWorkspace },
+    );
+    const parentHead = execSync("git rev-parse HEAD", {
+      cwd: parentWorkspace,
+      encoding: "utf8",
+    }).trim();
+    expect(parentHead).not.toBe(mainSha);
+
+    // Wait for the pool to re-warm so the spawn's claim has a session to
+    // grab quickly (either path is correct; this just makes timing predictable).
+    await waitFor(() => !!repoStore.get(SPAWN_REPO_URL)?.warmSessionId, 10000, "re-warm after parent claim");
+
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "do the thing", branch: "spawn-test-child" },
+    });
+    expect(spawnRes.statusCode).toBe(200);
+    const { sessionId: childId } = spawnRes.json() as { sessionId: string };
+
+    const child = sessionManager.get(childId);
+    expect(child?.workspaceDir).toBeDefined();
+    expect(child?.workspaceDir).not.toBe(parentWorkspace);
+
+    // The fix: child's HEAD is at origin/main, NOT inherited from parent's HEAD.
+    const childHead = execSync("git rev-parse HEAD", {
+      cwd: child!.workspaceDir!,
+      encoding: "utf8",
+    }).trim();
+    expect(childHead).toBe(mainSha);
+    expect(childHead).not.toBe(parentHead);
+
+    // Child is on the requested branch.
+    const childBranch = execSync("git branch --show-current", {
+      cwd: child!.workspaceDir!,
+      encoding: "utf8",
+    }).trim();
+    expect(childBranch).toBe("spawn-test-child");
+
+    // Child must be a fully-graduated session, not a warm-pool slot.
+    expect(child?.warm).toBeFalsy();
+    expect(child?.branchRenamed).toBe(true);
+    expect(child?.parentSessionId).toBe(parentId);
+    expect(child?.remoteUrl).toBe(SPAWN_REPO_URL);
+  });
+
+  it("honors opts.base by resetting HEAD after the claim", { timeout: 30_000 }, async () => {
+    // Add an extra commit to the cache so we have a non-HEAD commit reachable
+    // from origin/main's history. `opts.base` must resolve in the child's
+    // clone (a copy of the cache), so the commit has to live there — pushing
+    // from the parent's workspace into a non-bare cache fails on
+    // receive.denyCurrentBranch, hence we commit directly in the cache.
+    const cacheDir = getSpawnRepoCacheDir(tmpDir, SPAWN_REPO_URL);
+    const baseSha = execSync("git rev-parse HEAD", { cwd: cacheDir, encoding: "utf8" }).trim();
+    fs.writeFileSync(path.join(cacheDir, "tip.txt"), "tip\n");
+    execSync(
+      'git add tip.txt && git -c user.email=t@t.com -c user.name=Test commit -m tip --no-gpg-sign',
+      { cwd: cacheDir },
+    );
+    execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: cacheDir });
+    const tipSha = execSync("git rev-parse HEAD", { cwd: cacheDir, encoding: "utf8" }).trim();
+    expect(tipSha).not.toBe(baseSha);
+
+    const { parentId } = await claimGraduatedParent();
+    await waitFor(() => !!repoStore.get(SPAWN_REPO_URL)?.warmSessionId, 10000, "re-warm");
+
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", branch: "base-test", base: baseSha },
+    });
+    expect(spawnRes.statusCode).toBe(200);
+    const { sessionId: childId } = spawnRes.json() as { sessionId: string };
+    const child = sessionManager.get(childId)!;
+
+    const childHead = execSync("git rev-parse HEAD", { cwd: child.workspaceDir!, encoding: "utf8" }).trim();
+    expect(childHead).toBe(baseSha);
+    expect(childHead).not.toBe(tipSha);
   });
 });
