@@ -249,24 +249,39 @@ running agent:
    `git add .`. This prevents accidentally including unrelated user edits
    that happen to be in the working tree. **This is a new rule for the
    install path, NOT an existing server convention.** `GitManager.autoCommit()`
-   (`src/server/shared/git.ts:78`) uses `git add -A` and is fine for its job
+   (`src/server/shared/git.ts:70`, with the `git add -A` call at line 78)
+   uses `git add -A` and is fine for its job
    (committing whatever the agent edited during a turn); the install flow
    needs the opposite discipline because the user — not the agent — is the
    one driving the change, and there may be unrelated in-flight work in the
    tree. Implementation: call `simpleGit.add([…paths])` directly with the
    plugin's own files plus the install marker, NOT through `autoCommit`.
-3. **Two-tab race in the same repo.** Two browser tabs on different sessions
-   in the same repo both clicking Install at the same time would race on the
-   git index and on the `.claude/skills/` directory. Resolution: an
-   in-process per-workspace install mutex inside `services/marketplace.ts`,
-   shaped like the canonical `Map<key, Promise<...>>` pattern used by
+   **Scope of this guarantee is single-commit only.** The next user turn's
+   `postTurnCommit()` will still run `autoCommit()`'s `git add -A` and
+   fold any unrelated edits sitting in the tree into the first
+   agent-attributed commit afterward — that's auto-commit's job and not
+   something this doc changes. The install-flow rule keeps the *install
+   commit itself* clean; subsequent commits behave as usual.
+3. **Multi-viewer / double-click races on a single session.** Two browser
+   tabs attached to the *same* session can both see the Install button
+   enabled (the runner broadcasts state to every attached viewer per
+   CLAUDE.md "Mutate runner state directly"), and a single tab can fire
+   Install twice in rapid succession. Both cases race on the git index and
+   on the `.claude/skills/` directory. Resolution: an in-process
+   per-workspace install mutex inside `services/marketplace.ts`, shaped
+   like the canonical `Map<key, Promise<...>>` pattern used by
    `_mcpInstallMutex` in `src/server/session/session-worker.ts:133` —
    concurrent callers coalesce on the in-flight promise; the entry is
    deleted in `.finally()`. This is runtime state, not persistent state
    (surviving a process restart with the lock held would be a bug), so it
    belongs in the service module, NOT in `RepoStore` (which is SQLite).
-   Keyed by `workspaceDir` because two sessions on the same repo share the
-   same workspace volume.
+   Keyed by `workspaceDir`, which is per-session: `RepoGit` gives each
+   session its own complete `.git/` via hardlinked local clones with no
+   shared worktree (`repo-git.ts:51-52`), and `session-dir-factory.ts:28-29`
+   roots `workspaceDir` under the session's own directory. So the mutex
+   covers same-session-multi-viewer and same-tab-double-click; cross-session
+   installs on the same repo are independent operations on independent
+   workspaces and don't need serialization at all.
 
 ### Install scope — repo-only
 
@@ -414,7 +429,9 @@ table holds `id`, `source` (JSON-encoded), `agent_id`, `auto_update`,
 `last_fetched_at`, `status`. v1 seeds it with the official Claude/Codex
 catalogs at orchestrator startup and never writes to it again (since v1
 doesn't expose add/remove); the table still exists from day one so v2 can
-layer on without restructuring or a schema migration.
+layer on without restructuring or needing *its own* additional migration
+on top of v1's. (Adding the table is itself a new entry in
+`src/server/shared/database.ts`'s `MIGRATIONS` array.)
 
 ### Backend-agnostic at the surface; agent-specific at the writer
 
@@ -508,7 +525,7 @@ So we pick by backend, using the lightest thing that works:
 |---|---|---|
 | Claude `claude -p` (default) | New process spawned per turn from `ClaudeProcess` (PTY) in `src/server/session/claude.ts` (`-p` arg at ~line 125, `pty.spawn("claude", …)` at ~line 190) | **Nothing.** The next user prompt naturally spawns a fresh `claude -p`, which re-scans `.claude/skills/` on startup. |
 | Streaming Claude (doc 140 live-steering, if/when enabled) | Persistent worker-side process | Call `killAgent` (`services/recovery.ts:139`) — SIGKILLs the CLI process on the worker. Next turn respawns and re-scans. No container destroy. |
-| Codex (`codex app-server`) | Persistent worker-side process | Same — `killAgent`. Next turn's `app-server` re-injects `<skills_instructions>` on respawn (**pending v0 spike** — see v0 build order; doc 138 verified this for `codex exec`, but `app-server`'s injection behavior on respawn must be re-verified). |
+| Codex (`codex app-server`) | Persistent worker-side process | Same — `killAgent`. Next turn's `app-server` re-injects `<skills_instructions>` on respawn (**pending v0 spike** — see v0 build order; doc 138 verified this for `codex exec`, but `app-server`'s injection behavior on respawn must be re-verified). **Fallback if the spike is negative:** v1 ships Claude-only (the v1a/v1b split below); v1b for Codex either waits for upstream `app-server` to gain a reload mechanism or implements a session-level reload via the JSON-RPC bridge the adapter already speaks. |
 
 `restartAgent` is explicitly NOT used here — it's the wrong tool for this
 job. `killAgent` is the right primitive when one is needed at all.
@@ -588,7 +605,8 @@ service code lands:
   namespace than CLI-installed ones (e.g. `/<plugin>__<skill>`).
 - **Codex `<skills_instructions>` injection under `app-server`.** Doc 138
   verified catalog injection for `codex exec`, but ShipIt's Codex adapter
-  spawns `codex app-server` (`src/server/session/agents/codex-adapter.ts:5`).
+  spawns `codex app-server` (args constructed at
+  `src/server/session/agents/codex-adapter.ts:330`, `spawn` at line 335).
   Whether `app-server` re-injects the catalog on every turn (so a
   `killAgent`-and-respawn picks up newly-installed skills) is the
   actually-relevant question. **Verify against the pinned Codex CLI version.**
@@ -653,6 +671,14 @@ day one, assuming v0 didn't surface anything that requires the v1a/v1b split.
    `MessageInput.tsx` and `agent-execution.ts` to allow `:`, so
    `/<plugin>:<skill>` (Claude's canonical namespace token) works through
    the autocomplete and the leading-slash detector.
+8. **Pre-clone the two seeded officials at orchestrator startup** so the
+   Discover tab opens instantly the first time a user clicks it. The disk
+   cost is bounded (two well-known catalogs) and the pattern matches how
+   `disk-janitor.ts` cleans up at startup rather than mid-session.
+   Alternative — streaming a "fetching catalog…" spinner the first time
+   Discover opens — was considered and rejected: it puts seconds of
+   first-impression latency on the user instead of amortizing it during
+   boot.
 
 Acceptance: a user on Claude *or* Codex can open Settings → Skills, browse the
 agent's official catalog, see a skill's `SKILL.md` rendered inline in Monaco,
@@ -712,6 +738,7 @@ cover:
 | `src/server/orchestrator/services/marketplace.ts` *(install mutex)* | In-process `Map<workspaceDir, Promise<InstallResult>>` for the per-workspace install lock; same shape as `_mcpInstallMutex` in `src/server/session/session-worker.ts:133`. NOT in `RepoStore` (which is SQLite — wrong layer for runtime locks). |
 | `src/server/orchestrator/services/recovery.ts` | Install service calls `killAgent` directly when a persistent agent is running (Streaming Claude / Codex). No `restartAgent`. One-shot `claude -p` needs no kill — next turn respawns. |
 | `src/client/components/Settings.tsx` | Add `skills` tab; make the `DialogContent` `className` conditional on active tab (Skills → `max-w-5xl` + `md:h-[80vh]`, others stay at current `max-w-2xl` + `md:h-120`) |
+| `src/client/stores/ui-store.ts` | Widen the `SettingsTab` discriminated union at line 30 to include `"skills"` — the persisted `settingsTab` state (which remembers the user's last-open tab across reloads) is typed against this union, and both type sites must agree. |
 | `src/client/components/SkillsTab.tsx` | New — Discover/Installed (v1) → Marketplaces/Errors (v2) sub-tabs; lives inside Settings |
 | `src/client/components/MessageInput.tsx` *(doc 138 amendment)* | Widen the slash-trigger regex at line 265 from `/^\/([a-zA-Z0-9._-]*)$/` to allow `:` so `/<plugin>:<skill>` keeps the autocomplete open through the namespace separator. |
 | `src/server/orchestrator/ws-handlers/agent-execution.ts` *(doc 138 amendment)* | Widen the slash-detection regex at line 115 from `/^\/[a-zA-Z0-9._-]+/` to allow `:`, so `assembleAgentPrompt` keeps the full `<plugin>:<skill>` token at index 0 when attachments are present. |
@@ -781,12 +808,8 @@ format — were promoted to v0 reconnaissance spikes that gate v1.)
    hook), and **at orchestrator startup** for the seeded officials. No
    per-hour or per-day timer. If a more aggressive refresh becomes necessary
    later, treat it as its own design decision — don't sneak it in here.
-3. **First-install latency for OpenAI's Codex catalog.** Git clone of a
-   third-party catalog repo can take seconds to tens of seconds on a cold
-   container. Either pre-clone the seeded officials during orchestrator
-   startup (acceptable: it's a one-time cost per orchestrator boot) or
-   stream a "fetching catalog…" state into the Discover tab the first time
-   it opens. Pick one before v1 ships.
+3. *(Resolved in Build order step 8 — pre-clone the seeded officials at
+   orchestrator startup.)*
 
 ## References
 
