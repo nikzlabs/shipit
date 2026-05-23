@@ -26,11 +26,17 @@ const openPrCard: PrCardState = {
     number: 42,
     title: "Add inline PR detail panel",
     body: "## Summary\n\nThis PR adds the panel.",
+    createdAt: "2026-05-20T10:00:00Z",
+    author: { login: "alice", avatarUrl: "https://avatars.example/alice.png" },
     url: "https://github.com/o/r/pull/42",
     baseBranch: "main",
     headBranch: "feature-branch",
     insertions: 100,
     deletions: 20,
+    files: [
+      { path: "src/client/App.tsx", status: "M", insertions: 80, deletions: 10 },
+      { path: "src/client/components/PrDetailPanel.tsx", status: "A", insertions: 20, deletions: 0 },
+    ],
   },
   checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
 };
@@ -49,6 +55,7 @@ describe("PrDetailPanel", () => {
     expect(screen.getByText("#42")).toBeInTheDocument();
     expect(screen.getByText("main")).toBeInTheDocument();
     expect(screen.getByText("feature-branch")).toBeInTheDocument();
+    expect(screen.getByText("@alice")).toBeInTheDocument();
     expect(screen.getByText("+100")).toBeInTheDocument();
     expect(screen.getByText("-20")).toBeInTheDocument();
   });
@@ -70,6 +77,16 @@ describe("PrDetailPanel", () => {
     setCard("s1", openPrCard);
     render(<PrDetailPanel sessionId="s1" />);
     expect(screen.getByText("3/3 checks passed")).toBeInTheDocument();
+  });
+
+  it("renders PR status actions in the Status section", () => {
+    setCard("s1", {
+      ...openPrCard,
+      autoMerge: { enabled: false, mergeMethod: "squash" },
+    });
+    render(<PrDetailPanel sessionId="s1" />);
+    expect(screen.getByText("Squash and merge")).toBeInTheDocument();
+    expect(screen.getByText("Auto-merge")).toBeInTheDocument();
   });
 
   it("lists failed checks when CI is failing", () => {
@@ -104,6 +121,14 @@ describe("PrDetailPanel", () => {
     setCard("s1", openPrCard);
     render(<PrDetailPanel sessionId="s1" />);
     expect(screen.getByText("View full diff")).toBeInTheDocument();
+  });
+
+  it("renders per-file rows in the Files section", () => {
+    setCard("s1", openPrCard);
+    render(<PrDetailPanel sessionId="s1" />);
+    expect(screen.getByText("src/client/App.tsx")).toBeInTheDocument();
+    expect(screen.getByText("src/client/components/PrDetailPanel.tsx")).toBeInTheDocument();
+    expect(screen.getByTitle("Added")).toHaveTextContent("A");
   });
 
   describe("Phase 2 — editing", () => {

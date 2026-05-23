@@ -33,6 +33,8 @@ function makeGraphQLPrNode(overrides: Record<string, unknown> = {}) {
     number: 42,
     title: "Add feature",
     body: "Original description",
+    createdAt: "2026-05-20T10:00:00Z",
+    author: { login: "alice", avatarUrl: "https://avatars/alice.png" },
     url: "https://github.com/owner/repo/pull/42",
     state: "OPEN",
     mergeable: "MERGEABLE",
@@ -41,7 +43,7 @@ function makeGraphQLPrNode(overrides: Record<string, unknown> = {}) {
     baseRefName: "main",
     additions: 100,
     deletions: 20,
-    files: { nodes: [] },
+    files: { nodes: [{ path: "src/index.ts", additions: 7, deletions: 2, changeType: "CHANGED" }] },
     commits: {
       nodes: [{
         commit: {
@@ -131,6 +133,8 @@ describe("parsePrNode", () => {
       prNumber: 42,
       prUrl: "https://github.com/owner/repo/pull/42",
       prTitle: "Add feature",
+      prCreatedAt: "2026-05-20T10:00:00Z",
+      prAuthor: { login: "alice", avatarUrl: "https://avatars/alice.png" },
       prState: "open",
       baseBranch: "main",
       headBranch: "shipit/abc-feature",
@@ -139,6 +143,7 @@ describe("parsePrNode", () => {
       checks: { state: "success", total: 2, passed: 2, failed: 0, pending: 0 },
       mergeable: "mergeable",
       autoMergeEnabled: false,
+      files: [{ path: "src/index.ts", status: "M", insertions: 7, deletions: 2 }],
     });
   });
 

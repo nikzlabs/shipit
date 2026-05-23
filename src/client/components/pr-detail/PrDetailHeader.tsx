@@ -45,6 +45,18 @@ function StateBadge({ phase }: { phase: PrCardState["phase"] }) {
   );
 }
 
+function formatRelativeDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return "";
+  const diffMin = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
 export function PrDetailHeader({
   card,
   sessionId,
@@ -163,6 +175,27 @@ export function PrDetailHeader({
             </div>
           )}
           <div className="mt-1 flex items-center gap-2 text-xs text-(--color-text-tertiary) flex-wrap">
+            {pr.author && (
+              <>
+                {pr.author.avatarUrl ? (
+                  <img
+                    src={pr.author.avatarUrl}
+                    alt=""
+                    className="h-4 w-4 rounded-full border border-(--color-border-secondary)"
+                  />
+                ) : null}
+                <span>@{pr.author.login}</span>
+                <span>·</span>
+              </>
+            )}
+            {pr.createdAt && (
+              <>
+                <span title={new Date(pr.createdAt).toLocaleString()}>
+                  opened {formatRelativeDate(pr.createdAt)}
+                </span>
+                <span>·</span>
+              </>
+            )}
             <span className="font-mono">{pr.baseBranch}</span>
             <span>←</span>
             <span className="font-mono">{pr.headBranch}</span>

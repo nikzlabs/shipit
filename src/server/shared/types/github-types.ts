@@ -197,6 +197,9 @@ export interface PrCommentAuthor {
   avatarUrl: string;
 }
 
+/** Author of the pull request itself. */
+export type PrAuthor = PrCommentAuthor;
+
 /**
  * A PR-level (issue) comment — the conversation timeline comments that appear
  * under the PR body on github.com, not tied to a diff line. docs/133 Phase 4.
@@ -245,11 +248,17 @@ export interface PrStatusSummary {
   prTitle: string;
   /** PR description body (markdown source). Empty string when none. */
   prBody: string;
+  /** ISO timestamp when the PR was opened. */
+  prCreatedAt?: string;
+  /** PR author. Undefined when GitHub omits the actor. */
+  prAuthor?: PrAuthor;
   prState: "open" | "merged" | "closed";
   baseBranch: string;
   headBranch: string;
   insertions: number;
   deletions: number;
+  /** Per-file summary for the open PR. Present when returned by GitHub's bounded files connection. */
+  files?: PrFileStat[];
   checks: {
     state: "pending" | "success" | "failure" | "none";
     total: number;
