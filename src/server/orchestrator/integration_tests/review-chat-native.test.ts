@@ -98,7 +98,7 @@ describe("Integration: chat-native AI review", () => {
       payload: {
         filePath: planPath,
         comments: [
-          { kind: "section", section_heading: "## Architecture", section_index: 1, text: "Clarify the registry." },
+          { kind: "selection", quoted_text: "A design", text: "Clarify the registry." },
         ],
       },
     });

@@ -230,17 +230,25 @@ export interface LineReviewComment {
   source: ReviewCommentSource;
 }
 
-/** A section-anchored comment inside a markdown file review. */
-export interface SectionReviewComment {
+/**
+ * A selection-anchored comment inside a markdown file review. The comment is
+ * anchored to a specific run of text the user highlighted; `contextBefore` and
+ * `contextAfter` are small windows of surrounding text used to disambiguate
+ * when the same `quotedText` appears multiple times in the document. When the
+ * doc drifts so that `quotedText` can no longer be located, the comment is
+ * rendered as orphaned rather than silently re-anchored to the wrong place.
+ */
+export interface SelectionReviewComment {
   id: string;
-  kind: "section";
-  sectionHeading: string;
-  sectionIndex: number;
+  kind: "selection";
+  quotedText: string;
+  contextBefore: string;
+  contextAfter: string;
   text: string;
   source: ReviewCommentSource;
 }
 
-export type ReviewComment = LineReviewComment | SectionReviewComment;
+export type ReviewComment = LineReviewComment | SelectionReviewComment;
 
 /**
  * A review of a single file inside one session. Drafts collect comments
@@ -256,8 +264,6 @@ export interface FileReview {
   comments: ReviewComment[];
   /** SHA-256 of the file content at the time the draft was created. */
   docSnapshotHash: string;
-  /** For markdown reviews, ordered list of `## ` headings at snapshot time. */
-  sectionHeadings: string[];
   createdAt: string;
   updatedAt: string;
   sentAt?: string;
@@ -273,18 +279,6 @@ export interface LineComment {
   line: number;
   text: string;
 }
-
-/** Section-anchored comment kept only for legacy data shape compatibility. */
-export interface SectionComment {
-  id: string;
-  kind: "section";
-  filePath: string;
-  sectionHeading: string;
-  sectionIndex: number;
-  text: string;
-}
-
-export type FileComment = LineComment | SectionComment;
 
 // ---- Secret declaration types (087-reusable-preview-secrets) ----
 

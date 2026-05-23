@@ -32,21 +32,6 @@ describe("comment-store", () => {
     });
   });
 
-  describe("addSectionComment", () => {
-    it("stores a comment with kind=section, heading, and index", () => {
-      useCommentStore.getState().addSectionComment("s1", "docs/x.md", "## Architecture", 2, "rethink this");
-      const comments = useCommentStore.getState().getAllComments("s1");
-      expect(comments).toHaveLength(1);
-      expect(comments[0]).toMatchObject({
-        kind: "section",
-        filePath: "docs/x.md",
-        sectionHeading: "## Architecture",
-        sectionIndex: 2,
-        text: "rethink this",
-      });
-    });
-  });
-
   describe("editComment", () => {
     it("updates text by id, preserving other fields", () => {
       useCommentStore.getState().addLineComment("s1", "a.ts", 3, "old");
@@ -56,7 +41,7 @@ describe("comment-store", () => {
       expect(c.text).toBe("new");
       expect(c.kind).toBe("line");
       expect(c.filePath).toBe("a.ts");
-      expect((c as { line: number }).line).toBe(3);
+      expect(c.line).toBe(3);
     });
 
     it("does nothing when id is unknown", () => {
@@ -99,17 +84,10 @@ describe("comment-store", () => {
     it("returns only comments matching the filePath", () => {
       useCommentStore.getState().addLineComment("s1", "a.ts", 1, "x");
       useCommentStore.getState().addLineComment("s1", "b.ts", 2, "y");
-      useCommentStore.getState().addSectionComment("s1", "a.ts", "## H", 0, "z");
+      useCommentStore.getState().addLineComment("s1", "a.ts", 3, "z");
       const aComments = useCommentStore.getState().getCommentsForFile("s1", "a.ts");
       expect(aComments).toHaveLength(2);
       expect(aComments.every((c) => c.filePath === "a.ts")).toBe(true);
-    });
-
-    it("returns both line and section comments for the file", () => {
-      useCommentStore.getState().addLineComment("s1", "a.md", 1, "line");
-      useCommentStore.getState().addSectionComment("s1", "a.md", "## H", 0, "section");
-      const kinds = useCommentStore.getState().getCommentsForFile("s1", "a.md").map((c) => c.kind).sort();
-      expect(kinds).toEqual(["line", "section"]);
     });
   });
 
