@@ -39,12 +39,18 @@ This doc uses "provider account" to mean one authenticated subscription identity
 for one agent provider. For Claude, that is one Anthropic/Claude Code account.
 For Codex, that is one ChatGPT/Codex account.
 
-API-key fallback auth is represented separately from subscription accounts but
-still needs a route id for session pinning/audit. For Codex, `codex-api-key`
-means "run with `OPENAI_API_KEY` / Platform API billing." It is eligible only
-when no subscription account is selected or when the user explicitly chooses API
-billing; it never appears in subscription quota ranking or failover-to-another-
-subscription decisions.
+Fallback auth is represented separately from subscription accounts but still
+needs a route id for session pinning/audit:
+
+- `codex-api-key` — run with `OPENAI_API_KEY` / OpenAI Platform API billing.
+- `claude-api-key` — run with `ANTHROPIC_API_KEY` / Anthropic Platform API
+  billing.
+- `claude-env-oauth` — run with `ANTHROPIC_AUTH_TOKEN`, used by dogfood/local
+  OAuth-style env auth.
+
+Fallback routes are eligible only when no subscription account is selected or
+when the user explicitly chooses that billing/auth path. They never appear in
+subscription quota ranking or failover-to-another-subscription decisions.
 
 ## Goals
 
@@ -102,6 +108,24 @@ Each row shows:
 Adding an account launches the provider's normal auth flow. OAuth/account/billing
 pages are allowed external tabs under the product principles; everything after
 auth returns to ShipIt and is rendered inline.
+
+Disconnect is blocked while the account is pinned to a running session unless
+the user chooses a replacement account. On disconnect:
+
+1. Find every session pinned to that provider account.
+2. Kill any live persistent agent process for those sessions.
+3. Disable token sync-back for the deleted account immediately.
+4. Remove the account's source credentials from
+   `/credentials/provider-accounts/...`.
+5. Purge or replace the account credential subtree in each affected per-session
+   credentials directory.
+6. Clear `agentSessionId` for affected sessions because provider-side resume is
+   no longer valid.
+7. Mark sessions as requiring account selection/re-auth, or transition them to a
+   user-selected replacement account using the full account-switch replay path.
+
+This prevents a deleted source account from continuing to run through a stale
+per-session credential copy.
 
 ### Session startup
 
@@ -192,9 +216,9 @@ Automatic retry is conservative:
   failure happened during initial provider/model request before tool execution.
   ShipIt switches to the next eligible provider account and retries once.
 - **Needs user intent:** the turn already wrote files, ran commands, modified git,
-  called MCP tools, or created external side effects. ShipIt stops, records the
-  exhausted account, surfaces the next eligible account, and asks the user in chat
-  whether to continue from the current workspace state.
+  called side-effecting MCP tools, or created external side effects. ShipIt
+  stops, records the exhausted account, surfaces the next eligible account, and
+  asks the user in chat whether to continue from the current workspace state.
 - **No retry:** all accounts are exhausted or unauthenticated.
 
 This mirrors the existing product stance: the agent is the actor, but ShipIt does
@@ -645,7 +669,8 @@ Track per-turn side effects using existing agent event observations:
 
 - Before first tool call: safe to retry.
 - After read-only tools only: safe to retry.
-- After write/edit/bash/MCP/external side-effect tools: require user intent.
+- After write/edit/bash/side-effecting MCP/external side-effect tools: require
+  user intent.
 
 Implementation can start coarse:
 
