@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: consume prefill text from external store on mount
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useLayoutEffect } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useIsMobile } from "../hooks/useMediaQuery.js";
@@ -19,6 +19,14 @@ import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo }
 import type { UploadItem } from "../hooks/useFileUpload.js";
 import type { AgentOption } from "../agent-types.js";
 import type { ModelInfo } from "../utils/model-info.js";
+
+// `field-sizing: content` (the CSS that grows the textarea with its content)
+// is supported on Chrome/Edge and Firefox desktop, but missing on Firefox for
+// Android and Safari. When unsupported we resize manually in a layout effect.
+const SUPPORTS_FIELD_SIZING =
+  typeof CSS !== "undefined" && typeof CSS.supports === "function"
+    ? CSS.supports("field-sizing", "content")
+    : false;
 
 export function MessageInput({
   onSend,
@@ -118,6 +126,22 @@ export function MessageInput({
     const loaded = focusKey ? getSavedDraftMessage(focusKey) ?? "" : "";
     if (loaded !== text) setText(loaded);
   }
+
+  // Fallback auto-grow for browsers without `field-sizing: content` support
+  // (most notably Firefox on Android). On supported browsers the CSS does
+  // this natively, so we short-circuit. The max-height cap stays on the
+  // element via Tailwind's `max-h-[40vh]` and is honored by both paths.
+  useLayoutEffect(() => {
+    if (SUPPORTS_FIELD_SIZING) return;
+    const ta = textareaRef.current;
+    if (!ta) return;
+    // Collapse first so scrollHeight reflects the content height, not the
+    // previously-set inline height (otherwise the textarea would only ever
+    // grow, never shrink when the user deletes text).
+    ta.style.height = "auto";
+    const next = ta.scrollHeight;
+    if (next > 0) ta.style.height = `${next}px`;
+  }, [text]);
 
   // Mirror text into localStorage so the draft also survives a tab refresh.
   // Declared AFTER the prefill effect below in mount-time effect ordering so
