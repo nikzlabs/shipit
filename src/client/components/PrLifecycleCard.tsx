@@ -497,12 +497,8 @@ function ReadyPhase({
   creating?: boolean;
   onCreatePr?: () => void;
 }) {
-  // While the agent runs after the user clicks Create PR, show the spinner
-  // state on the button. session.isLoading flips back to false at end of turn
-  // (post-turn auto-emits "open" or "ready" so the button returns to its
-  // resting state automatically).
-  const agentRunning = useSessionStore((s) => s.isLoading);
-  const creating = externalCreating || agentRunning;
+  const prCreationTurnRunning = useSessionStore((s) => s.isLoading && s.activity?.label === "Creating PR...");
+  const creating = Boolean(externalCreating) || prCreationTurnRunning;
   const ins = card.totalInsertions ?? 0;
   const del = card.totalDeletions ?? 0;
   const hasDiffStats = ins > 0 || del > 0;
