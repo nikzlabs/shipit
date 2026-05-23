@@ -6,10 +6,28 @@
  * and executed automatically.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+// Spy on `finalizeSessionAgentEnvironment` so the SSE-drop regression test
+// below can assert sync-back fires on `agent_result` even when `agent_done`
+// is missed. Wraps importOriginal so the real implementation still runs —
+// the test only observes invocation count and arguments.
+const finalizeAgentEnvSpy = vi.fn();
+vi.mock("../session-agent-env.js", async (importOriginal) => {
+  const mod = await importOriginal() as Record<string, unknown>;
+  const real = mod.finalizeSessionAgentEnvironment as (...args: unknown[]) => void;
+  return {
+    ...mod,
+    finalizeSessionAgentEnvironment: (...args: unknown[]) => {
+      finalizeAgentEnvSpy(...args);
+      return real(...args);
+    },
+  };
+});
+
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
@@ -358,6 +376,52 @@ describe("Integration: prompt queuing", () => {
     // The queue must still be drained — a second Claude must start for "Second".
     const secondClaude = await waitForClaude(() => lastClaude, firstClaude);
     expect(secondClaude.lastPrompt).toBe("Second");
+
+    client.close();
+  });
+
+  // Regression for the OAuth source-token rot bug: the post-turn token
+  // sync-back used to fire only from `agent.on("done")`. When `agent_done`
+  // was missed (same SSE-drop / worker-race hazard the drain regression
+  // above protects against), a token the CLI just rotated stayed stranded
+  // in the per-session credentials dir — the orchestrator's source
+  // `.credentials.json` never advanced. Once the in-container rotation
+  // invalidated the refresh token sitting in source, every newly-bootstrapped
+  // session 401'd with "Invalid authentication credentials". Sync-back must
+  // hang off `agent_result` (the canonical turn-end signal) too, idempotent
+  // with the `done`-fired path. Diagnosed against prod 2026-05-23: source
+  // mtime 08:51 while a per-session token at 19:21 carried the refreshed
+  // credentials; the rotation never propagated back.
+  it("syncs OAuth token back on agent_result even when no agent_done arrives (SSE-drop resilience)", async () => {
+    finalizeAgentEnvSpy.mockClear();
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Only message" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "agent_init", sessionId: "s-token-sync", model: "claude-sonnet-4-6", tools: [] });
+
+    // Emit ONLY agent_result, not done — simulates a missed agent_done SSE.
+    claude.emit("event", { type: "agent_result", status: "success", sessionId: "s-token-sync", durationMs: 100 });
+
+    // Give the listener a beat to fire (it's async via the trySyncTokenBack
+    // -> finalizeSessionAgentEnvironment chain).
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The sync-back path must have been invoked. In this in-process test
+    // setup the runner isn't a ContainerSessionRunner, so the underlying
+    // file write is a no-op — but the helper invocation is the observable
+    // we care about: the listener wired on `agent_result` actually fires
+    // sync-back, instead of waiting for an `agent_done` that may never
+    // arrive.
+    expect(finalizeAgentEnvSpy).toHaveBeenCalledTimes(1);
+
+    // Now emit `agent_done` — sync-back must be idempotent and NOT fire
+    // a second time. (The `postTurnTokenSyncFired` guard exists exactly so
+    // the late-arriving `done` doesn't double-run the file ops.)
+    claude.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(finalizeAgentEnvSpy).toHaveBeenCalledTimes(1);
 
     client.close();
   });
