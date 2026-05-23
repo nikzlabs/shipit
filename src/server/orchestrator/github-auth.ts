@@ -660,14 +660,25 @@ export class GitHubAuthManager extends EventEmitter {
       return null;
     }
 
-    const body = await res.json().catch(() => null) as { data?: unknown; errors?: { type?: string; message?: string }[] } | null;
+    const body = await res.json().catch(() => null) as { data?: unknown; errors?: { type?: string; code?: string; message?: string }[] } | null;
     if (!body) {
       console.warn("[github-auth] graphqlQuery: 2xx with unparseable JSON");
       return null;
     }
 
     const errors = body.errors ?? [];
-    const rateLimited = errors.some((e) => e.type === "RATE_LIMITED" || e.type === "SECONDARY_RATE_LIMITED");
+    // GitHub's GraphQL rate-limit errors come in several shapes — the primary
+    // budget produces `{type:"RATE_LIMIT", code:"graphql_rate_limit"}` (singular,
+    // confusingly), while abuse detection produces `RATE_LIMITED` /
+    // `SECONDARY_RATE_LIMITED`. Match all of them, and fall back to the `code`
+    // field as a belt-and-braces signal in case GitHub introduces yet another
+    // type label.
+    const rateLimited = errors.some((e) =>
+      e.type === "RATE_LIMIT" ||
+      e.type === "RATE_LIMITED" ||
+      e.type === "SECONDARY_RATE_LIMITED" ||
+      e.code === "graphql_rate_limit",
+    );
     if (rateLimited) {
       console.warn(
         `[github-auth] graphqlQuery RATE_LIMITED: remaining=${remaining ?? "?"} reset=${resetFromHeader ?? "?"} ` +
