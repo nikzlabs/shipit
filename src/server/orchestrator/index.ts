@@ -1078,6 +1078,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
         recordCodexRateLimits,
+        getSubscriptionLimitsSnapshot: () => limitsPoller?.getSnapshot() ?? {},
         workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
       };

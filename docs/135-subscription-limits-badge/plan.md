@@ -390,6 +390,15 @@ A new `LimitsPoller` lives next to `pr-status-poller.ts`:
   N≤3 collection updated once a minute. The initial-connect snapshot
   is included in the existing burst sent at `/api/events` connect
   time, alongside `docker_memory`.
+- **Error classification:** `wireAgentListeners()` can read the latest
+  poller cache through `getSubscriptionLimitsSnapshot()`. When a Claude
+  result error says the generic "org monthly usage limit" but the cached
+  Claude 5h window is already at 100%, the listener rewrites the
+  chat-facing `agent_result.error` to name Claude's 5h usage limit and
+  show the cached reset timestamp. This mirrors the Codex adapter's
+  app-server classification, but happens in the orchestrator because
+  Claude's limit data comes from the polled `/usage` endpoint rather than
+  the CLI event stream.
 - **Authenticate-then-refresh:** after a successful Claude or Codex
   login the auth managers already emit `auth_complete` /
   `codex_auth_complete`. The poller listens for these and triggers an
