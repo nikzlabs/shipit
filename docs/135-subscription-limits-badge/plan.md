@@ -210,6 +210,14 @@ null). The `LimitsPoller` still polls it on its cadence (cheap — no
 network) and each incoming event triggers `markAuthRefreshed("codex")` so
 the pill updates within seconds.
 
+The adapter also keeps the most recent pushed snapshot locally for error
+classification. Codex app-server has been observed returning the generic
+"org monthly usage limit" JSON-RPC error when the pushed `primary` window is
+already at 100%; in that case ShipIt rewrites the chat-facing failure to
+name Codex's 5h usage limit and show the `primary.resetsAt` timestamp. Other
+JSON-RPC errors, and monthly-limit errors without an exhausted 5h snapshot,
+still pass through unchanged.
+
 **Consequence:** the Codex pill is blank until the first turn of a session
 delivers a snapshot — there's no way to query usage out-of-band. That's an
 acceptable trade for using the one source we've *verified* works (it shows
