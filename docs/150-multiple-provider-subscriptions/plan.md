@@ -44,7 +44,7 @@ For Codex, that is one ChatGPT/Codex account.
 - Support **multiple authenticated accounts per provider** (`claude`, `codex`)
   while keeping the existing single-account path as a compatible default.
 - Automatically select a non-exhausted account for new turns, preferring the
-  user's chosen primary account until it is near or at quota.
+  user's chosen primary account until it crosses a defined quota threshold.
 - Automatically fail over after a hard quota/auth exhaustion signal when retrying
   will not duplicate side effects.
 - Render provider-account state inline: account label, provider, plan, quota
@@ -107,9 +107,13 @@ provisioning:
    keep using it.
 3. Otherwise prefer the provider's primary account.
 4. Skip accounts known to be exhausted until their reset time.
-5. Prefer accounts with the most remaining weekly quota; use short-window quota
+5. Treat accounts as **quota-low** when either known short-window usage is at or
+   above 90% or known weekly usage is at or above 95%. If the primary account is
+   quota-low and another eligible account is not quota-low, choose the healthier
+   account instead of primary.
+6. Prefer accounts with the most remaining weekly quota; use short-window quota
    as the tiebreaker.
-6. If all eligible accounts are exhausted, put the prompt into a delayed
+7. If all eligible accounts are exhausted, put the prompt into a delayed
    recoverable state with a wake-up time, show a chat-visible system message
    with reset times, and do not start the agent.
 
@@ -121,6 +125,37 @@ plans, enterprise policy, regional access, beta flags, or model availability.
 Failover must not silently downgrade behavior. If no account can satisfy the
 current turn's feature requirements, ShipIt surfaces that as an account/model
 availability problem instead of trying a lower-capability subscription.
+
+Per-account capability facts live on `ProviderAccount` as a cached
+`capabilities` snapshot:
+
+```ts
+interface ProviderAccountCapabilities {
+  models?: string[];
+  supportsImages?: boolean;
+  supportsReview?: boolean;
+  supportedPermissionModes?: PermissionMode[];
+  guardedModeState?: "unknown" | "available" | "unavailable";
+  source: "provider_profile" | "agent_init" | "manual_default";
+  refreshedAt: number;
+}
+```
+
+Sources:
+
+- Provider profile/auth metadata seeds plan/tier-derived defaults when stable.
+- The agent registry supplies provider-wide defaults as a conservative fallback.
+- Runtime `agent_init` updates the account that actually ran the turn. Guarded
+  mode remains `unknown` until observed; a failed guarded engagement marks that
+  account unavailable for guarded turns until policy/account metadata changes.
+
+Selection treats unknown capability conservatively for automatic failover:
+
+- If the current/primary account has unknown-but-unproven capability, it may be
+  attempted because that matches today's behavior.
+- A fallback account with unknown capability is not used for automatic failover
+  when the current turn requires that capability; ShipIt asks for user intent or
+  reports `no_model_eligible_account` / `capability_unknown` instead.
 
 An exhausted turn cannot use the existing in-memory message queue by itself.
 Today queued messages drain from agent completion paths; if no agent starts,
@@ -204,8 +239,13 @@ transition:
    Codex thread.
 3. Replace the provider credential subtree in the session credential directory
    with account B's subtree before the next `/agent/start`.
-4. Start a new provider-side conversation and reconstruct context from ShipIt's
-   local chat history / current workspace state, not from provider resume.
+4. Build an explicit replay package from ShipIt's persisted chat history and
+   current workspace state before starting account B. This package includes the
+   user/assistant transcript since the last checkpoint or bounded summary, any
+   still-relevant file references, active thread/checkpoint metadata, current git
+   diff summary, and a note that provider-side resume was reset because the
+   account changed. Inject it into the system prompt or first user message using
+   the same conversation-replay mechanism used when `agentSessionId` is cleared.
 5. Record a chat-visible system event that the session moved from account A to
    account B and provider-side resume was reset.
 
