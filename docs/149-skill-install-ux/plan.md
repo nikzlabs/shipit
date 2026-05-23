@@ -14,9 +14,11 @@ currently have to hand-write `.claude/skills/<name>/SKILL.md` or shell out to th
 underlying CLI — neither fits §2 (inline > link-out) or §5 (chat is the input
 surface). This doc designs an inline ShipIt-native surface that matches the
 floor of what the two CLIs offer (Discover / Installed / Marketplaces / Errors,
-project + user scopes, install/enable/disable/uninstall) and lifts the ceiling
-where a GUI gives us leverage the TUI doesn't (Monaco preview of SKILL.md,
-context-cost meter, diff on marketplace update).
+install/enable/disable/uninstall) and lifts the ceiling where a GUI gives us
+leverage the TUI doesn't (Monaco preview of SKILL.md, context-cost meter, diff
+on marketplace update). ShipIt only supports **repo-scope** installs (skills
+live in the workspace and travel with the repo); the CLIs' user/local scopes
+are explicitly out of scope.
 
 This builds on:
 
@@ -29,6 +31,12 @@ Doc 138 already wired discovery for *project* skills the user has *already
 authored*. This doc covers the next layer up: discovery and install of skills
 the user **hasn't** authored — from public catalogs, the agent's official
 marketplaces, and team-internal sources.
+
+**Repo-scope only.** Skills install into the workspace's `.claude/skills/` or
+`.codex/skills/` and travel with the repo via auto-commit. User-scope skills
+and Codex built-in `$CODEX_HOME` skills are explicitly out of scope — both
+require a per-user persistent volume mounted into the session container,
+which is much larger than this doc wants to take on.
 
 ## Background: how the two CLIs handle this today
 
@@ -158,12 +166,11 @@ Click "Install" on a Discover card → opens an **Install sheet**:
 │  commit-commands                            │
 │  by anthropic-official  ·  updated 3d ago   │
 ├─────────────────────────────────────────────┤
-│  Scope:  [ Project (.claude/skills/) ▾ ]    │
+│  Installs to .claude/skills/ (this repo)    │
 │                                             │
 │  Will install:                              │
 │    📄  skills/commit/SKILL.md     +52 lines │
 │    📄  skills/push/SKILL.md       +38 lines │
-│    🔌  mcp: gh-helper             (network) │
 │                                             │
 │  Context cost: ≈ 1.2 KB / turn              │
 │                                             │
@@ -176,23 +183,30 @@ lift**: TUIs can only show a description; we can show the full body, frontmatter
 included, before the user commits. Same Monaco component the diff viewer uses,
 so it's free.
 
-Project-scope installs write to `.claude/skills/` (or `.codex/skills/`) and
-are picked up by the existing auto-commit. The user sees the same diff card
-they'd see for any other agent edit.
+Installs write to `.claude/skills/` (or `.codex/skills/`) and are picked up by
+the existing auto-commit. The user sees the same diff card they'd see for any
+other agent edit. No scope picker in the install sheet — repo-level is the
+only scope.
 
-### Install scopes — three levels, mapped to ShipIt's realities
+### Install scope — repo-only
 
-| Scope | Claude path | Codex path | Persistence | Implementation cost |
-|---|---|---|---|---|
-| **Project** | `.claude/skills/` | `.codex/skills/` | Workspace, committed, travels with PR | **Cheap** — file write + auto-commit. v1 ships this first. |
-| **User** | `~/.claude/skills/` | `~/.codex/skills/` | Mounted volume, survives session destruction | **Yak-shave** — needs a per-user persistent volume mounted at `/root/.claude/` (and `/root/.codex/`). Punt to follow-up. |
-| **Local** | `.claude/settings.local.json` (gitignored) | (Codex equivalent unclear) | Workspace, not committed | **Medium** — same as project but written under a gitignored path. v2. |
+Only **project scope** is supported. Skills install to `.claude/skills/` (or
+`.codex/skills/`) in the workspace and travel with the repo via auto-commit.
+This is intentional:
 
-The **user-scope volume** is the main piece of new infra. It would solve
-multiple problems at once: user-scope skills, persistent agent auth state, and
-Codex built-in `$CODEX_HOME` skills (currently container-only and not
-orchestrator-reachable per doc 138). Worth scoping as its own follow-up doc
-once v1 ships.
+- **It matches how teams already think about skills.** Skills are code-equivalent
+  (they steer the agent's behavior on this codebase); they should live in the
+  repo and be reviewed in PRs alongside it.
+- **It avoids the persistent-volume yak-shave.** User-scope skills need a
+  per-user volume mounted at `/root/.claude/` and `/root/.codex/`, which
+  touches container lifecycle in ways that go well beyond skills.
+- **Codex built-in `$CODEX_HOME` skills are explicitly out of scope.** They live
+  inside the container and aren't orchestrator-reachable over the HTTP link
+  (per doc 138); surfacing them requires the same volume work.
+
+If users later need cross-repo skill sharing, the path is either (a) publish
+the skill to a team-internal marketplace they `marketplace add` per repo, or
+(b) revisit the persistent-volume design as its own follow-up.
 
 ### Reimplement, don't wrap
 
@@ -261,7 +275,7 @@ addMarketplace(source, agentId): MarketplaceInfo
 removeMarketplace(id): void
 refreshMarketplace(id): MarketplaceInfo
 listPlugins(marketplaceId): PluginInfo[]
-installPlugin(workspaceDir, marketplaceId, pluginName, scope): InstallResult
+installPlugin(workspaceDir, marketplaceId, pluginName): InstallResult
 uninstallPlugin(workspaceDir, marketplaceId, pluginName): void
 enablePlugin / disablePlugin
 ```
@@ -281,7 +295,7 @@ POST   /api/marketplaces                 { source }
 DELETE /api/marketplaces/:id
 POST   /api/marketplaces/:id/refresh
 GET    /api/marketplaces/:id/plugins
-POST   /api/sessions/:id/plugins/install   { marketplaceId, pluginName, scope }
+POST   /api/sessions/:id/plugins/install   { marketplaceId, pluginName }
 DELETE /api/sessions/:id/plugins/:marketplaceId/:pluginName
 PATCH  /api/sessions/:id/plugins/:marketplaceId/:pluginName   { enabled: bool }
 ```
@@ -342,10 +356,11 @@ already can.
 
 Smallest valuable v1 first, layered to ship independently.
 
-### v1 — Project-scope skills, both backends, official catalogs only
+### v1 — Repo-level skills, both backends, official catalogs only
 
-Skills-only contents (no MCP/hooks/LSP/apps yet), project-scope only (no
-user-scope volume yak-shave), but Claude *and* Codex from day one.
+Skills-only contents (no MCP/hooks/LSP/apps yet), repo-scope only (the only
+scope we support — see "Install scope" above), but Claude *and* Codex from
+day one.
 
 1. **Resolve the Codex skills path first.** Empirically verify whether
    current Codex CLI (the version pinned in `docker/agent-cli/package-lock.json`)
@@ -355,7 +370,8 @@ user-scope volume yak-shave), but Claude *and* Codex from day one.
    verified `.codex/skills/` against codex-cli 0.132.0; pick one (and scan
    both for reads to stay tolerant).
 2. **Backend** — `services/marketplace.ts` with `listPlugins(agentId)` and
-   `installPlugin(scope: "project", agentId)`. Two hard-coded catalogs in v1:
+   `installPlugin(agentId)`. Repo scope is implicit — no `scope` parameter,
+   since we don't support any other. Two hard-coded catalogs in v1:
    `anthropics/claude-plugins-official` (Claude) and OpenAI's official Codex
    catalog (per <https://developers.openai.com/codex/plugins>). Fetch +
    parse shared; *writer* branches on `agentId` (paths in the Divergences
@@ -399,14 +415,7 @@ skills. Needs the corresponding scope writes in `.claude/settings.json` /
 `.codex/config.toml`. Updates the "Will install" preview accordingly. This is
 where the install sheet starts showing rich diffs of multi-file impact.
 
-### v4 — User-scope volume
-
-Per-user persistent volume mounted at `/root/.claude/` and `/root/.codex/`.
-Unlocks user-scope installs, persistent agent auth, and Codex built-in skill
-scans. Likely its own design doc once v1–v3 land — it touches container
-lifecycle in ways that go well beyond skills.
-
-### v5 — Ceiling lifts beyond the CLI
+### v4 — Ceiling lifts beyond the CLI
 
 - Diff view on marketplace update (show `SKILL.md` diff between old/new
   pinned SHA before applying).
@@ -422,8 +431,10 @@ cover:
 - **Authoring** skills — doc 096 (`.claude/skills/` write access).
 - **Invoking** skills — doc 138 (`/` autocomplete, `Skill` allowlist).
 - **Slash command layer** — doc 132 (the broader `/foo` family).
-- **Per-user persistent volume** — flagged as the major dependency for v5,
-  but its own design.
+- **Per-user persistent volume** — out of scope full stop; revisiting the
+  volume design is its own doc, not a follow-up of this one.
+- **User-scope or `$CODEX_HOME` skill scanning** — depends on the persistent
+  volume, so also out of scope.
 - **Publishing** ShipIt-managed catalogs — out of scope; if a team wants to
   publish, they use the upstream marketplace standard.
 
@@ -455,8 +466,12 @@ cover:
 - **v1 is skills-only.** MCP/hooks/LSP/apps deferred to v3. They need
   scope-write logic into `settings.json`/`config.toml` that's not in v1's
   critical path.
-- **v1 is project-scope only.** User-scope needs a persistent volume; defer
-  to v4.
+- **Repo-level scope only — no user-scope skills.** Skills live in the
+  workspace and travel with the repo via auto-commit. User-scope (and
+  Codex built-in `$CODEX_HOME` scans) would need a per-user persistent
+  volume mounted at `/root/.claude/` and `/root/.codex/`; that's a much
+  larger piece of infra than this doc wants to take on. Out of scope, full
+  stop, until/unless a separate doc revisits the volume design.
 - **No ShipIt-curated catalog.** We render Anthropic's official, OpenAI's
   official, and any third-party catalog the user adds. We compete on the
   install-experience UX, not on the contents — and skipping the curation
