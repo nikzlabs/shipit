@@ -158,6 +158,25 @@ export function saveCollapsedRepos(collapsed: Set<string>): void {
   } catch { /* ignore */ }
 }
 
+const COLLAPSED_PARENTS_KEY = "shipit-collapsed-parents";
+
+export function getSavedCollapsedParents(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_PARENTS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw) as string[];
+      return new Set(arr);
+    }
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+export function saveCollapsedParents(collapsed: Set<string>): void {
+  try {
+    localStorage.setItem(COLLAPSED_PARENTS_KEY, JSON.stringify([...collapsed]));
+  } catch { /* ignore */ }
+}
+
 const DRAFT_MESSAGE_KEY_PREFIX = "shipit-draft-message:";
 
 /** Read the saved draft message text for a session (or `"new"` for the new-session view). */
@@ -203,4 +222,4 @@ export function saveDevicePresetId(presetId: string | null): void {
   } catch { /* ignore */ }
 }
 
-export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, DEVICE_PRESET_KEY };
+export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, DEVICE_PRESET_KEY };

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
-import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos } from "../utils/local-storage.js";
+import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents } from "../utils/local-storage.js";
 
 /** Buffers SSE status updates that arrive before addRepo stores the repo. */
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
@@ -11,6 +11,12 @@ interface RepoState {
   addRepoDialogOpen: boolean;
   newRepoDialogOpen: boolean;
   collapsedRepos: Set<string>;
+  /**
+   * Parent session IDs whose agent-spawned children are hidden in the sidebar.
+   * Per-parent so a user can collapse one busy parent's brood without affecting
+   * the rest. Persisted to localStorage — see [[collapse-spawned-sessions]].
+   */
+  collapsedParents: Set<string>;
 
   // Actions
   setRepos: (repos: RepoInfo[]) => void;
@@ -20,6 +26,7 @@ interface RepoState {
   updateRepoStatus: (url: string, status: "cloning" | "ready") => void;
   updateRepoWarmSession: (url: string, sessionId: string) => void;
   toggleRepoCollapsed: (url: string) => void;
+  toggleParentCollapsed: (parentId: string) => void;
   reset: () => void;
 
   // Async actions
@@ -42,6 +49,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   addRepoDialogOpen: false,
   newRepoDialogOpen: false,
   collapsedRepos: getSavedCollapsedRepos(),
+  collapsedParents: getSavedCollapsedParents(),
 
   setRepos: (repos) => {
     const { activeRepoUrl } = get();
@@ -89,6 +97,15 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       else next.add(url);
       saveCollapsedRepos(next);
       return { collapsedRepos: next };
+    }),
+
+  toggleParentCollapsed: (parentId) =>
+    set((state) => {
+      const next = new Set(state.collapsedParents);
+      if (next.has(parentId)) next.delete(parentId);
+      else next.add(parentId);
+      saveCollapsedParents(next);
+      return { collapsedParents: next };
     }),
 
   reset: () => set({ repos: [], activeRepoUrl: undefined, addRepoDialogOpen: false, newRepoDialogOpen: false }),
