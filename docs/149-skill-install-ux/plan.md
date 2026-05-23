@@ -131,6 +131,19 @@ MCP so the two extension-management surfaces sit adjacent.
 Skill management is configuration, not turn-by-turn workflow, so it
 belongs with the other agent-config affordances.
 
+**Session switch with the Skills tab open.** The Skills tab is
+session-aware: the active session decides the catalog shown in Discover,
+the install destination, the install-button gate (against `runner.running`),
+and the Installed list. If the user switches sessions via the sidebar
+while the Settings dialog is open, the Skills tab re-binds to the new
+active session and re-fetches the catalog + installed list. State that
+was in-flight in the install sheet (mid-fetch, mid-install) is canceled
+on switch and the sheet closes — the user can re-open it in the new
+session if they want to continue. This is the same pattern doc 138's
+`/`-autocomplete uses (re-renders per session via store subscription);
+the existing `hasActiveSession` prop in `SettingsProps` carries the
+no-active-session case (Skills tab disables with an empty-state message).
+
 **Per-tab dialog width.** Today the dialog is `max-w-2xl` (672 px) with
 `md:h-120` (480 px), which suits the existing form-shaped tabs (single-column
 inputs in `McpServerSettings.tsx`, the GitHub token form, git identity,
@@ -236,15 +249,28 @@ Three concurrency cases the install flow must handle, since installs land
 files in the workspace and the workspace is also being mutated by the
 running agent:
 
-1. **Install during an active turn.** The Install button is disabled while a
-   turn is running (the existing `runner.running` state, mutated directly per
-   CLAUDE.md "Mutate runner state directly"). Hovering shows a tooltip:
-   "Agent is working — install will become available when it's done."
-   Rationale: an in-flight turn that triggers `agent_result` mid-install
-   risks the existing auto-commit (`postTurnCommit()` in
+1. **Install during an active turn — and during the post-turn auto-commit
+   window.** The Install button is disabled while a turn is running (the
+   existing `runner.running` state, mutated directly per CLAUDE.md "Mutate
+   runner state directly"). Hovering shows a tooltip: "Agent is working —
+   install will become available when it's done." Rationale: an in-flight
+   turn that triggers `agent_result` mid-install risks the existing
+   auto-commit (`postTurnCommit()` in
    `src/server/orchestrator/ws-handlers/post-turn.ts:19`) sweeping plugin
    files into a commit alongside unrelated agent edits, or losing the
    install's own commit to a race.
+
+   **But `runner.running` is cleared *before* `postTurnCommit()` runs** —
+   `agent-listeners` sets `runner.running = false` on `agent_result`, then
+   `postTurnCommit()` runs `git add -A` shortly after (`agent-execution.ts:413`,
+   `:433`). If the user clicks Install the moment the button re-enables,
+   the install's path-scoped commit races with the post-turn `git add -A`
+   on the same index. Resolution: the per-workspace mutex described in
+   case #3 below covers **both** install↔install AND install↔post-turn-commit.
+   `postTurnCommit()` takes the same `Map<workspaceDir, Promise<...>>`
+   lock on entry; an install in progress waits for the post-turn commit
+   to finish, and vice versa. This serializes the two operations on a
+   shared lock instead of leaving a race window in the post-turn gap.
 2. **Path-scoped `git add` on install commit.** Even with #1, the install
    commit must `git add` only the plugin's own paths, never `git add -A` or
    `git add .`. This prevents accidentally including unrelated user edits
@@ -426,12 +452,19 @@ POST   /api/marketplaces/:id/refresh
 GET    /api/marketplaces/:id/plugins
 
 # Session-scoped (api-routes-files.ts):
+GET    /api/sessions/:id/plugins                              # list installed plugins (scans install markers)
 POST   /api/sessions/:id/plugins/install   { marketplaceId, pluginName }
 DELETE /api/sessions/:id/plugins/:marketplaceId/:pluginName
 
 # v3 adds:
 # PATCH  /api/sessions/:id/plugins/:marketplaceId/:pluginName   { enabled: bool }
 ```
+
+The `GET` listing endpoint backs the Installed sub-tab — it scans
+`.claude/skills/*/` (or `.codex/skills/*/`) for `.shipit-installed.json`
+markers and returns one row per managed plugin with its `marketplaceId`,
+`pluginName`, `version`, and `installedAt`. Implemented by a
+`listInstalledPlugins(workspaceDir)` function in `services/marketplace.ts`.
 
 App-wide marketplace state persists in a new
 `src/server/orchestrator/marketplace-store.ts` — **SQLite via
@@ -476,23 +509,18 @@ would not list plugin skills and invocation would break. So:
   the captured text, so the colon doesn't need to be in the character
   class for that one to work. Call out the `MessageInput.tsx` change as a
   v1-scoped doc 138 amendment in Key files.
-- **Codex** → write to `.codex/skills/<plugin>__<skill>/SKILL.md` (or
-  `.agents/skills/` per the directory-layout note). Tiebreaker for the
-  write destination, evaluated in order: (1) if exactly one of the two
-  directories exists and is non-empty, write there; (2) if both exist and
-  both are non-empty, prefer the one with more entries; (3) if neither
-  exists (the default), use `.codex/skills/` until the v0 spike confirms
-  `.agents/skills/` is canonical. Reads scan both directories regardless
-  — **and the existing skill discovery surfaces have to learn about
-  `.agents/skills/` too**: `services/skills.ts:27-33` (`listSkills()`)
-  currently scans only `.codex/skills/`, and the session-worker endpoint
-  at `session-worker.ts:462` scans only `~/.codex/skills/`. If we ever
-  write to `.agents/skills/`, both need the scope-widening change or the
-  doc 138 autocomplete won't see installed Codex skills. v1 takes the
-  shortcut: write only to `.codex/skills/` and defer the
-  `.agents/skills/` write target to a follow-up doc once the v0 spike
-  confirms which is canonical. Reads can still scan both opportunistically
-  in v1, since that's a small additive change.
+- **Codex** → **v1 writes only to `.codex/skills/<plugin>__<skill>/SKILL.md`**
+  — single path, no tiebreaker. This sidesteps a real contradiction the
+  earlier draft had: scanning both `.codex/skills/` and `.agents/skills/`
+  would require widening `services/skills.ts:27-33` (`listSkills()`) and
+  the session-worker endpoint at `session-worker.ts:462`, neither of which
+  currently scans `.agents/skills/`. Reads stay single-path in v1 to match
+  writes; defer the `.agents/skills/` write target AND the scanner
+  widening to a follow-up doc once the v0 spike confirms which directory
+  is canonical for the pinned Codex CLI version. If the spike finds that
+  current Codex prefers `.agents/skills/`, the follow-up doc adds the
+  scanner widening and changes the write target — it's a small change
+  precisely because v1 keeps reads and writes aligned.
 
   Frontmatter `name` set to `<plugin>:<skill>`; invocation token is
   `$<plugin>:<skill>`. Codex's catalog-injection model reads `SKILL.md`
@@ -515,10 +543,11 @@ work. ShipIt marks every directory it installs with a sentinel file:
 ```
 .claude/skills/<plugin>__<skill>/
   SKILL.md
-  .shipit-installed.json   # { marketplaceId, pluginName, version, installedAt }
+  .shipit-installed.json   # { marketplaceId, pluginName, version, installedAt,
+                           #   skillMdHash: "<sha256 of SKILL.md at install time>" }
 ```
 
-Three policies that fall out:
+Four policies that fall out:
 
 - **Install refuses if the target directory exists without a marker.** The
   user gets an error explaining the collision and instructions to either
@@ -527,6 +556,15 @@ Three policies that fall out:
 - **Install over an existing ShipIt-managed directory is treated as
   upgrade.** Version differs → diff the new vs old `SKILL.md` and show in
   the install sheet; same version → no-op.
+- **Upgrade refuses if the on-disk `SKILL.md` hash diverged from the
+  marker's recorded `skillMdHash`.** Catches the common case: user
+  installs `linear`, tweaks the body (description nudges, project
+  guidance), later upgrades — without this check the upgrade silently
+  overwrites their edits, since the consent record is the marker (not the
+  body). On mismatch, the error tells the user to either uninstall +
+  reinstall (discarding their edits) or fork the skill into a hand-written
+  sibling directory. Successful upgrades refresh the hash to the new
+  body's sha256.
 - **Uninstall refuses if the marker is absent or modified.** Deleting a
   user-authored directory by accident is unrecoverable; the marker is the
   consent record.
@@ -661,8 +699,10 @@ service code lands:
 - **Codex project skill path.** `.codex/skills/` (doc 138 empirical against
   codex-cli 0.132.0) vs `.agents/skills/` (current OpenAI docs, aligned
   with agentskills.io). Re-verify against the Codex CLI version pinned in
-  `docker/agent-cli/package-lock.json`. Pick one for writes; scan both for
-  reads.
+  `docker/agent-cli/package-lock.json`. v1 writes only to `.codex/skills/`
+  regardless of spike outcome (matches the existing single-path read
+  scanner); a negative result feeds a follow-up doc that widens both the
+  scanner and the writer to `.agents/skills/`.
 - **Codex marketplace manifest format.** Claude's
   `.claude-plugin/marketplace.json` is publicly specced; Codex's catalog
   manifest filename and schema aren't. Read OpenAI's official catalog repo
@@ -730,6 +770,15 @@ day one, assuming v0 didn't surface anything that requires the v1a/v1b split.
    things on boot, this *fetches* — different direction, same scheduling
    discipline of "do it once at start, not on a timer").
 
+   **Destination on disk:** `marketplace-cache/<id>/` under the orchestrator
+   data dir, parallel to the existing `repo-cache/<hash>/` and
+   `dep-cache/<hash>/` conventions (`session-dir-factory.ts:49`). The `<id>`
+   is the marketplace's short name (e.g. `claude-plugins-official`). Once
+   v2 adds add/remove verbs, `disk-janitor.ts` gains a sweep for
+   `marketplace-cache/<id>/` directories whose `id` is no longer in the
+   `marketplaces` table — same pattern janitor already uses for orphan
+   `repo-cache/` and `dep-cache/` entries.
+
 Acceptance: a user on Claude *or* Codex can open Settings → Skills, browse the
 agent's official catalog, see a skill's `SKILL.md` rendered inline in Monaco,
 click Install, see the file land in `.claude/skills/<plugin>__<skill>/` or
@@ -788,8 +837,9 @@ cover:
 | `src/server/orchestrator/services/marketplace.ts` *(install mutex)* | In-process `Map<workspaceDir, Promise<InstallResult>>` for the per-workspace install lock; same shape as `_mcpInstallMutex` in `src/server/session/session-worker.ts:133`. NOT in `RepoStore` (which is SQLite — wrong layer for runtime locks). |
 | `src/server/orchestrator/services/recovery.ts` | Install service calls `killAgent` directly when a persistent agent is running (Streaming Claude / Codex). No `restartAgent`. One-shot `claude -p` needs no kill — next turn respawns. |
 | `src/server/shared/git.ts` | Add a public `commitPaths(paths, message)` method to `GitManager`. Wraps `simpleGit.add([paths])` + `simpleGit.commit(message)` for the install flow's path-scoped commit. Keeps the "orchestrator talks to git only through GitManager" boundary intact; reusable by v3 (MCP/hooks writes). |
+| `src/server/orchestrator/ws-handlers/post-turn.ts` | `postTurnCommit()` takes the per-workspace mutex from `services/marketplace.ts` before running `git.autoCommit()`, serializing it against install operations on the same workspace. Mutex is exported from the marketplace service (or moved to a shared lock module if that's cleaner). |
 | `src/client/components/Settings.tsx` | Add `skills` tab; widen the local `type Tab = …` union at line 20 to include `"skills"`; make the `DialogContent` `className` conditional on active tab (Skills → `max-w-5xl` + `md:h-[80vh]`, others stay at current `max-w-2xl` + `md:h-120`). |
-| `src/client/stores/ui-store.ts` | Widen the `SettingsTab` discriminated union at line 30 to include `"skills"`. There are **three type sites** total (`Settings.tsx:20`, `ui-store.ts:30`, and the persisted `settingsTab` field at `ui-store.ts:75`); all must be widened together or the persisted last-open-tab state fails typecheck. |
+| `src/client/stores/ui-store.ts` | Widen the `SettingsTab` discriminated union at line 30 to include `"skills"`. There are **three type sites** that share the union: `Settings.tsx:20` (local `Tab` union), `ui-store.ts:30` (the exported `SettingsTab`), and the `settingsTab` Zustand state at `ui-store.ts:75`. All three must be widened together or TypeScript narrowing breaks. `settingsTab` is **not** persisted across reloads (no `local-storage.ts` helper; `setSettingsTab` is a plain `set({ settingsTab })`); if we later decide to remember the last-open tab, add the standard `saveSettingsTab`/`getSavedSettingsTab` pair in `local-storage.ts` — but that's not part of this doc's scope. |
 | `src/client/components/SkillsTab.tsx` | New — Discover/Installed (v1) → Marketplaces/Errors (v2) sub-tabs; lives inside Settings |
 | `src/client/components/MessageInput.tsx` *(doc 138 amendment)* | Widen the slash-trigger regex at line 265 from `/^\/([a-zA-Z0-9._-]*)$/` to allow `:` so `/<plugin>:<skill>` keeps the autocomplete open through the namespace separator. The `agent-execution.ts:115` regex is NOT end-anchored, so it already handles `:` — no change needed there. |
 | `src/client/components/SkillInstallSheet.tsx` | New — install sheet with inline Monaco `SKILL.md` preview |
