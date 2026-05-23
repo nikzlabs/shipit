@@ -193,6 +193,21 @@ export function buildEnv(
   return env;
 }
 
+export async function buildOrchestratorCallbackEnv(sessionId: string): Promise<string[]> {
+  const orchestratorPort = process.env.PORT || "3000";
+  const orchestratorHost =
+    process.env.SHIPIT_ORCHESTRATOR_HOST || (await import("node:os")).hostname();
+  const env = [
+    `SHIPIT_SESSION_ID=${sessionId}`,
+    `SHIPIT_PORT=${orchestratorPort}`,
+    `SHIPIT_HOST=${orchestratorHost}`,
+  ];
+  if (process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS) {
+    env.push(`SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=${process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS}`);
+  }
+  return env;
+}
+
 // ---------------------------------------------------------------------------
 // Health check
 // ---------------------------------------------------------------------------
@@ -267,11 +282,7 @@ export async function createContainer(
   );
 
   // Expose orchestrator API so the agent can query service status/logs
-  env.push(`SHIPIT_SESSION_ID=${config.sessionId}`);
-  const orchestratorPort = process.env.PORT || "3000";
-  const orchestratorHost = (await import("node:os")).hostname();
-  env.push(`SHIPIT_PORT=${orchestratorPort}`);
-  env.push(`SHIPIT_HOST=${orchestratorHost}`);
+  env.push(...await buildOrchestratorCallbackEnv(config.sessionId));
 
   // Use Docker-capable image when Docker access is requested
   const imageName = (config.dockerAccess && deps.dockerImageName)

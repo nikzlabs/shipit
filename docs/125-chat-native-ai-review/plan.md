@@ -49,6 +49,14 @@ description: Replace the out-of-band AI review endpoint with a chat-native flow 
 > single capability flag still holds — Codex satisfies both ingredients, so no
 > flag split was needed. The orchestrator handler, allow-list, and write-back
 > path were already backend-agnostic. Open question #5 is resolved.
+>
+> **Callback resilience update (2026-05).** Worker→orchestrator callbacks now
+> try multiple orchestrator URLs. `SHIPIT_HOST` is still the primary callback
+> host, but `OrchestratorClient` falls back to
+> `SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS` (defaulting to the stable Compose alias
+> `shipit`) when the stamped hostname is stale. Production sets
+> `SHIPIT_ORCHESTRATOR_HOST=shipit`, so long-lived session containers can still
+> submit review comments after the orchestrator container is recreated.
 
 ## Summary
 

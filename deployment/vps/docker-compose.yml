@@ -30,6 +30,12 @@ services:
       - DOCKER_NETWORK=shipit
       - SESSION_WORKER_IMAGE=shipit-session-worker:prod
       - DOCKER_STACK=shipit
+      # Session containers call back into the orchestrator for agent-owned
+      # operations such as review comments and PR creation. Use the stable
+      # Compose service DNS name instead of this container's ephemeral hostname
+      # so existing sessions survive orchestrator container replacement.
+      - SHIPIT_ORCHESTRATOR_HOST=shipit
+      - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
       # Disk janitor — see src/server/orchestrator/disk-janitor.ts. Runs
       # once at orchestrator startup (no periodic timer). archiveSession
       # already drops the workspace at archive time; the 30-day workspace
