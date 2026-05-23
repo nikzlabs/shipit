@@ -43,9 +43,26 @@
 - [x] `npm run test:dev`
 - [x] Update `plan.md` (status, key files, deferred work)
 
-## Phase 2: deferred
+## Remaining work, prioritized
+
+### High priority
 
 - [ ] Render GitHub-sourced review threads inline on the Monaco diff viewer (`MonacoCommentWidgets` `source: 'local' | 'github'` discriminator)
-- [ ] "Send review to GitHub (N)" pill in `PrLifecycleCard.tsx` — batch local line comments into a single `submitPullRequestReview`
-- [ ] Auto-loop hook on new GitHub-sourced comment (per-session opt-in, similar to `autoFix`)
+
+  This is the core promise of the feature. Review comments currently appear in the PR conversation panel, but not where reviewers and agents reason about changed code lines. Until this exists, comment sync is useful but not truly inline.
+
+- [ ] Add a "Send review to GitHub (N)" pill in `PrLifecycleCard.tsx` and batch local line comments into a single `submitPullRequestReview`
+
+  This should follow inline rendering. Posting each line comment immediately is noisy and does not match GitHub's review workflow. A pending-review batch makes ShipIt behave like a real PR review surface instead of a comment proxy.
+
+### Medium priority
+
+- [ ] Add an auto-loop hook on new GitHub-sourced comments (per-session opt-in, similar to `autoFix`)
+
+  This becomes valuable after comments are visible inline: a reviewer comment can prompt the agent to address feedback without the user manually copying context. Keep it opt-in because automatic agent action on teammate comments can be surprising.
+
+### Low priority until the above are stable
+
 - [ ] Promote `prCommentSync` to default-on after a beta cycle
+
+  Default-on makes sense once inline rendering and write-back are trustworthy. Before then, the flag should stay off so a partial workflow is not exposed as the default experience.
