@@ -48,7 +48,7 @@ export interface ClaimSessionDeps {
     workspaceDir: string;
   }>;
   sseBroadcast: (event: string, data: unknown) => void;
-  warmSessionForRepo?: (repoUrl: string, opts?: { withStandby?: boolean }) => Promise<void>;
+  warmSessionForRepo?: (repoUrl: string) => Promise<void>;
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
   shouldSkipClaimFetch?: (repoUrl: string) => boolean;
   containerManager?: SessionContainerManager;
@@ -238,7 +238,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
    * claim's response isn't blocked on prep work for a future user.
    */
   function rewarmPool(url: string): void {
-    if (deps.warmSessionForRepo) void deps.warmSessionForRepo(url, { withStandby: true });
+    if (deps.warmSessionForRepo) void deps.warmSessionForRepo(url);
   }
 
   return {

@@ -238,7 +238,7 @@ describe("standby container pre-warming", () => {
     }
   });
 
-  it("startup warming does NOT create a standby container", async () => {
+  it("startup warming creates a standby container (so pre-install runs ahead of the first claim)", async () => {
     // Wait for warm session to be created
     await waitFor(
       () => !!repoStore.get(REPO_URL)?.warmSessionId,
@@ -248,10 +248,16 @@ describe("standby container pre-warming", () => {
 
     const warmSessionId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-    // Startup warming should NOT boot a container
-    expect(containerManager.get(warmSessionId)).toBeUndefined();
-    expect(containerManager.isStandby(warmSessionId)).toBe(false);
-    expect(fakeDocker._containers.size).toBe(0);
+    // The whole point of docs/148: startup warming must boot a standby so
+    // `agent.install` pre-install fires before the user clicks New Session.
+    // Standby creation is fire-and-forget, so wait for it to land.
+    await waitFor(
+      () => containerManager.isStandby(warmSessionId),
+      10000,
+      "standby container created at startup",
+    );
+    expect(containerManager.get(warmSessionId)).toBeDefined();
+    expect(fakeDocker._containers.size).toBeGreaterThanOrEqual(1);
   }, 15000);
 
   it("claim triggers re-warming with standby container", async () => {
@@ -262,7 +268,7 @@ describe("standby container pre-warming", () => {
     );
     const firstWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-    // Claim the warm session — this triggers re-warming with { withStandby: true }
+    // Claim the warm session — this triggers re-warming (with standby + pre-install)
     const encodedUrl = encodeURIComponent(REPO_URL);
     const res = await app.inject({
       method: "POST",
@@ -494,14 +500,18 @@ describe("standby container pre-warming", () => {
   });
 
   it("no standby when at container cap", async () => {
-    await waitFor(
-      () => !!repoStore.get(REPO_URL)?.warmSessionId,
-      10000,
-      "warm session",
-    );
+    const warmId = await (async () => {
+      await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10000, "warm session");
+      return repoStore.get(REPO_URL)!.warmSessionId!;
+    })();
+    // Startup warming now creates a standby (docs/148). Wait for it so the
+    // realCount/standbyCount math below is deterministic.
+    await waitFor(() => containerManager.isStandby(warmId), 10000, "startup standby");
 
-    // Fill up containers to the cap (default maxIdleContainers = 10)
-    // by creating real containers
+    // Fill up to the cap (default maxIdleContainers = 10). The startup
+    // standby is one container but it doesn't count toward `realCount`, so
+    // fill 10 real ones — realCount becomes 10 (= maxIdle), blocking the
+    // re-warm's standby creation below.
     const sessionsDir = path.join(tmpDir, "sessions");
     for (let i = 0; i < 10; i++) {
       const sid = `fill-session-${i}`;
@@ -517,9 +527,9 @@ describe("standby container pre-warming", () => {
         pidsLimit: 256,
       });
     }
-    expect(containerManager.size).toBe(10);
+    expect(containerManager.size - containerManager.standbyCount).toBe(10);
 
-    // Claim the warm session — triggers re-warming with { withStandby: true }
+    // Claim the warm session — triggers re-warming (with standby + pre-install)
     const encodedUrl = encodeURIComponent(REPO_URL);
     await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
 
@@ -625,7 +635,7 @@ describe("standby container resources propagated from shipit.yaml", () => {
     );
     const firstWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
 
-    // Claim → re-warm with { withStandby: true } reads shipit.yaml.
+    // Claim → re-warm reads shipit.yaml.
     const encodedUrl = encodeURIComponent(REPO_URL);
     await app.inject({ method: "POST", url: `/api/repos/${encodedUrl}/claim-session` });
 

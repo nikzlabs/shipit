@@ -83,7 +83,7 @@ export interface ApiDeps {
   generateText: (prompt: string, cwd: string) => Promise<string>;
   sessionsRoot: string;
   /** Warm a session for a repo (called after clone, after graduation, etc.). */
-  warmSessionForRepo?: (repoUrl: string, opts?: { withStandby?: boolean }) => Promise<void>;
+  warmSessionForRepo?: (repoUrl: string) => Promise<void>;
   /** Returns the in-flight warming promise for a repo, if any. */
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
   /**

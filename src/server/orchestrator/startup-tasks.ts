@@ -174,7 +174,7 @@ export function scheduleStartupTasks(
         }
       }
     }
-    // Re-warm repos that have no warm session at all (+ migrated repos)
+    // Re-warm repos that have no warm session at all (+ migrated repos).
     for (const url of migratedRepoUrls) {
       void warmSessionForRepo(url);
     }
