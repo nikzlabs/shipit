@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: high
 description: Make per-session `npm install` near-instant by sharing a materialized, lockfile-keyed node_modules across sessions for the same repo — not just the download cache.
 ---
@@ -53,7 +53,7 @@ reused** across sessions. That is the gap.
   - **Regression fix 2026-05-23:** the warm-pool used to accept a `{ withStandby?: boolean }` opt-in (default `false`). `scheduleStartupTasks` was the one caller that forgot to pass `true`, so every prod restart left every repo with a no-standby, no-pre-install warm session — the first claim per repo per restart paid the full ~24s install on the critical path. **The option was deleted entirely.** Audit found every caller wanted `true`; the opt-in existed only to be forgotten (and two repo-add paths in `api-routes-session.ts` were silently broken in the same way). Now the warm-pool always provisions a standby when a container manager exists; local/test mode opts out the right way — by passing `containerManager: null`.
 - [container-session-runner.ts](../../src/server/orchestrator/container-session-runner.ts#L834-L891) forwards the commands over HTTP to the worker's `POST /install`.
 - The worker ([session-worker.ts](../../src/server/session/session-worker.ts#L761-L848)) shells out to each command in the workspace with `NODE_ENV=development`, streams stdout/stderr as `install_log` SSE events, and on success writes a `.shipit/.install-done` marker so a **re-activation of the same workspace** skips. A *new* workspace has no marker → full re-install.
-- Note: [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L194) has a comment "Pre-run install so the user doesn't wait for it on activation" but the block is **empty** — warm containers do not currently pre-install. (See Option C.)
+- The fast path only engages for a single bare package-manager command. ShipIt's own [shipit.yaml](../../shipit.yaml) therefore uses `agent.install: npm install`; the older wrapper script was intentionally classified as arbitrary shell and bypassed the materialized `node_modules` cache, which is why prod still showed `[agent-install] running npm install` and paid the full ~24s install. That wrapper has since been removed.
 
 ## Goal
 
@@ -300,7 +300,7 @@ Rules that make this safe across deployments:
   session container's `node_modules`. Net: overlay is **demoted out of the runtime ladder**
   to Option D (container-creation-time, future). The spike's value is that *if* we ever do
   Option D, the CoW + teardown caveats are now known (workdir needs root to clean up).
-- [ ] Instrument and split the 24s (resolve / extract / native scripts) — `npm install --timing`.
+- [ ] Instrument and split the 24s (resolve / extract / native scripts) — `npm install --timing`. Deferred; the shipped cache-hit path restores without invoking npm.
 - [x] **Where the hash is computed:** the **worker** (it holds the workspace), as part of
   the worker-side materialize. `storeKey` covers npm/yarn/pnpm by hashing lockfile content
   + runtime, so no per-manager branching is needed for the key itself.
@@ -313,29 +313,37 @@ Rules that make this safe across deployments:
 - [x] **Native-addon portability:** `storeKey` includes a `runtimeKey` (image digest +
   arch + libc), so a tree built for one runtime is a cache miss (→ real install) on
   another, including self-hosted image rebuilds. No silent late load-failure.
-- [ ] **Define `runtimeKey` precisely** and where the worker reads it (image digest via a
+- [x] **Define `runtimeKey` precisely** and where the worker reads it (image digest via a
   baked-in env/label? `process.arch` + libc detection?). The shape is decided; the exact
-  inputs are not.
+  inputs are `SESSION_WORKER_IMAGE_ID`/`IMAGE_DIGEST`, `process.arch`, detected libc, and
+  Node major.
 - [ ] **Monorepo/workspace coverage** beyond the single-root-lockfile v1 (multi-lockfile,
   nested/hoisted `node_modules`). v1 falls through to plain install; revisit after ship.
-- [ ] Cache invalidation + disk-janitor: extend [disk-janitor.ts](../../src/server/orchestrator/disk-janitor.ts) to prune `nm-store/{storeKey}` by mtime and unreferenced storeKey.
-- [ ] **Implement + test the single-flight populate** (per-`storeKey` lock, temp-dir +
+- [x] Cache invalidation + disk-janitor: extend [disk-janitor.ts](../../src/server/orchestrator/disk-janitor.ts) to prune `nm-store/{storeKey}` by mtime.
+- [x] **Implement + test the single-flight populate** (per-`storeKey` lock, temp-dir +
   atomic rename) — the M4 safety core. Single-flight must span read-and-repopulate, not
   just the initial populate, so a self-heal can't overwrite a store another session is
   mid-read on. This is the highest-risk piece; it needs dedicated concurrency tests.
-- [ ] Build the worker-side `materialize()` ladder and its strategy impls (reflink / tar /
+- [x] Build the worker-side `materialize()` ladder and its strategy impls (tar /
   copy / real install), the `storeKey`/`isCacheableInstall` helpers, mount the `nm-store`
   dir into the container, and call it from `runInstallCommands`. Option E flag tuning
   composes cleanly — the tuned command is part of `storeKey`, so it can't collide with an
-  untuned one. Log the disable *reason* (operator kill-switch vs non-cacheable install)
-  distinctly for observability.
+  untuned one. Reflink is deferred because prod is ext4; add it above tar if production
+  moves to xfs(reflink)/btrfs.
 
 ## Implementation status
 
-Design only — no code yet. A throwaway spike validated the overlay CoW mechanics on a
-bare host (recorded in Open questions; it also surfaced the topology constraint that moved
-materialize into the worker) and confirmed the prod filesystem facts. The spike was not
-kept; this doc is the source of truth and integration starts from the open items above.
+Implemented. The worker-side cache lives in [nm-store.ts](../../src/server/session/nm-store.ts)
+and is called from [session-worker.ts](../../src/server/session/session-worker.ts):
+
+- cacheable single-command installs (`npm install`, `npm ci`, `yarn [install]`, `pnpm install`) compute a store key from lockfile content, runtime key, and the tuned install command;
+- cache hits materialize `node_modules` from `/dep-cache/nm-store/<storeKey>` via tar-stream, then `cp -a` fallback, and write `.shipit/.install-done`;
+- cache misses run the real install and then best-effort publish the resulting `node_modules` with temp-dir + atomic rename;
+- non-cacheable shell commands and the `SHIPIT_FAST_INSTALL=disabled` kill switch fall through to the old plain install behavior.
+
+For ShipIt's own repo, `shipit.yaml` must remain a bare `npm install`. If prod logs still
+show `[agent-install] running npm install`, the old wrapper is still deployed somewhere
+and the fast-install cache is not being used.
 
 ## Key files
 

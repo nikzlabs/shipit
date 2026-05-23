@@ -9,7 +9,7 @@
 # for why the separate tree and the in-command `npm install` were removed.
 #
 # Node version is pinned to the SAME node:24-slim digest as the agent /
-# session-worker image (Dockerfile.session-worker.dogfood). This is load-bearing:
+# session-worker prod image. This is load-bearing:
 # the native modules in node_modules (better-sqlite3, node-pty, …) are built by
 # `agent.install` inside the node:24 agent container, and the `dev` service must
 # share that ABI to load them. (Previously this image was node:22 with its own
@@ -22,7 +22,7 @@ WORKDIR /workspace
 # Runtime tools the inner orchestrator needs. The previous full `node:22` base
 # bundled git; `node:24-slim` does not, so install it explicitly along with the
 # same toolset baked into the session-worker runtime image
-# (Dockerfile.session-worker.{prod,dogfood}). git is load-bearing — the inner
+# (Dockerfile.session-worker.prod). git is load-bearing — the inner
 # orch's GitManager shells out to it for clone/commit/diff. The others keep the
 # inner orch's behavior at parity with a real session container.
 RUN apt-get update \
