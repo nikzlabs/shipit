@@ -486,20 +486,27 @@ function DeploymentStatusRow({ deployments }: { deployments: GitHubDeploymentSta
 // transient when auto-create is on), which made the toggle effectively
 // undiscoverable. See docs/099-auto-pr-on-meaningful-turn/plan.md.
 
-function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrCardState; sessionId: string; creating?: boolean }) {
-  const quickCreate = usePrStore((s) => s.quickCreate);
-  const [localCreating, setLocalCreating] = useState(false);
-  const creating = externalCreating || localCreating;
+function ReadyPhase({
+  card,
+  sessionId,
+  creating: externalCreating,
+  onCreatePr,
+}: {
+  card: PrCardState;
+  sessionId: string;
+  creating?: boolean;
+  onCreatePr?: () => void;
+}) {
+  // While the agent runs after the user clicks Create PR, show the spinner
+  // state on the button. session.isLoading flips back to false at end of turn
+  // (post-turn auto-emits "open" or "ready" so the button returns to its
+  // resting state automatically).
+  const agentRunning = useSessionStore((s) => s.isLoading);
+  const creating = externalCreating || agentRunning;
   const ins = card.totalInsertions ?? 0;
   const del = card.totalDeletions ?? 0;
   const hasDiffStats = ins > 0 || del > 0;
   const openDiff = useOpenPrDiff();
-
-  const handleCreate = async () => {
-    setLocalCreating(true);
-    await quickCreate(sessionId);
-    setLocalCreating(false);
-  };
 
   return (
     <div className="flex items-center gap-3 flex-nowrap">
@@ -510,8 +517,8 @@ function ReadyPhase({ card, sessionId, creating: externalCreating }: { card: PrC
           <DiffStats ins={ins} del={del} onClick={openDiff} />
           <Button
             size="sm"
-            onClick={handleCreate}
-            disabled={creating}
+            onClick={onCreatePr}
+            disabled={creating || !onCreatePr}
             className="shrink-0 h-6 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
           >
             {creating && <CircleNotchIcon size={14} className="animate-spin" />}
@@ -696,19 +703,19 @@ function RichErrorText({ text }: { text: string }) {
   return <>{parts}</>;
 }
 
-function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
-  const quickCreate = usePrStore((s) => s.quickCreate);
+function ErrorPhase({
+  card,
+  onCreatePr,
+}: {
+  card: PrCardState;
+  sessionId: string;
+  onCreatePr?: () => void;
+}) {
   const setSettingsTab = useUiStore((s) => s.setSettingsTab);
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
-  const [retrying, setRetrying] = useState(false);
+  const agentRunning = useSessionStore((s) => s.isLoading);
   const lines = card.errorMessage?.split("\n") ?? [];
   const isAuthError = card.errorKind === "auth";
-
-  const handleRetry = async () => {
-    setRetrying(true);
-    await quickCreate(sessionId);
-    setRetrying(false);
-  };
 
   const handleSignIn = () => {
     setSettingsTab("github");
@@ -746,11 +753,11 @@ function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
       <Button
         variant="ghost"
         size="sm"
-        onClick={handleRetry}
-        disabled={retrying}
+        onClick={onCreatePr}
+        disabled={agentRunning || !onCreatePr}
         className="shrink-0"
       >
-        {retrying ? "Retrying..." : "Retry"}
+        {agentRunning ? "Retrying..." : "Retry"}
       </Button>
     </div>
   );
@@ -758,7 +765,16 @@ function ErrorPhase({ card, sessionId }: { card: PrCardState; sessionId: string 
 
 // ---- Main component ----
 
-export function PrLifecycleCard({ sessionId, onOpenDetails }: { sessionId: string; onOpenDetails?: () => void }) {
+export function PrLifecycleCard({
+  sessionId,
+  onOpenDetails,
+  onCreatePr,
+}: {
+  sessionId: string;
+  onOpenDetails?: () => void;
+  /** Ask the agent to create a PR. The agent has context the orchestrator doesn't, so it can pick a good title and write a proper Summary/Changes/Test plan body. */
+  onCreatePr?: () => void;
+}) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   if (!card) return null;
 
@@ -789,7 +805,7 @@ export function PrLifecycleCard({ sessionId, onOpenDetails }: { sessionId: strin
       title={clickable ? "Open PR details" : undefined}
       className={`mx-4 rounded-t-xl border border-b-0 border-(--color-border-primary) bg-(--color-bg-secondary)/20 px-4 py-2 ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
     >
-      {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} />}
+      {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} onCreatePr={onCreatePr} />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
       {card.phase === "merged" && (
         <TerminalPhase card={card} sessionId={sessionId}
@@ -799,7 +815,7 @@ export function PrLifecycleCard({ sessionId, onOpenDetails }: { sessionId: strin
       {card.phase === "closed" && (
         <TerminalPhase card={card} sessionId={sessionId} text={`PR #${card.pr?.number} closed`} />
       )}
-      {card.phase === "error" && <ErrorPhase card={card} sessionId={sessionId} />}
+      {card.phase === "error" && <ErrorPhase card={card} sessionId={sessionId} onCreatePr={onCreatePr} />}
     </div>
   );
 }

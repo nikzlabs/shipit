@@ -104,15 +104,6 @@ interface PrState {
   applyPrStatusUpdates: (updates: PrStatusSummary[], removals?: string[]) => void;
   /** Update inline card from pr_lifecycle_update WS message. */
   updateCard: (sessionId: string, card: PrCardState) => void;
-  /** Set card to "creating" phase. */
-  setCardCreating: (sessionId: string) => void;
-  /** Set card to "open" phase from quick-create response. */
-  setCardOpen: (sessionId: string, pr: PrCardState["pr"]) => void;
-  /** Set card to "error" phase. */
-  setCardError: (sessionId: string, message: string, kind?: "auth" | "generic") => void;
-
-  // Quick PR creation
-  quickCreate: (sessionId: string) => Promise<void>;
 
   // CI fix actions
   /** Trigger manual CI fix. Returns error message on failure, null on success. */
@@ -261,89 +252,6 @@ export const usePrStore = create<PrState>((set, get) => ({
       }
       return { cardBySession: { ...state.cardBySession, [sessionId]: card } };
     });
-  },
-
-  setCardCreating: (sessionId) => {
-    set((state) => {
-      const existing = state.cardBySession[sessionId];
-      return {
-        cardBySession: {
-          ...state.cardBySession,
-          [sessionId]: {
-            ...existing,
-            cardId: existing?.cardId ?? `pr-card-${sessionId}`,
-            phase: "creating" as const,
-          },
-        },
-      };
-    });
-  },
-
-  setCardOpen: (sessionId, pr) => {
-    set((state) => ({
-      cardBySession: {
-        ...state.cardBySession,
-        [sessionId]: {
-          cardId: state.cardBySession[sessionId]?.cardId ?? `pr-card-${sessionId}`,
-          phase: "open" as const,
-          pr,
-        },
-      },
-    }));
-  },
-
-  setCardError: (sessionId, message, kind = "generic") => {
-    set((state) => {
-      const existing = state.cardBySession[sessionId];
-      return {
-        cardBySession: {
-          ...state.cardBySession,
-          [sessionId]: {
-            ...existing,
-            cardId: existing?.cardId ?? `pr-card-${sessionId}`,
-            phase: "error" as const,
-            errorMessage: message,
-            errorKind: kind,
-          },
-        },
-      };
-    });
-  },
-
-  quickCreate: async (sessionId) => {
-    get().setCardCreating(sessionId);
-    try {
-      const res = await fetch(`/api/sessions/${sessionId}/pr/quick`, {
-        method: "POST",
-        headers: { Accept: "application/json" },
-      });
-      if (!res.ok) {
-        const data = await res.json() as { error?: string };
-        // HTTP 401 from the PR routes means the GitHub token is missing or
-        // expired. Tag the card so it can surface a "Sign in to GitHub"
-        // action alongside Retry — otherwise the user only sees the raw
-        // "Not authenticated with GitHub" string with no path forward.
-        const kind = res.status === 401 ? "auth" : "generic";
-        get().setCardError(sessionId, data.error || "Failed to create pull request", kind);
-        return;
-      }
-      const data = await res.json() as { number: number; title: string; body?: string; url: string; baseBranch: string; headBranch: string; insertions: number; deletions: number };
-      get().setCardOpen(sessionId, {
-        number: data.number,
-        title: data.title,
-        body: data.body,
-        url: data.url,
-        baseBranch: data.baseBranch,
-        headBranch: data.headBranch,
-        insertions: data.insertions,
-        deletions: data.deletions,
-      });
-    } catch (err) {
-      get().setCardError(
-        sessionId,
-        err instanceof Error ? err.message : "Failed to create pull request",
-      );
-    }
   },
 
   fixCI: async (sessionId) => {
