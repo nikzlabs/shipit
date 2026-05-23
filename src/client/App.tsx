@@ -744,12 +744,18 @@ export default function App() {
     async (doc: DocEntry) => {
       useFileStore.getState().closePreview();
 
-      const { messages } = useSessionStore.getState();
-      const { activeRepoUrl } = useRepoStore.getState();
+      const { messages, sessions, sessionId } = useSessionStore.getState();
+      // Prefer the current session's repo — the doc was opened from this
+      // session's workspace, so a fresh session for it must land in the same
+      // repo. `activeRepoUrl` is only a fallback because it can drift away
+      // from the current session on URL-based navigation.
+      const repoUrl =
+        sessions.find((s) => s.id === sessionId)?.remoteUrl ??
+        useRepoStore.getState().activeRepoUrl;
 
       // If the current session already has messages, switch to a fresh session first
-      if (messages.length > 0 && activeRepoUrl) {
-        await handleNewSessionForRepo(activeRepoUrl);
+      if (messages.length > 0 && repoUrl) {
+        await handleNewSessionForRepo(repoUrl);
       }
 
       const text = `Work on: ${doc.title}\n\nPlease read the plan at ${doc.path}, then proceed with the implementation.`;
