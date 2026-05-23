@@ -59,6 +59,24 @@ card's merge/auto-fix/auto-merge controls into the panel is the remaining part
 of Phase 3. The Files section is a single diff link, not a per-file list
 (Phase 5).
 
+**Remaining-work assessment (2026-05-23):** the missing Status actions are
+mostly extraction and wiring. `PrLifecycleCard.tsx` already owns the relevant UI
+and behavior (`AutoFixToggle`, `AutoMergeToggle`, `MergeButton`, merge-method
+dropdown, CI fix, conflict-resolution prompt) and `pr-store.ts` already exposes
+the backing actions (`toggleAutoFix`, `toggleAutoMerge`, `merge`,
+`setMergeMethod`, `fixCI`). The panel work should reuse/extract those pieces
+rather than introduce another PR-action path.
+
+The per-file list is not just wiring. `PrCardState.files?: PrFileStat[]` exists
+for the pre-PR **ready** phase, but open PR status currently carries only
+aggregate insertions/deletions in `pr` plus path-only GraphQL data used by
+`extractChangedFiles()` for workflow/CI decisions. `PrStatusSummary` does not
+yet expose per-file `{ path, status, insertions, deletions }` rows for open PRs,
+and `PrFilesSection` only opens the full diff. A useful first pass should add
+per-file summary data to the poller result and render it in the panel; scoped
+per-row diff opening can follow if the existing diff dialog cannot cheaply focus
+or filter to one path.
+
 ## Summary
 
 Clicking a `PrLifecycleCard` brings forward an **inline PR detail tab** in the right-hand panel, rendered entirely inside ShipIt — title, description (markdown), full check breakdown, deploy statuses, review comments, activity timeline, and file list. The card in chat stays as a compact, live status marker; the PR tab is the drill-in surface that subsumes everything a user would otherwise leave for github.com.

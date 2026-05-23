@@ -3,6 +3,71 @@
 Tracks the whole feature (all phases in `plan.md`), not just one pass. Legend:
 `[x]` done · `[ ]` todo. Phase status mirrors the phasing table in `plan.md`.
 
+## Remaining work details (current assessment)
+
+These items separate user importance from implementation cost, so the next pass
+can pick the right sequence instead of treating every unchecked box equally.
+
+### High importance — low/medium implementation cost
+
+- [ ] **Status actions in the PR panel.**
+      Importance: high. Implementation cost: low/medium.
+      This is mostly extraction and wiring: the card already has the UI and
+      behavior in `PrLifecycleCard.tsx` (`AutoFixToggle`, `AutoMergeToggle`,
+      `MergeButton`, merge-method dropdown, CI fix, conflict-resolution prompt).
+      `pr-store.ts` already exposes the backing actions: `toggleAutoFix`,
+      `toggleAutoMerge`, `merge`, `setMergeMethod`, and `fixCI`.
+      Next implementation should extract/reuse these controls in
+      `pr-detail/PrStatusSection.tsx` rather than adding a second action path.
+
+### High importance — medium implementation cost
+
+- [ ] **Per-file list in the Files section.**
+      Importance: high. Implementation cost: medium.
+      This is not just wiring from the current PR card. `PrCardState.files?`
+      exists for the pre-PR ready phase, but open PR status currently has only
+      aggregate `pr.insertions` / `pr.deletions`; the poller selects path-only
+      PR file data for workflow/CI decisions via `extractChangedFiles()`.
+      Add open-PR file rows to `PrStatusSummary` / `PrCardState` with at least
+      `{ path, additions, deletions }`, and include status/change type if the
+      GitHub source exposes it cheaply. Render those rows in
+      `pr-detail/PrFilesSection.tsx`. Keep the existing full-diff button.
+      Per-row scoped diff opening can be a follow-up if the current Monaco diff
+      dialog cannot focus/filter a single path without extra diff plumbing.
+
+### Medium importance — low implementation cost
+
+- [ ] **Header metadata: PR author and created-at age.**
+      Importance: medium. Implementation cost: low.
+      Select `createdAt` and `author { login avatarUrl }` in the PR status
+      query, parse them into `PrStatusSummary`, preserve them in `pr-store`, and
+      render author/age in `PrDetailHeader`.
+
+### Medium importance — medium/high implementation cost
+
+- [ ] **Activity timeline.**
+      Importance: medium. Implementation cost: medium/high.
+      Add `timelineItems` to the heavy PR-tab query, parse a typed
+      `TimelineItem[]`, and render a read-only `PrTimelineSection`. Gate this
+      behind `pr_tab_active` like conversation fields so idle polling stays
+      cheap.
+
+### Lower importance or owned elsewhere
+
+- [ ] **Shared status component extraction.**
+      Importance: low by itself; useful as part of status actions.
+      Do this when wiring actions into the panel so the card and panel do not
+      keep parallel status rendering logic.
+- [ ] **Monaco inline-diff review widgets.**
+      Importance: high for docs/102, but not a blocker for the PR detail panel
+      status. The PR tab already supports review-thread reply and resolve/reopen;
+      the remaining work is the inline-on-diff surface.
+- [ ] **Regenerate PR description from conversation.**
+      Importance: low. Existing title/body editing covers the core workflow.
+- [ ] **Swap description textarea for Monaco markdown editor.**
+      Importance: low. Current textarea is acceptable unless long-form PR body
+      editing becomes common.
+
 ## Phase 1 — Panel scaffold + header + description (✅ done)
 
 - [x] `ui-store.ts`: add `"pr"` to the `RightTab` union.
