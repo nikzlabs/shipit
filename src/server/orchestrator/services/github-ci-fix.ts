@@ -10,8 +10,11 @@ import path from "node:path";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionManager } from "../sessions.js";
+import type { CredentialStore } from "../credential-store.js";
 import type { CIFailureLog } from "../../shared/types/github-types.js";
 import { extractFailedCheckRuns } from "../pr-status-poller.js";
+import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { ServiceError } from "./types.js";
 
 // ---- CI fix operations ----
@@ -228,6 +231,9 @@ export async function triggerCIFix(
   prStatusPoller: PrStatusPoller,
   runnerRegistry: SessionRunnerRegistry,
   sessionId: string,
+  sessionManager: SessionManager,
+  credentialsDir: string | undefined,
+  credentialStore: CredentialStore | undefined,
 ): Promise<{ status: "sent" | "queued"; attemptNumber: number }> {
   if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
@@ -257,6 +263,18 @@ export async function triggerCIFix(
   prStatusPoller.markAutoFixRunning(sessionId);
   const autoFixState = prStatusPoller.getAutoFixState(sessionId);
   const attemptNumber = autoFixState?.attemptCount ?? 1;
+
+  // docs/149 — bring the session's env up to date (OAuth token sync,
+  // MCP refresh, secrets push) before the system turn fires. Without
+  // this, the CI-fix turn used to inherit none of the WS path's env
+  // discipline, so a rotated OAuth token here also produces a 401.
+  if (credentialsDir && credentialStore) {
+    await prepareSessionAgentEnvironment(runner, {
+      sessionId,
+      agentId: runner.agentId,
+      deps: { credentialsDir, credentialStore, sessionManager },
+    });
+  }
 
   // sendSystemMessage handles both cases: enqueues when busy,
   // emits system_turn event for WS handler pickup when idle.

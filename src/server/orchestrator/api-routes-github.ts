@@ -608,6 +608,9 @@ export async function registerGitHubRoutes(
           deps.prStatusPoller,
           deps.runnerRegistry,
           request.params.id,
+          deps.sessionManager,
+          deps.credentialsDir,
+          deps.credentialStore,
         );
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -648,6 +651,9 @@ export async function registerGitHubRoutes(
                 deps.prStatusPoller,
                 deps.runnerRegistry,
                 request.params.id,
+                deps.sessionManager,
+                deps.credentialsDir,
+                deps.credentialStore,
               );
             } catch {
               // Non-fatal — the toggle still worked, fix just didn't trigger

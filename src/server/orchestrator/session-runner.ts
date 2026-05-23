@@ -92,14 +92,36 @@ export interface SystemTurnDeps {
   sseBroadcast: (event: string, data: unknown) => void;
   /** Persist a chat message to history. */
   persistMessage: (sessionId: string, msg: { role: "user" | "assistant"; text: string }) => void;
-  /** Resolve the Claude CLI session ID for --resume (returns undefined for fresh sessions). */
-  resolveAgentSessionId: (sessionId: string) => string | undefined;
   /** Replace in-progress messages in chat history (incremental persistence). */
   replaceInProgress?: (sessionId: string, messages: { role: "assistant"; text: string; inProgress: true }[]) => void;
   /** Finalize in-progress messages (remove the flag) after turn completion. */
   finalizeInProgress?: (sessionId: string) => void;
   /** Clear in-progress messages on error/abort. */
   clearInProgress?: (sessionId: string) => void;
+  /**
+   * docs/149 — build the full `AgentRunParams` for this turn (system prompt,
+   * model, settings, MCP, autoCreatePr, permissionMode, resume id). Without
+   * this, system turns used to run with only `{ prompt, sessionId, cwd }` and
+   * inherited none of the user-path agent configuration.
+   */
+  buildRunParams: (sessionId: string, agentId: AgentId, prompt: string) => Promise<AgentRunParams>;
+  /**
+   * docs/149 — emit the PR lifecycle card after a system-turn commit lands.
+   * Mirrors the WS handler's post-turn flow. Optional so tests can omit it.
+   */
+  postTurnPrFlow?: (
+    sessionId: string,
+    sessionDir: string,
+    commitHash: string,
+    emit: (msg: WsServerMessage) => void,
+  ) => Promise<void>;
+  /**
+   * docs/149 — write a CLI-rotated OAuth token back to the orchestrator source
+   * after a system turn. Optional; production wires it to
+   * `finalizeSessionAgentEnvironment` so the agent-spawned and CI-auto-fix
+   * paths participate in the same rotating-token discipline as the WS path.
+   */
+  finalizeAgentEnv?: (sessionId: string, agentId: AgentId) => void;
 }
 
 /**
@@ -125,15 +147,19 @@ export interface SystemTurnHost {
 /**
  * Shared implementation for server-initiated agent turns. Used by both
  * SessionRunner and ContainerSessionRunner to avoid code duplication.
+ *
+ * docs/149 — async because run-params assembly is async (reads system prompt,
+ * MCP config, etc). Callers fire-and-forget via `void this._runSystemTurn(...)`
+ * — `sendSystemMessage` still returns `void`.
  */
-export function runSystemTurn(
+export async function runSystemTurn(
   host: SystemTurnHost,
   deps: SystemTurnDeps,
   agentId: AgentId,
   text: string,
   createAgent: (agentId: AgentId) => AgentProcess,
   activity?: string,
-): void {
+): Promise<void> {
   const agent = createAgent(agentId);
   host.running = true;
   host.accumulatedText = "";
@@ -185,15 +211,30 @@ export function runSystemTurn(
     console.log("[system-turn] agent exited with code", code);
     host.setAgent(null);
 
+    // docs/149 — write back any CLI-rotated OAuth token before doing further
+    // post-turn work. Matches the WS-path `syncTokenBackAfterTurn` behavior.
+    deps.finalizeAgentEnv?.(host.sessionId, agentId);
+
+    let commitHash: string | null = null;
     try {
       const summary = host.turnSummary.split("\n")[0]?.slice(0, 120) || "CI fix";
-      const hash = await deps.autoCommit(host.sessionDir, summary);
-      if (hash) {
-        host.emitMessage({ type: "git_committed", hash, message: summary });
+      commitHash = await deps.autoCommit(host.sessionDir, summary);
+      if (commitHash) {
+        host.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
         deps.scheduleAutoPush(host.sessionDir);
       }
     } catch (err) {
       console.error("[system-turn] auto-commit failed:", err);
+    }
+
+    // docs/149 — emit PR lifecycle card after the commit lands, same as the
+    // WS path. Optional dep; tests can leave it unwired.
+    if (commitHash) {
+      try {
+        await deps.postTurnPrFlow?.(host.sessionId, host.sessionDir, commitHash, (m) => host.emitMessage(m));
+      } catch (err) {
+        console.error("[system-turn] pr-lifecycle flow failed:", err);
+      }
     }
 
     host.running = false;
@@ -201,7 +242,7 @@ export function runSystemTurn(
       const next = host.dequeue();
       if (next) {
         host.emitMessage({ type: "queue_updated", queue: host.getQueueSnapshot() });
-        runSystemTurn(host, deps, agentId, next.text, createAgent);
+        void runSystemTurn(host, deps, agentId, next.text, createAgent);
         return;
       }
     }
@@ -210,11 +251,8 @@ export function runSystemTurn(
     host.onAgentFinished();
   });
 
-  agent.run({
-    prompt: text,
-    sessionId: deps.resolveAgentSessionId(host.sessionId),
-    cwd: host.sessionDir,
-  } as AgentRunParams);
+  const runParams = await deps.buildRunParams(host.sessionId, agentId, text);
+  agent.run(runParams);
 }
 
 // ---------------------------------------------------------------------------
@@ -562,12 +600,12 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       this.enqueue({ text });
       return;
     }
-    this._runSystemTurn(text, activity);
+    void this._runSystemTurn(text, activity);
   }
 
-  private _runSystemTurn(text: string, activity?: string): void {
+  private async _runSystemTurn(text: string, activity?: string): Promise<void> {
     const deps = this._systemTurnDeps!;
-    runSystemTurn(this, deps, this._agentId, text, (agentId) => {
+    await runSystemTurn(this, deps, this._agentId, text, (agentId) => {
       const agent = deps.agentFactory(agentId);
       this.setAgent(agent);
       return agent;

@@ -328,6 +328,7 @@ export async function registerSessionRoutes(
           },
           deps.defaultAgentId,
           deps.credentialsDir,
+          deps.credentialStore,
         );
         // Broadcast the updated session list so the parent's sidebar shows
         // the new child immediately — same pattern as `fork` / `unarchive`.
@@ -459,13 +460,15 @@ export async function registerSessionRoutes(
     "/api/sessions/:parentId/children/:childId/message",
     async (request, reply) => {
       try {
-        const result = sendChildMessage(
+        const result = await sendChildMessage(
           sessionManager,
           deps.runnerRegistry,
           request.params.parentId,
           request.params.childId,
           request.body?.text ?? "",
           deps.defaultAgentId,
+          deps.credentialsDir,
+          deps.credentialStore,
         );
         return { queuePosition: result.queuePosition, enqueued: result.enqueued };
       } catch (err) {

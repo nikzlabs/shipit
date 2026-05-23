@@ -1328,11 +1328,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this.enqueue({ text });
       return;
     }
-    this._runSystemTurn(text, activity);
+    void this._runSystemTurn(text, activity);
   }
 
-  private _runSystemTurn(text: string, activity?: string): void {
-    runSystemTurn(this, this._systemTurnDeps!, this._agentId, text, (agentId) => {
+  private async _runSystemTurn(text: string, activity?: string): Promise<void> {
+    await runSystemTurn(this, this._systemTurnDeps!, this._agentId, text, (agentId) => {
       return this.createAgent(agentId);
     }, activity);
   }
