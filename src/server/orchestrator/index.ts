@@ -12,6 +12,7 @@ import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
 import { pushToOrigin, isGitAuthError } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
+import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
@@ -268,6 +269,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
     : undefined;
 
+  // docs/149 — lazy holder for the PR status poller. The poller is constructed
+  // AFTER the runner registry (depends on it), but the registry's system-turn
+  // PR lifecycle hook needs to reach it at runtime. Wired below, after the
+  // poller exists.
+  const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
+  // docs/149 — same shape as the WS handler's readSystemPrompt, hoisted to
+  // app scope so the system-turn hook can read it without per-connection state.
+  const readSystemPromptApp = async (): Promise<string | undefined> => {
+    try {
+      const content = await fs.readFile(path.join(workspaceDir, ".shipit", "system-prompt.md"), "utf-8");
+      const trimmed = content.trim();
+      return trimmed || undefined;
+    } catch { return undefined; }
+  };
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
@@ -275,6 +291,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, runtimeMode, broadcastLog,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
+    ...(credentialsDir ? { credentialsDir } : {}),
+    readSystemPrompt: readSystemPromptApp,
+    generateText,
+    getPrStatusPoller: () => prStatusPollerRef.ref ?? undefined,
   });
   registryHolder.ref = runnerRegistry;
 
@@ -299,6 +319,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // bare cache now (off the request path) — see docs/145.
     ...(repoPrefetcher ? { onRepoMainAdvanced: (url: string) => repoPrefetcher.prefetchRepo(url) } : {}),
   });
+  // docs/149 — fill in the lazy reference that the system-turn PR-lifecycle
+  // hook closes over.
+  prStatusPollerRef.ref = prStatusPoller;
 
   // ---- Event wiring (deployment + auth) ----
   wireEventHandlers({

@@ -133,7 +133,7 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("sendSystemMessage starts agent turn when idle with deps set", () => {
+  it("sendSystemMessage starts agent turn when idle with deps set", async () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
@@ -146,13 +146,19 @@ describe("SessionRunner", () => {
       scheduleAutoPush: vi.fn(),
       sseBroadcast: vi.fn(),
       persistMessage: vi.fn(),
-      resolveAgentSessionId: vi.fn().mockReturnValue("agent-session-123"),
+      buildRunParams: vi.fn().mockResolvedValue({
+        prompt: "fix ci",
+        cwd: "/tmp/s1",
+        sessionId: "agent-session-123",
+      }),
     });
 
     runner.sendSystemMessage("fix ci");
     // Should start a turn directly — not enqueue
     expect(runner.queueLength).toBe(0);
     expect(runner.running).toBe(true);
+    // buildRunParams is async, so let microtasks flush before asserting on run().
+    await new Promise((r) => setTimeout(r, 0));
     expect(fakeAgent.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "fix ci" }));
     runner.dispose({ force: true });
   });

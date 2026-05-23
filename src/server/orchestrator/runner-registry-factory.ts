@@ -9,12 +9,16 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { PlatformCredentialProvider } from "./platform-credentials.js";
+import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { AgentId, AgentProcess, WsLogEntry } from "../shared/types.js";
 import type { RuntimeMode } from "./app-di.js";
 import { pushToOrigin } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { getErrorMessage } from "./validation.js";
 import { setupServiceManager } from "./service-manager-setup.js";
+import { buildAgentRunParams } from "./session-agent-run-params.js";
+import { finalizeSessionAgentEnvironment } from "./session-agent-env.js";
+import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 
 // ---- Runner registry setup ----
 
@@ -95,6 +99,31 @@ export interface RunnerRegistryDeps {
    * stdout. See docs/124-session-rescue-and-diagnostics §1.1.
    */
   broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  /**
+   * docs/149 — credentials root used by the post-system-turn finalize hook
+   * (writes a CLI-rotated OAuth token back to the orchestrator source).
+   * Optional so test setups without container creds still work.
+   */
+  credentialsDir?: string;
+  /**
+   * docs/149 — used by the system-turn `buildRunParams` hook to load the
+   * user's optional Settings > Instructions suffix. Optional so test setups
+   * can skip the file read.
+   */
+  readSystemPrompt?: () => Promise<string | undefined>;
+  /**
+   * docs/149 — used by the post-system-turn PR-lifecycle flow when auto-
+   * create-PR is on, to derive a PR description from chat history. Optional
+   * so tests can leave the flow unwired.
+   */
+  generateText?: (prompt: string, cwd: string) => Promise<string>;
+  /**
+   * docs/149 — lazy resolver for the PR-status poller. Lazy because the
+   * poller is constructed AFTER the runner registry (it depends on the
+   * registry) — without a getter the post-turn flow would close over a null
+   * reference. Optional so tests omit it.
+   */
+  getPrStatusPoller?: () => PrStatusPoller | undefined;
 }
 
 /**
@@ -109,6 +138,7 @@ export function createRunnerRegistry(
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
+    credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -158,10 +188,74 @@ export function createRunnerRegistry(
         },
         sseBroadcast,
         persistMessage: (sessionId, msg) => chatHistoryManager.append(sessionId, msg),
-        resolveAgentSessionId: (sessionId) => sessionManager.get(sessionId)?.agentSessionId,
         replaceInProgress: (sessionId, messages) => chatHistoryManager.replaceInProgress(sessionId, messages),
         finalizeInProgress: (sessionId) => chatHistoryManager.finalizeInProgress(sessionId),
         clearInProgress: (sessionId) => chatHistoryManager.clearInProgress(sessionId),
+        // docs/149 — assemble full AgentRunParams for system turns. Without
+        // this, spawned-session / CI-auto-fix turns ran with only
+        // `{ prompt, sessionId, cwd }` (no system prompt, no settings, no
+        // model, no MCP, no autoCreatePr). When `credentialStore` is absent
+        // (extreme-minimal test setup) we fall back to the minimal shape
+        // so we don't regress those callers.
+        buildRunParams: async (sessionId, agentId, prompt) => {
+          const session = sessionManager.get(sessionId);
+          if (!credentialStore) {
+            return {
+              prompt,
+              cwd: runner.sessionDir,
+              ...(session?.agentSessionId !== undefined ? { sessionId: session.agentSessionId } : {}),
+            };
+          }
+          return buildAgentRunParams({
+            deps: {
+              credentialStore,
+              githubAuthManager,
+              sessionManager,
+              readSystemPrompt: readSystemPrompt ?? (() => Promise.resolve(undefined)),
+              getSelectedModel: () => session?.model,
+            },
+            sessionId,
+            agentId,
+            prompt,
+            sessionDir: runner.sessionDir,
+            ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
+          });
+        },
+        // docs/149 — write back any CLI-rotated OAuth token after a system
+        // turn lands. Mirrors the WS-path `syncTokenBackAfterTurn` discipline.
+        ...(credentialsDir && credentialStore ? {
+          finalizeAgentEnv: (sessionId, agentId) => {
+            finalizeSessionAgentEnvironment(runner, {
+              sessionId,
+              agentId,
+              deps: { credentialsDir, credentialStore, sessionManager },
+            });
+          },
+        } : {}),
+        // docs/149 — emit the PR lifecycle card after a system-turn commit.
+        // Lazy poller resolution because the poller is constructed AFTER the
+        // runner registry; the closure fires post-turn, by which time it's set.
+        ...(generateText ? {
+          postTurnPrFlow: async (sessionId, sessionDir, commitHash, emit) => {
+            const prStatusPoller = getPrStatusPoller?.();
+            if (!prStatusPoller || !credentialStore) return;
+            await emitPrLifecycleAfterCommit({
+              deps: {
+                sessionManager,
+                prStatusPoller,
+                githubAuthManager,
+                credentialStore,
+                chatHistoryManager,
+                generateText,
+                createGitManager,
+              },
+              sessionId,
+              sessionDir,
+              commitHash,
+              emit,
+            });
+          },
+        } : {}),
       });
 
       // In local mode (dogfooding), the orchestrator can't manage Docker —

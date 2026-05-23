@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 priority: high
 description: Make agent-spawned sessions take the same env-prep and agent-start code path as user-spawned sessions, so they get OAuth, MCP, system prompt, settings, model, and PR lifecycle treatment identically.
 ---
@@ -337,3 +337,40 @@ they still pass.
   parent is its own design.
 - Per-spawn agent override beyond what docs/117 already supports.
 - Streaming-agent reuse across system turns.
+
+## Implementation notes
+
+- **Token write-back hook instead of registry listener.** The plan left the
+  finalize-env wiring as an implementation choice between "listener on the
+  runner" and "third optional hook on `SystemTurnDeps`." Settled on the hook
+  (`finalizeAgentEnv?: (sessionId, agentId) => void`) — adding a new event to
+  `SessionRunnerEvents` would have rippled through every runner fake in the
+  test suite, while the hook is one line in `runSystemTurn`'s `agent.on("done")`
+  and one line in the registry factory.
+- **`resolveAgentSessionId` deleted from `SystemTurnDeps`.** The `--resume` id
+  lookup is now done inside `buildRunParams`, so the standalone resolver is
+  redundant. `session-runner.test.ts` updated to use `buildRunParams` directly
+  in the deps fixture.
+- **`buildRunParams` is required, but tolerant of missing `credentialStore`.**
+  Production wires it through the credential store; test setups that don't
+  supply one fall back to the legacy minimal `{ prompt, sessionId, cwd }`
+  shape rather than crashing. Keeps the new contract clean while preserving
+  behavior for thin test harnesses.
+- **`selectAgentEnvForPush` relocated to `session-agent-env.ts`.** The
+  function was inside `ws-handlers/agent-execution.ts`, which would have
+  created a cycle (env-prep importing from ws-handlers). Moved to the new
+  module; `agent-execution.ts` re-exports it so `agent-env-push.test.ts`'s
+  import path keeps working.
+- **`readSystemPrompt` hoisted to app scope.** The WS handler reads
+  `.shipit/system-prompt.md` from `workspaceDir` via a per-connection helper;
+  duplicated the same closure at app scope in `index.ts` so the system-turn
+  `buildRunParams` hook can read it without per-connection state.
+- **Lazy `PrStatusPoller` resolver.** The poller is constructed after the
+  runner registry (depends on it), but the registry's post-turn PR-lifecycle
+  hook needs it at runtime. Threaded through as `getPrStatusPoller: () =>
+  PrStatusPoller | undefined` so the closure resolves it at fire time.
+- **Tests.** Added `session-agent-env.test.ts` (idempotence, OAuth freshness,
+  agent-env push, write-back) using a fake `ContainerSessionRunner` with its
+  prototype reparented so the `instanceof` checks fire. The integration test
+  gets a run-params parity assertion driven by extending `FakeClaudeProcess`
+  to capture `settingsPath` / `model` / `mcpServers` / `autoCreatePr`.

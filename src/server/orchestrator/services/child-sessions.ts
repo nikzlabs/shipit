@@ -14,10 +14,10 @@ import type { SessionManager } from "../sessions.js";
 import type { RepoGit } from "../repo-git.js";
 import type { RepoStore } from "../repo-store.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
-import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { SessionInfo, AgentId } from "../../shared/types.js";
+import type { CredentialStore } from "../credential-store.js";
 import { generateBranchPrefix } from "../git-utils.js";
-import { provisionAgentCredentials } from "../session-credentials.js";
+import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 
@@ -143,6 +143,7 @@ export async function spawnChildSession(
   opts: SpawnChildSessionOptions,
   defaultAgentId: AgentId,
   credentialsDir: string | undefined,
+  credentialStore: CredentialStore | undefined,
 ): Promise<SpawnChildSessionResult> {
   const trimmedPrompt = opts.prompt?.trim();
   if (!trimmedPrompt) {
@@ -320,22 +321,25 @@ export async function spawnChildSession(
   const childAgentId: AgentId = opts.agent ?? defaultAgentId;
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, childAgentId);
 
-  // docs/138 — the first turn on a child session is kicked off by
-  // `sendSystemMessage` below, which bypasses the WS `runAgentWithMessage`
-  // handler that normally pins the agent and copies its credential subtree
-  // into the per-session credentials dir. Without this, the freshly-spawned
-  // container has an empty `/credentials/sessions/<id>` and the Claude CLI
-  // reports "Not logged in · Please run /login" on its first turn. Mirror
-  // the WS handler's first-turn block here so the spawn path is at parity.
-  if (runner instanceof ContainerSessionRunner && credentialsDir) {
-    try {
-      provisionAgentCredentials(credentialsDir, newSessionId, childAgentId);
-    } catch (err) {
-      console.warn("[spawn-child] credentials provisioning failed:", String(err));
-    }
+  // docs/149 — bring the child to full env-prep parity with the WS path
+  // BEFORE the first system turn fires. Otherwise the freshly-spawned
+  // container has no agent credentials, a stale OAuth token, no MCP env
+  // pushed, and no `agentPinned` flag — so the CLI reports "Not logged in"
+  // (or 401 on a rotated token) on its first turn. Subsumes the previous
+  // inline `provisionAgentCredentials` + `setAgentId` + `setAgentPinned`
+  // block (docs/138). Idempotent; safe to call before every system turn.
+  if (credentialsDir && credentialStore) {
+    await prepareSessionAgentEnvironment(runner, {
+      sessionId: newSessionId,
+      agentId: childAgentId,
+      deps: { credentialsDir, credentialStore, sessionManager },
+    });
+  } else {
+    // Tests without credentialsDir / credentialStore still need the pin so
+    // `runner.agentId` is meaningful when the agent factory is invoked.
+    sessionManager.setAgentId(newSessionId, childAgentId);
+    sessionManager.setAgentPinned(newSessionId);
   }
-  sessionManager.setAgentId(newSessionId, childAgentId);
-  sessionManager.setAgentPinned(newSessionId);
 
   runner.sendSystemMessage(trimmedPrompt);
 
@@ -500,14 +504,16 @@ export interface SendChildMessageResult {
  * shape (non-empty, ≤ 50,000 chars) before reaching for the runner registry,
  * so a malformed call doesn't even create a runner.
  */
-export function sendChildMessage(
+export async function sendChildMessage(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
   parentSessionId: string,
   childSessionId: string,
   text: string,
   defaultAgentId: AgentId,
-): SendChildMessageResult {
+  credentialsDir: string | undefined,
+  credentialStore: CredentialStore | undefined,
+): Promise<SendChildMessageResult> {
   const trimmed = text?.trim();
   if (!trimmed) throw new ServiceError(400, "Message text is required");
   if (trimmed.length > 50_000) {
@@ -527,6 +533,19 @@ export function sendChildMessage(
   // not persisted on `SessionInfo`, so we fall back to the orchestrator's
   // default; this matches `spawnChildSession`'s behavior.
   const runner = runnerRegistry.getOrCreate(childSessionId, child.workspaceDir, defaultAgentId);
+
+  // docs/149 — refresh per-session credentials + OAuth + MCP env before the
+  // follow-up turn fires. Mirrors the spawn path; idempotent so re-running
+  // it on every message is fine. Without this, a child whose OAuth token
+  // has been rotated by another session since the first turn 401s here too.
+  if (credentialsDir && credentialStore) {
+    await prepareSessionAgentEnvironment(runner, {
+      sessionId: childSessionId,
+      agentId: runner.agentId,
+      deps: { credentialsDir, credentialStore, sessionManager },
+    });
+  }
+
   const wasRunning = runner.running;
   runner.sendSystemMessage(trimmed);
   return {

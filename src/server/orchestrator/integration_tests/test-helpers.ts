@@ -483,6 +483,11 @@ export class FakeClaudeProcess extends EventEmitter {
    * machinery). The fake itself stays one-shot.
    */
   public lastUseStreaming = false;
+  /** docs/149 — captures full AgentRunParams the orchestrator handed to `run()`. */
+  public lastSettingsPath: string | undefined;
+  public lastModel: string | undefined;
+  public lastMcpServers: unknown[] | undefined;
+  public lastAutoCreatePr: boolean | undefined;
   public killed = false;
   public interrupted = false;
   public stdinData: string[] = [];
@@ -504,7 +509,19 @@ export class FakeClaudeProcess extends EventEmitter {
     return super.emit(eventName, ...args);
   }
 
-  run(params: { prompt: string; sessionId?: string; systemPrompt?: string; images?: { data: string; mediaType: string; filename?: string }[]; cwd?: string; permissionMode?: string; useStreaming?: boolean }) {
+  run(params: {
+    prompt: string;
+    sessionId?: string;
+    systemPrompt?: string;
+    images?: { data: string; mediaType: string; filename?: string }[];
+    cwd?: string;
+    permissionMode?: string;
+    useStreaming?: boolean;
+    settingsPath?: string;
+    model?: string;
+    mcpServers?: unknown[];
+    autoCreatePr?: boolean;
+  }) {
     this.runCalled = true;
     this.lastPrompt = params.prompt;
     this.lastSessionId = params.sessionId;
@@ -513,6 +530,10 @@ export class FakeClaudeProcess extends EventEmitter {
     this.lastCwd = params.cwd;
     this.lastPermissionMode = params.permissionMode;
     this.lastUseStreaming = params.useStreaming === true;
+    this.lastSettingsPath = params.settingsPath;
+    this.lastModel = params.model;
+    this.lastMcpServers = params.mcpServers;
+    this.lastAutoCreatePr = params.autoCreatePr;
   }
 
   kill() {
