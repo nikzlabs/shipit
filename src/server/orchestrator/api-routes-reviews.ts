@@ -255,10 +255,10 @@ export async function registerReviewRoutes(
   // Chat-native AI review write-back (docs/125)
   //
   // The session worker relays the agent's `submit_review_comments` tool call
-  // here (worker injects the trusted SESSION_ID). The agent is allow-listed to
-  // exactly the file the current review turn authorized — `runner.
-  // activeReviewFilePath` — so a confused subagent can't draft comments on a
-  // file the user never opened. `source: "ai"` is forced server-side.
+  // here (worker injects the trusted SESSION_ID). Explicit review turns still
+  // narrow writes to `runner.activeReviewFilePath`, but normal agent/subagent
+  // turns may also post review comments against their declared `filePath`.
+  // `source: "ai"` is forced server-side.
   // ----------------------------------------------------------------
   app.post<{
     Params: { sessionId: string };
@@ -274,13 +274,13 @@ export async function registerReviewRoutes(
         return;
       }
 
-      // Allow-list: only the file the current review turn authorized.
+      // If a chat-native review turn is active, keep its single-file
+      // allow-list. Otherwise accept the submitted file path so regular agent
+      // and subagent reviews can still land anchored comments.
       const runner = deps.runnerRegistry.get(sessionId);
-      if (runner?.activeReviewFilePath !== filePath) {
+      if (runner?.activeReviewFilePath && runner.activeReviewFilePath !== filePath) {
         reply.code(403).send({
-          error: runner?.activeReviewFilePath
-            ? `submit_review_comments is authorized for "${runner.activeReviewFilePath}", not "${filePath}".`
-            : "No review is in progress for this session — submit_review_comments is only available during a review turn.",
+          error: `submit_review_comments is authorized for "${runner.activeReviewFilePath}", not "${filePath}".`,
         });
         return;
       }
@@ -297,7 +297,7 @@ export async function registerReviewRoutes(
         );
         // Broadcast the updated draft so an open file-preview modal renders the
         // new AI comments live (and reconnecting viewers replay it).
-        runner.emitMessage({ type: "review_updated", sessionId, filePath, review: result.review });
+        runner?.emitMessage({ type: "review_updated", sessionId, filePath, review: result.review });
         return { ok: true, added: result.added, outdated: result.outdated };
       } catch (err) {
         if (err instanceof ServiceError) {
