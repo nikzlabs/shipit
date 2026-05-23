@@ -67,17 +67,33 @@ export async function buildAgentRunParams(
   } = args;
   let agentSessionId = args.agentSessionId;
 
-  const agentInstructions = deps.credentialStore.getAgentSystemInstructionsEnabled()
+  // Consume the conversation replay SYNCHRONOUSLY before any await — it's a
+  // session-mutating DB transaction (clears the replay column). If the
+  // session's database closes between an earlier `await` (e.g. the
+  // `readSystemPrompt` fs read below) and this call, better-sqlite3 throws
+  // `The database connection is not open`. The fix is order: every DB read
+  // the function needs lives ahead of the first `await`, so the params
+  // build either runs to completion or never starts. See docs/149.
+  const agentInstructionsEnabled = deps.credentialStore.getAgentSystemInstructionsEnabled();
+  const mcpServers = Object.values(deps.credentialStore.getAllMcpServers()).filter(
+    (s) => s.enabled,
+  );
+  const autoCreatePr = deps.credentialStore.getAutoCreatePr()
+    && deps.githubAuthManager.authenticated;
+  const replay = deps.sessionManager.consumeConversationReplay(sessionId);
+  const selectedModel = deps.getSelectedModel();
+
+  const userSystemPrompt = await deps.readSystemPrompt();
+
+  const agentInstructions = agentInstructionsEnabled
     ? buildAgentSystemInstructions({ agentId })
     : undefined;
-  const userSystemPrompt = await deps.readSystemPrompt();
   let systemPrompt: string | undefined =
     [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;
 
-  // If the session is graduating from a warm slot and carries a one-shot
+  // If the session was graduating from a warm slot and carried a one-shot
   // conversation replay, append it to the system prompt and clear the
   // resume id so the CLI doesn't try to attach to a non-existent session.
-  const replay = deps.sessionManager.consumeConversationReplay(sessionId);
   if (replay) {
     agentSessionId = undefined;
     systemPrompt = systemPrompt ? `${systemPrompt}\n\n${replay}` : replay;
@@ -91,20 +107,13 @@ export async function buildAgentRunParams(
     ? "/etc/shipit/managed-settings.json"
     : undefined;
 
-  const mcpServers = Object.values(deps.credentialStore.getAllMcpServers()).filter(
-    (s) => s.enabled,
-  );
-
-  const autoCreatePr = deps.credentialStore.getAutoCreatePr()
-    && deps.githubAuthManager.authenticated;
-
   const params: AgentRunParams = {
     prompt,
     cwd: sessionDir,
     ...(agentSessionId !== undefined ? { sessionId: agentSessionId } : {}),
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
-    ...(deps.getSelectedModel() !== undefined ? { model: deps.getSelectedModel() } : {}),
+    ...(selectedModel !== undefined ? { model: selectedModel } : {}),
     ...(settingsPath !== undefined ? { settingsPath } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
     autoCreatePr,
