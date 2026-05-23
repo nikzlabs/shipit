@@ -5,6 +5,7 @@ import { SessionSidebar } from "./SessionSidebar.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useRepoStore } from "../stores/repo-store.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
 afterEach(() => {
@@ -13,6 +14,7 @@ afterEach(() => {
   useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
   usePrStore.setState({ cardBySession: {}, statusBySession: {} });
   useUiStore.getState().setProjectSettingsRepoUrl(null);
+  useRepoStore.setState({ collapsedParents: new Set<string>() });
 });
 
 const baseSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -310,6 +312,45 @@ describe("SessionSidebar", () => {
       expect(screen.getByTitle("Auto-fix running")).toBeTruthy();
       expect(screen.queryByTitle("Agent running")).toBeNull();
       expect(screen.queryByTitle(/CI failed/)).toBeNull();
+    });
+  });
+
+  describe("spawned-children collapse", () => {
+    const parent = baseSession({ id: "parent-1", title: "Parent", remoteUrl: repoA.url });
+    const childA = baseSession({ id: "child-a", title: "Child A", remoteUrl: repoA.url, parentSessionId: "parent-1" });
+    const childB = baseSession({ id: "child-b", title: "Child B", remoteUrl: repoA.url, parentSessionId: "parent-1" });
+
+    it("shows a caret on a parent that has spawned children", () => {
+      render(<SessionSidebar {...defaultProps} sessions={[parent, childA, childB]} />);
+      // Default: expanded — caret says "Hide ...".
+      expect(screen.getByLabelText("Hide 2 spawned sessions")).toBeTruthy();
+      expect(screen.getByText("Child A")).toBeTruthy();
+      expect(screen.getByText("Child B")).toBeTruthy();
+    });
+
+    it("hides children when the parent caret is clicked", async () => {
+      const user = userEvent.setup();
+      render(<SessionSidebar {...defaultProps} sessions={[parent, childA, childB]} />);
+      await user.click(screen.getByLabelText("Hide 2 spawned sessions"));
+      expect(screen.queryByText("Child A")).toBeNull();
+      expect(screen.queryByText("Child B")).toBeNull();
+      // Parent stays visible with a "Show" caret.
+      expect(screen.getByText("Parent")).toBeTruthy();
+      expect(screen.getByLabelText("Show 2 spawned sessions")).toBeTruthy();
+    });
+
+    it("does not render a caret on sessions without spawned children", () => {
+      const solo = baseSession({ id: "solo", title: "Solo", remoteUrl: repoA.url });
+      render(<SessionSidebar {...defaultProps} sessions={[solo]} />);
+      expect(screen.queryByLabelText(/spawned session/)).toBeNull();
+    });
+
+    it("clicking the caret does not trigger onResume on the parent row", async () => {
+      const onResume = vi.fn();
+      const user = userEvent.setup();
+      render(<SessionSidebar {...defaultProps} sessions={[parent, childA]} currentSessionId="other" onResume={onResume} />);
+      await user.click(screen.getByLabelText("Hide 1 spawned session"));
+      expect(onResume).not.toHaveBeenCalled();
     });
   });
 

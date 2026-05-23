@@ -116,6 +116,14 @@ interface SessionItemProps {
    * archive controls are identical to a regular row.
    */
   indented?: boolean;
+  /**
+   * Number of agent-spawned children attached to this session. When > 0,
+   * the row renders a caret toggle on the left so the user can collapse the
+   * brood — matches the existing repo-header caret pattern.
+   */
+  childCount?: number;
+  isChildrenCollapsed?: boolean;
+  onToggleChildren?: () => void;
 }
 
 /** Consolidated status dot replacing separate AgentDot + CiDot. */
@@ -157,11 +165,12 @@ function SessionStatusDot({ sessionId }: { sessionId: string }) {
   return null;
 }
 
-export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, repoLabel, disabled, indented }: SessionItemProps) {
+export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren }: SessionItemProps) {
   const isArchived = session.archived === true;
 
   const attentionReason = useAttentionInfo(session.id);
   const needsAttention = attentionReason !== null && !isArchived;
+  const hasChildren = (childCount ?? 0) > 0 && !!onToggleChildren;
 
   return (
     <div
@@ -181,6 +190,20 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
       }`}
       title={attentionReason ?? undefined}
     >
+      {hasChildren && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onToggleChildren?.(); }}
+          className="shrink-0 -ml-1 w-4 h-4 mt-px flex items-center justify-center text-(--color-text-tertiary) hover:text-(--color-text-primary) rounded"
+          aria-label={isChildrenCollapsed ? `Show ${childCount} spawned session${childCount === 1 ? "" : "s"}` : `Hide ${childCount} spawned session${childCount === 1 ? "" : "s"}`}
+          title={isChildrenCollapsed ? `Show ${childCount} spawned` : `Hide ${childCount} spawned`}
+        >
+          {isChildrenCollapsed
+            ? <CaretRightIcon size={ICON_SIZE.XS} />
+            : <CaretDownIcon size={ICON_SIZE.XS} />
+          }
+        </button>
+      )}
       <PrStateBadge sessionId={session.id} />
 
       <button
@@ -242,6 +265,8 @@ function RepoGroup({
   isNewSessionSelected,
   isCollapsed,
   onToggleCollapse,
+  collapsedParents,
+  onToggleParentCollapsed,
   onResume,
   onArchive,
   onNewSession,
@@ -264,6 +289,8 @@ function RepoGroup({
   isNewSessionSelected: boolean;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  collapsedParents: Set<string>;
+  onToggleParentCollapsed: (parentId: string) => void;
   onResume: (id: string) => void;
   onArchive: (id: string) => void;
   onNewSession: () => void;
@@ -448,6 +475,9 @@ function RepoGroup({
               for (const s of sessions) {
                 // Skip children that we'll render beneath their parent below.
                 if (s.parentSessionId && !orphanedChildren.has(s.id)) continue;
+                const children = childrenByParent.get(s.id);
+                const childCount = children?.length ?? 0;
+                const childrenCollapsed = collapsedParents.has(s.id);
                 rendered.push(
                   <SessionItem
                     key={s.id}
@@ -455,10 +485,12 @@ function RepoGroup({
                     isCurrent={s.id === currentSessionId}
                     onResume={onResume}
                     onArchive={onArchive}
+                    childCount={childCount}
+                    isChildrenCollapsed={childrenCollapsed}
+                    onToggleChildren={childCount > 0 ? () => onToggleParentCollapsed(s.id) : undefined}
                   />,
                 );
-                const children = childrenByParent.get(s.id);
-                if (!children) continue;
+                if (!children || childrenCollapsed) continue;
                 for (const child of children) {
                   rendered.push(
                     <SessionItem
@@ -500,6 +532,8 @@ export function SessionSidebar({
 
   const collapsedRepos = useRepoStore((s) => s.collapsedRepos);
   const toggleRepoCollapsed = useRepoStore((s) => s.toggleRepoCollapsed);
+  const collapsedParents = useRepoStore((s) => s.collapsedParents);
+  const toggleParentCollapsed = useRepoStore((s) => s.toggleParentCollapsed);
   const reorderRepos = useRepoStore((s) => s.reorderRepos);
 
   // Drag-and-drop reorder state. Lives at the sidebar level so all groups
@@ -788,6 +822,8 @@ export function SessionSidebar({
               isNewSessionSelected={activeNewSessionRepoUrl === repo.url}
               isCollapsed={!isSingleRepo && collapsedRepos.has(repo.url)}
               onToggleCollapse={() => toggleRepoCollapsed(repo.url)}
+              collapsedParents={collapsedParents}
+              onToggleParentCollapsed={toggleParentCollapsed}
               onResume={onResume}
               onArchive={onArchive}
               onNewSession={() => onNewSessionForRepo(repo.url)}
