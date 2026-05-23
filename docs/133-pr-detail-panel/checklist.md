@@ -10,7 +10,7 @@ can pick the right sequence instead of treating every unchecked box equally.
 
 ### High importance — low/medium implementation cost
 
-- [ ] **Status actions in the PR panel.**
+- [x] **Status actions in the PR panel.**
       Importance: high. Implementation cost: low/medium.
       This is mostly extraction and wiring: the card already has the UI and
       behavior in `PrLifecycleCard.tsx` (`AutoFixToggle`, `AutoMergeToggle`,
@@ -22,7 +22,7 @@ can pick the right sequence instead of treating every unchecked box equally.
 
 ### High importance — medium implementation cost
 
-- [ ] **Per-file list in the Files section.**
+- [x] **Per-file list in the Files section.**
       Importance: high. Implementation cost: medium.
       This is not just wiring from the current PR card. `PrCardState.files?`
       exists for the pre-PR ready phase, but open PR status currently has only
@@ -37,7 +37,7 @@ can pick the right sequence instead of treating every unchecked box equally.
 
 ### Medium importance — low implementation cost
 
-- [ ] **Header metadata: PR author and created-at age.**
+- [x] **Header metadata: PR author and created-at age.**
       Importance: medium. Implementation cost: low.
       Select `createdAt` and `author { login avatarUrl }` in the PR status
       query, parse them into `PrStatusSummary`, preserve them in `pr-store`, and
@@ -54,7 +54,7 @@ can pick the right sequence instead of treating every unchecked box equally.
 
 ### Lower importance or owned elsewhere
 
-- [ ] **Shared status component extraction.**
+- [x] **Shared status component extraction.**
       Importance: low by itself; useful as part of status actions.
       Do this when wiring actions into the panel so the card and panel do not
       keep parallel status rendering logic.
@@ -113,10 +113,10 @@ can pick the right sequence instead of treating every unchecked box equally.
 - [x] `pr-detail/PrStatusSection.tsx` (new): read-only status — checks summary,
       failed-check list, deployments, conflict warning — reading the same
       `pr-store` slice as the card.
-- [ ] Extract the status visuals from `PrLifecycleCard` into a shared
+- [x] Extract the status visuals from `PrLifecycleCard` into a shared
       sub-component rendered by both card and panel (currently parallel render
       logic, same store slice).
-- [ ] Wire the card's actionable controls into the panel's Status section:
+- [x] Wire the card's actionable controls into the panel's Status section:
       auto-fix toggle, auto-merge toggle, merge button, merge-method dropdown
       (store actions `toggleAutoFix` / `toggleAutoMerge` / `merge` / `setMergeMethod`
       already exist — surface them in `PrStatusSection`).
@@ -178,9 +178,10 @@ heavy-field gating via `pr_tab_active`.
 
 - [x] `pr-detail/PrFilesSection.tsx` (new): single "View full diff" link →
       existing Monaco diff dialog.
-- [ ] Per-file list (path, status M/A/D, +/− stats) with a per-row "View diff"
-      that opens the existing diff viewer scoped to that file — no diff
-      re-implementation.
+- [x] Per-file list (path, status M/A/D, +/− stats) with per-row "View diff"
+      buttons that open the existing diff viewer — no diff re-implementation.
+- [ ] Optional follow-up: focus/filter the existing diff viewer to the selected
+      file when opened from a file row.
 
 ## Phase 6 — Activity timeline (⬜ todo)
 
@@ -195,9 +196,9 @@ heavy-field gating via `pr_tab_active`.
 
 ## Data layer — remaining summary fields (⬜ todo)
 
-- [ ] `PrStatusSummary`: `prCreatedAt` (ISO) — render PR age in the header.
-- [ ] `PrStatusSummary`: `prAuthor { login, avatarUrl }` — render author in header.
-- [ ] `pr-status-parser.ts`: select `createdAt` / `author` and parse them.
+- [x] `PrStatusSummary`: `prCreatedAt` (ISO) — render PR age in the header.
+- [x] `PrStatusSummary`: `prAuthor { login, avatarUrl }` — render author in header.
+- [x] `pr-status-parser.ts`: select `createdAt` / `author` and parse them.
 
 ## Cross-cutting
 

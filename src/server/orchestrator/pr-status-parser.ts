@@ -84,6 +84,8 @@ query($owner: String!, $name: String!) {
         number
         title
         body
+        createdAt
+        author { login avatarUrl }
         url
         state
         mergeable
@@ -93,7 +95,7 @@ query($owner: String!, $name: String!) {
         additions
         deletions
         files(first: 100) {
-          nodes { path }
+          nodes { path additions deletions changeType }
         }${includeConversation ? CONVERSATION_SELECTIONS : ""}
         commits(last: 1) {
           nodes {
@@ -150,6 +152,8 @@ export interface GraphQLPrNode {
   number: number;
   title: string;
   body: string | null;
+  createdAt?: string;
+  author?: { login: string; avatarUrl: string | null } | null;
   url: string;
   state: string;
   mergeable: string; // MERGEABLE, CONFLICTING, UNKNOWN
@@ -158,7 +162,7 @@ export interface GraphQLPrNode {
   baseRefName: string;
   additions: number;
   deletions: number;
-  files?: { nodes: { path: string }[] } | null;
+  files?: { nodes: { path: string; additions?: number; deletions?: number; changeType?: string }[] } | null;
   comments?: {
     nodes: {
       id: string;
@@ -336,11 +340,14 @@ export function parsePrNode(
     prUrl: node.url,
     prTitle: node.title,
     prBody: node.body ?? "",
+    prCreatedAt: node.createdAt,
+    prAuthor: node.author ? { login: node.author.login, avatarUrl: node.author.avatarUrl ?? "" } : undefined,
     prState: "open",
     baseBranch: node.baseRefName,
     headBranch: node.headRefName,
     insertions: node.additions,
     deletions: node.deletions,
+    files: parseFiles(node),
     checks: {
       state: checksState,
       total,
@@ -377,6 +384,30 @@ export function extractChangedFiles(node: GraphQLPrNode): string[] {
   const nodes = node.files?.nodes;
   if (!nodes) return [];
   return nodes.map((f) => f.path).filter((p): p is string => typeof p === "string" && p.length > 0);
+}
+
+function parseFiles(node: GraphQLPrNode): PrStatusSummary["files"] {
+  const nodes = node.files?.nodes;
+  if (!nodes) return undefined;
+  return nodes
+    .filter((f) => typeof f.path === "string" && f.path.length > 0)
+    .map((f) => ({
+      path: f.path,
+      status: mapFileChangeType(f.changeType),
+      insertions: f.additions ?? 0,
+      deletions: f.deletions ?? 0,
+    }));
+}
+
+function mapFileChangeType(changeType: string | undefined): string {
+  switch (changeType) {
+    case "ADDED": return "A";
+    case "DELETED": return "D";
+    case "RENAMED": return "R";
+    case "COPIED": return "C";
+    case "CHANGED":
+    default: return "M";
+  }
 }
 
 /** Extract failed check run database IDs from a GraphQL PR node. */
@@ -425,6 +456,9 @@ export function prStatusEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
     a.prState === b.prState &&
     a.prTitle === b.prTitle &&
     a.prBody === b.prBody &&
+    a.prCreatedAt === b.prCreatedAt &&
+    a.prAuthor?.login === b.prAuthor?.login &&
+    a.prAuthor?.avatarUrl === b.prAuthor?.avatarUrl &&
     a.checks.state === b.checks.state &&
     a.checks.total === b.checks.total &&
     a.checks.passed === b.checks.passed &&
@@ -434,8 +468,21 @@ export function prStatusEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
     a.autoMergeEnabled === b.autoMergeEnabled &&
     a.insertions === b.insertions &&
     a.deletions === b.deletions &&
+    filesEqual(a.files, b.files) &&
     deploymentsEqual(a.deployments, b.deployments) &&
     conversationEqual(a, b)
+  );
+}
+
+function filesEqual(a?: PrStatusSummary["files"], b?: PrStatusSummary["files"]): boolean {
+  if (a === undefined && b === undefined) return true;
+  if (a === undefined || b === undefined) return false;
+  if (a.length !== b.length) return false;
+  return a.every((f, i) =>
+    f.path === b[i].path &&
+    f.status === b[i].status &&
+    f.insertions === b[i].insertions &&
+    f.deletions === b[i].deletions,
   );
 }
 

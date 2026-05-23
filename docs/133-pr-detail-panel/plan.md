@@ -52,30 +52,25 @@ inline `Banner`. The write goes through the existing
 `PATCH /api/sessions/:id/pr/:number` route (`editPullRequest` →
 `updatePullRequest`). Merged/closed PRs show no edit affordances.
 
-**Not yet done:** Phase 6 (activity timeline), the `prCreatedAt`/`prAuthor`/
-`timeline` summary fields, and the Monaco-widget surface for inline-on-diff
-threads from docs/102. The shipped Status section is read-only; wiring the
-card's merge/auto-fix/auto-merge controls into the panel is the remaining part
-of Phase 3. The Files section is a single diff link, not a per-file list
-(Phase 5).
+**Shipped (Phase 3/5 follow-up, status actions + file rows + header metadata):**
+PR status controls now live in a shared `PrStatusControls.tsx` component used
+by both the compact lifecycle card and the PR detail panel. The panel Status
+section exposes merge, merge-method selection, auto-merge, fix-CI, auto-fix,
+and conflict-resolution controls against the same `pr-store` actions as the
+card. The PR status query now selects `createdAt`, `author`, and per-file
+`path/additions/deletions/changeType`; the parser carries these into
+`PrStatusSummary`, the store preserves them on `PrCardState.pr`, the header
+renders author + opened age, and the Files section renders per-file rows with
+change type and +/- stats. Per-row "View diff" currently opens the shared full
+diff viewer; file-focused diff opening remains a small follow-up.
 
-**Remaining-work assessment (2026-05-23):** the missing Status actions are
-mostly extraction and wiring. `PrLifecycleCard.tsx` already owns the relevant UI
-and behavior (`AutoFixToggle`, `AutoMergeToggle`, `MergeButton`, merge-method
-dropdown, CI fix, conflict-resolution prompt) and `pr-store.ts` already exposes
-the backing actions (`toggleAutoFix`, `toggleAutoMerge`, `merge`,
-`setMergeMethod`, `fixCI`). The panel work should reuse/extract those pieces
-rather than introduce another PR-action path.
+**Not yet done:** Phase 6 (activity timeline), the `timeline` summary field,
+and the Monaco-widget surface for inline-on-diff threads from docs/102.
 
-The per-file list is not just wiring. `PrCardState.files?: PrFileStat[]` exists
-for the pre-PR **ready** phase, but open PR status currently carries only
-aggregate insertions/deletions in `pr` plus path-only GraphQL data used by
-`extractChangedFiles()` for workflow/CI decisions. `PrStatusSummary` does not
-yet expose per-file `{ path, status, insertions, deletions }` rows for open PRs,
-and `PrFilesSection` only opens the full diff. A useful first pass should add
-per-file summary data to the poller result and render it in the panel; scoped
-per-row diff opening can follow if the existing diff dialog cannot cheaply focus
-or filter to one path.
+**Remaining-work assessment (2026-05-23):** the high-value wiring pass is now
+done. Remaining work is mostly the heavier activity timeline query/rendering,
+Monaco inline-diff review widgets from docs/102, and optional file-focused diff
+opening from the Files section.
 
 ## Summary
 
