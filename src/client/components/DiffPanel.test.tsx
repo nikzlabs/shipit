@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { DiffPanel, type TurnDiffData } from "./DiffPanel.js";
 import type { FileDiff } from "../../server/shared/types.js";
@@ -12,6 +12,24 @@ vi.mock("@monaco-editor/react", () => ({
     </div>
   ),
 }));
+
+/** Stub window.matchMedia so useIsMobile() returns the desired value. */
+function mockMatchMedia(isMobile: boolean) {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(max-width: 767px)" ? isMobile : false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  });
+}
+
+beforeEach(() => {
+  // Default to desktop so the bulk of tests exercise the side-by-side layout.
+  mockMatchMedia(false);
+});
 
 function makeFile(overrides?: Partial<FileDiff>): FileDiff {
   return {
@@ -210,6 +228,73 @@ describe("DiffPanel", () => {
       });
       render(<DiffPanel {...props} />);
       expect(screen.getByText("old-name.ts → new-name.ts")).toBeInTheDocument();
+    });
+  });
+
+  describe("mobile master-detail", () => {
+    beforeEach(() => {
+      mockMatchMedia(true);
+    });
+
+    it("hides the diff editor on initial mobile render (list view first)", () => {
+      const props = defaultProps();
+      props.diff = makeDiff({
+        files: [
+          makeFile({ path: "src/foo.ts" }),
+          makeFile({ path: "src/bar.ts" }),
+        ],
+        stats: { totalInsertions: 10, totalDeletions: 4, filesChanged: 2 },
+      });
+      render(<DiffPanel {...props} />);
+
+      // File list visible, no diff editors rendered yet.
+      expect(screen.getByText("foo.ts")).toBeInTheDocument();
+      expect(screen.getByText("bar.ts")).toBeInTheDocument();
+      expect(screen.queryAllByTestId("mock-diff-editor")).toHaveLength(0);
+      expect(screen.queryByLabelText("Back to file list")).not.toBeInTheDocument();
+    });
+
+    it("shows only the selected file's diff after picking from the list", () => {
+      const props = defaultProps();
+      props.diff = makeDiff({
+        files: [
+          makeFile({ path: "src/foo.ts", oldContent: "old-foo", newContent: "new-foo" }),
+          makeFile({ path: "src/bar.ts", oldContent: "old-bar", newContent: "new-bar" }),
+        ],
+        stats: { totalInsertions: 10, totalDeletions: 4, filesChanged: 2 },
+      });
+      render(<DiffPanel {...props} />);
+
+      fireEvent.click(screen.getByText("bar.ts"));
+
+      const editors = screen.getAllByTestId("mock-diff-editor");
+      expect(editors).toHaveLength(1);
+      expect(screen.getByTestId("original")).toHaveTextContent("old-bar");
+      expect(screen.getByTestId("modified")).toHaveTextContent("new-bar");
+      // List items themselves are hidden once we switched to detail view.
+      expect(screen.queryByText("foo.ts")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Back to file list")).toBeInTheDocument();
+    });
+
+    it("returns to the file list when the back button is clicked", () => {
+      const props = defaultProps();
+      props.diff = makeDiff({
+        files: [
+          makeFile({ path: "src/foo.ts" }),
+          makeFile({ path: "src/bar.ts" }),
+        ],
+        stats: { totalInsertions: 10, totalDeletions: 4, filesChanged: 2 },
+      });
+      render(<DiffPanel {...props} />);
+
+      fireEvent.click(screen.getByText("foo.ts"));
+      expect(screen.getAllByTestId("mock-diff-editor")).toHaveLength(1);
+
+      fireEvent.click(screen.getByLabelText("Back to file list"));
+
+      expect(screen.queryAllByTestId("mock-diff-editor")).toHaveLength(0);
+      expect(screen.getByText("foo.ts")).toBeInTheDocument();
+      expect(screen.getByText("bar.ts")).toBeInTheDocument();
     });
   });
 

@@ -2,9 +2,10 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import type { DiffOnMount } from "@monaco-editor/react";
-import { XIcon, PaperPlaneTiltIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { XIcon, PaperPlaneTiltIcon, CaretRightIcon, CaretDownIcon, CaretLeftIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
+import { useIsMobile } from "../hooks/useMediaQuery.js";
 import { useCommentStore } from "../stores/comment-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
@@ -82,6 +83,10 @@ const DIFF_EDITOR_OPTIONS = {
 export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: DiffPanelProps) {
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [collapsedFiles, setCollapsedFiles] = useState<Set<number>>(new Set());
+  // Mobile master-detail: on narrow viewports we show either the file list or a
+  // single file's diff, not both. Desktop ignores this state entirely.
+  const [mobileView, setMobileView] = useState<"list" | "detail">("list");
+  const isMobile = useIsMobile();
   const fileSectionRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const editorContainerRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const managersRef = useRef<Map<string, CommentWidgetManager>>(new Map());
@@ -121,7 +126,8 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     });
   }, []);
 
-  /** Sidebar click: highlight, expand if collapsed, scroll into view. */
+  /** Sidebar click: highlight, expand if collapsed, scroll into view. On
+   * mobile, also flips from the file list to the single-file detail view. */
   const handleSelectFile = useCallback((index: number) => {
     setSelectedFileIndex(index);
     setCollapsedFiles((prev) => {
@@ -130,6 +136,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       next.delete(index);
       return next;
     });
+    setMobileView("detail");
     requestAnimationFrame(() => {
       fileSectionRefs.current.get(index)?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -274,8 +281,20 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   return (
     <div className="flex flex-col h-full bg-(--color-bg-primary)">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-2">
         <div className="flex items-center gap-2 text-sm min-w-0">
+          {isMobile && mobileView === "detail" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setMobileView("list")}
+              className="text-(--color-text-secondary) p-0.5 shrink-0 flex items-center gap-0.5"
+              aria-label="Back to file list"
+            >
+              <CaretLeftIcon size={ICON_SIZE.SM} />
+              <span className="text-xs">Files</span>
+            </Button>
+          )}
           <span className="text-(--color-text-primary) font-medium shrink-0">{commitMessage ?? "Changes"}</span>
           <span className="text-(--color-success) shrink-0">+{diff.stats.totalInsertions}</span>
           <span className="text-(--color-error) shrink-0">-{diff.stats.totalDeletions}</span>
@@ -292,27 +311,35 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
         </Button>
       </div>
 
-      {/* Main area: file tree sidebar + stacked diffs */}
+      {/* Main area: file tree sidebar + stacked diffs.
+          - Desktop: both visible side-by-side.
+          - Mobile list view: only the sidebar, full width.
+          - Mobile detail view: only the selected file's diff, full width. */}
       <div className="flex flex-1 min-h-0">
         {/* File tree sidebar */}
-        <div className="w-56 shrink-0 border-r border-(--color-border-primary) overflow-y-auto bg-(--color-bg-secondary) py-1">
-          {fileTree.map((node, i) => (
-            <DiffTreeNode
-              key={node.path ?? `${node.name}-${i}`}
-              node={node}
-              depth={0}
-              selectedFileIndex={selectedFileIndex}
-              onSelect={handleSelectFile}
-              expandedDirs={expandedDirs}
-              onToggleDir={toggleDir}
-            />
-          ))}
-        </div>
+        {(!isMobile || mobileView === "list") && (
+          <div className={`${isMobile ? "flex-1" : "w-56 shrink-0 border-r border-(--color-border-primary)"} overflow-y-auto bg-(--color-bg-secondary) py-1`}>
+            {fileTree.map((node, i) => (
+              <DiffTreeNode
+                key={node.path ?? `${node.name}-${i}`}
+                node={node}
+                depth={0}
+                selectedFileIndex={selectedFileIndex}
+                onSelect={handleSelectFile}
+                expandedDirs={expandedDirs}
+                onToggleDir={toggleDir}
+              />
+            ))}
+          </div>
+        )}
 
-        {/* All files stacked in a single scrollable container */}
+        {/* Files diff area. Desktop stacks all files; mobile detail shows
+            only the selected one. */}
+        {(!isMobile || mobileView === "detail") && (
         <div className="flex-1 min-w-0 overflow-y-auto">
           {diff.files.map((file, i) => {
-            const collapsed = collapsedFiles.has(i);
+            if (isMobile && i !== selectedFileIndex) return null;
+            const collapsed = !isMobile && collapsedFiles.has(i);
             return (
               <div
                 key={file.path}
@@ -324,12 +351,12 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
                 {/* File section header */}
                 <div
                   className="flex items-center gap-2 px-3 py-1.5 bg-(--color-bg-secondary) cursor-pointer hover:bg-(--color-bg-hover) sticky top-0 z-10 border-y border-(--color-border-primary)"
-                  onClick={() => { setSelectedFileIndex(i); toggleFileCollapse(i); }}
+                  onClick={() => { setSelectedFileIndex(i); if (!isMobile) toggleFileCollapse(i); }}
                 >
-                  {collapsed
+                  {!isMobile && (collapsed
                     ? <CaretRightIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
                     : <CaretDownIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
-                  }
+                  )}
                   <span className="text-xs text-(--color-text-primary) truncate">
                     {file.oldPath ? `${file.oldPath} \u2192 ${file.path}` : file.path}
                   </span>
@@ -371,6 +398,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
             );
           })}
         </div>
+        )}
       </div>
 
       {/* Footer */}
