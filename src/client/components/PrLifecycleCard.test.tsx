@@ -117,7 +117,7 @@ describe("PrLifecycleCard", () => {
       totalDeletions: 2,
     });
 
-    render(<PrLifecycleCard sessionId="s1" />);
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
 
     expect(screen.getByText("+30")).toBeInTheDocument();
     expect(screen.getByText("-2")).toBeInTheDocument();
@@ -133,7 +133,7 @@ describe("PrLifecycleCard", () => {
       totalDeletions: 2,
     });
 
-    render(<PrLifecycleCard sessionId="s1" />);
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
 
     const button = screen.getByRole("button", { name: "Create PR" });
     expect(button).toBeInTheDocument();
