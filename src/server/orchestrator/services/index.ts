@@ -24,3 +24,4 @@ export * from "./rebase-driver.js";
 export * from "./health.js";
 export * from "./recovery.js";
 export * from "./diagnostics.js";
+export * from "./pr-lifecycle.js";

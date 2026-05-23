@@ -532,6 +532,50 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     });
     expect(res.statusCode).toBe(404);
   });
+
+  // -------------------------------------------------------------------------
+  // docs/149 — run-params parity: the spawned session's first agent.run(...)
+  // call must include the same fields the user-WS path provides (system prompt
+  // with agent instructions, managed-settings.json, model, MCP, autoCreatePr).
+  // Without this, agent-spawned sessions used to run blind — no settings means
+  // no branch-block hook, no PR-enforcement; no system prompt means the agent
+  // doesn't know about /shipit-docs/ etc.
+  // -------------------------------------------------------------------------
+
+  it("spawned session's first agent.run(...) carries the full WS-path params", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    const before = createdClaudes.length;
+    await spawnChild(parentId, { branch: "params-parity" });
+
+    // Wait for the spawn's `sendSystemMessage` → buildRunParams → agent.run.
+    const deadline = Date.now() + 2000;
+    while (createdClaudes.length === before && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const cp = createdClaudes[createdClaudes.length - 1];
+    expect(cp).toBeDefined();
+    // buildRunParams is async; let the microtask flush before asserting.
+    const runDeadline = Date.now() + 2000;
+    while (!cp.runCalled && Date.now() < runDeadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    expect(cp.runCalled).toBe(true);
+    // System prompt carries the agent instructions block (sentinel from
+    // buildAgentSystemInstructions). Without these, the spawned agent doesn't
+    // know about /shipit-docs/, the PR workflow, etc.
+    expect(cp.lastSystemPrompt).toBeTruthy();
+    expect(cp.lastSystemPrompt).toContain("ShipIt");
+    // Managed-settings drives the PreToolUse branch-block + Stop-hook PR
+    // enforcement. Claude-only.
+    expect(cp.lastSettingsPath).toBe("/etc/shipit/managed-settings.json");
+    // autoCreatePr defaults to false in test mode (no GitHub auth) — what
+    // matters is that the field is populated, not magic-undefined.
+    expect(cp.lastAutoCreatePr).toBe(false);
+    // MCP servers list is empty in tests (no configured servers), so the
+    // field should be undefined per our omit-when-empty contract.
+    expect(cp.lastMcpServers).toBeUndefined();
+  });
 });
 
 // -------------------------------------------------------------------------

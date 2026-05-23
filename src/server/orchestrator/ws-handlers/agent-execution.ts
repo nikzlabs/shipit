@@ -7,54 +7,21 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { wireAgentListeners } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
-import { buildAgentSystemInstructions } from "../agent-instructions.js";
-import { quickCreatePr } from "../services/github.js";
 import { resolveRunner } from "./resolve-runner.js";
-import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
-import type { ServiceManager } from "../service-manager.js";
-import type { CredentialStore } from "../credential-store.js";
-import { collectMcpAgentEnv } from "../secret-resolver.js";
-import { provisionAgentCredentials, syncAgentTokenIn, syncAgentTokenBack } from "../session-credentials.js";
-import { refreshExpiredMcpOAuthTokens } from "../services/mcp-oauth.js";
+import {
+  prepareSessionAgentEnvironment,
+  finalizeSessionAgentEnvironment,
+  selectAgentEnvForPush,
+} from "../session-agent-env.js";
+import { buildAgentRunParams } from "../session-agent-run-params.js";
+import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
 
-/**
- * Compute the full agent-env map that should be pushed to the worker's
- * `process.env` ahead of `/agent/start` (docs/088).
- *
- * Two regimes, distinguished by whether the runner has a `ServiceManager`:
- *
- *   * Compose-less session (`serviceManager` is `null`) — pull directly from
- *     `CredentialStore`. The account-level set covers `mcp__*` secrets,
- *     `MCP_PLATFORM_*` OAuth tokens, and `OPENAI_API_KEY`-style top-level
- *     keys. `collectMcpAgentEnv` returns both `mcp__*` and `MCP_PLATFORM_*`
- *     entries; the `mcp__*` ones overlap with `getAllAgentEnv()` but the
- *     values are identical, so spread order doesn't matter.
- *
- *   * Compose session — return the snapshot's `agentValues` map. The snapshot
- *     is the merged set (compose-declared + MCP) produced inside the most
- *     recent `ServiceManager.syncSecrets()` pass. The worker REPLACES its
- *     tracked set on every `PUT /secrets` call, so we MUST carry the *full*
- *     merged set here — pushing just the account-level subset would clobber
- *     the compose-declared `agent: true` secrets.
- *
- * Extracted from `runAgentWithMessage` for unit testability — the if/else
- * decision is the contract; the surrounding `runAgentWithMessage` flow
- * (queue drain, post-turn commit, PR card) is too entangled to test
- * directly.
- */
-export function selectAgentEnvForPush(input: {
-  serviceManager: Pick<ServiceManager, "getSecretsSnapshot"> | null;
-  credentialStore: Pick<CredentialStore, "getAllAgentEnv" | "getAllMcpOAuthTokens">;
-}): Record<string, string> {
-  if (input.serviceManager) {
-    return input.serviceManager.getSecretsSnapshot().agentValues;
-  }
-  return {
-    ...input.credentialStore.getAllAgentEnv(),
-    ...collectMcpAgentEnv(input.credentialStore),
-  };
-}
+// docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
+// tests, secret-resolver coverage) keep their import path working while the
+// canonical home moves to `session-agent-env.ts`.
+export { selectAgentEnvForPush };
+
 /**
  * Save base64 images to the session's uploads directory on the host.
  * Returns a prompt prefix referencing the on-disk files (container paths).
@@ -247,8 +214,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    */
   reviewFilePath?: string;
 }): Promise<void> {
-  const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths } = opts;
-  let { agentSessionId } = opts;
+  const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths, agentSessionId } = opts;
 
   // Capture the session context at turn start. These values must NOT be read
   // from ctx later because the user may switch sessions while the agent runs,
@@ -362,18 +328,21 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     }
   };
 
-  // docs/142 A — after the turn, write the CLI's refreshed OAuth token back to
-  // the orchestrator source if it advanced (expiry-guarded), so the source and
-  // future sessions stay fresh. Safe to call on every post-turn path; no-op
-  // outside container mode or when nothing rotated.
+  // docs/142 A / docs/149 — after the turn, write the CLI's refreshed OAuth
+  // token back to the orchestrator source if it advanced (expiry-guarded), so
+  // the source and future sessions stay fresh. Safe to call on every post-turn
+  // path; no-op outside container mode or when nothing rotated.
   const syncTokenBackAfterTurn = () => {
-    if (runner instanceof ContainerSessionRunner && capturedSessionId) {
-      try {
-        syncAgentTokenBack(ctx.credentialsDir, capturedSessionId, currentAgent.agentId);
-      } catch (err) {
-        console.warn("[credentials] token sync-back failed:", getErrorMessage(err));
-      }
-    }
+    if (!runner || !capturedSessionId) return;
+    finalizeSessionAgentEnvironment(runner, {
+      sessionId: capturedSessionId,
+      agentId: currentAgent.agentId,
+      deps: {
+        credentialsDir: ctx.credentialsDir,
+        credentialStore: ctx.credentialStore,
+        sessionManager: ctx.sessionManager,
+      },
+    });
   };
 
   wireAgentListeners(ctx, currentAgent, {
@@ -441,81 +410,23 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         console.error("[git] streaming auto-commit failed:", getErrorMessage(err));
       }
 
-      // PR lifecycle card (mirrors non-streaming done handler)
+      // PR lifecycle card (docs/149 — shared helper, identical to done branch).
       if (commitHash && capturedSessionId && capturedSessionDir) {
-        try {
-          const session = ctx.sessionManager.get(capturedSessionId);
-          if (session?.remoteUrl && session.branchRenamed !== false && !session.mergedAt) {
-            const git = ctx.createGitManager(capturedSessionDir);
-            const prStatus = ctx.prStatusPoller.getStatus(capturedSessionId);
-            if (!prStatus) {
-              const shouldAutoCreate = ctx.credentialStore.getAutoCreatePr()
-                && ctx.githubAuthManager.authenticated;
-              if (shouldAutoCreate) {
-                emitDone({
-                  type: "pr_lifecycle_update",
-                  sessionId: capturedSessionId,
-                  cardId: `pr-card-${capturedSessionId}`,
-                  phase: "creating",
-                });
-                try {
-                  const result = await quickCreatePr(
-                    git,
-                    ctx.githubAuthManager,
-                    ctx.chatHistoryManager,
-                    ctx.generateText,
-                    capturedSessionId,
-                    session.title ?? "",
-                    capturedSessionDir,
-                    session.remoteUrl,
-                  );
-                  if (ctx.prStatusPoller && session.remoteUrl) {
-                    ctx.prStatusPoller.trackSession(capturedSessionId, session.remoteUrl);
-                  }
-                  emitDone({
-                    type: "pr_lifecycle_update",
-                    sessionId: capturedSessionId,
-                    cardId: `pr-card-${capturedSessionId}`,
-                    phase: "open",
-                    pr: {
-                      number: result.number,
-                      title: result.title,
-                      body: result.body,
-                      url: result.url,
-                      baseBranch: result.baseBranch,
-                      headBranch: result.headBranch,
-                      insertions: result.insertions,
-                      deletions: result.deletions,
-                    },
-                  });
-                } catch (prErr) {
-                  console.error("[pr-lifecycle] streaming auto-create PR failed:", getErrorMessage(prErr));
-                  emitDone({
-                    type: "pr_lifecycle_update",
-                    sessionId: capturedSessionId,
-                    cardId: `pr-card-${capturedSessionId}`,
-                    phase: "error",
-                    errorMessage: getErrorMessage(prErr),
-                  });
-                }
-              } else {
-                const headBranch = session.branch || await git.getCurrentBranch();
-                const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
-                emitDone({
-                  type: "pr_lifecycle_update",
-                  sessionId: capturedSessionId,
-                  cardId: `pr-card-${capturedSessionId}`,
-                  phase: "ready",
-                  headBranch,
-                  totalInsertions,
-                  totalDeletions,
-                });
-              }
-            }
-          }
-        } catch (err) {
-          console.error("[pr-lifecycle] streaming diff stats failed:", getErrorMessage(err));
-        }
+        await emitPrLifecycleAfterCommit({
+          deps: {
+            sessionManager: ctx.sessionManager,
+            prStatusPoller: ctx.prStatusPoller,
+            githubAuthManager: ctx.githubAuthManager,
+            credentialStore: ctx.credentialStore,
+            chatHistoryManager: ctx.chatHistoryManager,
+            generateText: ctx.generateText,
+            createGitManager: ctx.createGitManager,
+          },
+          sessionId: capturedSessionId,
+          sessionDir: capturedSessionDir,
+          commitHash,
+          emit: emitDone,
+        });
       }
 
       if (capturedSessionId && !(runner?.running ?? false)) {
@@ -589,100 +500,24 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       console.error("[git] auto-commit failed:", getErrorMessage(err));
     }
 
-    // Emit PR lifecycle card after commit if the session has a remote
+    // Emit PR lifecycle card after commit (docs/149 — shared helper, identical
+    // to the streaming branch above).
     if (commitHash && capturedSessionId && capturedSessionDir) {
-      try {
-        const session = ctx.sessionManager.get(capturedSessionId);
-        if (session?.remoteUrl && session.branchRenamed !== false && !session.mergedAt) {
-          const git = ctx.createGitManager(capturedSessionDir);
-
-          // Check if a PR already exists for this branch
-          const prStatus = ctx.prStatusPoller.getStatus(capturedSessionId);
-          if (prStatus) {
-            // PR already exists — the poller handles updates via SSE
-          } else {
-            // No PR yet — auto-create if the setting is on and GitHub is
-            // authenticated. The outer `commitHash` truthiness check guarantees
-            // this turn produced a commit (i.e. files actually changed), and
-            // the `prStatus` short-circuit above guarantees we won't double-
-            // create when a PR is already open. So this fires after every
-            // meaningful turn until a PR exists. See doc 099 for the rationale
-            // behind dropping the previous `isNewSession` gate.
-            const shouldAutoCreate = ctx.credentialStore.getAutoCreatePr()
-              && ctx.githubAuthManager.authenticated;
-
-            if (shouldAutoCreate) {
-              // Auto-create PR: emit "creating" phase, then create the PR
-              emitDone({
-                type: "pr_lifecycle_update",
-                sessionId: capturedSessionId,
-                cardId: `pr-card-${capturedSessionId}`,
-                phase: "creating",
-              });
-
-              try {
-                const result = await quickCreatePr(
-                  git,
-                  ctx.githubAuthManager,
-                  ctx.chatHistoryManager,
-                  ctx.generateText,
-                  capturedSessionId,
-                  session.title ?? "",
-                  capturedSessionDir,
-                  session.remoteUrl,
-                );
-
-                // Track the new PR in the poller
-                if (ctx.prStatusPoller && session.remoteUrl) {
-                  ctx.prStatusPoller.trackSession(capturedSessionId, session.remoteUrl);
-                }
-
-                emitDone({
-                  type: "pr_lifecycle_update",
-                  sessionId: capturedSessionId,
-                  cardId: `pr-card-${capturedSessionId}`,
-                  phase: "open",
-                  pr: {
-                    number: result.number,
-                    title: result.title,
-                    body: result.body,
-                    url: result.url,
-                    baseBranch: result.baseBranch,
-                    headBranch: result.headBranch,
-                    insertions: result.insertions,
-                    deletions: result.deletions,
-                  },
-                });
-              } catch (err) {
-                console.error("[pr-lifecycle] Auto-create PR failed:", getErrorMessage(err));
-                emitDone({
-                  type: "pr_lifecycle_update",
-                  sessionId: capturedSessionId,
-                  cardId: `pr-card-${capturedSessionId}`,
-                  phase: "error",
-                  errorMessage: getErrorMessage(err),
-                });
-              }
-            } else {
-              // Send a "ready" card with diff stats vs base branch
-              const headBranch = session.branch || await git.getCurrentBranch();
-              const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
-
-              emitDone({
-                type: "pr_lifecycle_update",
-                sessionId: capturedSessionId,
-                cardId: `pr-card-${capturedSessionId}`,
-                phase: "ready",
-                headBranch,
-                totalInsertions,
-                totalDeletions,
-              });
-            }
-          }
-        }
-      } catch (err) {
-        console.error("[pr-lifecycle] Failed to compute diff stats:", getErrorMessage(err));
-      }
+      await emitPrLifecycleAfterCommit({
+        deps: {
+          sessionManager: ctx.sessionManager,
+          prStatusPoller: ctx.prStatusPoller,
+          githubAuthManager: ctx.githubAuthManager,
+          credentialStore: ctx.credentialStore,
+          chatHistoryManager: ctx.chatHistoryManager,
+          generateText: ctx.generateText,
+          createGitManager: ctx.createGitManager,
+        },
+        sessionId: capturedSessionId,
+        sessionDir: capturedSessionDir,
+        commitHash,
+        emit: emitDone,
+      });
     }
 
     // Notify via SSE for sidebar activity dots
@@ -696,35 +531,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     }
   });
 
-  // Auto-create-PR gate: drives the Stop-hook enforcement in the session
-  // container (/etc/shipit/managed-settings.json) and the harness fallback in
-  // post-turn.ts. The system-prompt nudge is unconditional — keeping the
-  // prompt static preserves the Anthropic prompt cache across turns.
-  const autoCreatePrActive = ctx.credentialStore.getAutoCreatePr()
-    && ctx.githubAuthManager.authenticated;
-
-  const agentInstructions = ctx.credentialStore.getAgentSystemInstructionsEnabled()
-    ? buildAgentSystemInstructions({
-        // docs/117 Phase 2 — teach the running agent when to reach for
-        // `shipit session create`. The guidance differs per agent because
-        // Claude has the in-process `Task` tool (the right fan-out primitive
-        // for in-turn work) and Codex does not. `agentId` is fixed for the
-        // session's lifetime, so this stays the only branching axis.
-        agentId: currentAgent.agentId,
-      })
-    : undefined;
-  const userSystemPrompt = await ctx.readSystemPrompt();
-  let systemPrompt = [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;
-  const activeAppSessionId = ctx.getActiveAppSessionId();
-  if (activeAppSessionId) {
-    const sessionReplay = ctx.sessionManager.consumeConversationReplay(activeAppSessionId);
-    if (sessionReplay) {
-      agentSessionId = undefined;
-      systemPrompt = systemPrompt
-        ? `${systemPrompt}\n\n${sessionReplay}`
-        : sessionReplay;
-    }
-  }
   // Assemble the prompt from the user text plus optional file/image context.
   // The slash-command-aware ordering lives in `assembleAgentPrompt`.
   const activeDir = ctx.getActiveDir();
@@ -736,100 +542,20 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
 
   const prompt = assembleAgentPrompt({ userText, fileContext, imageContext });
 
-  // Always point the Claude CLI at the baked managed-settings.json. It
-  // registers two hooks: a PreToolUse branch-block hook (always active —
-  // keeps the agent on the session branch) and a Stop hook that enforces
-  // "open a PR before ending the turn". The Stop hook self-gates on the
-  // SHIPIT_AUTO_CREATE_PR env var, which `autoCreatePr` below controls — so
-  // PR enforcement stays opt-in even though the settings file is always
-  // wired up. Claude-only; ignored by other adapters.
-  // See docs/129-stop-hook-pr-enforcement and docs/130-block-branch-ops.
-  const settingsPath = currentAgent.agentId === "claude"
-    ? "/etc/shipit/managed-settings.json"
-    : undefined;
-
-  // docs/088: pass the enabled user MCP servers as UNRESOLVED config blobs
-  // ($secret: placeholders intact). Raw secret values are NOT in this payload
-  // — they reach the worker's process.env via 087's agent-env pipeline. The
-  // worker resolves placeholders locally in generateMcpConfig().
-  const mcpServers = Object.values(ctx.credentialStore.getAllMcpServers()).filter(
-    (s) => s.enabled,
-  );
-
-  // docs/088 Phase 2: refresh any OAuth tokens whose access tokens are
-  // within the safety margin of expiry, BEFORE collecting the env map.
-  // Without this, the freshly-pushed env could carry a token that's about
-  // to expire and the first MCP tool call would fail. Fault-tolerant by
-  // design — refresh failures leave the stale token in place so the worker
-  // emits a meaningful `failed` status rather than silently dropping the
-  // server.
-  await refreshExpiredMcpOAuthTokens({ credentialStore: ctx.credentialStore }).catch(
-    (err: unknown) => {
-      console.warn("[mcp-oauth] background refresh failed:", getErrorMessage(err));
-    },
-  );
-
-  // docs/088: sequence the agent-env push ahead of `/agent/start` so the
-  // worker's `process.env` carries the right keys before `generateMcpConfig()`
-  // resolves `$secret:` / `$platform:` refs. The compose-vs-compose-less
-  // decision lives in `selectAgentEnvForPush` (see its docstring); both
-  // regimes are exercised in `agent-env-push.test.ts`.
-  //
-  // Previously only compose-less sessions were covered. Compose sessions
-  // relied on a fire-and-forget push from the `secrets_status` listener at
-  // activation, leaving an activation-time race where the agent's first turn
-  // could start before the push landed. The per-turn awaited push closes
-  // that gap.
-  //
-  // `tryPushAgentSecrets` is internally fault-tolerant — a transient HTTP
-  // failure is logged worker-side and never throws — so awaiting it here
-  // just sequences the push ahead of `/agent/start` without adding a
-  // failure path.
-  // docs/138 — pin the agent on the session's first turn. From here the agent
-  // is fixed for the session's life and `set_agent` is rejected server-side.
-  // For container sessions, also provision ONLY the pinned agent's credential
-  // subtree into the session's private credentials dir — cross-agent isolation,
-  // so the other agent's creds never land on disk in this session's container.
-  // Write-once (skipped after `agentPinned` is set): re-copying would clobber
-  // the CLI's in-place writes to `.claude`. Provisioning runs before
-  // `/agent/start` so the freshly-copied creds are present when the CLI
-  // authenticates; the per-session dir is already mounted, so the host-side
-  // write is visible in the container immediately — no remount needed.
+  // docs/149 — env prep (cred provisioning, OAuth sync-in, MCP refresh,
+  // agent-env push) is now factored into a single idempotent helper. The
+  // helper subsumes the previous inline blocks at lines 798–833 and the
+  // first-turn `agentPinned` flip.
   if (capturedSessionId) {
-    const session = ctx.sessionManager.get(capturedSessionId);
-    if (session && !session.agentPinned) {
-      if (runner instanceof ContainerSessionRunner) {
-        try {
-          provisionAgentCredentials(ctx.credentialsDir, capturedSessionId, currentAgent.agentId);
-        } catch (err) {
-          console.warn("[credentials] provisioning failed:", getErrorMessage(err));
-        }
-      }
-      ctx.sessionManager.setAgentId(capturedSessionId, currentAgent.agentId);
-      ctx.sessionManager.setAgentPinned(capturedSessionId);
-    }
-  }
-
-  // docs/142 A — sync the freshest OAuth token from the orchestrator source into
-  // this session's per-session credentials dir BEFORE the turn, so the CLI
-  // starts from the latest token instead of a stale write-once copy. Runs every
-  // turn (not just first), and only touches the token file. The matching
-  // write-back happens post-turn (see the done / agent_result handlers).
-  if (runner instanceof ContainerSessionRunner && capturedSessionId) {
-    try {
-      syncAgentTokenIn(ctx.credentialsDir, capturedSessionId, currentAgent.agentId);
-    } catch (err) {
-      console.warn("[credentials] token sync-in failed:", getErrorMessage(err));
-    }
-  }
-
-  if (runner instanceof ContainerSessionRunner) {
-    await runner.tryPushAgentSecrets(
-      selectAgentEnvForPush({
-        serviceManager: runner.serviceManager,
+    await prepareSessionAgentEnvironment(runner, {
+      sessionId: capturedSessionId,
+      agentId: currentAgent.agentId,
+      deps: {
+        credentialsDir: ctx.credentialsDir,
         credentialStore: ctx.credentialStore,
-      }),
-    );
+        sessionManager: ctx.sessionManager,
+      },
+    });
   }
 
   if (existingAgent) {
@@ -843,18 +569,25 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     // `/agent/kill` + `/agent/start` cycle (SIGTERM, exit 143).
     existingAgent.sendUserMessage(prompt);
   } else {
-    currentAgent.run({
+    // docs/149 — assemble the full AgentRunParams via the shared helper so
+    // the WS path and the system-turn path produce identical shapes (system
+    // prompt, managed-settings, model, MCP, autoCreatePr).
+    const runParams = await buildAgentRunParams({
+      deps: {
+        credentialStore: ctx.credentialStore,
+        githubAuthManager: ctx.githubAuthManager,
+        sessionManager: ctx.sessionManager,
+        readSystemPrompt: ctx.readSystemPrompt,
+        getSelectedModel: ctx.getSelectedModel,
+      },
+      sessionId: capturedSessionId ?? "",
+      agentId: currentAgent.agentId,
       prompt,
-      sessionId: agentSessionId,
-      systemPrompt,
-      cwd: activeDir,
-      permissionMode: effectivePermissionMode,
-      model: ctx.getSelectedModel(),
-      settingsPath,
-      autoCreatePr: autoCreatePrActive,
-      mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
-      useStreaming,
+      sessionDir: activeDir,
+      ...(agentSessionId !== undefined ? { agentSessionId } : {}),
+      ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
     });
+    currentAgent.run({ ...runParams, useStreaming });
   }
   // "Agent process started" is now emitted from agent-listeners.ts
   // when the agent_init event arrives, so the log reflects an actual
