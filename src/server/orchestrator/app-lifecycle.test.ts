@@ -7,6 +7,7 @@ import {
   createIdleEnforcer,
   IDLE_GRACE_PERIOD_MS,
   runMcpOAuthStartupRefresh,
+  scheduleStartupTasks,
 } from "./app-lifecycle.js";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
@@ -644,5 +645,71 @@ describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
     await expect(
       runMcpOAuthStartupRefresh({ credentialStore: store, fetchImpl: fakeFetch }),
     ).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * Regression: every `ready` repo gets warmed at boot, going through the
+ * standard warm-pool flow — which now unconditionally creates a standby
+ * container + pre-installs (docs/148). The previous bug here was that
+ * startup-tasks bypassed pre-install by passing no opts to a function whose
+ * `{ withStandby?: boolean }` opt-in defaulted to `false`. The opt was
+ * removed (every caller wanted it `true`), so the regression class is
+ * structurally impossible — this test now just pins that every ready repo
+ * is in fact warmed at boot.
+ */
+describe("scheduleStartupTasks — warms every ready repo at boot (docs/148)", () => {
+  it("calls warmSessionForRepo for stale, migrated, and fresh repos", async () => {
+    const calls: string[] = [];
+    const warmSessionForRepo = async (url: string): Promise<void> => {
+      calls.push(url);
+    };
+
+    // Three repos covering the three startup branches:
+    //  - `stale`: warm session id present but its workspace dir is missing → re-warm
+    //  - `migrated`: in `migratedRepoUrls` → re-warm
+    //  - `fresh`: ready repo with no warm session at all → re-warm
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-startup-warm-"));
+    const staleClonePath = path.join(tmpDir, "missing"); // intentionally absent
+
+    const repos = [
+      { url: "stale", status: "ready" as const, warmSessionId: "warm-stale" },
+      { url: "migrated", status: "ready" as const },
+      { url: "fresh", status: "ready" as const },
+    ];
+    const repoStore = {
+      list: () => repos,
+      setWarmSessionId: () => {},
+    } as unknown as Parameters<typeof scheduleStartupTasks>[0]["repoStore"];
+
+    const sessionManager = {
+      get: (id: string) => id === "warm-stale" ? { workspaceDir: staleClonePath } : undefined,
+      allIds: () => [],
+    } as unknown as Parameters<typeof scheduleStartupTasks>[0]["sessionManager"];
+
+    const noop = () => {};
+    const noopMgr = (): { delete?: (id: string) => void } => ({ delete: noop });
+
+    const timer = scheduleStartupTasks(
+      {
+        repoStore,
+        sessionManager,
+        chatHistoryManager: { delete: noop } as unknown as Parameters<typeof scheduleStartupTasks>[0]["chatHistoryManager"],
+        usageManager: noopMgr() as Parameters<typeof scheduleStartupTasks>[0]["usageManager"],
+        containerManager: null,
+        getBareCacheDir: (u: string) => path.join(tmpDir, "cache", u),
+        warmSessionForRepo,
+      },
+      ["migrated"],
+    );
+
+    // The body is in a setTimeout(0); flush by waiting one tick.
+    await new Promise((r) => setTimeout(r, 0));
+    clearTimeout(timer);
+
+    expect(calls.length).toBe(3);
+    expect([...calls].sort()).toEqual(["fresh", "migrated", "stale"]);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });

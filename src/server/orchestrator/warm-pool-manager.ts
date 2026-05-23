@@ -46,7 +46,7 @@ export interface WarmPoolDeps {
 export function createWarmPool(
   poolDeps: WarmPoolDeps,
 ): {
-  warmSessionForRepo: (repoUrl: string, opts?: { withStandby?: boolean }) => Promise<void>;
+  warmSessionForRepo: (repoUrl: string) => Promise<void>;
   waitForWarmSession: (repoUrl: string) => Promise<void> | undefined;
 } {
   const {
@@ -59,7 +59,7 @@ export function createWarmPool(
   const warmingInProgress = new Set<string>();
   const warmingPromises = new Map<string, Promise<void>>();
 
-  const warmSessionForRepo = async (repoUrl: string, opts?: { withStandby?: boolean }): Promise<void> => {
+  const warmSessionForRepo = async (repoUrl: string): Promise<void> => {
     const repo = repoStore.get(repoUrl);
     if (repo?.status !== "ready") return;
     // Don't warm if already has a warm session or is currently warming
@@ -166,10 +166,17 @@ export function createWarmPool(
         // session is still warmed and ready for on-demand activation —
         // which goes through `createContainerForRunner`, which also
         // consults the breaker.
-        const standbyAllowed = opts?.withStandby && containerManager && !oomBreaker?.isTripped(appSessionId);
-        if (opts?.withStandby && oomBreaker?.isTripped(appSessionId)) {
+        //
+        // No caller-side opt-out: every code path that warms a repo also
+        // wants a standby + pre-install, and a "warm but no standby" state
+        // is exactly what made docs/148 silently regress (every prod
+        // restart left every repo without pre-install). The local-mode /
+        // test-mode paths surface that intent the right way — by passing
+        // `containerManager: null` here.
+        if (oomBreaker?.isTripped(appSessionId)) {
           console.warn(`[warm] Skipping standby for ${appSessionId}: OOM circuit breaker tripped`);
         }
+        const standbyAllowed = containerManager && !oomBreaker?.isTripped(appSessionId);
         if (standbyAllowed && containerManager) {
           const realCount = containerManager.size - containerManager.standbyCount;
           const maxIdle = credentialStore.getMaxIdleContainers();

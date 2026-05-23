@@ -315,7 +315,7 @@ export async function handleSendMessage(
       // Start warming the next session for this repo in the background.
       // Intentionally not awaited — warming is independent of the user's message.
       if (session.remoteUrl) {
-        void ctx.warmSessionForRepo(session.remoteUrl, { withStandby: true });
+        void ctx.warmSessionForRepo(session.remoteUrl);
       }
     }
 
