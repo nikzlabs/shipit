@@ -330,13 +330,4 @@ The outer agent container's `agent.install` (`npm install` on the ShipIt repo) i
 
 Feature 148 replaces the repo-specific wrapper with the generic worker-side fast-install path: ShipIt's [shipit.yaml](../../shipit.yaml) uses a bare `npm install`, and the session worker can materialize `node_modules` from `/dep-cache/nm-store/<storeKey>` when the lockfile/runtime/install-command key has already been populated. This matters because shell wrappers are intentionally treated as arbitrary side-effectful install commands and bypass the cache.
 
-`docker/Dockerfile.session-worker.dogfood` remains as an older dogfood-only image variant that bakes ShipIt's `node_modules` at `/opt/shipit-prebake/node_modules`, but the default ShipIt repo install no longer calls `scripts/agent-install.sh`. The generic cache is the production path and is safe for all repos that use a bare package-manager install command.
-
-When testing that legacy dogfood image manually, build it once and point the outer orchestrator at it:
-
-```bash
-docker build -t shipit-session-worker:dogfood -f docker/Dockerfile.session-worker.dogfood .
-SESSION_WORKER_IMAGE=shipit-session-worker:dogfood npm run dev   # or set in deployment compose
-```
-
-This is intentionally **not** wired into the production session-worker images: the prebake adds ~600MB of ShipIt-specific deps that user repos don't use. Dogfood is the only consumer.
+The old dogfood-only session-worker image and `scripts/agent-install.sh` wrapper have been removed. They added a ShipIt-specific baked dependency tree and created a second install path that bypassed the production cache. The generic cache is now the only supported acceleration path for ShipIt itself.

@@ -53,7 +53,7 @@ reused** across sessions. That is the gap.
   - **Regression fix 2026-05-23:** the warm-pool used to accept a `{ withStandby?: boolean }` opt-in (default `false`). `scheduleStartupTasks` was the one caller that forgot to pass `true`, so every prod restart left every repo with a no-standby, no-pre-install warm session — the first claim per repo per restart paid the full ~24s install on the critical path. **The option was deleted entirely.** Audit found every caller wanted `true`; the opt-in existed only to be forgotten (and two repo-add paths in `api-routes-session.ts` were silently broken in the same way). Now the warm-pool always provisions a standby when a container manager exists; local/test mode opts out the right way — by passing `containerManager: null`.
 - [container-session-runner.ts](../../src/server/orchestrator/container-session-runner.ts#L834-L891) forwards the commands over HTTP to the worker's `POST /install`.
 - The worker ([session-worker.ts](../../src/server/session/session-worker.ts#L761-L848)) shells out to each command in the workspace with `NODE_ENV=development`, streams stdout/stderr as `install_log` SSE events, and on success writes a `.shipit/.install-done` marker so a **re-activation of the same workspace** skips. A *new* workspace has no marker → full re-install.
-- The fast path only engages for a single bare package-manager command. ShipIt's own [shipit.yaml](../../shipit.yaml) therefore uses `agent.install: npm install`; the older `bash scripts/agent-install.sh` wrapper was intentionally classified as arbitrary shell and bypassed the materialized `node_modules` cache, which is why prod still showed `[agent-install] running npm install` and paid the full ~24s install.
+- The fast path only engages for a single bare package-manager command. ShipIt's own [shipit.yaml](../../shipit.yaml) therefore uses `agent.install: npm install`; the older wrapper script was intentionally classified as arbitrary shell and bypassed the materialized `node_modules` cache, which is why prod still showed `[agent-install] running npm install` and paid the full ~24s install. That wrapper has since been removed.
 
 ## Goal
 
@@ -341,9 +341,9 @@ and is called from [session-worker.ts](../../src/server/session/session-worker.t
 - cache misses run the real install and then best-effort publish the resulting `node_modules` with temp-dir + atomic rename;
 - non-cacheable shell commands and the `SHIPIT_FAST_INSTALL=disabled` kill switch fall through to the old plain install behavior.
 
-For ShipIt's own repo, `shipit.yaml` must remain a bare `npm install`. If the log shows
-`[agent-install] running npm install`, the old wrapper path is still deployed and the
-fast-install cache is not being used.
+For ShipIt's own repo, `shipit.yaml` must remain a bare `npm install`. If prod logs still
+show `[agent-install] running npm install`, the old wrapper is still deployed somewhere
+and the fast-install cache is not being used.
 
 ## Key files
 
