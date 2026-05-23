@@ -16,7 +16,7 @@ beforeEach(() => {
   // Without this, leftover state from a prior test (e.g. rebaseStatus = "in_progress")
   // would suppress the conflict UI and produce confusing test failures.
   useGitStore.getState().reset();
-  useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
+  useSessionStore.setState({ activeRunnerSessions: new Set<string>(), isLoading: false, activity: undefined });
 });
 
 afterEach(cleanup);
@@ -117,11 +117,43 @@ describe("PrLifecycleCard", () => {
       totalDeletions: 2,
     });
 
-    render(<PrLifecycleCard sessionId="s1" />);
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
 
     expect(screen.getByText("+30")).toBeInTheDocument();
     expect(screen.getByText("-2")).toBeInTheDocument();
     expect(screen.getByText("Create PR")).toBeInTheDocument();
+  });
+
+  it("keeps ready phase create button idle while a normal agent turn is running", () => {
+    useSessionStore.setState({ isLoading: true, activity: { label: "Thinking..." } });
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      totalInsertions: 30,
+      totalDeletions: 2,
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    const button = screen.getByRole("button", { name: "Create PR" });
+    expect(button).toBeInTheDocument();
+    expect(button).not.toBeDisabled();
+    expect(screen.queryByText("Creating PR...")).not.toBeInTheDocument();
+  });
+
+  it("shows ready phase create button as creating for a PR creation turn", () => {
+    useSessionStore.setState({ isLoading: true, activity: { label: "Creating PR..." } });
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      totalInsertions: 30,
+      totalDeletions: 2,
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    const button = screen.getByRole("button", { name: /Creating PR/i });
+    expect(button).toBeDisabled();
   });
 
   it("renders creating phase with spinner inside button", () => {
