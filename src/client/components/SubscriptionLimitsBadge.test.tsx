@@ -5,6 +5,7 @@ import {
   SubscriptionLimitPill,
   tierColor,
   formatPct,
+  formatResetCountdown,
 } from "./SubscriptionLimitsBadge.js";
 import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
 
@@ -27,6 +28,21 @@ describe("formatPct", () => {
     expect(formatPct(0)).toBe("0%");
     expect(formatPct(33.4)).toBe("33%");
     expect(formatPct(99.6)).toBe("100%");
+  });
+});
+
+describe("formatResetCountdown", () => {
+  it("formats reset timestamps as compact durations", () => {
+    const now = Date.parse("2026-05-19T12:00:00Z");
+    expect(formatResetCountdown("2026-05-19T12:20:00Z", now)).toBe("20m");
+    expect(formatResetCountdown("2026-05-19T14:01:00Z", now)).toBe("3h");
+    expect(formatResetCountdown("2026-05-21T15:00:00Z", now)).toBe("2d 3h");
+  });
+
+  it("handles elapsed and unparsable reset timestamps", () => {
+    const now = Date.parse("2026-05-19T12:00:00Z");
+    expect(formatResetCountdown("2026-05-19T11:59:00Z", now)).toBe("now");
+    expect(formatResetCountdown("not-a-date", now)).toBe("not-a-date");
   });
 });
 
@@ -96,6 +112,48 @@ describe("SubscriptionLimitPill", () => {
     expect(screen.getByText("Claude")).toBeInTheDocument();
     expect(screen.getByText(/5h 96%/)).toBeInTheDocument();
     expect(screen.getByText(/7d 22%/)).toBeInTheDocument();
+  });
+
+  it("shows reset countdown text inline for session limits above 90%", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({
+          session: { usedPct: 96, resetAt: "2026-05-19T17:00:00Z" },
+          weekly: { usedPct: 22, resetAt: "2026-05-26T00:00:00Z" },
+        })}
+      />,
+    );
+    expect(screen.getByText(/5h 96%/)).toHaveTextContent(/resets in/);
+    expect(screen.getByText(/7d 22%/)).not.toHaveTextContent(/resets in/);
+  });
+
+  it("shows reset countdown text inline for weekly limits above 90%", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({
+          session: { usedPct: 20, resetAt: "2026-05-19T17:00:00Z" },
+          weekly: { usedPct: 94, resetAt: "2026-05-26T00:00:00Z" },
+        })}
+      />,
+    );
+    expect(screen.getByText(/5h 20%/)).not.toHaveTextContent(/resets in/);
+    expect(screen.getByText(/7d 94%/)).toHaveTextContent(/resets in/);
+  });
+
+  it("does not show reset countdown text at exactly 90%", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({
+          session: { usedPct: 90, resetAt: "2026-05-19T17:00:00Z" },
+          weekly: { usedPct: 90, resetAt: "2026-05-26T00:00:00Z" },
+        })}
+      />,
+    );
+    expect(screen.getByText(/5h 90%/)).not.toHaveTextContent(/resets in/);
+    expect(screen.getByText(/7d 90%/)).not.toHaveTextContent(/resets in/);
   });
 
   it("shows only the weekly meter when session is null", () => {
