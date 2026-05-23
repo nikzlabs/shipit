@@ -17,6 +17,11 @@ provider, rendered side-by-side immediately to the **left** of the
 existing `UptimeBadge` in the top bar (`AppLayout.tsx:145`), refreshed
 once a minute.
 
+When a visible window is above 90% used, the pill includes the compact
+time-until-reset text inline next to that window (for example,
+`5h 96% resets in 2h` or `7d 94% resets in 3d`). Below that threshold,
+reset times stay in the tooltip so the header remains compact.
+
 This pulls upstream rate-limit data — which today lives **only** behind a
 non-ShipIt surface (`claude /usage` in the Claude TUI, `codex /status` in
 the Codex TUI, or the chatgpt.com/codex web dashboard) — into ShipIt and

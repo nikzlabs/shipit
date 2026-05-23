@@ -83,8 +83,8 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
       data-stale={isStale ? "true" : undefined}
     >
       <span>{label}</span>
-      {sessionPct !== null && <Meter shortLabel="5h" pct={sessionPct} />}
-      {weeklyPct !== null && <Meter shortLabel="7d" pct={weeklyPct} />}
+      {snapshot.session && <Meter shortLabel="5h" pct={snapshot.session.usedPct} resetAt={snapshot.session.resetAt} />}
+      {snapshot.weekly && <Meter shortLabel="7d" pct={snapshot.weekly.usedPct} resetAt={snapshot.weekly.resetAt} />}
       {!hasData && <span>—</span>}
     </span>
   );
@@ -93,6 +93,7 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
 interface MeterProps {
   shortLabel: string;
   pct: number;
+  resetAt: string;
 }
 
 /**
@@ -106,9 +107,10 @@ interface MeterProps {
  * the per-theme `--color-context-*` tokens (shared with `ContextDial`),
  * which are tuned for contrast on both dark and light themes.
  */
-function Meter({ shortLabel, pct }: MeterProps) {
+function Meter({ shortLabel, pct, resetAt }: MeterProps) {
   const fillWidth = `${Math.max(0, Math.min(100, pct))}%`;
   const color = tierColor(pct);
+  const countdown = pct > 90 ? formatResetCountdown(resetAt) : null;
   return (
     <span
       className="relative inline-flex items-center whitespace-nowrap pb-0.75"
@@ -116,6 +118,7 @@ function Meter({ shortLabel, pct }: MeterProps) {
       style={{ color }}
     >
       {shortLabel} {formatPct(pct)}
+      {countdown && <span className="ml-1 text-(--color-text-secondary)">resets in {countdown}</span>}
       <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-(--color-text-secondary)/25">
         <span
           aria-hidden
@@ -144,6 +147,24 @@ export function tierColor(pct: number): string {
 /** Format 0–100 → `"96%"`, rounded to whole-number percent. */
 export function formatPct(pct: number): string {
   return `${Math.round(pct)}%`;
+}
+
+export function formatResetCountdown(iso: string, nowMs = Date.now()): string {
+  const resetMs = Date.parse(iso);
+  if (Number.isNaN(resetMs)) return iso;
+  const diffMs = resetMs - nowMs;
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return "now";
+
+  const totalMinutes = Math.max(1, Math.ceil(diffMs / 60_000));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+
+  const totalHours = Math.ceil(totalMinutes / 60);
+  if (totalHours < 24) return `${totalHours}h`;
+
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  if (hours === 0) return `${days}d`;
+  return `${days}d ${hours}h`;
 }
 
 function buildTooltip(label: string, snap: SubscriptionLimits): string {
