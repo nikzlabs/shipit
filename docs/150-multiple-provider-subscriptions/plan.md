@@ -297,6 +297,10 @@ Token sync-in/sync-back from doc 142 becomes account-scoped:
 - Sync in from `provider-accounts/<provider>/<accountId>/...`.
 - Sync back only to the same provider account source.
 - Expiry/freshness guards remain provider-specific.
+- Re-auth re-push from doc 142 A3 becomes account-scoped too. On auth completion
+  for account X, force-copy the fresh source token only into sessions pinned to
+  `{ provider, accountId: X }`; do not re-push to every session pinned to the
+  provider. Auth completion events must therefore include `accountId`.
 
 ### Agent startup
 
@@ -307,7 +311,18 @@ subtree. The worker/adapter continues to see normal CLI paths:
 - Claude: `/root/.claude` and `/root/.claude.json`.
 - Codex: `/root/.codex`.
 
-The adapter emits an `agent_init` extension:
+Provider-account metadata is orchestrator-owned. The adapters and worker do not
+know which account the orchestrator selected; they only see normal CLI paths
+after credentials are provisioned. Therefore account fields must be added either
+by:
+
+1. passing non-secret metadata in `AgentRunParams` (`providerAccountId`,
+   `providerAccountLabel`) so `ProxyAgentProcess`/local adapters can echo it, or
+2. decorating `agent_init` in `wireAgentListeners` / `runSystemTurn` before
+   emitting or persisting it.
+
+Prefer decoration at the orchestrator boundary so the worker remains credential
+agnostic. The emitted `agent_init` extension is:
 
 ```ts
 providerAccountId?: string;
@@ -315,6 +330,39 @@ providerAccountLabel?: string;
 ```
 
 This gives chat history and diagnostics an audit trail without exposing secrets.
+
+### Shared turn preflight
+
+Account routing, credential provisioning, token sync-in, and failover prechecks
+must live in a shared server-side turn preflight, not only in the WebSocket
+`runAgentWithMessage` path. Several production paths start turns without a
+viewer-attached WS:
+
+- `SessionRunner.sendSystemMessage` / `ContainerSessionRunner.sendSystemMessage`
+  call `runSystemTurn`.
+- Agent-spawned child sessions call `sendSystemMessage` for the initial prompt
+  and for follow-up messages from `shipit session send`.
+- GitHub CI auto-fix sends a system prompt through `sendSystemMessage`.
+- Rebase/conflict recovery services can start agent turns outside the chat WS
+  path.
+
+Create one orchestrator helper, for example `prepareProviderAccountTurn(...)`,
+that every turn entrypoint must call before `agent.run()` or
+`existingAgent.sendUserMessage(...)`. It is responsible for:
+
+- resolving or pinning `provider_account_id`,
+- deciding whether an existing process can be reused,
+- killing/restarting a persistent process when account switch is required,
+- clearing provider resume state on account switch,
+- provisioning account-qualified credentials,
+- syncing the account token in before start,
+- returning metadata used to decorate `agent_init`,
+- recording enough state to sync the token back after completion.
+
+`runAgentWithMessage`, `runSystemTurn`, child-session send/spawn paths,
+CI-fix paths, and any future server-initiated turns all use that helper. This
+keeps failover behavior identical whether the turn was started by chat, by the
+agent via `shipit session create`, or by a server automation.
 
 ### Quota and exhaustion detection
 
@@ -442,11 +490,23 @@ turn-level sync-in refreshes it from the selected account before start.
   files by `{ provider, accountId }`.
 - `src/server/orchestrator/ws-handlers/agent-execution.ts` — select account,
   pin account, detect safe retry, and perform failover.
+- `src/server/orchestrator/session-runner.ts` and
+  `src/server/orchestrator/container-session-runner.ts` — route
+  `sendSystemMessage` / `runSystemTurn` through the same provider-account
+  preflight used by WebSocket turns.
+- `src/server/orchestrator/runner-registry-factory.ts` — inject the
+  provider-account preflight/sync dependencies into `SystemTurnDeps`.
 - `src/server/orchestrator/services/child-sessions.ts` — agent-spawned sessions
   bypass `runAgentWithMessage` and directly provision credentials before
   `sendSystemMessage`; they must select or inherit a provider account, persist
   `provider_account_id`, and provision account-qualified credentials before
   setting `agent_pinned`.
+- `src/server/orchestrator/services/github-ci-fix.ts` and other services that
+  call `sendSystemMessage` — rely on the shared system-turn preflight rather
+  than assuming WS setup has already provisioned credentials.
+- `src/server/orchestrator/app-lifecycle.ts` — account-qualify auth-complete
+  handling and token re-push so re-auth for account X updates only sessions
+  pinned to account X.
 - `src/server/orchestrator/limits/*` and `limits-poller.ts` — move from
   agent-keyed snapshots to provider-account snapshots.
 - `src/server/shared/types/agent-types.ts` — add optional provider-account
@@ -530,6 +590,14 @@ turn-level sync-in refreshes it from the selected account before start.
 - Integration: agent-spawned child sessions persist `provider_account_id` and
   provision account-qualified credentials before their first `sendSystemMessage`
   turn.
+- Integration: child follow-up messages and GitHub CI auto-fix system turns use
+  the shared provider-account preflight instead of bypassing credential
+  selection/sync.
+- Integration: auth-complete for account X re-pushes the refreshed token only to
+  sessions pinned to account X.
+- Integration: `agent_init` events emitted through WS and system-turn paths carry
+  the orchestrator-selected provider account metadata without requiring adapters
+  to inspect credentials.
 - Integration: Codex unknown-quota accounts are selectable but do not outrank
   equivalent accounts with fresh known quota; `OPENAI_API_KEY` fallback is not
   rendered or ranked as a subscription account.
