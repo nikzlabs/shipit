@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: medium
 description: Inline PR detail tab (header, description, status, diff link) as a peer of Preview/Docs/Files, opened by clicking the PR lifecycle card.
 ---
@@ -64,13 +64,15 @@ renders author + opened age, and the Files section renders per-file rows with
 change type and +/- stats. Per-row "View diff" currently opens the shared full
 diff viewer; file-focused diff opening remains a small follow-up.
 
-**Not yet done:** Phase 6 (activity timeline), the `timeline` summary field,
-and the Monaco-widget surface for inline-on-diff threads from docs/102.
+**Deferred follow-ups (not blocking this feature):** activity timeline,
+file-focused diff opening, regenerate-description, and swapping the body editor
+to Monaco are polish/follow-up work rather than required PR detail panel scope.
+The Monaco-widget surface for inline-on-diff threads is tracked by docs/102.
 
 **Remaining-work assessment (2026-05-23):** the high-value wiring pass is now
-done. Remaining work is mostly the heavier activity timeline query/rendering,
-Monaco inline-diff review widgets from docs/102, and optional file-focused diff
-opening from the Files section.
+done. The PR detail panel now has the inline drill-in surface, editable title
+and description, status actions, conversation write-back, author/age metadata,
+and per-file rows. Remaining ideas are tracked as follow-ups or by docs/102.
 
 ## Summary
 
