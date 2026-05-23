@@ -255,14 +255,29 @@ running agent:
    (committing whatever the agent edited during a turn); the install flow
    needs the opposite discipline because the user — not the agent — is the
    one driving the change, and there may be unrelated in-flight work in the
-   tree. Implementation: call `simpleGit.add([…paths])` directly with the
-   plugin's own files plus the install marker, NOT through `autoCommit`.
+   tree. Implementation: add a new `commitPaths(paths, message)` method on
+   `GitManager` that wraps `this.git.add([…paths])` + `this.git.commit(message)`
+   for the install flow to call. Reach-into-`simpleGit`-directly from
+   `services/marketplace.ts` is the alternative, but the rest of the
+   orchestrator only talks to git through `GitManager` — a new public method
+   keeps that boundary intact and gives v3 (MCP/hooks writes) the same
+   primitive to reuse.
    **Scope of this guarantee is single-commit only.** The next user turn's
    `postTurnCommit()` will still run `autoCommit()`'s `git add -A` and
    fold any unrelated edits sitting in the tree into the first
    agent-attributed commit afterward — that's auto-commit's job and not
    something this doc changes. The install-flow rule keeps the *install
    commit itself* clean; subsequent commits behave as usual.
+
+   **Related: pre-existing uncommitted user edits.** If the user happens
+   to have uncommitted edits in the workspace at install time (e.g. they
+   paused the agent mid-edit, or made manual edits in the terminal), the
+   path-scoped `git add` correctly keeps those out of the install commit
+   — but does NOT interrupt them or warn the user. On the next user turn
+   they'll be folded into the post-turn commit and attributed to the
+   agent. That's mildly misleading attribution but is consistent with how
+   auto-commit works today; no change proposed here. Worth knowing in
+   code review.
 3. **Multi-viewer / double-click races on a single session.** Two browser
    tabs attached to the *same* session can both see the Install button
    enabled (the runner broadcasts state to every attached viewer per
@@ -428,11 +443,15 @@ those are credential-shaped: small, secret, hot-read. Marketplaces are
 queryable domain data and want the SQLite branch.) A new `marketplaces`
 table holds `id`, `source` (JSON-encoded), `agent_id`, `auto_update`,
 `last_fetched_at`, `status`. v1 seeds it with the official Claude/Codex
-catalogs at orchestrator startup and never writes to it again (since v1
-doesn't expose add/remove); the table still exists from day one so v2 can
-layer on without restructuring or needing *its own* additional migration
-on top of v1's. (Adding the table is itself a new entry in
-`src/server/shared/database.ts`'s `MIGRATIONS` array.)
+catalogs at orchestrator startup. After seed, v1 never inserts or deletes
+rows (no add/remove verbs are exposed), but it *does* update the
+`last_fetched_at` and `status` columns on each row as the background
+pre-clone completes (Build order step 8) and on the on-demand refresh
+path (session activation + Refresh button click in the Discover tab). The
+table still exists from day one so v2 can layer on without restructuring
+or needing *its own* additional migration on top of v1's. (Adding the
+table is itself a new entry in `src/server/shared/database.ts`'s
+`MIGRATIONS` array.)
 
 ### Backend-agnostic at the surface; agent-specific at the writer
 
@@ -463,11 +482,26 @@ would not list plugin skills and invocation would break. So:
   directories exists and is non-empty, write there; (2) if both exist and
   both are non-empty, prefer the one with more entries; (3) if neither
   exists (the default), use `.codex/skills/` until the v0 spike confirms
-  `.agents/skills/` is canonical. Reads scan both directories regardless.
+  `.agents/skills/` is canonical. Reads scan both directories regardless
+  — **and the existing skill discovery surfaces have to learn about
+  `.agents/skills/` too**: `services/skills.ts:27-33` (`listSkills()`)
+  currently scans only `.codex/skills/`, and the session-worker endpoint
+  at `session-worker.ts:462` scans only `~/.codex/skills/`. If we ever
+  write to `.agents/skills/`, both need the scope-widening change or the
+  doc 138 autocomplete won't see installed Codex skills. v1 takes the
+  shortcut: write only to `.codex/skills/` and defer the
+  `.agents/skills/` write target to a follow-up doc once the v0 spike
+  confirms which is canonical. Reads can still scan both opportunistically
+  in v1, since that's a small additive change.
+
   Frontmatter `name` set to `<plugin>:<skill>`; invocation token is
   `$<plugin>:<skill>`. Codex's catalog-injection model reads `SKILL.md`
-  directly (per doc 138) so the regex amendment doesn't bind there, but
-  it's harmless for Codex too.
+  directly (per doc 138) so the autocomplete regex amendment doesn't
+  bind there, but **doc 138's known `$`-reopen limitation is inherited
+  here**: doc 138 lines 184–189 note that once a Codex selection inserts
+  `$name`, editing the token won't re-open the menu (the regex matches
+  only a leading `/`). Adding `:` to the character class doesn't fix
+  that — it's a separate limitation we're inheriting, not solving.
 
 The catalog *fetch* logic is shared (Git clone or HTTP download + JSON parse
 of the manifest). Only the *write* step branches per agent.
@@ -544,8 +578,12 @@ Concrete sequence:
    For persistent backends: call `killAgent` on the runner; next turn
    respawns and picks up the new files.
 4. The user sees a status row in the install sheet: "Installed. New skills
-   are available for your next message." No chat-level notification —
-   installs are configuration, not conversation.
+   are available for your next message." If the user dismisses the sheet
+   before install completes, success/failure surfaces as a brief toast
+   (using whatever notification primitive the rest of the client uses) so
+   the result isn't invisible. We don't post into chat history — installs
+   are configuration, not conversation — but a toast respects the user's
+   decision to close the dialog while still confirming the outcome.
 
 ### Trust posture
 
@@ -578,15 +616,18 @@ But the user should know "the container is the sandbox" undersells what a
 hostile plugin can do — link to the credential-store and secret-store
 threat models when implementing.
 
-**Codex-specific implication.** On Codex, the catalog-injection model (per
-doc 138) lets the model pick a matching skill *even without an explicit
-`$name`* — the `<skills_instructions>` block listing every discovered skill
-is part of every turn's context. An installed-but-never-invoked malicious
-Codex skill is therefore in scope the moment its description happens to
-match a user prompt. The Monaco preview at install time is the *only* gate;
-there's no "but the user has to type the name" backstop. This makes the
-inline-preview defense (#2) more load-bearing for Codex than for Claude,
-not less.
+**Codex-specific implication (pending v0 spike).** *If* the v0 spike
+confirms that `codex app-server` injects the `<skills_instructions>`
+catalog on every turn — the way doc 138 verified for `codex exec` — then
+the catalog-injection model lets the model pick a matching skill *even
+without an explicit `$name`*. An installed-but-never-invoked malicious
+Codex skill would then be in scope the moment its description happens to
+match a user prompt, with the Monaco preview at install time as the only
+gate; there's no "but the user has to type the name" backstop. This would
+make the inline-preview defense (#2) more load-bearing for Codex than for
+Claude. The same v0 spike that gates the `killAgent` reload design (see
+Build order) also determines whether this trust-posture implication
+applies. Re-evaluate this paragraph after the spike concludes.
 
 ## Build order
 
@@ -677,14 +718,17 @@ day one, assuming v0 didn't surface anything that requires the v1a/v1b split.
    canonical namespace token) keeps the autocomplete open past the colon.
    The companion regex in `agent-execution.ts:115` isn't end-anchored and
    already handles `:` correctly; no change needed there.
-8. **Pre-clone the two seeded officials at orchestrator startup** so the
-   Discover tab opens instantly the first time a user clicks it. The disk
-   cost is bounded (two well-known catalogs) and the pattern matches how
-   `disk-janitor.ts` cleans up at startup rather than mid-session.
-   Alternative — streaming a "fetching catalog…" spinner the first time
-   Discover opens — was considered and rejected: it puts seconds of
-   first-impression latency on the user instead of amortizing it during
-   boot.
+8. **Pre-clone the two seeded officials in the background at orchestrator
+   startup** so the Discover tab opens instantly the first time a user
+   clicks it (the common case). The clone is **fire-and-forget**: kicked
+   off after server start, not blocking `whenReady` — otherwise an
+   upstream GitHub outage would delay orchestrator boot. Discover gracefully
+   handles the "still loading" state (the catalog rows render with a
+   loading skeleton until `last_fetched_at` is set). The disk cost is
+   bounded (two well-known catalogs); cleanup follows the same one-shot
+   startup pattern as `disk-janitor.ts` (though note: janitor *removes*
+   things on boot, this *fetches* — different direction, same scheduling
+   discipline of "do it once at start, not on a timer").
 
 Acceptance: a user on Claude *or* Codex can open Settings → Skills, browse the
 agent's official catalog, see a skill's `SKILL.md` rendered inline in Monaco,
@@ -743,6 +787,7 @@ cover:
 | `src/server/orchestrator/api-routes-files.ts` | Add session-scoped install/uninstall/enable routes alongside the existing `GET /api/sessions/:id/skills` from doc 138 |
 | `src/server/orchestrator/services/marketplace.ts` *(install mutex)* | In-process `Map<workspaceDir, Promise<InstallResult>>` for the per-workspace install lock; same shape as `_mcpInstallMutex` in `src/server/session/session-worker.ts:133`. NOT in `RepoStore` (which is SQLite — wrong layer for runtime locks). |
 | `src/server/orchestrator/services/recovery.ts` | Install service calls `killAgent` directly when a persistent agent is running (Streaming Claude / Codex). No `restartAgent`. One-shot `claude -p` needs no kill — next turn respawns. |
+| `src/server/shared/git.ts` | Add a public `commitPaths(paths, message)` method to `GitManager`. Wraps `simpleGit.add([paths])` + `simpleGit.commit(message)` for the install flow's path-scoped commit. Keeps the "orchestrator talks to git only through GitManager" boundary intact; reusable by v3 (MCP/hooks writes). |
 | `src/client/components/Settings.tsx` | Add `skills` tab; widen the local `type Tab = …` union at line 20 to include `"skills"`; make the `DialogContent` `className` conditional on active tab (Skills → `max-w-5xl` + `md:h-[80vh]`, others stay at current `max-w-2xl` + `md:h-120`). |
 | `src/client/stores/ui-store.ts` | Widen the `SettingsTab` discriminated union at line 30 to include `"skills"`. There are **three type sites** total (`Settings.tsx:20`, `ui-store.ts:30`, and the persisted `settingsTab` field at `ui-store.ts:75`); all must be widened together or the persisted last-open-tab state fails typecheck. |
 | `src/client/components/SkillsTab.tsx` | New — Discover/Installed (v1) → Marketplaces/Errors (v2) sub-tabs; lives inside Settings |
