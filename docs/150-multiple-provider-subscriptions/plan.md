@@ -39,8 +39,8 @@ This doc uses "provider account" to mean one authenticated subscription identity
 for one agent provider. For Claude, that is one Anthropic/Claude Code account.
 For Codex, that is one ChatGPT/Codex account.
 
-Fallback auth is represented separately from subscription accounts but still
-needs a route id for session pinning/audit:
+Reserved auth routes are represented separately from provider-account rows but
+still need route ids for session pinning/audit:
 
 - `codex-api-key` — run with `OPENAI_API_KEY` / OpenAI Platform API billing.
 - `claude-api-key` — run with `ANTHROPIC_API_KEY` / Anthropic Platform API
@@ -48,9 +48,20 @@ needs a route id for session pinning/audit:
 - `claude-env-oauth` — run with `ANTHROPIC_AUTH_TOKEN`, used by dogfood/local
   OAuth-style env auth.
 
-Fallback routes are eligible only when no subscription account is selected or
-when the user explicitly chooses that billing/auth path. They never appear in
-subscription quota ranking or failover-to-another-subscription decisions.
+The reserved ids are not all the same kind of fallback:
+
+- `codex-api-key` and `claude-api-key` are pay-as-you-go fallbacks. They are
+  eligible only when no subscription account is selected or when the user
+  explicitly chooses that billing/auth path. They do not render subscription
+  quota, do not appear in subscription quota ranking, and are never selected for
+  "switch to another subscription" failover.
+- `claude-env-oauth` is an OAuth-style subscription route backed by
+  `ANTHROPIC_AUTH_TOKEN`, matching doc 135. It has Claude subscription quota
+  visibility and keeps the existing subscription-limits badge behavior. It is
+  not a provider-account row, so it does not participate in multi-account
+  ranking between stored account rows; however, when it is the selected Claude
+  route, quota polling, hard exhaustion detection, delayed-turn handling, and
+  same-route reset-time display behave like a Claude subscription account.
 
 ## Goals
 
@@ -245,8 +256,10 @@ Sessions need two persisted fields:
 
 - `agent_id` — existing provider/agent (`claude`, `codex`).
 - `provider_account_id` — new selected account for that provider. For
-  non-subscription fallback auth, this is a reserved route id such as
-  `codex-api-key`, not a subscription account row.
+  reserved auth routes, this is a route id such as `codex-api-key`,
+  `claude-api-key`, or `claude-env-oauth`, not a provider-account row.
+  `claude-env-oauth` is still subscription-style OAuth for quota purposes even
+  though it is not stored as a provider-account row.
 
 `agent_pinned` remains the first-turn boundary. On first turn, ShipIt pins both
 the agent and the provider account. The agent itself does not change.
@@ -356,7 +369,8 @@ UI and server gates, but its meaning changes:
 
 - `claude.authConfigured = true` when at least one authenticated Claude provider
   account exists, even if every account is currently quota-exhausted, or a
-  supported non-subscription Claude auth fallback exists.
+  supported reserved Claude auth route exists (`claude-api-key` or
+  `claude-env-oauth`).
 - `codex.authConfigured = true` when at least one authenticated Codex
   subscription account exists, even if exhausted, or `OPENAI_API_KEY` is
   configured.
@@ -372,7 +386,7 @@ currently stop at `agentRegistry.get(id)?.authConfigured` must either:
 
 Auth refresh events update both layers: the provider-account row is refreshed
 first, then `AgentRegistry.refreshAuth(provider)` recomputes the coarse boolean
-from provider-account state plus fallback env auth.
+from provider-account state plus reserved-route auth.
 
 Quota exhaustion is not authentication failure. An exhausted account remains
 authenticated and should not make Settings or model pickers show "not signed in."
@@ -570,6 +584,22 @@ future server-initiated turns all use that helper. This keeps failover behavior
 identical whether the turn was started by chat, by an answer to a blocked tool
 question, by the agent via `shipit session create`, or by a server automation.
 
+Reserved route ids have an explicit preflight contract because they are not
+provider-account rows:
+
+| Route id | Provisioning | Env/config pushed to the runner | Token sync | Quota/delayed-turn behavior |
+| --- | --- | --- | --- | --- |
+| `codex-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.codex` files instead of deleting them. | Set `OPENAI_API_KEY` for the Codex run and ensure adapter config prefers the API-key path over subscription files for this attempt. | No-op; API keys do not rotate through the Codex subscription token store. | No subscription quota. It is not ranked with subscription accounts, not used for subscription failover, and does not create delayed quota turns. Runtime API 429s surface as API-key rate/billing errors for that route. |
+| `claude-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.claude` files instead of deleting them. | Set `ANTHROPIC_API_KEY` for the Claude run and ensure adapter config prefers the API-key path over OAuth files for this attempt. | No-op; API keys do not rotate through the Claude OAuth token store. | No subscription quota. It is not ranked with subscription accounts, not used for subscription failover, and does not create delayed quota turns. Runtime API 429s surface as API-key rate/billing errors for that route. |
+| `claude-env-oauth` | Skip provider-account credential copy because the source of truth is the orchestrator/session env, not `/credentials/provider-accounts/...`. Preserve existing `.claude` files so switching back to a stored account can restore normal file-based OAuth. | Set `ANTHROPIC_AUTH_TOKEN` and do not set `ANTHROPIC_API_KEY`. Claude must treat the bearer as the selected OAuth source, matching doc 135's env-token path. | Sync-in reads only the current env token; sync-back is a no-op because ShipIt cannot safely rewrite an env-provided token. If the provider returns a refreshed token file during the run, it must not be copied into a stored provider-account row. | Subscription-style quota applies. The limits badge remains visible, hard exhaustion can create delayed quota turns, and reset-time handling matches Claude OAuth accounts. It is not ranked against stored provider-account rows for multi-account spreading because it has no account row; it is used when explicitly selected, pinned from migration/local auth, or when no stored Claude account exists and env OAuth is the available Claude auth. |
+
+Preflight must check route kind before assuming a `provider_account_id` can be
+loaded from `ProviderAccountManager`. Account-row provisioning, capability
+metadata writes, and token copy-back only run for real provider-account ids.
+Reserved-route handling still records the selected route in turn metadata so
+`agent_init`, diagnostics, and post-turn cleanup can explain which auth path
+was used.
+
 Detached/system-turn paths must hydrate persisted session routing before creating
 or reusing a runner. In particular, child follow-up messages and other paths that
 call `runnerRegistry.getOrCreate(...)` after a runner was disposed must read
@@ -609,18 +639,26 @@ Selection policy with unknown quota:
    primary account and record that the first turn will hydrate its quota.
 5. Once a Codex snapshot arrives, update only the account used by that runner.
 
-The `OPENAI_API_KEY` fallback from doc 119 is **not** a subscription account and
-does not participate in subscription quota ranking. Model it separately as a
-provider auth fallback:
+The `OPENAI_API_KEY` fallback from doc 119 and the Claude `ANTHROPIC_API_KEY`
+fallback are **not** subscription accounts and do not participate in
+subscription quota ranking. Model them separately as provider auth fallbacks:
 
-- It may make `codex` runnable when no ChatGPT subscription account exists.
-- It does not render a subscription-limits pill.
-- It is never selected for "switch to another subscription" failover.
-- Sessions that use it persist `provider_account_id = "codex-api-key"` so
-  history and diagnostics show that the turn used Platform API billing rather
-  than a ChatGPT subscription.
-- If both a Codex subscription account and `OPENAI_API_KEY` exist, subscription
+- They may make `codex` or `claude` runnable when no subscription account exists.
+- They do not render a subscription-limits pill.
+- They are never selected for "switch to another subscription" failover.
+- Sessions that use them persist `provider_account_id = "codex-api-key"` or
+  `"claude-api-key"` so history and diagnostics show that the turn used
+  Platform API billing rather than subscription auth.
+- If both a subscription account and the provider's API key exist, subscription
   credentials remain preferred so Platform API billing is not used silently.
+
+`ANTHROPIC_AUTH_TOKEN` is different: route id `claude-env-oauth` is reserved,
+but it is OAuth-style subscription auth per doc 135, not a pay-as-you-go
+API-key path. It keeps the Claude
+subscription-limits pill, quota polling, hard-exhaustion detection, and delayed
+quota turns. It is excluded only from multi-account spreading/ranking among
+stored provider-account rows because there is no provider-account row to update
+or sync back into.
 
 Hard exhaustion signals:
 
