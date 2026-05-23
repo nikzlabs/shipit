@@ -243,6 +243,13 @@ Clicking it does exactly two things on the client:
    Focus areas: correctness, completeness, internal consistency,
    contradictions with the rest of the repo. Skip nits.
 
+   After the subagent submits its findings: you (the parent) apply
+   the fixes — the subagent only reviews, it does not edit. Then
+   spawn a fresh subagent to re-review the updated file. Repeat
+   the review-fix-review loop until the reviewer returns an empty
+   array (no remaining findings). Each re-review must be a new
+   subagent so the review stays first-person-unbiased.
+
    --- Existing comments on this file (do not duplicate) ---
 
    The user has already left these comments. Build on them or

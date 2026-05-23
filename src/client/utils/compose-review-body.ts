@@ -111,6 +111,12 @@ export function composeReviewMessage(
     "",
     "Focus areas: correctness, completeness, internal consistency, and",
     "contradictions with the rest of the repo. Skip nits.",
+    "",
+    "After the subagent submits its findings: you (the parent) apply the fixes",
+    "— the subagent only reviews, it does not edit. Then spawn a fresh subagent",
+    "to re-review the updated file. Repeat the review-fix-review loop until the",
+    "reviewer returns an empty array (no remaining findings). Each re-review",
+    "must be a new subagent so the review stays first-person-unbiased.",
   ];
 
   if (embeds.length > 0) {
