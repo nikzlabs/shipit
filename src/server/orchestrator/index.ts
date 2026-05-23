@@ -59,6 +59,7 @@ import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes } from "./disk-janitor.js";
+import { resolveBuildId } from "./build-id.js";
 
 // ---- Re-exports for backwards compatibility ----
 export { CONTEXT_WINDOW_TOKENS } from "./ws-handlers/send-message.js";
@@ -114,6 +115,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // actually bounced the orchestrator — without it, a restart that
   // takes < 5s is invisible.
   const processStartedAt = Date.now();
+  const buildId = resolveBuildId();
+  const clientDir = path.resolve(process.cwd(), "dist/client");
   // ---- DI: instantiate all managers ----
   const mgrs = await initializeManagers(deps);
   const {
@@ -457,7 +460,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // live-ticking uptime badge next to the Docker memory badge so the
     // user can confirm that a restart actually happened. Sent once per
     // connect since the value is static for the process lifetime.
-    client.write(`event: system_info\ndata: ${JSON.stringify({ processStartedAt })}\n\n`);
+    client.write(`event: system_info\ndata: ${JSON.stringify({ processStartedAt, buildId })}\n\n`);
 
     // Send current Docker memory stats on connect
     if (dockerForStats) {
@@ -738,7 +741,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // Serve the built client files from dist/client/
   if (shouldServeStatic) {
-    const clientDir = path.resolve(process.cwd(), "dist/client");
     try {
       await app.register(fastifyStatic, {
         root: clientDir,

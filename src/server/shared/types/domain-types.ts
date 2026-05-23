@@ -351,6 +351,12 @@ export interface DockerMemoryStats {
 export interface SystemInfo {
   /** Epoch milliseconds when the orchestrator process started. */
   processStartedAt: number;
+  /**
+   * Build identifier for the orchestrator/client bundle. In production this is
+   * passed as SHIPIT_BUILD_ID at image build time; in development it falls back
+   * to the current git commit SHA.
+   */
+  buildId?: string;
 }
 
 // ---- Chat history message (shared data type) ----

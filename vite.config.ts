@@ -2,10 +2,27 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { execFileSync } from "node:child_process";
+
+function resolveBuildId(): string | undefined {
+  const explicit = process.env.VITE_SHIPIT_BUILD_ID?.trim() || process.env.SHIPIT_BUILD_ID?.trim();
+  if (explicit) return explicit;
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   root: path.resolve(__dirname, "src/client"),
+  define: {
+    __SHIPIT_CLIENT_BUILD_ID__: JSON.stringify(resolveBuildId()),
+  },
   build: {
     outDir: path.resolve(__dirname, "dist/client"),
     emptyOutDir: true,
