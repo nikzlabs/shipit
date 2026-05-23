@@ -34,11 +34,14 @@ export interface PrCardState {
     title: string;
     /** PR description body (markdown source). Optional; omitted when none. */
     body?: string;
+    createdAt?: string;
+    author?: { login: string; avatarUrl: string };
     url: string;
     baseBranch: string;
     headBranch: string;
     insertions: number;
     deletions: number;
+    files?: PrFileStat[];
   };
   /** CI check status (open phase). */
   checks?: {
@@ -204,11 +207,14 @@ export const usePrStore = create<PrState>((set, get) => ({
               number: update.prNumber,
               title: update.prTitle,
               body: update.prBody,
+              createdAt: update.prCreatedAt,
+              author: update.prAuthor,
               url: update.prUrl,
               baseBranch: update.baseBranch,
               headBranch: update.headBranch,
               insertions: update.insertions,
               deletions: update.deletions,
+              files: update.files,
             },
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
@@ -222,11 +228,14 @@ export const usePrStore = create<PrState>((set, get) => ({
               number: update.prNumber,
               title: update.prTitle,
               body: update.prBody,
+              createdAt: update.prCreatedAt,
+              author: update.prAuthor,
               url: update.prUrl,
               baseBranch: update.baseBranch,
               headBranch: update.headBranch,
               insertions: update.insertions,
               deletions: update.deletions,
+              files: update.files,
             },
             checks: update.checks,
             autoFix: update.autoFix,

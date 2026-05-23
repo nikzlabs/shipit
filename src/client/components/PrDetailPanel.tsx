@@ -44,7 +44,7 @@ export function PrDetailPanel({ sessionId }: { sessionId: string }) {
         issueComments={card.issueComments}
         reviewThreads={card.reviewThreads}
       />
-      <PrFilesSection sessionId={sessionId} baseBranch={card.pr.baseBranch} />
+      <PrFilesSection sessionId={sessionId} baseBranch={card.pr.baseBranch} files={card.pr.files} />
     </div>
   );
 }

@@ -26,11 +26,14 @@ function makePrStatus(overrides: Partial<PrStatusSummary> = {}): PrStatusSummary
     prUrl: "https://github.com/test/repo/pull/1",
     prTitle: "Test PR",
     prBody: "",
+    prCreatedAt: "2026-05-20T10:00:00Z",
+    prAuthor: { login: "alice", avatarUrl: "https://avatars/alice.png" },
     prState: "open",
     baseBranch: "main",
     headBranch: "feature",
     insertions: 10,
     deletions: 5,
+    files: [{ path: "src/index.ts", status: "M", insertions: 10, deletions: 5 }],
     checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
     mergeable: "mergeable",
     autoMergeEnabled: false,
@@ -106,6 +109,14 @@ describe("pr-store", () => {
         ["s1"],
       );
       expect(usePrStore.getState().statusBySession.s1?.prNumber).toBe(2);
+    });
+
+    it("copies PR metadata and file rows onto the card", () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus()]);
+      const pr = usePrStore.getState().cardBySession.s1?.pr;
+      expect(pr?.createdAt).toBe("2026-05-20T10:00:00Z");
+      expect(pr?.author?.login).toBe("alice");
+      expect(pr?.files).toEqual([{ path: "src/index.ts", status: "M", insertions: 10, deletions: 5 }]);
     });
   });
 

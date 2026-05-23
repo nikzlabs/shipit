@@ -19,7 +19,15 @@ import {
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore } from "../../stores/pr-store.js";
+import { useGitStore } from "../../stores/git-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
+import {
+  AutoFixToggle,
+  AutoMergeToggle,
+  FixCIButton,
+  MergeButton,
+  ResolveConflictsButton,
+} from "../PrStatusControls.js";
 
 function ChecksSummary({ checks }: { checks: PrCardState["checks"] }) {
   if (!checks || checks.state === "none") {
@@ -60,9 +68,24 @@ function ChecksSummary({ checks }: { checks: PrCardState["checks"] }) {
 
 export function PrStatusSection({ sessionId, card }: { sessionId: string; card: PrCardState }) {
   const status = usePrStore((s) => s.statusBySession[sessionId]);
+  const pr = card.pr;
   const deployments = status?.deployments ?? [];
   const mergeable = status?.mergeable;
+  const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const checks = card.checks ?? (status ? status.checks : undefined);
+  const autoFix = card.autoFix;
+  const autoMerge = card.autoMerge;
+  const isCiFailed = checks?.state === "failure";
+  const isCiPassed = checks?.state === "success";
+  const isCiNone = checks?.state === "none";
+  const isConflicting = mergeable === "conflicting";
+  const isAutoFixRunning = autoFix?.status === "running";
+  const isAutoFixExhausted = autoFix?.status === "exhausted";
+  const showConflictUi = isConflicting && rebaseStatus === "idle" && card.phase === "open" && pr;
+  const canMerge = (isCiPassed || isCiNone) && !isConflicting;
+  const showMergeButton = card.phase === "open" && canMerge && !autoMerge?.enabled;
+  const showFixButton = card.phase === "open" && isCiFailed && !isAutoFixRunning && (!autoFix?.enabled || isAutoFixExhausted);
+  const showAutoMergeToggle = card.phase === "open" && (!isCiFailed || isCiPassed);
 
   return (
     <section className="px-4 py-3 border-b border-(--color-border-primary) space-y-3">
@@ -71,6 +94,43 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
       </h3>
 
       <ChecksSummary checks={checks} />
+
+      {card.phase === "open" && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-(--color-border-primary) bg-(--color-bg-secondary)/40 p-2">
+          {showMergeButton && <MergeButton sessionId={sessionId} autoMerge={autoMerge} />}
+          {showFixButton && <FixCIButton sessionId={sessionId} />}
+          {showAutoMergeToggle && <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />}
+          {isCiFailed && <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />}
+          {showConflictUi && (
+            <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
+          )}
+          {!showMergeButton && !showFixButton && !showAutoMergeToggle && !isCiFailed && !showConflictUi && (
+            <span className="text-xs text-(--color-text-tertiary)">No PR actions available right now.</span>
+          )}
+        </div>
+      )}
+
+      {autoMerge?.enabled && !isCiPassed && !isCiNone && (
+        <div className="text-xs text-(--color-text-secondary)">
+          Will merge when CI passes.
+        </div>
+      )}
+      {autoMerge?.error && (
+        <div className="flex items-center gap-1 text-xs text-(--color-warning)">
+          <WarningIcon size={12} /> {autoMerge.error.message}
+        </div>
+      )}
+      {isAutoFixRunning && autoFix && (
+        <div className="flex items-center gap-2 text-xs text-(--color-warning)">
+          <CircleNotchIcon size={12} className="animate-spin" />
+          Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
+        </div>
+      )}
+      {isAutoFixExhausted && autoFix && (
+        <div className="text-xs text-(--color-text-tertiary)">
+          Auto-fix exhausted ({autoFix.maxAttempts}/{autoFix.maxAttempts} attempts)
+        </div>
+      )}
 
       {mergeable === "conflicting" && (
         <div className="flex items-center gap-2 text-sm text-(--color-warning)">
