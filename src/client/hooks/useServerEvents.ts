@@ -8,6 +8,9 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
 import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode } from "../../server/shared/types.js";
+import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
+
+let reloadingForClientUpdate = false;
 
 /**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
@@ -242,6 +245,12 @@ export function useServerEvents(): void {
     // is visible (the value resets when the orchestrator process bounces).
     es.addEventListener("system_info", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as SystemInfo;
+      const loadedClientBuildId = getLoadedClientBuildId();
+      if (shouldReloadForServerBuild(loadedClientBuildId, data.buildId) && !reloadingForClientUpdate) {
+        reloadingForClientUpdate = true;
+        window.location.reload();
+        return;
+      }
       useUiStore.getState().setProcessStartedAt(data.processStartedAt);
     });
 
