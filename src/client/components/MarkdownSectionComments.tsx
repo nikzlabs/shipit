@@ -4,6 +4,9 @@ import { marked } from "marked";
 import { PlusIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
+import { Badge, type BadgeProps } from "./ui/badge.js";
+import { parseFrontmatter, type ParsedFrontmatter } from "../utils/markdown-frontmatter.js";
+import type { DocPriority, DocStatus } from "../../server/shared/types.js";
 
 interface MarkdownSection {
   heading: string;
@@ -31,6 +34,58 @@ function parseMarkdownSections(content: string): MarkdownSection[] {
   }
 
   return sections;
+}
+
+/**
+ * Visual styling for status/priority badges in the frontmatter header. Kept in
+ * sync with `DocsViewer` so a doc's status looks the same whether it's seen as
+ * a list row or opened in the preview modal.
+ */
+const STATUS_BADGE: Record<DocStatus, { label: string; variant: BadgeProps["variant"] }> = {
+  "in-progress": { label: "In Progress", variant: "warning" },
+  "planned": { label: "Planned", variant: "info" },
+  "paused": { label: "Paused", variant: "default" },
+  "done": { label: "Done", variant: "success" },
+  "rejected": { label: "Rejected", variant: "error" },
+};
+
+const PRIORITY_BADGE: Record<DocPriority, { label: string; variant: BadgeProps["variant"] }> = {
+  high: { label: "High priority", variant: "error" },
+  medium: { label: "Med priority", variant: "warning" },
+  low: { label: "Low priority", variant: "default" },
+};
+
+function FrontmatterHeader({ fm }: { fm: ParsedFrontmatter }) {
+  const status = fm.status ? STATUS_BADGE[fm.status] : null;
+  const priority = fm.priority ? PRIORITY_BADGE[fm.priority] : null;
+  const hasBadges = !!status || !!priority || !!fm.customStatus;
+  const hasContent = hasBadges || !!fm.description || fm.extras.length > 0;
+  if (!hasContent) return null;
+
+  return (
+    <div className="mb-4 pb-4 border-b border-(--color-border-secondary) space-y-2">
+      {hasBadges && (
+        <div className="flex flex-wrap items-center gap-2">
+          {status && <Badge variant={status.variant}>{status.label}</Badge>}
+          {!status && fm.customStatus && <Badge variant="default">{fm.customStatus}</Badge>}
+          {priority && <Badge variant={priority.variant}>{priority.label}</Badge>}
+        </div>
+      )}
+      {fm.description && (
+        <p className="text-sm text-(--color-text-secondary) italic">{fm.description}</p>
+      )}
+      {fm.extras.length > 0 && (
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs">
+          {fm.extras.map((entry) => (
+            <div key={entry.key} className="contents">
+              <dt className="text-(--color-text-tertiary) font-medium">{entry.key}</dt>
+              <dd className="text-(--color-text-secondary) font-mono break-all">{entry.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
 }
 
 export interface SectionCommentData {
@@ -178,7 +233,12 @@ export function MarkdownSectionComments({
 }: MarkdownSectionCommentsProps) {
   const [addingToSection, setAddingToSection] = useState<number | null>(null);
 
-  const sections = useMemo(() => parseMarkdownSections(content), [content]);
+  // Strip YAML frontmatter from the content before sectioning so the raw
+  // `status: planned\npriority: high\n...` block doesn't render as a paragraph
+  // at the top of the preamble. The parsed fields are surfaced as a styled
+  // header instead — same visual language as the docs list.
+  const fm = useMemo(() => parseFrontmatter(content), [content]);
+  const sections = useMemo(() => parseMarkdownSections(fm.body), [fm.body]);
 
   const renderedSections = useMemo(() => {
     return sections.map((section) => ({
@@ -202,6 +262,7 @@ export function MarkdownSectionComments({
 
   return (
     <div className="space-y-0">
+      {fm.hasFrontmatter && <FrontmatterHeader fm={fm} />}
       {renderedSections.map((section) => {
         const sectionComments = commentsBySection.get(section.index) ?? [];
 
