@@ -292,13 +292,13 @@ reads/mutations.
    - Per-turn (only counted when `spawnedByTurn` is supplied): default `4`, exposed as `DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN` and overridable per-call via `maxSpawnedSessionsPerTurn`.
 
    Neither cap reads from `shipit.yaml` today — the constants live in `services/child-sessions.ts`. Self-hosters can patch the constants; a future env-var override (`MAX_SPAWNED_SESSIONS_PER_PARENT`, `MAX_SPAWNED_SESSIONS_PER_TURN`) is tracked in the checklist.
-3. **Clone** — when the parent has a `remoteUrl`, fetch the bare cache and clone from it (same path the home-screen "send" flow uses). When it doesn't, `git clone --local <parent-workspace> <child-workspace>` as a fallback.
-4. **Branch off `base`** — if `base` is provided, check it out before letting the agent start. Default: parent's current HEAD (so the child sees the parent's committed work; uncommitted-and-unstaged work is not visible — the child has its own clone).
-5. **Persist linkage** — `setParentSession(newSessionId, parentSessionId, spawnedByTurn)` writes `parent_session_id` + `spawned_by_turn` to the `sessions` table; `setBranch` / `setBranchRenamed(true)` / `setRemoteUrl` / `setModel` fill in the rest. The child is **not** marked warm.
+3. **Get the child's workspace.** When the parent's repo is registered in `repoStore` (the production happy path), the spawn flow calls `claimSessionService.claim(parent.remoteUrl)` — the exact same warm-pool-aware service the home-screen `POST /api/repos/:url/claim-session` route uses. The child gets a workspace branched off freshly-fetched `origin/main`. When the parent has no registered remote (integration tests, ad-hoc local repos), it falls back to a local clone of the parent's workspace and branches off the parent's HEAD.
+4. **Branch off `base`** — if `base` is provided, hard-reset the claimed workspace to that ref (`git reset --hard`). When `base` is omitted, the default is `origin/main` via the claim path (production) or the parent's HEAD (test fallback). The previous default — "parent's HEAD" — was changed because spawned children inherited the parent's committed-but-not-merged WIP, making their "Changes vs main" diff include work that was already on main. Honoring the user's expectation that a spawned session looks like any other new session was the goal.
+5. **Graduate the warm session.** The claim path created the session with `warm = true` and a `shipit/<random>` branch prefix; the spawn renames the branch to the user-supplied (or generated) name, calls `setBranchRenamed(true)`, flips `warm = false`, overrides the title via `rename`, and stamps parent linkage via `setParentSession(newSessionId, parentSessionId, spawnedByTurn)` plus `setModel`.
 6. **Enqueue the prompt** — `runnerRegistry.getOrCreate(...).sendSystemMessage(prompt)`. The runner picks the prompt up as soon as it starts.
 7. **Broadcast `session_list`** — the route emits the updated session list via SSE so the child appears in every connected sidebar immediately. (No parent-chat `SpawnedSessionCard` event is broadcast in Phase 1; that's Phase 2.)
 
-Steps 3–6 are mostly compositions of existing primitives — the same building blocks `forkSession` and the home-screen flow use.
+The claim service lives in `services/claim-session.ts` and is constructed once per app in `registerSessionRoutes`; the per-repo serialization map in its closure guards both the HTTP claim route and the spawn route against concurrent git operations on the same bare cache.
 
 ### Output formats
 
