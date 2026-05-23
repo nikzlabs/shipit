@@ -33,10 +33,38 @@ export interface OrchestratorResponse {
  * `SHIPIT_HOST`/`SHIPIT_PORT` are set by `container-lifecycle.ts:createContainer`.
  */
 export function resolveOrchestratorBaseUrl(): string | null {
+  return resolveOrchestratorBaseUrls()[0] ?? null;
+}
+
+/**
+ * Resolves all candidate orchestrator URLs from env, ordered by preference.
+ *
+ * `SHIPIT_HOST` historically contained the orchestrator container hostname.
+ * That hostname changes when the orchestrator container is recreated, while
+ * long-lived session containers keep their original env. The stable Compose
+ * service alias (`shipit`) continues to resolve to the current orchestrator on
+ * the shared Docker network, so keep it as a fallback for worker->orchestrator
+ * callbacks such as the review MCP bridge and gh shim.
+ */
+export function resolveOrchestratorBaseUrls(): string[] {
   const host = process.env.SHIPIT_HOST;
   const port = process.env.SHIPIT_PORT;
-  if (!host || !port) return null;
-  return `http://${host}:${port}`;
+  if (!host || !port) return [];
+  const hosts = [
+    host,
+    ...((process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS ?? "shipit")
+      .split(",")
+      .map((h) => h.trim())
+      .filter(Boolean)),
+  ];
+  const seen = new Set<string>();
+  return hosts
+    .filter((h) => {
+      if (seen.has(h)) return false;
+      seen.add(h);
+      return true;
+    })
+    .map((h) => `http://${h}:${port}`);
 }
 
 /**
@@ -52,13 +80,13 @@ export function resolveSessionId(): string | null {
  * configured orchestrator. Used by the agent-ops broker.
  */
 export class OrchestratorClient {
-  private readonly baseUrl: string;
+  private readonly baseUrls: string[];
   private readonly sessionId: string;
 
   constructor(opts: OrchestratorClientOptions = {}) {
-    const baseUrl = opts.baseUrl ?? resolveOrchestratorBaseUrl();
+    const baseUrls = opts.baseUrl ? [opts.baseUrl] : resolveOrchestratorBaseUrls();
     const sessionId = opts.sessionId ?? resolveSessionId();
-    if (!baseUrl) {
+    if (baseUrls.length === 0) {
       throw new Error(
         "Orchestrator base URL is not configured (SHIPIT_HOST/SHIPIT_PORT env not set)",
       );
@@ -66,7 +94,7 @@ export class OrchestratorClient {
     if (!sessionId) {
       throw new Error("Session ID is not configured (SESSION_ID env not set)");
     }
-    this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.baseUrls = baseUrls.map((url) => url.replace(/\/$/, ""));
     this.sessionId = sessionId;
   }
 
@@ -74,9 +102,9 @@ export class OrchestratorClient {
    * Build a session-scoped path. The session ID is always injected by the
    * worker — the agent cannot influence which session the request targets.
    */
-  private url(suffix: string): string {
+  private url(baseUrl: string, suffix: string): string {
     const tail = suffix.startsWith("/") ? suffix : `/${suffix}`;
-    return `${this.baseUrl}/api/sessions/${encodeURIComponent(this.sessionId)}${tail}`;
+    return `${baseUrl}/api/sessions/${encodeURIComponent(this.sessionId)}${tail}`;
   }
 
   /** Send a JSON request to a session-scoped orchestrator endpoint. */
@@ -85,7 +113,6 @@ export class OrchestratorClient {
     suffix: string,
     body?: unknown,
   ): Promise<OrchestratorResponse> {
-    const url = this.url(suffix);
     const init: RequestInit = {
       method,
       headers: { "Content-Type": "application/json" },
@@ -93,18 +120,32 @@ export class OrchestratorClient {
     if (body !== undefined && method !== "GET") {
       init.body = JSON.stringify(body);
     }
-    let res: Response;
-    try {
-      res = await fetch(url, init);
-    } catch (err) {
-      return { ok: false, status: 0, body: { error: getErrorMessage(err) } };
+    const failures: string[] = [];
+    for (const baseUrl of this.baseUrls) {
+      const url = this.url(baseUrl, suffix);
+      let res: Response;
+      try {
+        res = await fetch(url, init);
+      } catch (err) {
+        failures.push(`${baseUrl}: ${getErrorMessage(err)}`);
+        continue;
+      }
+      let parsed: unknown;
+      try {
+        parsed = await res.json();
+      } catch {
+        parsed = {};
+      }
+      return { ok: res.ok, status: res.status, body: parsed };
     }
-    let parsed: unknown;
-    try {
-      parsed = await res.json();
-    } catch {
-      parsed = {};
-    }
-    return { ok: res.ok, status: res.status, body: parsed };
+    return {
+      ok: false,
+      status: 0,
+      body: {
+        error: failures.length > 0
+          ? `Could not reach orchestrator (${failures.join("; ")})`
+          : "Could not reach orchestrator",
+      },
+    };
   }
 }

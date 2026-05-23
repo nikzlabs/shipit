@@ -6,6 +6,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildMounts,
   buildEnv,
+  buildOrchestratorCallbackEnv,
   buildContainerConfig,
   DEP_CACHE_CONTAINER_PATH,
 } from "./container-lifecycle.js";
@@ -109,6 +110,29 @@ describe("buildEnv", () => {
     expect(env).toContain("WORKSPACE_DIR=/workspace");
     expect(env).toContain("WORKER_PORT=9100");
     expect(env).toContain("HOME=/root");
+  });
+
+  it("passes through a stable orchestrator host override for worker callbacks", async () => {
+    const oldHost = process.env.SHIPIT_ORCHESTRATOR_HOST;
+    const oldFallbacks = process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS;
+    const oldPort = process.env.PORT;
+    process.env.SHIPIT_ORCHESTRATOR_HOST = "shipit";
+    process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS = "shipit";
+    process.env.PORT = "4123";
+    try {
+      const env = await buildOrchestratorCallbackEnv("sess-1");
+      expect(env).toContain("SHIPIT_SESSION_ID=sess-1");
+      expect(env).toContain("SHIPIT_PORT=4123");
+      expect(env).toContain("SHIPIT_HOST=shipit");
+      expect(env).toContain("SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit");
+    } finally {
+      if (oldHost === undefined) delete process.env.SHIPIT_ORCHESTRATOR_HOST;
+      else process.env.SHIPIT_ORCHESTRATOR_HOST = oldHost;
+      if (oldFallbacks === undefined) delete process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS;
+      else process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS = oldFallbacks;
+      if (oldPort === undefined) delete process.env.PORT;
+      else process.env.PORT = oldPort;
+    }
   });
 });
 
