@@ -101,14 +101,25 @@ auth returns to ShipIt and is rendered inline.
 For a new turn, the router chooses a provider account before credential
 provisioning:
 
-1. If the session already has a pinned provider account and it is still usable,
+1. Filter to accounts that are eligible for the selected model, permission mode,
+   and requested provider features.
+2. If the session already has a pinned provider account and it is still usable,
    keep using it.
-2. Otherwise prefer the provider's primary account.
-3. Skip accounts known to be exhausted until their reset time.
-4. Prefer accounts with the most remaining weekly quota; use short-window quota
+3. Otherwise prefer the provider's primary account.
+4. Skip accounts known to be exhausted until their reset time.
+5. Prefer accounts with the most remaining weekly quota; use short-window quota
    as the tiebreaker.
-5. If all accounts are exhausted, show a chat-visible system message with reset
-   times and leave the turn queued/not-started.
+6. If all eligible accounts are exhausted, show a chat-visible system message
+   with reset times and leave the turn queued/not-started.
+
+Eligibility is checked before quota ranking. A fallback account that cannot run
+the selected model, requested permission mode, image support, MCP/review
+capability, or other provider-gated feature is not a valid substitute for the
+turn. This matters because two accounts for the same provider can have different
+plans, enterprise policy, regional access, beta flags, or model availability.
+Failover must not silently downgrade behavior. If no account can satisfy the
+current turn's feature requirements, ShipIt surfaces that as an account/model
+availability problem instead of trying a lower-capability subscription.
 
 ### Mid-turn failover
 
@@ -208,6 +219,29 @@ accounts:
 
 For backward compatibility, singleton helper methods continue to resolve the
 primary account until all call sites are migrated.
+
+### Agent availability gates
+
+`AgentRegistry.authConfigured` remains a coarse agent-level signal for existing
+UI and server gates, but its meaning changes:
+
+- `claude.authConfigured = true` when at least one ready Claude provider account
+  exists, or a supported non-subscription Claude auth fallback exists.
+- `codex.authConfigured = true` when at least one ready Codex subscription
+  account exists, or `OPENAI_API_KEY` is configured.
+- `AgentRegistry.available()` answers only "can this provider be attempted at
+  all?" It does not choose an account and does not guarantee the selected model
+  can run.
+
+Per-turn validation moves to `ProviderAccountManager`. Existing call sites that
+currently stop at `agentRegistry.get(id)?.authConfigured` must either:
+
+1. keep using it only for broad UI availability, or
+2. call `ProviderAccountManager.selectAccountForTurn(...)` before starting work.
+
+Auth refresh events update both layers: the provider-account row is refreshed
+first, then `AgentRegistry.refreshAuth(provider)` recomputes the coarse boolean
+from provider-account state plus fallback env auth.
 
 ## Server architecture
 
@@ -472,9 +506,19 @@ This intentionally favors correctness over seamless failover.
 4. Once all call sites use `ProviderAccountManager`, remove direct root-path
    reads except migration.
 
-Existing sessions without `provider_account_id` use the provider primary account
-on their next turn. If their per-session credential subtree already exists, the
-turn-level sync-in refreshes it from the selected account before start.
+Existing sessions without `provider_account_id` are split by pin state:
+
+- **Unpinned sessions:** use the provider primary account on their next turn.
+- **Pinned sessions with an existing per-session credential subtree:** create a
+  migrated account row bound to that session's current credential source, set
+  `provider_account_id` to it, and keep using the existing provider-side
+  `agentSessionId`. Do not route these sessions to the current primary account,
+  because the user may have changed primary after migration and a silent switch
+  would violate the process/thread reset rules above.
+- **Pinned sessions whose credential source cannot be identified:** mark the
+  session as needing re-auth/account selection before the next turn. The recovery
+  path must kill any persistent process, clear `agentSessionId`, provision the
+  chosen account, and restart from local context.
 
 ## Touchpoints
 
