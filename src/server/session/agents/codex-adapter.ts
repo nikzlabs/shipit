@@ -270,6 +270,12 @@ export class CodexAdapter
   /** Latest token usage from `thread/tokenUsage/updated`, surfaced at turn end. */
   private lastTokenUsage: CodexTokenUsage | null = null;
 
+  /** Latest subscription rate-limit snapshot pushed by the app-server. */
+  private lastRateLimits: {
+    session: { usedPct: number; resetAt: string } | null;
+    weekly: { usedPct: number; resetAt: string } | null;
+  } = { session: null, weekly: null };
+
   /** Pending JSON-RPC requests awaiting a response, keyed by id. */
   private pendingRequests = new Map<
     number,
@@ -527,7 +533,7 @@ export class CodexAdapter
       if (pending) {
         this.pendingRequests.delete(resp.id);
         if (resp.error) {
-          pending.reject(new Error(`JSON-RPC error ${resp.error.code}: ${resp.error.message}`));
+          pending.reject(new Error(`JSON-RPC error ${resp.error.code}: ${this.normalizeJsonRpcError(resp.error.message)}`));
         } else {
           pending.resolve(resp.result);
         }
@@ -845,6 +851,7 @@ export class CodexAdapter
     const weekly = this.parseRateWindow(rl.secondary);
     if (!session && !weekly) return;
 
+    this.lastRateLimits = { session, weekly };
     this.emit("event", { type: "agent_rate_limits", session, weekly } as AgentEvent);
   }
 
@@ -860,6 +867,25 @@ export class CodexAdapter
     // resetsAt is epoch seconds; tolerate a ms value defensively.
     const ms = w.resetsAt < 10_000_000_000 ? w.resetsAt * 1000 : w.resetsAt;
     return { usedPct, resetAt: new Date(ms).toISOString() };
+  }
+
+  /**
+   * Codex app-server can return the generic "org monthly usage limit" text
+   * even when its own pushed telemetry says the rolling 5h window is the
+   * exhausted meter. Correct only that known mismatch; all other upstream
+   * errors pass through unchanged.
+   */
+  private normalizeJsonRpcError(message: string): string {
+    if (!/monthly usage limit/i.test(message)) return message;
+
+    const sessionLimit = this.lastRateLimits.session;
+    if (!sessionLimit || sessionLimit.usedPct < 100) return message;
+
+    const reset = new Date(sessionLimit.resetAt);
+    const resetText = Number.isNaN(reset.getTime())
+      ? sessionLimit.resetAt
+      : reset.toISOString();
+    return `You've hit Codex's 5h usage limit. It resets at ${resetText}.`;
   }
 
   // ---- Initialization and turn lifecycle ----

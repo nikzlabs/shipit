@@ -11,6 +11,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
+import type { SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
 
 // Re-export so existing consumers of types.ts don't break
@@ -120,6 +121,11 @@ export interface AppCtx {
     session: { usedPct: number; resetAt: string } | null,
     weekly: { usedPct: number; resetAt: string } | null,
   ) => void;
+  /**
+   * Latest subscription-limits snapshot from the header badge poller. Used to
+   * classify agent result errors that upstream labels too generically.
+   */
+  getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
 
   // Config
   workspaceDir: string;

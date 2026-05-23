@@ -1,5 +1,6 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
+import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import type { ChatMessageGroup, ToolResultEntry, SteeredMessage } from "../session-runner.js";
 import type { PersistedMessage } from "../chat-history.js";
@@ -36,6 +37,35 @@ type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
  * sites; per-model windows are resolved via `getContextWindowForModel`.
  */
 export const CONTEXT_WINDOW_TOKENS = DEFAULT_CONTEXT_WINDOW_TOKENS;
+
+const AGENT_LIMIT_LABELS: Record<AgentId, string> = {
+  claude: "Claude",
+  codex: "Codex",
+};
+
+/**
+ * Upstream agent CLIs can report the generic "org monthly usage limit" even
+ * when ShipIt's subscription badge has a fresh exhausted 5h-window snapshot.
+ * Correct only that known mismatch; without an exhausted session window, keep
+ * the upstream text intact.
+ */
+export function normalizeAgentUsageLimitError(
+  agentId: AgentId,
+  message: string,
+  limits: SubscriptionLimitsMap | undefined,
+): string {
+  if (!/monthly usage limit/i.test(message)) return message;
+
+  const sessionLimit = limits?.[agentId]?.session;
+  if (!sessionLimit || sessionLimit.usedPct < 100) return message;
+
+  const reset = new Date(sessionLimit.resetAt);
+  const resetText = Number.isNaN(reset.getTime())
+    ? sessionLimit.resetAt
+    : reset.toISOString();
+  const label = AGENT_LIMIT_LABELS[agentId] ?? agentId;
+  return `You've hit ${label}'s 5h usage limit. It resets at ${resetText}.`;
+}
 
 /** Extract tool result entries from an agent_tool_result event. */
 export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
@@ -318,7 +348,8 @@ export function wireAgentListeners(
     ctx.broadcastLog(source as "stderr" | "stdout" | "server", text);
   });
 
-  agent.on("event", (event: AgentEvent) => {
+  agent.on("event", (rawEvent: AgentEvent) => {
+    let event = rawEvent;
     // Subscription rate-limits are account-wide telemetry, not chat content:
     // route them into the limits badge (which broadcasts its own SSE) and
     // stop — forwarding as an `agent_event` would just be noise for the chat
@@ -326,6 +357,17 @@ export function wireAgentListeners(
     if (event.type === "agent_rate_limits") {
       ctx.recordCodexRateLimits?.(event.session, event.weekly);
       return;
+    }
+
+    if (event.type === "agent_result" && event.error) {
+      event = {
+        ...event,
+        error: normalizeAgentUsageLimitError(
+          agent.agentId,
+          event.error,
+          ctx.getSubscriptionLimitsSnapshot?.(),
+        ),
+      };
     }
 
     emitToViewers({ type: "agent_event", event });

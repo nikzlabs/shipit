@@ -620,6 +620,34 @@ describe("CodexAdapter", () => {
     });
   });
 
+  it("rewrites misleading monthly-limit errors when the 5h window is exhausted", async () => {
+    adapter = new CodexAdapter();
+    const errors: Error[] = [];
+    adapter.on("error", (e) => errors.push(e));
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+    fakeProc.sendResponse(1, { serverInfo: { name: "codex-app-server" } });
+
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
+    fakeProc.sendResponse(2, { threadId: "thread-abc-123" });
+
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(4));
+    fakeProc.sendNotification("account/rateLimits/updated", {
+      rateLimits: {
+        primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 1779296611 },
+        secondary: { usedPercent: 12, windowDurationMins: 10080, resetsAt: 1779883011 },
+      },
+    });
+    fakeProc.sendErrorResponse(3, -32000, "You've hit your org's monthly usage limit");
+
+    await vi.waitFor(() => {
+      expect(errors[0]?.message).toContain("Codex's 5h usage limit");
+    });
+    expect(errors[0]?.message).toContain(new Date(1779296611 * 1000).toISOString());
+    expect(errors[0]?.message).not.toContain("monthly usage limit");
+  });
+
   it("ignores a rate-limits notification with no parseable window", async () => {
     await createAndInit("Hello");
     events.length = 0;

@@ -210,6 +210,14 @@ null). The `LimitsPoller` still polls it on its cadence (cheap — no
 network) and each incoming event triggers `markAuthRefreshed("codex")` so
 the pill updates within seconds.
 
+The adapter also keeps the most recent pushed snapshot locally for error
+classification. Codex app-server has been observed returning the generic
+"org monthly usage limit" JSON-RPC error when the pushed `primary` window is
+already at 100%; in that case ShipIt rewrites the chat-facing failure to
+name Codex's 5h usage limit and show the `primary.resetsAt` timestamp. Other
+JSON-RPC errors, and monthly-limit errors without an exhausted 5h snapshot,
+still pass through unchanged.
+
 **Consequence:** the Codex pill is blank until the first turn of a session
 delivers a snapshot — there's no way to query usage out-of-band. That's an
 acceptable trade for using the one source we've *verified* works (it shows
@@ -382,6 +390,15 @@ A new `LimitsPoller` lives next to `pr-status-poller.ts`:
   N≤3 collection updated once a minute. The initial-connect snapshot
   is included in the existing burst sent at `/api/events` connect
   time, alongside `docker_memory`.
+- **Error classification:** `wireAgentListeners()` can read the latest
+  poller cache through `getSubscriptionLimitsSnapshot()`. When a Claude
+  result error says the generic "org monthly usage limit" but the cached
+  Claude 5h window is already at 100%, the listener rewrites the
+  chat-facing `agent_result.error` to name Claude's 5h usage limit and
+  show the cached reset timestamp. This mirrors the Codex adapter's
+  app-server classification, but happens in the orchestrator because
+  Claude's limit data comes from the polled `/usage` endpoint rather than
+  the CLI event stream.
 - **Authenticate-then-refresh:** after a successful Claude or Codex
   login the auth managers already emit `auth_complete` /
   `codex_auth_complete`. The poller listens for these and triggers an
