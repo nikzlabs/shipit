@@ -20,6 +20,10 @@ description: Replace the out-of-band AI review endpoint with a chat-native flow 
 > via `send_review_message`, which authorizes the tool for one file
 > (`runner.activeReviewFilePath`); the orchestrator persists the AI comments
 > (`source: "ai"`, re-anchored) and broadcasts `review_updated` to the modal.
+> Agent/subagent review comments are also accepted outside an explicit
+> `send_review_message` turn; when no `activeReviewFilePath` is set, the
+> submitted `file_path` is treated as the review target so findings do not fall
+> back into plain chat.
 >
 > **One load-bearing deviation from the design below:** the write-back tool
 > handler runs in the **orchestrator**, not the worker. `FileReviewStore` and
@@ -507,10 +511,9 @@ One call per review, with the full array of comments. Rationale:
 
 When the worker receives the call, it:
 
-1. **Authorizes the `file_path`.** The agent is not free to write
-   review comments on arbitrary files — a confused or off-task
-   subagent could otherwise create drafts on files the user never
-   opened. The button and slash command do **not** send their
+1. **Authorizes the `file_path`.** Explicit review turns narrow writes
+   to the file the user asked the agent to review. The button and slash
+   command do **not** send their
    composed body via the freeform `send_message` WS message; they
    send a new structured message:
 
@@ -522,8 +525,9 @@ When the worker receives the call, it:
 
    This lets the WS handler distinguish a button/slash-command
    review from a user who simply typed `Review docs/foo.md` in
-   the composer (the latter is just chat — no allow-list, no
-   tool access). On receipt, the handler sets
+   the composer. The latter still has tool access; it just does not
+   set a single-file allow-list, so `submit_review_comments` accepts
+   the submitted `file_path`. On receipt, the structured handler sets
    `runner.activeReviewFilePath = reviewFilePath` and routes the
    text through the same code path as `send_message` for
    everything else.
@@ -945,6 +949,9 @@ Touchpoints:
     (i.e., when dequeued and the parent agent actually starts
     running, not at WS receipt — same point sessionId is
     captured). Clear it on the parent's `agent_result` event.
+    When the field is null, `submit_review_comments` still accepts
+    the submitted file path so normal agent/subagent reviews can land
+    anchored comments instead of reporting findings in chat.
     Mutate via the registry-resolved runner per CLAUDE.md
     "WebSocket lifecycle" rules; the field must survive a WS
     reconnect during the review.

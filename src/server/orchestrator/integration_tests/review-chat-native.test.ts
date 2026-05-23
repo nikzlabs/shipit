@@ -140,14 +140,51 @@ describe("Integration: chat-native AI review", () => {
     client.close();
   });
 
-  it("rejects a submit when no review turn is in progress", async () => {
-    // No send_review_message → runner has no activeReviewFilePath (and may not
-    // even exist yet). Either way the tool is unauthorized.
+  it("accepts a submit when no explicit review turn is in progress", async () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/review-submit`,
-      payload: { filePath: planPath, comments: [] },
+      payload: {
+        filePath: planPath,
+        comments: [
+          { kind: "selection", quoted_text: "Do the thing", text: "Make the outcome testable." },
+        ],
+      },
     });
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(200);
+
+    const draft = (await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/file-reviews/draft?filePath=${encodeURIComponent(planPath)}`,
+    })).json() as FileReview;
+    expect(draft.comments).toHaveLength(1);
+    expect(draft.comments[0]!.source).toBe("ai");
+  });
+
+  it("normal agent turns can submit review comments and broadcast updates", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Review the plan.", sessionId });
+    await waitForClaude(() => lastClaude);
+
+    const submit = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/review-submit`,
+      payload: {
+        filePath: planPath,
+        comments: [
+          { kind: "selection", quoted_text: "A design", text: "Tie this to the data flow." },
+        ],
+      },
+    });
+    expect(submit.statusCode).toBe(200);
+
+    const updated = (await client.receiveType("review_updated")) as WsReviewUpdated;
+    expect(updated.filePath).toBe(planPath);
+    expect(updated.review.comments[0]!.source).toBe("ai");
+
+    lastClaude.finish();
+    client.close();
   });
 });
