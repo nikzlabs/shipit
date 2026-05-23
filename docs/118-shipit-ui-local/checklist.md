@@ -8,7 +8,7 @@
 > with unit coverage for `buildRunnerFactory` and the idle-limit no-op. The
 > repo entry point (`docker-compose.yml`, `Dockerfile.dogfood`, `shipit.yaml`
 > `compose:`, `.gitignore`, `WORKSPACE_SKIP_DIRS`) is in place, as is the
-> prebake/install-state-machine/preview-overlay hardening (see "landed"
+> install-state-machine/preview-overlay hardening (see "landed"
 > sections).
 >
 > **Inner-UI surfacing now landed.** `runtimeMode` is threaded into the
@@ -115,16 +115,16 @@ Items intentionally cut from v1 but small enough to add later if the dogfooding 
 - [ ] **Inner UI terminal.** Lift the `ws-handlers/terminal-handlers.ts` `instanceof ContainerSessionRunner` gate. Have `SessionRunner` spawn a `TerminalProcess` (from `src/server/session/terminal.ts`) directly. The `TerminalProcess` class is not container-coupled — it's just node-pty.
 - [ ] **Inner UI file-watcher live updates.** Same shape: lift the handler gate, have `SessionRunner` spawn a `FileWatcher` instance (from `src/server/session/file-watcher.ts`) directly.
 
-## Outer-agent install pre-bake (landed)
+## Outer-agent install cache (landed)
 
-Wires the dogfood install loop end-to-end: the outer agent container hardlink-seeds `/workspace/node_modules` from a baked image layer, so `agent.install` collapses from 60-180s to ~5-10s.
+Legacy dogfood install loop removed: the outer agent container previously hardlink-seeded `/workspace/node_modules` from a baked image layer, but that required a repo-specific wrapper that bypassed the feature-148 fast-install cache. `shipit.yaml` now stays on bare `npm install` so the generic worker-side `node_modules` cache can engage in production.
 
-- [x] `scripts/agent-install.sh` — opportunistic prebake-seed wrapper around `npm install`. Falls through to plain `npm install` when no prebake is present, so it's safe as the default `agent.install` everywhere.
-- [x] `shipit.yaml` — `agent.install: bash scripts/agent-install.sh`.
-- [x] `docker/Dockerfile.session-worker.dogfood` — new session-worker variant that bakes ShipIt's `node_modules` at `/opt/shipit-prebake/`. Documented build / `SESSION_WORKER_IMAGE` invocation in `plan.md`.
+- [x] Remove `scripts/agent-install.sh` so the wrapper path cannot be re-enabled accidentally.
+- [x] `shipit.yaml` — reverted to bare `agent.install: npm install` for the feature-148 fast-install cache.
+- [x] Remove `docker/Dockerfile.session-worker.dogfood`; the generic fast-install cache replaces the prebaked ShipIt-specific dependency tree.
 - [x] `.dockerignore` — exclude the new dogfood Dockerfile from build contexts (parity with the other session-worker variants).
 
-## Install state machine hardening (landed alongside the prebake)
+## Install state machine hardening (landed alongside install caching)
 
 The "Installing dependencies..." overlay would sometimes stick forever if the orchestrator's SSE dropped between `install_status: running` and the worker's `install_done`, or if `setupServiceManager` triggered a concurrent `runInstall`. Both paths now have explicit fixes:
 

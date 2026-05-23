@@ -15,10 +15,9 @@ Tracks the four-axis rollout from `plan.md`. Order follows the plan's
 - [x] Install via `npm ci --ignore-scripts` into `/opt/agent-cli` whose
       `node_modules/.bin` is added to `PATH` (keeps bare-name `claude` /
       `codex` / `playwright-mcp` resolution working — no spawn-site changes).
-- [x] Update all six Dockerfiles to use the lockfile-based install:
+- [x] Update all Dockerfiles to use the lockfile-based install:
   - [x] `docker/Dockerfile.session-worker.prod`
   - [x] `docker/Dockerfile.session-worker.dev`
-  - [x] `docker/Dockerfile.session-worker.dogfood`
   - [x] `docker/Dockerfile.prod` (orchestrator; now includes `@playwright/mcp`)
   - [x] `docker/Dockerfile.dev` (orchestrator; now includes `@playwright/mcp`)
   - [x] `docker/Dockerfile.dogfood` (orchestrator)

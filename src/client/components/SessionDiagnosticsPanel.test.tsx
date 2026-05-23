@@ -64,7 +64,7 @@ const samplePayload = {
     { type: "log_entry", source: "server", text: "Session container paused after 60s.", timestamp: "2026-05-07T12:00:00.000Z" },
   ],
   parsedConfig: {
-    agent: { memory: 3072, cpu: 2.0, pids: 2048, install: ["bash scripts/agent-install.sh"] },
+    agent: { memory: 3072, cpu: 2.0, pids: 2048, install: ["npm install"] },
     compose: { file: "docker-compose.yml", dockerSocket: false },
     warnings: [],
     effectiveAgent: { memory: 3072, cpu: 2.0, pids: 2048, dockerAccess: false },
@@ -151,7 +151,7 @@ describe("SessionDiagnosticsPanel", () => {
       expect(screen.getByText("Parsed shipit.yaml")).toBeTruthy();
     });
     expect(screen.getByText("3072 MiB")).toBeTruthy();
-    expect(screen.getByText("bash scripts/agent-install.sh")).toBeTruthy();
+    expect(screen.getByText("npm install")).toBeTruthy();
     expect(screen.getByText("docker-compose.yml")).toBeTruthy();
   });
 
