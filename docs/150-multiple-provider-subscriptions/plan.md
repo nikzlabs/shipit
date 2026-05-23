@@ -446,6 +446,8 @@ viewer-attached WS:
 - Agent-spawned child sessions call `sendSystemMessage` for the initial prompt
   and for follow-up messages from `shipit session send`.
 - GitHub CI auto-fix sends a system prompt through `sendSystemMessage`.
+- `handleAnswerQuestion` can resume a blocked question flow by directly calling
+  `agent.run(...)`.
 - Rebase/conflict recovery services can start agent turns outside the chat WS
   path.
 
@@ -462,10 +464,11 @@ that every turn entrypoint must call before `agent.run()` or
 - returning metadata used to decorate `agent_init`,
 - recording enough state to sync the token back after completion.
 
-`runAgentWithMessage`, `runSystemTurn`, child-session send/spawn paths,
-CI-fix paths, and any future server-initiated turns all use that helper. This
-keeps failover behavior identical whether the turn was started by chat, by the
-agent via `shipit session create`, or by a server automation.
+`runAgentWithMessage`, `handleAnswerQuestion`, `runSystemTurn`,
+child-session send/spawn paths, CI-fix paths, rebase/conflict recovery, and any
+future server-initiated turns all use that helper. This keeps failover behavior
+identical whether the turn was started by chat, by an answer to a blocked tool
+question, by the agent via `shipit session create`, or by a server automation.
 
 ### Quota and exhaustion detection
 
@@ -606,6 +609,9 @@ Existing sessions without `provider_account_id` are split by pin state:
   files by `{ provider, accountId }`.
 - `src/server/orchestrator/ws-handlers/agent-execution.ts` — select account,
   pin account, detect safe retry, and perform failover.
+- `src/server/orchestrator/ws-handlers/send-message.ts` — route
+  `handleAnswerQuestion` direct `agent.run(...)` resumes through the same
+  provider-account preflight and metadata decoration.
 - `src/server/orchestrator/session-runner.ts` and
   `src/server/orchestrator/container-session-runner.ts` — route
   `sendSystemMessage` / `runSystemTurn` through the same provider-account
@@ -620,6 +626,9 @@ Existing sessions without `provider_account_id` are split by pin state:
 - `src/server/orchestrator/services/github-ci-fix.ts` and other services that
   call `sendSystemMessage` — rely on the shared system-turn preflight rather
   than assuming WS setup has already provisioned credentials.
+- `src/server/orchestrator/services/rebase-driver.ts` — route rebase/conflict
+  recovery direct `agent.run(...)` calls through provider-account preflight,
+  sync, and metadata decoration.
 - `src/server/orchestrator/app-lifecycle.ts` — account-qualify auth-complete
   handling and token re-push so re-auth for account X updates only sessions
   pinned to account X.
@@ -709,6 +718,9 @@ Existing sessions without `provider_account_id` are split by pin state:
 - Integration: child follow-up messages and GitHub CI auto-fix system turns use
   the shared provider-account preflight instead of bypassing credential
   selection/sync.
+- Integration: answer-question resumes and rebase/conflict recovery direct
+  `agent.run(...)` paths use the shared provider-account preflight, token sync,
+  and `agent_init` account metadata decoration.
 - Integration: auth-complete for account X re-pushes the refreshed token only to
   sessions pinned to account X.
 - Integration: `agent_init` events emitted through WS and system-turn paths carry
