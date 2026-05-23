@@ -229,7 +229,7 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
     await waitFor(() => !!repoStore.get(repoUrl)?.warmSessionId, 10000, "warm #1");
     const firstWarmId = repoStore.get(repoUrl)!.warmSessionId!;
 
-    // Claim → re-warm with { withStandby: true } → standby container.
+    // Claim → re-warm → standby container.
     const res = await app.inject({
       method: "POST",
       url: `/api/repos/${encodeURIComponent(repoUrl)}/claim-session`,
@@ -267,22 +267,13 @@ describe("Integration: warm-pool / claim staleness (W2 + W3)", () => {
 
     await waitFor(() => !!repoStore.get(repoUrl)?.warmSessionId, 10000, "warm #1");
     const warmId = repoStore.get(repoUrl)!.warmSessionId!;
-    const warmSession = sessionManager.get(warmId)!;
-    expect(warmSession.workspaceDir).toBeDefined();
+    expect(sessionManager.get(warmId)!.workspaceDir).toBeDefined();
 
-    // Manually stand up a container for the warm session at the *current*
-    // (default, 1.5 GiB) limits — this is the standby that booted off c1.
-    await containerManager.createStandby(
-      containerManager.buildConfig({
-        sessionId: warmId,
-        sessionDir: path.dirname(warmSession.workspaceDir!),
-        workspaceDir: warmSession.workspaceDir!,
-        credentialsDir: tmpDir,
-        memoryLimit: 1536 * 1024 * 1024,
-        cpuQuota: 50_000,
-        pidsLimit: 256,
-      }),
-    );
+    // Startup warming now boots the standby itself (docs/148). c1 has no
+    // shipit.yaml → defaults to 1.5 GiB, which is exactly the stale-limits
+    // baseline this test wants. Wait for it to land instead of building a
+    // duplicate by hand (which would now collide with the startup standby).
+    await waitFor(() => containerManager.isStandby(warmId), 10000, "startup standby");
     expect(containerManager.get(warmId)?.bootedLimits?.memoryLimit).toBe(1536 * 1024 * 1024);
 
     // The remote advances: c2 declares 3 GiB. The standby is now stale.
