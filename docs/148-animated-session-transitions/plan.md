@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: medium
 description: Animate session rows as they reorder or disappear in the sidebar — archive and PR-merge transitions glide instead of popping.
 ---
