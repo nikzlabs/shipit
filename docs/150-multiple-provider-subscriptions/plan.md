@@ -39,6 +39,13 @@ This doc uses "provider account" to mean one authenticated subscription identity
 for one agent provider. For Claude, that is one Anthropic/Claude Code account.
 For Codex, that is one ChatGPT/Codex account.
 
+API-key fallback auth is represented separately from subscription accounts but
+still needs a route id for session pinning/audit. For Codex, `codex-api-key`
+means "run with `OPENAI_API_KEY` / Platform API billing." It is eligible only
+when no subscription account is selected or when the user explicitly chooses API
+billing; it never appears in subscription quota ranking or failover-to-another-
+subscription decisions.
+
 ## Goals
 
 - Support **multiple authenticated accounts per provider** (`claude`, `codex`)
@@ -213,7 +220,9 @@ creating a second copy of the same prompt.
 Sessions need two persisted fields:
 
 - `agent_id` — existing provider/agent (`claude`, `codex`).
-- `provider_account_id` — new selected account for that provider.
+- `provider_account_id` — new selected account for that provider. For
+  non-subscription fallback auth, this is a reserved route id such as
+  `codex-api-key`, not a subscription account row.
 
 `agent_pinned` remains the first-turn boundary. On first turn, ShipIt pins both
 the agent and the provider account. The agent itself does not change.
@@ -294,8 +303,21 @@ accounts:
 - `claude-default` if a root Claude credential exists.
 - `codex-default` if a root Codex credential exists.
 
+Migration must preserve a single writable OAuth token source per account. Do not
+leave independent writable copies in both the legacy root path and
+`provider-accounts/...`; that would recreate the rotating-refresh-token split
+from doc 142. Compatibility is provided by helper resolution or symlinks:
+
+- Preferred: all code resolves credentials through `ProviderAccountManager`, and
+  legacy root paths are read only during migration.
+- Acceptable transitional path: root `.claude` / `.codex` symlinks point at the
+  selected default account source, so CLI refreshes still update one file.
+- Not allowed: copying token files into root and account paths where both can be
+  refreshed independently.
+
 For backward compatibility, singleton helper methods continue to resolve the
-primary account until all call sites are migrated.
+primary account until all call sites are migrated; they must resolve to the same
+writable file, not a copy.
 
 `capabilities` persists the account-specific snapshot described in session
 startup. Migration initializes it from provider-wide `AgentRegistry`
@@ -475,6 +497,13 @@ flows:
   selected provider account, or
 - a stable provider config-dir override if one exists.
 
+This requires explicit plumbing: add non-secret credential-root metadata to the
+server-side run path (for example `AgentRunParams.providerCredentialHome` or a
+local-only adapter option), update the local `agentFactory` to pass it, and teach
+Claude/Codex adapters to spawn with that account-scoped environment. Claude's
+current spawn path hardcodes `HOME: "/root"`, so it must be changed to accept the
+selected HOME/config root for local direct runs.
+
 Do not implement multi-account routing by rebinding the global `/root/.claude`
 or `/root/.codex` for local turns; concurrent local sessions would race. If a
 provider CLI cannot be safely pointed at an account-specific config root in
@@ -563,6 +592,9 @@ provider auth fallback:
 - It may make `codex` runnable when no ChatGPT subscription account exists.
 - It does not render a subscription-limits pill.
 - It is never selected for "switch to another subscription" failover.
+- Sessions that use it persist `provider_account_id = "codex-api-key"` so
+  history and diagnostics show that the turn used Platform API billing rather
+  than a ChatGPT subscription.
 - If both a Codex subscription account and `OPENAI_API_KEY` exist, subscription
   credentials remain preferred so Platform API billing is not used silently.
 
@@ -627,7 +659,9 @@ This intentionally favors correctness over seamless failover.
 ## Migration
 
 1. On startup, if root `.claude` exists and no Claude provider account exists,
-   create `claude-default` and move/copy credentials into the new account path.
+   create `claude-default` by moving the writable credential source into the new
+   account path, then leave only helper resolution or a symlink at the legacy
+   root path.
 2. Same for root `.codex`.
 3. Keep root singleton paths as compatibility aliases for one release:
    singleton call sites resolve the primary account.
@@ -668,6 +702,9 @@ Existing sessions without `provider_account_id` are split by pin state:
 - `src/server/orchestrator/ws-handlers/send-message.ts` — route
   `handleAnswerQuestion` direct `agent.run(...)` resumes through the same
   provider-account preflight and metadata decoration.
+- `src/server/shared/types/agent-types.ts` — add non-secret provider-account
+  metadata for event decoration and, for local/direct runs, account-scoped
+  credential HOME/config-root metadata consumed by adapters.
 - `src/server/orchestrator/session-runner.ts` and
   `src/server/orchestrator/container-session-runner.ts` — route
   `sendSystemMessage` / `runSystemTurn` through the same provider-account
@@ -688,10 +725,12 @@ Existing sessions without `provider_account_id` are split by pin state:
 - `src/server/orchestrator/app-lifecycle.ts` — account-qualify auth-complete
   handling and token re-push so re-auth for account X updates only sessions
   pinned to account X.
+- `src/server/session/claude.ts`, `src/server/session/agents/claude-adapter.ts`,
+  and `src/server/session/agents/codex-adapter.ts` — allow local/direct agent
+  spawns to use an account-scoped HOME/config root instead of hardcoded
+  singleton paths.
 - `src/server/orchestrator/limits/*` and `limits-poller.ts` — move from
   agent-keyed snapshots to provider-account snapshots.
-- `src/server/shared/types/agent-types.ts` — add optional provider-account
-  fields to init/result events if needed.
 - `src/server/shared/types/usage-limits-types.ts` — account-keyed limits map.
 - `src/server/shared/types/domain-types.ts` / `sessions.ts` — persist
   `provider_account_id`.
