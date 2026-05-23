@@ -304,6 +304,18 @@ running agent:
    agent. That's mildly misleading attribution but is consistent with how
    auto-commit works today; no change proposed here. Worth knowing in
    code review.
+
+   **Related: auto-push picks up install commits.** Post-turn auto-push
+   (`scheduleAutoPush`, debounced 5s) is shared infrastructure — it
+   pushes whatever HEAD is at fire time. If the user clicks Install
+   shortly after an agent turn, the still-pending push from that turn
+   fires and pushes BOTH the agent's post-turn commit AND the install
+   commit. This is the desired behavior (matches §1: PR card shows
+   everything inline), but worth saying out loud: an install action
+   triggers an implicit push as a side effect of an unrelated prior turn's
+   debounce timer. Don't introduce a separate "don't push install
+   commits" carve-out; it would just create surprise gaps in the PR
+   card.
 3. **Multi-viewer / double-click races on a single session.** Two browser
    tabs attached to the *same* session can both see the Install button
    enabled (the runner broadcasts state to every attached viewer per
@@ -405,6 +417,20 @@ interface PluginInfo {
   estimatedContextBytes: number;
 }
 ```
+
+**v1 semantics for the two surface-less fields:**
+
+- `MarketplaceInfo.autoUpdate` — v1 has no UI to toggle this (Marketplaces
+  tab is v2). The two seeded officials default to `true` (matches Claude
+  CLI's default for `claude-plugins-official`). v1 doesn't act on the
+  flag yet (no auto-update cadence either — see Open questions), but the
+  field is in the schema from day one so v2 doesn't need its own migration.
+- `PluginInfo.pinnedSha` — v1 honors the catalog's per-plugin pinned SHA
+  when present (matches the upstream marketplace contract of pinning each
+  plugin to a commit). If a catalog entry has no `pinnedSha`, v1 installs
+  from HEAD of the catalog clone. This gives v3's version-bump diff a
+  clean comparison point (old `pinnedSha` → new `pinnedSha`) without v1
+  needing its own pinning UI.
 
 New backend service `src/server/orchestrator/services/marketplace.ts`:
 
@@ -512,10 +538,14 @@ would not list plugin skills and invocation would break. So:
 - **Codex** → **v1 writes only to `.codex/skills/<plugin>__<skill>/SKILL.md`**
   — single path, no tiebreaker. This sidesteps a real contradiction the
   earlier draft had: scanning both `.codex/skills/` and `.agents/skills/`
-  would require widening `services/skills.ts:27-33` (`listSkills()`) and
-  the session-worker endpoint at `session-worker.ts:462`, neither of which
-  currently scans `.agents/skills/`. Reads stay single-path in v1 to match
-  writes; defer the `.agents/skills/` write target AND the scanner
+  would require widening `services/skills.ts:27-33` (`listSkills()`),
+  which currently scans only `.codex/skills/`. (Note: the
+  `GET /codex/skills` worker endpoint at `session-worker.ts:462` is a
+  different scope — it scans the container's `~/.codex/skills/` for
+  bundled `$CODEX_HOME` built-ins, which the Install scope section
+  explicitly puts out of scope. That endpoint is unrelated to project-skill
+  reads.) Reads stay single-path in v1 to match writes; defer the
+  `.agents/skills/` write target AND the orchestrator-side scanner
   widening to a follow-up doc once the v0 spike confirms which directory
   is canonical for the pinned Codex CLI version. If the spike finds that
   current Codex prefers `.agents/skills/`, the follow-up doc adds the
@@ -568,6 +598,25 @@ Four policies that fall out:
 - **Uninstall refuses if the marker is absent or modified.** Deleting a
   user-authored directory by accident is unrecoverable; the marker is the
   consent record.
+
+**Intentional bidirectional invisibility with upstream `/plugin`.** Because
+ShipIt bypasses `.claude-plugin/marketplace.json` and `/plugin` machinery
+entirely (per v0 spike #1) and writes flat directories with our own
+sentinel:
+
+- Skills ShipIt installs do **not** appear in the upstream `/plugin`
+  Installed tab if the user runs `claude` in the ShipIt terminal — from
+  the CLI's perspective they're orphan directories with no plugin
+  registration.
+- Skills the user installs via the upstream `/plugin install …` (with
+  the user-volume + CLI-managed scope, which ShipIt doesn't surface
+  anyway because it's user-scope) do **not** appear in ShipIt's
+  Installed tab because they lack the `.shipit-installed.json` marker.
+
+This is consistent with §1 (stay in ShipIt — the upstream TUI isn't the
+primary surface) and with v1's repo-scope-only stance, but it's worth
+flagging as an intentional limitation a reviewer would otherwise expect
+us to bridge.
 
 ### Settings-file ownership
 
@@ -779,6 +828,16 @@ day one, assuming v0 didn't surface anything that requires the v1a/v1b split.
    `marketplaces` table — same pattern janitor already uses for orphan
    `repo-cache/` and `dep-cache/` entries.
 
+   **What v1 does if the pre-clone fails** (since v2's Errors tab doesn't
+   exist yet): the catalog row's `status` goes to `fetch-failed` and
+   `last_fetched_at` stays null. Discover renders a per-marketplace
+   empty-state with a manual **Retry** button (matches how other
+   load-failed surfaces in ShipIt render — e.g. the repo-clone error
+   states). On session activation the orchestrator also retries any
+   catalog in `fetch-failed` status automatically, so transient outages
+   self-heal without user action. This is the v1 substitute for the v2
+   Errors sub-tab.
+
 Acceptance: a user on Claude *or* Codex can open Settings → Skills, browse the
 agent's official catalog, see a skill's `SKILL.md` rendered inline in Monaco,
 click Install, see the file land in `.claude/skills/<plugin>__<skill>/` or
@@ -838,7 +897,7 @@ cover:
 | `src/server/orchestrator/services/recovery.ts` | Install service calls `killAgent` directly when a persistent agent is running (Streaming Claude / Codex). No `restartAgent`. One-shot `claude -p` needs no kill — next turn respawns. |
 | `src/server/shared/git.ts` | Add a public `commitPaths(paths, message)` method to `GitManager`. Wraps `simpleGit.add([paths])` + `simpleGit.commit(message)` for the install flow's path-scoped commit. Keeps the "orchestrator talks to git only through GitManager" boundary intact; reusable by v3 (MCP/hooks writes). |
 | `src/server/orchestrator/ws-handlers/post-turn.ts` | `postTurnCommit()` takes the per-workspace mutex from `services/marketplace.ts` before running `git.autoCommit()`, serializing it against install operations on the same workspace. Mutex is exported from the marketplace service (or moved to a shared lock module if that's cleaner). |
-| `src/client/components/Settings.tsx` | Add `skills` tab; widen the local `type Tab = …` union at line 20 to include `"skills"`; make the `DialogContent` `className` conditional on active tab (Skills → `max-w-5xl` + `md:h-[80vh]`, others stay at current `max-w-2xl` + `md:h-120`). |
+| `src/client/components/Settings.tsx` | Three edits in this file, all required together: (1) widen the local `type Tab = …` union at line 20 to include `"skills"`; (2) insert `"skills"` into the `generalTabs` const array at line 312 (just before `"mcp"` per the sidebar-grouping decision); (3) extend the `tabLabel` switch at lines 313-323 with a `"skills"` case — the switch is exhaustive on `Tab`, so TypeScript will flag the missing case. Plus the `DialogContent` `className` conditional on active tab (Skills → `max-w-5xl` + `md:h-[80vh]`, others stay at current `max-w-2xl` + `md:h-120`). |
 | `src/client/stores/ui-store.ts` | Widen the `SettingsTab` discriminated union at line 30 to include `"skills"`. There are **three type sites** that share the union: `Settings.tsx:20` (local `Tab` union), `ui-store.ts:30` (the exported `SettingsTab`), and the `settingsTab` Zustand state at `ui-store.ts:75`. All three must be widened together or TypeScript narrowing breaks. `settingsTab` is **not** persisted across reloads (no `local-storage.ts` helper; `setSettingsTab` is a plain `set({ settingsTab })`); if we later decide to remember the last-open tab, add the standard `saveSettingsTab`/`getSavedSettingsTab` pair in `local-storage.ts` — but that's not part of this doc's scope. |
 | `src/client/components/SkillsTab.tsx` | New — Discover/Installed (v1) → Marketplaces/Errors (v2) sub-tabs; lives inside Settings |
 | `src/client/components/MessageInput.tsx` *(doc 138 amendment)* | Widen the slash-trigger regex at line 265 from `/^\/([a-zA-Z0-9._-]*)$/` to allow `:` so `/<plugin>:<skill>` keeps the autocomplete open through the namespace separator. The `agent-execution.ts:115` regex is NOT end-anchored, so it already handles `:` — no change needed there. |
@@ -851,10 +910,16 @@ cover:
 
 - **Reimplement, don't wrap.** Agent-agnostic principle wins over inheriting CLI
   updates for free.
-- **v1 covers both backends.** Claude and Codex ship together — being
-  agent-agnostic at the surface means no user is left waiting for parity.
-  Forces the `.codex/skills/` vs `.agents/skills/` resolution up front, which
-  is the right time to do it anyway.
+- **v1 targets both backends, with a v1a/v1b escape hatch.** The *goal*
+  is Claude and Codex shipping together — being agent-agnostic at the
+  surface means no user is left waiting for parity, and the spike work
+  this forces (`.codex/skills/` vs `.agents/skills/` path; Codex
+  marketplace manifest format) is the right time to do it anyway. If the
+  v0 spikes surface more friction than expected (e.g. Codex's catalog
+  manifest isn't stable or `app-server` doesn't re-inject the catalog),
+  v1 ships Claude-only and Codex follows as v1b on the same release
+  train — not as a multi-release wait. The Build order's escape hatch
+  is the contract; this Decision is its goal, not its guarantee.
 - **v1 is skills-only.** MCP/hooks/LSP/apps deferred to v3. They need
   scope-write logic into `settings.json`/`config.toml` that's not in v1's
   critical path.
