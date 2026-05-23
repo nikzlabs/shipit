@@ -1,6 +1,13 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
+// Some ShipIt session images run with NODE_ENV=production. React's production
+// bundle does not export `act`, which breaks React Testing Library even though
+// the same tests pass in CI with NODE_ENV=test.
+if (process.env.NODE_ENV === "production") {
+  process.env.NODE_ENV = "test";
+}
+
 // Node 25 exposes localStorage/sessionStorage on globalThis, which
 // prevents Vitest from copying jsdom's implementations into scope.
 // --no-webstorage disables the built-in Web Storage API so jsdom wins.
