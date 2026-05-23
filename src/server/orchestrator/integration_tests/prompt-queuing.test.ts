@@ -333,4 +333,32 @@ describe("Integration: prompt queuing", () => {
 
     client.close();
   });
+
+  // Regression: when `agent_done` is lost (e.g. an SSE drop at exactly the
+  // wrong moment, between the worker emitting `agent_result` and `agent_done`)
+  // the queue used to be stranded forever — the chip would show "1 message
+  // queued" and the agent never picked it up. `agent_result` is the canonical
+  // turn-ended signal; the drain must hang off it, not off the process-exit
+  // `done` event.
+  it("drains the queue on agent_result even when no agent_done arrives (SSE-drop resilience)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "First" });
+    const firstClaude = await waitForClaude(() => lastClaude);
+    firstClaude.emit("event", { type: "agent_init", sessionId: "s-result-only", model: "claude-sonnet-4-6", tools: [] });
+
+    client.send({ type: "send_message", text: "Second" });
+    const queued = await drainUntil(client, (m) => m.type === "message_queued");
+    expect(queued?.type).toBe("message_queued");
+
+    // Emit ONLY agent_result, not done — simulates a missed agent_done SSE.
+    firstClaude.emit("event", { type: "agent_result", status: "success", sessionId: "s-result-only", durationMs: 100 });
+
+    // The queue must still be drained — a second Claude must start for "Second".
+    const secondClaude = await waitForClaude(() => lastClaude, firstClaude);
+    expect(secondClaude.lastPrompt).toBe("Second");
+
+    client.close();
+  });
 });

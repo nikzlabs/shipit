@@ -376,6 +376,22 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     }
   };
 
+  // Guard the post-turn drain so whichever signal arrives first — `agent_result`
+  // (the canonical turn-ended event) or `agent_done` (process exit) — advances
+  // the queue, and the other becomes a no-op. Previously the drain only hung
+  // off `done`, so a missed `agent_done` (SSE drop between agent_result and
+  // process-exit, worker clearing its agent ref via a race, etc.) stranded the
+  // queue at "1 message queued" forever. Non-streaming only — the streaming
+  // post-turn block below has its own `streamingPostTurnFired` guard and
+  // performs commit/PR work alongside the drain, so it stays self-contained.
+  let postTurnDrainFired = false;
+  const tryPostTurnDrain = async (): Promise<void> => {
+    if (postTurnDrainFired) return;
+    postTurnDrainFired = true;
+    stopRunner(runner);
+    await drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone);
+  };
+
   wireAgentListeners(ctx, currentAgent, {
     isNewSession,
     persistUserMessage,
@@ -386,10 +402,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     useStreaming,
   });
 
-  // Track whether we got a result event
-  currentAgent.on("event", (event: AgentEvent) => {
-    if (event.type === "agent_result") {
-      receivedResult = true;
+  // Track whether we got a result event, and (for non-streaming) drain the
+  // queue immediately — don't wait for `agent_done`, which can be lost.
+  currentAgent.on("event", async (event: AgentEvent) => {
+    if (event.type !== "agent_result") return;
+    receivedResult = true;
+    if (!useStreaming) {
+      await tryPostTurnDrain();
     }
   });
 
@@ -528,7 +547,12 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   currentAgent.on("done", async (code: number | null) => {
     console.log("[agent] process exited with code", code);
     ctx.broadcastLog("server", `Agent process exited with code ${code}`);
-    if (runner) runner.setAgent(null);
+    // Only clear the runner's agent ref if it still points to us. The
+    // agent_result-triggered drain above may have already started a new turn
+    // and called `runner.setAgent(NEW)`; clobbering it back to null here
+    // would strand the new agent and the next event from it would log
+    // `[sse-drop] ... dropped (no _agent)`.
+    if (runner?.getAgent() === currentAgent) runner.setAgent(null);
 
     // Capture any OAuth token the CLI refreshed during this turn (non-streaming
     // path; the streaming path does this in the agent_result handler above).
@@ -565,9 +589,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
 
     // Process the message queue FIRST so the client clears queued visual state
     // immediately, before the (potentially slow) post-turn git commit work.
-    // Use runner directly (not ctx) so this works even after WS disconnect.
-    stopRunner(runner);
-    await drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone);
+    // Idempotent — `agent_result` above may already have triggered the drain,
+    // in which case this is a no-op (and `runner.running` may have been re-set
+    // to true by the new turn, which `tryPostTurnDrain` deliberately leaves
+    // alone via its early-return).
+    await tryPostTurnDrain();
 
     // Auto-commit after agent turn using the session dir captured at turn start.
     // Do NOT use ctx.getActiveGitManager() — the user may have switched sessions.
