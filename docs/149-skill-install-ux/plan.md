@@ -109,10 +109,24 @@ not a blocker.
 
 ## Design
 
-### Surface: a Skills sidebar tab
+### Surface: a Skills tab inside the existing Settings dialog
 
-Add **Skills** as a top-level sidebar tab next to the existing surfaces. The
-panel renders four sub-tabs that mirror the CLI floor:
+Add **Skills** as a new tab in the existing Settings dialog
+(`src/client/components/Settings.tsx`), alongside the current Agent / GitHub /
+Git / Instructions / MCP / Advanced tabs. Skill management is configuration,
+not turn-by-turn workflow, so it belongs with the other agent-config affordances.
+
+**The Settings dialog must grow.** Today it's `max-w-2xl` (672 px) with
+`md:h-120` (480 px) — enough for narrow forms, far too tight for the
+marketplace browse UX (list + detail pane + Monaco preview). The Skills tab
+needs roughly **two-pane proportions**: a left list of plugins ~320 px wide
+plus a right detail/preview pane ~640 px wide, plus tab navigation. Plan to
+expand the dialog to `max-w-5xl` (1024 px) minimum, ideally `max-w-6xl`
+(1152 px), and `md:h-[80vh]` so the marketplace has room to breathe. The
+other tabs (which have less content) get the extra space for free and don't
+suffer from it. Make this change once, not per-tab.
+
+Inside the Skills tab, four sub-tabs mirror the CLI floor:
 
 1. **Discover** — browse the active agent's catalogs. Search bar at top.
    Cards show name, description, source marketplace, **context-cost estimate**,
@@ -129,11 +143,11 @@ panel renders four sub-tabs that mirror the CLI floor:
    `rust-analyzer-lsp` plugin works"*) — keeps us §5-compliant: the *agent*
    runs the fix, not a hidden shell button.
 
-This is a chat-shaped surface (per §5): skills *are* chat tools, so a sidebar
+This is a chat-shaped surface (per §5): skills *are* chat tools, so a tab
 that manages them is "configure my chat" — not a category mistake like a
-"click to run npm test" button. The trigger that opens it can also be `/`-led
-in the composer (a "Browse skills…" affordance at the bottom of the existing
-`/`-autocomplete menu added in doc 138).
+"click to run npm test" button. A secondary entry point lives at the bottom
+of the existing `/`-autocomplete menu added in doc 138 ("Browse skills…"
+opens Settings → Skills directly).
 
 ### Install flow
 
@@ -328,53 +342,71 @@ already can.
 
 Smallest valuable v1 first, layered to ship independently.
 
-### v1 — Project-scope skills from the official catalog (Claude only)
+### v1 — Project-scope skills, both backends, official catalogs only
 
-The thinnest slice that's clearly better than the TUI and avoids the user-scope
-volume yak-shave.
+Skills-only contents (no MCP/hooks/LSP/apps yet), project-scope only (no
+user-scope volume yak-shave), but Claude *and* Codex from day one.
 
-1. **Backend** — `services/marketplace.ts` with `listPlugins` and
-   `installPlugin(scope: "project")`. Hard-code the official
-   `anthropics/claude-plugins-official` catalog source for v1. Skill-only
-   contents — MCP/hooks/LSP deferred.
-2. **Route** — `GET /api/marketplaces/claude-plugins-official/plugins` and
-   `POST /api/sessions/:id/plugins/install`.
-3. **Client** — Skills sidebar tab with Discover + Installed sub-tabs. Search,
-   detail view, install sheet, Monaco preview of `SKILL.md`. No Errors/
-   Marketplaces tabs yet (the catalog is hard-coded).
-4. **Reload** — emit the existing `restartAgent`-equivalent after install.
+1. **Resolve the Codex skills path first.** Empirically verify whether
+   current Codex CLI (the version pinned in `docker/agent-cli/package-lock.json`)
+   prefers `.codex/skills/` or `.agents/skills/`. This is a v1 blocker, not a
+   later question — both backends shipping together means we can't punt it.
+   The agentskills.io open standard nominates `.agents/skills/` but doc 138
+   verified `.codex/skills/` against codex-cli 0.132.0; pick one (and scan
+   both for reads to stay tolerant).
+2. **Backend** — `services/marketplace.ts` with `listPlugins(agentId)` and
+   `installPlugin(scope: "project", agentId)`. Two hard-coded catalogs in v1:
+   `anthropics/claude-plugins-official` (Claude) and OpenAI's official Codex
+   catalog (per <https://developers.openai.com/codex/plugins>). Fetch +
+   parse shared; *writer* branches on `agentId` (paths in the Divergences
+   table). Catalog manifest schema is publicly specced for Claude
+   (`.claude-plugin/marketplace.json`); for Codex the schema needs to be read
+   directly from the official catalog repo — fold this into the same v1 spike
+   as the path resolution.
+3. **Route** — `GET /api/marketplaces?agent=claude|codex` returns the catalog
+   listing for the active agent; `POST /api/sessions/:id/plugins/install`
+   does the workspace write. Catalog IDs aren't user-configurable yet so the
+   marketplaces collection is effectively read-only.
+4. **Client** — Skills tab added to the existing Settings dialog
+   (`Settings.tsx`). Dialog widens to `max-w-5xl`+ and `md:h-[80vh]` —
+   one-time change, benefits other tabs too. Sub-tabs: Discover + Installed
+   only. Search, detail view, install sheet, Monaco preview of `SKILL.md`.
+   Marketplaces and Errors sub-tabs deferred to v2 since v1's catalogs are
+   hard-coded and skills-only installs have a small error surface.
+5. **Per-agent rendering** — the active agent (from session config) decides
+   which catalog and which token convention (`/name` vs `$name`) the UI
+   shows. No agent-picker in the Skills tab itself; it follows the session.
+6. **Reload** — emit the existing `restartAgent`-equivalent after install
+   (Claude calls `/reload-plugins` internally; Codex restarts the worker
+   process so the next turn re-injects `<skills_instructions>`).
 
-Acceptance: a user can browse the official Anthropic catalog inside ShipIt,
-preview a skill's `SKILL.md`, install it to `.claude/skills/`, see the
-auto-commit land, and invoke `/<plugin>:<skill>` in the next turn — all
-without leaving ShipIt and without typing a shell command.
+Acceptance: a user on Claude *or* Codex can open Settings → Skills, browse the
+agent's official catalog, preview a skill's `SKILL.md` in Monaco, click
+Install, see the file land in `.claude/skills/` or `.codex/skills/` with
+auto-commit, and invoke `/<plugin>:<skill>` or `$<plugin>:<skill>` in the
+next turn — all inside ShipIt.
 
-### v2 — Codex parity
+### v2 — Custom marketplaces + Errors tab
 
-Repeat v1 for Codex. The hard-coded catalog points at OpenAI's official Codex
-plugin catalog (per <https://developers.openai.com/codex/plugins>). Writer
-branches on `agentId`. Re-verifies the `.codex/skills/` vs `.agents/skills/`
-question and locks in the canonical path.
+The Marketplaces sub-tab — paste a GitHub `owner/repo`, Git URL, or local
+path; refresh/remove/toggle auto-update. Persisted app-wide (see Decisions).
+Adds the Errors sub-tab as catalog/network/install failures become possible.
 
-### v3 — Custom marketplaces
-
-Marketplaces sub-tab — add/remove/list/refresh/toggle auto-update for
-third-party catalogs. Persisted in `~/.shipit/marketplaces.json` (or
-equivalent app-wide store). Powers team-internal catalogs.
-
-### v4 — Full plugin composition
+### v3 — Full plugin composition
 
 Extend `installPlugin()` to write MCP server entries and hooks, not just
 skills. Needs the corresponding scope writes in `.claude/settings.json` /
-`.codex/config.toml`. Updates the "Will install" preview accordingly.
+`.codex/config.toml`. Updates the "Will install" preview accordingly. This is
+where the install sheet starts showing rich diffs of multi-file impact.
 
-### v5 — User-scope volume
+### v4 — User-scope volume
 
 Per-user persistent volume mounted at `/root/.claude/` and `/root/.codex/`.
 Unlocks user-scope installs, persistent agent auth, and Codex built-in skill
-scans. Likely its own design doc once v1–v4 land.
+scans. Likely its own design doc once v1–v3 land — it touches container
+lifecycle in ways that go well beyond skills.
 
-### v6 — Ceiling lifts beyond the CLI
+### v5 — Ceiling lifts beyond the CLI
 
 - Diff view on marketplace update (show `SKILL.md` diff between old/new
   pinned SHA before applying).
@@ -404,44 +436,64 @@ cover:
 | `src/server/shared/types/domain-types.ts` | Add `MarketplaceSource`, `MarketplaceInfo`, `PluginInfo`, `SkillRef`, `InstallResult` |
 | `src/server/orchestrator/api-routes-files.ts` | Mount the new routes (or split into `api-routes-marketplace.ts` if the surface grows) |
 | `src/server/orchestrator/ws-handlers/...` | Reload-after-install message + agent restart trigger |
-| `src/client/components/SkillsPanel.tsx` | New sidebar — Discover/Installed/Marketplaces/Errors tabs |
-| `src/client/components/SkillInstallSheet.tsx` | New — install sheet with Monaco preview |
+| `src/client/components/Settings.tsx` | Add new `skills` tab to the `Tab` union and the `Tabs` block; widen the `DialogContent` from `max-w-2xl`/`md:h-120` to `max-w-5xl`/`md:h-[80vh]` |
+| `src/client/components/SkillsTab.tsx` | New — Discover/Installed (v1) → Marketplaces/Errors (v2) sub-tabs; lives inside Settings |
+| `src/client/components/SkillInstallSheet.tsx` | New — install sheet with Monaco `SKILL.md` preview |
 | `src/client/stores/skills-store.ts` | New Zustand store for marketplace/plugin state |
 | `src/client/hooks/useMarketplace.ts` | New API hooks |
+| `src/client/components/MessageInput.tsx` / `SkillAutoComplete.tsx` | Add "Browse skills…" entry at the bottom of the `/`-autocomplete that opens Settings → Skills |
 | `src/server/shipit-docs/skills.md` | New agent-facing doc describing how installed skills behave under ShipIt |
 
 ## Decisions
 
 - **Reimplement, don't wrap.** Agent-agnostic principle wins over inheriting CLI
   updates for free.
-- **v1 is project-scope only.** User-scope needs a persistent volume; defer.
+- **v1 covers both backends.** Claude and Codex ship together — being
+  agent-agnostic at the surface means no user is left waiting for parity.
+  Forces the `.codex/skills/` vs `.agents/skills/` resolution up front, which
+  is the right time to do it anyway.
+- **v1 is skills-only.** MCP/hooks/LSP/apps deferred to v3. They need
+  scope-write logic into `settings.json`/`config.toml` that's not in v1's
+  critical path.
+- **v1 is project-scope only.** User-scope needs a persistent volume; defer
+  to v4.
+- **No ShipIt-curated catalog.** We render Anthropic's official, OpenAI's
+  official, and any third-party catalog the user adds. We compete on the
+  install-experience UX, not on the contents — and skipping the curation
+  burden keeps the surface honest. Future re-evaluation: if upstream
+  catalogs don't cover ShipIt-flavored conventions well (compose previews,
+  `shipit.yaml`, PR lifecycle), revisit whether a small bundled set makes
+  sense.
+- **Surface lives in the Settings dialog.** Skill management is configuration,
+  not workflow — it belongs with the other agent-config tabs. The dialog must
+  grow to `max-w-5xl` + `md:h-[80vh]` to fit the marketplace browser; this
+  is a one-time change that benefits the other tabs as a side effect.
 - **Marketplaces are app-wide, not session-scoped.** Same catalog visible across
   every session — matches how users think about extensions.
 - **Project-scope installs auto-commit.** Trust is mediated by the existing PR
   review path, not by a separate "are you sure" gate.
 - **Monaco preview is in the v1 install sheet.** This is the headline GUI
   affordance over the TUI; shipping it later is a missed signal.
-- **Skills-only contents in v1.** MCP/hooks/LSP/apps deferred to v4. They need
-  scope-write logic into `settings.json`/`config.toml` that's not in v1's
-  critical path.
 
 ## Open questions
 
-1. **Codex project skill path.** `.codex/skills/` (doc 138 empirical) vs
-   `.agents/skills/` (current OpenAI docs). Resolve empirically against the
-   Codex CLI version pinned in `docker/agent-cli/package-lock.json` before
-   v2 lands.
-2. **Codex marketplace manifest format.** Public docs describe
+1. **Codex project skill path — v1 blocker.** `.codex/skills/` (doc 138
+   empirical) vs `.agents/skills/` (current OpenAI docs). Now that v1 covers
+   both backends, this resolves before v1 lands, not later. Empirical
+   verification against the Codex CLI version pinned in
+   `docker/agent-cli/package-lock.json` is the first thing to do once
+   implementation starts.
+2. **Codex marketplace manifest format — v1 blocker.** Public docs describe
    `.codex-plugin/plugin.json` for individual plugins, but the catalog
-   manifest's filename and schema aren't fully specced publicly. May need to
-   read OpenAI's official catalog repo directly.
+   manifest's filename and schema aren't fully specced publicly. Read
+   OpenAI's official catalog repo directly during the same spike as Q1.
 3. **Reload semantics for Codex.** Does running Codex re-scan the skill
-   catalog mid-session, or only on next `codex exec`? If the latter, v2 just
+   catalog mid-session, or only on next `codex exec`? If the latter, v1 just
    needs to invalidate on the next turn — no restart needed.
-4. **MCP server installs (v4).** Some Claude MCP servers in the catalog (e.g.
-   `github`) require user OAuth. Does the install sheet trigger the OAuth
-   flow inline, or queue it as a "needs auth" item in the Errors tab?
-   Probably the latter for v4 — the OAuth flow is a §3 legitimate
+4. **MCP server installs (v3).** Some MCP servers in upstream catalogs (e.g.
+   Claude's `github`) require user OAuth. Does the install sheet trigger the
+   OAuth flow inline, or queue it as a "needs auth" item in the Errors tab?
+   Probably the latter for v3 — the OAuth flow is a §3 legitimate
    external-tab exception, but it's not the install action itself.
 5. **Catalog auto-update cadence.** Claude refreshes at session start by
    default. Our model is different (long-lived sessions, warm pool). A
