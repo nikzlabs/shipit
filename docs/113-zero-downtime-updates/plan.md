@@ -49,6 +49,7 @@ Specifically:
 | Chat history persisted in SQLite | `chat-history.ts` | Survives orchestrator AND container restarts. `finalizeInProgress()` cleans up half-streamed messages on boot. |
 | SSE auto-reconnect with backoff | `container-session-runner.ts:614–705` | Worker → orchestrator stream re-establishes itself when a new orchestrator boots. |
 | WS auto-reconnect with backoff | `useWebSocket.ts:35–100`, `useConnectionSync.ts` | Browser → orchestrator stream re-establishes itself when the new orchestrator is up. |
+| Client build fingerprint | `client-build-info.ts`, `client-build.ts`, `useServerEvents.ts` | On SSE reconnect, the new orchestrator sends the Vite asset fingerprint it serves. A browser tab whose loaded asset fingerprint differs hard-reloads so it runs the matching client bundle. |
 | Terminal output buffer + xterm reset | `container-session-runner.ts` (~line 642) | Re-attach replays the recent scrollback without corrupting rendering. |
 | `ContainerSessionRunner` placeholder workerUrl | `container-session-runner.ts:136–160` | Runner can exist before the worker URL is known; it resolves on adoption. |
 
@@ -417,6 +418,9 @@ forward; you don't need 4 to start.
   per-session banner with "Restart container" button (reuses the
   existing restart action from doc 112).
 - `src/client/hooks/useServerEvents.ts` — handle the new event types.
+  Already handles client/server build skew: `system_info.clientBuildId`
+  is compared against the browser's loaded Vite asset refs, and a
+  mismatch triggers a hard page reload.
 - `src/client/components/Settings.tsx` — surface drain countdown in
   the existing "Software Updates" section.
 
