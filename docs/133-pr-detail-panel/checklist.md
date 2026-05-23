@@ -60,8 +60,9 @@ Tracks the whole feature (all phases in `plan.md`), not just one pass. Legend:
 
 ## Phase 4 — Conversation section (🟡 partial)
 
-Shipped scope (decided 2026-05-20): issue comments read + post; review threads
-**read-only**; poller heavy-field gating via `pr_tab_active`.
+Shipped scope: issue comments read + post; review threads read + reply +
+resolve/reopen in the PR tab when `prCommentSync` is enabled; poller
+heavy-field gating via `pr_tab_active`.
 
 ### Server — data layer
 - [x] `github-types.ts`: add `PrCommentAuthor`, `PrIssueComment`,
@@ -97,9 +98,9 @@ Shipped scope (decided 2026-05-20): issue comments read + post; review threads
       review threads + composer + inline error banner.
 - [x] `PrDetailPanel.tsx`: render `PrConversationSection` between Status and Files.
 
-### Remaining (write-back — needs the rest of docs/102)
-- [ ] Review-thread **reply** write-back (composer per thread).
-- [ ] Review-thread **resolve / unresolve** write-back.
+### Remaining (docs/102 inline-diff surface)
+- [x] Review-thread **reply** write-back (composer per thread).
+- [x] Review-thread **resolve / unresolve** write-back.
 - [ ] Monaco-widget surface for inline-on-diff threads (docs/102).
 
 ### Tests
