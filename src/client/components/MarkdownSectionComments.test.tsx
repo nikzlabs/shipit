@@ -51,6 +51,28 @@ describe("MarkdownSectionComments", () => {
       // 1 preamble + 2 sections = 3 buttons
       expect(buttons).toHaveLength(3);
     });
+
+    it("renders YAML frontmatter as a styled header and strips it from the body", () => {
+      const content = `---
+status: planned
+priority: high
+description: Align spawned sessions with the user path.
+---
+
+# Align agent-spawned session startup
+
+Context body.
+`;
+      render(<MarkdownSectionComments {...makeProps({ content })} />);
+      // Typed fields render as badges / description, not as raw text.
+      expect(screen.getByText("Planned")).toBeInTheDocument();
+      expect(screen.getByText("High priority")).toBeInTheDocument();
+      expect(
+        screen.getByText("Align spawned sessions with the user path."),
+      ).toBeInTheDocument();
+      // And the raw `status: planned …` paragraph should be gone.
+      expect(screen.queryByText(/status: planned/)).not.toBeInTheDocument();
+    });
   });
 
   describe("adding a comment", () => {
