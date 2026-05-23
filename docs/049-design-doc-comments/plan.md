@@ -1,11 +1,14 @@
 ---
 status: done
+description: Review comments on design docs and code, anchored to a text selection (markdown) or a line (code).
 ---
 # 049 — Review Comments
 
+> **Update (2026-05):** markdown review comments now anchor to a **text selection** (any verbatim run of text the user highlights), not a `## ` section heading. The "+ button per section" affordance was removed — selecting text in the rendered doc surfaces a floating "Comment" button. Comments are stored with `quotedText`, `contextBefore`, and `contextAfter`; on re-render a comment whose quoted text is no longer in the doc is rendered in an "Orphaned comments" group at the bottom rather than silently re-anchored to the wrong place. Selection comments use `kind: "selection"` in the storage layer; the legacy `kind: "section"` rows were migrated in place by database migration 16. The sections below describe the original section-anchored design; the selection model preserves the same lifecycle (per-(session, file) drafts, send/history, AI review write-back via `submit_review_comments`) and only changes the anchor granularity.
+
 ## Summary
 
-Let users leave review comments on design docs (`plan.md` files) and on any source file in the workspace. Design doc comments are section-anchored with server-side persistence and an AI review option; file comments are line-anchored with client-side persistence. Both flows culminate in a "Send" action that constructs a structured prompt and sends it to Claude.
+Let users leave review comments on design docs (`plan.md` files) and on any source file in the workspace. Design doc comments are selection-anchored with server-side persistence and an AI review option; file comments are line-anchored with client-side persistence. Both flows culminate in a "Send" action that constructs a structured prompt and sends it to Claude.
 
 ## Motivation
 

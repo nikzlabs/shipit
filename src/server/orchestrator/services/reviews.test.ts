@@ -2,12 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ReviewComment } from "../../shared/types.js";
+import type { ReviewComment, SelectionReviewComment } from "../../shared/types.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { FileReviewStore } from "../review-store.js";
 import {
-  parseMarkdownSections,
   reanchorComments,
+  locateSelection,
   buildReviewPrompt,
   detectFileReviewType,
   submitAiReviewComments,
@@ -19,14 +19,22 @@ import { ServiceError } from "./types.js";
 
 // ---- Helpers ----
 
-function sectionComment(
-  partial: { id?: string; sectionHeading: string; sectionIndex?: number; text: string; source?: "human" | "ai" },
-): ReviewComment {
+function selectionComment(
+  partial: {
+    id?: string;
+    quotedText: string;
+    contextBefore?: string;
+    contextAfter?: string;
+    text: string;
+    source?: "human" | "ai";
+  },
+): SelectionReviewComment {
   return {
     id: partial.id ?? "c1",
-    kind: "section",
-    sectionHeading: partial.sectionHeading,
-    sectionIndex: partial.sectionIndex ?? 0,
+    kind: "selection",
+    quotedText: partial.quotedText,
+    contextBefore: partial.contextBefore ?? "",
+    contextAfter: partial.contextAfter ?? "",
     text: partial.text,
     source: partial.source ?? "human",
   };
@@ -43,53 +51,6 @@ function lineComment(
     source: partial.source ?? "human",
   };
 }
-
-// ============================================================
-// parseMarkdownSections
-// ============================================================
-
-describe("parseMarkdownSections", () => {
-  it("parses multiple ## headings into separate sections", () => {
-    const md = [
-      "## Overview",
-      "Some overview text.",
-      "",
-      "## Architecture",
-      "Details here.",
-    ].join("\n");
-
-    const sections = parseMarkdownSections(md);
-
-    expect(sections).toHaveLength(2);
-    expect(sections[0]!.heading).toBe("## Overview");
-    expect(sections[0]!.index).toBe(0);
-    expect(sections[1]!.heading).toBe("## Architecture");
-    expect(sections[1]!.index).toBe(1);
-  });
-
-  it("captures preamble (content before first heading) as a section with empty heading", () => {
-    const md = "Intro paragraph.\n\n## First Section\nBody.";
-    const sections = parseMarkdownSections(md);
-
-    expect(sections).toHaveLength(2);
-    expect(sections[0]!.heading).toBe("");
-    expect(sections[0]!.rawContent).toContain("Intro paragraph.");
-    expect(sections[1]!.heading).toBe("## First Section");
-  });
-
-  it("returns an empty array for empty content", () => {
-    expect(parseMarkdownSections("")).toEqual([]);
-  });
-
-  it("does not treat ### (h3) as a section boundary", () => {
-    const md = "## Parent\n### Child\nContent.";
-    const sections = parseMarkdownSections(md);
-
-    expect(sections).toHaveLength(1);
-    expect(sections[0]!.heading).toBe("## Parent");
-    expect(sections[0]!.rawContent).toContain("### Child");
-  });
-});
 
 // ============================================================
 // detectFileReviewType
@@ -111,67 +72,88 @@ describe("detectFileReviewType", () => {
 });
 
 // ============================================================
+// locateSelection
+// ============================================================
+
+describe("locateSelection", () => {
+  it("returns the first occurrence when quoted text is unique", () => {
+    const content = "alpha beta gamma";
+    expect(locateSelection(content, { quotedText: "beta", contextBefore: "", contextAfter: "" })).toBe(6);
+  });
+
+  it("disambiguates by contextBefore/contextAfter when quoted text repeats", () => {
+    const content = "the cat sat. then the cat ran.";
+    const before = locateSelection(content, {
+      quotedText: "cat",
+      contextBefore: "the ",
+      contextAfter: " sat",
+    });
+    const after = locateSelection(content, {
+      quotedText: "cat",
+      contextBefore: "the ",
+      contextAfter: " ran",
+    });
+    expect(content.slice(before, before + 3)).toBe("cat");
+    expect(content.slice(after, after + 3)).toBe("cat");
+    expect(before).not.toBe(after);
+  });
+
+  it("returns -1 when quoted text is missing", () => {
+    expect(locateSelection("hello world", { quotedText: "absent", contextBefore: "", contextAfter: "" })).toBe(-1);
+  });
+
+  it("falls back to the first occurrence when no occurrence matches context", () => {
+    const content = "alpha beta gamma";
+    const idx = locateSelection(content, {
+      quotedText: "beta",
+      contextBefore: "wrong",
+      contextAfter: "context",
+    });
+    expect(idx).toBe(6);
+  });
+});
+
+// ============================================================
 // reanchorComments
 // ============================================================
 
 describe("reanchorComments", () => {
-  it("anchors all comments when headings are unchanged", () => {
-    const headings = ["## Overview", "## Architecture"];
+  it("anchors selections whose quoted text appears in the body", () => {
+    const content = "## Overview\n\nThis section is good.\n\n## Details\n\nMore content here.";
     const comments = [
-      sectionComment({ id: "c1", sectionHeading: "## Overview", sectionIndex: 0, text: "Good" }),
-      sectionComment({ id: "c2", sectionHeading: "## Architecture", sectionIndex: 1, text: "Needs work" }),
+      selectionComment({ id: "c1", quotedText: "good", text: "feedback A" }),
+      selectionComment({ id: "c2", quotedText: "More content", text: "feedback B" }),
     ];
 
-    const result = reanchorComments(comments, headings);
+    const result = reanchorComments(comments, content);
 
     expect(result.anchored).toHaveLength(2);
     expect(result.orphaned).toHaveLength(0);
   });
 
-  it("re-anchors comments when sections are reordered", () => {
-    const newHeadings = ["## Architecture", "## Overview"];
+  it("orphans selections whose quoted text is gone", () => {
+    const content = "## Overview\n\nThis section is good.";
     const comments = [
-      sectionComment({ id: "c1", sectionHeading: "## Overview", sectionIndex: 0, text: "A" }),
-      sectionComment({ id: "c2", sectionHeading: "## Architecture", sectionIndex: 1, text: "B" }),
+      selectionComment({ id: "c1", quotedText: "good", text: "feedback" }),
+      selectionComment({ id: "c2", quotedText: "deleted phrase", text: "stale feedback" }),
     ];
 
-    const result = reanchorComments(comments, newHeadings);
-
-    expect(result.anchored).toHaveLength(2);
-    const overview = result.anchored.find((c) => c.kind === "section" && c.sectionHeading === "## Overview");
-    expect(overview?.kind === "section" ? overview.sectionIndex : -1).toBe(1);
-  });
-
-  it("orphans comments whose section was deleted", () => {
-    const newHeadings = ["## Overview"];
-    const comments = [
-      sectionComment({ id: "c1", sectionHeading: "## Overview", sectionIndex: 0, text: "A" }),
-      sectionComment({ id: "c2", sectionHeading: "## Deleted Section", sectionIndex: 1, text: "B" }),
-    ];
-
-    const result = reanchorComments(comments, newHeadings);
+    const result = reanchorComments(comments, content);
 
     expect(result.anchored).toHaveLength(1);
     expect(result.orphaned).toHaveLength(1);
+    expect(result.orphaned[0]!.quotedText).toBe("deleted phrase");
   });
 
-  it("always anchors line comments — they are not affected by markdown drift", () => {
+  it("always anchors line comments — they aren't affected by markdown drift", () => {
     const comments = [
       lineComment({ id: "c1", line: 10, text: "fix me" }),
       lineComment({ id: "c2", line: 20, text: "rename" }),
     ];
-    const result = reanchorComments(comments, []);
-    expect(result.anchored).toHaveLength(2);
+    const result = reanchorComments(comments, "");
+    expect(result.lines).toHaveLength(2);
+    expect(result.anchored).toHaveLength(0);
     expect(result.orphaned).toHaveLength(0);
-  });
-
-  it("anchors preamble comments to index 0 even when no headings exist", () => {
-    const comments = [sectionComment({ id: "c1", sectionHeading: "", sectionIndex: 5, text: "Preamble" })];
-    const result = reanchorComments(comments, []);
-
-    expect(result.anchored).toHaveLength(1);
-    const c = result.anchored[0];
-    expect(c.kind === "section" ? c.sectionIndex : -1).toBe(0);
   });
 });
 
@@ -180,61 +162,55 @@ describe("reanchorComments", () => {
 // ============================================================
 
 describe("buildReviewPrompt (markdown)", () => {
-  it("groups comments by section heading", () => {
+  const CONTENT = [
+    "## Overview",
+    "Scope is unclear.",
+    "",
+    "## Architecture",
+    "Needs a diagram here.",
+  ].join("\n");
+
+  it("embeds each comment with the quoted text it anchors to", () => {
     const comments = [
-      sectionComment({ id: "c1", sectionHeading: "## Overview", sectionIndex: 0, text: "Clarify scope" }),
-      sectionComment({ id: "c2", sectionHeading: "## Architecture", sectionIndex: 1, text: "Add diagram" }),
-      sectionComment({ id: "c3", sectionHeading: "## Overview", sectionIndex: 0, text: "Define terms" }),
+      selectionComment({ id: "c1", quotedText: "Scope is unclear", text: "Clarify scope" }),
+      selectionComment({ id: "c2", quotedText: "Needs a diagram", text: "Add the diagram" }),
     ];
 
-    const prompt = buildReviewPrompt(
-      "docs/001-feature/plan.md",
-      "markdown",
-      comments,
-      "",
-      ["## Overview", "## Architecture"],
-    );
+    const prompt = buildReviewPrompt("docs/001-feature/plan.md", "markdown", comments, CONTENT);
 
-    expect(prompt).toContain("### ## Overview");
-    expect(prompt).toContain("- Clarify scope");
-    expect(prompt).toContain("- Define terms");
-    expect(prompt).toContain("### ## Architecture");
-    expect(prompt).toContain("- Add diagram");
+    expect(prompt).toContain("> Scope is unclear");
+    expect(prompt).toContain("Clarify scope");
+    expect(prompt).toContain("> Needs a diagram");
+    expect(prompt).toContain("Add the diagram");
     expect(prompt).toContain("docs/001-feature/plan.md");
-    expect(prompt).not.toContain("removed/renamed");
+    expect(prompt).not.toContain("removed/edited text");
   });
 
-  it("places orphaned comments under removed/renamed sections heading", () => {
+  it("places orphaned comments under a dedicated heading", () => {
     const comments = [
-      sectionComment({ id: "c1", sectionHeading: "## Overview", sectionIndex: 0, text: "Good" }),
-      sectionComment({ id: "c2", sectionHeading: "## Deleted", sectionIndex: 1, text: "Was important" }),
+      selectionComment({ id: "c1", quotedText: "Scope is unclear", text: "Clarify" }),
+      selectionComment({ id: "c2", quotedText: "deleted phrase", text: "Was important" }),
     ];
 
-    const prompt = buildReviewPrompt("plan.md", "markdown", comments, "", ["## Overview"]);
+    const prompt = buildReviewPrompt("plan.md", "markdown", comments, CONTENT);
 
-    expect(prompt).toContain("### Comments on removed/renamed sections");
-    expect(prompt).toContain("(was: ## Deleted) Was important");
+    expect(prompt).toContain("### Comments on removed/edited text");
+    expect(prompt).toContain("«deleted phrase»");
+    expect(prompt).toContain("Was important");
   });
 
-  it("includes both human and AI comments", () => {
+  it("orders anchored comments by their position in the document", () => {
     const comments = [
-      sectionComment({ id: "c1", sectionHeading: "## Design", text: "Human feedback", source: "human" }),
-      sectionComment({ id: "c2", sectionHeading: "## Design", text: "AI feedback", source: "ai" }),
+      selectionComment({ id: "c2", quotedText: "Needs a diagram", text: "second" }),
+      selectionComment({ id: "c1", quotedText: "Scope is unclear", text: "first" }),
     ];
 
-    const prompt = buildReviewPrompt("plan.md", "markdown", comments, "", ["## Design"]);
-    expect(prompt).toContain("- Human feedback");
-    expect(prompt).toContain("- AI feedback");
-  });
+    const prompt = buildReviewPrompt("plan.md", "markdown", comments, CONTENT);
 
-  it("uses (Introduction) label for preamble comments", () => {
-    const comments = [
-      sectionComment({ id: "c1", sectionHeading: "", sectionIndex: 0, text: "General note" }),
-    ];
-
-    const prompt = buildReviewPrompt("plan.md", "markdown", comments, "", ["## Something"]);
-    expect(prompt).toContain("### (Introduction)");
-    expect(prompt).toContain("- General note");
+    const idxFirst = prompt.indexOf("first");
+    const idxSecond = prompt.indexOf("second");
+    expect(idxFirst).toBeGreaterThan(0);
+    expect(idxSecond).toBeGreaterThan(idxFirst);
   });
 });
 
@@ -259,18 +235,15 @@ describe("buildReviewPrompt (code)", () => {
       lineComment({ id: "c1", line: 3, text: "first comment" }),
     ];
 
-    const prompt = buildReviewPrompt("src/foo.ts", "code", comments, fileContent, []);
+    const prompt = buildReviewPrompt("src/foo.ts", "code", comments, fileContent);
 
-    // Comments are sorted by line number
     const idxFirst = prompt.indexOf("first comment");
     const idxSecond = prompt.indexOf("second comment");
     expect(idxFirst).toBeGreaterThan(0);
     expect(idxSecond).toBeGreaterThan(idxFirst);
 
-    // Snippet for line 3 should include lines 1-5 with arrow on line 3
     expect(prompt).toContain("→ 3 │ line 3");
     expect(prompt).toContain("**src/foo.ts:3**");
-    // Snippet for line 7 should include lines 5-8
     expect(prompt).toContain("→ 7 │ line 7");
   });
 
@@ -278,9 +251,8 @@ describe("buildReviewPrompt (code)", () => {
     const fileContent = "a\nb\nc\nd\ne";
     const comments = [lineComment({ id: "c1", line: 1, text: "first" })];
 
-    const prompt = buildReviewPrompt("a.ts", "code", comments, fileContent, []);
+    const prompt = buildReviewPrompt("a.ts", "code", comments, fileContent);
     expect(prompt).toContain("→ 1 │ a");
-    // Should not show line 0
     expect(prompt).not.toContain(" 0 │");
   });
 
@@ -290,7 +262,6 @@ describe("buildReviewPrompt (code)", () => {
       "code",
       [lineComment({ line: 1, text: "fix" })],
       "x",
-      [],
     );
     expect(prompt).toContain("Please address each comment.");
   });
@@ -305,7 +276,7 @@ describe("submitAiReviewComments", () => {
   let store: FileReviewStore;
   let workspaceDir: string;
   const FILE = "docs/001-foo/plan.md";
-  const MARKDOWN = ["## Overview", "Intro.", "", "## Architecture", "Body."].join("\n");
+  const MARKDOWN = ["## Overview", "Intro paragraph.", "", "## Architecture", "Body content."].join("\n");
 
   beforeEach(() => {
     dbManager = new DatabaseManager(":memory:");
@@ -321,13 +292,13 @@ describe("submitAiReviewComments", () => {
   });
 
   function seedDraft(): void {
-    store.createDraft("s1", FILE, "markdown", "h", ["## Overview", "## Architecture"]);
+    store.createDraft("s1", FILE, "markdown", "h");
   }
 
   it("forces source:ai server-side and persists into the existing draft", async () => {
     seedDraft();
     const comments: AiReviewCommentInput[] = [
-      { kind: "section", section_heading: "## Architecture", section_index: 1, text: "tighten this" },
+      { kind: "selection", quoted_text: "Body content", text: "tighten this" },
     ];
     const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, comments);
 
@@ -336,27 +307,10 @@ describe("submitAiReviewComments", () => {
     expect(result.review.comments[0]!.source).toBe("ai");
   });
 
-  it("re-anchors section comments against the CURRENT file, not a cached snapshot", async () => {
-    // Draft was created with stale headings; the agent passes a wrong index.
-    store.createDraft("s1", FILE, "markdown", "h", ["## Overview"]);
-    const comments: AiReviewCommentInput[] = [
-      { kind: "section", section_heading: "## Architecture", section_index: 99, text: "x" },
-    ];
-    const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, comments);
-
-    const c = result.review.comments[0]!;
-    expect(c.kind).toBe("section");
-    if (c.kind === "section") {
-      // "## Architecture" is index 1 in the current file — not the bogus 99.
-      expect(c.sectionIndex).toBe(1);
-    }
-    expect(result.outdated).toBe(0);
-  });
-
-  it("counts a comment on a vanished section as outdated but still persists it", async () => {
+  it("counts comments whose quoted text is missing as outdated but still persists them", async () => {
     seedDraft();
     const comments: AiReviewCommentInput[] = [
-      { kind: "section", section_heading: "## Removed", section_index: 0, text: "stale" },
+      { kind: "selection", quoted_text: "phrase that no longer exists", text: "stale" },
     ];
     const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, comments);
     expect(result.outdated).toBe(1);
@@ -366,20 +320,19 @@ describe("submitAiReviewComments", () => {
   it("rejects when the draft was sent during the review run", async () => {
     seedDraft();
     const draft = store.getDraft("s1", FILE)!;
-    store.addSectionComment(draft.id, "## Overview", 0, "human note", "human");
+    store.addSelectionComment(draft.id, "Intro paragraph", "", "", "human note", "human");
     store.markSent(draft.id);
 
     await expect(
       submitAiReviewComments(store, "s1", FILE, workspaceDir, [
-        { kind: "section", section_heading: "## Overview", section_index: 0, text: "late" },
+        { kind: "selection", quoted_text: "Intro paragraph", text: "late" },
       ]),
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("ensures a fresh draft when none exists (modal closed mid-review)", async () => {
-    // No draft and no prior review at all.
     const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, [
-      { kind: "section", section_heading: "## Overview", section_index: 0, text: "fresh" },
+      { kind: "selection", quoted_text: "Intro paragraph", text: "fresh" },
     ]);
     expect(result.added).toBe(1);
     expect(store.getDraft("s1", FILE)).not.toBeNull();
@@ -388,9 +341,8 @@ describe("submitAiReviewComments", () => {
   it("rejects an oversize payload (too many comments)", async () => {
     seedDraft();
     const tooMany: AiReviewCommentInput[] = Array.from({ length: MAX_REVIEW_COMMENTS + 1 }, () => ({
-      kind: "section" as const,
-      section_heading: "## Overview",
-      section_index: 0,
+      kind: "selection" as const,
+      quoted_text: "Intro paragraph",
       text: "x",
     }));
     await expect(
@@ -401,7 +353,7 @@ describe("submitAiReviewComments", () => {
   it("rejects a comment whose text exceeds the per-comment limit", async () => {
     seedDraft();
     const big: AiReviewCommentInput[] = [
-      { kind: "section", section_heading: "## Overview", section_index: 0, text: "x".repeat(MAX_REVIEW_COMMENT_CHARS + 1) },
+      { kind: "selection", quoted_text: "Intro paragraph", text: "x".repeat(MAX_REVIEW_COMMENT_CHARS + 1) },
     ];
     await expect(
       submitAiReviewComments(store, "s1", FILE, workspaceDir, big),

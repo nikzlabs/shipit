@@ -37,11 +37,17 @@ function truncate(text: string): string {
   return `${trimmed.slice(0, MAX_COMMENT_CHARS)}…`;
 }
 
+function truncateQuote(text: string, max = 80): string {
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max)}…`;
+}
+
 function anchorOf(comment: ReviewComment, origin: "draft" | "sent", sentAt?: string): string {
   const state = origin === "draft" ? "draft" : `sent${sentAt ? ` ${sentAt.slice(0, 10)}` : ""}`;
   if (comment.kind === "line") return `line ${comment.line} (${state})`;
-  const heading = comment.sectionHeading || "(introduction)";
-  return `${heading} (section, ${state})`;
+  const quote = truncateQuote(comment.quotedText) || "(empty selection)";
+  return `«${quote}» (selection, ${state})`;
 }
 
 function sourceLabelOf(comment: ReviewComment, origin: "draft" | "sent"): string {

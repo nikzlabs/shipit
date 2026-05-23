@@ -61,12 +61,13 @@ interface FileReviewState {
     text: string,
   ) => Promise<ReviewComment | null>;
 
-  /** Add a section-anchored comment. Only valid for markdown reviews. */
-  addSectionComment: (
+  /** Add a selection-anchored comment. Only valid for markdown reviews. */
+  addSelectionComment: (
     sessionId: string,
     filePath: string,
-    sectionHeading: string,
-    sectionIndex: number,
+    quotedText: string,
+    contextBefore: string,
+    contextAfter: string,
     text: string,
   ) => Promise<ReviewComment | null>;
 
@@ -168,7 +169,7 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
     }
   },
 
-  addSectionComment: async (sessionId, filePath, sectionHeading, sectionIndex, text) => {
+  addSelectionComment: async (sessionId, filePath, quotedText, contextBefore, contextAfter, text) => {
     const key = makeKey(sessionId, filePath);
     const draft = get().draftByKey[key];
     if (!draft) return null;
@@ -176,7 +177,7 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
       const comment = await request<ReviewComment>(
         "POST",
         `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
-        { kind: "section", sectionHeading, sectionIndex, text },
+        { kind: "selection", quotedText, contextBefore, contextAfter, text },
       );
       set((s) => ({
         draftByKey: {
@@ -186,7 +187,7 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
       }));
       return comment;
     } catch (err) {
-      console.error("[file-review-store] addSectionComment failed:", err);
+      console.error("[file-review-store] addSelectionComment failed:", err);
       return null;
     }
   },

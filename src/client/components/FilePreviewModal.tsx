@@ -4,8 +4,8 @@ import { XIcon, PaperPlaneTiltIcon, RobotIcon, CaretDownIcon } from "@phosphor-i
 import { ICON_SIZE } from "../design-tokens.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Button } from "./ui/button.js";
-import { MarkdownSectionComments } from "./MarkdownSectionComments.js";
-import type { SectionCommentData } from "./MarkdownSectionComments.js";
+import { MarkdownSelectionComments } from "./MarkdownSelectionComments.js";
+import type { SelectionCommentData } from "./MarkdownSelectionComments.js";
 import { useFileReviewStore } from "../stores/file-review-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -194,27 +194,28 @@ function MarkdownViewer({
   sessionId: string;
   comments: ReviewComment[];
 }) {
-  const addSectionComment = useFileReviewStore((s) => s.addSectionComment);
+  const addSelectionComment = useFileReviewStore((s) => s.addSelectionComment);
   const editComment = useFileReviewStore((s) => s.editComment);
   const deleteComment = useFileReviewStore((s) => s.deleteComment);
 
-  const sectionComments: SectionCommentData[] = useMemo(() => {
+  const selectionComments: SelectionCommentData[] = useMemo(() => {
     return comments
-      .filter((c): c is Extract<ReviewComment, { kind: "section" }> => c.kind === "section")
+      .filter((c): c is Extract<ReviewComment, { kind: "selection" }> => c.kind === "selection")
       .map((c) => ({
         id: c.id,
-        sectionHeading: c.sectionHeading,
-        sectionIndex: c.sectionIndex,
+        quotedText: c.quotedText,
+        contextBefore: c.contextBefore,
+        contextAfter: c.contextAfter,
         text: c.text,
         source: c.source,
       }));
   }, [comments]);
 
   const handleAdd = useCallback(
-    (sectionHeading: string, sectionIndex: number, text: string) => {
-      void addSectionComment(sessionId, filePath, sectionHeading, sectionIndex, text);
+    (quotedText: string, contextBefore: string, contextAfter: string, text: string) => {
+      void addSelectionComment(sessionId, filePath, quotedText, contextBefore, contextAfter, text);
     },
-    [sessionId, filePath, addSectionComment],
+    [sessionId, filePath, addSelectionComment],
   );
 
   const handleEdit = useCallback(
@@ -232,9 +233,9 @@ function MarkdownViewer({
   );
 
   return (
-    <MarkdownSectionComments
+    <MarkdownSelectionComments
       content={content}
-      comments={sectionComments}
+      comments={selectionComments}
       onAddComment={handleAdd}
       onEditComment={handleEdit}
       onDeleteComment={handleDelete}
@@ -289,8 +290,8 @@ function PastReviews({ history }: { history: FileReview[] }) {
                       }`}
                     >
                       <span className="text-(--color-text-tertiary)">
-                        {c.kind === "section"
-                          ? `${c.sectionHeading || "(Intro)"}: `
+                        {c.kind === "selection"
+                          ? `«${c.quotedText.slice(0, 40)}${c.quotedText.length > 40 ? "…" : ""}»: `
                           : `Line ${c.line}: `}
                       </span>
                       <span className="text-(--color-text-secondary)">{c.text}</span>

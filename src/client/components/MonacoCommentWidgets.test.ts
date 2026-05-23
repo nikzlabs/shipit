@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
-import type { FileComment } from "../../server/shared/types.js";
+import type { LineComment } from "../../server/shared/types.js";
 
 /**
  * Minimal stub of the bits of monaco.editor.ICodeEditor that
@@ -57,7 +57,7 @@ function makeFakeEditor() {
   };
 }
 
-function lineComment(overrides?: Partial<FileComment & { kind: "line" }>): FileComment {
+function lineComment(overrides?: Partial<LineComment>): LineComment {
   return {
     id: "c1",
     kind: "line",
@@ -65,7 +65,7 @@ function lineComment(overrides?: Partial<FileComment & { kind: "line" }>): FileC
     line: 5,
     text: "needs fixing",
     ...overrides,
-  } as FileComment;
+  };
 }
 
 describe("MonacoCommentWidgets", () => {
@@ -132,13 +132,13 @@ describe("MonacoCommentWidgets", () => {
         onDeleteComment: vi.fn(),
       },
     );
-    // Section-kind entries are filtered out by the widget regardless of
-    // any extra fields. We pass a minimal section shape that satisfies
+    // Selection-kind entries are filtered out by the widget regardless of
+    // any extra fields. We pass a minimal selection shape that satisfies
     // the LineCommentLike supertype.
     manager.setComments([
       {
         id: "s1",
-        kind: "section",
+        kind: "selection",
         filePath: "doc.md",
         text: "x",
       },

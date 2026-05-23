@@ -17,14 +17,14 @@ import type * as monaco from "monaco-editor";
 
 /**
  * Minimal shape of comments the widget consumes. The widget filters to
- * `kind === "line"` internally, so callers can pass mixed arrays (e.g. the
- * union `FileComment[]` from the legacy comment-store, or a pre-filtered
- * `ReviewComment[]` line-only list).
+ * `kind === "line"` internally, so callers can pass mixed arrays (e.g. a
+ * `ReviewComment[]` containing both line and selection kinds) without having
+ * to pre-filter at the call site.
  */
 export interface LineCommentLike {
   id: string;
   /** Discriminator. Non-"line" entries are filtered out by the widget. */
-  kind: "line" | "section";
+  kind: "line" | "selection";
   /** Required when `kind === "line"`. */
   line?: number;
   text: string;
