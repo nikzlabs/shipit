@@ -100,8 +100,16 @@ export class ClaudeProcess extends EventEmitter {
     // `/my-skill` invocation is honored in every permission mode. This accepts
     // that plan mode is no longer guaranteed read-only when a user
     // deliberately invokes a side-effecting skill. See docs/138.
-    const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__*";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
+    //
+    // `mcp__shipit-review__*` is allowlisted alongside playwright because the
+    // bridge is a built-in MCP server the worker registers in mcp.json (docs/125),
+    // not a user-configured one — so it never flows through `mcpServerNames`.
+    // Without this entry the CLI gates `submit_review_comments` behind an
+    // interactive prompt that headless `-p` mode cannot satisfy, and review
+    // subagents fail with "permission not yet granted" (docs/149). The tool
+    // writes only to ShipIt's review-draft state, so it is safe under plan mode.
+    const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__*,mcp__shipit-review__*";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit-review__*";
 
     // docs/088: enabled user MCP servers contribute a `mcp__<name>__*` glob to
     // the `auto` allowlist. `plan` mode deliberately omits them
@@ -330,8 +338,10 @@ export class StreamingClaudeProcess extends EventEmitter {
   run(opts: ClaudeRunOptions): void {
     const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr } = opts;
 
-    const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__*";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot";
+    // See ClaudeProcess.run above for why `mcp__shipit-review__*` joins
+    // `mcp__playwright__*` in both lists (docs/125, docs/149).
+    const AUTO_TOOLS = "Write,Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__*,mcp__shipit-review__*";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit-review__*";
 
     const userMcpGlobs = (mcpServerNames ?? []).map((name) => `mcp__${name}__*`).join(",");
     const withUserMcp = (base: string): string => userMcpGlobs ? `${base},${userMcpGlobs}` : base;
