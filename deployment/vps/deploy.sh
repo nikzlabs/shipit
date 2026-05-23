@@ -28,7 +28,11 @@ docker network prune -f
 # docs/141-cli-version-strategy). Docker's content hash of the COPYed lockfile
 # invalidates the install layer automatically when versions change; nothing
 # time-based is needed.
+SHIPIT_BUILD_ID="$(git rev-parse HEAD 2>/dev/null || true)"
 BUILD_ARGS=("--pull")
+if [ -n "$SHIPIT_BUILD_ID" ]; then
+  BUILD_ARGS+=("--build-arg" "SHIPIT_BUILD_ID=$SHIPIT_BUILD_ID")
+fi
 case "${FORCE_REBUILD:-0}" in
   1|true|TRUE|True|yes|YES|Yes|on|ON|On)
     BUILD_ARGS+=("--no-cache")

@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { getLoadedClientBuildId, shouldReloadForServerBuild } from "./client-build.js";
+import { normalizeBuildId, shouldReloadForServerBuild } from "./client-build.js";
 
 describe("client build utilities", () => {
-  it("fingerprints the loaded Vite assets", () => {
-    document.head.innerHTML = `
-      <link rel="stylesheet" href="/assets/index-BBB.css">
-      <script type="module" src="/assets/index-AAA.js"></script>
-    `;
-
-    expect(getLoadedClientBuildId(document)).toBe("/assets/index-AAA.js|/assets/index-BBB.css");
+  it("normalizes empty build ids", () => {
+    expect(normalizeBuildId("  abc123  ")).toBe("abc123");
+    expect(normalizeBuildId("   ")).toBeUndefined();
+    expect(normalizeBuildId(undefined)).toBeUndefined();
   });
 
   it("reloads only when both build ids exist and differ", () => {

@@ -352,11 +352,11 @@ export interface SystemInfo {
   /** Epoch milliseconds when the orchestrator process started. */
   processStartedAt: number;
   /**
-   * Fingerprint of the client bundle currently served by the orchestrator.
-   * Existing browser tabs compare this with their loaded asset refs after an
-   * SSE reconnect and reload when a restarted server is serving a new build.
+   * Build identifier for the orchestrator/client bundle. In production this is
+   * passed as SHIPIT_BUILD_ID at image build time; in development it falls back
+   * to the current git commit SHA.
    */
-  clientBuildId?: string;
+  buildId?: string;
 }
 
 // ---- Chat history message (shared data type) ----

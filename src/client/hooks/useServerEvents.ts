@@ -246,7 +246,7 @@ export function useServerEvents(): void {
     es.addEventListener("system_info", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as SystemInfo;
       const loadedClientBuildId = getLoadedClientBuildId();
-      if (shouldReloadForServerBuild(loadedClientBuildId, data.clientBuildId) && !reloadingForClientUpdate) {
+      if (shouldReloadForServerBuild(loadedClientBuildId, data.buildId) && !reloadingForClientUpdate) {
         reloadingForClientUpdate = true;
         window.location.reload();
         return;
