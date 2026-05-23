@@ -127,10 +127,14 @@ Today queued messages drain from agent completion paths; if no agent starts,
 there is no completion event to wake the queue after a quota reset. Delayed
 quota waits therefore need their own persisted/scheduled state:
 
-- persist the blocked prompt and target provider in a delayed-turn table or
-  session field,
+- persist the full turn request in a delayed-turn table or session field:
+  user text, validated file refs, upload refs, image refs, permission mode,
+  review-file authorization, selected model, selected agent, target provider,
+  and the assembled prompt/context snapshot needed to restart deterministically,
 - schedule an orchestrator timer for the earliest eligible reset,
 - re-check account eligibility/quota at wake time before starting,
+- revalidate that referenced files/uploads still exist and surface a recoverable
+  error instead of starting with silently missing context,
 - broadcast the delayed state so reconnecting clients show why the prompt is not
   running,
 - allow the user to cancel or replace the delayed prompt from chat.
@@ -257,10 +261,12 @@ primary account until all call sites are migrated.
 `AgentRegistry.authConfigured` remains a coarse agent-level signal for existing
 UI and server gates, but its meaning changes:
 
-- `claude.authConfigured = true` when at least one ready Claude provider account
-  exists, or a supported non-subscription Claude auth fallback exists.
-- `codex.authConfigured = true` when at least one ready Codex subscription
-  account exists, or `OPENAI_API_KEY` is configured.
+- `claude.authConfigured = true` when at least one authenticated Claude provider
+  account exists, even if every account is currently quota-exhausted, or a
+  supported non-subscription Claude auth fallback exists.
+- `codex.authConfigured = true` when at least one authenticated Codex
+  subscription account exists, even if exhausted, or `OPENAI_API_KEY` is
+  configured.
 - `AgentRegistry.available()` answers only "can this provider be attempted at
   all?" It does not choose an account and does not guarantee the selected model
   can run.
@@ -274,6 +280,12 @@ currently stop at `agentRegistry.get(id)?.authConfigured` must either:
 Auth refresh events update both layers: the provider-account row is refreshed
 first, then `AgentRegistry.refreshAuth(provider)` recomputes the coarse boolean
 from provider-account state plus fallback env auth.
+
+Quota exhaustion is not authentication failure. An exhausted account remains
+authenticated and should not make Settings or model pickers show "not signed in."
+`ProviderAccountManager.selectAccountForTurn(...)` returns structured failures
+such as `all_exhausted`, `no_model_eligible_account`, or `auth_required`; only
+the last one changes auth UI state.
 
 ## Server architecture
 
@@ -396,6 +408,31 @@ providerAccountLabel?: string;
 ```
 
 This gives chat history and diagnostics an audit trail without exposing secrets.
+
+### Runtime modes
+
+Multi-account routing must work in both full container mode and local/dogfood
+mode.
+
+In full container mode, account selection is implemented by writing the selected
+account's credential subtree into the session's mounted `/credentials/sessions`
+directory before worker `/agent/start`.
+
+In local/dogfood mode, there is no per-session credentials mount and direct
+`SessionRunner` processes currently read singleton `/root/.claude` /
+`/root/.codex`. The implementation must therefore spawn direct agents with an
+account-scoped credential environment, using the same preferred strategy as auth
+flows:
+
+- temporary `HOME` / config root whose `.claude` or `.codex` points at the
+  selected provider account, or
+- a stable provider config-dir override if one exists.
+
+Do not implement multi-account routing by rebinding the global `/root/.claude`
+or `/root/.codex` for local turns; concurrent local sessions would race. If a
+provider CLI cannot be safely pointed at an account-specific config root in
+local mode, multi-account failover for that provider must be disabled there with
+an explicit inline diagnostic rather than silently using the singleton account.
 
 ### Shared turn preflight
 
@@ -680,6 +717,15 @@ Existing sessions without `provider_account_id` are split by pin state:
 - Integration: Codex unknown-quota accounts are selectable but do not outrank
   equivalent accounts with fresh known quota; `OPENAI_API_KEY` fallback is not
   rendered or ranked as a subscription account.
+- Integration: delayed quota turns persist and restore the full turn request,
+  including files, uploads/images, permission mode, review authorization, model,
+  and assembled prompt context.
+- Integration: exhausted-but-authenticated accounts keep
+  `AgentRegistry.authConfigured` true; account selection reports `all_exhausted`
+  separately from `auth_required`.
+- Integration: local/dogfood direct runner starts the agent with an
+  account-scoped config root, or reports an explicit unsupported diagnostic for
+  providers where that is not possible.
 - Client: Settings renders multiple provider accounts and can make one primary.
 - Client: subscription limits render multiple accounts per provider without
   layout overlap.
