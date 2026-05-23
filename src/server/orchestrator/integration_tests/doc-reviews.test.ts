@@ -97,10 +97,10 @@ Unit and integration tests.
   const codePath = "src/api.ts";
 
   // ----------------------------------------------------------------
-  // Ensure draft (markdown)
+  // Ensure draft
   // ----------------------------------------------------------------
 
-  it("POST /file-reviews/draft creates a markdown draft snapshotting headings", async () => {
+  it("POST /file-reviews/draft creates a markdown draft", async () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/draft`,
@@ -112,13 +112,10 @@ Unit and integration tests.
     expect(body.fileType).toBe("markdown");
     expect(body.sessionId).toBe(sessionId);
     expect(body.filePath).toBe(planPath);
-    expect(body.sectionHeadings).toContain("## Summary");
-    expect(body.sectionHeadings).toContain("## Architecture");
-    expect(body.sectionHeadings).toContain("## Testing");
     expect(body.comments).toHaveLength(0);
   });
 
-  it("POST /file-reviews/draft creates a code draft with empty headings", async () => {
+  it("POST /file-reviews/draft creates a code draft", async () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/draft`,
@@ -127,7 +124,6 @@ Unit and integration tests.
     expect(res.statusCode).toBe(200);
     const body = res.json() as FileReview;
     expect(body.fileType).toBe("code");
-    expect(body.sectionHeadings).toEqual([]);
   });
 
   it("POST /file-reviews/draft is idempotent — returns the same draft on repeat calls", async () => {
@@ -174,10 +170,10 @@ Unit and integration tests.
   });
 
   // ----------------------------------------------------------------
-  // Add section comment (markdown)
+  // Add selection comment (markdown)
   // ----------------------------------------------------------------
 
-  it("POST /comments adds a section comment to a markdown draft", async () => {
+  it("POST /comments adds a selection comment to a markdown draft", async () => {
     const draft = (await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/draft`,
@@ -188,15 +184,16 @@ Unit and integration tests.
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
       payload: {
-        kind: "section",
-        sectionHeading: "## Architecture",
-        sectionIndex: 1,
+        kind: "selection",
+        quotedText: "Plugin-based approach",
+        contextBefore: "## Architecture\n",
+        contextAfter: ".",
         text: "Consider a registry pattern",
       },
     });
     expect(res.statusCode).toBe(200);
     const comment = res.json() as ReviewComment;
-    expect(comment.kind).toBe("section");
+    expect(comment.kind).toBe("selection");
     expect(comment.text).toBe("Consider a registry pattern");
     expect(comment.source).toBe("human");
   });
@@ -239,7 +236,7 @@ Unit and integration tests.
     expect(res.statusCode).toBe(400);
   });
 
-  it("POST /comments rejects section comment on a code review", async () => {
+  it("POST /comments rejects selection comment on a code review", async () => {
     const draft = (await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/draft`,
@@ -249,7 +246,7 @@ Unit and integration tests.
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
-      payload: { kind: "section", sectionHeading: "## fake", sectionIndex: 0, text: "x" },
+      payload: { kind: "selection", quotedText: "anything", text: "x" },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -264,7 +261,22 @@ Unit and integration tests.
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
-      payload: { kind: "section", sectionHeading: "## Summary", sectionIndex: 0, text: "  " },
+      payload: { kind: "selection", quotedText: "Plugin-based approach", text: "  " },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("POST /comments validates empty selection", async () => {
+    const draft = (await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/draft`,
+      payload: { filePath: planPath },
+    })).json() as FileReview;
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
+      payload: { kind: "selection", quotedText: "", text: "needs anchor" },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -283,7 +295,7 @@ Unit and integration tests.
     const comment = (await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
-      payload: { kind: "section", sectionHeading: "## Summary", sectionIndex: 0, text: "Original" },
+      payload: { kind: "selection", quotedText: "Add deployment support", text: "Original" },
     })).json() as ReviewComment;
 
     const res = await app.inject({
@@ -310,7 +322,7 @@ Unit and integration tests.
     const comment = (await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
-      payload: { kind: "section", sectionHeading: "## Summary", sectionIndex: 0, text: "Delete me" },
+      payload: { kind: "selection", quotedText: "Add deployment support", text: "Delete me" },
     })).json() as ReviewComment;
 
     const res = await app.inject({
@@ -330,7 +342,7 @@ Unit and integration tests.
   // Send (markdown)
   // ----------------------------------------------------------------
 
-  it("POST /send marks markdown review as sent and returns a section-grouped prompt", async () => {
+  it("POST /send marks markdown review as sent and returns a quoted-text prompt", async () => {
     const draft = (await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/draft`,
@@ -340,7 +352,11 @@ Unit and integration tests.
     await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/${draft.id}/comments`,
-      payload: { kind: "section", sectionHeading: "## Architecture", sectionIndex: 1, text: "Add Netlify support" },
+      payload: {
+        kind: "selection",
+        quotedText: "Plugin-based approach",
+        text: "Add Netlify support",
+      },
     });
 
     const res = await app.inject({
@@ -350,7 +366,7 @@ Unit and integration tests.
     expect(res.statusCode).toBe(200);
     const body = res.json() as { prompt: string; review: FileReview };
     expect(body.prompt).toContain("Add Netlify support");
-    expect(body.prompt).toContain("## Architecture");
+    expect(body.prompt).toContain("Plugin-based approach");
     expect(body.prompt).toContain(planPath);
     expect(body.review.status).toBe("sent");
 
@@ -417,7 +433,7 @@ Unit and integration tests.
     await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/file-reviews/${first.id}/comments`,
-      payload: { kind: "section", sectionHeading: "## Summary", sectionIndex: 0, text: "Good" },
+      payload: { kind: "selection", quotedText: "Add deployment support", text: "Good" },
     });
     await app.inject({
       method: "POST",

@@ -34,9 +34,10 @@ const TOOL_DESCRIPTION = [
   "Submit the results of a code/document review as anchored comments. Call this",
   "exactly ONCE per review with ALL findings as a single array — do not call it",
   "per comment. If the file needs no comments, still call it with an empty array;",
-  "that is the signal that the review ran. Section comments anchor to a markdown",
-  "`## heading`; line comments anchor to a 1-based line number in a code file.",
-  "You do not pass a session id or a comment source — those are set server-side.",
+  "that is the signal that the review ran. Selection comments anchor to a verbatim",
+  "run of text copied from the document (`quoted_text`); line comments anchor to a",
+  "1-based line number in a code file. You do not pass a session id or a comment",
+  "source — those are set server-side.",
 ].join(" ");
 
 const inputSchema = {
@@ -54,18 +55,25 @@ const inputSchema = {
           {
             type: "object",
             properties: {
-              kind: { const: "section" },
-              section_heading: {
+              kind: { const: "selection" },
+              quoted_text: {
                 type: "string",
-                description: 'The markdown heading line, e.g. "## Architecture".',
+                description:
+                  "The exact run of text from the document that the comment applies to. Copy it verbatim — whitespace and punctuation must match so the server can re-locate it.",
               },
-              section_index: {
-                type: "number",
-                description: "0-based index of the section in the document.",
+              context_before: {
+                type: "string",
+                description:
+                  "Up to ~50 characters of text immediately preceding `quoted_text` in the document. Used to disambiguate when the same `quoted_text` appears multiple times. Optional but recommended.",
+              },
+              context_after: {
+                type: "string",
+                description:
+                  "Up to ~50 characters of text immediately following `quoted_text` in the document. Used to disambiguate when the same `quoted_text` appears multiple times. Optional but recommended.",
               },
               text: { type: "string", description: "The review comment." },
             },
-            required: ["kind", "section_heading", "text"],
+            required: ["kind", "quoted_text", "text"],
           },
           {
             type: "object",

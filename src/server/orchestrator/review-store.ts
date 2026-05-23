@@ -25,8 +25,13 @@ interface CommentRow {
   review_id: string;
   kind: string;
   line: number | null;
+  // Legacy columns from migration 7 — retained for back-compat with sent
+  // review history (see migration 16). New writes use the selection columns.
   section_heading: string | null;
   section_index: number | null;
+  quoted_text: string | null;
+  context_before: string | null;
+  context_after: string | null;
   text: string;
   source: string;
   created_at: string;
@@ -37,7 +42,7 @@ interface CommentRow {
  *
  * Reviews are scoped to a `(sessionId, filePath)` pair. Each session can
  * carry at most one draft per file and an unbounded history of sent reviews.
- * Both line-anchored (code) and section-anchored (markdown) comments live
+ * Both line-anchored (code) and selection-anchored (markdown) comments live
  * in the same `file_review_comments` table, discriminated by the `kind`
  * column.
  */
@@ -61,9 +66,10 @@ export class FileReviewStore {
       }
       return {
         id: c.id,
-        kind: "section",
-        sectionHeading: c.section_heading ?? "",
-        sectionIndex: c.section_index ?? 0,
+        kind: "selection",
+        quotedText: c.quoted_text ?? "",
+        contextBefore: c.context_before ?? "",
+        contextAfter: c.context_after ?? "",
         text: c.text,
         source: c.source as ReviewCommentSource,
       };
@@ -77,7 +83,6 @@ export class FileReviewStore {
       status: row.status as FileReview["status"],
       comments: parsedComments,
       docSnapshotHash: row.doc_snapshot_hash,
-      sectionHeadings: JSON.parse(row.section_headings) as string[],
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       sentAt: row.sent_at ?? undefined,
@@ -125,7 +130,6 @@ export class FileReviewStore {
     filePath: string,
     fileType: FileReviewType,
     docSnapshotHash: string,
-    sectionHeadings: string[],
   ): FileReview {
     const existing = this.getDraft(sessionId, filePath);
     if (existing) return existing;
@@ -135,14 +139,13 @@ export class FileReviewStore {
     this.db.prepare(`
       INSERT INTO file_reviews
         (id, session_id, file_path, file_type, status, doc_snapshot_hash, section_headings, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, 'draft', ?, '[]', ?, ?)
     `).run(
       id,
       sessionId,
       filePath,
       fileType,
       docSnapshotHash,
-      JSON.stringify(sectionHeadings),
       now,
       now,
     );
@@ -155,7 +158,6 @@ export class FileReviewStore {
       status: "draft",
       comments: [],
       docSnapshotHash,
-      sectionHeadings,
       createdAt: now,
       updatedAt: now,
     };
@@ -178,30 +180,40 @@ export class FileReviewStore {
     return { id, kind: "line", line, text, source };
   }
 
-  /** Add a section-anchored comment to a draft review. */
-  addSectionComment(
+  /** Add a selection-anchored comment to a draft review. */
+  addSelectionComment(
     reviewId: string,
-    sectionHeading: string,
-    sectionIndex: number,
+    quotedText: string,
+    contextBefore: string,
+    contextAfter: string,
     text: string,
     source: ReviewCommentSource = "human",
   ): ReviewComment {
     const id = crypto.randomUUID();
     this.db.prepare(`
       INSERT INTO file_review_comments
-        (id, review_id, kind, section_heading, section_index, text, source, created_at)
-      VALUES (?, ?, 'section', ?, ?, ?, ?, ?)
+        (id, review_id, kind, quoted_text, context_before, context_after, text, source, created_at)
+      VALUES (?, ?, 'selection', ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       reviewId,
-      sectionHeading,
-      sectionIndex,
+      quotedText,
+      contextBefore,
+      contextAfter,
       text,
       source,
       new Date().toISOString(),
     );
     this.touchReview(reviewId);
-    return { id, kind: "section", sectionHeading, sectionIndex, text, source };
+    return {
+      id,
+      kind: "selection",
+      quotedText,
+      contextBefore,
+      contextAfter,
+      text,
+      source,
+    };
   }
 
   /** Update a comment's text. */

@@ -2,7 +2,7 @@
  * Review services — server-persisted, per-(session, file) reviews.
  *
  * Backs the unified review surface (docs/112-unified-review-surface):
- * markdown files get section-anchored comments, code files get line-anchored
+ * markdown files get selection-anchored comments, code files get line-anchored
  * comments, and both share the same draft/sent/history lifecycle.
  */
 
@@ -14,75 +14,79 @@ import type {
   FileReviewType,
   ReviewComment,
   ReviewCommentSource,
+  SelectionReviewComment,
 } from "../../shared/types.js";
 import { ServiceError } from "./types.js";
 
-// ---- Section parsing (shared utility) ----
-
-export interface MarkdownSection {
-  heading: string;
-  rawContent: string;
-  index: number;
-}
-
-export function parseMarkdownSections(content: string): MarkdownSection[] {
-  const sections: MarkdownSection[] = [];
-  const lines = content.split("\n");
-  let current: MarkdownSection = { heading: "", rawContent: "", index: 0 };
-
-  for (const line of lines) {
-    if (line.startsWith("## ")) {
-      if (current.heading || current.rawContent.trim()) {
-        sections.push(current);
-      }
-      current = { heading: line, rawContent: `${line}\n`, index: sections.length };
-    } else {
-      current.rawContent += `${line}\n`;
-    }
-  }
-  if (current.heading || current.rawContent.trim()) {
-    sections.push(current);
-  }
-
-  return sections;
-}
-
-// ---- Re-anchoring (markdown only) ----
+// ---- Selection anchoring (markdown only) ----
 
 interface ReanchoredSplit {
-  anchored: ReviewComment[];
-  orphaned: ReviewComment[];
+  anchored: SelectionReviewComment[];
+  orphaned: SelectionReviewComment[];
 }
 
 /**
- * Walk a list of review comments and route each section-anchored comment
- * either to the new section it now belongs to (heading match) or to the
- * orphaned bucket if its section no longer exists. Line comments and
- * preamble comments are always anchored.
+ * Locate a selection-anchored comment in the current document body. Returns
+ * the offset of the first match disambiguated by `contextBefore`/`contextAfter`
+ * when the same `quotedText` appears multiple times, or `-1` if the quoted
+ * text is no longer present.
+ *
+ * Disambiguation is best-effort: if no occurrence is bracketed by the saved
+ * context windows, the first occurrence wins. The context match is exact —
+ * it doesn't try to be clever about whitespace drift, because clever matching
+ * is exactly how comments end up attached to the wrong text.
+ */
+export function locateSelection(
+  content: string,
+  comment: Pick<SelectionReviewComment, "quotedText" | "contextBefore" | "contextAfter">,
+): number {
+  if (comment.quotedText === "") return -1;
+  let from = 0;
+  let firstMatch = -1;
+  while (from <= content.length) {
+    const idx = content.indexOf(comment.quotedText, from);
+    if (idx === -1) break;
+    if (firstMatch === -1) firstMatch = idx;
+    const before = content.slice(Math.max(0, idx - comment.contextBefore.length), idx);
+    const after = content.slice(idx + comment.quotedText.length, idx + comment.quotedText.length + comment.contextAfter.length);
+    if (
+      (comment.contextBefore === "" || before.endsWith(comment.contextBefore)) &&
+      (comment.contextAfter === "" || after.startsWith(comment.contextAfter))
+    ) {
+      return idx;
+    }
+    from = idx + 1;
+  }
+  return firstMatch;
+}
+
+/**
+ * Walk a list of review comments and route each selection-anchored comment
+ * either to "anchored" (its `quotedText` is still present in the doc) or
+ * "orphaned" (the quoted text no longer exists). Line comments are always
+ * anchored.
  */
 export function reanchorComments(
   comments: ReviewComment[],
-  currentHeadings: string[],
-): ReanchoredSplit {
-  const headingIndex = new Map(currentHeadings.map((h, i) => [h, i]));
-  const anchored: ReviewComment[] = [];
-  const orphaned: ReviewComment[] = [];
+  content: string,
+): ReanchoredSplit & { lines: ReviewComment[] } {
+  const anchored: SelectionReviewComment[] = [];
+  const orphaned: SelectionReviewComment[] = [];
+  const lines: ReviewComment[] = [];
 
   for (const comment of comments) {
     if (comment.kind === "line") {
-      anchored.push(comment);
+      lines.push(comment);
       continue;
     }
-    if (comment.sectionHeading === "") {
-      anchored.push({ ...comment, sectionIndex: 0 });
-    } else if (headingIndex.has(comment.sectionHeading)) {
-      anchored.push({ ...comment, sectionIndex: headingIndex.get(comment.sectionHeading)! });
+    if (locateSelection(content, comment) >= 0) {
+      anchored.push(comment);
     } else {
       orphaned.push(comment);
     }
   }
 
-  return { anchored, orphaned };
+  return { anchored, orphaned, lines };
 }
 
 // ---- File-type detection ----
@@ -156,27 +160,24 @@ export async function ensureDraftReview(
   }
 
   const hash = await hashContent(content);
-  let headings: string[] = [];
-  if (fileType === "markdown") {
-    headings = parseMarkdownSections(content)
-      .map((s) => s.heading)
-      .filter((h) => h !== "");
-  }
-
-  return reviewStore.createDraft(sessionId, filePath, fileType, hash, headings);
+  return reviewStore.createDraft(sessionId, filePath, fileType, hash);
 }
 
-/** Add a section-anchored comment to a draft review. */
-export function addSectionComment(
+/** Add a selection-anchored comment to a draft review. */
+export function addSelectionComment(
   reviewStore: FileReviewStore,
   reviewId: string,
-  sectionHeading: string,
-  sectionIndex: number,
+  quotedText: string,
+  contextBefore: string,
+  contextAfter: string,
   text: string,
   source: ReviewCommentSource = "human",
 ): ReviewComment {
   if (!text.trim()) {
     throw new ServiceError(400, "Comment text cannot be empty");
+  }
+  if (!quotedText.trim()) {
+    throw new ServiceError(400, "Selection text cannot be empty");
   }
   const review = reviewStore.getReview(reviewId);
   if (!review) {
@@ -186,9 +187,16 @@ export function addSectionComment(
     throw new ServiceError(400, "Cannot add comments to a sent review");
   }
   if (review.fileType !== "markdown") {
-    throw new ServiceError(400, "Section comments are only valid on markdown files");
+    throw new ServiceError(400, "Selection comments are only valid on markdown files");
   }
-  return reviewStore.addSectionComment(reviewId, sectionHeading, sectionIndex, text, source);
+  return reviewStore.addSelectionComment(
+    reviewId,
+    quotedText,
+    contextBefore,
+    contextAfter,
+    text,
+    source,
+  );
 }
 
 /** Add a line-anchored comment to a draft review. */
@@ -268,70 +276,46 @@ export function deleteDraftReview(reviewStore: FileReviewStore, reviewId: string
 
 // ---- Prompt construction ----
 
-interface SectionGroup {
-  heading: string;
-  comments: ReviewComment[];
-}
-
 export function buildReviewPrompt(
   filePath: string,
   fileType: FileReviewType,
   comments: ReviewComment[],
   fileContent: string,
-  currentHeadings: string[],
 ): string {
   if (fileType === "markdown") {
-    return buildMarkdownPrompt(filePath, comments, currentHeadings);
+    return buildMarkdownPrompt(filePath, comments, fileContent);
   }
   return buildCodePrompt(filePath, comments, fileContent);
+}
+
+function truncateForPrompt(text: string, max = 200): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
 }
 
 function buildMarkdownPrompt(
   filePath: string,
   comments: ReviewComment[],
-  currentHeadings: string[],
+  fileContent: string,
 ): string {
-  const currentSet = new Set(currentHeadings);
-  const anchored: ReviewComment[] = [];
-  const orphaned: ReviewComment[] = [];
-  for (const c of comments) {
-    if (c.kind !== "section") {
-      anchored.push(c);
-      continue;
-    }
-    if (c.sectionHeading === "" || currentSet.has(c.sectionHeading)) {
-      anchored.push(c);
-    } else {
-      orphaned.push(c);
-    }
-  }
-
-  const grouped = new Map<string, ReviewComment[]>();
-  for (const comment of anchored) {
-    if (comment.kind !== "section") continue;
-    const key = comment.sectionHeading || "(Introduction)";
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key)!.push(comment);
-  }
-  const groups: SectionGroup[] = Array.from(grouped, ([heading, cs]) => ({ heading, comments: cs }));
+  const { anchored, orphaned } = reanchorComments(comments, fileContent);
+  const inDocOrder = [...anchored].sort((a, b) => {
+    return locateSelection(fileContent, a) - locateSelection(fileContent, b);
+  });
 
   let prompt = `I've reviewed ${filePath} and have the following feedback:\n\n`;
 
-  for (const group of groups) {
-    prompt += `### ${group.heading}\n\n`;
-    for (const c of group.comments) {
-      prompt += `- ${c.text}\n`;
-    }
-    prompt += "\n";
+  for (const c of inDocOrder) {
+    prompt += `> ${truncateForPrompt(c.quotedText)}\n\n`;
+    prompt += `${c.text}\n\n`;
   }
 
   if (orphaned.length > 0) {
-    prompt += `### Comments on removed/renamed sections\n\n`;
-    prompt += `The following comments reference sections that no longer exist in the document. `;
+    prompt += `### Comments on removed/edited text\n\n`;
+    prompt += `The following comments reference text that no longer appears verbatim in the document. `;
     prompt += `The feedback may still be relevant — consider whether it applies elsewhere.\n\n`;
     for (const c of orphaned) {
-      if (c.kind !== "section") continue;
-      prompt += `- (was: ${c.sectionHeading}) ${c.text}\n`;
+      prompt += `- (was: «${truncateForPrompt(c.quotedText, 80)}») ${c.text}\n`;
     }
     prompt += "\n";
   }
@@ -394,19 +378,11 @@ export async function sendReview(
   }
 
   const content = (await readFileSafe(workspaceDir, review.filePath)) ?? "";
-  let currentHeadings: string[] = review.sectionHeadings;
-  if (review.fileType === "markdown" && content) {
-    currentHeadings = parseMarkdownSections(content)
-      .map((s) => s.heading)
-      .filter((h) => h !== "");
-  }
-
   const prompt = buildReviewPrompt(
     review.filePath,
     review.fileType,
     review.comments,
     content,
-    currentHeadings,
   );
   reviewStore.markSent(reviewId);
   const updated = reviewStore.getReview(reviewId);
@@ -427,14 +403,20 @@ export const MAX_REVIEW_COMMENT_CHARS = 2048;
  * by the caller.
  */
 export type AiReviewCommentInput =
-  | { kind: "section"; section_heading: string; section_index?: number; text: string }
+  | {
+      kind: "selection";
+      quoted_text: string;
+      context_before?: string;
+      context_after?: string;
+      text: string;
+    }
   | { kind: "line"; line: number; text: string };
 
 export interface SubmitAiReviewResult {
   review: FileReview;
   /** Number of comments persisted. */
   added: number;
-  /** Number of section comments whose heading no longer exists (anchored as outdated). */
+  /** Number of selection comments whose quoted text is not found in the current document (anchored as outdated). */
   outdated: number;
 }
 
@@ -495,16 +477,9 @@ export async function submitAiReviewComments(
     draft = await ensureDraftReview(reviewStore, sessionId, filePath, workspaceDir);
   }
 
-  // Re-anchor section comments against the current file, not the version the
-  // subagent read while it worked. Reuses the same parser as Send.
+  // Re-anchor selection comments against the current file, not the version the
+  // subagent read while it worked.
   const content = (await readFileSafe(workspaceDir, filePath)) ?? "";
-  const currentHeadings =
-    draft.fileType === "markdown" && content
-      ? parseMarkdownSections(content)
-          .map((s) => s.heading)
-          .filter((h) => h !== "")
-      : [];
-  const headingIndex = new Map(currentHeadings.map((h, i) => [h, i]));
 
   let added = 0;
   let outdated = 0;
@@ -519,13 +494,20 @@ export async function submitAiReviewComments(
       continue;
     }
     if (draft.fileType !== "markdown") continue;
-    const heading = c.section_heading ?? "";
-    const resolvedIndex = heading === "" ? 0 : headingIndex.get(heading);
-    if (resolvedIndex === undefined) outdated++;
-    reviewStore.addSectionComment(
+    const quotedText = c.quoted_text ?? "";
+    if (!quotedText.trim()) continue;
+    const contextBefore = c.context_before ?? "";
+    const contextAfter = c.context_after ?? "";
+    if (
+      locateSelection(content, { quotedText, contextBefore, contextAfter }) < 0
+    ) {
+      outdated++;
+    }
+    reviewStore.addSelectionComment(
       draft.id,
-      heading,
-      resolvedIndex ?? c.section_index ?? 0,
+      quotedText,
+      contextBefore,
+      contextAfter,
       c.text,
       "ai",
     );

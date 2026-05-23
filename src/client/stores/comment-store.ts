@@ -1,32 +1,38 @@
 import { create } from "zustand";
-import type { FileComment, LineComment, SectionComment } from "../../server/shared/types.js";
+import type { LineComment } from "../../server/shared/types.js";
+
+/**
+ * Legacy file-comment store used by DiffPanel for per-staged-change line
+ * comments. Markdown comments live in `file-review-store.ts` and are
+ * server-persisted; this store is local-to-the-browser and only handles line
+ * comments on staged diffs.
+ */
 
 const STORAGE_KEY = "shipit-file-comments";
 
-function loadFromStorage(): Record<string, FileComment[]> {
+function loadFromStorage(): Record<string, LineComment[]> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as Record<string, FileComment[]>;
+    if (raw) return JSON.parse(raw) as Record<string, LineComment[]>;
   } catch { /* ignore */ }
   return {};
 }
 
-function saveToStorage(data: Record<string, FileComment[]>): void {
+function saveToStorage(data: Record<string, LineComment[]>): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch { /* ignore */ }
 }
 
 interface FileCommentState {
-  commentsBySession: Record<string, FileComment[]>;
+  commentsBySession: Record<string, LineComment[]>;
 
   addLineComment: (sessionId: string, filePath: string, line: number, text: string) => void;
-  addSectionComment: (sessionId: string, filePath: string, sectionHeading: string, sectionIndex: number, text: string) => void;
   editComment: (sessionId: string, commentId: string, text: string) => void;
   deleteComment: (sessionId: string, commentId: string) => void;
   clearComments: (sessionId: string) => void;
-  getCommentsForFile: (sessionId: string, filePath: string) => FileComment[];
-  getAllComments: (sessionId: string) => FileComment[];
+  getCommentsForFile: (sessionId: string, filePath: string) => LineComment[];
+  getAllComments: (sessionId: string) => LineComment[];
   getCommentCount: (sessionId: string) => number;
 }
 
@@ -39,23 +45,6 @@ export const useCommentStore = create<FileCommentState>((set, get) => ({
       kind: "line",
       filePath,
       line,
-      text,
-    };
-    set((state) => {
-      const session = [...(state.commentsBySession[sessionId] ?? []), comment];
-      const next = { ...state.commentsBySession, [sessionId]: session };
-      saveToStorage(next);
-      return { commentsBySession: next };
-    });
-  },
-
-  addSectionComment: (sessionId, filePath, sectionHeading, sectionIndex, text) => {
-    const comment: SectionComment = {
-      id: crypto.randomUUID(),
-      kind: "section",
-      filePath,
-      sectionHeading,
-      sectionIndex,
       text,
     };
     set((state) => {

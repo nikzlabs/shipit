@@ -236,6 +236,26 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE repos ADD COLUMN display_order INTEGER");
   },
+  // Migration 16: markdown review comments anchor to user text selections, not
+  // to `## ` headings. Adds quoted_text/context_before/context_after columns,
+  // and migrates existing `kind='section'` rows by promoting the heading text
+  // (sans `## ` prefix) into quoted_text. The legacy section_heading and
+  // section_index columns are left in place to avoid a destructive rewrite of
+  // sent-review history; they're no longer read by the application code.
+  (db) => {
+    db.exec(`
+      ALTER TABLE file_review_comments ADD COLUMN quoted_text TEXT;
+      ALTER TABLE file_review_comments ADD COLUMN context_before TEXT;
+      ALTER TABLE file_review_comments ADD COLUMN context_after TEXT;
+
+      UPDATE file_review_comments
+         SET quoted_text = TRIM(REPLACE(COALESCE(section_heading, ''), '## ', '')),
+             context_before = '',
+             context_after = '',
+             kind = 'selection'
+       WHERE kind = 'section';
+    `);
+  },
 ];
 
 export class DatabaseManager {

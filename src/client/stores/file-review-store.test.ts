@@ -53,15 +53,22 @@ function makeDraft(overrides?: Partial<FileReview>): FileReview {
     status: overrides?.status ?? "draft",
     comments: overrides?.comments ?? [],
     docSnapshotHash: overrides?.docSnapshotHash ?? "h",
-    sectionHeadings: overrides?.sectionHeadings ?? ["## A"],
     createdAt: overrides?.createdAt ?? "2025-01-01T00:00:00Z",
     updatedAt: overrides?.updatedAt ?? "2025-01-01T00:00:00Z",
     sentAt: overrides?.sentAt,
   };
 }
 
-function sectionComment(id: string, text = "x"): ReviewComment {
-  return { id, kind: "section", sectionHeading: "## A", sectionIndex: 0, text, source: "human" };
+function selectionComment(id: string, text = "x"): ReviewComment {
+  return {
+    id,
+    kind: "selection",
+    quotedText: "anchored text",
+    contextBefore: "",
+    contextAfter: "",
+    text,
+    source: "human",
+  };
 }
 
 function lineComment(id: string, line = 1, text = "x"): ReviewComment {
@@ -104,20 +111,21 @@ describe("file-review-store", () => {
     expect(useFileReviewStore.getState().getHistory("s1", "plan.md").map((r) => r.id)).toEqual(["s0"]);
   });
 
-  it("addSectionComment() appends to draft locally after successful POST", async () => {
+  it("addSelectionComment() appends to draft locally after successful POST", async () => {
     const draft = makeDraft({ id: "d2" });
     const fake = new FakeFetch();
     fake.on("POST", "/api/sessions/s1/file-reviews/draft", () => draft);
     fake.on("GET", /file-reviews\?filePath/, () => ({ reviews: [] }));
-    fake.on("POST", "/api/sessions/s1/file-reviews/d2/comments", () => sectionComment("c1", "hello"));
+    fake.on("POST", "/api/sessions/s1/file-reviews/d2/comments", () => selectionComment("c1", "hello"));
     fake.install();
 
     await useFileReviewStore.getState().load("s1", "plan.md");
-    const comment = await useFileReviewStore.getState().addSectionComment(
+    const comment = await useFileReviewStore.getState().addSelectionComment(
       "s1",
       "plan.md",
-      "## A",
-      0,
+      "anchored text",
+      "",
+      "",
       "hello",
     );
     expect(comment?.id).toBe("c1");
@@ -125,7 +133,7 @@ describe("file-review-store", () => {
   });
 
   it("addLineComment() appends to a code draft", async () => {
-    const draft = makeDraft({ id: "d3", fileType: "code", sectionHeadings: [] });
+    const draft = makeDraft({ id: "d3", fileType: "code" });
     const fake = new FakeFetch();
     fake.on("POST", "/api/sessions/s1/file-reviews/draft", () => draft);
     fake.on("GET", /file-reviews\?filePath/, () => ({ reviews: [] }));
@@ -139,7 +147,7 @@ describe("file-review-store", () => {
   });
 
   it("editComment() updates the local comment text", async () => {
-    const draft = makeDraft({ id: "d4", comments: [sectionComment("c1", "old")] });
+    const draft = makeDraft({ id: "d4", comments: [selectionComment("c1", "old")] });
     const fake = new FakeFetch();
     fake.on("POST", "/api/sessions/s1/file-reviews/draft", () => draft);
     fake.on("GET", /file-reviews\?filePath/, () => ({ reviews: [] }));
@@ -152,7 +160,7 @@ describe("file-review-store", () => {
   });
 
   it("deleteComment() removes the local comment", async () => {
-    const draft = makeDraft({ id: "d5", comments: [sectionComment("c1"), sectionComment("c2")] });
+    const draft = makeDraft({ id: "d5", comments: [selectionComment("c1"), selectionComment("c2")] });
     const fake = new FakeFetch();
     fake.on("POST", "/api/sessions/s1/file-reviews/draft", () => draft);
     fake.on("GET", /file-reviews\?filePath/, () => ({ reviews: [] }));
@@ -166,7 +174,7 @@ describe("file-review-store", () => {
   });
 
   it("sendDraft() returns the prompt, clears the draft, and prepends to history", async () => {
-    const draft = makeDraft({ id: "d6", comments: [sectionComment("c1")] });
+    const draft = makeDraft({ id: "d6", comments: [selectionComment("c1")] });
     const sentReview: FileReview = { ...draft, status: "sent", sentAt: "2025-01-03T00:00:00Z" };
     const fake = new FakeFetch();
     fake.on("POST", "/api/sessions/s1/file-reviews/draft", () => draft);
@@ -206,7 +214,15 @@ describe("file-review-store", () => {
     const updated = makeDraft({
       id: "d8",
       comments: [
-        { id: "ai1", kind: "section", sectionHeading: "## A", sectionIndex: 0, text: "robot says", source: "ai" },
+        {
+          id: "ai1",
+          kind: "selection",
+          quotedText: "anchored text",
+          contextBefore: "",
+          contextAfter: "",
+          text: "robot says",
+          source: "ai",
+        },
       ],
     });
     useFileReviewStore.getState().applyReviewUpdate(updated);
@@ -231,7 +247,7 @@ describe("file-review-store", () => {
   });
 
   it("discardEmptyDraft() leaves drafts with comments alone", async () => {
-    const draft = makeDraft({ id: "d10", comments: [sectionComment("c1")] });
+    const draft = makeDraft({ id: "d10", comments: [selectionComment("c1")] });
     const fake = new FakeFetch();
     fake.on("POST", "/api/sessions/s1/file-reviews/draft", () => draft);
     fake.on("GET", /file-reviews\?filePath/, () => ({ reviews: [] }));

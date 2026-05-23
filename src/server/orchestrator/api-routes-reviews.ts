@@ -16,7 +16,7 @@ import {
   getDraftReview,
   ensureDraftReview,
   addLineComment,
-  addSectionComment,
+  addSelectionComment,
   updateReviewComment,
   deleteReviewComment,
   deleteDraftReview,
@@ -112,7 +112,14 @@ export async function registerReviewRoutes(
     Params: { sessionId: string; reviewId: string };
     Body:
       | { kind: "line"; line: number; text: string; source?: Source }
-      | { kind: "section"; sectionHeading: string; sectionIndex: number; text: string; source?: Source };
+      | {
+          kind: "selection";
+          quotedText: string;
+          contextBefore?: string;
+          contextAfter?: string;
+          text: string;
+          source?: Source;
+        };
   }>(
     "/api/sessions/:sessionId/file-reviews/:reviewId/comments",
     async (request, reply) => {
@@ -129,11 +136,12 @@ export async function registerReviewRoutes(
           );
           return comment;
         }
-        const comment = addSectionComment(
+        const comment = addSelectionComment(
           deps.reviewStore!,
           request.params.reviewId,
-          body.sectionHeading,
-          body.sectionIndex,
+          body.quotedText,
+          body.contextBefore ?? "",
+          body.contextAfter ?? "",
           body.text,
           source,
         );

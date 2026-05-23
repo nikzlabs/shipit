@@ -85,7 +85,7 @@ describe("FilePreviewModal", () => {
     expect(editorDiv).not.toBeNull();
   });
 
-  it("renders markdown content via MarkdownSectionComments", () => {
+  it("renders markdown content via MarkdownSelectionComments", () => {
     render(
       <FilePreviewModal
         filePath="README.md"
@@ -94,7 +94,7 @@ describe("FilePreviewModal", () => {
         onClose={() => {}}
       />
     );
-    // MarkdownSectionComments renders the heading text
+    // MarkdownSelectionComments renders the heading text
     expect(screen.getByText("Hello World")).toBeInTheDocument();
   });
 
