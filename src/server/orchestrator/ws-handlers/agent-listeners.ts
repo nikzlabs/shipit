@@ -259,6 +259,15 @@ export function wireAgentListeners(
     }
   };
 
+  // `agent_init` fires once per Claude CLI "session" — i.e. once per top-level
+  // turn AND once per Task subagent (each subagent gets its own session_id and
+  // emits its own init). The log entry is meant to mark the agent process
+  // actually coming up, not every internal session boundary, so gate it to the
+  // first init we see for this wired-agent invocation. Without the flag, a turn
+  // that dispatches a few subagents prints a wall of misleading "Agent process
+  // started" entries even though only one process started.
+  let hasLoggedAgentStart = false;
+
   // ---- MCP mid-turn crash detection (docs/088) ----
   //
   // The CLI's init event covers cold-start liveness (ClaudeAdapter →
@@ -331,8 +340,14 @@ export function wireAgentListeners(
       // /agent/start (HTTP 409), producing misleading multi-start log
       // entries when the orchestrator's defensive flow couldn't catch
       // a race. agent_init is emitted by both local adapters and the
-      // proxy, so this works uniformly across runtime modes.
-      ctx.broadcastLog("server", "Agent process started");
+      // proxy, so this works uniformly across runtime modes. Gated to
+      // the first init per turn — see the `hasLoggedAgentStart` comment
+      // above for why subsequent inits (subagents, streaming turn-2)
+      // must not re-log.
+      if (!hasLoggedAgentStart) {
+        hasLoggedAgentStart = true;
+        ctx.broadcastLog("server", "Agent process started");
+      }
       ctx.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
       const session = ctx.sessionManager.get(turnSessionId);
       if (session) {
