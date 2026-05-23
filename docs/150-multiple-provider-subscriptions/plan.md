@@ -266,6 +266,7 @@ interface ProviderAccount {
   isPrimary: boolean;
   status: "ready" | "authenticating" | "exhausted" | "auth_failed" | "unavailable";
   plan?: string | null;
+  capabilities?: ProviderAccountCapabilities;
   lastUsedAt?: number;
   exhaustedUntil?: number | null;
   quota?: SubscriptionLimits;
@@ -295,6 +296,12 @@ accounts:
 
 For backward compatibility, singleton helper methods continue to resolve the
 primary account until all call sites are migrated.
+
+`capabilities` persists the account-specific snapshot described in session
+startup. Migration initializes it from provider-wide `AgentRegistry`
+capabilities with `source: "manual_default"` and `guardedModeState: "unknown"`.
+Auth/profile refreshes and runtime `agent_init` observations update it in
+`CredentialStore`, so fallback eligibility survives orchestrator restarts.
 
 ### Agent availability gates
 
@@ -509,6 +516,15 @@ child-session send/spawn paths, CI-fix paths, rebase/conflict recovery, and any
 future server-initiated turns all use that helper. This keeps failover behavior
 identical whether the turn was started by chat, by an answer to a blocked tool
 question, by the agent via `shipit session create`, or by a server automation.
+
+Detached/system-turn paths must hydrate persisted session routing before creating
+or reusing a runner. In particular, child follow-up messages and other paths that
+call `runnerRegistry.getOrCreate(...)` after a runner was disposed must read
+`SessionInfo.agentId` and `SessionInfo.providerAccountId` first and pass the
+persisted agent into runner creation. Falling back to `defaultAgentId` before
+preflight would recreate the runner under the wrong provider and can bypass the
+pinned account. The shared preflight then validates that the hydrated account is
+still usable before the turn starts.
 
 ### Quota and exhaustion detection
 
@@ -758,6 +774,9 @@ Existing sessions without `provider_account_id` are split by pin state:
 - Integration: child follow-up messages and GitHub CI auto-fix system turns use
   the shared provider-account preflight instead of bypassing credential
   selection/sync.
+- Integration: after a runner is disposed, child follow-up and other detached
+  system-turn paths recreate it from persisted `agent_id` and
+  `provider_account_id`, not `defaultAgentId`.
 - Integration: answer-question resumes and rebase/conflict recovery direct
   `agent.run(...)` paths use the shared provider-account preflight, token sync,
   and `agent_init` account metadata decoration.
