@@ -120,9 +120,16 @@ not a blocker.
 ### Surface: a Skills tab inside the existing Settings dialog
 
 Add **Skills** as a new tab in the existing Settings dialog
-(`src/client/components/Settings.tsx`), alongside the current Agent / GitHub /
-Git / Instructions / MCP / Advanced tabs. Skill management is configuration,
-not turn-by-turn workflow, so it belongs with the other agent-config affordances.
+(`src/client/components/Settings.tsx`). The dialog today has two sidebar
+groups: an **Agent** group (`agent-claude`, `agent-codex` — split per
+backend) and a **General** group (GitHub, Git, Instructions, MCP, Advanced).
+Place Skills under the **General** group rather than the Agent group,
+because the surface is agent-aware but not agent-scoped (one Skills tab
+follows whichever session you're on, like MCP). Position it just before
+MCP so the two extension-management surfaces sit adjacent.
+
+Skill management is configuration, not turn-by-turn workflow, so it
+belongs with the other agent-config affordances.
 
 **Per-tab dialog width.** Today the dialog is `max-w-2xl` (672 px) with
 `md:h-120` (480 px), which suits the existing form-shaped tabs (single-column
@@ -145,11 +152,11 @@ first two and the rest are deferred — see Build order for the split.
 2. **Installed (v1)** — what's already in the workspace. Each row:
    marketplace + plugin chip, uninstall overflow. v1 lists only plugins
    ShipIt itself installed (identified by the install marker — see
-   "Backend-agnostic at the surface; agent-specific at the writer"). Skills
-   the user wrote by hand under `.claude/skills/` show up in the existing
+   "Install marker — managed vs hand-written skills"). Skills the user
+   wrote by hand under `.claude/skills/` show up in the existing
    `/`-autocomplete (doc 138) but are not listed here, since this surface is
    "what's installed *from a marketplace*." **No enable/disable in v1** —
-   only install/uninstall (see "Enable/disable deferred to v3" below).
+   only install/uninstall (see Data model: enable/disable deferred to v3).
 3. **Marketplaces (v2)** — add (paste GitHub shorthand, Git URL, or local
    path), list, refresh, remove, toggle auto-update. The official
    Anthropic/OpenAI catalogs come pre-added per active agent.
@@ -240,8 +247,14 @@ running agent:
 2. **Path-scoped `git add` on install commit.** Even with #1, the install
    commit must `git add` only the plugin's own paths, never `git add -A` or
    `git add .`. This prevents accidentally including unrelated user edits
-   that happen to be in the working tree. CLAUDE.md already calls this out
-   for the git-commit flow generally; the install path follows the same rule.
+   that happen to be in the working tree. **This is a new rule for the
+   install path, NOT an existing server convention.** `GitManager.autoCommit()`
+   (`src/server/shared/git.ts:78`) uses `git add -A` and is fine for its job
+   (committing whatever the agent edited during a turn); the install flow
+   needs the opposite discipline because the user — not the agent — is the
+   one driving the change, and there may be unrelated in-flight work in the
+   tree. Implementation: call `simpleGit.add([…paths])` directly with the
+   plugin's own files plus the install marker, NOT through `autoCommit`.
 3. **Two-tab race in the same repo.** Two browser tabs on different sessions
    in the same repo both clicking Install at the same time would race on the
    git index and on the `.claude/skills/` directory. Resolution: an
@@ -390,15 +403,18 @@ DELETE /api/sessions/:id/plugins/:marketplaceId/:pluginName
 ```
 
 App-wide marketplace state persists in a new
-`src/server/orchestrator/marketplace-store.ts` following the existing
-patterns of `repo-store.ts` and `secret-store.ts` — **SQLite via
-`DatabaseManager`**, class wrapping prepared statements (not a JSON file —
-the orchestrator has no JSON-file persistence stores). A new
-`marketplaces` table holds `id`, `source` (JSON-encoded), `agent_id`,
-`auto_update`, `last_fetched_at`, `status`. v1 seeds it with the official
-Claude/Codex catalogs at orchestrator startup and never writes to it again
-(since v1 doesn't expose add/remove); the table still exists from day one
-so v2 can layer on without restructuring or a schema migration.
+`src/server/orchestrator/marketplace-store.ts` — **SQLite via
+`DatabaseManager`**, class wrapping prepared statements. This matches the
+pattern used by other domain-data stores like `repo-store.ts` and
+`secret-store.ts`. (The orchestrator does have JSON-file stores —
+`credential-store.ts` writes `JSON.stringify` to disk at line 95 — but
+those are credential-shaped: small, secret, hot-read. Marketplaces are
+queryable domain data and want the SQLite branch.) A new `marketplaces`
+table holds `id`, `source` (JSON-encoded), `agent_id`, `auto_update`,
+`last_fetched_at`, `status`. v1 seeds it with the official Claude/Codex
+catalogs at orchestrator startup and never writes to it again (since v1
+doesn't expose add/remove); the table still exists from day one so v2 can
+layer on without restructuring or a schema migration.
 
 ### Backend-agnostic at the surface; agent-specific at the writer
 
@@ -420,12 +436,16 @@ would not list plugin skills and invocation would break. So:
   `/^\/([a-zA-Z0-9._:-]*)$/`); call out as a v1-scoped doc 138 amendment
   in Key files.
 - **Codex** → write to `.codex/skills/<plugin>__<skill>/SKILL.md` (or
-  `.agents/skills/` per the directory-layout note; write to whichever the
-  user's existing skills already use, defaulting to `.codex/skills/` until
-  `.agents/skills/` is confirmed canonical). Frontmatter `name` set to
-  `<plugin>:<skill>`; invocation token is `$<plugin>:<skill>`. Codex's
-  catalog-injection model reads `SKILL.md` directly (per doc 138) so the
-  regex amendment doesn't bind there, but it's harmless for Codex too.
+  `.agents/skills/` per the directory-layout note). Tiebreaker for the
+  write destination, evaluated in order: (1) if exactly one of the two
+  directories exists and is non-empty, write there; (2) if both exist and
+  both are non-empty, prefer the one with more entries; (3) if neither
+  exists (the default), use `.codex/skills/` until the v0 spike confirms
+  `.agents/skills/` is canonical. Reads scan both directories regardless.
+  Frontmatter `name` set to `<plugin>:<skill>`; invocation token is
+  `$<plugin>:<skill>`. Codex's catalog-injection model reads `SKILL.md`
+  directly (per doc 138) so the regex amendment doesn't bind there, but
+  it's harmless for Codex too.
 
 The catalog *fetch* logic is shared (Git clone or HTTP download + JSON parse
 of the manifest). Only the *write* step branches per agent.
@@ -486,9 +506,9 @@ So we pick by backend, using the lightest thing that works:
 
 | Backend | Process model | What we do on install |
 |---|---|---|
-| Claude `claude -p` (default) | New process spawned per turn from `src/server/session/claude.ts:317` | **Nothing.** The next user prompt naturally spawns a fresh `claude -p`, which re-scans `.claude/skills/` on startup. |
+| Claude `claude -p` (default) | New process spawned per turn from `ClaudeProcess` (PTY) in `src/server/session/claude.ts` (`-p` arg at ~line 125, `pty.spawn("claude", …)` at ~line 190) | **Nothing.** The next user prompt naturally spawns a fresh `claude -p`, which re-scans `.claude/skills/` on startup. |
 | Streaming Claude (doc 140 live-steering, if/when enabled) | Persistent worker-side process | Call `killAgent` (`services/recovery.ts:139`) — SIGKILLs the CLI process on the worker. Next turn respawns and re-scans. No container destroy. |
-| Codex (`codex app-server`) | Persistent worker-side process | Same — `killAgent`. Next `codex exec` re-injects `<skills_instructions>`. |
+| Codex (`codex app-server`) | Persistent worker-side process | Same — `killAgent`. Next turn's `app-server` re-injects `<skills_instructions>` on respawn (**pending v0 spike** — see v0 build order; doc 138 verified this for `codex exec`, but `app-server`'s injection behavior on respawn must be re-verified). |
 
 `restartAgent` is explicitly NOT used here — it's the wrong tool for this
 job. `killAgent` is the right primitive when one is needed at all.
@@ -536,15 +556,44 @@ But the user should know "the container is the sandbox" undersells what a
 hostile plugin can do — link to the credential-store and secret-store
 threat models when implementing.
 
+**Codex-specific implication.** On Codex, the catalog-injection model (per
+doc 138) lets the model pick a matching skill *even without an explicit
+`$name`* — the `<skills_instructions>` block listing every discovered skill
+is part of every turn's context. An installed-but-never-invoked malicious
+Codex skill is therefore in scope the moment its description happens to
+match a user prompt. The Monaco preview at install time is the *only* gate;
+there's no "but the user has to type the name" backstop. This makes the
+inline-preview defense (#2) more load-bearing for Codex than for Claude,
+not less.
+
 ## Build order
 
 Smallest valuable v1 first, layered to ship independently.
 
-### v0 — Reconnaissance spike (~½ day, gates v1)
+### v0 — Reconnaissance spike (~1 day, gates v1)
 
-Two Codex-side unknowns pre-empt UI work. Resolve before any client or
+Four upstream-CLI unknowns pre-empt UI work. Resolve before any client or
 service code lands:
 
+- **Claude colon-in-name resolution.** ShipIt installs to a flat directory
+  named `<plugin>__<skill>/` with frontmatter `name: <plugin>:<skill>`,
+  bypassing Claude's `/plugin` machinery entirely (no `.claude-plugin/marketplace.json`
+  registration). The whole `__`/`:` strategy assumes Claude's CLI honors a
+  colon in the `name` frontmatter when the skill is discovered via raw
+  filesystem scan, and resolves `/foo:bar` against a directory called
+  `foo__bar`. **Verify empirically** against the pinned Claude CLI version.
+  If it doesn't, the doc 138 regex amendment is wasted work — pick a
+  different delimiter (likely `.` since the existing regex already allows
+  it) or accept that ShipIt-installed plugins invoke under a different
+  namespace than CLI-installed ones (e.g. `/<plugin>__<skill>`).
+- **Codex `<skills_instructions>` injection under `app-server`.** Doc 138
+  verified catalog injection for `codex exec`, but ShipIt's Codex adapter
+  spawns `codex app-server` (`src/server/session/agents/codex-adapter.ts:5`).
+  Whether `app-server` re-injects the catalog on every turn (so a
+  `killAgent`-and-respawn picks up newly-installed skills) is the
+  actually-relevant question. **Verify against the pinned Codex CLI version.**
+  If `app-server` doesn't re-inject on respawn, `killAgent` alone won't make
+  new Codex skills visible — we'd need a different reload mechanism.
 - **Codex project skill path.** `.codex/skills/` (doc 138 empirical against
   codex-cli 0.132.0) vs `.agents/skills/` (current OpenAI docs, aligned
   with agentskills.io). Re-verify against the Codex CLI version pinned in
@@ -556,11 +605,13 @@ service code lands:
   directly (linked from <https://developers.openai.com/codex/plugins>) and
   document the fields ShipIt needs.
 
-If either spike reveals more friction than expected (e.g. Codex's catalog
-format isn't stable or requires a vendor SDK), fall back to **v1a-Claude
-then v1b-Codex** as separate releases on the same train rather than blocking
-v1 on Codex. The Decisions section commits to "both backends ship together"
-as the *goal*; this is the agreed-upon escape hatch if the goal slips.
+If any of these spikes surface more friction than expected, fall back to
+**v1a-Claude then v1b-Codex** as separate releases on the same train rather
+than blocking v1 on Codex. The Decisions section commits to "both backends
+ship together" as the *goal*; this is the agreed-upon escape hatch if the
+goal slips. The Claude colon-in-name spike is the highest-risk of the four,
+because a negative result invalidates the chosen namespace strategy across
+*both* backends.
 
 ### v1 — Repo-level skills, both backends, official catalogs only
 
