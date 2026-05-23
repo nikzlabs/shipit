@@ -242,8 +242,9 @@ running agent:
    "Agent is working — install will become available when it's done."
    Rationale: an in-flight turn that triggers `agent_result` mid-install
    risks the existing auto-commit (`postTurnCommit()` in
-   `agent-execution.ts`) sweeping plugin files into a commit alongside
-   unrelated agent edits, or losing the install's own commit to a race.
+   `src/server/orchestrator/ws-handlers/post-turn.ts:19`) sweeping plugin
+   files into a commit alongside unrelated agent edits, or losing the
+   install's own commit to a race.
 2. **Path-scoped `git add` on install commit.** Even with #1, the install
    commit must `git add` only the plugin's own paths, never `git add -A` or
    `git add .`. This prevents accidentally including unrelated user edits
@@ -445,13 +446,17 @@ would not list plugin skills and invocation would break. So:
 - **Claude** → write to `.claude/skills/<plugin>__<skill>/SKILL.md` (double
   underscore as the in-directory delimiter, filesystem-safe). Frontmatter
   `name` is set to `<plugin>:<skill>` to match Claude's canonical
-  invocation token. **This requires a small amendment to doc 138's regexes**
-  — both `MessageInput.tsx:265` (`/^\/([a-zA-Z0-9._-]*)$/`) and
-  `agent-execution.ts:115` (`/^\/[a-zA-Z0-9._-]+/`) currently exclude `:`,
-  so the autocomplete would close on the `:` and the leading-slash detector
-  would miss the full token. Widen both regexes to allow `:` (e.g.
-  `/^\/([a-zA-Z0-9._:-]*)$/`); call out as a v1-scoped doc 138 amendment
-  in Key files.
+  invocation token. **This requires a small amendment to doc 138's
+  autocomplete regex** — `MessageInput.tsx:265` is
+  `/^\/([a-zA-Z0-9._-]*)$/` (end-anchored with `$`), so once the user
+  types past `:` the menu closes mid-token. Widen to allow `:` (e.g.
+  `/^\/([a-zA-Z0-9._:-]*)$/`). The companion regex in `agent-execution.ts:115`
+  is `/^\/[a-zA-Z0-9._-]+/` — NOT end-anchored, so `.test("/foo:bar rest")`
+  already returns `true` today; no change needed there. `assembleAgentPrompt`
+  uses only the boolean (for prepend-vs-append attachment ordering), not
+  the captured text, so the colon doesn't need to be in the character
+  class for that one to work. Call out the `MessageInput.tsx` change as a
+  v1-scoped doc 138 amendment in Key files.
 - **Codex** → write to `.codex/skills/<plugin>__<skill>/SKILL.md` (or
   `.agents/skills/` per the directory-layout note). Tiebreaker for the
   write destination, evaluated in order: (1) if exactly one of the two
@@ -667,10 +672,11 @@ day one, assuming v0 didn't surface anything that requires the v1a/v1b split.
 6. **Install/turn concurrency** — Install button disabled while
    `runner.running` is true; path-scoped `git add`; per-workspace install
    mutex in `services/marketplace.ts`.
-7. **Doc 138 regex amendment** — widen the `/`-slash regexes in
-   `MessageInput.tsx` and `agent-execution.ts` to allow `:`, so
-   `/<plugin>:<skill>` (Claude's canonical namespace token) works through
-   the autocomplete and the leading-slash detector.
+7. **Doc 138 regex amendment** — widen the `/`-slash autocomplete regex in
+   `MessageInput.tsx:265` to allow `:` so `/<plugin>:<skill>` (Claude's
+   canonical namespace token) keeps the autocomplete open past the colon.
+   The companion regex in `agent-execution.ts:115` isn't end-anchored and
+   already handles `:` correctly; no change needed there.
 8. **Pre-clone the two seeded officials at orchestrator startup** so the
    Discover tab opens instantly the first time a user clicks it. The disk
    cost is bounded (two well-known catalogs) and the pattern matches how
@@ -737,11 +743,10 @@ cover:
 | `src/server/orchestrator/api-routes-files.ts` | Add session-scoped install/uninstall/enable routes alongside the existing `GET /api/sessions/:id/skills` from doc 138 |
 | `src/server/orchestrator/services/marketplace.ts` *(install mutex)* | In-process `Map<workspaceDir, Promise<InstallResult>>` for the per-workspace install lock; same shape as `_mcpInstallMutex` in `src/server/session/session-worker.ts:133`. NOT in `RepoStore` (which is SQLite — wrong layer for runtime locks). |
 | `src/server/orchestrator/services/recovery.ts` | Install service calls `killAgent` directly when a persistent agent is running (Streaming Claude / Codex). No `restartAgent`. One-shot `claude -p` needs no kill — next turn respawns. |
-| `src/client/components/Settings.tsx` | Add `skills` tab; make the `DialogContent` `className` conditional on active tab (Skills → `max-w-5xl` + `md:h-[80vh]`, others stay at current `max-w-2xl` + `md:h-120`) |
-| `src/client/stores/ui-store.ts` | Widen the `SettingsTab` discriminated union at line 30 to include `"skills"` — the persisted `settingsTab` state (which remembers the user's last-open tab across reloads) is typed against this union, and both type sites must agree. |
+| `src/client/components/Settings.tsx` | Add `skills` tab; widen the local `type Tab = …` union at line 20 to include `"skills"`; make the `DialogContent` `className` conditional on active tab (Skills → `max-w-5xl` + `md:h-[80vh]`, others stay at current `max-w-2xl` + `md:h-120`). |
+| `src/client/stores/ui-store.ts` | Widen the `SettingsTab` discriminated union at line 30 to include `"skills"`. There are **three type sites** total (`Settings.tsx:20`, `ui-store.ts:30`, and the persisted `settingsTab` field at `ui-store.ts:75`); all must be widened together or the persisted last-open-tab state fails typecheck. |
 | `src/client/components/SkillsTab.tsx` | New — Discover/Installed (v1) → Marketplaces/Errors (v2) sub-tabs; lives inside Settings |
-| `src/client/components/MessageInput.tsx` *(doc 138 amendment)* | Widen the slash-trigger regex at line 265 from `/^\/([a-zA-Z0-9._-]*)$/` to allow `:` so `/<plugin>:<skill>` keeps the autocomplete open through the namespace separator. |
-| `src/server/orchestrator/ws-handlers/agent-execution.ts` *(doc 138 amendment)* | Widen the slash-detection regex at line 115 from `/^\/[a-zA-Z0-9._-]+/` to allow `:`, so `assembleAgentPrompt` keeps the full `<plugin>:<skill>` token at index 0 when attachments are present. |
+| `src/client/components/MessageInput.tsx` *(doc 138 amendment)* | Widen the slash-trigger regex at line 265 from `/^\/([a-zA-Z0-9._-]*)$/` to allow `:` so `/<plugin>:<skill>` keeps the autocomplete open through the namespace separator. The `agent-execution.ts:115` regex is NOT end-anchored, so it already handles `:` — no change needed there. |
 | `src/client/components/SkillInstallSheet.tsx` | New — install sheet with inline Monaco `SKILL.md` preview |
 | `src/client/stores/skills-store.ts` | New Zustand store for marketplace/plugin state |
 | `src/client/hooks/useMarketplace.ts` | New API hooks |
