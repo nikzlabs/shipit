@@ -38,6 +38,7 @@ let dbManager: DatabaseManager;
 const sseBroadcast = vi.fn();
 
 beforeEach(async () => {
+  sseBroadcast.mockClear();
   dbManager = createTestDatabaseManager();
   tmpDir = fs.mkdtempSync("/tmp/shipit-pr-merge-test-");
 
@@ -263,6 +264,71 @@ describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
     // call may still fail in the stub (no real GitHub), but the status code
     // proves the running-runner gate didn't fire.
     expect(res.statusCode).not.toBe(409);
+  });
+
+  it("forces a merged PR status update after merge succeeds", async () => {
+    githubAuth.setGraphqlResult({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [{
+              number: 42,
+              title: "Test PR",
+              url: "https://github.com/test-user/test-repo/pull/42",
+              state: "OPEN",
+              mergeable: "MERGEABLE",
+              autoMergeRequest: null,
+              headRefName: "shipit/test-feature",
+              baseRefName: "main",
+              additions: 10,
+              deletions: 5,
+              commits: {
+                nodes: [{
+                  commit: {
+                    oid: "abc123",
+                    statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [] } },
+                  },
+                }],
+              },
+            }],
+          },
+        },
+      },
+    });
+    githubAuth.setPrData({
+      url: "https://github.com/test-user/test-repo/pull/42",
+      number: 42,
+      base: "main",
+      title: "Test PR",
+    });
+    githubAuth.setFindPrAnyStateResult({
+      url: "https://github.com/test-user/test-repo/pull/42",
+      number: 42,
+      base: "main",
+      title: "Test PR",
+      body: "",
+      state: "closed",
+      merged_at: "2026-05-24T12:00:00Z",
+      additions: 10,
+      deletions: 5,
+    });
+
+    prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
+    await new Promise((r) => setTimeout(r, 100));
+    sseBroadcast.mockClear();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/merge`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ method: "squash" }),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: true });
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({ sessionId, prState: "merged", prNumber: 42 })],
+    }));
   });
 });
 

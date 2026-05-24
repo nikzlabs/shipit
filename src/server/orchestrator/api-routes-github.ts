@@ -94,6 +94,7 @@ export async function registerGitHubRoutes(
         // Track the new PR in the poller
         if (deps.prStatusPoller && session.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
+          void deps.prStatusPoller.forceRefreshSession(request.params.id);
         }
 
         return result;
@@ -116,11 +117,16 @@ export async function registerGitHubRoutes(
       try {
         const git = createGitManager(dir);
         const session = sessionManager.get(request.params.id);
-        return await createPullRequest(
+        const result = await createPullRequest(
           git, deps.githubAuthManager,
           request.body.title, request.body.body, request.body.base, request.body.draft,
           session?.remoteUrl,
         );
+        if (result.success && deps.prStatusPoller && session?.remoteUrl) {
+          deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
+          void deps.prStatusPoller.forceRefreshSession(request.params.id);
+        }
+        return result;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -171,6 +177,7 @@ export async function registerGitHubRoutes(
         });
         if (deps.prStatusPoller && session.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
+          void deps.prStatusPoller.forceRefreshSession(request.params.id);
         }
         return result;
       } catch (err) {
@@ -591,7 +598,15 @@ export async function registerGitHubRoutes(
         }
 
         const git = createGitManager(dir);
-        return await mergePullRequest(git, deps.githubAuthManager, request.body?.method, session?.remoteUrl);
+        const result = await mergePullRequest(git, deps.githubAuthManager, request.body?.method, session?.remoteUrl);
+        if ((result.success || result.autoMergeEnabled) && poller && session?.remoteUrl) {
+          if (result.success) {
+            await poller.forceVerifySessionPrState(request.params.id);
+          } else {
+            await poller.forceRefreshSession(request.params.id);
+          }
+        }
+        return result;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

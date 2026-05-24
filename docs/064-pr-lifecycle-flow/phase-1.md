@@ -151,12 +151,12 @@ Write a concise GitHub PR description in markdown:
 
 ### Architecture
 
-One poller per repo, not per session. All sessions sharing a repo share one polling loop. Polls every **15 seconds** after an immediate first poll when tracking starts. This is one GraphQL call per repo regardless of how many sessions exist, keeping active PR/CI updates timely while leaving much more headroom in GitHub's GraphQL point budget.
+One poller per repo, not per session. All sessions sharing a repo share one polling loop. Polls every **15 seconds** after an immediate first poll when tracking starts. User-visible events can request an out-of-band forced refresh for a specific session's repo (session activation, PR creation, PR-tab activation, merge button) so the low-frequency background cadence does not leave the lifecycle card stale. This is one GraphQL call per repo regardless of how many sessions exist, keeping active PR/CI updates timely while leaving much more headroom in GitHub's GraphQL point budget.
 
 ```
 PrStatusPoller (orchestrator)
   │
-  │ every 3s
+  │ every 15s, plus targeted forced refreshes
   ▼
 GitHub GraphQL API (one query per repo, OPEN PRs only)
   │

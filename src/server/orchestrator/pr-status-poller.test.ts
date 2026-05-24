@@ -531,6 +531,50 @@ describe("PrStatusPoller", () => {
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
   });
 
+  it("force-refreshes a session even when idle polling would skip", async () => {
+    githubAuth = makeGitHubAuth({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [makeGraphQLPrNode({ title: "Original title" })],
+          },
+        },
+      },
+    });
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sseBroadcast).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(sseBroadcast).toHaveBeenCalledTimes(1);
+
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [makeGraphQLPrNode({ title: "Updated while idle" })],
+          },
+        },
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    expect(sseBroadcast).toHaveBeenCalledTimes(1);
+
+    await poller.forceRefreshSession("s1");
+
+    expect(sseBroadcast).toHaveBeenCalledTimes(2);
+    expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
+      updates: [expect.objectContaining({ sessionId: "s1", prTitle: "Updated while idle" })],
+    }));
+  });
+
   it("fetches conversation fields only when a session's PR tab is active (docs/133 Phase 4)", async () => {
     const graphqlResult = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode(CONVERSATION_OVERRIDES)] } } },
