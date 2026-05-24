@@ -144,14 +144,14 @@ Write a concise GitHub PR description in markdown:
 ### What happens after creation
 
 1. Card transitions to `open` phase with the returned PR data
-2. The PR status poller picks up the new PR on its next tick (within 3s)
+2. The PR status poller picks up the new PR immediately when tracking starts, then refreshes on its normal cadence
 3. Card begins showing live CI status
 
 ## PR status poller (server-side)
 
 ### Architecture
 
-One poller per repo, not per session. All sessions sharing a repo share one polling loop. Polls every **3 seconds** — fast enough that CI updates feel real-time. This is one GraphQL call per repo regardless of how many sessions exist, so the rate limit cost is trivial (~1,200 calls/hr out of 5,000/hr budget).
+One poller per repo, not per session. All sessions sharing a repo share one polling loop. Polls every **15 seconds** after an immediate first poll when tracking starts. This is one GraphQL call per repo regardless of how many sessions exist, keeping active PR/CI updates timely while leaving much more headroom in GitHub's GraphQL point budget.
 
 ```
 PrStatusPoller (orchestrator)
