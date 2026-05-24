@@ -116,31 +116,51 @@ function ChecklistProgressBadge({
 }
 
 /**
- * Fuses the "In Progress" status and the `done/total` checklist count into a
- * single pill whose background doubles as a progress bar: the warning-tinted
- * fill spans `done/total` of the pill width, the rest is the neutral track.
- * The partial fill *is* the "in progress" signal, so we drop the separate
- * status label. Text stays neutral (`text-secondary`) because it sits over
- * both the fill and the track and must read on either.
+ * Per-status fill color for the fused progress pill. Mirrors the badge variant
+ * each status uses (warning/info/success/error) so the pill is recognizable
+ * as that status at a glance. `paused` has no semantic color — we use
+ * `border-secondary` so the fill is still visible against the `bg-tertiary`
+ * track in both themes.
+ */
+const STATUS_FILL_VAR: Record<DocStatus, string> = {
+  "in-progress": "--color-warning-subtle",
+  "planned": "--color-info-subtle",
+  "paused": "--color-border-secondary",
+  "done": "--color-success-subtle",
+  "rejected": "--color-error-subtle",
+};
+
+/**
+ * Fuses status and `done/total` checklist count into a single pill whose
+ * background doubles as a progress bar: a status-tinted fill spans `done/total`
+ * of the pill width, the rest is the neutral `bg-tertiary` track. The fill
+ * color *is* the status signal, so we drop the separate status label. Text
+ * stays neutral (`text-secondary`) because it sits over both the fill and the
+ * track and must read on either. Used for any typed-status doc that has a
+ * checklist; custom-status docs keep their separate label since the raw
+ * string conveys information we can't fold into a color.
  */
 function ProgressStatusBadge({
+  status,
   progress,
 }: {
+  status: DocStatus;
   progress: { total: number; done: number };
 }) {
   const pct =
     progress.total > 0
       ? Math.round((progress.done / progress.total) * 100)
       : 0;
+  const label = STATUS_CONFIG[status].label;
   return (
     <span
       className={`${DOC_BADGE_CLASS} relative inline-flex w-20 shrink-0 items-center justify-center overflow-hidden rounded-full border border-(--color-border-secondary)/50 px-2 font-medium tabular-nums bg-(--color-bg-tertiary) text-(--color-text-secondary)`}
-      title={`In progress — ${progress.done} of ${progress.total} checklist items complete`}
+      title={`${label} — ${progress.done} of ${progress.total} checklist items complete`}
     >
       <span
         aria-hidden
-        className="absolute inset-y-0 left-0 bg-(--color-warning-subtle)"
-        style={{ width: `${pct}%` }}
+        className="absolute inset-y-0 left-0"
+        style={{ width: `${pct}%`, backgroundColor: `var(${STATUS_FILL_VAR[status]})` }}
       />
       <span className="relative">
         {progress.done}/{progress.total}
@@ -150,9 +170,9 @@ function ProgressStatusBadge({
 }
 
 /**
- * The trailing badge cluster for a doc row. An in-progress doc that has
+ * The trailing badge cluster for a doc row. Any typed-status doc that carries
  * checklist progress collapses its count and status into a single
- * {@link ProgressStatusBadge}; everything else renders the count and status as
+ * {@link ProgressStatusBadge}; everything else renders count and status as
  * separate badges. `compact` (archived rows) omits priority and custom-status
  * badges, matching the reduced cluster those rows showed before.
  */
@@ -166,8 +186,15 @@ function DocStatusBadges({
   const checklist =
     doc.checklist && doc.checklist.total > 0 ? doc.checklist : null;
 
-  if (doc.status === "in-progress" && checklist) {
-    return <ProgressStatusBadge progress={checklist} />;
+  if (doc.status && checklist) {
+    return (
+      <>
+        {!compact && doc.priority && (
+          <PriorityBadge priority={doc.priority} />
+        )}
+        <ProgressStatusBadge status={doc.status} progress={checklist} />
+      </>
+    );
   }
 
   return (

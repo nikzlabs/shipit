@@ -309,6 +309,69 @@ describe("DocsViewer", () => {
       expect(fill?.style.width).toBe("77%"); // round(58/75 * 100)
     });
 
+    it("also fuses status and count for planned, paused, done, and rejected docs", () => {
+      // The fused pill is no longer in-progress-only — every typed status that
+      // carries a checklist collapses into one pill (status label dropped,
+      // fill color signals status). Custom-status is intentionally excluded
+      // since the raw label conveys information color can't replace.
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001/plan.md", title: "Planned-Doc", status: "planned", checklist: { total: 4, done: 1 } }),
+        makeDoc({ path: "docs/002/plan.md", title: "Paused-Doc", status: "paused", checklist: { total: 4, done: 2 } }),
+        makeDoc({ path: "docs/003/plan.md", title: "Done-Doc", status: "done", checklist: { total: 4, done: 4 } }),
+        makeDoc({ path: "docs/004/plan.md", title: "Rejected-Doc", status: "rejected", checklist: { total: 4, done: 3 } }),
+      ];
+      render(<DocsViewer {...props} />);
+      // Expand archived so done + rejected rows are visible too.
+      fireEvent.click(screen.getByRole("button", { name: /Archived \(2\)/ }));
+      // Counts are visible for every status.
+      expect(screen.getByText("1/4")).toBeInTheDocument();
+      expect(screen.getByText("2/4")).toBeInTheDocument();
+      expect(screen.getByText("4/4")).toBeInTheDocument();
+      expect(screen.getByText("3/4")).toBeInTheDocument();
+      // Status labels are dropped — the fill color is the status signal now.
+      expect(screen.queryByText("Planned")).not.toBeInTheDocument();
+      expect(screen.queryByText("Paused")).not.toBeInTheDocument();
+      expect(screen.queryByText("Done")).not.toBeInTheDocument();
+      expect(screen.queryByText("Rejected")).not.toBeInTheDocument();
+    });
+
+    it("colors the fused pill fill by status", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001/plan.md", title: "Planned-Doc", status: "planned", checklist: { total: 4, done: 2 } }),
+        makeDoc({ path: "docs/002/plan.md", title: "Done-Doc", status: "done", checklist: { total: 4, done: 4 } }),
+      ];
+      render(<DocsViewer {...props} />);
+      fireEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
+      const fillFor = (text: string): HTMLElement | null => {
+        const pill = screen.getByText(text).closest("span")?.parentElement;
+        return pill?.querySelector("[aria-hidden]") as HTMLElement | null;
+      };
+      // Planned uses the info-subtle fill; done uses success-subtle. We assert
+      // the CSS variable name rather than the resolved color so the test is
+      // theme-agnostic.
+      expect(fillFor("2/4")?.style.backgroundColor).toBe("var(--color-info-subtle)");
+      expect(fillFor("4/4")?.style.backgroundColor).toBe("var(--color-success-subtle)");
+    });
+
+    it("keeps the separate count + custom-status badges when status is a raw custom string", () => {
+      // Custom-status docs aren't fused because the raw label ("blocked",
+      // "experimental") conveys information that color alone can't replace.
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001/plan.md",
+          title: "Blocked-Doc",
+          customStatus: "blocked",
+          checklist: { total: 4, done: 2 },
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("2/4")).toBeInTheDocument();
+      expect(screen.getByText("blocked")).toBeInTheDocument();
+    });
+
     it("keeps the separate status label for in-progress docs without a checklist", () => {
       const props = defaultProps();
       props.files = [
