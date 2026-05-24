@@ -153,7 +153,7 @@ export function runSystemTurn(
       const agentText = contentArr
         .filter((b): b is { type: "text"; text: string } => b.type === "text")
         .map((b) => b.text)
-        .join("");
+        .join("\n\n");
       if (agentText) {
         host.turnSummary = agentText;
         host.accumulatedText += agentText;

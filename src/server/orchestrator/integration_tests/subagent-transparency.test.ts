@@ -295,4 +295,72 @@ describe("Integration: Subagent transparency (109)", () => {
 
     client.close();
   });
+
+  it("separates multiple text blocks in a single subagent assistant event with paragraph breaks", async () => {
+    // Regression: an `assistant` event whose content is
+    //   [text "A.", tool_use, text "B.", tool_use, text "C."]
+    // used to render as "A.B.C." (joined with ""), losing the boundaries
+    // between distinct preambles. Each text block is its own narration and
+    // must stay separated so `whitespace-pre-wrap` renders them as paragraphs.
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Spawn a chatty subagent" });
+    await waitForClaude(() => lastClaude);
+
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "subagent-session-4" });
+    const sessionStarted = await client.receiveType("session_started");
+    const appSessionId = (sessionStarted as { session: { id: string } }).session.id;
+
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "task-1", name: "Task", input: { description: "Multi", prompt: "..." } },
+        ],
+      },
+    });
+
+    // Subagent emits a single assistant event with three text blocks
+    // separated by tool_use blocks — the shape that interleaved-thinking
+    // serial tool calls produce in one turn.
+    lastClaude.emit("event", {
+      type: "assistant",
+      parent_tool_use_id: "task-1",
+      message: {
+        content: [
+          { type: "text", text: "Now let me look at file A." },
+          { type: "tool_use", id: "sub-r1", name: "Read", input: { file_path: "/a.ts" } },
+          { type: "text", text: "Now let me look at file B." },
+          { type: "tool_use", id: "sub-r2", name: "Read", input: { file_path: "/b.ts" } },
+          { type: "text", text: "Let me verify by listing scripts." },
+          { type: "tool_use", id: "sub-bash", name: "Bash", input: { command: "ls" } },
+        ],
+      },
+    });
+
+    lastClaude.emit("event", {
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "task-1", content: "report" }],
+      },
+    });
+    lastClaude.finish("subagent-session-4");
+    try { for (let i = 0; i < 20; i++) await client.receive(300); } catch { /* drain */ }
+
+    const messages = chatHistoryManager.load(appSessionId);
+    const assistantMsg = messages.find((m) => m.role === "assistant" && m.toolUse?.some((t) => t.name === "Task"));
+    expect(assistantMsg).toBeDefined();
+    const subStep = assistantMsg!.subagentEvents?.find((e) => e.kind === "assistant");
+    expect(subStep).toBeDefined();
+    if (subStep?.kind !== "assistant") throw new Error("expected assistant step");
+    // Critical: the three preambles must stay separated, not run together.
+    expect(subStep.text).not.toContain("file A.Now let me");
+    expect(subStep.text).toContain("Now let me look at file A.");
+    expect(subStep.text).toContain("Now let me look at file B.");
+    expect(subStep.text).toContain("Let me verify by listing scripts.");
+    expect(subStep.text).toMatch(/file A\.\n\nNow let me look at file B/);
+
+    client.close();
+  });
 });

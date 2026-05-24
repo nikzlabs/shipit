@@ -50,13 +50,13 @@ export function SubagentCall({ tool, subagentEvents, parentToolResults, isStream
   const finalReport = findSubagentFinalReport(tool.id, parentToolResults);
 
   const [promptExpanded, setPromptExpanded] = useState(false);
-  // Keep "work" expanded while streaming so users see live activity, then
-  // collapse once the final report arrives so the chat doesn't stay noisy.
-  // The user's manual toggle (if any) takes precedence over the default —
-  // tracked via `userOverride`. Computed (not stateful) so we don't need a
-  // setState-during-render pattern when the report arrives.
+  // Keep "work" expanded by default — both while streaming AND after the
+  // final report arrives. The previous auto-collapse (`!finalReport`) hid
+  // the individual tool calls (Edit, Read, Bash, …) and per-step text the
+  // moment the subagent finished, leaving only the (often run-on) final
+  // report. The user can still collapse manually via the caret.
   const [userOverride, setUserOverride] = useState<boolean | null>(null);
-  const workExpanded = userOverride ?? !finalReport;
+  const workExpanded = userOverride ?? true;
 
   const isError = finalReport?.isError ?? false;
   const inProgress = !finalReport && isStreaming;

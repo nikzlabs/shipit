@@ -438,10 +438,15 @@ export function wireAgentListeners(
     }
 
     if (event.type === "agent_assistant") {
+      // Multiple text blocks within a single assistant event are distinct
+      // preambles separated by tool_use blocks (common when a subagent runs
+      // serial tool calls in one turn). Joining with "" runs them together
+      // with no separator — "…cloaker.Now I have…". Use "\n\n" so each
+      // preamble renders as its own paragraph under whitespace-pre-wrap.
       const text = (event.content ?? [])
         .filter((b): b is ClaudeContentBlockText => b.type === "text")
         .map((b) => b.text)
-        .join("");
+        .join("\n\n");
 
       const toolBlocks = (event.content ?? [])
         .filter((b): b is ClaudeContentBlockToolUse => b.type === "tool_use");
