@@ -8,7 +8,7 @@ Tracks remaining work for docs/142. See `plan.md` for design and rationale.
 - [x] `useSessionWebSocket` derives the WS `agent` query param from the saved model
 - [x] `ModelAgentSelector` always persists the picked model's agent (removed the
       stale in-memory `activeAgentId` guard)
-- [ ] Verify on prod: a new session shown as Opus actually runs Claude/Opus
+- [x] Verify on prod: a new session shown as Opus actually runs Claude/Opus
       (no silent switch to gpt-5.5)
 - [x] C2/C3 — **inverted** the server reconciliation (`index.ts` new-session
       agent/model resolve): for an unpinned session the **model is
@@ -23,7 +23,7 @@ Tracks remaining work for docs/142. See `plan.md` for design and rationale.
       persistent 409
 - [x] `auth_required` tears the turn down (kill worker agent, clear `running`)
 - [x] Tests: kill+restart path; `auth_required` teardown
-- [ ] Verify on prod: after a failed turn, the next send is not blocked by
+- [x] Verify on prod: after a failed turn, the next send is not blocked by
       "Agent already running"
 
 ## A — the 401 (ROOT-CAUSED + primary fix shipped)
@@ -53,12 +53,12 @@ intact; closes the write-back loop with an expiry guard).
       New + existing sessions work again (#577 live; per-turn sync-in healed the
       pinned sessions). NOTE: sign-out was required because the UI couldn't tell
       a dead token from a live one — see the honest-auth-state item below.
-- [ ] **Validate copy-back at the TTL boundary (~28h after re-login):** create a
+- [x] **Validate copy-back at the TTL boundary (~28h after re-login):** create a
       Claude session past the access-token expiry — if it still works, a session
       refreshed and wrote the rotated token back. If it 401s, move sync-back off
       the post-turn hook (the CLI may refresh lazily) onto a credential-file
       watch.
-- [ ] **Honest auth state:** A1 (now live) flips the card reactively on the next
+- [x] **Honest auth state:** A1 (now live) flips the card reactively on the next
       runtime 401 → `auth_required` → OAuth flow, so the manual sign-out we
       needed this time should not recur. Confirm at the TTL boundary that a dead
       token auto-surfaces the re-auth prompt (rather than a silent 401). A
@@ -93,7 +93,7 @@ orchestrator restarted mid-flow.
       to Node's default on purpose.
 - [x] Test — `ws-handler-error-isolation.test.ts`: a rejecting handler surfaces
       a client error and the socket/process survive.
-- [ ] Verify on prod after deploy: a wedged worker call no longer restarts the
+- [x] Verify on prod after deploy: a wedged worker call no longer restarts the
       orchestrator (no new `RestartCount` bumps in the crash window).
 
 ## Cross-cutting
@@ -102,5 +102,5 @@ orchestrator restarted mid-flow.
       401 classification, A3 re-push and C2/C3 resolve are all
       orchestrator-internal; the agent inside the container still reads
       `~/.claude` / `~/.codex` exactly as `environment.md` already describes.
-- [ ] After deploy: confirm B (no stuck "Agent already running") and C (new
+- [x] After deploy: confirm B (no stuck "Agent already running") and C (new
       session shown as Opus runs Claude) on prod.
