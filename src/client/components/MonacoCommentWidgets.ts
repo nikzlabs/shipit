@@ -25,11 +25,23 @@ export interface LineCommentLike {
   id: string;
   /** Discriminator. Non-"line" entries are filtered out by the widget. */
   kind: "line" | "selection";
+  /** Local comments are editable; GitHub comments are synced, read-only review threads. */
+  source?: "local" | "github";
   /** Required when `kind === "line"`. */
   line?: number;
   text: string;
   /** Present on legacy diff-panel comments; absent on per-file review comments. */
   filePath?: string;
+  author?: { login: string; avatarUrl?: string };
+  createdAt?: string;
+  isResolved?: boolean;
+  isOutdated?: boolean;
+  replies?: {
+    id: string;
+    author: { login: string; avatarUrl?: string };
+    body: string;
+    createdAt: string;
+  }[];
 }
 
 export interface CommentWidgetManager {
@@ -100,14 +112,15 @@ export function createCommentWidgetManager(
     comment: LineCommentLike,
     afterLineNumber: number,
   ): void {
+    const isGitHub = comment.source === "github";
     const domNode = document.createElement("div");
     domNode.style.cssText = "padding: 4px 12px 4px 16px; margin: 4px 0 4px 40px;";
     domNode.className = "monaco-comment-card";
 
     const card = document.createElement("div");
     card.style.cssText = `
-      border-left: 2px solid #60a5fa;
-      background: rgba(30, 58, 138, 0.3);
+      border-left: 2px solid ${isGitHub ? "#22c55e" : "#60a5fa"};
+      background: ${isGitHub ? "rgba(20, 83, 45, 0.26)" : "rgba(30, 58, 138, 0.3)"};
       border-radius: 0 6px 6px 0;
       padding: 8px 12px;
       font-size: 12px;
@@ -119,15 +132,38 @@ export function createCommentWidgetManager(
     header.style.cssText = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;";
 
     const label = document.createElement("span");
-    label.style.cssText = "font-size: 10px; color: #94a3b8; font-weight: 600;";
+    label.style.cssText = "font-size: 10px; color: #94a3b8; font-weight: 600; display: flex; align-items: center; gap: 6px; min-width: 0;";
     const line = "line" in comment ? comment.line : 0;
-    label.textContent = `Line ${line}`;
+    const location = document.createElement("span");
+    location.textContent = `Line ${line}`;
+    label.appendChild(location);
+
+    if (isGitHub) {
+      const badge = document.createElement("span");
+      badge.textContent = "GitHub";
+      badge.style.cssText = "color: #bbf7d0; background: rgba(34, 197, 94, 0.16); border: 1px solid rgba(34, 197, 94, 0.32); border-radius: 999px; padding: 1px 6px;";
+      label.appendChild(badge);
+      if (comment.isResolved) {
+        const resolved = document.createElement("span");
+        resolved.textContent = "resolved";
+        resolved.style.cssText = "color: #86efac;";
+        label.appendChild(resolved);
+      }
+      if (comment.isOutdated) {
+        const outdated = document.createElement("span");
+        outdated.textContent = "outdated";
+        outdated.style.cssText = "color: #cbd5e1;";
+        label.appendChild(outdated);
+      }
+    }
 
     const buttons = document.createElement("div");
     buttons.style.cssText = "display: flex; gap: 4px; opacity: 0; transition: opacity 0.15s;";
 
-    card.addEventListener("mouseenter", () => { buttons.style.opacity = "1"; });
-    card.addEventListener("mouseleave", () => { buttons.style.opacity = "0"; });
+    if (!isGitHub) {
+      card.addEventListener("mouseenter", () => { buttons.style.opacity = "1"; });
+      card.addEventListener("mouseleave", () => { buttons.style.opacity = "0"; });
+    }
 
     const editBtn = document.createElement("button");
     editBtn.textContent = "Edit";
@@ -190,14 +226,54 @@ export function createCommentWidgetManager(
       options.onDeleteComment(comment.id);
     });
 
-    buttons.appendChild(editBtn);
-    buttons.appendChild(deleteBtn);
+    if (!isGitHub) {
+      buttons.appendChild(editBtn);
+      buttons.appendChild(deleteBtn);
+    }
     header.appendChild(label);
     header.appendChild(buttons);
 
     const body = document.createElement("div");
-    body.style.cssText = "white-space: pre-wrap; line-height: 1.4;";
-    body.textContent = comment.text;
+    body.style.cssText = "white-space: pre-wrap; line-height: 1.4; display: flex; flex-direction: column; gap: 8px;";
+
+    const replies = comment.replies?.length
+      ? comment.replies
+      : [{
+          id: comment.id,
+          author: comment.author ?? { login: isGitHub ? "github" : "user" },
+          body: comment.text,
+          createdAt: comment.createdAt ?? "",
+        }];
+    for (const reply of replies) {
+      const replyNode = document.createElement("div");
+      replyNode.style.cssText = "display: flex; gap: 8px; min-width: 0;";
+
+      const avatar = document.createElement("div");
+      avatar.style.cssText = "width: 18px; height: 18px; border-radius: 999px; overflow: hidden; flex: 0 0 auto; background: #334155; color: #cbd5e1; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600;";
+      if (reply.author.avatarUrl) {
+        const img = document.createElement("img");
+        img.src = reply.author.avatarUrl;
+        img.alt = reply.author.login;
+        img.style.cssText = "width: 100%; height: 100%; object-fit: cover;";
+        avatar.appendChild(img);
+      } else {
+        avatar.textContent = reply.author.login.charAt(0).toUpperCase();
+      }
+
+      const content = document.createElement("div");
+      content.style.cssText = "min-width: 0; flex: 1;";
+      const meta = document.createElement("div");
+      meta.style.cssText = "font-size: 10px; color: #94a3b8; margin-bottom: 2px;";
+      meta.textContent = reply.createdAt ? `${reply.author.login} · ${new Date(reply.createdAt).toLocaleDateString()}` : reply.author.login;
+      const text = document.createElement("div");
+      text.style.cssText = "white-space: pre-wrap; line-height: 1.4;";
+      text.textContent = reply.body;
+      content.appendChild(meta);
+      content.appendChild(text);
+      replyNode.appendChild(avatar);
+      replyNode.appendChild(content);
+      body.appendChild(replyNode);
+    }
 
     card.appendChild(header);
     card.appendChild(body);
@@ -206,7 +282,7 @@ export function createCommentWidgetManager(
     editor.changeViewZones((accessor) => {
       const zoneId = accessor.addZone({
         afterLineNumber,
-        heightInPx: 80,
+        heightInPx: Math.min(220, 68 + replies.length * 42),
         domNode,
         suppressMouseDown: true,
       });

@@ -362,6 +362,50 @@ describe("MonacoCommentWidgets", () => {
     expect(onDelete).toHaveBeenCalledWith("abc");
   });
 
+  it("renders GitHub-sourced review threads as read-only cards with author details", () => {
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+    const manager = createCommentWidgetManager(
+      fake.editor as never,
+      {
+        filePath: "src/a.ts",
+        onAddComment: vi.fn(),
+        onEditComment: onEdit,
+        onDeleteComment: onDelete,
+      },
+    );
+
+    manager.setComments([
+      {
+        id: "github:RT_1",
+        kind: "line",
+        source: "github",
+        filePath: "src/a.ts",
+        line: 9,
+        text: "rename this",
+        isResolved: true,
+        replies: [
+          {
+            id: "RC_1",
+            author: { login: "alice", avatarUrl: "" },
+            body: "rename this",
+            createdAt: "2026-05-20T10:00:00Z",
+          },
+        ],
+      },
+    ]);
+
+    const zone = [...fake.zones.values()][0];
+    expect(zone.domNode.textContent).toContain("GitHub");
+    expect(zone.domNode.textContent).toContain("resolved");
+    expect(zone.domNode.textContent).toContain("alice");
+    expect(zone.domNode.textContent).toContain("rename this");
+    expect([...zone.domNode.querySelectorAll("button")].some((b) => b.textContent === "Edit")).toBe(false);
+    expect([...zone.domNode.querySelectorAll("button")].some((b) => b.textContent === "Del")).toBe(false);
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
   it("comment card edit flow calls onEditComment with new text", () => {
     const onEdit = vi.fn();
     const manager = createCommentWidgetManager(

@@ -47,7 +47,7 @@
 
 ### High priority
 
-- [ ] Render GitHub-sourced review threads inline on the Monaco diff viewer (`MonacoCommentWidgets` `source: 'local' | 'github'` discriminator)
+- [x] Render GitHub-sourced review threads inline on the Monaco diff viewer (`MonacoCommentWidgets` `source: 'local' | 'github'` discriminator)
 
   This is the core promise of the feature. Review comments currently appear in the PR conversation panel, but not where reviewers and agents reason about changed code lines. Until this exists, comment sync is useful but not truly inline.
 
