@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Settings, type SettingsProps } from "./Settings.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePreviewStore } from "../stores/preview-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 
 afterEach(() => {
   cleanup();
@@ -13,6 +14,7 @@ afterEach(() => {
     missingByService: {},
     missingRequired: [],
   });
+  useSettingsStore.getState().setProviderAccounts([]);
 });
 
 const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"], supportsReview: true };
@@ -148,6 +150,36 @@ describe("Settings - Agent → Claude tab", () => {
   it("does not show Sign out when not authenticated", () => {
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} authUrl="https://auth.example.com" />);
     expect(screen.queryByTestId("claude-sign-out")).not.toBeInTheDocument();
+  });
+
+  it("renders provider accounts and primary state", () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      {
+        id: "acct-primary",
+        provider: "claude",
+        label: "Primary Anthropic",
+        isPrimary: true,
+        status: "ready",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "acct-backup",
+        provider: "claude",
+        label: "Backup Anthropic",
+        isPrimary: false,
+        status: "unavailable",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    render(<Settings {...defaultProps} />);
+
+    expect(screen.getByDisplayValue("Primary Anthropic")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Backup Anthropic")).toBeInTheDocument();
+    expect(screen.getByText("Primary")).toBeInTheDocument();
   });
 });
 

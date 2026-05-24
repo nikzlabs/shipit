@@ -27,6 +27,7 @@ import type { WsLogEntry } from "../shared/types.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import type { SessionLoopDetector } from "./loop-detector.js";
 import type { RuntimeMode } from "../shared/types.js";
+import type { ProviderAccountManager } from "./provider-account-manager.js";
 
 import { ServiceError } from "./services/index.js";
 
@@ -57,6 +58,7 @@ export interface ApiDeps {
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
   credentialStore: CredentialStore;
+  providerAccountManager: ProviderAccountManager;
   defaultAgentId: AgentId;
   workspaceDir: string;
   /**

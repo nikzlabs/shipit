@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import type { GitCommit } from "../components/GitHistory.js";
-import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage, RuntimeMode } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage, RuntimeMode, ProviderAccount } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
 import { getContextWindowForModel } from "../../server/shared/model-windows.js";
 import type { AgentOption } from "../agent-types.js";
@@ -64,6 +64,7 @@ interface BootstrapResponse {
     autoCreatePr?: boolean;
     liveSteering?: boolean;
     prCommentSync?: boolean;
+    providerAccounts?: ProviderAccount[];
   };
   /** Orchestrator runtime mode (feature 118). Defaults to "containerized". */
   runtimeMode?: RuntimeMode;
@@ -210,6 +211,7 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.autoCreatePr !== undefined) useSettingsStore.getState().setAutoCreatePr(data.settings.autoCreatePr);
   if (data.settings.liveSteering !== undefined) useSettingsStore.getState().setLiveSteering(data.settings.liveSteering);
   if (data.settings.prCommentSync !== undefined) useSettingsStore.getState().setPrCommentSync(data.settings.prCommentSync);
+  if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
   useUiStore.getState().setBootstrapLoaded(true);
 }

@@ -19,6 +19,11 @@ import {
   fullReset,
   startAuth,
   submitAuthCode,
+  listProviderAccounts,
+  createProviderAccount,
+  renameProviderAccount,
+  makePrimaryProviderAccount,
+  deleteProviderAccount,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -59,7 +64,7 @@ export async function registerBootstrapRoutes(
           deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir, deps.credentialStore,
           request.body.gitIdentity, request.body.systemPrompt, request.body.maxIdleContainers,
           request.body.agentSystemInstructionsEnabled, request.body.autoCreatePr, request.body.liveSteering,
-          request.body.prCommentSync,
+          request.body.prCommentSync, deps.providerAccountManager,
         );
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -103,6 +108,99 @@ export async function registerBootstrapRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to set agent env: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ---- Provider accounts (docs/150) ----
+
+  app.get("/api/provider-accounts", async () => {
+    return listProviderAccounts(deps.providerAccountManager);
+  });
+
+  app.post<{ Body: { provider: AgentId; label?: string } }>(
+    "/api/provider-accounts",
+    async (request, reply) => {
+      try {
+        const result = createProviderAccount(deps.providerAccountManager, request.body.provider, request.body.label);
+        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to create provider account: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.patch<{ Params: { provider: AgentId; accountId: string }; Body: { label: string } }>(
+    "/api/provider-accounts/:provider/:accountId",
+    async (request, reply) => {
+      try {
+        const result = renameProviderAccount(
+          deps.providerAccountManager,
+          request.params.provider,
+          request.params.accountId,
+          request.body.label,
+        );
+        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to rename provider account: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.post<{ Params: { provider: AgentId; accountId: string } }>(
+    "/api/provider-accounts/:provider/:accountId/primary",
+    async (request, reply) => {
+      try {
+        const result = makePrimaryProviderAccount(
+          deps.providerAccountManager,
+          request.params.provider,
+          request.params.accountId,
+        );
+        deps.agentRegistry.refreshAuth(request.params.provider);
+        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        deps.sseBroadcast("agent_list", { agents: listAgents(deps.agentRegistry), defaultAgentId: deps.defaultAgentId });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to set primary provider account: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.delete<{ Params: { provider: AgentId; accountId: string } }>(
+    "/api/provider-accounts/:provider/:accountId",
+    async (request, reply) => {
+      try {
+        const result = deleteProviderAccount(
+          deps.providerAccountManager,
+          deps.sessionManager,
+          deps.runnerRegistry,
+          request.params.provider,
+          request.params.accountId,
+        );
+        deps.agentRegistry.refreshAuth(request.params.provider);
+        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        deps.sseBroadcast("agent_list", { agents: listAgents(deps.agentRegistry), defaultAgentId: deps.defaultAgentId });
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to disconnect provider account: ${getErrorMessage(err)}` });
       }
     },
   );
