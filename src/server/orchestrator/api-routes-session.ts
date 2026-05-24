@@ -39,6 +39,8 @@ import {
   ServiceError,
   createClaimSessionService,
   ClaimAbortedError,
+  recordSpawnInvocation,
+  classifySpawnFailure,
 } from "./services/index.js";
 import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
@@ -306,6 +308,11 @@ export async function registerSessionRoutes(
     "/api/sessions/:parentId/spawn",
     async (request, reply) => {
       const body = request.body ?? {};
+      // Effective agent id — same precedence the spawn service uses. Captured
+      // here so the telemetry record always carries an `agent` dimension, even
+      // when the request fails before `spawnChildSession` reaches its own
+      // resolution.
+      const effectiveAgentId = body.agent ?? deps.defaultAgentId;
       try {
         const result = await spawnChildSession(
           sessionManager,
@@ -352,6 +359,15 @@ export async function registerSessionRoutes(
           });
         }
 
+        recordSpawnInvocation({
+          parentSessionId: request.params.parentId,
+          ...(body.spawnedByTurn ? { spawnedByTurn: body.spawnedByTurn } : {}),
+          agentId: effectiveAgentId,
+          outcome: "success",
+          statusCode: 200,
+          childSessionId: result.sessionId,
+        });
+
         return {
           sessionId: result.sessionId,
           branch: result.branch,
@@ -359,11 +375,46 @@ export async function registerSessionRoutes(
           session: result.session,
         };
       } catch (err) {
-        if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
-          return;
+        const statusCode = err instanceof ServiceError ? err.statusCode : 500;
+        const errorMessage = err instanceof ServiceError
+          ? err.message
+          : `Failed to spawn child session: ${getErrorMessage(err)}`;
+
+        // docs/117 cross-cutting follow-up — surface the failure inline in the
+        // parent's chat alongside successful spawns. Without this, a quota
+        // rejection only shows up on the shim's stderr (visible to the agent
+        // but not to the user) — the success-path card has no counterpart.
+        // Same `emitMessage` route as `session_spawned` so reconnecting
+        // viewers see it via the turn-event buffer.
+        const parentRunner = deps.runnerRegistry.get(request.params.parentId);
+        if (parentRunner) {
+          const promptPreview = (body.prompt ?? "")
+            .trim()
+            .split(/\r?\n/)[0]
+            .slice(0, 200);
+          parentRunner.emitMessage({
+            type: "session_spawn_failed",
+            sessionId: request.params.parentId,
+            message: errorMessage,
+            statusCode,
+            reason: classifySpawnFailure(statusCode, errorMessage),
+            ...(body.title ? { title: body.title } : {}),
+            ...(body.branch ? { branch: body.branch } : {}),
+            ...(promptPreview ? { promptPreview } : {}),
+            failedAt: new Date().toISOString(),
+          });
         }
-        reply.code(500).send({ error: `Failed to spawn child session: ${getErrorMessage(err)}` });
+
+        recordSpawnInvocation({
+          parentSessionId: request.params.parentId,
+          ...(body.spawnedByTurn ? { spawnedByTurn: body.spawnedByTurn } : {}),
+          agentId: effectiveAgentId,
+          outcome: classifySpawnFailure(statusCode, errorMessage),
+          statusCode,
+          errorMessage,
+        });
+
+        reply.code(statusCode).send({ error: errorMessage });
       }
     },
   );
