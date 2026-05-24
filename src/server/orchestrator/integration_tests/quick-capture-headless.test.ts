@@ -1,0 +1,157 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execSync } from "node:child_process";
+import type { FastifyInstance } from "fastify";
+import { buildApp } from "../index.js";
+import { SessionManager } from "../sessions.js";
+import { RepoStore } from "../repo-store.js";
+import { GitManager } from "../../shared/git.js";
+import { repoUrlToHash } from "../git-utils.js";
+import { AuthManager } from "../auth.js";
+import type { GitHubAuthManager } from "../github-auth.js";
+import { DatabaseManager } from "../../shared/database.js";
+import {
+  FakeClaudeProcess,
+  StubAuthManager,
+  StubGitHubAuthManager,
+  createTestCredentialStore,
+  createTestDatabaseManager,
+} from "./test-helpers.js";
+
+const REPO_URL = "https://github.com/owner/quick-capture-test.git";
+
+function createCachedRepo(workspaceDir: string): void {
+  const repoDir = path.join(workspaceDir, "repo-cache", repoUrlToHash(REPO_URL));
+  const seedDir = path.join(workspaceDir, "seed-repo");
+  fs.mkdirSync(seedDir, { recursive: true });
+  execSync("git init -b main", { cwd: seedDir, stdio: "ignore" });
+  fs.writeFileSync(path.join(seedDir, "README.md"), "# quick-capture-test\n");
+  execSync("git add .", { cwd: seedDir, stdio: "ignore" });
+  execSync("git -c user.email=t@t.com -c user.name=Test commit -m init --no-gpg-sign", {
+    cwd: seedDir,
+    stdio: "ignore",
+  });
+  fs.mkdirSync(path.dirname(repoDir), { recursive: true });
+  execSync(`git clone --bare ${seedDir} ${repoDir}`, { stdio: "ignore" });
+  execSync(`git remote set-url origin ${REPO_URL}`, { cwd: repoDir, stdio: "ignore" });
+  execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: repoDir, stdio: "ignore" });
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 5000, label = "condition"): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`waitFor("${label}") timed out`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+describe("Integration: quick-capture headless sessions", () => {
+  let app: FastifyInstance;
+  let tmpDir: string;
+  let dbManager: DatabaseManager;
+  let sessionManager: SessionManager;
+  let repoStore: RepoStore;
+  let createdAgents: FakeClaudeProcess[];
+  let origGitTerminalPrompt: string | undefined;
+
+  beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-quick-capture-"));
+    origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
+    process.env.GIT_TERMINAL_PROMPT = "0";
+    createdAgents = [];
+    sessionManager = new SessionManager(dbManager);
+    repoStore = new RepoStore(dbManager);
+    createCachedRepo(tmpDir);
+    repoStore.add(REPO_URL);
+    repoStore.setReady(REPO_URL);
+
+    app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      repoStore,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      agentFactory: () => {
+        const agent = new FakeClaudeProcess();
+        createdAgents.push(agent);
+        return agent as never;
+      },
+      workspaceDir: tmpDir,
+      serveStatic: false,
+    });
+  });
+
+  afterEach(async () => {
+    await app.close();
+    dbManager.close();
+    if (origGitTerminalPrompt === undefined) {
+      delete process.env.GIT_TERMINAL_PROMPT;
+    } else {
+      process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  it("POST /api/sessions/headless creates and starts a session without WebSocket attachment", { timeout: 15_000 }, async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: {
+        repoUrl: REPO_URL,
+        initialPrompt: "Fix the flaky test",
+        branch: "quick/flaky-test",
+        agent: "claude",
+        model: "claude-sonnet-4-20250514",
+      },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as {
+      sessionId: string;
+      branch: string;
+      status: "running";
+      session: { id: string; title: string };
+    };
+    expect(body).toMatchObject({
+      branch: "quick/flaky-test",
+      status: "running",
+      session: { title: "Fix the flaky test" },
+    });
+
+    const session = sessionManager.get(body.sessionId);
+    expect(session).toMatchObject({
+      remoteUrl: REPO_URL,
+      branch: "quick/flaky-test",
+      branchRenamed: true,
+      model: "claude-sonnet-4-20250514",
+      agentId: "claude",
+      agentPinned: true,
+    });
+    expect(session?.workspaceDir).toBeTruthy();
+    await waitFor(() => createdAgents.some((agent) => agent.runCalled), 5000, "headless agent start");
+    expect(createdAgents[0].lastPrompt).toBe("Fix the flaky test");
+    expect(createdAgents[0].lastCwd).toBe(session?.workspaceDir);
+    expect(execSync("git branch --show-current", {
+      cwd: session!.workspaceDir!,
+      encoding: "utf8",
+    }).trim()).toBe("quick/flaky-test");
+  });
+
+  it("maps validation errors through the HTTP route", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: {
+        repoUrl: "",
+        initialPrompt: "Second",
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "Add a repo first." });
+  });
+});

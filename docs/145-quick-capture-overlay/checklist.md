@@ -5,5 +5,5 @@
 - [x] Add quick-capture overlay shell with repo selection, submit, dismiss, and error states.
 - [x] Add shortcut settings persistence and Settings UI.
 - [x] Add notification coalescing for bursty session completions.
-- [ ] Add broader test coverage for all planned edge cases.
+- [x] Add broader test coverage for all planned edge cases.
 - [ ] Run cross-browser/manual hotkey verification.

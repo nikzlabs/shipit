@@ -43,6 +43,7 @@ describe("useNotification", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   function setHidden(hidden: boolean) {
@@ -200,5 +201,37 @@ describe("useNotification", () => {
     expect(visibilityListeners.length).toBe(1);
     unmount();
     expect(visibilityListeners.length).toBe(0);
+  });
+
+  it("coalesces bursty hidden-tab notifications into one batch notification", () => {
+    vi.useFakeTimers();
+    const mockNotification = vi.fn();
+    vi.stubGlobal("Notification", Object.assign(mockNotification, { permission: "granted", requestPermission: vi.fn() }));
+
+    const { result } = renderHook(() => useNotification());
+    act(() => setHidden(true));
+    act(() => result.current.notify("Waiting for your input", {
+      sessionName: "One",
+      repoLabel: "acme/one",
+    }));
+    act(() => result.current.notify("Waiting for your input", {
+      sessionName: "Two",
+      repoLabel: "acme/two",
+    }));
+
+    expect(document.title).toBe("● One — ShipIt");
+    expect(mockNotification).toHaveBeenCalledTimes(1);
+    expect(mockNotification).toHaveBeenLastCalledWith("ShipIt · acme/one", {
+      body: "[One] Waiting for your input",
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    expect(document.title).toBe("● 2 sessions need attention — ShipIt");
+    expect(mockNotification).toHaveBeenCalledTimes(2);
+    expect(mockNotification).toHaveBeenLastCalledWith("ShipIt", { body: "2 sessions finished" });
+    vi.unstubAllGlobals();
   });
 });
