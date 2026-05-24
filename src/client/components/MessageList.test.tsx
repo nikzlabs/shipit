@@ -1138,10 +1138,12 @@ describe("MessageList", () => {
       expect(screen.getByText(/Findings/)).toBeInTheDocument();
       // "Done" status badge once final report has arrived
       expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
-      // Work is collapsed by default once final report is in — click to expand.
-      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
+      // Work stays expanded by default — tool calls and per-step text remain
+      // visible after the subagent finishes. Click the toggle to collapse.
       expect(screen.getByTestId("subagent-work")).toBeInTheDocument();
       expect(screen.getByText(/Reading file/)).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
+      expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
     });
 
     it("shows running indicator while subagent is still working", () => {
