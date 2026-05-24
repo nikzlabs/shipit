@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 priority: high
 description: Fix three coupled agent failures — a masked Claude 401, a stuck "Agent already running" state under live steering, and new sessions silently switching the user's model/agent.
 ---
@@ -348,18 +348,18 @@ the protocol). Pick before implementing.
 
 - [x] C — model source-of-truth (done first; unblocks A diagnosis)
 - [x] B — teardown + kill/restart recovery
-- [ ] A: run the fresh-Claude-session experiment to root-cause (now possible)
-- [ ] A1 — classify runtime 401 / `invalid authentication credentials`
-- [x] A2 — DROPPED (token is long-lived; expiry check would never trip)
-- [ ] A3 — re-provision Claude creds to pinned sessions on `auth_complete`
+- [x] A: run the fresh-Claude-session experiment to root-cause (now possible)
+- [x] A1 — classify runtime 401 / `invalid authentication credentials`
+- [x] A2 — DROPPED (expired-but-refreshable tokens should not report unauthenticated)
+- [x] A3 — re-provision Claude creds to pinned sessions on `auth_complete`
 - [x] B1 — teardown worker agent + clear runner state on `auth_required`
 - [x] B2 — kill + restart on persistent 409 in `_startAgentViaProxy`
 - [x] C1 — derive agent from saved model in WS query param (`agentIdForModel`);
       always persist the picked model's agent in `ModelAgentSelector` (removed
       the stale in-memory `activeAgentId` guard — the precise bug)
-- [ ] C2/C3 — server reconciliation left as a defensive guard; client now sends
+- [x] C2/C3 — server reconciliation left as a defensive guard; client now sends
       a coherent (derived-agent, model) pair so it should no longer fire. Verify
       in the experiment.
 - [x] Tests for B (kill+restart, `auth_required` teardown) and C (`agentIdForModel`)
-- [ ] Tests for A (after root-cause)
-- [ ] Update `src/server/shipit-docs/` if any agent-facing auth behavior changes
+- [x] Tests for A (after root-cause)
+- [x] Update `src/server/shipit-docs/` if any agent-facing auth behavior changes
