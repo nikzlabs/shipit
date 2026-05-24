@@ -1,10 +1,26 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 description: Inline skill/plugin discovery and install surface in ShipIt, matching the /plugin and /plugins TUIs from Claude Code and Codex.
 ---
 
 # 149 — Skill Install UX
+
+## Status (2026-05-24)
+
+**v1a (Claude-only) implemented on `shipit/skill-install-ux-docho7`.** Backend
+service + SQLite-backed marketplace store + path-scoped `commitPaths` +
+post-turn mutex coordination + Settings → Skills tab with inline Monaco
+preview all in place; lint, typecheck, and the dev test suite pass. Live
+browser dogfooding via Playwright MCP was not done in the implementation
+environment (no Docker stack); worth doing before this lands on `main`. See
+`checklist.md` for the full punch list and what remains for v1b (Codex), v2
+(custom marketplaces + Errors sub-tab), and v3 (full plugin composition).
+
+The Claude colon-in-name + flat-dir spike from v0 was verified empirically
+against Claude CLI 2.1.140 — both `/<plugin>:<skill>` and natural-language
+invocation resolve correctly against `.claude/skills/<plugin>__<skill>/`
+with frontmatter `name: <plugin>:<skill>`.
 
 ## Summary
 

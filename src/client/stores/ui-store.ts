@@ -33,6 +33,7 @@ type SettingsTab =
   | "github"
   | "git"
   | "instructions"
+  | "skills"
   | "mcp"
   | "advanced"
   | undefined;

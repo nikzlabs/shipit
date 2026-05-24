@@ -13,4 +13,5 @@ platform capabilities.
 | [deployment.md](deployment.md) | Deploy targets (Vercel, Cloudflare) |
 | [github.md](github.md) | Branches, PRs, auto-push, CI |
 | [sessions.md](sessions.md) | Agent-spawned sibling sessions — `shipit session create`, when to use it |
+| [skills.md](skills.md) | Skill directory layout — hand-written vs ShipIt-installed, install markers, auto-commit |
 | [design-docs.md](design-docs.md) | Feature docs — frontmatter format, status values, structure |

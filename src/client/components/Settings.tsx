@@ -8,6 +8,7 @@ import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
 import { McpServerSettings } from "./McpServerSettings.js";
+import { SkillsTab } from "./SkillsTab.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { isValidQuickCaptureHotkey } from "../hooks/useQuickCaptureHotkey.js";
@@ -19,7 +20,7 @@ const MAX_LENGTH = 50_000;
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "mcp" | "advanced";
+type Tab = "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "skills" | "mcp" | "advanced";
 
 const providerNames: Record<AgentId, string> = {
   claude: "Claude",
@@ -530,7 +531,7 @@ export function Settings({
   const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
 
-  const generalTabs = ["github", "git", "instructions", "mcp", "advanced"] as const;
+  const generalTabs = ["github", "git", "instructions", "skills", "mcp", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "agent-claude": return "Claude";
@@ -538,15 +539,23 @@ export function Settings({
       case "github": return "GitHub";
       case "git": return "Git";
       case "instructions": return "Instructions";
+      case "skills": return "Skills";
       case "mcp": return "MCP Servers";
       case "advanced": return "Advanced";
     }
   };
+  // Skills tab renders a two-pane layout (catalog list + Monaco preview when
+  // the install sheet opens) and wants more horizontal room than the existing
+  // form-shaped tabs. Swap the dialog class per active tab so other tabs keep
+  // their tight 672 px width.
+  const dialogClass = activeTab === "skills"
+    ? "rounded-lg border-(--color-border-secondary) max-w-5xl w-full md:mx-4 flex flex-col md:h-[80vh] max-md:h-full"
+    : "rounded-lg border-(--color-border-secondary) max-w-2xl w-full md:mx-4 flex flex-col md:h-120 max-md:h-full";
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
       <DialogContent
-        className="rounded-lg border-(--color-border-secondary) max-w-2xl w-full md:mx-4 flex flex-col md:h-120 max-md:h-full"
+        className={dialogClass}
         data-testid="settings-backdrop"
         onKeyDown={handleKeyDown}
       >
@@ -723,6 +732,10 @@ export function Settings({
                 </Button>
               </div>
             </div>
+          </TabsContent>
+
+          <TabsContent value="skills">
+            <SkillsTab hasActiveSession={hasActiveSession} />
           </TabsContent>
 
           <TabsContent value="mcp">
