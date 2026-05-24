@@ -740,6 +740,8 @@ export type WsRewindComplete =
       gapPosition: number;
       action: "chat";
       droppedMessageCount: number;
+      snapshotSessionId?: string;
+      snapshotExpiresAt?: number;
     }
   | {
       type: "rewind_complete";
@@ -747,6 +749,8 @@ export type WsRewindComplete =
       gapPosition: number;
       action: "code";
       commitHash: string;
+      snapshotSessionId?: string;
+      snapshotExpiresAt?: number;
     }
   | {
       type: "rewind_complete";
@@ -755,7 +759,23 @@ export type WsRewindComplete =
       action: "both";
       droppedMessageCount: number;
       commitHash: string;
+      snapshotSessionId?: string;
+      snapshotExpiresAt?: number;
     };
+
+export interface WsRewindSnapshotAvailable {
+  type: "rewind_snapshot_available";
+  sessionId: string;
+  action: "chat" | "code" | "both" | "fork";
+  expiresAt: number;
+}
+
+export interface WsRewindRestored {
+  type: "rewind_restored";
+  sessionId: string;
+  action: "chat" | "code" | "both" | "fork";
+  archivedSessionId?: string;
+}
 
 export interface WsRewindPreview {
   type: "rewind_preview";
@@ -773,6 +793,8 @@ export interface WsSessionForked {
   childSessionId: string;
   title: string;
   branch: string;
+  snapshotSessionId?: string;
+  snapshotExpiresAt?: number;
   sessionId?: string;
   sessionName?: string;
 }
@@ -931,6 +953,8 @@ export type WsServerMessage =
   | WsRollbackComplete
   | WsRewindComplete
   | WsRewindPreview
+  | WsRewindSnapshotAvailable
+  | WsRewindRestored
   | WsSessionForked
   | WsForkBreadcrumb
   | WsSessionSpawned

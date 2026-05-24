@@ -132,6 +132,49 @@ describe("Integration: rewind and fork", () => {
     client.close();
   });
 
+  it("restores code-only rewind snapshots and clears stale chat markers", async () => {
+    const { sessionId, workspaceDir } = await createSession();
+    const git = new GitManager(workspaceDir);
+    const initialHead = await git.getHeadHash();
+    expect(initialHead).toBeTruthy();
+
+    fs.writeFileSync(path.join(workspaceDir, "feature.txt"), "changed\n");
+    const changedHead = await git.autoCommit("change feature");
+    expect(changedHead).toBeTruthy();
+
+    chatHistoryManager.append(sessionId, { role: "user", text: "change the file" });
+    chatHistoryManager.append(sessionId, {
+      role: "assistant",
+      text: "changed",
+      commitHash: changedHead ?? undefined,
+      parentCommitHash: initialHead ?? undefined,
+    });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 1, action: "code" });
+    await expect(client.receiveType("rewind_complete")).resolves.toMatchObject({
+      type: "rewind_complete",
+      action: "code",
+      snapshotSessionId: sessionId,
+    });
+    expect(await git.getHeadHash()).toBe(initialHead);
+    expect(chatHistoryManager.load(sessionId)[1]).toMatchObject({ rolledBack: true, codeRollbackHash: initialHead });
+
+    client.send({ type: "rewind_restore_request", sessionId });
+    await expect(client.receiveType("rewind_restored")).resolves.toMatchObject({
+      type: "rewind_restored",
+      sessionId,
+      action: "code",
+    });
+    expect(await git.getHeadHash()).toBe(changedHead);
+    expect(chatHistoryManager.load(sessionId)[1].rolledBack).toBeUndefined();
+    expect(chatHistoryManager.load(sessionId)[1].codeRollbackHash).toBeUndefined();
+
+    client.close();
+  });
+
   it("truncates chat-only rewinds and removes uploads from discarded messages", async () => {
     const { sessionId, sessionDir } = await createSession();
     const uploadsDir = path.join(sessionDir, "uploads");
@@ -160,6 +203,34 @@ describe("Integration: rewind and fork", () => {
 
     expect(chatHistoryManager.load(sessionId).map((m) => m.text)).toEqual(["keep", "kept response"]);
     expect(fs.existsSync(path.join(uploadsDir, "discarded.txt"))).toBe(false);
+
+    client.close();
+  });
+
+  it("stores a chat rewind snapshot and restores it on request", async () => {
+    const { sessionId } = await createSession();
+    chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "user", text: "restore me" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "chat" });
+    await expect(client.receiveType("rewind_complete")).resolves.toMatchObject({
+      type: "rewind_complete",
+      action: "chat",
+      snapshotSessionId: sessionId,
+    });
+    expect(chatHistoryManager.load(sessionId).map((m) => m.text)).toEqual(["keep", "kept response"]);
+
+    client.send({ type: "rewind_restore_request", sessionId });
+    await expect(client.receiveType("rewind_restored")).resolves.toMatchObject({
+      type: "rewind_restored",
+      sessionId,
+      action: "chat",
+    });
+    expect(chatHistoryManager.load(sessionId).map((m) => m.text)).toEqual(["keep", "kept response", "restore me"]);
 
     client.close();
   });
@@ -249,6 +320,37 @@ describe("Integration: rewind and fork", () => {
         branch: "kept-upload",
       },
     });
+
+    client.close();
+  });
+
+  it("restores fork snapshots by archiving the child and removing the parent breadcrumb", async () => {
+    const { sessionId } = await createSession();
+    chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "fork", branchName: "undo-fork" });
+    const forked = await client.receiveType("session_forked");
+    expect(forked).toMatchObject({
+      type: "session_forked",
+      parentSessionId: sessionId,
+      snapshotSessionId: sessionId,
+    });
+    if (forked.type !== "session_forked") throw new Error("Expected session_forked");
+    expect(chatHistoryManager.load(sessionId).at(-1)?.forkChild?.childSessionId).toBe(forked.childSessionId);
+
+    client.send({ type: "rewind_restore_request", sessionId });
+    await expect(client.receiveType("rewind_restored")).resolves.toMatchObject({
+      type: "rewind_restored",
+      sessionId,
+      action: "fork",
+      archivedSessionId: forked.childSessionId,
+    });
+    expect(sessionManager.get(forked.childSessionId)?.archived).toBe(true);
+    expect(chatHistoryManager.load(sessionId).some((m) => m.forkChild?.childSessionId === forked.childSessionId)).toBe(false);
 
     client.close();
   });

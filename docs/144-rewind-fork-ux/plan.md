@@ -529,19 +529,19 @@ Landing 3 has no Landing-1 or Landing-2 hard dependencies — its items (U8 rich
   Old WS messages stay alive in this landing — they're removed in Landing 2 once the gap UI is live.
 - [x] B6: auto-switch + breadcrumb on fork success (uses `SpawnedSessionCard`). The breadcrumb is persisted (B2's `fork_child` column) so it survives reload. The server also emits `fork_breadcrumb` through the parent runner so other parent viewers see the card live without reload.
 - [x] U5: the new `rewind_at_gap` handler for `action: "code"` calls `markRolledBackFromIndex(sessionId, gapPosition, commitHash)` so every message at index ≥ `gapPosition` (both user and assistant — see `MessageList.tsx:390`) gets `rolled_back = 1`, and the first such row gets `code_rollback_hash = <commit>`. Both writes happen inside one `db.transaction(...)`. No divider row is appended for `code` — the client renders the divider synthetically from `codeRollbackHash` (per B2 #3), so reload preserves the dimmed + synthetic-divider state.
-- [ ] B7: integration test file covering all branches above.
+- [x] B7: integration test file covering all branches above.
 
 ### Landing 2 — Replace per-message dropdowns with between-turn rewind points
 
-- [ ] Build `RewindPoint` component per the "UI spec" section above (intermediate gap, gap-after-last, streaming states, menu).
-- [ ] Render `RewindPoint` between every role transition in `MessageList`, plus the prominent gap-after-last (D6). Hide/disable per D3.
-- [ ] Implement the four menu actions, all routing through `rewind_at_gap` (D2). The Fork action requires a branch name (B5 says the server rejects fork without `branchName`), so the Fork modal includes the inline name input from U7 — that input ships in Landing 2, not Landing 3, because Landing 2's UI is the first place a fork can be initiated under the new design. Defaults come from the session-namer slug; the user can edit before confirming.
-- [ ] Add `rewind_preview_request` / `rewind_preview` WS pair; populate menu subtitles and modal counts (U4 + UI spec).
-- [ ] Confirmation modal (selective, per D4) + undo toast + "Recover recent rewind" topbar overflow item.
-- [ ] `rewind_snapshots` SQLite table + restore endpoint (D8).
-- [ ] `fork_breadcrumb` WS event + handler so other parent viewers see the just-persisted breadcrumb without a reload (B5 / D7).
+- [x] Build `RewindPoint` component per the "UI spec" section above (intermediate gap, gap-after-last, streaming states, menu).
+- [x] Render `RewindPoint` between every role transition in `MessageList`, plus the prominent gap-after-last (D6). Hide/disable per D3.
+- [x] Implement the four menu actions, all routing through `rewind_at_gap` (D2). The Fork action requires a branch name (B5 says the server rejects fork without `branchName`), so the Fork modal includes the inline name input from U7 — that input ships in Landing 2, not Landing 3, because Landing 2's UI is the first place a fork can be initiated under the new design. Defaults come from the session-namer slug; the user can edit before confirming.
+- [x] Add `rewind_preview_request` / `rewind_preview` WS pair; populate menu subtitles and modal counts (U4 + UI spec).
+- [x] Confirmation modal (selective, per D4) + undo toast + "Recover recent rewind" topbar overflow item.
+- [x] `rewind_snapshots` SQLite table + restore endpoint (D8).
+- [x] `fork_breadcrumb` WS event + handler so other parent viewers see the just-persisted breadcrumb without a reload (B5 / D7).
 - [ ] Delete `RewindDropdown.tsx`, `RollbackDropdown.tsx`, the four old WS message types and their handlers. Cover with regression tests so the old chip can't sneak back.
-- [ ] U6: empty-chat marker after full rewind.
+- [x] U6: empty-chat marker after full rewind.
 
 ### Landing 3 — Polish
 
