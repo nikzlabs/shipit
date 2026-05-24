@@ -16,10 +16,15 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
   const event = data.event;
 
   if (event.type === "agent_assistant") {
+    // Multiple text blocks within a single assistant event are distinct
+    // preambles separated by tool_use blocks (common when a subagent runs
+    // serial tool calls in one turn). Joining with "" runs them together
+    // with no separator — "…cloaker.Now I have…". Use "\n\n" so each
+    // preamble renders as its own paragraph under whitespace-pre-wrap.
     const textBlocks = (event.content ?? [])
       .filter((b: AgentContentBlock): b is { type: "text"; text: string } => b.type === "text")
       .map((b) => b.text)
-      .join("");
+      .join("\n\n");
 
     const toolUseBlocks = (event.content ?? [])
       .filter((b: AgentContentBlock): b is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } => b.type === "tool_use");
