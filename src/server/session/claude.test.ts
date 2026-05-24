@@ -419,6 +419,26 @@ describe("ClaudeProcess", () => {
       expect(tools).toContain("mcp__playwright__");
     });
 
+    // docs/149 — the worker-registered `shipit-review` MCP bridge isn't a
+    // user-configured server, so it never flows through `mcpServerNames`. The
+    // tool must still be allowlisted explicitly or headless `-p` mode rejects
+    // it as "permission not yet granted" — including from review subagents.
+    it.each([
+      ["auto" as const, undefined],
+      ["plan" as const, "plan" as const],
+      ["guarded" as const, "guarded" as const],
+    ])("allowlists mcp__shipit-review__* in %s mode", (_label, permissionMode) => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", permissionMode });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools.split(",")).toContain("mcp__shipit-review__*");
+    });
+
     // docs/138: `Skill` must be allowlisted in every permission mode so an
     // explicit `/my-skill` invocation is honored even in headless `-p` mode
     // (no human to approve the prompt) and even in plan mode.
