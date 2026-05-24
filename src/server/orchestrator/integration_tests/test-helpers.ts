@@ -410,6 +410,11 @@ export class StubGitHubAuthManager extends EventEmitter {
   public reviewThreadReplyCalls: { threadId: string; body: string }[] = [];
   public reviewThreadResolveCalls: { threadId: string }[] = [];
   public reviewThreadUnresolveCalls: { threadId: string }[] = [];
+  public submitPullRequestReviewCalls: {
+    pullRequestId: string;
+    comments: { path: string; line: number; body: string; side?: "LEFT" | "RIGHT" }[];
+    body?: string;
+  }[] = [];
 
   /**
    * Per-call result overrides. Set to a non-null value to make the next call
@@ -420,9 +425,14 @@ export class StubGitHubAuthManager extends EventEmitter {
     success: true,
     message: "ok",
   };
+  private _pullRequestNodeId: string | null = "PR_node_1";
 
   setReviewThreadResult(result: { success: boolean; message: string }) {
     this._reviewThreadResult = result;
+  }
+
+  setPullRequestNodeId(nodeId: string | null) {
+    this._pullRequestNodeId = nodeId;
   }
 
   async addReviewThreadReply(threadId: string, body: string) {
@@ -439,6 +449,21 @@ export class StubGitHubAuthManager extends EventEmitter {
 
   async unresolveReviewThread(threadId: string) {
     this.reviewThreadUnresolveCalls.push({ threadId });
+    if (!this._authenticated) return { success: false, message: "Not authenticated with GitHub" };
+    return this._reviewThreadResult;
+  }
+
+  async getPullRequestNodeId(_owner: string, _repo: string, _pullNumber: number) {
+    if (!this._authenticated) return null;
+    return this._pullRequestNodeId;
+  }
+
+  async submitPullRequestReview(
+    pullRequestId: string,
+    comments: { path: string; line: number; body: string; side?: "LEFT" | "RIGHT" }[],
+    body?: string,
+  ) {
+    this.submitPullRequestReviewCalls.push({ pullRequestId, comments, body });
     if (!this._authenticated) return { success: false, message: "Not authenticated with GitHub" };
     return this._reviewThreadResult;
   }

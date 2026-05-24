@@ -5,6 +5,8 @@ import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useCommentStore } from "../stores/comment-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import type { PrMergeableState } from "../../server/shared/types.js";
 
 beforeEach(() => {
@@ -17,9 +19,14 @@ beforeEach(() => {
   // would suppress the conflict UI and produce confusing test failures.
   useGitStore.getState().reset();
   useSessionStore.setState({ activeRunnerSessions: new Set<string>(), isLoading: false, activity: undefined });
+  useCommentStore.setState({ commentsBySession: {} });
+  useSettingsStore.setState({ prCommentSync: false });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  vi.restoreAllMocks();
+  cleanup();
+});
 
 // ---- Helpers for merge-conflict tests ----
 
@@ -189,6 +196,47 @@ describe("PrLifecycleCard", () => {
     ).toBeInTheDocument();
     expect(screen.getByTitle("PR #42")).toBeInTheDocument();
     expect(screen.getByText(/CI/)).toBeInTheDocument();
+  });
+
+  it("shows pending review button only when PR comment sync is enabled", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "pending", total: 1, passed: 0, failed: 0, pending: 1 },
+    });
+    useCommentStore.getState().addLineComment("s1", "src/a.ts", 10, "Needs a guard");
+
+    const { rerender } = render(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.queryByRole("button", { name: /Send review/i })).not.toBeInTheDocument();
+
+    useSettingsStore.setState({ prCommentSync: true });
+    rerender(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.getByRole("button", { name: /Send review \(1\)/i })).toBeInTheDocument();
+  });
+
+  it("submits pending review comments and clears them on success", async () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "pending", total: 1, passed: 0, failed: 0, pending: 1 },
+    });
+    useSettingsStore.setState({ prCommentSync: true });
+    useCommentStore.getState().addLineComment("s1", "src/a.ts", 10, "Needs a guard");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, count: 1 }),
+    } as Response);
+
+    render(<PrLifecycleCard sessionId="s1" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Send review \(1\)/i }));
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/s1/pr/review", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        comments: [{ path: "src/a.ts", line: 10, body: "Needs a guard" }],
+      }),
+    }));
+    expect(useCommentStore.getState().getCommentCount("s1")).toBe(0);
   });
 
   it("renders open phase with failing checks", () => {

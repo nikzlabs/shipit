@@ -449,6 +449,22 @@ export async function viewPullRequest(
   };
 }
 
+/** Fetch the GraphQL node id for a pull request. */
+export async function getPullRequestNodeId(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): Promise<string | null> {
+  const res = await fetchGitHub(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+    token,
+  );
+  if (!res.ok) return null;
+  const pr = (await res.json()) as { node_id?: string };
+  return pr.node_id ?? null;
+}
+
 /**
  * Disable auto-merge on a pull request.
  * Uses the GraphQL API (`disablePullRequestAutoMerge` mutation).

@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   addReviewThreadReply,
   resolveReviewThread,
+  submitPullRequestReview,
   unresolveReviewThread,
 } from "./github-auth-review-threads.js";
 
@@ -132,6 +133,30 @@ describe("github-auth-review-threads", () => {
       const calls = getCaptured();
       expect(calls[0].body?.query).toContain("unresolveReviewThread");
       expect(calls[0].body?.variables).toEqual({ threadId: "PRT_kw1" });
+    });
+  });
+
+  describe("submitPullRequestReview", () => {
+    it("POSTs one addPullRequestReview mutation with thread comments", async () => {
+      const getCaptured = spyFetch([
+        jsonResponse({ data: { addPullRequestReview: { pullRequestReview: { id: "REV_1", state: "COMMENTED", url: "https://github.com/x/y/pull/1#pullrequestreview-1" } } } }),
+      ]);
+
+      const result = await submitPullRequestReview("ghp_test", "PR_node_1", [
+        { path: "src/a.ts", line: 4, body: "tighten this" },
+      ], "ShipIt review: 1 comment");
+
+      expect(result).toEqual({ success: true, message: "submit pull request review succeeded" });
+      const calls = getCaptured();
+      expect(calls).toHaveLength(1);
+      expect(calls[0].body?.query).toContain("addPullRequestReview");
+      expect(calls[0].body?.variables).toEqual({
+        pullRequestId: "PR_node_1",
+        body: "ShipIt review: 1 comment",
+        threads: [
+          { path: "src/a.ts", line: 4, body: "tighten this", side: "RIGHT" },
+        ],
+      });
     });
   });
 });
