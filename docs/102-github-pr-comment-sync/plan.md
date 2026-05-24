@@ -11,7 +11,8 @@ description: Bidirectionally sync GitHub PR review comments with ShipIt's inline
 - **Read side** — shipped with docs/133 Phase 4 (poller fetches `reviewThreads`, `PrConversationSection` renders them).
 - **Phase 1 write-back (this doc)** — reply, resolve, and unresolve via GraphQL. Gated by a `prCommentSync` setting (off by default). The mutation controls live in `PrConversationSection`.
 - **Inline render follow-up** — GitHub review threads now render as read-only Monaco diff widgets by mapping `PrReviewThread` data into `LineCommentLike` entries with `source: "github"`. Replies and resolve/reopen still live in `PrConversationSection`.
-- **Deferred** — "Send review to GitHub (N)" batched pending review flow, the agent auto-loop on new comment.
+- **Batched review write-back** — shipped: the open PR lifecycle card shows `Send review (N)` when local diff comments exist and `prCommentSync` is enabled. Submitting sends all local line comments as one GitHub PR review and clears the local draft only after GitHub accepts it.
+- **Deferred** — the agent auto-loop on new comment.
 
 ## Summary
 
@@ -30,7 +31,7 @@ Conductor sealed this gap in v0.29.0 ("GitHub Comment Sync") and v0.44.0 ("resol
 1. **Pull** — when a session has an open PR (`pr-status-poller.ts` already tracks this), the poller's GraphQL query gains a `reviewThreads` selection: `comments { nodes { id, body, author, path, line, originalLine, diffSide } }, isResolved`.
 2. **Render** — incoming threads materialize as Monaco comment widgets keyed by GitHub `databaseId` (distinct from the local `commentId` namespace). Author avatar and "from GitHub" badge in the widget header. Resolved threads collapse into a single chevron strip the way GitHub renders them.
 3. **Reply / resolve in ShipIt** — the existing comment composer gains a "post to GitHub" toggle (default on when the session has a PR). Submitting calls `POST /api/sessions/:id/pr/comments` → `services/github.ts:postReviewComment()` → GraphQL `addPullRequestReviewThreadReply` or `resolveReviewThread`.
-4. **Push** — a comment authored locally with the toggle on creates a **pending review** the first time, then `submitPullRequestReview` on the next "Send to GitHub" click. This avoids spamming GitHub with one notification per line comment.
+4. **Push** — local diff comments remain in ShipIt's browser-side draft until the user clicks `Send review (N)` on the PR lifecycle card. ShipIt then posts them as one GitHub PR review via GraphQL `addPullRequestReview` with `threads`, avoiding one notification per line comment.
 5. **Conflict resolution** — comments are append-only on both sides. Resolution state is last-writer-wins: a local resolve writes to GitHub immediately; a GitHub resolve flips local state on the next poll tick.
 
 ### Server pieces
@@ -91,8 +92,9 @@ Deferred to a Phase 2 of this feature:
 |---|---|
 | `src/client/components/MonacoCommentWidgets.ts` | **Shipped follow-up** — Render GitHub-sourced threads inline on the diff viewer with `source: 'local' \| 'github'`; GitHub cards are read-only and show author/reply/resolved/outdated metadata. |
 | `src/client/components/DiffPanel.tsx` | **Shipped follow-up** — Merge `card.reviewThreads` from `pr-store` with local diff comments so the Monaco diff shows teammate review comments on matching file/line anchors. |
-| `src/client/components/PrLifecycleCard.tsx` | "Pending review (N)" pill. |
-| `src/server/orchestrator/services/github-pr-comments.ts` | `submitPullRequestReview` to batch-post local line comments as a single pending review. |
+| `src/client/components/PrLifecycleCard.tsx` | **Shipped follow-up** — `Send review (N)` pill for local diff comments when `prCommentSync` is enabled. |
+| `src/server/orchestrator/github-auth-review-threads.ts` | **Shipped follow-up** — `submitPullRequestReview` GraphQL helper using `addPullRequestReview` with `threads`. |
+| `src/server/orchestrator/services/github-pr-comments.ts` | **Shipped follow-up** — `submitReviewComments` batches local line comments into a single submitted GitHub PR review. |
 
 ## Future extensions
 
@@ -100,4 +102,3 @@ Deferred to a Phase 2 of this feature:
 - **Suggested changes** — render GitHub's `suggestion` blocks as one-click apply buttons.
 - **Auto-loop on new comment** — when a reviewer leaves a comment, ShipIt can prompt Claude to address it automatically (gated by a per-session setting, similar to `autoFix`).
 - **MonacoCommentWidgets integration** — render GitHub-sourced review threads inline on the diff viewer (the read side currently lives only in the PR detail panel).
-- **Pending-review batching** — accumulate local line comments and post them as a single GraphQL `submitPullRequestReview` rather than one notification per reply.

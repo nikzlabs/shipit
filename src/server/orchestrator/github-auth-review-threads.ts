@@ -104,3 +104,49 @@ export async function unresolveReviewThread(
   );
   return parseMutationResult(res, "unresolve review thread");
 }
+
+export interface PullRequestReviewThreadDraft {
+  path: string;
+  line: number;
+  body: string;
+  side?: "LEFT" | "RIGHT";
+}
+
+/**
+ * Submit a batch of line comments as one GitHub pull request review.
+ *
+ * Uses the modern `threads` input so callers can anchor comments by file path,
+ * blob line, and diff side instead of deprecated diff-relative positions.
+ */
+export async function submitPullRequestReview(
+  token: string,
+  pullRequestId: string,
+  comments: PullRequestReviewThreadDraft[],
+  body?: string,
+): Promise<{ success: boolean; message: string }> {
+  const threads = comments.map((comment) => ({
+    path: comment.path,
+    line: comment.line,
+    body: comment.body,
+    side: comment.side ?? "RIGHT",
+  }));
+  const res = await fetchGitHubGraphQL(
+    token,
+    `mutation SubmitPullRequestReview(
+      $pullRequestId: ID!,
+      $threads: [DraftPullRequestReviewThread!],
+      $body: String,
+    ) {
+      addPullRequestReview(input: {
+        pullRequestId: $pullRequestId,
+        event: COMMENT,
+        body: $body,
+        threads: $threads,
+      }) {
+        pullRequestReview { id state url }
+      }
+    }`,
+    { pullRequestId, threads, body },
+  );
+  return parseMutationResult(res, "submit pull request review");
+}

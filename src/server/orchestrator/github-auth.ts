@@ -4,9 +4,10 @@ import type { CredentialStore } from "./credential-store.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper } from "./git-config.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl } from "./github-auth-repos.js";
-import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl } from "./github-auth-prs.js";
+import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
-import { addReviewThreadReply as addReviewThreadReplyImpl, resolveReviewThread as resolveReviewThreadImpl, unresolveReviewThread as unresolveReviewThreadImpl } from "./github-auth-review-threads.js";
+import { addReviewThreadReply as addReviewThreadReplyImpl, resolveReviewThread as resolveReviewThreadImpl, unresolveReviewThread as unresolveReviewThreadImpl, submitPullRequestReview as submitPullRequestReviewImpl } from "./github-auth-review-threads.js";
+import type { PullRequestReviewThreadDraft } from "./github-auth-review-threads.js";
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
@@ -506,6 +507,12 @@ export class GitHubAuthManager extends EventEmitter {
     return viewPullRequestImpl(this._token, owner, repo, pullNumber);
   }
 
+  /** Fetch the GraphQL node id for a pull request. */
+  async getPullRequestNodeId(owner: string, repo: string, pullNumber: number): Promise<string | null> {
+    if (!this._token) return null;
+    return getPullRequestNodeIdImpl(this._token, owner, repo, pullNumber);
+  }
+
   /**
    * Get CI check status for a PR's head commit.
    */
@@ -573,6 +580,16 @@ export class GitHubAuthManager extends EventEmitter {
   async unresolveReviewThread(threadId: string): Promise<{ success: boolean; message: string }> {
     if (!this._token) return { success: false, message: "Not authenticated with GitHub" };
     return unresolveReviewThreadImpl(this._token, threadId);
+  }
+
+  /** Submit a batch of line comments as one PR review (docs/102). */
+  async submitPullRequestReview(
+    pullRequestId: string,
+    comments: PullRequestReviewThreadDraft[],
+    body?: string,
+  ): Promise<{ success: boolean; message: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated with GitHub" };
+    return submitPullRequestReviewImpl(this._token, pullRequestId, comments, body);
   }
 
   /** Snapshot of the most recent rate-limit state seen on the GraphQL API. */
@@ -722,6 +739,6 @@ export class GitHubAuthManager extends EventEmitter {
 
 // Barrel re-exports from sub-modules for backwards compatibility
 export { createRepo, listUserRepos, searchRepos } from "./github-auth-repos.js";
-export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, markPullRequestReady, listPullRequests, viewPullRequest } from "./github-auth-prs.js";
+export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, markPullRequestReady, listPullRequests, viewPullRequest, getPullRequestNodeId } from "./github-auth-prs.js";
 export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
-export { addReviewThreadReply, resolveReviewThread, unresolveReviewThread } from "./github-auth-review-threads.js";
+export { addReviewThreadReply, resolveReviewThread, unresolveReviewThread, submitPullRequestReview } from "./github-auth-review-threads.js";
