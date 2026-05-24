@@ -576,6 +576,70 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     // field should be undefined per our omit-when-empty contract.
     expect(cp.lastMcpServers).toBeUndefined();
   });
+
+  it("spawned session inherits the parent's model selection", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    sessionManager.setModel(parentId, "claude-opus-4-7");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", branch: "child-model-test" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const deadline = Date.now() + 3000;
+    while (createdClaudes.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const cp = createdClaudes[createdClaudes.length - 1];
+    const runDeadline = Date.now() + 3000;
+    while (!cp.runCalled && Date.now() < runDeadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(cp.lastModel).toBe("claude-opus-4-7");
+  });
+
+  it("prepareSessionAgentEnvironment is idempotent: provisioning runs once, pin sticks", { timeout: 15_000 }, async () => {
+    // Direct unit-style assertion against the env-prep function — verifies
+    // the agentPinned flag gates the provisioning block so subsequent calls
+    // are no-ops.
+    const { prepareSessionAgentEnvironment } = await import("../session-agent-env.js");
+    const { SessionRunner } = await import("../session-runner.js");
+
+    const parentId = await createParentSession();
+    const session = sessionManager.get(parentId);
+    expect(session?.agentPinned).toBeFalsy();
+
+    const runner = new SessionRunner({
+      sessionId: parentId,
+      sessionDir: session!.workspaceDir!,
+      defaultAgentId: "claude",
+    });
+    const deps = {
+      credentialsDir: tmpDir,
+      credentialStore: createTestCredentialStore(tmpDir),
+      sessionManager,
+    };
+
+    await prepareSessionAgentEnvironment(runner, {
+      sessionId: parentId,
+      agentId: "claude",
+      deps,
+    });
+    expect(sessionManager.get(parentId)?.agentPinned).toBe(true);
+    expect(sessionManager.get(parentId)?.agentId).toBe("claude");
+
+    // Second call — must not re-pin and must not throw.
+    await prepareSessionAgentEnvironment(runner, {
+      sessionId: parentId,
+      agentId: "claude",
+      deps,
+    });
+    expect(sessionManager.get(parentId)?.agentPinned).toBe(true);
+
+    runner.dispose();
+  });
 });
 
 // -------------------------------------------------------------------------

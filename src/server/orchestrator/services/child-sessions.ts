@@ -538,15 +538,16 @@ export async function sendChildMessage(
   // follow-up turn fires. Mirrors the spawn path; idempotent so re-running
   // it on every message is fine. Without this, a child whose OAuth token
   // has been rotated by another session since the first turn 401s here too.
-  if (credentialsDir && credentialStore) {
+  // Skipped while the agent is already running — `sendSystemMessage` will
+  // enqueue, and the env-prep of the next-starting turn covers it.
+  const wasRunning = runner.running;
+  if (!wasRunning && credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {
       sessionId: childSessionId,
       agentId: runner.agentId,
       deps: { credentialsDir, credentialStore, sessionManager },
     });
   }
-
-  const wasRunning = runner.running;
   runner.sendSystemMessage(trimmed);
   return {
     queuePosition: wasRunning ? runner.queueLength : 0,

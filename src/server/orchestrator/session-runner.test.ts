@@ -154,6 +154,8 @@ describe("SessionRunner", () => {
     });
 
     runner.sendSystemMessage("fix ci");
+    // runSystemTurn awaits buildRunParams; flush microtasks so the run call lands.
+    await new Promise((r) => setImmediate(r));
     // Should start a turn directly — not enqueue
     expect(runner.queueLength).toBe(0);
     expect(runner.running).toBe(true);
