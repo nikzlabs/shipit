@@ -29,6 +29,15 @@
   --ease-in: ease-in;
 }
 
+/* Custom highlight for the markdown-comments "pending comment" range. The
+   native browser selection is dimmed or cleared once focus moves to the
+   comment textarea, so we paint a persistent highlight via the CSS Custom
+   Highlight API. See MarkdownSelectionComments.tsx. */
+::highlight(shipit-pending-comment) {
+  background-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  color: inherit;
+}
+
 /* ── Rocket launch animation (new-session empty state) ── */
 
 .rocket-scene {

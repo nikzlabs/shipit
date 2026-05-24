@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: selection listener + DOM measurement, useRef: rendered body container, useLayoutEffect: position the floating button against the latest selection rect
-import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, memo } from "react";
 import { marked } from "marked";
 import { ChatTeardropTextIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -9,6 +9,7 @@ import { parseFrontmatter, type ParsedFrontmatter } from "../utils/markdown-fron
 import type { DocPriority, DocStatus } from "../../server/shared/types.js";
 
 const CONTEXT_CHARS = 50;
+const HIGHLIGHT_NAME = "shipit-pending-comment";
 
 export interface SelectionCommentData {
   id: string;
@@ -23,6 +24,25 @@ interface MarkdownBlock {
   html: string;
   textContent: string;
 }
+
+/**
+ * Memoised wrapper around a single rendered markdown block. Without this,
+ * any parent state change (e.g. the floating-button snapshot updating on
+ * every `selectionchange` event) caused React to walk the block JSX during
+ * reconciliation. Because the JSX `{ __html: block.html }` object is created
+ * fresh each render, that walk re-ran the `dangerouslySetInnerHTML` write
+ * path, replacing the H1/H2/P/UL children inside each `.prose` div. The
+ * replacement detached the text nodes the user's selection was anchored to,
+ * which collapsed the selection mid-drag. Memoising on the `html` string
+ * skips the entire subtree update when the markdown hasn't changed.
+ */
+const MarkdownBlock = memo(({ html }: { html: string }) => (
+  <div
+    className="prose dark:prose-invert prose-sm max-w-none"
+    dangerouslySetInnerHTML={{ __html: html }}
+  />
+));
+MarkdownBlock.displayName = "MarkdownBlock";
 
 /** Render the markdown body, then split the resulting HTML into top-level blocks. */
 function parseMarkdownToBlocks(content: string): MarkdownBlock[] {
@@ -292,13 +312,42 @@ function CommentCard({
 
 /**
  * The user's pending selection — captured when the floating "Comment" button
- * is clicked. We snapshot the selection at click time because opening the
- * comment input collapses the live selection.
+ * is clicked. We snapshot the selection because the live one can be lost if
+ * the user clicks elsewhere (e.g. scrolling, editing the input) before
+ * submitting. The `range` is used to paint a CSS Custom Highlight while the
+ * input is open, so the user keeps a visible anchor for what they're
+ * commenting on.
  */
 interface PendingSelection {
   quotedText: string;
   contextBefore: string;
   contextAfter: string;
+  range: Range;
+}
+
+/**
+ * Live snapshot of the user's current selection, captured every time the
+ * selection changes. Bundles together (a) the per-line rects used to position
+ * the floating Comment button, (b) the resolved selection data (quoted
+ * text + context) so that clicking the button doesn't need to re-read
+ * `window.getSelection()`, and (c) the underlying Range, which we promote
+ * into the CSS Custom Highlight API once the comment input opens — that's
+ * what keeps a visible highlight on the selected text while focus is in the
+ * textarea (the native selection gets dimmed or cleared by the browser
+ * depending on UA).
+ *
+ * `first`/`last` are the rects of the first and last line of the selection
+ * (via `range.getClientRects()`). We never use `range.getBoundingClientRect()`
+ * because for multi-line selections the bounding rect spans the full text
+ * column — its horizontal centre lands far from the actual selected text.
+ */
+interface SelectionSnapshot {
+  first: DOMRect;
+  last: DOMRect;
+  quotedText: string;
+  contextBefore: string;
+  contextAfter: string;
+  range: Range;
 }
 
 export function MarkdownSelectionComments({
@@ -309,7 +358,7 @@ export function MarkdownSelectionComments({
   onDeleteComment,
 }: MarkdownSelectionCommentsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [floatingRect, setFloatingRect] = useState<DOMRect | null>(null);
+  const [snapshot, setSnapshot] = useState<SelectionSnapshot | null>(null);
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null);
 
   const fm = useMemo(() => parseFrontmatter(content), [content]);
@@ -339,82 +388,143 @@ export function MarkdownSelectionComments({
   }, [comments, blocks]);
 
   // Floating "Comment" button positioning. Tracks the live selection inside
-  // the markdown body and surfaces a tiny button near it; clicking promotes
-  // the live selection to a `pendingSelection` and shows the comment input.
+  // the markdown body and surfaces a tiny button near it. The selection data
+  // (quoted text + context + rects) is resolved eagerly on every change so
+  // the click handler doesn't have to re-read `window.getSelection()` — see
+  // the `SelectionSnapshot` doc for why that matters.
   // eslint-disable-next-line no-restricted-syntax -- selection event subscription on document
   useEffect(() => {
     if (pendingSelection) {
-      setFloatingRect(null);
+      setSnapshot(null);
       return;
     }
     const handler = () => {
       const sel = window.getSelection();
       const container = containerRef.current;
       if (!sel || sel.isCollapsed || !container) {
-        setFloatingRect(null);
+        setSnapshot(null);
         return;
       }
       if (sel.rangeCount === 0) {
-        setFloatingRect(null);
+        setSnapshot(null);
         return;
       }
       const range = sel.getRangeAt(0);
       if (!container.contains(range.commonAncestorContainer)) {
-        setFloatingRect(null);
+        setSnapshot(null);
         return;
       }
-      const text = sel.toString();
-      if (!text.trim()) {
-        setFloatingRect(null);
+      const quotedText = sel.toString();
+      if (!quotedText.trim()) {
+        setSnapshot(null);
         return;
       }
-      const rect = range.getBoundingClientRect();
-      if (rect.width === 0 && rect.height === 0) {
-        setFloatingRect(null);
+      const rects = Array.from(range.getClientRects()).filter(
+        (r) => r.width > 0 || r.height > 0,
+      );
+      if (rects.length === 0) {
+        setSnapshot(null);
         return;
       }
-      setFloatingRect(rect);
+      const fullText = container.textContent ?? "";
+      const startOffset = offsetWithin(container, range.startContainer, range.startOffset);
+      const endOffset = startOffset + quotedText.length;
+      const contextBefore =
+        startOffset > 0 ? fullText.slice(Math.max(0, startOffset - CONTEXT_CHARS), startOffset) : "";
+      const contextAfter =
+        endOffset < fullText.length
+          ? fullText.slice(endOffset, Math.min(fullText.length, endOffset + CONTEXT_CHARS))
+          : "";
+      setSnapshot({
+        first: rects[0],
+        last: rects[rects.length - 1],
+        quotedText,
+        contextBefore,
+        contextAfter,
+        range: range.cloneRange(),
+      });
     };
     document.addEventListener("selectionchange", handler);
     return () => document.removeEventListener("selectionchange", handler);
   }, [pendingSelection]);
 
-  // Snapshot the live selection so opening the input doesn't lose it.
-  const handleStartComment = useCallback(() => {
-    const sel = window.getSelection();
-    const container = containerRef.current;
-    if (!sel || sel.isCollapsed || !container || sel.rangeCount === 0) return;
-    const range = sel.getRangeAt(0);
-    if (!container.contains(range.commonAncestorContainer)) return;
-    const quotedText = sel.toString();
-    if (!quotedText.trim()) return;
-
-    const fullText = container.textContent ?? "";
-    const startOffset = offsetWithin(container, range.startContainer, range.startOffset);
-    const endOffset = startOffset + quotedText.length;
-    const contextBefore =
-      startOffset > 0 ? fullText.slice(Math.max(0, startOffset - CONTEXT_CHARS), startOffset) : "";
-    const contextAfter =
-      endOffset < fullText.length
-        ? fullText.slice(endOffset, Math.min(fullText.length, endOffset + CONTEXT_CHARS))
-        : "";
-
-    setPendingSelection({ quotedText, contextBefore, contextAfter });
-    setFloatingRect(null);
-    // Collapse the live selection so the highlight goes away while the user types.
-    sel.removeAllRanges();
+  // Promote the latest snapshot to a pending input. We deliberately use the
+  // captured snapshot rather than re-reading `window.getSelection()` — see
+  // the `SelectionSnapshot` doc.
+  const handleStartComment = useCallback((snap: SelectionSnapshot) => {
+    setPendingSelection({
+      quotedText: snap.quotedText,
+      contextBefore: snap.contextBefore,
+      contextAfter: snap.contextAfter,
+      range: snap.range,
+    });
+    setSnapshot(null);
   }, []);
 
-  // The floating button lives outside container scroll, so position it via fixed
-  // coordinates from getBoundingClientRect. useLayoutEffect avoids a one-frame
-  // flash where the button appears in the wrong place.
+  // Paint a CSS Custom Highlight over the pending range while the comment
+  // input is open. The native selection is dimmed/cleared by browsers once
+  // focus moves to the textarea, so without this the user loses sight of
+  // what they're commenting on. Falls back silently on browsers that don't
+  // support the Highlight API (Chrome 105+, Safari 17.2+, Firefox 140+).
+  // eslint-disable-next-line no-restricted-syntax -- not a data effect; registers a side-effecting CSS highlight
+  useEffect(() => {
+    if (!pendingSelection) return;
+    const HighlightCtor = (
+      globalThis as { Highlight?: new (...ranges: Range[]) => unknown }
+    ).Highlight;
+    const highlights = (
+      globalThis as { CSS?: { highlights?: Map<string, unknown> } }
+    ).CSS?.highlights;
+    if (!HighlightCtor || !highlights) return;
+    const highlight = new HighlightCtor(pendingSelection.range);
+    highlights.set(HIGHLIGHT_NAME, highlight);
+    return () => {
+      highlights.delete(HIGHLIGHT_NAME);
+    };
+  }, [pendingSelection]);
+
+  // Position the floating button against the latest selection rect. We use
+  // `position: absolute` relative to `containerRef` (which is `position:
+  // relative`) rather than `position: fixed`, because the markdown can be
+  // rendered inside a transformed ancestor (e.g. Radix DialogContent uses
+  // `-translate-x-1/2 -translate-y-1/2` to centre itself). A transformed
+  // ancestor becomes the containing block for `position: fixed` descendants,
+  // which silently breaks viewport-relative coordinates — the button drifts
+  // toward the side of the screen. `position: absolute` relative to the
+  // markdown body avoids the trap entirely and also keeps the button anchored
+  // to the text when the dialog body scrolls.
+  //
+  // Strategy: prefer placing the button below the LAST line of the selection,
+  // centred horizontally on that line. If there's no room below the viewport,
+  // fall back to above the FIRST line. Horizontal position is clamped to the
+  // container width so the button stays next to the selected text.
   const buttonRef = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
     const el = buttonRef.current;
-    if (!el || !floatingRect) return;
-    el.style.top = `${floatingRect.top + window.scrollY - el.offsetHeight - 6}px`;
-    el.style.left = `${floatingRect.left + window.scrollX + floatingRect.width / 2 - el.offsetWidth / 2}px`;
-  }, [floatingRect]);
+    const container = containerRef.current;
+    if (!el || !container || !snapshot) return;
+    const containerRect = container.getBoundingClientRect();
+    const margin = 6;
+    const edgePad = 4;
+    const bH = el.offsetHeight;
+    const bW = el.offsetWidth;
+
+    const spaceBelow = window.innerHeight - snapshot.last.bottom;
+    const placeBelow = spaceBelow >= bH + margin + edgePad;
+    const anchor = placeBelow ? snapshot.last : snapshot.first;
+    const top = placeBelow
+      ? anchor.bottom - containerRect.top + margin
+      : anchor.top - containerRect.top - bH - margin;
+
+    const desiredLeft =
+      anchor.left - containerRect.left + anchor.width / 2 - bW / 2;
+    const minLeft = edgePad;
+    const maxLeft = Math.max(edgePad, containerRect.width - bW - edgePad);
+    const left = Math.max(minLeft, Math.min(desiredLeft, maxLeft));
+
+    el.style.top = `${top}px`;
+    el.style.left = `${left}px`;
+  }, [snapshot]);
 
   return (
     <div className="space-y-0 relative" ref={containerRef}>
@@ -424,10 +534,7 @@ export function MarkdownSelectionComments({
         const blockComments = commentsByBlock.get(idx) ?? [];
         return (
           <div key={idx}>
-            <div
-              className="prose dark:prose-invert prose-sm max-w-none"
-              dangerouslySetInnerHTML={{ __html: block.html }}
-            />
+            <MarkdownBlock html={block.html} />
             {blockComments.map((comment) => (
               <CommentCard
                 key={comment.id}
@@ -477,15 +584,19 @@ export function MarkdownSelectionComments({
         />
       )}
 
-      {floatingRect && !pendingSelection && (
+      {snapshot && !pendingSelection && (
         <button
           ref={buttonRef}
           onMouseDown={(e) => {
-            // Prevent the click from collapsing the selection before we snapshot it.
+            // preventDefault stops the click from collapsing the selection or
+            // moving focus to the button. stopPropagation stops Radix Dialog's
+            // outside-click detection (and any other ancestor listeners) from
+            // swallowing the event.
             e.preventDefault();
-            handleStartComment();
+            e.stopPropagation();
+            handleStartComment(snapshot);
           }}
-          className="fixed z-50 flex items-center gap-1 px-2 py-1 rounded bg-(--color-bg-elevated) border border-(--color-border-secondary) text-xs text-(--color-text-primary) shadow-lg hover:bg-(--color-bg-hover) cursor-pointer"
+          className="absolute z-50 flex items-center gap-1 px-2 py-1 rounded bg-(--color-bg-elevated) border border-(--color-border-secondary) text-xs text-(--color-text-primary) shadow-lg hover:brightness-125 hover:border-(--color-border-primary) cursor-pointer"
           title="Comment on this selection"
         >
           <ChatTeardropTextIcon size={ICON_SIZE.SM} />
