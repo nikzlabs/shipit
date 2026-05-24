@@ -201,7 +201,10 @@ against `codex app-server generate-json-schema`, CLI 0.132.x):
 
 - **`diff`** is a **top-level unified-diff string** — always present. `update` is
   a standard hunk diff, `add` is all-`+` lines, `delete` is all-`-`.
-  `extractUnifiedDiff()` simply returns it.
+  `extractUnifiedDiff()` returns it. Some app-server builds have emitted
+  path-only `add` changes; for that case the adapter reads the just-written file
+  from the session workspace and synthesizes the all-`+` diff so chat write
+  blocks still show line counts and the clickable diff affordance.
 - **`kind`** is an **internally-tagged** enum object — `{ type: "add" }`,
   `{ type: "delete" }`, or `{ type: "update", move_path: string | null }` — **not**
   the plain string the field name suggests. Interpolating this object raw was the
