@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { CaretDownIcon, CaretRightIcon } from "@phosphor-icons/react";
+import { useMemo, useRef, useState } from "react";
+import { CaretDownIcon, CaretRightIcon, MagnifyingGlassIcon, XIcon } from "@phosphor-icons/react";
 import { Badge } from "./ui/badge.js";
 import type { BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
@@ -255,7 +255,22 @@ function wasModifiedInSession(doc: DocEntry, sessionStartedAt: string | undefine
 
 type Tab = "tracked" | "other";
 
-export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: DocsViewerProps) {
+export function DocsViewer({ files: allFiles, onFileClick, onRefresh, sessionStartedAt }: DocsViewerProps) {
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const files = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return allFiles;
+    return allFiles.filter((f) => {
+      if (f.title.toLowerCase().includes(q)) return true;
+      if (f.path.toLowerCase().includes(q)) return true;
+      if (f.description?.toLowerCase().includes(q)) return true;
+      return false;
+    });
+  }, [allFiles, searchQuery]);
+
   // Docs touched during the current session — shown in a dedicated group at the
   // top so the user sees what the agent just worked on without scrolling.
   // We exclude untracked siblings (e.g. `checklist.md`) when a tracked plan
@@ -314,7 +329,7 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
   // dominate the list as a project ages.
   const [archivedExpanded, setArchivedExpanded] = useState(false);
 
-  if (files.length === 0) {
+  if (allFiles.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-2">
@@ -336,6 +351,15 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
     );
   }
 
+  const openSearch = () => {
+    setSearchOpen(true);
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+  };
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchQuery("");
+  };
+
   // Sort the modified-in-session group by recency (most recent first), with
   // path as a deterministic tiebreaker.
   const sortedModified = [...modifiedInSession].sort((a, b) => {
@@ -355,17 +379,60 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
     <div className="flex flex-col h-full">
       {/* Header bar */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
-        <span className="font-medium">{files.length} doc{files.length !== 1 ? "s" : ""}</span>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onRefresh}
-          className="shrink-0 ml-2"
-          title="Refresh file list"
-        >
-          Reload
-        </Button>
+        <span className="font-medium">
+          {searchQuery.trim()
+            ? `${files.length} of ${allFiles.length} doc${allFiles.length !== 1 ? "s" : ""}`
+            : `${allFiles.length} doc${allFiles.length !== 1 ? "s" : ""}`}
+        </span>
+        <div className="flex items-center gap-1 shrink-0 ml-2">
+          <button
+            onClick={openSearch}
+            className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+            title="Search docs"
+            aria-label="Search docs"
+          >
+            <MagnifyingGlassIcon size={ICON_SIZE.SM} weight="bold" />
+          </button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onRefresh}
+            title="Refresh file list"
+          >
+            Reload
+          </Button>
+        </div>
       </div>
+
+      {searchOpen && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-(--color-bg-secondary) border-b border-(--color-border-primary)">
+          <input
+            ref={searchInputRef}
+            autoFocus
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") closeSearch(); }}
+            placeholder="Filter docs..."
+            className="flex-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded px-3 py-1 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:ring-1 focus:ring-(--color-border-focus)"
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={closeSearch}
+            className="p-1"
+            title="Close search (Escape)"
+          >
+            <XIcon size={ICON_SIZE.SM} />
+          </Button>
+        </div>
+      )}
+
+      {searchQuery.trim() && files.length === 0 && (
+        <div className="flex items-center justify-center py-6 text-xs text-(--color-text-tertiary)">
+          No docs match &ldquo;{searchQuery.trim()}&rdquo;
+        </div>
+      )}
 
       {/* List body — modified-in-session group renders above tabs */}
       <div className="flex-1 overflow-y-auto">

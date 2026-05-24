@@ -669,9 +669,7 @@ export default function App() {
   }, [handleNewSessionForRepo, navigate]);
 
   useKeyboardShortcuts({
-    search,
     searchOpen,
-    setSearchOpen: (updater) => setSearchOpen(updater),
     shortcutsOpen,
     setShortcutsOpen: (updater) => setShortcutsOpen(updater),
     isLoading,
@@ -984,6 +982,7 @@ export default function App() {
           title={currentSession.title}
           onRename={(title) => useSessionStore.getState().renameSession(currentSession.id, title)}
           onDownloadChat={handleDownloadChat}
+          onSearch={() => setSearchOpen(true)}
           onArchive={() => {
             // Prefer the archived session's own repo. `activeRepoUrl` can be
             // stale (it isn't re-synced on URL navigation), so falling through
