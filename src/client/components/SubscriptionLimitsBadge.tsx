@@ -108,16 +108,21 @@ interface MeterProps {
  * which are tuned for contrast on both dark and light themes.
  */
 function Meter({ shortLabel, pct, resetAt }: MeterProps) {
-  const fillWidth = `${Math.max(0, Math.min(100, pct))}%`;
-  const color = tierColor(pct);
-  const countdown = pct > 90 ? formatResetCountdown(resetAt) : null;
+  // Once `resetAt` has elapsed the window has rolled over — the cached
+  // pct is no longer meaningful (poller refreshes every 5min, so the
+  // pill would otherwise sit at "5h 100% resets in now" until the next
+  // tick lands).
+  const displayPct = effectivePct(pct, resetAt);
+  const fillWidth = `${Math.max(0, Math.min(100, displayPct))}%`;
+  const color = tierColor(displayPct);
+  const countdown = displayPct > 90 ? formatResetCountdown(resetAt) : null;
   return (
     <span
       className="relative inline-flex items-center whitespace-nowrap pb-0.75"
-      data-meter-pct={Math.round(pct)}
+      data-meter-pct={Math.round(displayPct)}
       style={{ color }}
     >
-      {shortLabel} {formatPct(pct)}
+      {shortLabel} {formatPct(displayPct)}
       {countdown && <span className="ml-1 text-(--color-text-secondary)">resets in {countdown}</span>}
       <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-(--color-text-secondary)/25">
         <span
@@ -128,6 +133,19 @@ function Meter({ shortLabel, pct, resetAt }: MeterProps) {
       </span>
     </span>
   );
+}
+
+/**
+ * Returns 0 when `resetAt` is a valid timestamp that has already
+ * elapsed (the window has rolled over since the last poll), otherwise
+ * returns the cached `pct` unchanged. Unparseable `resetAt` values
+ * preserve the cached value so a bad payload doesn't silently zero out
+ * the meter.
+ */
+export function effectivePct(pct: number, resetAt: string, nowMs = Date.now()): number {
+  const resetMs = Date.parse(resetAt);
+  if (!Number.isNaN(resetMs) && resetMs <= nowMs) return 0;
+  return pct;
 }
 
 /**
