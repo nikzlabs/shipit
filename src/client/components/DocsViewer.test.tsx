@@ -151,6 +151,7 @@ describe("DocsViewer", () => {
       fireEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
       const items = screen.getAllByRole("button").filter(
         (btn) =>
+          btn.getAttribute("aria-label") !== "Search docs" &&
           !btn.textContent?.includes("Reload") &&
           !btn.textContent?.includes("Tracked") &&
           !btn.textContent?.includes("Other") &&
@@ -178,7 +179,9 @@ describe("DocsViewer", () => {
       ];
       render(<DocsViewer {...props} />);
       const items = screen.getAllByRole("button").filter(
-        (btn) => !btn.textContent?.includes("Reload"),
+        (btn) =>
+          btn.getAttribute("aria-label") !== "Search docs" &&
+          !btn.textContent?.includes("Reload"),
       );
       // high (newer path first), then medium, then low, then unset
       expect(items[0].textContent).toContain("A-HighNew");
@@ -404,6 +407,7 @@ describe("DocsViewer", () => {
       fireEvent.click(screen.getByRole("button", { name: /Archived \(2\)/ }));
       const items = screen.getAllByRole("button").filter(
         (btn) =>
+          btn.getAttribute("aria-label") !== "Search docs" &&
           !btn.textContent?.includes("Reload") &&
           !/^Archived \(\d+\)$/.test(btn.textContent ?? ""),
       );
@@ -510,7 +514,9 @@ describe("DocsViewer", () => {
       render(<DocsViewer {...props} />);
       expect(screen.getByText("Modified in this session")).toBeInTheDocument();
       const items = screen.getAllByRole("button").filter(
-        (btn) => !btn.textContent?.includes("Reload"),
+        (btn) =>
+          btn.getAttribute("aria-label") !== "Search docs" &&
+          !btn.textContent?.includes("Reload"),
       );
       // Most recently modified first.
       expect(items[0].textContent).toContain("Newest");

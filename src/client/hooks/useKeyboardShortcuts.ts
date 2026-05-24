@@ -1,11 +1,8 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: window keydown listeners with cleanup (browser API subscription)
 import { useEffect } from "react";
-import type { UseSearchReturn } from "./useSearch.js";
 
 export function useKeyboardShortcuts(params: {
-  search: UseSearchReturn;
   searchOpen: boolean;
-  setSearchOpen: (updater: (prev: boolean) => boolean) => void;
   shortcutsOpen: boolean;
   setShortcutsOpen: (updater: (prev: boolean) => boolean) => void;
   isLoading: boolean;
@@ -13,31 +10,7 @@ export function useKeyboardShortcuts(params: {
   handleInterrupt: () => void;
   handleNewSession: () => void;
 }): void {
-  const { search, setSearchOpen, setShortcutsOpen, isLoading, searchOpen, shortcutsOpen, settingsOpen, handleInterrupt, handleNewSession } = params;
-
-  // Ctrl+F / Cmd+F to toggle the chat search bar — only when the chat input is focused.
-  // Everywhere else (docs viewer, right panel, dialogs, iframes, or just clicking around
-  // with nothing focused) we leave Cmd+F alone so the browser's native find works.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-        const target = e.target as HTMLElement | null;
-        const inChatInput = !!target?.closest("[data-chat-input]");
-        if (!inChatInput) return;
-        e.preventDefault();
-        setSearchOpen((prev: boolean) => {
-          if (prev) {
-            search.clear();
-            return false;
-          }
-          return true;
-        });
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [search, setSearchOpen]);
+  const { setShortcutsOpen, isLoading, searchOpen, shortcutsOpen, settingsOpen, handleInterrupt, handleNewSession } = params;
 
   // Cmd/Ctrl+/ to toggle keyboard shortcuts overlay (works regardless of focus —
   // the chat input is auto-focused so a bare key wouldn't fire). Bare ? is kept
