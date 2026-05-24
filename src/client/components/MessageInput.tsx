@@ -298,7 +298,13 @@ export function MessageInput({
     // Detect a leading `/` for skill autocomplete. Skills only resolve when the
     // `/name` token sits at the very start of the prompt (the CLI requirement),
     // so the menu only opens while the cursor is inside that first token.
-    const slashMatch = /^\/([a-zA-Z0-9._-]*)$/.exec(textBeforeCursor);
+    //
+    // The `:` is allowed for plugin-namespaced skills installed via docs/149's
+    // `<plugin>__<skill>/SKILL.md` layout with frontmatter `name: <plugin>:<skill>`
+    // — typing `/foo:bar` should keep the menu open through the namespace
+    // separator. The companion regex in `agent-execution.ts` is not end-anchored,
+    // so it already handles `:` correctly; no change needed there.
+    const slashMatch = /^\/([a-zA-Z0-9._:-]*)$/.exec(textBeforeCursor);
     if (slashMatch && skills.length > 0) {
       setSkillQuery(slashMatch[1]);
       setShowSkillMenu(true);

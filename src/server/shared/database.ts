@@ -291,6 +291,27 @@ const MIGRATIONS: Migration[] = [
         ON rewind_snapshots(session_id, expires_at_ms);
     `);
   },
+  // Migration 20: marketplaces table (docs/149 — skill install UX). Holds the
+  // catalog list shown in Settings → Skills → Discover, keyed by short id
+  // (e.g. `claude-plugins-official`). v1 seeds one row at startup and never
+  // inserts/deletes after that; v2 adds the add/remove verbs. `source` is a
+  // JSON-encoded `MarketplaceSource`. `agent_id` filters the Discover list to
+  // the active session's agent. `status` reflects the most recent fetch
+  // attempt (loading / ok / fetch-failed) so the UI can render a retry button.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS marketplaces (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        auto_update INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'loading',
+        last_fetched_at TEXT,
+        fetch_error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_marketplaces_agent ON marketplaces(agent_id);
+    `);
+  },
 ];
 
 export class DatabaseManager {

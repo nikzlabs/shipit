@@ -8,6 +8,7 @@
 export * from "./types.js";
 export * from "./files.js";
 export * from "./skills.js";
+export * from "./marketplace.js";
 export * from "./session.js";
 export * from "./spawn-telemetry.js";
 export * from "./claim-session.js";
