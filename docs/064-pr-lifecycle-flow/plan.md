@@ -268,7 +268,7 @@ When user clicks the button:
    d. Creates PR via GitHub API
    e. Returns PR info
 3. Client transitions card to `phase: "open"` with the PR data
-4. PR status poller picks up the new PR immediately when tracking starts, then refreshes on its normal cadence via SSE
+4. PR status poller force-refreshes the session's repo immediately, then refreshes on its normal 15-second cadence via SSE
 
 #### "Create with options..." flow (escape hatch)
 
