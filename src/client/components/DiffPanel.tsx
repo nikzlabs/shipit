@@ -7,10 +7,12 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { useIsMobile } from "../hooks/useMediaQuery.js";
 import { useCommentStore } from "../stores/comment-store.js";
+import { usePrStore } from "../stores/pr-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
-import type { CommentWidgetManager } from "./MonacoCommentWidgets.js";
+import type { CommentWidgetManager, LineCommentLike } from "./MonacoCommentWidgets.js";
 import type { FileDiff } from "../../server/shared/types.js";
+import type { PrReviewThread } from "../../server/shared/types/github-types.js";
 import { buildFileTree, type FileTreeNode } from "./diff-utils.js";
 import { DiffTreeNode } from "./DiffTreeNode.js";
 
@@ -50,6 +52,32 @@ export interface TurnDiffData {
   toCommit: string;
   files: FileDiff[];
   stats: { totalInsertions: number; totalDeletions: number; filesChanged: number };
+}
+
+export function githubReviewThreadsToLineComments(threads: PrReviewThread[] | undefined): LineCommentLike[] {
+  return (threads ?? [])
+    .filter((thread) => thread.path && typeof thread.line === "number")
+    .map((thread) => {
+      const first = thread.comments[0];
+      return {
+        id: `github:${thread.id}`,
+        kind: "line",
+        source: "github",
+        filePath: thread.path ?? undefined,
+        line: thread.line ?? undefined,
+        text: first?.body ?? "",
+        author: first?.author,
+        createdAt: first?.createdAt,
+        isResolved: thread.isResolved,
+        isOutdated: thread.isOutdated,
+        replies: thread.comments.map((comment) => ({
+          id: comment.id,
+          author: comment.author,
+          body: comment.body,
+          createdAt: comment.createdAt,
+        })),
+      };
+    });
 }
 
 interface DiffPanelProps {
@@ -93,7 +121,16 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
 
   const sessionId = useSessionStore((s) => s.sessionId) ?? "";
   const sessionComments = useCommentStore((s) => s.commentsBySession[sessionId]);
+  const prReviewThreads = usePrStore((s) => s.cardBySession[sessionId]?.reviewThreads);
   const allComments = sessionComments ?? [];
+  const githubComments = useMemo(
+    () => githubReviewThreadsToLineComments(prReviewThreads),
+    [prReviewThreads],
+  );
+  const visibleComments = useMemo(
+    () => [...allComments, ...githubComments],
+    [allComments, githubComments],
+  );
   const commentCount = allComments.length;
   const addLineComment = useCommentStore((s) => s.addLineComment);
   const editComment = useCommentStore((s) => s.editComment);
@@ -166,9 +203,9 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     for (const [filePath, manager] of managersRef.current.entries()) {
-      manager.setComments(allComments.filter((c) => c.filePath === filePath));
+      manager.setComments(visibleComments.filter((c) => c.filePath === filePath));
     }
-  }, [allComments]);
+  }, [visibleComments]);
 
   /** Called when each file's DiffEditor mounts. Sets up auto-height + comments. */
   const handleEditorMount = useCallback((editor: Parameters<DiffOnMount>[0], fileIndex: number) => {
@@ -211,10 +248,10 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       side: "modified",
     });
     manager.setComments(
-      useCommentStore.getState().getCommentsForFile(sessionId, file.path),
+      visibleComments.filter((c) => c.filePath === file.path),
     );
     managersRef.current.set(file.path, manager);
-  }, [diff.files, sessionId, addLineComment, editComment, deleteComment]);
+  }, [diff.files, sessionId, addLineComment, editComment, deleteComment, visibleComments]);
 
   const handleSendComments = useCallback(() => {
     if (commentCount === 0 || !onSendComments) return;
