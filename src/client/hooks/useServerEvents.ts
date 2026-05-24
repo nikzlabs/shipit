@@ -7,7 +7,7 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount } from "../../server/shared/types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 
 let reloadingForClientUpdate = false;
@@ -203,6 +203,11 @@ export function useServerEvents(): void {
           ? "Sign-in was denied."
           : "Sign-in failed. Try again.";
       useSettingsStore.getState().setCodexDeviceAuthError(data.message ?? fallback);
+    });
+
+    es.addEventListener("provider_accounts", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { accounts: ProviderAccount[] };
+      useSettingsStore.getState().setProviderAccounts(data.accounts);
     });
 
     es.addEventListener("pr_status", (e: MessageEvent) => {

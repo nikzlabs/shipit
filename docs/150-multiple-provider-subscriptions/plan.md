@@ -1333,6 +1333,11 @@ Implementation started:
   a stored account.
 - Account-qualified token sync helpers compare session tokens only against the
   matching account source; reserved `claude-env-oauth` skips file token sync.
+- Settings now has provider-account CRUD endpoints under
+  `/api/provider-accounts` and renders account rows in each agent tab. Users can
+  rename account rows, make a row primary, add an unauthenticated placeholder
+  row, and disconnect rows that are not pinned to existing sessions. Scoped
+  login for those rows is intentionally still a separate Phase 1 item.
 
 ### Phase 2 — Inline quota per account
 
@@ -1425,5 +1430,7 @@ Implementation started:
   account-scoped config root, or reports an explicit unsupported diagnostic for
   providers where that is not possible.
 - Client: Settings renders multiple provider accounts and can make one primary.
+  Covered by `Settings.test.tsx`; endpoint coverage lives in
+  `http-mutations.test.ts`.
 - Client: subscription limits render multiple accounts per provider without
   layout overlap.

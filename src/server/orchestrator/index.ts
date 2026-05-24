@@ -466,6 +466,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       supportedPermissionModes: a.capabilities.supportedPermissionModes,
     }));
     client.write(`event: agent_list\ndata: ${JSON.stringify({ agents, defaultAgentId })}\n\n`);
+    client.write(`event: provider_accounts\ndata: ${JSON.stringify({ accounts: providerAccountManager.list() })}\n\n`);
 
     // In-flight Codex device-auth flow — replay the pending event so a
     // client that connected after the original broadcast (e.g. page reload
@@ -644,6 +645,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     agentRegistry,
     githubAuthManager,
     credentialStore,
+    providerAccountManager,
     defaultAgentId,
     workspaceDir,
     runtimeMode,

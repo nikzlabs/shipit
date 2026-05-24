@@ -390,6 +390,76 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
   });
 
+  describe("provider account settings endpoints", () => {
+    it("creates, renames, makes primary, and disconnects provider accounts", async () => {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/provider-accounts",
+        payload: { provider: "claude", label: "Work Anthropic" },
+      });
+      expect(created.statusCode).toBe(200);
+      const createdBody = created.json() as { account: { id: string; label: string; isPrimary: boolean }; accounts: { provider: string }[] };
+      expect(createdBody.account.label).toBe("Work Anthropic");
+      expect(createdBody.account.isPrimary).toBe(true);
+      expect(createdBody.accounts.filter((account) => account.provider === "claude")).toHaveLength(1);
+
+      const accountId = createdBody.account.id;
+      const renamed = await app.inject({
+        method: "PATCH",
+        url: `/api/provider-accounts/claude/${accountId}`,
+        payload: { label: "Primary Anthropic" },
+      });
+      expect(renamed.statusCode).toBe(200);
+      expect((renamed.json() as { account: { label: string } }).account.label).toBe("Primary Anthropic");
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/provider-accounts",
+        payload: { provider: "claude", label: "Backup Anthropic" },
+      });
+      const secondId = (second.json() as { account: { id: string } }).account.id;
+
+      const primary = await app.inject({
+        method: "POST",
+        url: `/api/provider-accounts/claude/${secondId}/primary`,
+      });
+      expect(primary.statusCode).toBe(200);
+      const primaryAccounts = (primary.json() as { accounts: { id: string; isPrimary: boolean }[] }).accounts;
+      expect(primaryAccounts.find((account) => account.id === secondId)?.isPrimary).toBe(true);
+      expect(primaryAccounts.find((account) => account.id === accountId)?.isPrimary).toBe(false);
+
+      const deleted = await app.inject({
+        method: "DELETE",
+        url: `/api/provider-accounts/claude/${accountId}`,
+      });
+      expect(deleted.statusCode).toBe(200);
+      expect((deleted.json() as { accounts: { provider: string; id: string }[] }).accounts
+        .filter((account) => account.provider === "claude")
+        .map((account) => account.id)).toEqual([secondId]);
+    });
+
+    it("rejects disconnecting an account pinned to an existing session", async () => {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/provider-accounts",
+        payload: { provider: "codex", label: "Team ChatGPT" },
+      });
+      const accountId = (created.json() as { account: { id: string } }).account.id;
+      const session = sessionManager.track("pinned-session", "Pinned session", path.join(tmpDir, "session"));
+      sessionManager.setAgentId(session.id, "codex");
+      sessionManager.setProviderRoute(session.id, "account", accountId);
+      sessionManager.setAgentPinned(session.id);
+
+      const deleted = await app.inject({
+        method: "DELETE",
+        url: `/api/provider-accounts/codex/${accountId}`,
+      });
+
+      expect(deleted.statusCode).toBe(409);
+      expect((deleted.json() as { error: string }).error).toMatch(/pinned/i);
+    });
+  });
+
   // ---- Auth mutations ----
 
   describe("POST /api/auth/api-key", () => {

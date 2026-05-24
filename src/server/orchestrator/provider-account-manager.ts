@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { AgentId, ProviderAccount, ProviderRouteKind } from "../shared/types.js";
 import type { CredentialStore } from "./credential-store.js";
 
@@ -56,6 +57,54 @@ export class ProviderAccountManager {
 
   getPrimary(provider: AgentId): ProviderAccount | undefined {
     return this.credentialStore.getPrimaryProviderAccount(provider);
+  }
+
+  create(provider: AgentId, label?: string): ProviderAccount {
+    const now = Date.now();
+    const existing = this.list(provider);
+    const account: ProviderAccount = {
+      id: `acct_${randomUUID()}`,
+      provider,
+      label: normalizeLabel(label) ?? `${PROVIDER_LABEL[provider]} account ${existing.length + 1}`,
+      isPrimary: existing.length === 0,
+      status: "unavailable",
+      capabilities: {
+        source: "manual_default",
+        refreshedAt: now,
+      },
+      createdAt: now,
+      updatedAt: now,
+    };
+    fs.mkdirSync(this.resolveCredentialRoot(provider, account.id), { recursive: true });
+    this.credentialStore.upsertProviderAccount(account);
+    return this.get(provider, account.id) ?? account;
+  }
+
+  rename(provider: AgentId, accountId: string, label: string): ProviderAccount {
+    const account = this.require(provider, accountId);
+    const normalized = normalizeLabel(label);
+    if (!normalized) throw new Error("Provider account label cannot be empty");
+    if (normalized.length > 120) throw new Error("Provider account label is too long (max 120 characters)");
+    this.credentialStore.upsertProviderAccount({ ...account, label: normalized });
+    return this.require(provider, accountId);
+  }
+
+  makePrimary(provider: AgentId, accountId: string): ProviderAccount {
+    const account = this.require(provider, accountId);
+    this.credentialStore.upsertProviderAccount({ ...account, isPrimary: true });
+    return this.require(provider, accountId);
+  }
+
+  delete(provider: AgentId, accountId: string): void {
+    this.require(provider, accountId);
+    fs.rmSync(this.resolveCredentialRoot(provider, accountId), { recursive: true, force: true });
+    this.credentialStore.deleteProviderAccount(provider, accountId);
+  }
+
+  require(provider: AgentId, accountId: string): ProviderAccount {
+    const account = this.get(provider, accountId);
+    if (!account) throw new Error(`Provider account not found: ${provider}/${accountId}`);
+    return account;
   }
 
   selectRouteForTurn(provider: AgentId): ProviderRoute | null {
@@ -155,4 +204,9 @@ export function legacyCredentialPathsForProvider(provider: AgentId): readonly st
 
 export function providerDisplayLabel(provider: AgentId): string {
   return PROVIDER_LABEL[provider];
+}
+
+function normalizeLabel(label: string | undefined): string | null {
+  const normalized = typeof label === "string" ? label.trim() : "";
+  return normalized || null;
 }

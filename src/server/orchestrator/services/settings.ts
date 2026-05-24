@@ -8,11 +8,14 @@ import fs from "node:fs/promises";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
-import type { AgentId } from "../../shared/types.js";
+import type { AgentId, ProviderAccount } from "../../shared/types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { ServiceError } from "./types.js";
 import type { AgentInfo, GlobalSettings } from "./types.js";
+import type { ProviderAccountManager } from "../provider-account-manager.js";
+import type { SessionManager } from "../sessions.js";
+import type { SessionRunnerRegistry } from "../session-runner.js";
 
 // ---- Read operations ----
 
@@ -36,6 +39,7 @@ export async function getGlobalSettings(
   defaultAgentId: AgentId,
   workspaceDir: string,
   credentialStore?: CredentialStore,
+  providerAccountManager?: ProviderAccountManager,
 ): Promise<GlobalSettings> {
   const stored = getGitIdentity();
   const gitIdentity = stored
@@ -67,7 +71,8 @@ export async function getGlobalSettings(
   // browser-tools section are unconditional, which keeps the rendered prompt
   // stable across turns so the Anthropic prompt cache stays warm.
   const agentSystemInstructions = buildAgentSystemInstructions({ agentId: defaultAgentId });
-  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, prCommentSync };
+  const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
+  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, prCommentSync, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -100,6 +105,7 @@ export async function saveGlobalSettings(
   autoCreatePr?: boolean,
   liveSteering?: boolean,
   prCommentSync?: boolean,
+  providerAccountManager?: ProviderAccountManager,
 ): Promise<GlobalSettings> {
   // Save git identity if provided
   if (gitIdentity) {
@@ -153,7 +159,7 @@ export async function saveGlobalSettings(
     credentialStore.setPrCommentSync(prCommentSync);
   }
 
-  return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir, credentialStore);
+  return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir, credentialStore, providerAccountManager);
 }
 
 /** Validate and set the active agent. Returns the agent ID or throws. */
@@ -226,3 +232,100 @@ export function clearApiKey(): void {
   delete process.env.ANTHROPIC_API_KEY;
 }
 
+// ---- Provider account management (docs/150) ----
+
+export function listProviderAccounts(providerAccountManager: ProviderAccountManager): { accounts: ProviderAccount[] } {
+  return { accounts: providerAccountManager.list() };
+}
+
+export function createProviderAccount(
+  providerAccountManager: ProviderAccountManager,
+  provider: AgentId,
+  label?: string,
+): { account: ProviderAccount; accounts: ProviderAccount[] } {
+  validateProvider(provider);
+  const account = providerAccountManager.create(provider, label);
+  return { account, accounts: providerAccountManager.list() };
+}
+
+export function renameProviderAccount(
+  providerAccountManager: ProviderAccountManager,
+  provider: AgentId,
+  accountId: string,
+  label: string,
+): { account: ProviderAccount; accounts: ProviderAccount[] } {
+  validateProvider(provider);
+  validateAccountId(accountId);
+  try {
+    const account = providerAccountManager.rename(provider, accountId, label);
+    return { account, accounts: providerAccountManager.list() };
+  } catch (err) {
+    throw providerAccountServiceError(err);
+  }
+}
+
+export function makePrimaryProviderAccount(
+  providerAccountManager: ProviderAccountManager,
+  provider: AgentId,
+  accountId: string,
+): { account: ProviderAccount; accounts: ProviderAccount[] } {
+  validateProvider(provider);
+  validateAccountId(accountId);
+  try {
+    const account = providerAccountManager.makePrimary(provider, accountId);
+    return { account, accounts: providerAccountManager.list() };
+  } catch (err) {
+    throw providerAccountServiceError(err);
+  }
+}
+
+export function deleteProviderAccount(
+  providerAccountManager: ProviderAccountManager,
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  provider: AgentId,
+  accountId: string,
+): { accounts: ProviderAccount[] } {
+  validateProvider(provider);
+  validateAccountId(accountId);
+  const pinned = sessionManager
+    .listAll()
+    .filter((session) =>
+      session.providerRouteKind === "account" &&
+      session.providerRouteId === accountId &&
+      session.agentId === provider &&
+      !session.archived,
+    );
+  const running = pinned.filter((session) => runnerRegistry.get(session.id)?.running);
+  if (running.length > 0) {
+    throw new ServiceError(409, "Cannot disconnect an account while a pinned session is running");
+  }
+  if (pinned.length > 0) {
+    throw new ServiceError(409, "Cannot disconnect an account pinned to existing sessions until account switching is available");
+  }
+  try {
+    providerAccountManager.delete(provider, accountId);
+    return { accounts: providerAccountManager.list() };
+  } catch (err) {
+    throw providerAccountServiceError(err);
+  }
+}
+
+function validateProvider(provider: AgentId): void {
+  if (provider !== "claude" && provider !== "codex") {
+    throw new ServiceError(400, "Unknown provider");
+  }
+}
+
+function validateAccountId(accountId: string): void {
+  if (typeof accountId !== "string" || !accountId.trim()) {
+    throw new ServiceError(400, "Provider account id is required");
+  }
+}
+
+function providerAccountServiceError(err: unknown): ServiceError {
+  const message = err instanceof Error ? err.message : "Provider account operation failed";
+  if (/not found/i.test(message)) return new ServiceError(404, message);
+  if (/empty|too long/i.test(message)) return new ServiceError(400, message);
+  return new ServiceError(500, message);
+}

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PermissionMode, FileContextRef } from "../../server/shared/types.js";
+import type { PermissionMode, FileContextRef, ProviderAccount } from "../../server/shared/types.js";
 import { getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, saveSoundOnFinish } from "../utils/local-storage.js";
 
 /**
@@ -55,6 +55,7 @@ interface SettingsState {
   codexDeviceAuth: CodexDeviceAuth | null;
   /** Last device-auth failure message — `null` when no error. */
   codexDeviceAuthError: string | null;
+  providerAccounts: ProviderAccount[];
 
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
@@ -68,6 +69,7 @@ interface SettingsState {
   setPrCommentSync: (enabled: boolean) => void;
   setCodexDeviceAuth: (state: CodexDeviceAuth | null) => void;
   setCodexDeviceAuthError: (message: string | null) => void;
+  setProviderAccounts: (accounts: ProviderAccount[]) => void;
   /**
    * Update the permission mode. When `sessionId` is provided, the change is
    * scoped to that session only. When `sessionId` is undefined (e.g. on the
@@ -115,6 +117,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   prCommentSync: false,
   codexDeviceAuth: null,
   codexDeviceAuthError: null,
+  providerAccounts: [],
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
@@ -145,6 +148,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setCodexDeviceAuth: (state) => set({ codexDeviceAuth: state }),
 
   setCodexDeviceAuthError: (message) => set({ codexDeviceAuthError: message }),
+  setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
 
   setPermissionMode: (sessionId, mode) => {
     if (sessionId) {

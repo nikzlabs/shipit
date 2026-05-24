@@ -28,8 +28,8 @@
 - [ ] Make Codex auth manager account-scoped for starting/checking/signing out specific accounts.
 - [ ] Force auth subprocesses to write to an account-specific HOME/config root.
 - [ ] Add account-qualified auth pending/complete/failed SSE events.
-- [ ] Add Settings endpoints/services for list, create, rename, make primary, and disconnect provider accounts.
-- [ ] Render provider account management in Settings.
+- [x] Add Settings endpoints/services for list, create, rename, make primary, and disconnect provider accounts.
+- [x] Render provider account management in Settings.
 - [ ] Block disconnect while an account is pinned to a running session unless replacement is selected.
 - [ ] Implement account-switch runtime transition for pinned sessions: kill process, clear `agentSessionId`, reprovision, replay from local context.
 - [ ] Hydrate persisted provider route for detached/system-turn runner recreation.
@@ -100,6 +100,6 @@
 - [ ] Integration: switching a pinned session kills the persistent agent, clears `agentSessionId`, and reprovisions credentials.
 - [ ] Integration: detached system turns recreate runners from persisted agent/provider route.
 - [ ] Integration: answer-question and rebase/conflict direct `agent.run` paths use provider preflight.
-- [ ] Client: Settings renders multiple accounts and primary selection.
+- [x] Client: Settings renders multiple accounts and primary selection.
 - [ ] Client: subscription limits render multiple accounts per provider.
 - [ ] Client: session diagnostics renders the active account.
