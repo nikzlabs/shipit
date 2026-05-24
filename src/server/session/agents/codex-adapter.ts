@@ -192,6 +192,13 @@ function contentToAddedDiff(content: string): string {
   return withoutFinalNewline.split("\n").map((line) => `+${line}`).join("\n");
 }
 
+function summarizeCodexSubagentPrompt(prompt: unknown): string {
+  if (typeof prompt !== "string") return "Running agent...";
+  const firstLine = prompt.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  if (!firstLine) return "Running agent...";
+  return firstLine.length > 90 ? `${firstLine.slice(0, 87)}...` : firstLine;
+}
+
 /**
  * Token usage snapshot from a `thread/tokenUsage/updated` notification.
  * `total` is the cumulative turn rollup (billing); `last` is the most recent
@@ -770,6 +777,22 @@ export class CodexAdapter
         // `Task` tool renders. The actual review write-back still arrives via
         // the `submit_review_comments` MCP tool, mapped above.
         if (phase === "started") {
+          if (item.tool === "spawn_agent") {
+            this.emitAssistant([
+              {
+                type: "tool_use",
+                id,
+                name: "Agent",
+                input: {
+                  agent: item.receiverThreadId ?? item.newThreadId,
+                  subagent_type: "Codex",
+                  description: summarizeCodexSubagentPrompt(item.prompt),
+                  prompt: item.prompt,
+                },
+              },
+            ]);
+            return;
+          }
           this.emitAssistant([
             {
               type: "tool_use",

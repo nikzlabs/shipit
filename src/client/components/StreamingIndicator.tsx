@@ -123,6 +123,13 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         tool: toolName,
       };
     }
+    case "Agent": {
+      const desc = typeof input.description === "string" ? input.description : "";
+      return {
+        label: desc ? `Agent: ${desc}` : "Running agent...",
+        tool: toolName,
+      };
+    }
     default: {
       // Generic MCP tool handling — works for any MCP server
       if (toolName.startsWith("mcp__")) {
