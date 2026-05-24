@@ -195,12 +195,6 @@ export interface WsGlobalSettings {
   defaultAgentId: AgentId;
   /** When true, mid-turn messages steer the running agent. (docs/140) */
   liveSteering: boolean;
-  /**
-   * When true, the PR conversation panel surfaces reply/resolve write-back
-   * controls (docs/102). Defaults `false`; field is always present so the
-   * client always knows the current value.
-   */
-  prCommentSync: boolean;
 }
 
 // ---- Template messages ----

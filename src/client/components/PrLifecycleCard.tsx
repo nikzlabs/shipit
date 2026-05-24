@@ -15,7 +15,6 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
-import { useSettingsStore } from "../stores/settings-store.js";
 import { Button } from "./ui/button.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import { MarkdownContent } from "./message-markdown.js";
@@ -407,7 +406,6 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   const deployments = usePrStore((s) => s.statusBySession[sessionId]?.deployments);
   const mergeable = usePrStore((s) => s.statusBySession[sessionId]?.mergeable);
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
-  const prCommentSync = useSettingsStore((s) => s.prCommentSync);
   const pendingReviewCount = useCommentStore((s) => s.getCommentCount(sessionId));
   const openDiff = useOpenPrDiff(pr?.baseBranch);
   if (!pr) return null;
@@ -456,7 +454,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
         />
         <span className="ml-auto shrink-0 flex items-center gap-3">
           <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
-          {prCommentSync && pendingReviewCount > 0 && (
+          {pendingReviewCount > 0 && (
             <PendingReviewButton sessionId={sessionId} count={pendingReviewCount} />
           )}
           <CiIndicator checks={card.checks} />

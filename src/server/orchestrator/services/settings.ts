@@ -63,7 +63,6 @@ export async function getGlobalSettings(
   const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
   const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
   const liveSteering = credentialStore?.getLiveSteering() ?? false;
-  const prCommentSync = credentialStore?.getPrCommentSync() ?? false;
   // Pass `defaultAgentId` so the Settings preview shows the same per-agent
   // "Parallel sessions" guidance the running agent gets (docs/117 Phase 2).
   // A session that picks a non-default agent will see that agent's variant at
@@ -72,7 +71,7 @@ export async function getGlobalSettings(
   // stable across turns so the Anthropic prompt cache stays warm.
   const agentSystemInstructions = buildAgentSystemInstructions({ agentId: defaultAgentId });
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
-  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, prCommentSync, providerAccounts };
+  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -104,7 +103,6 @@ export async function saveGlobalSettings(
   agentSystemInstructionsEnabled?: boolean,
   autoCreatePr?: boolean,
   liveSteering?: boolean,
-  prCommentSync?: boolean,
   providerAccountManager?: ProviderAccountManager,
 ): Promise<GlobalSettings> {
   // Save git identity if provided
@@ -152,11 +150,6 @@ export async function saveGlobalSettings(
   // Save live steering toggle if provided
   if (liveSteering !== undefined) {
     credentialStore.setLiveSteering(liveSteering);
-  }
-
-  // Save PR comment sync toggle if provided (docs/102)
-  if (prCommentSync !== undefined) {
-    credentialStore.setPrCommentSync(prCommentSync);
   }
 
   return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir, credentialStore, providerAccountManager);

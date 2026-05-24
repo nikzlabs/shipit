@@ -371,10 +371,9 @@ export async function registerGitHubRoutes(
   //
   // Three mutations targeted at a single review thread by its GraphQL node id.
   // The session id is in the path so the route can resolve the session's PR
-  // (and, in the future, verify the thread belongs to it). For Phase 1 we
-  // forward straight through to GitHub once the feature flag + auth checks
-  // pass. The next poll tick (5s by default) reconciles the cached state on
-  // the client — no need to optimistically rewrite store state on success.
+  // (and, in the future, verify the thread belongs to it). The next poll tick
+  // (5s by default) reconciles the cached state on the client — no need to
+  // optimistically rewrite store state on success.
 
   // POST /api/sessions/:id/pr/review — submit local line comments as one review
   app.post<{ Params: { id: string }; Body: { comments?: unknown } }>(
@@ -386,7 +385,6 @@ export async function registerGitHubRoutes(
         const git = createGitManager(dir);
         const session = sessionManager.get(request.params.id);
         return await submitReviewComments(
-          deps.credentialStore,
           deps.githubAuthManager,
           git,
           request.body?.comments,
@@ -413,7 +411,6 @@ export async function registerGitHubRoutes(
       const body = request.body?.body ?? "";
       try {
         return await replyToReviewThread(
-          deps.credentialStore,
           deps.githubAuthManager,
           request.params.threadId,
           body,
@@ -438,7 +435,6 @@ export async function registerGitHubRoutes(
       }
       try {
         return await resolveReviewThread(
-          deps.credentialStore,
           deps.githubAuthManager,
           request.params.threadId,
         );
@@ -462,7 +458,6 @@ export async function registerGitHubRoutes(
       }
       try {
         return await unresolveReviewThread(
-          deps.credentialStore,
           deps.githubAuthManager,
           request.params.threadId,
         );

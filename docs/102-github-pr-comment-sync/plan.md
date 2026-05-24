@@ -9,10 +9,11 @@ description: Bidirectionally sync GitHub PR review comments with ShipIt's inline
 ## Status snapshot
 
 - **Read side** — shipped with docs/133 Phase 4 (poller fetches `reviewThreads`, `PrConversationSection` renders them).
-- **Phase 1 write-back (this doc)** — reply, resolve, and unresolve via GraphQL. Gated by a `prCommentSync` setting (off by default). The mutation controls live in `PrConversationSection`.
+- **Phase 1 write-back (this doc)** — reply, resolve, and unresolve via GraphQL. Mutation controls live in `PrConversationSection` and are always available when the user is authenticated with GitHub.
 - **Inline render follow-up** — GitHub review threads now render as read-only Monaco diff widgets by mapping `PrReviewThread` data into `LineCommentLike` entries with `source: "github"`. Replies and resolve/reopen still live in `PrConversationSection`.
-- **Batched review write-back** — shipped: the open PR lifecycle card shows `Send review (N)` when local diff comments exist and `prCommentSync` is enabled. Submitting sends all local line comments as one GitHub PR review and clears the local draft only after GitHub accepts it.
-- **Future extensions** — the agent auto-loop on new comments and default-on rollout remain separate follow-up work, not blockers for this feature's shipped scope.
+- **Batched review write-back** — shipped: the open PR lifecycle card shows `Send review (N)` whenever local diff comments exist. Submitting sends all local line comments as one GitHub PR review and clears the local draft only after GitHub accepts it.
+- **Flag removed** — the `prCommentSync` opt-in setting was retired after the beta cycle. The write paths are user-triggered (Reply / Resolve / Send review), so there's no background mutation a flag needs to gate. Server routes still enforce `githubAuthManager.authenticated` (401 otherwise).
+- **Future extensions** — the agent auto-loop on new comments remains separate follow-up work, not a blocker for this feature's shipped scope.
 
 ## Summary
 
@@ -30,7 +31,7 @@ Conductor sealed this gap in v0.29.0 ("GitHub Comment Sync") and v0.44.0 ("resol
 
 1. **Pull** — when a session has an open PR (`pr-status-poller.ts` already tracks this), the poller's GraphQL query gains a `reviewThreads` selection: `comments { nodes { id, body, author, path, line, originalLine, diffSide } }, isResolved`.
 2. **Render** — incoming threads materialize as Monaco comment widgets keyed by GitHub `databaseId` (distinct from the local `commentId` namespace). Author avatar and "from GitHub" badge in the widget header. Resolved threads collapse into a single chevron strip the way GitHub renders them.
-3. **Reply / resolve in ShipIt** — the existing comment composer gains a "post to GitHub" toggle (default on when the session has a PR). Submitting calls `POST /api/sessions/:id/pr/comments` → `services/github.ts:postReviewComment()` → GraphQL `addPullRequestReviewThreadReply` or `resolveReviewThread`.
+3. **Reply / resolve in ShipIt** — the conversation panel surfaces Reply and Resolve/Reopen controls on every review thread when the session is authenticated with GitHub. Submitting calls the thread mutation routes → GraphQL `addPullRequestReviewThreadReply` or `resolveReviewThread` / `unresolveReviewThread`.
 4. **Push** — local diff comments remain in ShipIt's browser-side draft until the user clicks `Send review (N)` on the PR lifecycle card. ShipIt then posts them as one GitHub PR review via GraphQL `addPullRequestReview` with `threads`, avoiding one notification per line comment.
 5. **Conflict resolution** — comments are append-only on both sides. Resolution state is last-writer-wins: a local resolve writes to GitHub immediately; a GitHub resolve flips local state on the next poll tick.
 
@@ -51,10 +52,10 @@ Conductor sealed this gap in v0.29.0 ("GitHub Comment Sync") and v0.44.0 ("resol
 
 GitHub reports comments against `originalLine` on the diff (i.e. the snapshot of the file at the SHA of the comment). Local comments target the working copy. We match by `(path, side, line)` against the diff currently rendered in the Monaco editor using the existing diff-vs-base-branch query — if the file has drifted since the comment was posted, we render the comment as "outdated" with a chevron, matching GitHub's behavior.
 
-## Auth and feature flags
+## Auth
 
-- Requires `githubAuthManager.authenticated`. Otherwise the toggle is hidden and pull is skipped.
-- Gate the whole feature behind a `prCommentSync` setting in `CredentialStore`, default off in initial release. Promote to default-on after the integration test suite is green and one beta cycle.
+- Requires `githubAuthManager.authenticated`. Otherwise the write controls are hidden in the conversation panel and the routes refuse mutations with 401.
+- No feature-flag gate — the write surfaces are all user-triggered (Reply / Resolve / Send review), so a flag is redundant. The setting was removed after the beta cycle.
 
 ## Tests
 
@@ -74,16 +75,10 @@ Shipped in Phase 1 (write-back via the PR conversation panel):
 |---|---|
 | `src/server/orchestrator/github-auth-review-threads.ts` | **New** — GraphQL helpers: `addReviewThreadReply`, `resolveReviewThread`, `unresolveReviewThread`. |
 | `src/server/orchestrator/github-auth.ts` | Methods on `GitHubAuthManager` that delegate to the helpers above. |
-| `src/server/orchestrator/services/github-pr-comments.ts` | **New** — service wrapping the mutations behind the feature flag + auth checks. Throws `ServiceError(403, …)` when `prCommentSync` is off. |
+| `src/server/orchestrator/services/github-pr-comments.ts` | **New** — service wrapping the mutations behind an auth check. Throws `ServiceError(401, …)` when the user is not authenticated with GitHub. |
 | `src/server/orchestrator/api-routes-github.ts` | New routes: `POST /api/sessions/:id/pr/threads/:threadId/reply`, `…/resolve`, `…/unresolve`. |
-| `src/server/orchestrator/credential-store.ts` | New `prCommentSync` flag (default `false`) with `getPrCommentSync` / `setPrCommentSync`. |
-| `src/server/orchestrator/services/{settings,types}.ts` | Carry the flag through `GlobalSettings` so bootstrap surfaces it to the client. |
-| `src/server/shared/types/ws-server-messages.ts` | Add `prCommentSync` to `WsGlobalSettings`. |
 | `src/client/stores/pr-store.ts` | Actions `replyToThread`, `resolveThread`, `unresolveThread` — optimistic + revert, reconciled by the next poll. |
-| `src/client/stores/settings-store.ts` | `prCommentSync` state slice. |
-| `src/client/components/pr-detail/PrConversationSection.tsx` | Reply box + Resolve/Reopen control on every review thread. Hidden when the flag is off. |
-| `src/client/components/Settings.tsx` | New `PrCommentSyncSettings` toggle in the GitHub tab. |
-| `src/client/utils/session-data.ts`, `src/client/App.tsx` | Pick up `prCommentSync` from the bootstrap payload. |
+| `src/client/components/pr-detail/PrConversationSection.tsx` | Reply box + Resolve/Reopen control on every review thread. |
 | `src/server/orchestrator/integration_tests/test-helpers.ts` | `StubGitHubAuthManager` gains `addReviewThreadReply` / `resolveReviewThread` / `unresolveReviewThread` plus call-log + result-override hooks. |
 
 Deferred to a Phase 2 of this feature:
@@ -92,7 +87,7 @@ Deferred to a Phase 2 of this feature:
 |---|---|
 | `src/client/components/MonacoCommentWidgets.ts` | **Shipped follow-up** — Render GitHub-sourced threads inline on the diff viewer with `source: 'local' \| 'github'`; GitHub cards are read-only and show author/reply/resolved/outdated metadata. |
 | `src/client/components/DiffPanel.tsx` | **Shipped follow-up** — Merge `card.reviewThreads` from `pr-store` with local diff comments so the Monaco diff shows teammate review comments on matching file/line anchors. |
-| `src/client/components/PrLifecycleCard.tsx` | **Shipped follow-up** — `Send review (N)` pill for local diff comments when `prCommentSync` is enabled. |
+| `src/client/components/PrLifecycleCard.tsx` | **Shipped follow-up** — `Send review (N)` pill for local diff comments. |
 | `src/server/orchestrator/github-auth-review-threads.ts` | **Shipped follow-up** — `submitPullRequestReview` GraphQL helper using `addPullRequestReview` with `threads`. |
 | `src/server/orchestrator/services/github-pr-comments.ts` | **Shipped follow-up** — `submitReviewComments` batches local line comments into a single submitted GitHub PR review. |
 
@@ -101,4 +96,3 @@ Deferred to a Phase 2 of this feature:
 - **Reactions** — GitHub thumbs/eyes mirrored in the widget.
 - **Suggested changes** — render GitHub's `suggestion` blocks as one-click apply buttons.
 - **Auto-loop on new comment** — when a reviewer leaves a comment, ShipIt can prompt Claude to address it automatically (gated by a per-session setting, similar to `autoFix`).
-- **Default-on rollout** — promote `prCommentSync` after a beta cycle once the team is comfortable making the workflow visible by default.
