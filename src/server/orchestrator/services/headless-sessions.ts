@@ -1,6 +1,5 @@
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
-import { sendSystemMessageOnRunner } from "../session-runner.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo, AgentId } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
@@ -134,7 +133,7 @@ export async function createHeadlessSession(
   }
 
   quickSessionIds.add(newSessionId);
-  sendSystemMessageOnRunner(runner, trimmedPrompt);
+  runner.dispatch({ text: trimmedPrompt });
 
   console.log(`[headless-session] Started ${newSessionId}: branch=${branchName} title="${title}"`);
 
