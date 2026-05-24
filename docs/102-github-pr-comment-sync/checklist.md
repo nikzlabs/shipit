@@ -51,7 +51,7 @@
 
   This is the core promise of the feature. Review comments currently appear in the PR conversation panel, but not where reviewers and agents reason about changed code lines. Until this exists, comment sync is useful but not truly inline.
 
-- [ ] Add a "Send review to GitHub (N)" pill in `PrLifecycleCard.tsx` and batch local line comments into a single `submitPullRequestReview`
+- [x] Add a "Send review to GitHub (N)" pill in `PrLifecycleCard.tsx` and batch local line comments into a single `submitPullRequestReview`
 
   This should follow inline rendering. Posting each line comment immediately is noisy and does not match GitHub's review workflow. A pending-review batch makes ShipIt behave like a real PR review surface instead of a comment proxy.
 

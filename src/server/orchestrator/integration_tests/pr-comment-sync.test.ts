@@ -198,6 +198,52 @@ describe("PR review-thread sync", () => {
       expect(res.statusCode).toBe(502);
       expect(res.json()).toMatchObject({ error: expect.stringContaining("not found") });
     });
+
+    it("submits local line comments as one pull request review", async () => {
+      await githubAuth.setToken("test-token");
+      await new GitManager(sessionDir).addRemote("origin", "https://github.com/user/repo.git");
+      githubAuth.setPrData({
+        url: "https://github.com/user/repo/pull/7",
+        number: 7,
+        base: "main",
+        title: "My PR",
+      });
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/review`,
+        payload: {
+          comments: [
+            { path: "src/a.ts", line: 12, body: "  tighten this  " },
+            { path: "src/b.ts", line: 3, body: "handle null" },
+          ],
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ success: true, count: 2 });
+      expect(githubAuth.submitPullRequestReviewCalls).toEqual([
+        {
+          pullRequestId: "PR_node_1",
+          body: "ShipIt review: 2 comments",
+          comments: [
+            { path: "src/a.ts", line: 12, body: "tighten this", side: "RIGHT" },
+            { path: "src/b.ts", line: 3, body: "handle null", side: "RIGHT" },
+          ],
+        },
+      ]);
+    });
+
+    it("rejects an empty review batch with 400", async () => {
+      await githubAuth.setToken("test-token");
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/review`,
+        payload: { comments: [] },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(githubAuth.submitPullRequestReviewCalls).toHaveLength(0);
+    });
   });
 
   describe("settings round-trip", () => {

@@ -19,6 +19,8 @@
 
 import type { CredentialStore } from "../credential-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
+import type { GitManager } from "../../shared/git.js";
+import { parseGitHubRemote } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 
 function ensureEnabled(credentialStore: CredentialStore): void {
@@ -37,6 +39,53 @@ function ensureThreadId(threadId: unknown): asserts threadId is string {
   if (typeof threadId !== "string" || threadId.trim().length === 0) {
     throw new ServiceError(400, "Review thread id is required");
   }
+}
+
+export interface PullRequestReviewCommentInput {
+  path: string;
+  line: number;
+  body: string;
+}
+
+function ensureReviewComments(comments: unknown): PullRequestReviewCommentInput[] {
+  if (!Array.isArray(comments) || comments.length === 0) {
+    throw new ServiceError(400, "At least one review comment is required");
+  }
+  if (comments.length > 100) {
+    throw new ServiceError(400, "A review can include at most 100 comments");
+  }
+
+  return comments.map((comment, index) => {
+    if (!comment || typeof comment !== "object") {
+      throw new ServiceError(400, `Review comment ${index + 1} is invalid`);
+    }
+    const value = comment as { path?: unknown; line?: unknown; body?: unknown };
+    const path = typeof value.path === "string" ? value.path.trim() : "";
+    const line = typeof value.line === "number" ? value.line : Number.NaN;
+    const body = typeof value.body === "string" ? value.body.trim() : "";
+    if (!path) throw new ServiceError(400, `Review comment ${index + 1} path is required`);
+    if (!Number.isInteger(line) || line <= 0) {
+      throw new ServiceError(400, `Review comment ${index + 1} line must be a positive integer`);
+    }
+    if (!body) throw new ServiceError(400, `Review comment ${index + 1} body is required`);
+    return { path, line, body };
+  });
+}
+
+async function resolveGitHubRemote(
+  git: GitManager,
+  remoteUrl?: string,
+): Promise<{ owner: string; repo: string }> {
+  if (remoteUrl) {
+    const parsed = parseGitHubRemote(remoteUrl);
+    if (parsed) return parsed;
+  }
+
+  const origin = (await git.getRemotes()).find((remote) => remote.name === "origin");
+  if (!origin) throw new ServiceError(400, "No 'origin' remote configured");
+  const parsed = parseGitHubRemote(origin.url);
+  if (!parsed) throw new ServiceError(400, "Remote URL is not a GitHub repository");
+  return parsed;
 }
 
 /**
@@ -97,4 +146,39 @@ export async function unresolveReviewThread(
     throw new ServiceError(502, result.message);
   }
   return result;
+}
+
+/** Submit local diff comments to the current branch's PR as one GitHub review. */
+export async function submitReviewComments(
+  credentialStore: CredentialStore,
+  githubAuthManager: GitHubAuthManager,
+  git: GitManager,
+  comments: unknown,
+  remoteUrl?: string,
+): Promise<{ success: boolean; message: string; count: number }> {
+  ensureEnabled(credentialStore);
+  ensureAuthenticated(githubAuthManager);
+  const reviewComments = ensureReviewComments(comments);
+
+  const resolved = await resolveGitHubRemote(git, remoteUrl);
+  const head = await git.getCurrentBranch();
+  const pr = await githubAuthManager.findPullRequest(resolved.owner, resolved.repo, head);
+  if (!pr) {
+    throw new ServiceError(404, "No active PR for current branch");
+  }
+
+  const pullRequestId = await githubAuthManager.getPullRequestNodeId(resolved.owner, resolved.repo, pr.number);
+  if (!pullRequestId) {
+    throw new ServiceError(502, "Failed to fetch pull request id from GitHub");
+  }
+
+  const result = await githubAuthManager.submitPullRequestReview(
+    pullRequestId,
+    reviewComments.map((comment) => ({ ...comment, side: "RIGHT" as const })),
+    `ShipIt review: ${reviewComments.length} comment${reviewComments.length === 1 ? "" : "s"}`,
+  );
+  if (!result.success) {
+    throw new ServiceError(502, result.message);
+  }
+  return { ...result, count: reviewComments.length };
 }

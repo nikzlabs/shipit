@@ -14,6 +14,8 @@ import type { PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useCommentStore } from "../stores/comment-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { Button } from "./ui/button.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import { MarkdownContent } from "./message-markdown.js";
@@ -34,6 +36,7 @@ import {
   WarningIcon,
   GlobeIcon,
   DotsThreeVerticalIcon,
+  PaperPlaneTiltIcon,
 } from "@phosphor-icons/react";
 import type { GitHubDeploymentStatus } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -221,6 +224,63 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   );
 }
 
+function PendingReviewButton({ sessionId, count }: { sessionId: string; count: number }) {
+  const [submitting, setSubmitting] = useState(false);
+  const clearComments = useCommentStore((s) => s.clearComments);
+  const setToast = useUiStore((s) => s.setToast);
+
+  const handleSubmit = async () => {
+    if (submitting || count === 0) return;
+    const comments = useCommentStore.getState().getAllComments(sessionId);
+    if (comments.length === 0) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/review`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          comments: comments.map((comment) => ({
+            path: comment.filePath,
+            line: comment.line,
+            body: comment.text,
+          })),
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        setToast({ message: data.error || "Failed to send review" });
+        return;
+      }
+      clearComments(sessionId);
+      setToast({ message: `Sent review with ${comments.length} comment${comments.length === 1 ? "" : "s"}` });
+    } catch (err) {
+      setToast({
+        message: err instanceof Error ? err.message : "Failed to send review",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      onClick={handleSubmit}
+      disabled={submitting}
+      className="shrink-0 h-6 border border-(--color-border-secondary)"
+      title="Send local diff comments to GitHub as one review"
+    >
+      {submitting ? (
+        <CircleNotchIcon size={14} className="animate-spin" />
+      ) : (
+        <PaperPlaneTiltIcon size={ICON_SIZE.SM} />
+      )}
+      {submitting ? "Sending..." : `Send review (${count})`}
+    </Button>
+  );
+}
+
 /**
  * MergeConflictIndicator — surfaces GitHub's `CONFLICTING` mergeable state.
  *
@@ -347,6 +407,8 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   const deployments = usePrStore((s) => s.statusBySession[sessionId]?.deployments);
   const mergeable = usePrStore((s) => s.statusBySession[sessionId]?.mergeable);
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
+  const prCommentSync = useSettingsStore((s) => s.prCommentSync);
+  const pendingReviewCount = useCommentStore((s) => s.getCommentCount(sessionId));
   const openDiff = useOpenPrDiff(pr?.baseBranch);
   if (!pr) return null;
 
@@ -394,6 +456,9 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
         />
         <span className="ml-auto shrink-0 flex items-center gap-3">
           <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
+          {prCommentSync && pendingReviewCount > 0 && (
+            <PendingReviewButton sessionId={sessionId} count={pendingReviewCount} />
+          )}
           <CiIndicator checks={card.checks} />
           {showConflictUi && <MergeConflictIndicator />}
           {showConflictUi && (

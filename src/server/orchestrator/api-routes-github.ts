@@ -32,6 +32,7 @@ import {
   updateMergeMethod,
   replyToReviewThread,
   resolveReviewThread,
+  submitReviewComments,
   unresolveReviewThread,
   ServiceError,
 } from "./services/index.js";
@@ -367,6 +368,32 @@ export async function registerGitHubRoutes(
   // forward straight through to GitHub once the feature flag + auth checks
   // pass. The next poll tick (5s by default) reconciles the cached state on
   // the client — no need to optimistically rewrite store state on success.
+
+  // POST /api/sessions/:id/pr/review — submit local line comments as one review
+  app.post<{ Params: { id: string }; Body: { comments?: unknown } }>(
+    "/api/sessions/:id/pr/review",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const git = createGitManager(dir);
+        const session = sessionManager.get(request.params.id);
+        return await submitReviewComments(
+          deps.credentialStore,
+          deps.githubAuthManager,
+          git,
+          request.body?.comments,
+          session?.remoteUrl,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to submit review: ${getErrorMessage(err)}` });
+      }
+    },
+  );
 
   // POST /api/sessions/:id/pr/threads/:threadId/reply — reply to a review thread
   app.post<{ Params: { id: string; threadId: string }; Body: { body: string } }>(
