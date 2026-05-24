@@ -47,6 +47,25 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("one-line");
   });
 
+  it("tells the agent not to use git state to decide whether to open a PR", () => {
+    const out = buildAgentSystemInstructions();
+    // The auto-commit timing must be called out: it happens AFTER the turn,
+    // so the in-turn working tree is not a signal of "nothing to PR".
+    expect(out).toContain("after");
+    expect(out).toMatch(/auto-commit/i);
+    // The agent must be told explicitly not to consult git plumbing to
+    // decide. Naming the commands the agent reaches for blocks the failure
+    // mode where it runs `git status` / `git log` and skips the PR.
+    expect(out).toContain("git status");
+    expect(out).toContain("git diff");
+    expect(out).toContain("git log");
+    // And it must be told what to use INSTEAD — its own edit history.
+    expect(out).toMatch(/Edit\/Write\/MultiEdit/);
+    // The mid-turn flush behavior is spelled out so the agent trusts that
+    // calling `gh pr create` mid-turn captures its just-made edits.
+    expect(out).toMatch(/flush/i);
+  });
+
   it("tells the agent to stay on the session branch and not create branches", () => {
     const out = buildAgentSystemInstructions();
     expect(out).toContain("git checkout -b");
