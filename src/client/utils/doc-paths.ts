@@ -13,6 +13,11 @@ export function basenameOf(path: string): string {
   return lastSlash < 0 ? path : path.slice(lastSlash + 1);
 }
 
+/** Return true for the secondary tracking file in a feature-doc directory. */
+export function isChecklistPath(path: string): boolean {
+  return basenameOf(path).toLowerCase() === "checklist.md";
+}
+
 /**
  * Return all entries in `entries` whose directory matches `path`'s directory.
  * The result includes the entry for `path` itself (if present in `entries`).
@@ -87,5 +92,24 @@ export function hasTrackedSibling(path: string, entries: DocEntry[]): boolean {
   if (dir === "") return false;
   return entries.some(
     (e) => e.path !== path && isTracked(e) && dirOf(e.path) === dir,
+  );
+}
+
+/**
+ * Return true when `path` is a checklist with a tracked `plan.md` in the same
+ * directory. Feature checklists can carry frontmatter for the modal and
+ * scanner, but the docs list should still render the tracked plan as the
+ * single primary row.
+ */
+export function hasTrackedPlanSibling(path: string, entries: DocEntry[]): boolean {
+  if (!isChecklistPath(path)) return false;
+  const dir = dirOf(path);
+  if (dir === "") return false;
+  return entries.some(
+    (e) =>
+      e.path !== path &&
+      dirOf(e.path) === dir &&
+      basenameOf(e.path).toLowerCase() === "plan.md" &&
+      isTracked(e),
   );
 }
