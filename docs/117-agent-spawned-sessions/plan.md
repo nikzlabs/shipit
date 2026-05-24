@@ -1,6 +1,5 @@
 ---
-status: in-progress
-priority: medium
+status: done
 description: CLI shim letting agents create and manage sibling ShipIt sessions for parallel branch work, with per-turn quotas and sidebar visibility.
 ---
 
@@ -44,13 +43,24 @@ Phases 1, 2, and 3 are live as of this revision. What works today:
 - **(Phase 3.)** `shipit session view` (and `wait`) now surface the
   child's `latestAssistantMessage` and `prUrl` so the parent agent can
   get a snapshot without scraping the child's chat history.
+- **(Cross-cutting follow-up.)** Spawn failures (quota 429, invalid request,
+  parent missing) now surface inline in the parent's chat via a
+  `session_spawn_failed` WS event and a `SpawnFailedCard` — counterpart to
+  `SpawnedSessionCard` so a rejected spawn is visible alongside successful
+  ones instead of only on the shim's stderr.
+- **(Cross-cutting follow-up.)** Every spawn invocation is counted by
+  `services/spawn-telemetry.ts`, dimensioned by parent / turn / agent /
+  outcome. A structured `[spawn-telemetry]` log line is emitted on each
+  attempt and the in-process counters are queryable via
+  `getSpawnTelemetrySnapshot()`.
 
 What is **not** in Phase 1 + 2 + 3 (see the table below for tracking):
 
 - No persistence of the `SpawnedSessionCard` in chat history — the card is
   re-rendered live via the turn-event buffer, and the child remains visible
   in the sidebar via the existing `session_list` broadcast.
-- No cross-repo spawns (`--repo other/name`) — Phase 4 (optional).
+- No cross-repo spawns (`--repo other/name`) — Phase 4 (optional, deferred
+  until there's user demand).
 
 ## Summary
 
@@ -419,7 +429,8 @@ The existing idle-container cleanup (doc 063) applies normally — spawned sessi
 | **1** | Build the shim + worker `/agent-ops/session/*` routes + `POST /api/sessions/:parentId/spawn` + `parentSessionId` field. Update `shipit-docs/sessions.md`. **No agent prompt changes.** Sidebar grouping is *not* shipped in Phase 1 (deferred to Phase 2 alongside the SpawnedSessionCard rendering). | done |
 | **2** | Update `agent-instructions.ts` to teach the agent when to reach for `shipit session create` vs `Task`. Sidebar grouping enabled. SpawnedSessionCard rendered in parent chats. | done |
 | **3** | Add `wait`, `archive`, and follow-up `message` flows once telemetry shows the agent uses Phase 1 reliably. Surface `latestAssistantMessage` + `prUrl` on the `view` snapshot. Env-var overrides for quota constants. | done |
-| **4** *(optional)* | Cross-repo spawns (different `--repo`) for advanced workflows. Probably gated by a per-account setting. | planned |
+| **Cross-cutting** | Inline `SpawnFailedCard` on quota / invalid-request rejections; spawn-invocation telemetry counters dimensioned by parent / turn / agent / outcome. | done |
+| **4** *(optional)* | Cross-repo spawns (different `--repo`) for advanced workflows. Probably gated by a per-account setting. Deferred — no user demand yet. | deferred |
 
 Phase 1 is fully backwards-compatible: nothing nudges the agent to use the new tool; the user can still spawn sessions manually. Phase 2 is when it starts paying for itself.
 
@@ -467,8 +478,16 @@ In addition to the per-threat table above, two systemic notes:
 | `src/client/components/MessageList.tsx` | **(Phase 2.)** Detects `spawnedSession` on a `ChatMessage` and renders `SpawnedSessionCard` instead of the bubble. | done |
 | `src/client/hooks/message-handlers/session-spawned.ts` | **(Phase 2.)** **New.** Handler that converts the `session_spawned` WS event into a `ChatMessage` with `spawnedSession` populated. Registered in `message-handlers/index.ts`. | done |
 | `src/client/stores/session-store.ts` | **(Phase 2.)** Adds a `getChildren(parentSessionId)` selector. `parentSessionId` was already plumbed onto `SessionInfo` in Phase 1. | done |
-| `src/server/orchestrator/integration_tests/agent-spawned-session.test.ts` | **New.** End-to-end coverage of the spawn happy path, parent-linkage persistence, per-turn quota 429, list ordering, cross-tenancy 404 on `view`, AND the Phase 2 `session_spawned` WS emission on the parent runner. 8 cases. | done |
+| `src/server/orchestrator/integration_tests/agent-spawned-session.test.ts` | **New.** End-to-end coverage of the spawn happy path, parent-linkage persistence, per-turn quota 429, list ordering, cross-tenancy 404 on `view`, the Phase 2 `session_spawned` WS emission on the parent runner, the cross-cutting `session_spawn_failed` event on both quota (429) and invalid-request (400) paths, and the spawn-telemetry counter dimensions (success / invalid_request / parent_missing across agents and turns). | done |
 | `src/client/components/SpawnedSessionCard.test.tsx` | **(Phase 2.)** **New.** Component tests covering all four status states (idle / running / archived / missing), reactive transitions, Open button click handling (custom `onOpen` + store fallback), the disabled Open when the child is missing, and branch omission. | done |
+| `src/client/components/SpawnFailedCard.tsx` | **(Cross-cutting.)** **New.** In-chat card rendered when a spawn was rejected. Mirrors the layout of `SpawnedSessionCard` so the success/failure pair are visually paired; shows reason headline (per-turn / per-session / rejected / parent-missing / generic), orchestrator error message, status code, and prompt preview. | done |
+| `src/client/components/SpawnFailedCard.test.tsx` | **(Cross-cutting.)** **New.** Component tests covering all five reason headlines, optional title / branch / promptPreview fallbacks, and verbatim rendering of the orchestrator's error message + status code. 10 cases. | done |
+| `src/client/hooks/message-handlers/session-spawn-failed.ts` | **(Cross-cutting.)** **New.** Handler that converts the `session_spawn_failed` WS event into a `ChatMessage` with `spawnFailed` populated. Registered in `message-handlers/index.ts`. | done |
+| `src/client/components/MessageList.tsx` | **(Cross-cutting.)** Extended `ChatMessage` with `spawnFailed?: { … }`; renders `SpawnFailedCard` when present (counterpart to the `spawnedSession` branch added in Phase 2). | done |
+| `src/server/orchestrator/services/spawn-telemetry.ts` | **(Cross-cutting.)** **New.** In-process counters + `[spawn-telemetry]` structured log line for every spawn invocation. Exposes `recordSpawnInvocation`, `getSpawnTelemetrySnapshot`, `resetSpawnTelemetry`, and `classifySpawnFailure` for outcome bucketing. | done |
+| `src/server/orchestrator/services/spawn-telemetry.test.ts` | **(Cross-cutting.)** **New.** Unit tests for the outcome classifier, counter dimensions (outcome / agent / turn / parent), structured log line format, error-message truncation, and reset behavior. | done |
+| `src/server/orchestrator/api-routes-session.ts` | **(Cross-cutting.)** The spawn route now emits `session_spawn_failed` via the parent runner on every failure path AND calls `recordSpawnInvocation` on both success and failure with the effective agent id (`body.agent ?? defaultAgentId`). | done |
+| `src/server/shared/types/ws-server-messages.ts` | **(Cross-cutting.)** Added `WsSessionSpawnFailed` (`{ sessionId, message, statusCode, reason, title?, branch?, promptPreview?, failedAt }`) and wired it into the `WsServerMessage` discriminated union. | done |
 | `src/server/orchestrator/agent-instructions.test.ts` | **(Phase 2.)** Extended with five new cases covering the per-agent "Parallel sessions" section: Claude variant contrasts `Task` vs `shipit session create`, Codex variant says "only fan-out primitive," baseline rendering still omits the section, and composes correctly with `previewUrl` + `autoCreatePr`. | done |
 
 ## Open questions
