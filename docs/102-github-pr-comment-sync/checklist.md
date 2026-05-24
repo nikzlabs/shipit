@@ -43,9 +43,10 @@
 - [x] `npm run test:dev`
 - [x] Update `plan.md` (status, key files, deferred work)
 
-## Remaining work, prioritized
+## Follow-up ideas
 
-### High priority
+These are intentionally outside the shipped scope for docs/102. Keep them here
+as planning notes unless they grow into their own feature docs.
 
 - [x] Render GitHub-sourced review threads inline on the Monaco diff viewer (`MonacoCommentWidgets` `source: 'local' | 'github'` discriminator)
 
@@ -55,14 +56,10 @@
 
   This should follow inline rendering. Posting each line comment immediately is noisy and does not match GitHub's review workflow. A pending-review batch makes ShipIt behave like a real PR review surface instead of a comment proxy.
 
-### Medium priority
-
-- [ ] Add an auto-loop hook on new GitHub-sourced comments (per-session opt-in, similar to `autoFix`)
+- Add an auto-loop hook on new GitHub-sourced comments (per-session opt-in, similar to `autoFix`)
 
   This becomes valuable after comments are visible inline: a reviewer comment can prompt the agent to address feedback without the user manually copying context. Keep it opt-in because automatic agent action on teammate comments can be surprising.
 
-### Low priority until the above are stable
-
-- [ ] Promote `prCommentSync` to default-on after a beta cycle
+- Promote `prCommentSync` to default-on after a beta cycle
 
   Default-on makes sense once inline rendering and write-back are trustworthy. Before then, the flag should stay off so a partial workflow is not exposed as the default experience.
