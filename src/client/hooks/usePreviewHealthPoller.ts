@@ -10,7 +10,13 @@ import type { IframeSlot } from "./useIframePool.js";
 function buildSubdomainUrl(sessionId: string, port: number, apiHost: string): string | null {
   const [rawHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") as [string, string] : [apiHost, ""];
   const apiHostname = /^(127\.\d+\.\d+\.\d+|::1)$/.test(rawHostname) ? "localhost" : rawHostname;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) || apiHostname.includes(":")) return null;
+  if (
+    /^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) ||
+    apiHostname.includes(":") ||
+    (apiHostname !== "localhost" && !apiHostname.includes(".")) ||
+    apiHostname.endsWith(".ts.net") ||
+    apiHostname.endsWith(".beta.tailscale.net")
+  ) return null;
   const portSuffix = apiPort ? `:${apiPort}` : "";
   return `${window.location.protocol}//${sessionId}--${port}.${apiHostname}${portSuffix}/`;
 }
