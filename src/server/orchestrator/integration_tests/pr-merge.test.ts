@@ -524,8 +524,10 @@ describe("PrStatusPoller onMergeDetected callback", () => {
       deletions: 5,
     });
 
-    // Wait for next poll cycle (5s interval + a REST hop's worth of slop).
-    await new Promise((r) => setTimeout(r, 5_500));
+    // Trigger an immediate poll rather than sleeping for the production
+    // interval; this exercises the same missing-PR verification path.
+    poller.setPrTabActive(sessionId, true);
+    await new Promise((r) => setTimeout(r, 100));
 
     expect(onMergeDetected).toHaveBeenCalledWith(sessionId);
 
