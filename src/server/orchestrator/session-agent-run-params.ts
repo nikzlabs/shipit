@@ -5,7 +5,7 @@
  * `AgentRunParams` payload the CLI adapter expects: system prompt, settings
  * path, model, MCP servers, autoCreatePr gate, permission mode. Lives
  * outside any turn-execution module so the user path
- * (`runAgentWithMessage`) and the system-turn path (`runSystemTurn`) build
+ * (`runAgentWithMessage`) and the system-turn path (`runDispatchedTurn`) build
  * the same shape — without this, agent-spawned sessions used to run with no
  * system prompt, no settings (so neither the branch-block PreToolUse hook
  * nor the Stop-hook PR enforcement applied), no MCP, and no model.

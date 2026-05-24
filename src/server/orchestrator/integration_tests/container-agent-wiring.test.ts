@@ -192,7 +192,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
   // Regression for the spawn-path SSE race: when an agent spawns a child
   // session via `shipit session create`, the orchestrator calls
-  // `runner.sendSystemMessage(prompt)` synchronously after creating the
+  // `runner.dispatch(...)` synchronously after creating the
   // runner — no viewer is attached, so `attachViewer()` has not connected
   // SSE first. If `/agent/start` is POSTed before SSE is connected, the
   // worker's first agent events stream to a channel with no listener and
@@ -210,7 +210,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     });
 
     // Deliberately do NOT call attachViewer — exercises the spawn path
-    // where sendSystemMessage runs before any viewer connects.
+    // where runner.dispatch runs before any viewer connects.
     const proxy = runner.createAgent("claude");
 
     const events: { type: string }[] = [];

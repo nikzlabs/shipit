@@ -607,7 +607,7 @@ export function createPrStatusPoller(
       const prompt = buildCIFixPrompt(logs);
 
       prStatusPoller.markAutoFixRunning(sessionId);
-      runner.sendSystemMessage(prompt, "Auto-fixing CI...");
+      runner.dispatch({ text: prompt, activity: "Auto-fixing CI..." });
     },
     onMergeDetectedCb: async (sessionId) => {
       try {

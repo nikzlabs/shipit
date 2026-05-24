@@ -205,7 +205,7 @@ async function tryForcePush(
 
 /**
  * Run an agent turn dedicated to resolving rebase conflicts. Differs from
- * `runSystemTurn` in that it skips auto-commit / auto-push at the end (the
+ * `runDispatchedTurn` in that it skips auto-commit / auto-push at the end (the
  * rebase machinery commits via `rebase --continue`, and force push happens
  * after the entire flow completes).
  */

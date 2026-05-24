@@ -27,8 +27,8 @@
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
-import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage } from "./session-runner.js";
-import { runSystemTurn } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, AgentDispatchOptions } from "./session-runner.js";
+import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
 import type { SSEEvent } from "./sse-client.js";
 import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
@@ -622,7 +622,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // /agent/start lands and the CLI begins streaming events on `/events`
     // before our POST ack returns (see the timeoutMs:0 comment below). If
     // SSE is connected after the POST — the path taken by spawned-child
-    // sessions, which call `sendSystemMessage` without any viewer attached
+    // sessions, which call `runner.dispatch` without any viewer attached
     // to wire it up first — the initial `agent_init` / `agent_assistant` /
     // `agent_result` / `agent_done` events are lost and the runner is
     // stuck at running=true forever. The worker's `GET /events` only
@@ -1319,22 +1319,27 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._systemTurnDeps = deps;
   }
 
-  sendSystemMessage(text: string, activity?: string): void {
+  dispatch(opts: AgentDispatchOptions): void {
     if (this._isRunning) {
-      this.enqueue({ text });
+      // docs/150 — broadcast message_queued via emitMessage so every attached
+      // viewer (and any other HTTP-originated caller in this session) sees the
+      // update. Previously the WS handler emitted this on a single socket.
+      const position = this.enqueue(toQueuedMessage(opts));
+      this.emitMessage({ type: "message_queued", text: opts.text, position });
       return;
     }
     if (!this._systemTurnDeps) {
-      this.enqueue({ text });
+      const position = this.enqueue(toQueuedMessage(opts));
+      this.emitMessage({ type: "message_queued", text: opts.text, position });
       return;
     }
-    void this._runSystemTurn(text, activity);
+    void this._runDispatchedTurn(opts);
   }
 
-  private async _runSystemTurn(text: string, activity?: string): Promise<void> {
-    await runSystemTurn(this, this._systemTurnDeps!, this._agentId, text, (agentId) => {
+  private async _runDispatchedTurn(opts: AgentDispatchOptions): Promise<void> {
+    await runDispatchedTurn(this, this._systemTurnDeps!, this._agentId, opts, (agentId) => {
       return this.createAgent(agentId);
-    }, activity);
+    });
   }
 
   // --- Lifecycle ---
