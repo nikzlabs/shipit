@@ -179,6 +179,55 @@ export class PrStatusPoller {
     }
   }
 
+  /**
+   * Force a one-shot refresh for the repo that owns a session's PR status.
+   * This is used for user-visible events (session activation, PR creation,
+   * merge button) so the 15s background cadence remains cheap without making
+   * the UI wait for the next tick.
+   */
+  async forceRefreshSession(
+    sessionId: string,
+    opts: { waitForMissingVerify?: boolean } = {},
+  ): Promise<void> {
+    const repoKey = this.sessionRepos.get(sessionId);
+    const slash = repoKey?.indexOf("/") ?? -1;
+    if (!repoKey || slash <= 0) return;
+
+    // A user action is a strong activity signal, and a forced refresh should
+    // not be suppressed by a previous "missing from bulk GraphQL" episode.
+    this.recordClientActivity();
+    this.verifiedAbsent.delete(sessionId);
+
+    const owner = repoKey.slice(0, slash);
+    const repo = repoKey.slice(slash + 1);
+    await this.pollRepo(repoKey, owner, repo, {
+      force: true,
+      waitForMissingVerify: opts.waitForMissingVerify ?? false,
+    });
+  }
+
+  /**
+   * Force a REST verification for a single session's PR. This is used after
+   * ShipIt itself merges a PR, where waiting for the open-PR GraphQL view to
+   * drop the branch can leave the UI stale for one or more poll intervals.
+   */
+  async forceVerifySessionPrState(sessionId: string): Promise<void> {
+    const repoKey = this.sessionRepos.get(sessionId);
+    const slash = repoKey?.indexOf("/") ?? -1;
+    if (!repoKey || slash <= 0) return;
+
+    const session = this.sessionManager.get(sessionId);
+    if (!session?.branch) return;
+
+    this.recordClientActivity();
+    this.verifiedAbsent.delete(sessionId);
+
+    const owner = repoKey.slice(0, slash);
+    const repo = repoKey.slice(slash + 1);
+    await this.verifyMissingPr(sessionId, owner, repo, session.branch);
+    this.verifiedAbsent.add(sessionId);
+  }
+
   /** Untrack a session (archived, PR merged, etc.). */
   untrackSession(sessionId: string): void {
     const repoKey = this.sessionRepos.get(sessionId);
@@ -216,7 +265,7 @@ export class PrStatusPoller {
         const repo = repoKey.slice(slash + 1);
         // Treat activation as user activity so an idle-paused repo resumes.
         this.recordClientActivity();
-        this.pollRepo(repoKey, owner, repo).catch((err: unknown) => {
+        this.pollRepo(repoKey, owner, repo, { force: true }).catch((err: unknown) => {
           console.error(`[pr-poller] Error on PR-tab-activated poll ${repoKey}:`, err);
         });
       }
@@ -383,7 +432,7 @@ export class PrStatusPoller {
     this.repoTimers.set(repoKey, timer);
 
     // Run the first poll immediately
-    this.pollRepo(repoKey, owner, repo).catch((err: unknown) => {
+    this.pollRepo(repoKey, owner, repo, { force: true }).catch((err: unknown) => {
       console.error(`[pr-poller] Error on initial poll ${repoKey}:`, err);
     });
   }
@@ -403,7 +452,12 @@ export class PrStatusPoller {
     }
   }
 
-  private async pollRepo(repoKey: string, owner: string, repo: string): Promise<void> {
+  private async pollRepo(
+    repoKey: string,
+    owner: string,
+    repo: string,
+    opts: { force?: boolean; waitForMissingVerify?: boolean } = {},
+  ): Promise<void> {
     if (!this.githubAuth.authenticated) return;
 
     // ---- Rate-limit gate ----
@@ -422,7 +476,7 @@ export class PrStatusPoller {
     }
 
     if (stillLimited) return;
-    if (this.canSkipPoll()) return;
+    if (!opts.force && this.canSkipPoll()) return;
 
     // docs/133 Phase 4: fetch the heavier conversation fields only when a
     // session on this repo has its PR tab open. Idle polls stay cheap.
@@ -560,9 +614,9 @@ export class PrStatusPoller {
         // every poll. We now NEVER promote synchronously — instead route
         // through a single REST verify per "missing" episode, debounced by
         // `verifiedAbsent` until the PR reappears in a bulk response.
-        if (this.verifiedAbsent.has(session.id) || this.inFlightVerify.has(session.id)) continue;
+        if ((!opts.force && this.verifiedAbsent.has(session.id)) || this.inFlightVerify.has(session.id)) continue;
         this.inFlightVerify.add(session.id);
-        this.verifyMissingPr(session.id, owner, repo, session.branch)
+        const verify = this.verifyMissingPr(session.id, owner, repo, session.branch)
           .catch((err: unknown) => {
             console.error(`[pr-poller] REST verify error for ${session.id}:`, err);
           })
@@ -570,6 +624,7 @@ export class PrStatusPoller {
             this.inFlightVerify.delete(session.id);
             this.verifiedAbsent.add(session.id);
           });
+        if (opts.waitForMissingVerify) await verify;
       }
     }
 

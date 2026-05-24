@@ -1034,6 +1034,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         if (dir !== activeSessionDir) {
           activeSessionDir = dir;
         }
+        if (s?.remoteUrl) {
+          prStatusPoller.trackSession(sid, s.remoteUrl);
+          void prStatusPoller.forceRefreshSession(sid).catch((err: unknown) => {
+            console.error(`[pr-poller] Error on session-activated refresh ${sid}:`, err);
+          });
+        }
         if (dir) void checkGitIdentity(dir);
       };
 
