@@ -1,6 +1,6 @@
 ---
 status: planned
-priority: medium
+priority: high
 description: Globally-gated MCP tool that lets the primary agent ask the other agent for a one-shot, read-only review of the current branch diff — surfaced inline through the same chat history.
 ---
 
