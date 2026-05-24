@@ -266,6 +266,74 @@ describe("Integration: Usage & cost tracking", () => {
     client.close();
   });
 
+  it("records token-only usage when cost is not reported", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "hello" });
+    await waitForClaude(() => lastClaude);
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "token-only-session" });
+    const sessionStarted = await client.receiveType("session_started");
+    const appSessionId = (sessionStarted as any).session.id;
+
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "token-only-session",
+      duration_ms: 2500,
+      usage: {
+        input_tokens: 120,
+        output_tokens: 40,
+        cache_read_input_tokens: 800,
+      },
+    });
+
+    const usageUpdate = await client.receiveType("usage_update");
+    expect(usageUpdate).toMatchObject({
+      type: "usage_update",
+      sessionId: appSessionId,
+      totalCostUsd: 0,
+      totalDurationMs: 2500,
+      turnCount: 1,
+      lastTurnInputTokens: 120,
+      lastTurnOutputTokens: 40,
+      cumulativeInputTokens: 120,
+      cumulativeOutputTokens: 40,
+    });
+
+    const turnUsage = await client.receiveType("turn_usage_update");
+    expect(turnUsage).toMatchObject({
+      type: "turn_usage_update",
+      sessionId: appSessionId,
+      totalCostUsd: 0,
+      turnCount: 1,
+      turn: {
+        inputTokens: 120,
+        outputTokens: 40,
+        cacheRead: 800,
+        costUsd: 0,
+        durationMs: 2500,
+      },
+    });
+
+    lastClaude.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const statsRes = await app.inject({ method: "GET", url: `/api/sessions/${appSessionId}/usage` });
+    expect(statsRes.statusCode).toBe(200);
+    const statsMsg = statsRes.json();
+    expect(statsMsg.stats.totalCostUsd).toBe(0);
+    expect(statsMsg.stats.totalTurns).toBe(1);
+    expect(statsMsg.stats.sessions[0]).toMatchObject({
+      sessionId: appSessionId,
+      totalCostUsd: 0,
+      totalDurationMs: 2500,
+      turnCount: 1,
+    });
+
+    client.close();
+  });
+
   it("archive_session preserves usage data", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status

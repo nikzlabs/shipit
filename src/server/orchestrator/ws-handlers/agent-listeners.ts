@@ -669,7 +669,11 @@ export function wireAgentListeners(
       // from there via `GET /api/sessions/:id/history` (see B in the
       // ContextDial cost-display unification).
       let perTurnUsage: TurnUsage | undefined;
-      if (event.tokens?.input !== undefined || event.tokens?.output !== undefined || event.cost?.totalUsd !== undefined) {
+      const hasUsageTelemetry =
+        event.cost?.totalUsd !== undefined
+        || event.tokens?.input !== undefined
+        || event.tokens?.output !== undefined;
+      if (hasUsageTelemetry) {
         perTurnUsage = {
           inputTokens: event.tokens?.input ?? 0,
           outputTokens: event.tokens?.output ?? 0,
@@ -687,10 +691,14 @@ export function wireAgentListeners(
         if (event.contextTokens !== undefined) perTurnUsage.contextTokens = event.contextTokens;
       }
 
-      if (event.cost?.totalUsd !== undefined) {
+      if (perTurnUsage) {
+        // Some backends, including Codex app-server, report authoritative token
+        // usage but no dollar cost. Persist those turns with a zero-dollar
+        // value so session turn counts, token history, and rehydration still
+        // work; do not estimate pricing here.
         ctx.usageManager.record(
           usageSessionId,
-          event.cost.totalUsd,
+          perTurnUsage.costUsd,
           event.durationMs ?? 0,
           event.tokens?.input,
           event.tokens?.output,
@@ -725,15 +733,6 @@ export function wireAgentListeners(
             });
           }
         }
-      } else if (perTurnUsage) {
-        // Tokens but no cost — still notify the dial.
-        emitToViewers({
-          type: "turn_usage_update",
-          sessionId: usageSessionId,
-          turn: perTurnUsage,
-          totalCostUsd: 0,
-          turnCount: 0,
-        });
       }
 
       // Persist each message group as a separate assistant entry so that
