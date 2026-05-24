@@ -112,6 +112,7 @@ export async function registerSessionRoutes(
 
     const runner = deps.runnerRegistry.get(request.params.id);
     const agentRunning = runner?.running ?? false;
+    const rewindSnapshot = deps.chatHistoryManager.latestRewindSnapshot(request.params.id);
 
     // Don't reconstruct in-progress messages from runner.chatMessageGroups here.
     // The DB already has in-progress rows persisted at each agent_tool_result
@@ -133,6 +134,7 @@ export async function registerSessionRoutes(
       commits,
       fileTree,
       agentRunning,
+      rewindSnapshot,
       turnUsage,
       sessionUsage,
       cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,

@@ -158,6 +158,11 @@ export interface WsRewindPreviewRequest {
   action: RewindAtGapAction;
 }
 
+export interface WsRewindRestoreRequest {
+  type: "rewind_restore_request";
+  sessionId: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsSendReviewMessage
@@ -180,4 +185,5 @@ export type WsClientMessage =
   | WsRewindToMessage
   | WsRewindAtGap
   | WsRewindPreviewRequest
+  | WsRewindRestoreRequest
   | WsPrTabActive;

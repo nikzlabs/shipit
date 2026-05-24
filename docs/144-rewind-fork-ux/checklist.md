@@ -24,8 +24,8 @@ status: in-progress
 - [x] Add `rewind_preview_request` / `rewind_preview` server contract and count calculation.
 - [x] Use `rewind_preview` for menu subtitles and modal counts.
 - [x] Add selective confirmation modals.
-- [ ] Add undo toast and "Recover recent rewind" topbar overflow entry.
-- [ ] Add `rewind_snapshots` persistence and restore path.
+- [x] Add undo toast and "Recover recent rewind" topbar overflow entry.
+- [x] Add `rewind_snapshots` persistence and restore path.
 - [ ] Remove legacy per-message rewind/rollback dropdowns and old WS message types.
 - [x] U6: Show an empty-chat notice after rewinding to the start.
 

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { DotsThreeVerticalIcon, DownloadSimpleIcon, PencilSimpleIcon, ArchiveIcon } from "@phosphor-icons/react";
+import { ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, DownloadSimpleIcon, PencilSimpleIcon, ArchiveIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import {
   DropdownMenu,
@@ -13,9 +13,11 @@ interface SessionTopBarProps {
   onRename: (title: string) => void;
   onDownloadChat: () => void;
   onArchive: () => void;
+  recoverRewindAvailable?: boolean;
+  onRecoverRewind?: () => void;
 }
 
-export function SessionTopBar({ title, onRename, onDownloadChat, onArchive }: SessionTopBarProps) {
+export function SessionTopBar({ title, onRename, onDownloadChat, onArchive, recoverRewindAvailable, onRecoverRewind }: SessionTopBarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editingTitle, setEditingTitle] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -89,6 +91,12 @@ export function SessionTopBar({ title, onRename, onDownloadChat, onArchive }: Se
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {recoverRewindAvailable && (
+              <DropdownMenuItem onSelect={onRecoverRewind}>
+                <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />
+                Recover recent rewind
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onSelect={startEditing}>
               <PencilSimpleIcon size={ICON_SIZE.SM} />
               Rename

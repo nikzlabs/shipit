@@ -38,6 +38,8 @@ import { handleRebaseStarted } from "./rebase-started.js";
 import { handleReviewUpdated } from "./review-updated.js";
 import { handleRewindComplete } from "./rewind-complete.js";
 import { handleRewindPreview } from "./rewind-preview.js";
+import { handleRewindRestored } from "./rewind-restored.js";
+import { handleRewindSnapshotAvailable } from "./rewind-snapshot-available.js";
 import { handleRollbackComplete } from "./rollback-complete.js";
 import { handleSecretsStatus } from "./secrets-status.js";
 import { handleServiceList } from "./service-list.js";
@@ -123,6 +125,8 @@ export const messageHandlers: MessageHandlerMap = {
   review_updated: handleReviewUpdated,
   rewind_complete: handleRewindComplete,
   rewind_preview: handleRewindPreview,
+  rewind_restored: handleRewindRestored,
+  rewind_snapshot_available: handleRewindSnapshotAvailable,
   rollback_complete: handleRollbackComplete,
   secrets_status: handleSecretsStatus,
   service_list: handleServiceList,

@@ -27,6 +27,12 @@ export interface RescueState {
   startedAt?: number;
 }
 
+export interface RewindRecovery {
+  sessionId: string;
+  action: "chat" | "code" | "both" | "fork";
+  expiresAt: number;
+}
+
 interface SessionState {
   sessionId: string | undefined;
   messages: ChatMessage[];
@@ -39,6 +45,7 @@ interface SessionState {
   activeRunnerSessions: Set<string>;
   queuedMessages: { text: string; position: number }[];
   rewindPreviews: Record<string, WsRewindPreview>;
+  rewindRecoveries: Record<string, RewindRecovery>;
   /** WS message to auto-send when the next per-session WS connection opens (e.g. new session from home). */
   pendingWsMessage: Record<string, unknown> | undefined;
   /** Text to prefill into the message input (consumed and cleared by MessageInput). */
@@ -121,6 +128,7 @@ interface SessionState {
   ) => void;
   setRewindPreview: (preview: WsRewindPreview) => void;
   clearRewindPreviews: () => void;
+  setRewindRecovery: (recovery: RewindRecovery | null) => void;
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
   /**
    * Fill the composer textarea with text the user is expected to edit before
@@ -191,6 +199,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [] as SessionInfo[],
   authUrl: null,
   activeRunnerSessions: new Set<string>(),
+  rewindRecoveries: {} as Record<string, RewindRecovery>,
   turnUsage: initialTurnUsage,
   allSessions: [] as SessionInfo[],
   allSessionsDialogOpen: false,
@@ -264,6 +273,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     })),
 
   clearRewindPreviews: () => set({ rewindPreviews: {} }),
+
+  setRewindRecovery: (recovery) =>
+    set((state) => {
+      if (!recovery) {
+        const sid = state.sessionId;
+        if (!sid || !(sid in state.rewindRecoveries)) return state;
+        const { [sid]: _omit, ...rest } = state.rewindRecoveries;
+        void _omit;
+        return { rewindRecoveries: rest };
+      }
+      return {
+        rewindRecoveries: {
+          ...state.rewindRecoveries,
+          [recovery.sessionId]: recovery,
+        },
+      };
+    }),
 
   setPendingWsMessage: (pendingWsMessage) => set({ pendingWsMessage }),
 

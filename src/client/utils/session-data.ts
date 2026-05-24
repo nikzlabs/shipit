@@ -47,6 +47,11 @@ interface HistoryResponse {
   sessionUsage?: SessionUsage | null;
   cumulativeInputTokens?: number;
   cumulativeOutputTokens?: number;
+  rewindSnapshot?: {
+    sessionId: string;
+    action: "chat" | "code" | "both" | "fork";
+    expiresAt: number;
+  } | null;
 }
 
 interface BootstrapResponse {
@@ -94,6 +99,9 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     session.setActivity(undefined);
   }
   session.setHistoryLoaded(true);
+  if (data.rewindSnapshot) {
+    session.setRewindRecovery(data.rewindSnapshot);
+  }
   useGitStore.getState().setCommits(data.commits);
   useFileStore.getState().setTree(data.fileTree);
 
