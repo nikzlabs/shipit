@@ -106,6 +106,7 @@ export default function App() {
   const previousNewSessionRouteRef = useRef<string | undefined>(undefined);
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
+  const rewindRecoveries = useSessionStore((s) => s.rewindRecoveries);
   const rewindPreviews = useSessionStore((s) => s.rewindPreviews);
   const isLoading = useSessionStore((s) => s.isLoading);
   const activity = useSessionStore((s) => s.activity);
@@ -299,6 +300,17 @@ export default function App() {
     send,
     terminalRef,
   });
+
+  // eslint-disable-next-line no-restricted-syntax -- browser event bridges toast/topbar actions to the active WS sender
+  useEffect(() => {
+    const handleRestore = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      const targetSessionId = detail?.sessionId ?? useSessionStore.getState().sessionId;
+      if (targetSessionId) send({ type: "rewind_restore_request", sessionId: targetSessionId });
+    };
+    window.addEventListener("shipit:restore-rewind", handleRestore);
+    return () => window.removeEventListener("shipit:restore-rewind", handleRestore);
+  }, [send]);
 
   // Initialize sessionId from URL on mount
   // eslint-disable-next-line no-restricted-syntax -- existing usage
@@ -961,6 +973,8 @@ export default function App() {
   );
 
   // ── Chat panel ──
+  const currentRewindRecovery = sessionId ? rewindRecoveries[sessionId] : undefined;
+  const recoverRewindAvailable = Boolean(currentRewindRecovery && currentRewindRecovery.expiresAt > Date.now());
   const chatPanel = (
     <>
       {searchOpen && <SearchBar query={search.query} onQueryChange={search.setQuery} matches={search.matches} currentMatchIndex={search.currentMatchIndex} onNext={search.goToNext} onPrev={search.goToPrev} onClose={() => { setSearchOpen(false); search.clear(); }} />}
@@ -977,6 +991,8 @@ export default function App() {
             void useSessionStore.getState().archiveSession(currentSession.id);
             if (repoUrl) void handleNewSessionForRepo(repoUrl);
           }}
+          recoverRewindAvailable={recoverRewindAvailable}
+          onRecoverRewind={() => window.dispatchEvent(new CustomEvent("shipit:restore-rewind", { detail: { sessionId: currentSession.id } }))}
         />
       )}
       {showHomeScreen ? (

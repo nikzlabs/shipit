@@ -274,6 +274,23 @@ const MIGRATIONS: Migration[] = [
     db.exec("ALTER TABLE sessions ADD COLUMN provider_route_id TEXT");
     db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_provider_route ON sessions(provider_route_kind, provider_route_id)");
   },
+  // Migration 19: rewind undo snapshots (docs/144 Landing 2). Rows are small,
+  // short-lived restore records used by the undo toast and topbar recovery
+  // entry. Expiry is enforced lazily by the ChatHistoryManager helpers.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS rewind_snapshots (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_rewind_snapshots_session_expires
+        ON rewind_snapshots(session_id, expires_at_ms);
+    `);
+  },
 ];
 
 export class DatabaseManager {
@@ -314,6 +331,7 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM secrets").run();
       this.db.prepare("DELETE FROM file_review_comments").run();
       this.db.prepare("DELETE FROM file_reviews").run();
+      this.db.prepare("DELETE FROM rewind_snapshots").run();
     })();
   }
 

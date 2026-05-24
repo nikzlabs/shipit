@@ -1,5 +1,30 @@
+import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent } from "./session-runner.js";
+
+export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
+
+export type RewindSnapshotPayload =
+  | { action: "chat"; messages: PersistedMessage[] }
+  | { action: "code"; headHash: string; flippedMessageIds: number[] }
+  | { action: "both"; messages: PersistedMessage[]; headHash: string }
+  | { action: "fork"; childSessionId: string; breadcrumbMessageId: number };
+
+export interface RewindSnapshotInfo {
+  id: string;
+  sessionId: string;
+  action: RewindSnapshotAction;
+  expiresAt: number;
+}
+
+interface RewindSnapshotRow {
+  id: string;
+  session_id: string;
+  action: RewindSnapshotAction;
+  payload_json: string;
+  created_at_ms: number;
+  expires_at_ms: number;
+}
 
 /**
  * A single persisted chat message.
@@ -108,6 +133,7 @@ export class ChatHistoryManager {
   private stmtDeleteBySession;
   private stmtDeleteInProgress;
   private stmtFinalizeInProgress;
+  private stmtDeleteExpiredSnapshots;
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
@@ -118,6 +144,7 @@ export class ChatHistoryManager {
     this.stmtDeleteBySession = this.db.prepare("DELETE FROM messages WHERE session_id = ?");
     this.stmtDeleteInProgress = this.db.prepare("DELETE FROM messages WHERE session_id = ? AND in_progress = 1");
     this.stmtFinalizeInProgress = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE session_id = ? AND in_progress = 1");
+    this.stmtDeleteExpiredSnapshots = this.db.prepare("DELETE FROM rewind_snapshots WHERE expires_at_ms <= ?");
   }
 
   private toRow(sessionId: string, msg: PersistedMessage) {
@@ -258,6 +285,45 @@ export class ChatHistoryManager {
              code_rollback_hash = NULL
        WHERE session_id = ? AND id IN (${placeholders})
     `).run(sessionId, ...messageIds);
+  }
+
+  deleteMessageById(sessionId: string, messageId: number): boolean {
+    const result = this.db.prepare("DELETE FROM messages WHERE session_id = ? AND id = ?").run(sessionId, messageId);
+    return result.changes > 0;
+  }
+
+  createRewindSnapshot(sessionId: string, payload: RewindSnapshotPayload, now = Date.now()): RewindSnapshotInfo {
+    const expiresAt = now + 5 * 60 * 1000;
+    const id = crypto.randomUUID();
+    this.db.prepare(`
+      INSERT INTO rewind_snapshots (id, session_id, action, payload_json, created_at_ms, expires_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, sessionId, payload.action, JSON.stringify(payload), now, expiresAt);
+    return { id, sessionId, action: payload.action, expiresAt };
+  }
+
+  latestRewindSnapshot(sessionId: string, now = Date.now()): RewindSnapshotInfo | null {
+    this.stmtDeleteExpiredSnapshots.run(now);
+    const row = this.db.prepare(`
+      SELECT * FROM rewind_snapshots
+       WHERE session_id = ? AND expires_at_ms > ?
+       ORDER BY created_at_ms DESC
+       LIMIT 1
+    `).get(sessionId, now) as RewindSnapshotRow | undefined;
+    return row ? { id: row.id, sessionId: row.session_id, action: row.action, expiresAt: row.expires_at_ms } : null;
+  }
+
+  consumeRewindSnapshot(sessionId: string, snapshotId?: string, now = Date.now()): RewindSnapshotPayload | null {
+    this.stmtDeleteExpiredSnapshots.run(now);
+    const row = this.db.prepare(`
+      SELECT * FROM rewind_snapshots
+       WHERE session_id = ? AND expires_at_ms > ? ${snapshotId ? "AND id = ?" : ""}
+       ORDER BY created_at_ms DESC
+       LIMIT 1
+    `).get(...(snapshotId ? [sessionId, now, snapshotId] : [sessionId, now])) as RewindSnapshotRow | undefined;
+    if (!row) return null;
+    this.db.prepare("DELETE FROM rewind_snapshots WHERE id = ?").run(row.id);
+    return JSON.parse(row.payload_json) as RewindSnapshotPayload;
   }
 
   /**
