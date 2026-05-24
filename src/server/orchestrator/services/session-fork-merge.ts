@@ -17,8 +17,8 @@ import { ServiceError } from "./types.js";
 /** Fork a session into a new clone with its own branch. */
 export async function forkSession(
   sessionManager: SessionManager,
-  createRepoGit: (dir: string) => RepoGit,
-  getBareCacheDir: (repoUrl: string) => string,
+  _createRepoGit: (dir: string) => RepoGit,
+  _getBareCacheDir: (repoUrl: string) => string,
   sessionsRoot: string,
   githubAuthManager: { authenticated: boolean; configureGitCredentials: (dir: string) => void },
   _threadManager: { init: (sessionId: string) => void },
@@ -40,30 +40,39 @@ export async function forkSession(
   const newSessionDir = path.join(sessionsRoot, newSessionId);
   const newWorkspaceDir = path.join(newSessionDir, "workspace");
 
+  // Clone from the active session worktree (not the bare cache). The chat
+  // history's `startPoint` SHA is from an auto-commit in this session — it
+  // is guaranteed to exist here, but may be missing from the bare cache
+  // (commit not yet auto-pushed, or pruned after the PR branch was deleted).
+  // --local hardlinks objects on the same filesystem, so disk cost matches
+  // the old cache-clone path.
+  await simpleGit().raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
+  const newGit = simpleGit(newWorkspaceDir);
+  // Disable auto-gc so hardlinks aren't broken in either clone.
+  await newGit.raw(["config", "gc.auto", "0"]);
+  // Reset origin to the real remote (clone --local sets it to activeSessionDir).
   if (activeSession?.remoteUrl) {
-    // Clone from bare cache
-    const cacheDir = getBareCacheDir(activeSession.remoteUrl);
-    const cacheGit = createRepoGit(cacheDir);
-    await cacheGit.fetchCache();
-    await cacheGit.cloneFromCache(newWorkspaceDir, activeSession.remoteUrl);
-    // Checkout the branch at the specified start point
-    const branchArgs = ["checkout", "-b", trimmed];
-    if (startPoint) branchArgs.push(startPoint);
-    await simpleGit(newWorkspaceDir).raw(branchArgs);
-  } else {
-    // Local repo — clone directly from the active session
-    await simpleGit().raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
-    const branchArgs = ["checkout", "-b", trimmed];
-    if (startPoint) branchArgs.push(startPoint);
-    await simpleGit(newWorkspaceDir).raw(branchArgs);
-    // Disable auto-gc
-    await simpleGit(newWorkspaceDir).raw(["config", "gc.auto", "0"]);
+    await newGit.raw(["remote", "set-url", "origin", activeSession.remoteUrl]);
   }
-
-  // Configure GitHub credentials
   if (githubAuthManager.authenticated) {
     githubAuthManager.configureGitCredentials(newWorkspaceDir);
   }
+  // Refresh remote-tracking refs against the real upstream. After clone
+  // --local, refs/remotes/origin/* mirror the active session's local
+  // branches, so PR-diff bases (e.g. origin/main) start out pointing at
+  // the active session's local view rather than real origin — that's
+  // what produces the "+1657 -94" diff inflation on a fresh fork until
+  // the next auto-push fetch normalizes them.
+  if (activeSession?.remoteUrl) {
+    try {
+      await newGit.raw(["fetch", "origin", "--prune"]);
+    } catch (err) {
+      console.warn("[git] fork: fetch origin failed (non-fatal):", String(err));
+    }
+  }
+  const branchArgs = ["checkout", "-b", trimmed];
+  if (startPoint) branchArgs.push(startPoint);
+  await newGit.raw(branchArgs);
 
   // Track in session manager
   const title = `${activeSession?.title ?? "Session"} (${trimmed})`;
