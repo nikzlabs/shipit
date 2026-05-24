@@ -73,6 +73,8 @@ interface BootstrapResponse {
   };
   /** Orchestrator runtime mode (feature 118). Defaults to "containerized". */
   runtimeMode?: RuntimeMode;
+  /** Preview subdomain policy from the orchestrator runtime environment. */
+  previewSubdomains?: "auto" | "always";
 }
 
 /**
@@ -221,5 +223,6 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.prCommentSync !== undefined) useSettingsStore.getState().setPrCommentSync(data.settings.prCommentSync);
   if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
+  useUiStore.getState().setPreviewSubdomains(data.previewSubdomains ?? "auto");
   useUiStore.getState().setBootstrapLoaded(true);
 }

@@ -67,6 +67,25 @@ cd /opt/shipit && git pull origin main
 bash deployment/vps/deploy.sh
 ```
 
+## Optional: Tailscale private access
+
+You can add tailnet-only access without changing the Cloudflare tunnel path:
+
+```bash
+ssh root@<server-ip>
+bash /opt/shipit/deployment/vps/tailscale.sh
+```
+
+The script installs Tailscale if needed, authenticates the VPS, sets the node hostname to `shipit` by default, and runs Tailscale Serve as a private reverse proxy to ShipIt's localhost listener. Cloudflare continues to serve `https://shipit.example.com` and `*.shipit.example.com`.
+
+Production ShipIt is configured with `SHIPIT_PREVIEW_SUBDOMAINS=always`, so Tailscale access also expects wildcard preview DNS for the hostname you open in the browser. MagicDNS alone gives you `shipit`, but not `*.shipit`. For robust previews over Tailscale, add a private DNS wildcard such as `shipit-tail.example.com` and `*.shipit-tail.example.com` pointing at the VPS's Tailscale IP, then open ShipIt through that hostname.
+
+For unattended setup, provide an auth key:
+
+```bash
+SHIPIT_TAILSCALE_AUTHKEY=tskey-auth-... bash /opt/shipit/deployment/vps/tailscale.sh
+```
+
 ## Troubleshooting
 
 **Check orchestrator logs:**

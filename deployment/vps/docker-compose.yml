@@ -36,6 +36,11 @@ services:
       # so existing sessions survive orchestrator container replacement.
       - SHIPIT_ORCHESTRATOR_HOST=shipit
       - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
+      # Production access paths should use subdomain previews. Cloudflare
+      # already routes *.$DOMAIN through the tunnel; Tailscale/private DNS
+      # needs an equivalent wildcard that resolves preview hostnames like
+      # {sessionId}--{port}.shipit to this VPS.
+      - SHIPIT_PREVIEW_SUBDOMAINS=always
       # Disk janitor — see src/server/orchestrator/disk-janitor.ts. Runs
       # once at orchestrator startup (no periodic timer). archiveSession
       # already drops the workspace at archive time; the 30-day workspace
