@@ -5,7 +5,7 @@ import type { BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { DocEntry, DocPriority, DocStatus } from "../../server/shared/types.js";
-import { hasTrackedSibling, isTracked } from "../utils/doc-paths.js";
+import { hasTrackedPlanSibling, hasTrackedSibling, isTracked } from "../utils/doc-paths.js";
 
 export interface DocsViewerProps {
   files: DocEntry[];
@@ -267,6 +267,7 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
       files.filter(
         (f) =>
           wasModifiedInSession(f, sessionStartedAt) &&
+          !hasTrackedPlanSibling(f.path, files) &&
           (isTracked(f) || !hasTrackedSibling(f.path, files)),
       ),
     [files, sessionStartedAt],
@@ -284,14 +285,19 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
     [files, modifiedPaths],
   );
 
-  const tracked = remaining.filter((f) => isTracked(f));
+  const tracked = remaining.filter(
+    (f) => isTracked(f) && !hasTrackedPlanSibling(f.path, files),
+  );
   // Hide untracked siblings (e.g. `checklist.md`) when a tracked plan exists
   // in the same directory — they're now reachable via the modal's sibling
   // tabs, so listing them separately is redundant noise. We check against the
   // full `files` list so a tracked plan that was pulled into the "Modified"
   // group above still suppresses its untracked sibling here.
   const untracked = remaining.filter(
-    (f) => !isTracked(f) && !hasTrackedSibling(f.path, files),
+    (f) =>
+      !isTracked(f) &&
+      !hasTrackedSibling(f.path, files) &&
+      !hasTrackedPlanSibling(f.path, files),
   );
   const hasTracked = tracked.length > 0;
   const hasUntracked = untracked.length > 0;

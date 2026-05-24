@@ -363,6 +363,33 @@ describe("DocsViewer", () => {
       expect(screen.queryByText(/Other \(/)).not.toBeInTheDocument();
     });
 
+    it("hides a tracked checklist when a tracked plan exists in the same directory", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001-exp/plan.md",
+          title: "Experiment",
+          status: "in-progress",
+          description: "Primary plan summary.",
+          checklist: { total: 4, done: 2 },
+        }),
+        makeDoc({
+          path: "docs/001-exp/checklist.md",
+          title: "Experiment",
+          status: "in-progress",
+          checklist: { total: 4, done: 2 },
+          modifiedAt: "2026-01-03T00:00:00.000Z",
+        }),
+      ];
+      render(<DocsViewer {...props} sessionStartedAt="2026-01-01T00:00:00.000Z" />);
+
+      // The checklist has its own status frontmatter, but the plan is still
+      // the only primary list row for the feature.
+      expect(screen.getAllByText("Experiment")).toHaveLength(1);
+      expect(screen.getByText("Primary plan summary.")).toBeInTheDocument();
+      expect(screen.getByText("2/4")).toBeInTheDocument();
+    });
+
     it("sorts custom-status docs between paused and archived (done + rejected)", () => {
       const props = defaultProps();
       props.files = [
