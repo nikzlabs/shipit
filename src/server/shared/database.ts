@@ -266,6 +266,14 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE messages ADD COLUMN code_rollback_hash TEXT;
     `);
   },
+  // Migration 18: provider-account routing (docs/150). Sessions persist both
+  // the route kind and route id so account rows are never confused with
+  // reserved env/API-key auth routes.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN provider_route_kind TEXT");
+    db.exec("ALTER TABLE sessions ADD COLUMN provider_route_id TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_provider_route ON sessions(provider_route_kind, provider_route_id)");
+  },
 ];
 
 export class DatabaseManager {

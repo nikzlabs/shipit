@@ -1,5 +1,32 @@
 import type { AgentId } from "./agent-types.js";
 
+export type ProviderRouteKind = "account" | "reserved";
+
+export type ProviderAccountStatus = "ready" | "authenticating" | "auth_failed" | "unavailable";
+
+export interface ProviderAccountCapabilities {
+  models?: string[];
+  supportsImages?: boolean;
+  supportsReview?: boolean;
+  supportedPermissionModes?: string[];
+  source: "provider_profile" | "agent_init" | "manual_default";
+  refreshedAt: number;
+}
+
+export interface ProviderAccount {
+  id: string;
+  provider: AgentId;
+  label: string;
+  isPrimary: boolean;
+  status: ProviderAccountStatus;
+  plan?: string | null;
+  capabilities?: ProviderAccountCapabilities;
+  lastUsedAt?: number;
+  exhaustedUntil?: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 // ---- Runtime mode (feature 118) ----
 
 /**
@@ -68,6 +95,12 @@ export interface SessionInfo {
    * credentials are deliberately absent, and `set_agent` is rejected.
    */
   agentPinned?: boolean;
+  /**
+   * docs/150 — route used for the pinned provider. Account routes refer to a
+   * stored ProviderAccount id; reserved routes are env/API-key auth paths.
+   */
+  providerRouteKind?: ProviderRouteKind;
+  providerRouteId?: string;
   /**
    * If this session was spawned by another session via `shipit session create`
    * (see docs/117-agent-spawned-sessions/), the parent's session ID. Used to

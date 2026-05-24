@@ -13,7 +13,7 @@ import { getErrorMessage } from "./validation.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import type { SessionManager } from "./sessions.js";
-import { repushAgentToken } from "./session-credentials.js";
+import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import type { RepoGit } from "./repo-git.js";
 import type { AuthManager } from "./auth.js";
 import type { CodexAuthManager, CodexAuthFailedEvent, CodexAuthPendingEvent } from "./codex-auth.js";
@@ -726,12 +726,16 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
    * overwrites sessions that already hold the agent's token (no cross-agent
    * leak, no-op in local mode where there are no per-session dirs).
    */
-  const repushTokenToPinnedSessions = (agentId: AgentId): void => {
+  const repushTokenToPinnedSessions = (agentId: AgentId, accountId?: string): void => {
     let healed = 0;
     for (const session of sessionManager.list()) {
       if (!session.agentPinned || session.agentId !== agentId) continue;
+      if (accountId && (session.providerRouteKind !== "account" || session.providerRouteId !== accountId)) continue;
       try {
-        if (repushAgentToken(credentialsDir, session.id, agentId)) healed++;
+        const wrote = accountId
+          ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId)
+          : repushAgentToken(credentialsDir, session.id, agentId);
+        if (wrote) healed++;
       } catch (err) {
         console.error(`[auth] A3 token re-push failed for session ${session.id}:`, err);
       }

@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: high
 description: Allow multiple subscription accounts for the same agent provider and automatically fail over when the active subscription is exhausted.
 ---
@@ -1316,6 +1316,23 @@ the source of truth.
 - Let users choose the primary account per provider.
 - New turns use the primary account.
 - No automatic failover yet.
+
+Implementation started:
+
+- `CredentialStore` now persists provider-account rows and
+  `ProviderAccountManager` owns default-account migration, primary account
+  lookup, coarse `authConfigured` checks, and reserved-route selection for the
+  current singleton/env paths.
+- Existing root `.claude` / `.codex` credentials migrate into
+  `provider-accounts/<provider>/<default-account>/...` and the legacy root path
+  remains an alias so current auth managers keep working while call sites move
+  to the manager.
+- Sessions persist `provider_route_kind` and `provider_route_id`, and the shared
+  `prepareSessionAgentEnvironment` / `finalizeSessionAgentEnvironment` path
+  provisions and syncs account-qualified credentials when the selected route is
+  a stored account.
+- Account-qualified token sync helpers compare session tokens only against the
+  matching account source; reserved `claude-env-oauth` skips file token sync.
 
 ### Phase 2 — Inline quota per account
 

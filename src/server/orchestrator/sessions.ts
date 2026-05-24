@@ -1,4 +1,4 @@
-import type { SessionInfo } from "../shared/types.js";
+import type { ProviderRouteKind, SessionInfo } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentId } from "../shared/types/agent-types.js";
@@ -22,6 +22,8 @@ interface SessionRow {
   agent_id: string | null;
   /** docs/138 — set once the session has taken its first turn (agent pinned). */
   agent_pinned: number;
+  provider_route_kind: string | null;
+  provider_route_id: string | null;
   pr_status: string | null;
   /** docs/117 — set when the session was spawned by another via `shipit session create`. */
   parent_session_id: string | null;
@@ -55,6 +57,10 @@ export class SessionManager {
     if (row.model) info.model = row.model;
     if (row.agent_id === "claude" || row.agent_id === "codex") info.agentId = row.agent_id;
     if (row.agent_pinned) info.agentPinned = true;
+    if ((row.provider_route_kind === "account" || row.provider_route_kind === "reserved") && row.provider_route_id) {
+      info.providerRouteKind = row.provider_route_kind;
+      info.providerRouteId = row.provider_route_id;
+    }
     if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
     return info;
@@ -284,6 +290,12 @@ export class SessionManager {
    */
   setAgentPinned(id: string): void {
     this.db.prepare("UPDATE sessions SET agent_pinned = 1 WHERE id = ?").run(id);
+  }
+
+  setProviderRoute(id: string, kind: ProviderRouteKind, routeId: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET provider_route_kind = ?, provider_route_id = ? WHERE id = ?",
+    ).run(kind, routeId, id);
   }
 
   /**

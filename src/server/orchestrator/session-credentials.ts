@@ -27,6 +27,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
 import { writeContainerGitConfig } from "./git-config.js";
+import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 
 /** Subdirectory under the credentials root that holds per-session subtrees. */
 export const SESSION_CREDENTIALS_SUBDIR = "sessions";
@@ -131,6 +132,31 @@ export function provisionAgentCredentials(
   sessionId: string,
   agentId: AgentId,
 ): void {
+  provisionAgentCredentialsFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot, false);
+}
+
+export function provisionProviderAccountCredentials(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  accountId: string,
+): void {
+  provisionAgentCredentialsFromRoot(
+    credentialsRoot,
+    sessionId,
+    agentId,
+    providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+    true,
+  );
+}
+
+function provisionAgentCredentialsFromRoot(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  sourceRoot: string,
+  replaceExistingProviderSubtree: boolean,
+): void {
   const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
   fs.mkdirSync(dir, { recursive: true });
   // Refresh shared config first (token may have been set after the warm
@@ -142,7 +168,10 @@ export function provisionAgentCredentials(
   // warm container's scaffold ran (e.g. GitHub connected mid-session).
   writeSessionGitConfig(credentialsRoot, sessionId);
   for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
-    copyCredentialPath(credentialsRoot, dir, rel);
+    if (replaceExistingProviderSubtree) {
+      fs.rmSync(path.join(dir, rel), { recursive: true, force: true });
+    }
+    copyCredentialPath(sourceRoot, dir, rel);
   }
 }
 
@@ -281,12 +310,35 @@ const TOKEN_FRESHNESS: Partial<Record<AgentId, (file: string) => number | null>>
  * No-op for agents without a registered token file (e.g. Codex). (docs/142 A)
  */
 export function syncAgentTokenIn(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+  syncAgentTokenInFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot);
+}
+
+export function syncProviderAccountTokenIn(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  accountId: string,
+): void {
+  syncAgentTokenInFromRoot(
+    credentialsRoot,
+    sessionId,
+    agentId,
+    providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+  );
+}
+
+function syncAgentTokenInFromRoot(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  sourceRoot: string,
+): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
   const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   for (const rel of files) {
-    const src = path.join(credentialsRoot, rel);
+    const src = path.join(sourceRoot, rel);
     if (!fs.existsSync(src)) continue;
     const dst = path.join(sessionDir, rel);
     // Expiry guard (mirrors syncAgentTokenBack): only pull when the source is
@@ -321,12 +373,35 @@ export function syncAgentTokenIn(credentialsRoot: string, sessionId: string, age
  * file was written (the session was an active holder of this agent's token).
  */
 export function repushAgentToken(credentialsRoot: string, sessionId: string, agentId: AgentId): boolean {
+  return repushAgentTokenFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot);
+}
+
+export function repushProviderAccountToken(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  accountId: string,
+): boolean {
+  return repushAgentTokenFromRoot(
+    credentialsRoot,
+    sessionId,
+    agentId,
+    providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+  );
+}
+
+function repushAgentTokenFromRoot(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  sourceRoot: string,
+): boolean {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return false;
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   let wrote = false;
   for (const rel of files) {
-    const src = path.join(credentialsRoot, rel);
+    const src = path.join(sourceRoot, rel);
     if (!fs.existsSync(src)) continue;
     const dst = path.join(sessionDir, rel);
     if (!fs.existsSync(dst)) continue; // don't seed creds into a non-holder
@@ -345,6 +420,29 @@ export function repushAgentToken(credentialsRoot: string, sessionId: string, age
  * token. No-op for agents without a registered token file. (docs/142 A)
  */
 export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+  syncAgentTokenBackToRoot(credentialsRoot, sessionId, agentId, credentialsRoot);
+}
+
+export function syncProviderAccountTokenBack(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  accountId: string,
+): void {
+  syncAgentTokenBackToRoot(
+    credentialsRoot,
+    sessionId,
+    agentId,
+    providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+  );
+}
+
+function syncAgentTokenBackToRoot(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  sourceRoot: string,
+): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
   const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
@@ -354,7 +452,7 @@ export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, a
     if (!fs.existsSync(sessionFile)) continue;
     const sessionExp = freshness(sessionFile);
     if (sessionExp === null) continue; // can't prove it's newer — don't risk a regression
-    const sourceFile = path.join(credentialsRoot, rel);
+    const sourceFile = path.join(sourceRoot, rel);
     const sourceExp = fs.existsSync(sourceFile) ? freshness(sourceFile) : null;
     if (sourceExp !== null && sessionExp <= sourceExp) continue; // source already as fresh or fresher
     atomicCopyFile(sessionFile, sourceFile);

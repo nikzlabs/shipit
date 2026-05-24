@@ -7,6 +7,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../auth.js";
 import type { CredentialStore } from "../credential-store.js";
+import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -99,6 +100,7 @@ export interface AppCtx {
   authManager: AuthManager;
   agentRegistry: AgentRegistry;
   credentialStore: CredentialStore;
+  providerAccountManager: ProviderAccountManager;
 
   // Repo management
   repoStore: RepoStore;
