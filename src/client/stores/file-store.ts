@@ -1,9 +1,17 @@
 import { create } from "zustand";
 import type { FileTreeNode } from "../components/FileTree.js";
-import type { DocEntry, SkillInfo, UploadedFile, UploadItem } from "../../server/shared/types.js";
+import type { AgentReview, DocEntry, SkillInfo, UploadedFile, UploadItem } from "../../server/shared/types.js";
 import { detectFilePreviewType, type FilePreviewType } from "../utils/file-preview-type.js";
 import type { FilePreviewAction } from "../components/FilePreviewModal.js";
 import { useSessionStore } from "./session-store.js";
+
+/**
+ * docs/151 — file-preview-modal display mode. `live` is the default surface
+ * (live file, draft comments, send affordance). `agent-review` opens an
+ * immutable snapshot of one agent-authored review: snapshot content, that
+ * review's comments only, no draft footer, no Send button.
+ */
+export type FilePreviewMode = "live" | "agent-review";
 
 // localStorage-backed set of upload paths the user has explicitly deleted.
 // Prevents hydrateUploads from resurrecting them if the server DELETE fails.
@@ -77,6 +85,13 @@ interface FileState {
   previewType: FilePreviewType | null;
   previewLoading: boolean;
   previewActions: FilePreviewAction[];
+  /**
+   * docs/151 — modal display mode. `live` for the normal draft/send surface;
+   * `agent-review` for an immutable snapshot of one agent-authored review.
+   */
+  previewMode: FilePreviewMode;
+  /** The agent review being viewed when `previewMode === "agent-review"`. */
+  previewAgentReview: AgentReview | null;
 
   setTree: (tree: FileTreeNode[]) => void;
   setViewingFile: (path: string | null) => void;
@@ -99,6 +114,13 @@ interface FileState {
   // Unified preview actions
   openPreview: (sessionId: string, filePath: string, opts?: { actions?: FilePreviewAction[] }) => Promise<void>;
   openPreviewWithContent: (filePath: string, content: string, type: FilePreviewType, actions?: FilePreviewAction[]) => void;
+  /**
+   * docs/151 — open the modal in agent-review snapshot mode. Fetches the
+   * snapshot + comments via the agent-reviews endpoint and stamps the result
+   * into `previewAgentReview`. The modal renders from `snapshotContent`, not
+   * the live file.
+   */
+  openAgentReview: (sessionId: string, reviewId: string) => Promise<void>;
   closePreview: () => void;
 
   fetchTree: (sessionId: string) => Promise<void>;
@@ -127,6 +149,8 @@ const initialState = {
   previewType: null as FilePreviewType | null,
   previewLoading: false,
   previewActions: [] as FilePreviewAction[],
+  previewMode: "live" as FilePreviewMode,
+  previewAgentReview: null as AgentReview | null,
 };
 
 export const useFileStore = create<FileState>((set) => ({
@@ -262,6 +286,8 @@ export const useFileStore = create<FileState>((set) => ({
       previewType: detectedType,
       previewLoading: true,
       previewActions: opts?.actions ?? [],
+      previewMode: "live",
+      previewAgentReview: null,
     });
 
     // Normalize path for URL construction (strip leading slash from upload paths)
@@ -303,7 +329,42 @@ export const useFileStore = create<FileState>((set) => ({
       previewType: type,
       previewLoading: false,
       previewActions: actions ?? [],
+      previewMode: "live",
+      previewAgentReview: null,
     });
+  },
+
+  openAgentReview: async (sessionId, reviewId) => {
+    set({
+      previewFile: null,
+      previewContent: null,
+      previewType: null,
+      previewLoading: true,
+      previewActions: [],
+      previewMode: "agent-review",
+      previewAgentReview: null,
+    });
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/agent-reviews/${reviewId}`);
+      if (!res.ok) throw new Error(`Failed to fetch agent review: ${res.status}`);
+      const review = (await res.json()) as AgentReview;
+      const type: FilePreviewType =
+        review.fileType === "markdown" ? "markdown" : "code";
+      set({
+        previewFile: review.filePath,
+        previewContent: review.snapshotContent,
+        previewType: type,
+        previewLoading: false,
+        previewAgentReview: review,
+      });
+    } catch {
+      set({
+        previewLoading: false,
+        previewContent: null,
+        previewMode: "live",
+        previewAgentReview: null,
+      });
+    }
   },
 
   closePreview: () => {
@@ -313,6 +374,8 @@ export const useFileStore = create<FileState>((set) => ({
       previewType: null,
       previewLoading: false,
       previewActions: [],
+      previewMode: "live",
+      previewAgentReview: null,
     });
   },
 

@@ -312,6 +312,60 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_marketplaces_agent ON marketplaces(agent_id);
     `);
   },
+  // Migration 21: agent review tables (docs/151). Splits AI-authored review
+  // submissions out of the human-draft `file_reviews` bucket into immutable
+  // chat-history-anchored rows that own a snapshot of the file at review
+  // time. Anchors are relative to `snapshot_content`, not the live file, so
+  // pins stay aligned with what the reviewer saw.
+  //
+  // Also folds in the cleanup sweep: drops every `source = "ai"` row that
+  // still lives in a draft `file_review`, plus any draft whose comments were
+  // wholly AI-authored (and is thus left empty by the sweep). Sent reviews
+  // and their AI rows are preserved — the user explicitly clicked Send on
+  // those, so the history record is meaningful. The sweep is idempotent:
+  // re-running it after Migration 21 is a no-op because new AI submissions
+  // land in `agent_reviews` instead of `file_review_comments`.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_reviews (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        file_type TEXT NOT NULL,
+        snapshot_content TEXT NOT NULL,
+        snapshot_hash TEXT NOT NULL,
+        summary TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_reviews_session_file
+        ON agent_reviews(session_id, file_path);
+
+      CREATE TABLE IF NOT EXISTS agent_review_comments (
+        id TEXT PRIMARY KEY,
+        agent_review_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        line INTEGER,
+        quoted_text TEXT,
+        context_before TEXT,
+        context_after TEXT,
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (agent_review_id) REFERENCES agent_reviews(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_review_comments_review
+        ON agent_review_comments(agent_review_id);
+
+      DELETE FROM file_review_comments
+       WHERE source = 'ai'
+         AND review_id IN (
+           SELECT id FROM file_reviews WHERE status = 'draft'
+         );
+
+      DELETE FROM file_reviews
+       WHERE status = 'draft'
+         AND id NOT IN (SELECT review_id FROM file_review_comments);
+    `);
+  },
 ];
 
 export class DatabaseManager {
@@ -352,6 +406,8 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM secrets").run();
       this.db.prepare("DELETE FROM file_review_comments").run();
       this.db.prepare("DELETE FROM file_reviews").run();
+      this.db.prepare("DELETE FROM agent_review_comments").run();
+      this.db.prepare("DELETE FROM agent_reviews").run();
       this.db.prepare("DELETE FROM rewind_snapshots").run();
     })();
   }

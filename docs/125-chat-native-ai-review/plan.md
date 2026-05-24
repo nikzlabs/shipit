@@ -6,6 +6,19 @@ description: Replace the out-of-band AI review endpoint with a chat-native flow 
 
 # 125 — Chat-native AI Review
 
+> **Status note (docs/151 supersedes the AI-comment storage path).** The
+> chat-native review *flow* described here is still live — the same
+> `submit_review_comments` MCP tool, the same `send_review_message` handler,
+> the same allow-list lifecycle. What changed in docs/151 is what the tool
+> persists and how the parent agent receives the findings: AI submissions now
+> create an immutable `agent_reviews` row (with a snapshot of the file at
+> review time) instead of writing into the human `file_reviews` draft bucket,
+> and the tool response carries a structured rendering the subagent is
+> instructed to echo verbatim so the parent receives the findings via the
+> Task tool result. The orchestrator broadcasts `agent_review_added` (not
+> `review_updated`) to surface the inline chat card. See docs/151 for the
+> rationale and migration sweep.
+>
 > **Status note (all phases landed).** Phase 3 removed the out-of-band
 > `/ai-review` route, `generateAiReview`, and `AI_REVIEW_PROMPT_TEMPLATE`;
 > the chat-native MCP flow is now the only path to AI review. The

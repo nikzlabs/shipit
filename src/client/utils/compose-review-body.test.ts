@@ -70,6 +70,24 @@ describe("composeReviewMessage", () => {
     expect(body).not.toContain("ai prior");
   });
 
+  // docs/151 — AI submissions no longer land in the human draft bucket, so the
+  // embed defensively filters out any AI-source draft rows that pre-date the
+  // sweep. Without this filter a stuck pre-migration draft would still
+  // re-embed agent text into the next review.
+  it("drops AI-source draft comments from the embed (docs/151)", () => {
+    const draft = review({
+      comments: [selection("h1", "human note"), selection("a1", "ai prior", "ai")],
+    });
+    const body = composeReviewMessage("plan.md", draft, []);
+    expect(body).toContain("human note");
+    expect(body).not.toContain("ai prior");
+  });
+
+  it("instructs the subagent to echo the tool response verbatim (docs/151)", () => {
+    const body = composeReviewMessage("plan.md", null, []);
+    expect(body).toContain("return the tool result verbatim");
+  });
+
   it("truncates long comments and notes when the cap drops some", () => {
     const many = Array.from({ length: 25 }, (_, i) => selection(`c${i}`, `note ${i}`));
     const draft = review({ comments: many });

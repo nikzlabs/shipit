@@ -67,6 +67,12 @@ export function createCommentWidgetManager(
     onEditComment: (commentId: string, text: string) => void;
     onDeleteComment: (commentId: string) => void;
     side?: "modified";
+    /**
+     * docs/151 — when true, suppresses the glyph-margin click that opens an
+     * add-comment input, and the edit/delete actions on existing comments.
+     * Used by `FilePreviewModal` in agent-review snapshot mode.
+     */
+    readOnly?: boolean;
   },
 ): CommentWidgetManager {
   // Resolve the actual code editor instance
@@ -226,7 +232,7 @@ export function createCommentWidgetManager(
       options.onDeleteComment(comment.id);
     });
 
-    if (!isGitHub) {
+    if (!isGitHub && !options.readOnly) {
       buttons.appendChild(editBtn);
       buttons.appendChild(deleteBtn);
     }
@@ -363,6 +369,7 @@ export function createCommentWidgetManager(
   // Glyph margin click handler
   const GLYPH_MARGIN_TYPE = 2; // Monaco MouseTargetType.GUTTER_GLYPH_MARGIN
   const glyphDisposable = editor.onMouseDown((e) => {
+    if (options.readOnly) return;
     if (
       (e.target.type as number) === GLYPH_MARGIN_TYPE &&
       e.target.position
@@ -416,6 +423,7 @@ export function createCommentWidgetManager(
     },
 
     openCommentInput(line: number) {
+      if (options.readOnly) return;
       createInputZone(line);
     },
 

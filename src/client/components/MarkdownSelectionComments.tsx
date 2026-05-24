@@ -173,6 +173,12 @@ export interface MarkdownSelectionCommentsProps {
   onAddComment: (quotedText: string, contextBefore: string, contextAfter: string, text: string) => void;
   onEditComment: (commentId: string, text: string) => void;
   onDeleteComment: (commentId: string) => void;
+  /**
+   * docs/151 — when true, hides the floating add-comment button and passes
+   * no-op edit/delete callbacks so the comments render but the user can't
+   * mutate them. Used by `FilePreviewModal` in agent-review snapshot mode.
+   */
+  readOnly?: boolean;
 }
 
 function CommentInput({
@@ -247,11 +253,13 @@ function CommentCard({
   showQuote,
   onEdit,
   onDelete,
+  readOnly = false,
 }: {
   comment: SelectionCommentData;
   showQuote: boolean;
   onEdit: (commentId: string, text: string) => void;
   onDelete: (commentId: string) => void;
+  readOnly?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
 
@@ -289,22 +297,24 @@ function CommentCard({
           )}
           <p className="text-sm text-(--color-text-primary) whitespace-pre-wrap">{comment.text}</p>
         </div>
-        <div className="flex gap-1 shrink-0 opacity-0 group-hover/comment:opacity-100 transition-opacity">
-          <button
-            onClick={() => setEditing(true)}
-            className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-tertiary) hover:text-(--color-text-primary)"
-            title="Edit"
-          >
-            <PencilSimpleIcon size={ICON_SIZE.SM} />
-          </button>
-          <button
-            onClick={() => onDelete(comment.id)}
-            className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-tertiary) hover:text-(--color-error)"
-            title="Delete"
-          >
-            <TrashIcon size={ICON_SIZE.SM} />
-          </button>
-        </div>
+        {!readOnly && (
+          <div className="flex gap-1 shrink-0 opacity-0 group-hover/comment:opacity-100 transition-opacity">
+            <button
+              onClick={() => setEditing(true)}
+              className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+              title="Edit"
+            >
+              <PencilSimpleIcon size={ICON_SIZE.SM} />
+            </button>
+            <button
+              onClick={() => onDelete(comment.id)}
+              className="p-1 rounded hover:bg-(--color-bg-hover) text-(--color-text-tertiary) hover:text-(--color-error)"
+              title="Delete"
+            >
+              <TrashIcon size={ICON_SIZE.SM} />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -356,6 +366,7 @@ export function MarkdownSelectionComments({
   onAddComment,
   onEditComment,
   onDeleteComment,
+  readOnly = false,
 }: MarkdownSelectionCommentsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [snapshot, setSnapshot] = useState<SelectionSnapshot | null>(null);
@@ -542,6 +553,7 @@ export function MarkdownSelectionComments({
                 showQuote
                 onEdit={onEditComment}
                 onDelete={onDeleteComment}
+                readOnly={readOnly}
               />
             ))}
           </div>
@@ -563,6 +575,7 @@ export function MarkdownSelectionComments({
               showQuote
               onEdit={onEditComment}
               onDelete={onDeleteComment}
+              readOnly={readOnly}
             />
           ))}
         </div>
@@ -584,7 +597,7 @@ export function MarkdownSelectionComments({
         />
       )}
 
-      {snapshot && !pendingSelection && (
+      {snapshot && !pendingSelection && !readOnly && (
         <button
           ref={buttonRef}
           onMouseDown={(e) => {

@@ -3,6 +3,7 @@ import type { Handler, HandlerContext, QueuedMessageStash } from "./types.js";
 
 import { handleAgentEvent } from "./agent-event.js";
 import { handleAgentInterrupted } from "./agent-interrupted.js";
+import { handleAgentReviewAdded } from "./agent-review-added.js";
 import { handleAuthRequired } from "./auth-required.js";
 import { handleClearLogs } from "./clear-logs.js";
 import { handleCommitLinked } from "./commit-linked.js";
@@ -90,6 +91,7 @@ type MessageHandlerMap = {
 export const messageHandlers: MessageHandlerMap = {
   agent_event: handleAgentEvent,
   agent_interrupted: handleAgentInterrupted,
+  agent_review_added: handleAgentReviewAdded,
   auth_required: handleAuthRequired,
   clear_logs: handleClearLogs,
   commit_linked: handleCommitLinked,
