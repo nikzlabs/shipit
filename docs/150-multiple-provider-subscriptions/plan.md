@@ -42,15 +42,16 @@ For Codex, that is one ChatGPT/Codex account.
 Reserved auth routes are represented separately from provider-account rows but
 still need route ids for session pinning/audit. Of the three, only the env-based
 auth paths exist in code today (`OPENAI_API_KEY` per doc 119; `ANTHROPIC_API_KEY`
-and `ANTHROPIC_AUTH_TOKEN` per `auth.ts:checkAccessToken`). The explicit route
-ids and per-route preflight contract below are introduced by this doc — there is
-no `AuthManager`-style route plumbing today; the auth state is just a derived
-flag on the singleton manager. Reserved route ids:
+and `ANTHROPIC_AUTH_TOKEN` per `AuthManager.checkCredentials` / `getAccessToken`
+in `auth.ts`). The explicit route ids and per-route preflight contract below
+are introduced by this doc — there is no `AuthManager`-style route plumbing
+today; the auth state is just a derived flag on the singleton manager.
+Reserved route ids:
 
 - `codex-api-key` — run with `OPENAI_API_KEY` / OpenAI Platform API billing.
 - `claude-api-key` — run with `ANTHROPIC_API_KEY` / Anthropic Platform API
-  billing. New logical route name; previously surfaced only as the `api-key`
-  reason on `AuthManager.checkAccessToken`.
+  billing. New logical route name; previously surfaced only as the
+  `reason: "api-key"` branch returned by `AuthManager.getAccessToken`.
 - `claude-env-oauth` — run with `ANTHROPIC_AUTH_TOKEN`, used by dogfood/local
   OAuth-style env auth.
 
@@ -75,12 +76,26 @@ The reserved ids are not all the same kind of fallback:
   orchestrator process env at preflight time. This is deterministic: once the
   user adds even one stored Claude account, the router prefers that account
   and `claude-env-oauth` is never selected, regardless of whether
-  `ANTHROPIC_AUTH_TOKEN` is still set — the env var was originally meant for
-  the dogfood/local OAuth case where no stored account is possible (see doc
-  135). The reserved-route preflight contract's toggles for
-  `AGENT_TOKEN_FILES[claude]` sync therefore fire iff this selection rule
-  matches. Surfacing env-OAuth as a user-selectable Settings entry is
-  explicitly out of scope here.
+  `ANTHROPIC_AUTH_TOKEN` is still set.
+
+  **Semantic break to flag explicitly.** Today (doc 135 era), an
+  orchestrator process that booted with both `ANTHROPIC_AUTH_TOKEN` set
+  *and* a stored Claude credential at `/credentials/.claude` would use the
+  stored credential for the CLI but render the env-OAuth-style limits pill
+  from the same source. Under this doc, the Migration step turns any
+  pre-existing root `.claude` into a stored `claude-default` provider
+  account, so the env-OAuth selection rule's "no stored account" precondition
+  no longer matches — env-OAuth is now unreachable on that host. This is
+  intentional (it ends the double-source ambiguity), but it does change the
+  dogfood/local code path that doc 135 described: hosts that today rely on
+  the env-token being authoritative will silently switch to using
+  `claude-default` after migration. Operators of those hosts should clear
+  the stored credential if they specifically want env-OAuth back.
+
+  The reserved-route preflight contract's gates for the
+  `syncAgentTokenIn` / `syncAgentTokenBack` helpers therefore fire iff this
+  selection rule matches. Surfacing env-OAuth as a user-selectable Settings
+  entry is explicitly out of scope here.
 
 ## Goals
 
@@ -110,11 +125,17 @@ several others. The amendments are called out here so a reader who finds 119 or
   restriction symmetrically for Claude and Codex; doc 119's per-installation
   singleton becomes the migrated default account.
 - **Doc 135 "one pill per provider, account-wide" is extended, not replaced.**
-  Each pill still reflects account-wide subscription state, but a provider with
-  multiple authenticated accounts now renders a grouped pill (multiple sub-pills
-  or a compact roll-up) rather than collapsing many accounts into a single
-  number. The "account-wide, not focus-driven" property of doc 135 is preserved:
-  pills do not change when the user switches sessions.
+  Doc 135's original framing rested on two assumptions that this doc partially
+  undoes: (a) "exactly one pill per provider" (broken — N accounts produce N
+  sub-pills or a roll-up), and (b) "the pill represents the account-wide
+  number for that provider" (still true *per account*, but no longer "the
+  Claude pill = the Claude account's state" since there is no single Claude
+  account). The "not focus-driven" property survives: pills do not change
+  when the user switches sessions. The "account-wide" property survives at
+  the per-account-pill level. The "one pill per provider" property is
+  explicitly relaxed. Treat doc 135's prose as describing the 1-account
+  case, which remains the common case post-migration; this doc owns the
+  N-account extension.
 - **Doc 138 per-agent credential isolation is the substrate this doc extends.**
   Isolation moves from "agent" to "agent provider account": a session pinned to
   Claude account A never has Claude account B's credentials, Codex credentials,
@@ -330,6 +351,17 @@ account to bootstrap the snapshot, instead of returning
 `no_model_eligible_account`. Codex's unknown-quota fallback rule (Quota and
 exhaustion detection rule 4) is unaffected — it already selects in the
 unknown-quota case independent of this exception.
+
+The reserved route `claude-env-oauth` has no `isPrimary` notion — it is not
+a provider-account row, so the "primary vs non-primary" framing above does
+not apply. When env-OAuth is the only Claude auth available (the selection
+rule's precondition), the router selects it directly without consulting
+the first-use exception. Its capabilities snapshot still hydrates on its
+first `agent_init` as a special key on
+`SubscriptionLimitsMap.claude["claude-env-oauth"]` (per the
+`SubscriptionLimitsMap` definition above); the same conservative rule then
+gates *future* unknown-capability fallback to a stored Claude account if one
+is added later.
 
 An exhausted turn cannot use the existing in-memory message queue by itself.
 Today queued messages drain from agent completion paths; if no agent starts,
@@ -592,7 +624,16 @@ from doc 142. Compatibility goes through one path only:
   Legacy root paths are read only during the migration step itself and are not
   used afterwards. Singleton helper methods continue to exist for backward
   compatibility, but their implementations route through `ProviderAccountManager`
-  and resolve to the primary account's file — not a second copy.
+  and resolve to the primary account's file — not a second copy. Concretely,
+  this means **rewriting `AuthManager.checkCredentials` and the related
+  helpers** to ask `ProviderAccountManager.resolveCredentialDir({ provider,
+  accountId: <primary> })` for the path on every call, rather than reading
+  the module-level `CLAUDE_CONFIG_DIR` / `CODEX_CONFIG_DIR` constants. Just
+  rebinding those constants at startup is **not** a working alternative
+  here: once the primary account changes (via "make primary" in Settings),
+  any code that captured the old constant in a closure or held a reference
+  would read the wrong account's tokens. Route every read through the
+  manager so primary-change is observed on the next call.
 - **Explicitly rejected: stacked symlinks** (`/root/.claude` →
   `/credentials/.claude` → `provider-accounts/<provider>/<accountId>/.claude`).
   The session-worker image already stages `/root/.claude` →
@@ -880,7 +921,7 @@ provider-account rows:
 | --- | --- | --- | --- | --- |
 | `codex-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.codex` files instead of deleting them. | Set `OPENAI_API_KEY` for the Codex run and ensure adapter config prefers the API-key path over subscription files for this attempt. | No-op; API keys do not rotate through the Codex subscription token store. | No subscription quota. It is not ranked with subscription accounts, not used for subscription failover, and does not create delayed quota turns. Runtime API 429s surface as API-key rate/billing errors for that route. |
 | `claude-api-key` | Skip provider-account credential copy. Preserve any existing subscription `.claude` files instead of deleting them. | Set `ANTHROPIC_API_KEY` for the Claude run and ensure adapter config prefers the API-key path over OAuth files for this attempt. | No-op; API keys do not rotate through the Claude OAuth token store. | No subscription quota. It is not ranked with subscription accounts, not used for subscription failover, and does not create delayed quota turns. Runtime API 429s surface as API-key rate/billing errors for that route. |
-| `claude-env-oauth` | Skip provider-account credential copy because the source of truth is the orchestrator/session env, not `/credentials/provider-accounts/...`. Per the selection rule above, this route is only ever chosen when no stored Claude account row exists, so there is no `provider-accounts/claude/acct_<id>/` subtree to preserve. Any `.credentials.json` the CLI writes during this env-OAuth turn stays local to the per-session credential subtree; it is never copied back to `provider-accounts/...`, and if the user later adds a stored Claude account the next preflight switches off env-OAuth and the per-session file is purged on the normal account-switch path. | Set `ANTHROPIC_AUTH_TOKEN` and do not set `ANTHROPIC_API_KEY`. Claude must treat the bearer as the selected OAuth source, matching doc 135's env-token path. | Both `syncAgentTokenIn` and `syncAgentTokenBack` are explicitly **disabled** for this route — not implemented as a no-op via the generic file-list pathway, because `AGENT_TOKEN_FILES[claude]` would otherwise pull a token file into and out of the env-OAuth session. Preflight must short-circuit both helpers when the selected route is `claude-env-oauth`. If the provider returns a refreshed token file during the run, it must not be copied into a stored provider-account row. | Subscription-style quota applies. The limits badge remains visible, hard exhaustion can create delayed quota turns, and reset-time handling matches Claude OAuth accounts. It is not ranked against stored provider-account rows for multi-account spreading because it has no account row; it is used when explicitly selected, pinned from migration/local auth, or when no stored Claude account exists and env OAuth is the available Claude auth. |
+| `claude-env-oauth` | Skip provider-account credential copy because the source of truth is the orchestrator/session env, not `/credentials/provider-accounts/...`. Per the selection rule above, this route is only ever chosen when no stored Claude account row exists, so there is no `provider-accounts/claude/acct_<id>/` subtree to preserve. Any `.credentials.json` the CLI writes during this env-OAuth turn stays local to the per-session credential subtree; it is never copied back to `provider-accounts/...`, and if the user later adds a stored Claude account the next preflight switches off env-OAuth and the per-session file is purged on the normal account-switch path. | Set `ANTHROPIC_AUTH_TOKEN` and do not set `ANTHROPIC_API_KEY`. Claude must treat the bearer as the selected OAuth source, matching doc 135's env-token path. | Both `syncAgentTokenIn` and `syncAgentTokenBack` are explicitly **disabled** for this route at the helper-invocation site. `AGENT_TOKEN_FILES[claude]` is a static map in `session-credentials.ts` and is not mutated per-route; the gate belongs in the preflight code that decides whether to call the helpers at all. Without that gate, the generic file-list pathway would still pull a token file into and out of the env-OAuth session. If the provider returns a refreshed token file during the run, it must not be copied into a stored provider-account row. | Subscription-style quota applies. The limits badge remains visible, hard exhaustion can create delayed quota turns, and reset-time handling matches Claude OAuth accounts. It is not ranked against stored provider-account rows for multi-account spreading because it has no account row; it is used when explicitly selected, pinned from migration/local auth, or when no stored Claude account exists and env OAuth is the available Claude auth. |
 
 Preflight must check route kind before assuming a `provider_account_id` can be
 loaded from `ProviderAccountManager`. Account-row provisioning, capability
@@ -890,12 +931,27 @@ Reserved-route handling still records the selected route in turn metadata so
 was used.
 
 Detached/system-turn paths must hydrate persisted session routing before creating
-or reusing a runner. Every `runnerRegistry.getOrCreate(sessionId, sessionDir,
-defaultAgentId)` call site must read `SessionInfo.agentId`,
-`SessionInfo.providerRouteKind`, and `SessionInfo.providerRouteId` first and
-pass the persisted agent (not `defaultAgentId`) into runner creation when the
-session is pinned. Falling back to `defaultAgentId` before preflight would
-recreate the runner under the wrong provider and can bypass the pinned account.
+or reusing a runner. Today `SessionRunnerRegistry.getOrCreate(sessionId,
+sessionDir, defaultAgentId: AgentId): SessionRunnerInterface` carries only
+the agent id. Two ways to wire the route through:
+
+1. **Preferred — keep the registry signature minimal.** Every call site
+   reads `SessionInfo.{agentId, providerRouteKind, providerRouteId}` first
+   and passes the persisted agent id (not `defaultAgentId`) into
+   `getOrCreate(...)`; the route fields are then consumed by the shared
+   preflight (`prepareProviderAccountTurn`) before `agent.run(...)` or
+   `existingAgent.sendUserMessage(...)`. The runner itself doesn't need to
+   know its route — the preflight resolves it per turn. This keeps the
+   registry signature unchanged and makes route resolution a per-turn
+   decision (which it needs to be anyway, for account switches).
+2. **Alternative — extend the signature.** Add an optional
+   `route?: { kind: "account" | "reserved"; id: string }` parameter; the
+   runner stores it for diagnostics only. Implementation is freer to choose
+   this if there is a clear reason, but the registry should not become the
+   source of truth for route — `SessionInfo` is.
+
+Either way, falling back to `defaultAgentId` before preflight would recreate
+the runner under the wrong provider and can bypass the pinned account.
 
 The concrete `runnerRegistry.getOrCreate(...)` call sites today that need
 attention are:
@@ -924,9 +980,14 @@ usable before the turn starts.
 
 ### Quota and exhaustion detection
 
-Doc 135's limits map changes from agent-keyed to account-keyed, preserving
-the existing `Partial<...>` wrapper so a missing key still means "no pill"
-(doc 135 explicitly relies on this for sign-out propagation):
+Doc 135's limits map changes shape from a one-level agent-keyed record to a
+two-level agent → account-or-route record. This is a real wire-format change
+broadcast over SSE — the SSE payload that today carries `{ claude: {...},
+codex: {...} }` now carries `{ claude: { acct_a: {...}, acct_b: {...} },
+codex: { acct_x: {...} } }` — so every client/server consumer of the
+snapshot has to be updated together. The outer `Partial<...>` wrapper is
+preserved so a missing top-level key still means "this provider has no
+pill," in line with doc 135's "missing key = no pill" convention:
 
 ```ts
 type SubscriptionLimitsMap = Partial<Record<
@@ -934,6 +995,23 @@ type SubscriptionLimitsMap = Partial<Record<
   Partial<Record<string, SubscriptionLimits>>
 >>;
 ```
+
+Consumers that must change together (not exhaustive — verify against
+current code at implementation time):
+
+- Server: `src/server/orchestrator/limits/*`, `limits-poller.ts`
+  (`getSnapshot`), the SSE broadcast site that emits
+  `subscription_limits`.
+- Client: `src/client/stores/ui-store.ts` (or wherever the snapshot is
+  cached), `src/client/hooks/useServerEvents.ts` (the
+  `subscription_limits` event handler), `src/client/AppLayout.tsx` /
+  `SubscriptionLimitsBadge.tsx` (the renderer), and any helper such as
+  `getSubscriptionLimitsSnapshot` that currently returns the flat shape.
+
+Touchpoints below already name the server entries; the client entries are
+called out under "Client architecture" but should be considered part of the
+same migration commit so a snapshot in the new shape never reaches a client
+that expects the old one.
 
 The inner `string` key is either a stored provider-account row id
 (`acct_<...>`) or the literal sentinel `"claude-env-oauth"` for the reserved
@@ -960,7 +1038,14 @@ Selection policy with unknown quota:
 3. Prefer the user's primary account over a non-primary unknown account.
 4. If every eligible Codex subscription account has unknown quota, choose the
    primary account and record that the first turn will hydrate its quota.
-5. Once a Codex snapshot arrives, update only the account used by that runner.
+5. If the primary is itself ineligible (auth-failed / disconnected / not in
+   the eligible set) and multiple non-primary accounts have unknown quota,
+   tie-break by `lastUsedAt` descending — the most recently used non-primary
+   account is most likely to still have a healthy session and is the least
+   surprising default. If no `lastUsedAt` exists (none have ever been used),
+   tie-break by `createdAt` ascending (the oldest account added). Record that
+   the first turn will hydrate that account's quota.
+6. Once a Codex snapshot arrives, update only the account used by that runner.
 
 The `OPENAI_API_KEY` fallback from doc 119 and the Claude `ANTHROPIC_API_KEY`
 fallback are **not** subscription accounts and do not participate in
@@ -1086,7 +1171,16 @@ copy-back is just "A" / "A-copyback" — there is no separate A2 step to run.)
   `provider_route_kind = "account"` and `provider_route_id` to that account
   and keep using the existing provider-side `agentSessionId`. The per-session
   subtree continues as a derived runtime copy; archive/reset/janitor paths
-  may remove it freely.
+  may remove it freely. **Why byte-equality is safe here but rejected in the
+  disconnect flow:** the disconnect flow runs at an arbitrary later time
+  when A-copyback may have rotated either the source token or the
+  per-session copy independently, so bytes can diverge while still belonging
+  to the same account. The migration step runs *immediately after* the
+  A-copyback ground-state pass mentioned above — at that point the source
+  token reflects the freshest CLI value, so byte equality is a valid proxy
+  for identity. Outside that one-shot startup pass, fall back to the
+  stable-identity rule the disconnect flow uses (JWT account claim or
+  persisted `provider_route_id`).
 - **Pinned session token is strictly newer than every root/default source
   (mid-session refresh that A2 copyback couldn't reconcile):** the token
   works, so do not force re-auth. Copy it into a new account-qualified
@@ -1134,17 +1228,30 @@ the source of truth.
   preflight used by WebSocket turns.
 - `src/server/orchestrator/runner-registry-factory.ts` — inject the
   provider-account preflight/sync dependencies into `SystemTurnDeps`.
-- `src/server/orchestrator/services/child-sessions.ts` — agent-spawned sessions
-  bypass `runAgentWithMessage` and directly provision credentials before
-  `sendSystemMessage`; they must select or inherit a provider account, persist
-  `provider_account_id`, and provision account-qualified credentials before
-  setting `agent_pinned`.
+- `src/server/orchestrator/services/child-sessions.ts` — two distinct sites
+  need changes:
+  - `spawnChildSession` (~:321) — agent-spawned sessions bypass
+    `runAgentWithMessage` and directly provision credentials before
+    `sendSystemMessage`; this site must select or inherit a provider account,
+    persist `provider_route_kind` / `provider_route_id`, and provision
+    account-qualified credentials before setting `agent_pinned`.
+  - `sendChildMessage` (~:529) — child follow-up messages after the runner
+    was disposed; this site must hydrate persisted routing from `SessionInfo`
+    and pass the persisted agent into `getOrCreate(...)` instead of falling
+    back to `defaultAgentId`.
 - `src/server/orchestrator/services/github-ci-fix.ts` and other services that
   call `sendSystemMessage` — rely on the shared system-turn preflight rather
   than assuming WS setup has already provisioned credentials.
 - `src/server/orchestrator/services/rebase-driver.ts` — route rebase/conflict
   recovery direct `agent.run(...)` calls through provider-account preflight,
-  sync, and metadata decoration.
+  sync, and metadata decoration. This is a **new responsibility** for this
+  service: today it calls `agent.run(...)` without provisioning credentials
+  or running token sync (it relies on prior WS-path setup having done so),
+  so the change is "rebase-driver now runs the full system-turn preflight,"
+  not "rebase-driver now also passes one extra argument." Cancellation /
+  error paths in the rebase driver must trigger the same delayed-turn /
+  recoverable-error handling as the chat path when preflight reports
+  `all_exhausted` or `auth_required`.
 - `src/server/orchestrator/app-lifecycle.ts` — account-qualify auth-complete
   handling and token re-push so re-auth for account X updates only sessions
   pinned to account X. `repushAgentToken` /
@@ -1159,19 +1266,26 @@ the source of truth.
   draws, not collapse them:
   - `hasAnyAuthForProvider("claude")` returns true iff
     (any stored Claude provider-account row exists)
-    OR (`claude-api-key` reserved route eligible:
-    `process.env.ANTHROPIC_API_KEY?.trim()` is set)
-    OR (`claude-env-oauth` reserved route eligible: per the env-OAuth
-    selection rule — `ANTHROPIC_AUTH_TOKEN` is set AND no stored Claude
-    account exists).
+    OR (`process.env.ANTHROPIC_API_KEY?.trim()` is set)
+    OR (`process.env.ANTHROPIC_AUTH_TOKEN?.trim()` is set).
+    This coarse predicate intentionally does NOT mirror the env-OAuth
+    *selection* precondition ("no stored Claude account exists") — that
+    precondition belongs at selection time, not at "is this provider
+    configured at all?" time. Having any of the three signals counts as
+    configured for the purpose of `authConfigured`.
   - `hasAnyAuthForProvider("codex")` returns true iff
     (any stored Codex provider-account row exists)
     OR (`codex-api-key` reserved route eligible:
     `process.env.OPENAI_API_KEY?.trim()` is set).
   Without these reserved-route checks the rewiring silently regresses
-  today's behavior: `AUTH_ENV_KEYS` has no Claude entry (Claude's env-var
-  check lives inside `AuthManager.checkCredentials`), and the Codex env-var
-  OR was added in doc 119.
+  today's behavior. For Claude specifically, the `ANTHROPIC_API_KEY` and
+  `ANTHROPIC_AUTH_TOKEN` env vars already count toward today's
+  `authConfigured` — `AuthManager.checkCredentials` ORs `hasCredentials ||
+  hasApiKey || hasAuthToken` (see `auth.ts`) — so the `claude-api-key` /
+  `claude-env-oauth` OR clauses here are **preserving** existing behavior
+  through the new resolver, not adding new behavior. For Codex, the env-var
+  OR was added in doc 119 (`AUTH_ENV_KEYS["codex"]`) and is preserved the
+  same way.
 - `src/server/session/claude.ts`, `src/server/session/agents/claude-adapter.ts`,
   and `src/server/session/agents/codex-adapter.ts` — allow local/direct agent
   spawns to use an account-scoped HOME/config root instead of hardcoded
@@ -1179,8 +1293,13 @@ the source of truth.
 - `src/server/orchestrator/limits/*` and `limits-poller.ts` — move from
   agent-keyed snapshots to provider-account snapshots.
 - `src/server/shared/types/usage-limits-types.ts` — account-keyed limits map.
-- `src/server/shared/types/domain-types.ts` / `sessions.ts` — persist
-  `provider_account_id`.
+- `src/server/shared/types/domain-types.ts` / `sessions.ts` — persist the
+  two-field `provider_route_kind` (`"account" | "reserved"`) and
+  `provider_route_id` on `SessionInfo`. Migration writes both for existing
+  sessions per the Migration section. The prose shorthand
+  "`provider_account_id`" used elsewhere in this doc maps onto this field
+  pair; persistence and APIs MUST use the two-field form, not an overloaded
+  single column.
 - `src/client/stores/*` — provider account state and SSE handling.
 - `src/client/components/Settings.tsx` — Agent accounts management UI.
 - `src/client/components/SubscriptionLimitsBadge.tsx` — grouped multi-account
