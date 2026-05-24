@@ -134,12 +134,18 @@ export async function handleSendMessage(
         }
       }
 
-      // Not steering (or no active agent ref): queue the message
-      runnerForQueue.messageQueue.push({ text: msg.text, images: msg.images, files: msg.files, uploads: msg.uploads, permissionMode: msg.permissionMode, reviewFilePath });
-      ctx.send({
-        type: "message_queued",
-        position: runnerForQueue.messageQueue.length,
+      // Not steering (or no active agent ref): delegate to runner.dispatch
+      // (docs/150). The runner owns the send-or-queue rule; here we're in
+      // the "running" branch so dispatch will enqueue and broadcast
+      // message_queued via runner.emitMessage (every attached viewer sees
+      // it, not just this socket).
+      runnerForQueue.dispatch({
         text: msg.text,
+        ...(msg.images !== undefined ? { images: msg.images } : {}),
+        ...(msg.files !== undefined ? { files: msg.files } : {}),
+        ...(msg.uploads !== undefined ? { uploads: msg.uploads } : {}),
+        ...(msg.permissionMode !== undefined ? { permissionMode: msg.permissionMode } : {}),
+        ...(reviewFilePath !== undefined ? { reviewFilePath } : {}),
       });
       return;
     }

@@ -2,18 +2,17 @@
 import { useEffect, useRef, useCallback } from "react";
 import { formatErrorForMessage } from "../components/PreviewFrame.js";
 import type { PreviewError } from "./usePreviewErrors.js";
-import type { WsClientMessage } from "../../server/shared/types.js";
 import { useApi } from "./useApi.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePreviewStore } from "../stores/preview-store.js";
+import { dispatchAgentMessage } from "../utils/dispatch-agent-message.js";
 
 export function useAutoFix(params: {
   previewErrors: PreviewError[];
   isLoading: boolean;
   status: string;
-  send: (msg: WsClientMessage) => void;
 }) {
-  const { previewErrors, isLoading, status, send } = params;
+  const { previewErrors, isLoading, status } = params;
   const { post: apiPost } = useApi();
 
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
@@ -36,17 +35,21 @@ export function useAutoFix(params: {
 
   const handleSendAutoFix = useCallback(
     (text: string) => {
-      const session = useSessionStore.getState();
-      session.setMessages((prev) => [...prev, { role: "user", text }]);
-      session.setIsLoading(true);
-      session.setActivity({ label: "Auto-fixing errors..." });
-      send({
-        type: "send_message",
+      const sid = useSessionStore.getState().sessionId;
+      if (!sid) return;
+      // docs/150 — auto-fix POSTs to the dispatch route, same as the manual
+      // "Send to Agent" button. `requestPermission` is intentionally NOT
+      // called here (auto-fire shouldn't pop a notification prompt at the
+      // user out of nowhere — preserves the asymmetry of the previous WS
+      // path, which also skipped it).
+      void dispatchAgentMessage({
+        sessionId: sid,
         text,
-        sessionId: useSessionStore.getState().sessionId,
-      });
+        activity: "Fixing preview errors…",
+        apiPost,
+      }).catch(() => { /* helper surfaces toast */ });
     },
-    [send],
+    [apiPost],
   );
 
   // Auto-fix logic

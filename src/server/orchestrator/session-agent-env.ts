@@ -6,7 +6,7 @@
  * MCP servers, the compose secrets pipeline. The functions are session-scoped,
  * idempotent, and orthogonal to whether a turn is about to start; the caller
  * invokes them before/after agent runs to keep the user-spawn path
- * (`runAgentWithMessage`) and the system-turn path (`runSystemTurn` — used by
+ * (`runAgentWithMessage`) and the system-turn path (`runDispatchedTurn` — used by
  * `spawnChildSession`, `sendChildMessage`, `triggerCIFix`) at parity. Without
  * this, agent-spawned sessions launch with a stale OAuth token (the rotating
  * refresh token is single-use, so any other session refreshing it leaves the

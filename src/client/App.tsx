@@ -77,6 +77,7 @@ import { resumeSessionInternal, handleSessionResume, resetSessionState } from ".
 import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug, shouldAdoptClaimedSession } from "./utils/repo-label.js";
 import { saveAgentId, saveModelId } from "./utils/local-storage.js";
 import { siblingsOf, orderSiblingsForTabs, siblingTabLabel } from "./utils/doc-paths.js";
+import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -261,7 +262,6 @@ export default function App() {
     previewErrors,
     isLoading,
     status,
-    send,
   });
 
   // useKeyboardShortcuts is called after handleNewSessionForRepo is defined
@@ -480,60 +480,92 @@ export default function App() {
     [send],
   );
 
+  // docs/150 — one in-flight ref per converted callsite swallows rapid
+  // double-clicks (compose-error overlays can flicker as services restart).
+  // The ref is set true at dispatch start and cleared in `.finally`; the
+  // existing `isLoading` flag also disables most buttons.
+  const sendErrorsInFlight = useRef(false);
+  const createPrInFlight = useRef(false);
+  const composeErrorInFlight = useRef(false);
+  const composeHintInFlight = useRef(false);
+  const serviceLogsInFlight = useRef(false);
+
   const handleSendErrors = useCallback(
     (errors: PreviewError[]) => {
+      if (sendErrorsInFlight.current) return;
+      const sid = useSessionStore.getState().sessionId;
+      if (!sid) return;
       const text = formatErrorForMessage(errors);
       requestPermission();
       useUiStore.getState().setShowTemplates(false);
-      const session = useSessionStore.getState();
-      session.setMessages((prev) => [...prev, { role: "user", text }]);
-      session.setIsLoading(true);
-      session.setActivity({ label: "Thinking..." });
-      const sid = useSessionStore.getState().sessionId;
-      const pm = useSettingsStore.getState().getPermissionMode(sid);
-      send({ type: "send_message", text, sessionId: sid, permissionMode: pm !== "auto" ? pm : undefined });
+      sendErrorsInFlight.current = true;
+      void dispatchAgentMessage({ sessionId: sid, text, activity: "Fixing preview errors…", apiPost })
+        .catch(() => { /* helper surfaces toast */ })
+        .finally(() => { sendErrorsInFlight.current = false; });
     },
-    [send, requestPermission],
+    [requestPermission, apiPost],
   );
 
-  // "Create PR" on the PR lifecycle card sends a turn to the agent instead of
-  // calling the orchestrator's quick-create route directly. The agent has the
-  // turn-by-turn context (what changed, why, which files), so it picks a better
-  // title and writes a more accurate Summary/Changes/Test plan body than the
-  // server-side LLM call could from chat history alone.
+  // "Create PR" on the PR lifecycle card dispatches a turn to the agent (via
+  // the docs/150 HTTP dispatch route) instead of calling the orchestrator's
+  // quick-create route. The agent has the turn-by-turn context (what changed,
+  // why, which files), so it picks a better title and writes a more accurate
+  // Summary/Changes/Test plan body than the server-side LLM call could.
   const handleCreatePr = useCallback(() => {
+    if (createPrInFlight.current) return;
+    const sid = useSessionStore.getState().sessionId;
+    if (!sid) return;
     const text = "Please create a pull request for the changes in this session.";
     requestPermission();
     useUiStore.getState().setShowTemplates(false);
-    const session = useSessionStore.getState();
-    session.setMessages((prev) => [...prev, { role: "user", text }]);
-    session.setIsLoading(true);
-    session.setActivity({ label: "Creating PR..." });
-    const sid = session.sessionId;
-    const pm = useSettingsStore.getState().getPermissionMode(sid);
-    send({ type: "send_message", text, sessionId: sid, permissionMode: pm !== "auto" ? pm : undefined });
-  }, [send, requestPermission]);
+    createPrInFlight.current = true;
+    void dispatchAgentMessage({ sessionId: sid, text, activity: "Creating PR…", apiPost })
+      .catch(() => { /* helper surfaces toast */ })
+      .finally(() => { createPrInFlight.current = false; });
+  }, [requestPermission, apiPost]);
 
   const handleSendComposeErrorToAgent = useCallback(() => {
+    if (composeErrorInFlight.current) return;
     const { composeError } = usePreviewStore.getState();
     if (!composeError) return;
+    const sid = useSessionStore.getState().sessionId;
+    if (!sid) return;
     const text = `Docker Compose failed to start:\n\n\`\`\`\n${composeError.trim()}\n\`\`\`\n\nPlease fix this error so the services can start successfully.`;
-    useSessionStore.getState().setPrefillText(text);
-  }, []);
+    requestPermission();
+    composeErrorInFlight.current = true;
+    void dispatchAgentMessage({ sessionId: sid, text, activity: "Fixing compose error…", apiPost })
+      .catch(() => { /* helper surfaces toast */ })
+      .finally(() => { composeErrorInFlight.current = false; });
+  }, [requestPermission, apiPost]);
 
   const handleSendComposeHintToAgent = useCallback(() => {
+    if (composeHintInFlight.current) return;
+    const sid = useSessionStore.getState().sessionId;
+    if (!sid) return;
     const text = "The preview panel needs a Docker Compose configuration. Please add a `compose` key to `shipit.yaml` pointing to the project's compose file so that previews can be enabled.";
-    useSessionStore.getState().setPrefillText(text);
-  }, []);
+    requestPermission();
+    composeHintInFlight.current = true;
+    void dispatchAgentMessage({ sessionId: sid, text, activity: "Setting up preview…", apiPost })
+      .catch(() => { /* helper surfaces toast */ })
+      .finally(() => { composeHintInFlight.current = false; });
+  }, [requestPermission, apiPost]);
 
   const handleSendServiceLogsToAgent = useCallback((serviceName: string, status: string, logs: string) => {
+    if (serviceLogsInFlight.current) return;
+    const sid = useSessionStore.getState().sessionId;
+    if (!sid) return;
     const lines = [`The Docker Compose service "${serviceName}" is in state "${status}". Recent logs:`, ""];
     if (logs) {
       lines.push("```", logs, "```", "");
     }
     lines.push("Please investigate and fix the issue.");
-    useSessionStore.getState().setPrefillText(lines.join("\n"));
-  }, []);
+    const text = lines.join("\n");
+    requestPermission();
+    serviceLogsInFlight.current = true;
+    void dispatchAgentMessage({ sessionId: sid, text, activity: "Investigating service…", apiPost })
+      .catch(() => { /* helper surfaces toast */ })
+      .finally(() => { serviceLogsInFlight.current = false; });
+  }, [requestPermission, apiPost]);
 
   const handleAnswerQuestion = useCallback(
     (toolUseId: string, answers: Record<string, string>) => {

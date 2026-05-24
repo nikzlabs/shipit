@@ -276,8 +276,8 @@ export async function triggerCIFix(
     });
   }
 
-  // sendSystemMessage handles both cases: enqueues when busy,
-  // emits system_turn event for WS handler pickup when idle.
-  runner.sendSystemMessage(prompt);
+  // dispatch handles both cases: enqueues when busy, emits system_turn
+  // event for WS handler pickup when idle.
+  runner.dispatch({ text: prompt, activity: "Auto-fixing CI..." });
   return { status: runner.running ? "queued" : "sent", attemptNumber };
 }
