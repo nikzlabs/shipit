@@ -3,7 +3,7 @@ import type { WsClientMessage, WsServerMessage, ImageAttachment, FileAttachment,
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
 import { generateSessionName } from "../session-namer.js";
-import { wireAgentListeners, recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.js";
+import { wireAgentListeners, recordSteeredMessage, persistTurnInProgress, type AgentListenerDeps } from "./agent-listeners.js";
 import { runAgentWithMessage, drainNextQueuedMessage } from "./agent-execution.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
@@ -494,7 +494,18 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     else ctx.send(msg);
   };
 
-  wireAgentListeners(ctx, currentAgent, {
+  const answerListenerDeps: AgentListenerDeps = {
+    sessionManager: ctx.sessionManager,
+    chatHistoryManager: ctx.chatHistoryManager,
+    usageManager: ctx.usageManager,
+    authManager: ctx.authManager,
+    sseBroadcast: ctx.sseBroadcast,
+    broadcastLog: ctx.broadcastLog,
+    getSelectedModel: ctx.getSelectedModel,
+    recordCodexRateLimits: ctx.recordCodexRateLimits,
+    getSubscriptionLimitsSnapshot: ctx.getSubscriptionLimitsSnapshot,
+  };
+  wireAgentListeners(currentAgent, answerRunner, answerListenerDeps, {
     isNewSession: false,
     persistUserMessage,
     fallbackTitle: answerText.slice(0, 80) || "Answer",

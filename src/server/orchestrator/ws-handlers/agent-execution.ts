@@ -5,9 +5,10 @@ import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode }
 import type { AgentEvent } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
-import { wireAgentListeners } from "./agent-listeners.js";
+import { wireAgentListeners, type AgentListenerDeps } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { resetRunnerTurnState } from "../session-runner.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import {
   prepareSessionAgentEnvironment,
@@ -239,24 +240,17 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       ? undefined
       : permissionMode;
 
-  // Reset turn-scoped state directly on the runner.
-  if (runner) {
-    runner.clearTurnEventBuffer();
-    runner.turnSummary = "";
-    runner.accumulatedText = "";
-    runner.accumulatedToolUse = [];
-    runner.chatMessageGroups = [];
-    runner.needsNewMessageGroup = true;
-    runner.steeredMessages = [];
-    runner.wasInterrupted = false;
-    // docs/125 — authorize the review tool for exactly this turn's file (or
-    // clear the allow-list for a normal turn). Setting it at turn start — the
-    // same point sessionId is captured — means a queued review message is
-    // authorized only when it actually starts running. Subagent tool calls
-    // happen inline within the parent's turn, so the value is still set when
-    // `submit_review_comments` lands.
-    runner.activeReviewFilePath = opts.reviewFilePath ?? null;
-  }
+  // Reset turn-scoped state directly on the runner — shared with the system-
+  // dispatched and rebase flows so all three paths start from a clean slate
+  // (no stale chatMessageGroups bleeding across turns).
+  //
+  // docs/125 — `reviewFilePath` authorizes the chat-native review tool for
+  // exactly this turn's file (or clears the allow-list for a normal turn).
+  // Setting it at turn start — the same point sessionId is captured — means
+  // a queued review message is authorized only when it actually starts
+  // running. Subagent tool calls happen inline within the parent's turn, so
+  // the value is still set when `submit_review_comments` lands.
+  if (runner) resetRunnerTurnState(runner, { reviewFilePath: opts.reviewFilePath ?? null });
   // Live steering: use streaming mode when enabled and the active agent supports it.
   // For streaming agents, reuse the existing agent process (it persists across turns)
   // rather than creating a new one via the factory. (docs/140)
@@ -380,7 +374,18 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     await drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone);
   };
 
-  wireAgentListeners(ctx, currentAgent, {
+  const listenerDeps: AgentListenerDeps = {
+    sessionManager: ctx.sessionManager,
+    chatHistoryManager: ctx.chatHistoryManager,
+    usageManager: ctx.usageManager,
+    authManager: ctx.authManager,
+    sseBroadcast: ctx.sseBroadcast,
+    broadcastLog: ctx.broadcastLog,
+    getSelectedModel: ctx.getSelectedModel,
+    recordCodexRateLimits: ctx.recordCodexRateLimits,
+    getSubscriptionLimitsSnapshot: ctx.getSubscriptionLimitsSnapshot,
+  };
+  wireAgentListeners(currentAgent, runner, listenerDeps, {
     isNewSession,
     persistUserMessage,
     fallbackTitle: userText.slice(0, 80) || "New session",

@@ -21,10 +21,14 @@
 
 import type { GitManager, RebaseConflictFile } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import type { AgentProcess, AgentId, AgentEvent, AgentRunParams } from "../../shared/types.js";
+import type { AgentProcess, AgentId, AgentRunParams } from "../../shared/types.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
+import type { UsageManager } from "../usage.js";
+import type { AuthManager } from "../auth.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
+import { resetRunnerTurnState } from "../session-runner.js";
+import { wireAgentListeners, type AgentListenerDeps } from "../ws-handlers/agent-listeners.js";
 import { ServiceError } from "./types.js";
 import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
@@ -42,6 +46,16 @@ export interface RebaseDriverDeps {
   runner: SessionRunnerInterface;
   sessionManager: SessionManager;
   chatHistoryManager: ChatHistoryManager;
+  /**
+   * Usage + auth managers needed by the shared agent listener
+   * (`wireAgentListeners`). Without these the conflict-resolution turn would
+   * skip per-turn cost/token tracking and couldn't kick off OAuth on
+   * `auth_required`. Shared with the WS path so the rebase turn is just
+   * "a user turn with the post-turn commit/push elided" — see
+   * `runRebaseResolutionTurn`.
+   */
+  usageManager: UsageManager;
+  authManager: AuthManager;
   /** Factory for creating agents. Falls back to runner.createAgent if available. */
   agentFactory?: (agentId: AgentId) => AgentProcess;
   sseBroadcast: (event: string, data: unknown) => void;
@@ -204,16 +218,25 @@ async function tryForcePush(
 }
 
 /**
- * Run an agent turn dedicated to resolving rebase conflicts. Differs from
- * `runDispatchedTurn` in that it skips auto-commit / auto-push at the end (the
- * rebase machinery commits via `rebase --continue`, and force push happens
- * after the entire flow completes).
+ * Run an agent turn dedicated to resolving rebase conflicts.
+ *
+ * Funnels through the same `wireAgentListeners` implementation the WS user-
+ * typed turn and the system-dispatched turn (`runDispatchedTurn`) use, so
+ * chat history accumulates the same message-group structure (tool calls
+ * visible, assistant text split at tool-result boundaries) regardless of
+ * caller. The only carve-out is the post-turn behavior: this flow skips
+ * auto-commit / auto-push / queue-drain because the rebase machinery
+ * commits via `rebase --continue` and force-push runs after the entire
+ * flow completes — auto-committing mid-rebase would corrupt the rebase.
  */
 function runRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
 ): Promise<void> {
-  const { runner, agentFactory, sessionManager, chatHistoryManager, sseBroadcast } = deps;
+  const {
+    runner, agentFactory, sessionManager, chatHistoryManager,
+    sseBroadcast, usageManager, authManager,
+  } = deps;
 
   return new Promise((resolve, reject) => {
     const agentId = runner.agentId;
@@ -228,57 +251,60 @@ function runRebaseResolutionTurn(
     const agent = createFn(agentId);
     runner.setAgent(agent);
     runner.running = true;
-    runner.accumulatedText = "";
-    runner.turnSummary = "";
-    runner.needsNewMessageGroup = true;
-    runner.clearTurnEventBuffer();
+    resetRunnerTurnState(runner);
 
     const activity = "Resolving conflicts...";
     runner.emitMessage({ type: "system_user_message", text: prompt, activity });
     chatHistoryManager.append(runner.sessionId, { role: "user", text: prompt });
     sseBroadcast("session_agent_started", { sessionId: runner.sessionId, activity });
 
-    const onEvent = (event: AgentEvent) => {
-      runner.emitMessage({ type: "agent_event", event });
-      if (event.type === "agent_assistant") {
-        const contentArr = (event as { content?: { type: string; text?: string }[] }).content ?? [];
-        const text = contentArr
-          .filter((b): b is { type: "text"; text: string } => b.type === "text")
-          .map((b) => b.text)
-          .join("");
-        if (text) {
-          runner.turnSummary = text;
-          runner.accumulatedText += text;
-        }
-      }
+    // Listener deps shared with the WS user-typed path. The rebase flow has
+    // no per-connection model selection, so we surface the session's pinned
+    // model (whatever the WS user-typed turn would have used).
+    const listenerDeps: AgentListenerDeps = {
+      sessionManager,
+      chatHistoryManager,
+      usageManager,
+      authManager,
+      sseBroadcast,
+      broadcastLog: (_source, _text) => { /* rebase flow doesn't surface CLI log lines */ },
+      getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
     };
 
-    const onError = (err: Error) => {
+    wireAgentListeners(agent, runner, listenerDeps, {
+      isNewSession: false,
+      // User message persisted synchronously above; the listener's `isNewSession`
+      // branch is gated to false, so this lambda never fires.
+      persistUserMessage: () => { /* no-op */ },
+      capturedSessionId: runner.sessionId,
+      fallbackTitle: "Rebase",
+    });
+
+    // Reject the rebase Promise on agent process error. The listener's own
+    // error handler has already emitted the error to chat history and reset
+    // runner state; we just need to unblock the outer rebase loop.
+    agent.on("error", (err: Error) => {
       console.error("[rebase] agent error:", err.message);
-      runner.emitMessage({ type: "error", message: `Agent process error: ${err.message}` });
-      runner.setAgent(null);
-      runner.running = false;
       reject(err);
-    };
+    });
 
-    const onDone = (code: number | null) => {
+    // Resolve on process exit. The listener has already persisted message
+    // groups on `agent_result` and set `runner.running = false`; this `done`
+    // handler just performs the rebase-specific finish (sseBroadcast +
+    // onAgentFinished + resolve). No auto-commit / auto-push / queue drain
+    // — see the function docstring for why.
+    agent.on("done", (code: number | null) => {
       console.log("[rebase] agent exited with code", code);
       runner.setAgent(null);
-      if (runner.accumulatedText) {
-        chatHistoryManager.append(runner.sessionId, {
-          role: "assistant",
-          text: runner.accumulatedText,
-        });
-      }
+      // Defensive: a process that exited without firing `agent_result` (rare
+      // crash before any events) wouldn't have had its `running` flag reset
+      // by the listener. Force it false so the rebase loop's next iteration
+      // can start cleanly.
       runner.running = false;
       sseBroadcast("session_agent_finished", { sessionId: runner.sessionId });
       runner.onAgentFinished();
       resolve();
-    };
-
-    agent.on("event", onEvent);
-    agent.on("error", onError);
-    agent.on("done", onDone);
+    });
 
     const session = sessionManager.get(runner.sessionId);
     const agentSessionId = session?.agentSessionId ?? runner.sessionId;

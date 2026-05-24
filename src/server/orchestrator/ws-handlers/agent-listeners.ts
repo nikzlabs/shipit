@@ -1,11 +1,42 @@
-import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode } from "../../shared/types.js";
+import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, WsLogEntry } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
-import type { ChatMessageGroup, ToolResultEntry, SteeredMessage } from "../session-runner.js";
-import type { PersistedMessage } from "../chat-history.js";
-import { resolveRunner } from "./resolve-runner.js";
+import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, SessionRunnerInterface } from "../session-runner.js";
+import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
+import type { SessionManager } from "../sessions.js";
+import type { UsageManager } from "../usage.js";
+import type { AuthManager } from "../auth.js";
 import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
+
+/**
+ * Context-light dependency set for `wireAgentListeners`. Lifted out of the
+ * WS handler context (`FullCtx = ConnectionCtx & RunnerCtx & AppCtx`) so that
+ * non-WS callers — system-dispatched turns, the rebase conflict-resolution
+ * driver, child-session spawns — can share the same listener implementation.
+ *
+ * Keep this list minimal: anything in here is something the listener actually
+ * needs to do its job. New per-turn signals belong in `WireListenersOpts`,
+ * not here.
+ */
+export interface AgentListenerDeps {
+  sessionManager: SessionManager;
+  chatHistoryManager: ChatHistoryManager;
+  usageManager: UsageManager;
+  authManager: AuthManager;
+  /** App-level SSE broadcaster (session_list, session_started, etc.). */
+  sseBroadcast: (event: string, data: unknown) => void;
+  /** Append a line to the per-session log buffer. */
+  broadcastLog: (source: WsLogEntry["source"], text: string) => void;
+  /** Model the caller wants the turn to start with (before agent_init confirms). */
+  getSelectedModel: () => string | undefined;
+  /** Optional: push a Codex rate-limit snapshot to the subscription badge. */
+  recordCodexRateLimits?: (
+    session: { usedPct: number; resetAt: string } | null,
+    weekly: { usedPct: number; resetAt: string } | null,
+  ) => void;
+  /** Optional: latest subscription-limits snapshot, used to reclassify generic CLI errors. */
+  getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
+}
 
 /**
  * Find the chat message group that contains the given tool_use id (either in
@@ -28,9 +59,6 @@ function findGroupContainingTool(
   }
   return undefined;
 }
-
-/** Full handler context — send-message handlers need all three sub-contexts. */
-type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
 /**
  * Default context window in tokens. Kept as a re-export for legacy call
@@ -213,79 +241,94 @@ function summarizeCrashReason(content: string): string {
 }
 
 /**
- * Wire up common agent event listeners shared across send_message,
- * answer_question, and the queued-message replay inside runAgentWithMessage.
+ * Per-turn options accepted by `wireAgentListeners`. Anything that varies
+ * between callers (WS-typed, system-dispatched, rebase resolution) belongs
+ * here; long-lived dependencies (managers, broadcasters) live in
+ * `AgentListenerDeps`.
+ */
+export interface WireListenersOpts {
+  isNewSession: boolean;
+  persistUserMessage: (sessionId: string) => void;
+  fallbackTitle?: string;
+  /**
+   * Session ID captured at turn start — immune to session switches. The WS
+   * paths capture this from `ctx.getActiveAppSessionId()` (URL-derived on the
+   * per-session route); system-dispatched and rebase paths pass the runner's
+   * sessionId directly. All call sites pass a value; the optional marker is
+   * a vestige of an old test-ergonomics affordance and runtime requires it.
+   */
+  capturedSessionId?: string;
+  /**
+   * The permission mode this turn actually requested from the CLI (docs/138),
+   * AFTER any guarded→auto downgrade. When this is `"guarded"`, the
+   * `agent_init` handler reads `init.permissionMode` to confirm the
+   * classifier engaged (`"auto"`) and, if not, sets the runner's volatile
+   * `guardedUnavailable` flag and emits an inline fallback notice. Undefined /
+   * non-guarded turns skip the check entirely.
+   */
+  requestedPermissionMode?: PermissionMode;
+  /**
+   * Called from the `error` handler after the runner has been cleaned up.
+   * `runAgentWithMessage` uses this to drain the next queued message so a
+   * transient /agent/start failure (e.g. 409 race) doesn't strand the rest
+   * of the queue. Awaited so any recursive turn start is sequenced inside
+   * the error handler.
+   */
+  onError?: () => Promise<void>;
+  /**
+   * True when this turn is being run on a persistent streaming agent
+   * (live steering active, docs/140). In streaming mode the CLI can
+   * genuinely block on `AskUserQuestion` (the user's answer flows back via
+   * `sendUserMessage`/NDJSON on stdin), so the orchestrator must NOT
+   * interrupt on the tool — that would tear down the running turn instead
+   * of letting the user steer their answer in.
+   */
+  useStreaming?: boolean;
+}
+
+/**
+ * Wire up common agent event listeners shared across every entry point that
+ * runs an agent turn: WS `send_message` / `answer_question`, system-dispatched
+ * turns (Fix CI, child sessions, the `/agent/dispatch` HTTP route), and the
+ * rebase conflict-resolution driver. All flows share the same message-group
+ * accumulator (`runner.chatMessageGroups`) so tool calls + assistant text
+ * round-trip through chat history identically regardless of caller.
+ *
+ * `runner` must be the registry-resolved reference (not a per-connection
+ * `getRunner()` result) so the listener survives WS disconnects. `null` is
+ * accepted only as a defensive fallback — the listener degrades to a no-op
+ * for state mutations when it's null. Callers should resolve via the registry
+ * (`resolveRunner` for WS, `host` for system flows) and pass the result here.
  */
 export function wireAgentListeners(
-  ctx: FullCtx,
   agent: AgentProcess,
-  opts: {
-    isNewSession: boolean;
-    persistUserMessage: (sessionId: string) => void;
-    fallbackTitle?: string;
-    /**
-     * Session ID captured at turn start — immune to session switches. Always
-     * set in production: both `runAgentWithMessage` and `handleAnswerQuestion`
-     * capture this from `ctx.getActiveAppSessionId()`, which is the URL-
-     * derived session ID on the per-session WS route. Marked optional only
-     * for ergonomics in the rare test that wires listeners directly.
-     */
-    capturedSessionId?: string;
-    /**
-     * The permission mode this turn actually requested from the CLI (docs/138),
-     * AFTER any guarded→auto downgrade. When this is `"guarded"`, the
-     * `agent_init` handler reads `init.permissionMode` to confirm the
-     * classifier engaged (`"auto"`) and, if not, sets the runner's volatile
-     * `guardedUnavailable` flag and emits an inline fallback notice. Undefined /
-     * non-guarded turns skip the check entirely.
-     */
-    requestedPermissionMode?: PermissionMode;
-    /**
-     * Called from the `error` handler after the runner has been cleaned up.
-     * `runAgentWithMessage` uses this to drain the next queued message so a
-     * transient /agent/start failure (e.g. 409 race) doesn't strand the rest
-     * of the queue. Awaited so any recursive turn start is sequenced inside
-     * the error handler.
-     */
-    onError?: () => Promise<void>;
-    /**
-     * True when this turn is being run on a persistent streaming agent
-     * (live steering active, docs/140). In streaming mode the CLI can
-     * genuinely block on `AskUserQuestion` (the user's answer flows back via
-     * `sendUserMessage`/NDJSON on stdin), so the orchestrator must NOT
-     * interrupt on the tool — that would tear down the running turn instead
-     * of letting the user steer their answer in.
-     */
-    useStreaming?: boolean;
-  },
+  runner: SessionRunnerInterface | null,
+  deps: AgentListenerDeps,
+  opts: WireListenersOpts,
 ): void {
   if (!opts.capturedSessionId) {
     // The previous fallback in the agent_init branch called
     // `setActiveAppSessionId(event.sessionId)` — but `event.sessionId` is the
     // Claude CLI's internal session_id (e.g. `agent-init-1`), not an app
     // session UUID. Setting it as the active app session is always wrong.
-    // Per-session WS handlers always pass capturedSessionId, so reaching
-    // this state means the call site is buggy — fail loudly rather than
-    // silently mis-routing the session.
-    throw new Error("wireAgentListeners requires opts.capturedSessionId — per-session WS routes always set it");
+    // All callers always set capturedSessionId, so reaching this state means
+    // the call site is buggy — fail loudly rather than silently mis-routing.
+    throw new Error("wireAgentListeners requires opts.capturedSessionId");
   }
-  // Capture runner at wire time — this direct reference survives WS disconnects.
-  // `resolveRunner` prefers the registry (keyed by the captured session ID),
-  // so the runner is correct even when the originating WS has already
-  // disconnected by the time this is invoked from a queue-drained recursive
-  // turn. Mutate this captured reference directly throughout the listeners.
-  const runner = resolveRunner(ctx, opts.capturedSessionId);
   // Capture the model used for this turn — sourced from `agent_init` (what the
   // CLI actually picked) or falls back to the user-selected model. Used on
   // `agent_result` to attach the model to per-turn usage so the dial can
   // re-target context window when the user switches models mid-session.
-  let turnModel: string | undefined = ctx.getSelectedModel();
-  // Helper: emit to all viewers via runner, or fall back to ctx.send
+  let turnModel: string | undefined = deps.getSelectedModel();
+  // Helper: emit to all viewers via runner. If runner is unexpectedly null
+  // (registry lookup failed before any viewer attached), the message has
+  // nowhere good to go — log and drop rather than try a per-connection send,
+  // which doesn't exist on every caller anyway.
   const emitToViewers = (msg: WsServerMessage) => {
     if (runner) {
       runner.emitMessage(msg);
     } else {
-      ctx.send(msg);
+      console.warn(`[agent-listeners] dropping ${msg.type} — no runner attached`);
     }
   };
 
@@ -345,7 +388,7 @@ export function wireAgentListeners(
   };
 
   agent.on("log", (source: string, text: string) => {
-    ctx.broadcastLog(source as "stderr" | "stdout" | "server", text);
+    deps.broadcastLog(source as "stderr" | "stdout" | "server", text);
   });
 
   agent.on("event", (rawEvent: AgentEvent) => {
@@ -355,7 +398,7 @@ export function wireAgentListeners(
     // stop — forwarding as an `agent_event` would just be noise for the chat
     // message grouping. See CodexLimitsProvider / docs/135.
     if (event.type === "agent_rate_limits") {
-      ctx.recordCodexRateLimits?.(event.session, event.weekly);
+      deps.recordCodexRateLimits?.(event.session, event.weekly);
       return;
     }
 
@@ -365,7 +408,7 @@ export function wireAgentListeners(
         error: normalizeAgentUsageLimitError(
           agent.agentId,
           event.error,
-          ctx.getSubscriptionLimitsSnapshot?.(),
+          deps.getSubscriptionLimitsSnapshot?.(),
         ),
       };
     }
@@ -388,13 +431,13 @@ export function wireAgentListeners(
       // must not re-log.
       if (!hasLoggedAgentStart) {
         hasLoggedAgentStart = true;
-        ctx.broadcastLog("server", "Agent process started");
+        deps.broadcastLog("server", "Agent process started");
       }
-      ctx.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
-      const session = ctx.sessionManager.get(turnSessionId);
+      deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
+      const session = deps.sessionManager.get(turnSessionId);
       if (session) {
         emitToViewers({ type: "session_started", session });
-        ctx.sseBroadcast("session_started", { session });
+        deps.sseBroadcast("session_started", { session });
       }
       if (opts.isNewSession) {
         // docs/140 diag — see comment in agent-execution.ts persistUserMessage.
@@ -552,7 +595,7 @@ export function wireAgentListeners(
       ) {
         runner.wasInterrupted = true;
         agent.interrupt();
-        ctx.broadcastLog("server", "Agent interrupted: waiting for AskUserQuestion answer");
+        deps.broadcastLog("server", "Agent interrupted: waiting for AskUserQuestion answer");
       }
     }
 
@@ -604,7 +647,7 @@ export function wireAgentListeners(
           runner?.steeredMessages ?? [],
           { inProgress: true },
         );
-        ctx.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
+        deps.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
         if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
       }
     }
@@ -612,9 +655,9 @@ export function wireAgentListeners(
     if (event.type === "agent_result") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId) {
-        ctx.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
-        ctx.sessionManager.track(turnSessionId);
-        ctx.sseBroadcast("session_list", { sessions: ctx.sessionManager.list() });
+        deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
+        deps.sessionManager.track(turnSessionId);
+        deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
       }
 
       // docs/138 — surface guarded-mode classifier blocks inline so a guarded
@@ -696,7 +739,7 @@ export function wireAgentListeners(
         // usage but no dollar cost. Persist those turns with a zero-dollar
         // value so session turn counts, token history, and rehydration still
         // work; do not estimate pricing here.
-        ctx.usageManager.record(
+        deps.usageManager.record(
           usageSessionId,
           perTurnUsage.costUsd,
           event.durationMs ?? 0,
@@ -709,9 +752,9 @@ export function wireAgentListeners(
             contextTokens: event.contextTokens,
           },
         );
-        const sessionUsage = ctx.usageManager.getSessionUsage(usageSessionId);
+        const sessionUsage = deps.usageManager.getSessionUsage(usageSessionId);
         if (sessionUsage) {
-          const tokenTotals = ctx.usageManager.getSessionTokenTotals(usageSessionId);
+          const tokenTotals = deps.usageManager.getSessionTokenTotals(usageSessionId);
           emitToViewers({
             type: "usage_update",
             sessionId: sessionUsage.sessionId,
@@ -745,8 +788,8 @@ export function wireAgentListeners(
         runner?.steeredMessages ?? [],
         { inProgress: false },
       );
-      ctx.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);
-      ctx.chatHistoryManager.finalizeInProgress(usageSessionId);
+      deps.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);
+      deps.chatHistoryManager.finalizeInProgress(usageSessionId);
       if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
 
       // Mark turn as complete immediately — don't wait for async post-turn
@@ -771,7 +814,7 @@ export function wireAgentListeners(
   agent.on("auth_required", () => {
     console.log("[server] Agent CLI requires authentication, starting OAuth flow");
     emitToViewers({ type: "auth_required" });
-    ctx.authManager.startOAuthFlow();
+    deps.authManager.startOAuthFlow();
 
     // Tear the failed turn down. An auth failure ends the turn, but a
     // persistent streaming agent (live steering) does NOT exit on a failed
@@ -799,7 +842,7 @@ export function wireAgentListeners(
 
   agent.on("error", async (err: Error) => {
     console.error("[agent] process error:", err.message);
-    ctx.broadcastLog("server", `Agent process error: ${err.message}`);
+    deps.broadcastLog("server", `Agent process error: ${err.message}`);
     emitToViewers({ type: "error", message: `Agent process error: ${err.message}` });
     const turnSessionId = opts.capturedSessionId;
     if (turnSessionId) {
@@ -818,9 +861,9 @@ export function wireAgentListeners(
         toolResults: g.toolResults?.length ? g.toolResults : undefined,
         subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
       }));
-      ctx.chatHistoryManager.replaceInProgress(turnSessionId, partialMessages);
-      ctx.chatHistoryManager.finalizeInProgress(turnSessionId);
-      ctx.chatHistoryManager.append(turnSessionId, {
+      deps.chatHistoryManager.replaceInProgress(turnSessionId, partialMessages);
+      deps.chatHistoryManager.finalizeInProgress(turnSessionId);
+      deps.chatHistoryManager.append(turnSessionId, {
         role: "assistant",
         text: `Error: ${err.message}`,
         isError: true,

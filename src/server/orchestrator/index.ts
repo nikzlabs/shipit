@@ -305,6 +305,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, runtimeMode, broadcastLog,
+    usageManager, authManager,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     ...(credentialsDir ? { credentialsDir } : {}),
     readSystemPrompt: readSystemPromptApp,
