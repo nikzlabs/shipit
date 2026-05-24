@@ -250,16 +250,25 @@ describe("DocsViewer", () => {
         makeDoc({ path: "docs/004-low-inprog/plan.md", title: "Low-InProgress", status: "in-progress", priority: "low" }),
       ];
       render(<DocsViewer {...props} />);
+      // Query the row buttons by the unique `-InProgress`/`-Planned` suffixes
+      // we put in the test titles. Filtering by hand against "Reload" /
+      // "Tracked" / "Archived" is fragile if a future header change adds a
+      // stray button — anchoring on the doc titles makes the assertion stable.
       const items = screen.getAllByRole("button").filter(
-        (btn) => !btn.textContent?.includes("Reload"),
+        (btn) => /-(InProgress|Planned)$/.test(
+          // Use the title span only so badge text never leaks in.
+          btn.querySelector("span")?.textContent ?? "",
+        ),
       );
-      // High bucket, in-progress before planned within the bucket.
-      expect(items[0].textContent).toContain("High-InProgress");
-      expect(items[1].textContent).toContain("High-Planned");
-      // Low bucket (still beats unset).
-      expect(items[2].textContent).toContain("Low-InProgress");
-      // Unset priority sorts last regardless of status.
-      expect(items[3].textContent).toContain("Unset-InProgress");
+      expect(items.map((btn) => btn.querySelector("span")?.textContent)).toEqual([
+        // High bucket, in-progress before planned within the bucket.
+        "High-InProgress",
+        "High-Planned",
+        // Low bucket (still beats unset).
+        "Low-InProgress",
+        // Unset priority sorts last regardless of status.
+        "Unset-InProgress",
+      ]);
     });
 
     it("shows path context for tracked docs in subdirectories", () => {
