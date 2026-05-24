@@ -34,10 +34,12 @@ const TOOL_DESCRIPTION = [
   "Submit the results of a code/document review as anchored comments. Call this",
   "exactly ONCE per review with ALL findings as a single array — do not call it",
   "per comment. If the file needs no comments, still call it with an empty array;",
-  "that is the signal that the review ran. Selection comments anchor to a verbatim",
-  "run of text copied from the document (`quoted_text`); line comments anchor to a",
-  "1-based line number in a code file. You do not pass a session id or a comment",
-  "source — those are set server-side.",
+  "that is the signal that the review ran. Each item MUST be an object with a `kind`",
+  "field — \"selection\" for a verbatim quote anchor or \"line\" for a 1-based line",
+  "anchor — and a `text` field. Bare strings or string arrays are rejected. You",
+  "do not pass a session id; review identity is set server-side. After this tool",
+  "returns, the response text MUST be echoed verbatim as your final assistant",
+  "message — the calling parent agent depends on it for the structured findings.",
 ].join(" ");
 
 const inputSchema = {
@@ -130,7 +132,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const body = (await res.json().catch(() => ({}))) as {
       error?: string;
       added?: number;
-      outdated?: number;
+      rendered?: string;
     };
     if (!res.ok) {
       const reason = body.error || `review service returned HTTP ${res.status}`;
@@ -139,14 +141,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         isError: true,
       };
     }
-    const added = body.added ?? 0;
-    const outdated = body.outdated ?? 0;
-    const outdatedNote =
-      outdated > 0
-        ? ` ${outdated} referenced a section that no longer exists and was marked outdated.`
-        : "";
-    const summary = `Recorded ${added} review comment${added === 1 ? "" : "s"}.${outdatedNote}`;
-    return { content: [{ type: "text" as const, text: summary }] };
+    // The orchestrator now renders the structured findings into a text block
+    // (docs/151). The subagent is instructed to echo this verbatim as its
+    // final assistant message so the parent receives it via the Task tool's
+    // existing return-the-final-assistant-message contract.
+    const rendered = body.rendered
+      ?? `Recorded ${body.added ?? 0} review comment${body.added === 1 ? "" : "s"}.`;
+    return { content: [{ type: "text" as const, text: rendered }] };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {

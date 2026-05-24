@@ -1,6 +1,6 @@
 /**
  * compose-review-body — builds the chat message that kicks off a chat-native
- * AI review (docs/125).
+ * AI review (docs/125, updated by docs/151).
  *
  * Both the "Ask agent to review" button and the `/review` slash command use
  * this so the two entry points produce an identical prompt. The body:
@@ -8,15 +8,18 @@
  *     likely wrote the file, so a first-person review is biased);
  *   - instructs the subagent to call `submit_review_comments` exactly once with
  *     all findings (empty array if none);
- *   - embeds the user's existing comments verbatim so the subagent builds on
- *     them instead of duplicating them.
+ *   - instructs the subagent to echo the tool result verbatim as its final
+ *     assistant message so the structured findings reach the parent through
+ *     the Task tool result (docs/151);
+ *   - embeds the user's existing human-authored comments verbatim so the
+ *     subagent builds on them instead of duplicating them.
  *
- * Embedding rules (plan §"Embedding existing comments"):
- *   - draft comments (human + AI), most recent first, have first claim;
- *   - then the most recent SENT review's `human` comments only — never AI
- *     comments from prior runs (that would create a feedback loop on rerun);
+ * Embedding rules (docs/151 supersedes the docs/125 rules):
+ *   - draft `human` comments only, most recent first — AI comments no longer
+ *     live in the draft bucket (they have their own immutable card history);
+ *   - then the most recent SENT review's `human` comments only;
  *   - hard cap of 20 comments total, each truncated to 500 chars;
- *   - on overflow, oldest drafts drop first and a "N older comments omitted"
+ *   - on overflow, oldest entries drop first and a "N older comments omitted"
  *     note is appended so the subagent knows the embed is partial.
  */
 
@@ -50,39 +53,36 @@ function anchorOf(comment: ReviewComment, origin: "draft" | "sent", sentAt?: str
   return `«${quote}» (selection, ${state})`;
 }
 
-function sourceLabelOf(comment: ReviewComment, origin: "draft" | "sent"): string {
-  if (comment.source === "ai") {
-    // AI comments only ever come from drafts here (sent AI comments are
-    // filtered out before embedding), but label prior-run AI distinctly.
-    return origin === "draft" ? "[agent]" : "[agent (prior)]";
-  }
-  return "[user]";
-}
-
 /**
  * Select up to MAX_EMBEDDED_COMMENTS comments to embed, applying the ranking
  * and drop rules. Returns the chosen comments (in render order) plus how many
  * were dropped by the cap.
+ *
+ * Drops AI-source comments at every step: post-docs/151 the draft is human-only
+ * anyway, but the filter is kept defensively (a session whose draft still
+ * carries pre-migration AI rows in `sent` history wouldn't re-embed them).
  */
 function selectComments(
   draft: FileReview | null,
   mostRecentSent: FileReview | null,
 ): { embeds: EmbeddedComment[]; dropped: number } {
   // Drafts first, most recent last in storage → reverse for newest-first.
-  const draftComments = draft ? [...draft.comments].reverse() : [];
+  const draftHuman = draft
+    ? [...draft.comments].reverse().filter((c) => c.source === "human")
+    : [];
   const sentHuman = mostRecentSent
     ? mostRecentSent.comments.filter((c) => c.source === "human")
     : [];
 
   const ranked: EmbeddedComment[] = [
-    ...draftComments.map((c) => ({
+    ...draftHuman.map((c) => ({
       anchor: anchorOf(c, "draft"),
-      sourceLabel: sourceLabelOf(c, "draft"),
+      sourceLabel: "[user]",
       text: truncate(c.text),
     })),
     ...sentHuman.map((c) => ({
       anchor: anchorOf(c, "sent", mostRecentSent?.sentAt),
-      sourceLabel: sourceLabelOf(c, "sent"),
+      sourceLabel: "[user]",
       text: truncate(c.text),
     })),
   ];
@@ -114,6 +114,9 @@ export function composeReviewMessage(
     "  findings as a single array. Do not call it per-comment.",
     "- If the file needs no new comments, still call `submit_review_comments`",
     "  with an empty array — that is the signal that the review ran.",
+    "- After calling `submit_review_comments`, return the tool result verbatim",
+    "  as your final assistant message. Do not paraphrase, do not add",
+    "  commentary, do not summarize — the parent needs the exact rendered list.",
     "",
     "Focus areas: correctness, completeness, internal consistency, and",
     "contradictions with the rest of the repo. Skip nits.",
@@ -131,8 +134,7 @@ export function composeReviewMessage(
       "--- Existing comments on this file (do not duplicate) ---",
       "",
       "The user has already left these comments. Build on them or cover gaps they",
-      "leave; do not repeat them. Comments labeled [agent (prior)] are from earlier",
-      "AI reviews — treat them as weaker authority than [user] comments.",
+      "leave; do not repeat them.",
       "",
     );
     for (const e of embeds) {

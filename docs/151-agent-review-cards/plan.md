@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 priority: medium
 description: Move AI review submissions out of the human draft bucket into immutable chat-history cards anchored to a snapshot of the file at review time, with the structured findings flowing back to the parent agent via the tool response itself.
 ---

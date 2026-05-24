@@ -12,7 +12,12 @@ import { useUiStore } from "../stores/ui-store.js";
 import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
 import type { CommentWidgetManager, LineCommentLike } from "./MonacoCommentWidgets.js";
 import type { FilePreviewType } from "../utils/file-preview-type.js";
-import type { ReviewComment, FileReview } from "../../server/shared/types.js";
+import type {
+  AgentReview,
+  AgentReviewComment,
+  ReviewComment,
+  FileReview,
+} from "../../server/shared/types.js";
 import { composeReviewMessage } from "../utils/compose-review-body.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import type * as MonacoEditor from "monaco-editor";
@@ -60,6 +65,25 @@ export interface FilePreviewModalProps {
    * Caller dispatches a `send_review_message` and closes the modal.
    */
   onAskAgentReview?: (prompt: string, filePath: string) => void;
+  /**
+   * docs/151 — modal display mode. `live` (default) is the normal draft/send
+   * surface. `agent-review` opens an immutable snapshot of one agent-authored
+   * review: snapshot content, that review's comments only, no draft footer,
+   * no Send button.
+   */
+  mode?: "live" | "agent-review";
+  /**
+   * docs/151 — the agent review to render when `mode === "agent-review"`.
+   * Provides the snapshot content and comments; anchors index into the
+   * snapshot, not the live file.
+   */
+  agentReview?: AgentReview | null;
+  /**
+   * docs/151 — called when the user clicks "View live file" in agent-review
+   * mode. Caller swaps the modal back into the normal `live` surface on the
+   * same file (draft state, history, human authoring available there).
+   */
+  onSwitchToLive?: () => void;
 }
 
 /** Map file extensions to Monaco language IDs. */
@@ -100,11 +124,13 @@ function CodeEditor({
   content,
   sessionId,
   comments,
+  readOnly = false,
 }: {
   filePath: string;
   content: string;
   sessionId: string;
-  comments: ReviewComment[];
+  comments: { id: string; kind: "line" | "selection"; line?: number; text: string }[];
+  readOnly?: boolean;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
   const managerRef = useRef<CommentWidgetManager | null>(null);
@@ -116,7 +142,9 @@ function CodeEditor({
 
   const lineComments = useMemo<LineCommentLike[]>(() => {
     return comments
-      .filter((c): c is Extract<ReviewComment, { kind: "line" }> => c.kind === "line")
+      .filter((c): c is { id: string; kind: "line"; line: number; text: string } =>
+        c.kind === "line" && typeof c.line === "number",
+      )
       .map((c) => ({ id: c.id, kind: "line", line: c.line, text: c.text }));
   }, [comments]);
 
@@ -148,14 +176,18 @@ function CodeEditor({
       managerRef.current = createCommentWidgetManager(editor, {
         filePath,
         onAddComment: (line, text) => {
+          if (readOnly) return;
           void addLineComment(sessionId, filePath, line, text);
         },
         onEditComment: (id, text) => {
+          if (readOnly) return;
           void editComment(sessionId, filePath, id, text);
         },
         onDeleteComment: (id) => {
+          if (readOnly) return;
           void deleteComment(sessionId, filePath, id);
         },
+        readOnly,
       });
 
       managerRef.current.setComments(lineComments);
@@ -170,7 +202,7 @@ function CodeEditor({
     };
     // The lineComments dep is intentionally omitted: we sync via the
     // separate effect below to avoid tearing down the editor on every change.
-  }, [filePath, content, sessionId, addLineComment, editComment, deleteComment]);
+  }, [filePath, content, sessionId, addLineComment, editComment, deleteComment, readOnly]);
 
   // Sync comments without rebuilding the editor.
   // eslint-disable-next-line no-restricted-syntax -- syncing widget state with store updates
@@ -188,57 +220,50 @@ function MarkdownViewer({
   content,
   sessionId,
   comments,
+  readOnly = false,
 }: {
   filePath: string;
   content: string;
   sessionId: string;
-  comments: ReviewComment[];
+  comments: SelectionCommentData[];
+  readOnly?: boolean;
 }) {
   const addSelectionComment = useFileReviewStore((s) => s.addSelectionComment);
   const editComment = useFileReviewStore((s) => s.editComment);
   const deleteComment = useFileReviewStore((s) => s.deleteComment);
 
-  const selectionComments: SelectionCommentData[] = useMemo(() => {
-    return comments
-      .filter((c): c is Extract<ReviewComment, { kind: "selection" }> => c.kind === "selection")
-      .map((c) => ({
-        id: c.id,
-        quotedText: c.quotedText,
-        contextBefore: c.contextBefore,
-        contextAfter: c.contextAfter,
-        text: c.text,
-        source: c.source,
-      }));
-  }, [comments]);
-
   const handleAdd = useCallback(
     (quotedText: string, contextBefore: string, contextAfter: string, text: string) => {
+      if (readOnly) return;
       void addSelectionComment(sessionId, filePath, quotedText, contextBefore, contextAfter, text);
     },
-    [sessionId, filePath, addSelectionComment],
+    [sessionId, filePath, addSelectionComment, readOnly],
   );
 
   const handleEdit = useCallback(
     (commentId: string, text: string) => {
+      if (readOnly) return;
       void editComment(sessionId, filePath, commentId, text);
     },
-    [sessionId, filePath, editComment],
+    [sessionId, filePath, editComment, readOnly],
   );
 
   const handleDelete = useCallback(
     (commentId: string) => {
+      if (readOnly) return;
       void deleteComment(sessionId, filePath, commentId);
     },
-    [sessionId, filePath, deleteComment],
+    [sessionId, filePath, deleteComment, readOnly],
   );
 
   return (
     <MarkdownSelectionComments
       content={content}
-      comments={selectionComments}
+      comments={comments}
       onAddComment={handleAdd}
       onEditComment={handleEdit}
       onDeleteComment={handleDelete}
+      readOnly={readOnly}
     />
   );
 }
@@ -321,8 +346,12 @@ export function FilePreviewModal({
   onClose,
   onSendComments,
   onAskAgentReview,
+  mode = "live",
+  agentReview,
+  onSwitchToLive,
 }: FilePreviewModalProps) {
   const sessionId = useSessionStore((s) => s.sessionId) ?? "";
+  const isAgentReviewMode = mode === "agent-review";
   // Agent-busy state: a review is a chat turn, so we can't start one while the
   // agent is mid-turn. The button stays visible but disabled (the composed
   // prompt depends on current draft state, so we don't auto-queue).
@@ -352,12 +381,15 @@ export function FilePreviewModal({
 
   const reviewable = fileType === "markdown" || fileType === "code";
 
-  // Load draft + history when the modal opens for a reviewable file.
+  // Load draft + history when the modal opens for a reviewable file. Skip in
+  // agent-review mode — that surface is scoped to one immutable review and
+  // doesn't show drafts or history.
   // eslint-disable-next-line no-restricted-syntax -- one-shot fetch tied to (session, file) identity
   useEffect(() => {
+    if (isAgentReviewMode) return;
     if (!sessionId || !reviewable || content === null) return;
     void load(sessionId, filePath);
-  }, [sessionId, filePath, reviewable, content, load]);
+  }, [sessionId, filePath, reviewable, content, load, isAgentReviewMode]);
 
   const commentCount = draft?.comments.length ?? 0;
   // The subagent can usefully review markdown of any size, or code under a cap
@@ -365,20 +397,23 @@ export function FilePreviewModal({
   const reviewableForAgent =
     fileType === "markdown" || (fileType === "code" && (content?.length ?? 0) <= 10 * 1024);
   const showAskReview =
-    reviewable
+    !isAgentReviewMode
+    && reviewable
     && reviewableForAgent
     && !!sessionId
     && content !== null
     && activeAgentSupportsReview
     && !!onAskAgentReview;
-  const canSend = !!onSendComments && commentCount > 0;
+  const canSend = !isAgentReviewMode && !!onSendComments && commentCount > 0;
 
   const handleClose = useCallback(() => {
-    if (sessionId && reviewable && draft?.comments.length === 0) {
+    // Skip the empty-draft cleanup in agent-review mode — that surface never
+    // touches drafts.
+    if (!isAgentReviewMode && sessionId && reviewable && draft?.comments.length === 0) {
       void discardEmptyDraft(sessionId, filePath);
     }
     onClose();
-  }, [sessionId, reviewable, draft, filePath, discardEmptyDraft, onClose]);
+  }, [sessionId, reviewable, draft, filePath, discardEmptyDraft, onClose, isAgentReviewMode]);
 
   const handleSwitchSibling = useCallback(
     (nextPath: string) => {
@@ -405,8 +440,59 @@ export function FilePreviewModal({
     if (prompt) onSendComments(prompt);
   }, [sessionId, filePath, sendDraft, onSendComments]);
 
-  const comments = draft?.comments ?? [];
-  const showSiblingTabs = !!siblings && siblings.length > 1;
+  // In agent-review mode, the comments come from the immutable agent_reviews
+  // row (snapshot-anchored, no source field). In live mode they come from the
+  // current draft.
+  const markdownComments: SelectionCommentData[] = useMemo(() => {
+    if (isAgentReviewMode) {
+      if (!agentReview) return [];
+      return agentReview.comments
+        .filter((c): c is Extract<AgentReviewComment, { kind: "selection" }> => c.kind === "selection")
+        .map((c) => ({
+          id: c.id,
+          quotedText: c.quotedText,
+          contextBefore: c.contextBefore,
+          contextAfter: c.contextAfter,
+          text: c.text,
+          source: "ai" as const,
+        }));
+    }
+    return (draft?.comments ?? [])
+      .filter((c): c is Extract<ReviewComment, { kind: "selection" }> => c.kind === "selection")
+      .map((c) => ({
+        id: c.id,
+        quotedText: c.quotedText,
+        contextBefore: c.contextBefore,
+        contextAfter: c.contextAfter,
+        text: c.text,
+        source: c.source,
+      }));
+  }, [isAgentReviewMode, agentReview, draft]);
+
+  const codeComments = useMemo(() => {
+    if (isAgentReviewMode) {
+      if (!agentReview) return [];
+      return agentReview.comments
+        .filter((c): c is Extract<AgentReviewComment, { kind: "line" }> => c.kind === "line")
+        .map((c) => ({ id: c.id, kind: "line" as const, line: c.line, text: c.text }));
+    }
+    return (draft?.comments ?? [])
+      .filter((c): c is Extract<ReviewComment, { kind: "line" }> => c.kind === "line")
+      .map((c) => ({ id: c.id, kind: "line" as const, line: c.line, text: c.text }));
+  }, [isAgentReviewMode, agentReview, draft]);
+
+  const showSiblingTabs = !isAgentReviewMode && !!siblings && siblings.length > 1;
+  const showFooter =
+    !isAgentReviewMode
+    && reviewable
+    && content !== null
+    && (commentCount > 0 || history.length > 0);
+
+  // Header subtitle for agent-review mode: tell the user the content shown is
+  // a snapshot from review time, not the live file.
+  const snapshotLabel = isAgentReviewMode && agentReview
+    ? `Snapshot from ${new Date(agentReview.createdAt).toLocaleString()} — file may have changed since.`
+    : null;
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
@@ -414,9 +500,31 @@ export function FilePreviewModal({
         {/* Header */}
         <div className="border-b border-(--color-border-secondary) shrink-0">
           <div className="flex items-center justify-between px-6 py-4">
-            <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
-              {filePath}
-            </DialogTitle>
+            <div className="min-w-0">
+              <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
+                {filePath}
+              </DialogTitle>
+              {snapshotLabel && (
+                <div
+                  className="mt-0.5 text-[11px] text-(--color-text-tertiary) truncate"
+                  data-testid="agent-review-snapshot-label"
+                >
+                  {snapshotLabel}
+                  {onSwitchToLive && (
+                    <>
+                      {" "}
+                      <button
+                        type="button"
+                        onClick={onSwitchToLive}
+                        className="text-(--color-accent) hover:underline cursor-pointer"
+                      >
+                        View live file
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
             <div className="flex items-center gap-2 shrink-0 ml-4">
               {showAskReview && (
                 <WithTooltip label={agentRunning ? "Wait for the current turn to finish" : "Start a chat review turn"}>
@@ -480,7 +588,8 @@ export function FilePreviewModal({
               filePath={filePath}
               content={content}
               sessionId={sessionId}
-              comments={comments}
+              comments={markdownComments}
+              readOnly={isAgentReviewMode}
             />
           ) : fileType === "image" ? (
             <div className="flex items-center justify-center h-full">
@@ -499,13 +608,14 @@ export function FilePreviewModal({
               filePath={filePath}
               content={content}
               sessionId={sessionId}
-              comments={comments}
+              comments={codeComments}
+              readOnly={isAgentReviewMode}
             />
           )}
         </div>
 
-        {/* Footer — review controls */}
-        {reviewable && content !== null && (commentCount > 0 || history.length > 0) && (
+        {/* Footer — review controls (live mode only) */}
+        {showFooter && (
           <div className="flex items-center justify-between px-6 py-3 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-4">
             <div className="flex items-center gap-3 min-w-0">
               <span className="text-xs text-(--color-text-secondary) whitespace-nowrap">

@@ -894,6 +894,30 @@ export interface WsReviewUpdated {
   review: FileReview;
 }
 
+/**
+ * Server → Client: an agent review card was added to chat history (docs/151).
+ *
+ * Emitted when the chat-native review subagent finishes a review and writes
+ * its anchored findings via `submit_review_comments`. The card carries enough
+ * metadata to render a summary tile (file path, finding count) inline in the
+ * chat transcript; the snapshot + full comment list are fetched lazily on
+ * `[open]` click via `GET /api/sessions/:sessionId/agent-reviews/:reviewId`.
+ *
+ * Broadcast via `runner.emitMessage()` so every attached viewer sees it and
+ * it lands in the turn-event buffer for reconnecting viewers.
+ */
+export interface WsAgentReviewAdded {
+  type: "agent_review_added";
+  sessionId: string;
+  filePath: string;
+  reviewId: string;
+  fileType: "markdown" | "code";
+  snapshotHash: string;
+  findingCount: number;
+  summary?: string;
+  createdAt: string;
+}
+
 export type WsServerMessage =
   | WsAgentEvent
   | WsError
@@ -979,4 +1003,5 @@ export type WsServerMessage =
   | WsRebaseComplete
   | WsRebaseAborted
   | WsReviewUpdated
+  | WsAgentReviewAdded
   | WsSubscriptionLimits;

@@ -24,7 +24,6 @@ import {
   submitAiReviewComments,
   ServiceError,
 } from "./services/index.js";
-import type { AiReviewCommentInput } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 
 type Source = "human" | "ai";
@@ -252,17 +251,23 @@ export async function registerReviewRoutes(
   );
 
   // ----------------------------------------------------------------
-  // Chat-native AI review write-back (docs/125)
+  // Agent review write-back (docs/151)
   //
   // The session worker relays the agent's `submit_review_comments` tool call
-  // here (worker injects the trusted SESSION_ID). Explicit review turns still
-  // narrow writes to `runner.activeReviewFilePath`, but normal agent/subagent
-  // turns may also post review comments against their declared `filePath`.
-  // `source: "ai"` is forced server-side.
+  // here (worker injects the trusted SESSION_ID). The submission creates an
+  // immutable `agent_reviews` row (with a snapshot of the file at review
+  // time) and broadcasts `agent_review_added` so an inline card lands in the
+  // chat transcript. Explicit chat-native review turns still narrow writes to
+  // `runner.activeReviewFilePath`; normal agent/subagent turns may also post
+  // review comments against their declared `filePath`.
+  //
+  // The response body carries the rendered structured findings the subagent
+  // is instructed to echo verbatim — the parent receives them via the Task
+  // tool result without needing a separate fetch tool.
   // ----------------------------------------------------------------
   app.post<{
     Params: { sessionId: string };
-    Body: { filePath?: string; comments?: AiReviewCommentInput[] };
+    Body: { filePath?: string; comments?: unknown[] };
   }>(
     "/api/sessions/:sessionId/review-submit",
     async (request, reply) => {
@@ -285,20 +290,42 @@ export async function registerReviewRoutes(
         return;
       }
 
+      if (!deps.agentReviewStore) {
+        reply.code(500).send({ error: "Agent review store not configured" });
+        return;
+      }
+
       const dir = resolveSessionDir(deps.sessionManager, sessionId, reply);
       if (!dir) return;
       try {
         const result = await submitAiReviewComments(
-          deps.reviewStore!,
+          deps.agentReviewStore,
           sessionId,
           filePath,
           dir,
           comments,
         );
-        // Broadcast the updated draft so an open file-preview modal renders the
-        // new AI comments live (and reconnecting viewers replay it).
-        runner?.emitMessage({ type: "review_updated", sessionId, filePath, review: result.review });
-        return { ok: true, added: result.added, outdated: result.outdated };
+        // Broadcast a card-shaped event so the chat transcript shows the
+        // review happened and a reconnecting viewer replays it.
+        runner?.emitMessage({
+          type: "agent_review_added",
+          sessionId,
+          filePath,
+          reviewId: result.review.id,
+          fileType: result.review.fileType,
+          snapshotHash: result.review.snapshotHash,
+          findingCount: result.review.comments.length,
+          ...(result.review.summary ? { summary: result.review.summary } : {}),
+          createdAt: result.review.createdAt,
+        });
+        return {
+          ok: true,
+          reviewId: result.review.id,
+          snapshotHash: result.review.snapshotHash,
+          findingCount: result.review.comments.length,
+          added: result.added,
+          rendered: result.rendered,
+        };
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -306,6 +333,28 @@ export async function registerReviewRoutes(
         }
         reply.code(500).send({ error: `Failed to submit review comments: ${getErrorMessage(err)}` });
       }
+    },
+  );
+
+  // ----------------------------------------------------------------
+  // Fetch one agent review (snapshot + comments) for the chat-card modal.
+  // ----------------------------------------------------------------
+  app.get<{
+    Params: { sessionId: string; reviewId: string };
+  }>(
+    "/api/sessions/:sessionId/agent-reviews/:reviewId",
+    async (request, reply) => {
+      const { sessionId, reviewId } = request.params;
+      if (!deps.agentReviewStore) {
+        reply.code(404).send({ error: "Agent review store not configured" });
+        return;
+      }
+      const review = deps.agentReviewStore.getReview(reviewId);
+      if (review?.sessionId !== sessionId) {
+        reply.code(404).send({ error: "Agent review not found" });
+        return;
+      }
+      return review;
     },
   );
 

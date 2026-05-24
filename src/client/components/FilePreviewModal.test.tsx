@@ -321,4 +321,100 @@ describe("FilePreviewModal", () => {
       expect(onSwitchSibling).not.toHaveBeenCalled();
     });
   });
+
+  // docs/151 — agent-review snapshot mode.
+  describe("agent-review mode", () => {
+    const sampleReview = {
+      id: "rev-1",
+      sessionId: "session-1",
+      filePath: "docs/foo/plan.md",
+      fileType: "markdown" as const,
+      snapshotContent: "## Architecture\n\nA design.",
+      snapshotHash: "deadbeefcafef00d",
+      summary: undefined,
+      comments: [
+        {
+          id: "ac1",
+          kind: "selection" as const,
+          quotedText: "A design",
+          contextBefore: "",
+          contextAfter: "",
+          text: "Clarify the registry.",
+        },
+      ],
+      createdAt: "2026-05-01T12:00:00Z",
+    };
+
+    it("renders the snapshot label in the header", () => {
+      setupSessionAndAgents("claude");
+      render(
+        <FilePreviewModal
+          filePath="docs/foo/plan.md"
+          content={sampleReview.snapshotContent}
+          fileType="markdown"
+          onClose={() => {}}
+          mode="agent-review"
+          agentReview={sampleReview}
+        />,
+      );
+      expect(screen.getByTestId("agent-review-snapshot-label")).toHaveTextContent(/Snapshot from/);
+      expect(screen.getByTestId("agent-review-snapshot-label")).toHaveTextContent(/may have changed since/);
+    });
+
+    it("hides the Send button and Ask-agent-to-review button", () => {
+      setupSessionAndAgents("claude");
+      render(
+        <FilePreviewModal
+          filePath="docs/foo/plan.md"
+          content={sampleReview.snapshotContent}
+          fileType="markdown"
+          onClose={() => {}}
+          onSendComments={() => {}}
+          onAskAgentReview={() => {}}
+          mode="agent-review"
+          agentReview={sampleReview}
+        />,
+      );
+      expect(screen.queryByRole("button", { name: /send/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /ask agent to review/i })).not.toBeInTheDocument();
+    });
+
+    it("renders a 'View live file' link wired to onSwitchToLive", () => {
+      setupSessionAndAgents("claude");
+      const onSwitchToLive = vi.fn();
+      render(
+        <FilePreviewModal
+          filePath="docs/foo/plan.md"
+          content={sampleReview.snapshotContent}
+          fileType="markdown"
+          onClose={() => {}}
+          mode="agent-review"
+          agentReview={sampleReview}
+          onSwitchToLive={onSwitchToLive}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /view live file/i }));
+      expect(onSwitchToLive).toHaveBeenCalledOnce();
+    });
+
+    it("suppresses sibling tabs", () => {
+      setupSessionAndAgents("claude");
+      render(
+        <FilePreviewModal
+          filePath="docs/foo/plan.md"
+          content={sampleReview.snapshotContent}
+          fileType="markdown"
+          siblings={[
+            { path: "docs/foo/plan.md", label: "Plan" },
+            { path: "docs/foo/checklist.md", label: "Checklist" },
+          ]}
+          onSwitchSibling={() => {}}
+          onClose={() => {}}
+          mode="agent-review"
+          agentReview={sampleReview}
+        />,
+      );
+      expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    });
+  });
 });
