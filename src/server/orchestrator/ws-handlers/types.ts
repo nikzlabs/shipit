@@ -128,6 +128,16 @@ export interface AppCtx {
    * classify agent result errors that upstream labels too generically.
    */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
+  /**
+   * Turn-driven refresh hook for the subscription-limits poller. Called from
+   * `agent-execution.ts` after each `agent_result` so the Claude pill stays
+   * fresh without a wall-clock poll burning calls against the aggressively
+   * rate-limited `/api/oauth/usage` endpoint (Anthropic returns 429 with
+   * `retry-after: 0` after a few calls — see plan.md "Refresh strategy").
+   * The poller internally debounces so a tight burst of turns can't earn a
+   * 429. Optional — test contexts and non-WS callers don't wire it.
+   */
+  refreshSubscriptionLimits?: (agentId: AgentId) => void;
 
   // Config
   workspaceDir: string;

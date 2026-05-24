@@ -398,6 +398,14 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   currentAgent.on("event", async (event: AgentEvent) => {
     if (event.type !== "agent_result") return;
     receivedResult = true;
+    // Refresh the subscription-limits badge for this provider after each
+    // turn. The poller's wall-clock cadence is a lazy heartbeat because
+    // Anthropic's `/api/oauth/usage` aggressively returns 429 — turn-driven
+    // refresh is the primary freshness signal for Claude. The poller
+    // internally debounces (≥90s between fetches) so a tight burst of
+    // turns doesn't earn a 429. Codex is event-fed via `recordCodexRateLimits`
+    // elsewhere and ignores this trigger.
+    ctx.refreshSubscriptionLimits?.(currentAgent.agentId);
     if (!useStreaming) {
       trySyncTokenBack();
       await tryPostTurnDrain();

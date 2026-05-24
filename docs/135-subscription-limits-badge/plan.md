@@ -363,11 +363,32 @@ plan.
 
 A new `LimitsPoller` lives next to `pr-status-poller.ts`:
 
-- **Cadence:** 5 minutes per provider. Originally 60s, but usage
-  numbers move slowly on the human scale and the upstream limits
-  are tight — per-minute polling burned headroom for no perceptible
-  gain. The poller still fires one *immediate* tick on `start()` so
-  the first SSE snapshot doesn't wait for the interval to elapse.
+- **Cadence:** 30 minutes per provider — a long safety heartbeat.
+  Originally 60s, then 5min, now 30min. Anthropic's
+  `/api/oauth/usage` is aggressively server-side rate-limited
+  (returns 429 with `retry-after: 0` after a handful of calls,
+  then stays 429 for ~30 minutes; this is a known Anthropic-side
+  bug affecting Claude Code itself and the entire community
+  status-line ecosystem — see
+  [anthropics/claude-code#31637](https://github.com/anthropics/claude-code/issues/31637),
+  [#30930](https://github.com/anthropics/claude-code/issues/30930)).
+  Wall-clock polling at any cadence eventually trips this and
+  leaves the badge stuck on 30-minute-old data. **Fresh data
+  primarily flows in via `triggerProviderRefresh()` on agent-turn
+  completion (Claude) and `recordCodexRateLimits()` from the agent
+  event stream (Codex);** the 30-minute timer exists only to
+  refresh idle tabs that haven't run a turn in a long time. The
+  poller still fires one *immediate* tick on `start()` so the
+  first SSE snapshot doesn't wait for the interval to elapse.
+- **Turn-driven refresh (Claude):** `agent-execution.ts` calls
+  `refreshSubscriptionLimits(agentId)` after each `agent_result`
+  event. The poller's `triggerProviderRefresh(agentId)` debounces
+  to ≥90s between fetches per provider, respects `authStalled` and
+  the 429 `pollNotBefore` backoff (so a busy user can't defeat
+  either), and otherwise issues an immediate `refreshOne(agentId)`.
+  This synchronizes upstream calls with the user's actual usage —
+  no calls when idle, fresh numbers after every turn the debounce
+  allows.
 - **Trigger:** runs whenever there is at least one connected SSE
   client AND at least one registered provider returns
   `canFetch() === true`. Notably: an *active runner* is **not**
@@ -467,9 +488,11 @@ A new `LimitsPoller` lives next to `pr-status-poller.ts`:
 
 This mirrors the existing `docker_memory` flow in `index.ts:406–423` in
 shape (cache + SSE broadcast + initial-connect snapshot) but with a
-map-valued cache and a 5-minute cadence rather than the unconditional
+map-valued cache and a 30-minute heartbeat rather than the unconditional
 10s timer — the upstream cost matters here, the cost of `docker stats`
-locally does not.
+locally does not. The primary refresh signal for Claude is the
+turn-driven `triggerProviderRefresh()` path described above, not the
+heartbeat.
 
 ### Multi-provider display
 

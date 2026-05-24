@@ -1147,6 +1147,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         prStatusPoller,
         recordCodexRateLimits,
         getSubscriptionLimitsSnapshot: () => limitsPoller?.getSnapshot() ?? {},
+        refreshSubscriptionLimits: limitsPoller
+          ? (agentId) => limitsPoller.triggerProviderRefresh(agentId)
+          : undefined,
         workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
       };
