@@ -10,8 +10,10 @@ import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { PlatformCredentialProvider } from "./platform-credentials.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
-import type { AgentId, AgentProcess, WsLogEntry } from "../shared/types.js";
+import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap } from "../shared/types.js";
 import type { RuntimeMode } from "./app-di.js";
+import type { UsageManager } from "./usage.js";
+import type { AuthManager } from "./auth.js";
 import { pushToOrigin } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { getErrorMessage } from "./validation.js";
@@ -124,6 +126,36 @@ export interface RunnerRegistryDeps {
    * reference. Optional so tests omit it.
    */
   getPrStatusPoller?: () => PrStatusPoller | undefined;
+  /**
+   * Usage manager — used by `wireAgentListeners` to record per-turn token /
+   * cost telemetry on `agent_result`. Shared with the WS path so a system-
+   * dispatched turn lands in the same `usage_turns` series as a user-typed
+   * turn (cost graph, ContextDial, etc.).
+   */
+  usageManager: UsageManager;
+  /**
+   * Claude auth manager — used by `wireAgentListeners` to kick off the OAuth
+   * flow when the CLI emits `auth_required`. Without it a system turn that
+   * runs into a stale token would just emit `auth_required` with no
+   * follow-up. Shared with the WS path.
+   */
+  authManager: AuthManager;
+  /**
+   * Optional — push a Codex rate-limit snapshot (from an `agent_rate_limits`
+   * AgentEvent) into the subscription-limits badge. Mirrors the WS-path
+   * `AppCtx.recordCodexRateLimits`. Wired by `index.ts` after the limits
+   * provider is constructed.
+   */
+  recordCodexRateLimits?: (
+    session: { usedPct: number; resetAt: string } | null,
+    weekly: { usedPct: number; resetAt: string } | null,
+  ) => void;
+  /**
+   * Optional — latest subscription-limits snapshot used by the listener to
+   * reclassify generic "monthly usage limit" CLI errors into the precise
+   * "5h usage limit" message when a session window is exhausted.
+   */
+  getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
 }
 
 /**
@@ -139,6 +171,7 @@ export function createRunnerRegistry(
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
+    usageManager, authManager, recordCodexRateLimits, getSubscriptionLimitsSnapshot,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -152,6 +185,23 @@ export function createRunnerRegistry(
     },
     onRunnerIdle: () => enforceIdleContainerLimit(),
     onRunnerCreated: (runner) => {
+      // Shared listener deps — same shape `wireAgentListeners` consumes on
+      // the WS path. The system-turn flow now goes through the same listener,
+      // so a Fix CI / child-session / `/agent/dispatch` turn produces chat
+      // history with the same message-group structure (tool calls visible,
+      // assistant text split at tool-result boundaries) as a user-typed turn.
+      const listenerDeps = {
+        sessionManager,
+        chatHistoryManager,
+        usageManager,
+        authManager,
+        sseBroadcast,
+        broadcastLog: (source: WsLogEntry["source"], text: string) =>
+          broadcastLog(runner.sessionId, source, text),
+        getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
+        ...(recordCodexRateLimits ? { recordCodexRateLimits } : {}),
+        ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
+      };
       runner.setSystemTurnDeps({
         agentFactory: (agentId) => {
           if (runner.createAgent) return runner.createAgent(agentId);
@@ -186,11 +236,7 @@ export function createRunnerRegistry(
             }
           }, autoPushDebounceMs));
         },
-        sseBroadcast,
-        persistMessage: (sessionId, msg) => chatHistoryManager.append(sessionId, msg),
-        replaceInProgress: (sessionId, messages) => chatHistoryManager.replaceInProgress(sessionId, messages),
-        finalizeInProgress: (sessionId) => chatHistoryManager.finalizeInProgress(sessionId),
-        clearInProgress: (sessionId) => chatHistoryManager.clearInProgress(sessionId),
+        listenerDeps,
         // docs/149 — assemble full AgentRunParams for system turns. Without
         // this, spawned-session / CI-auto-fix turns ran with only
         // `{ prompt, sessionId, cwd }` (no system prompt, no settings, no

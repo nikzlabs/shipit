@@ -7,9 +7,18 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { AgentProcess, AgentId, AgentEvent, TerminalProcess, AgentRunParams } from "../shared/types.js";
+import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
 import type { ServiceManager } from "./service-manager.js";
+import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
+
+// `runDispatchedTurn` lives in a separate module because it depends on
+// `wireAgentListeners` at runtime, which would otherwise create an import
+// cycle through `ws-handlers/agent-listeners.ts` ↔ `session-runner.ts`.
+// Re-exported here so container-session-runner.ts (and the runner classes
+// in this file) can keep their existing import path.
+import { runDispatchedTurn } from "./dispatched-turn.js";
+export { runDispatchedTurn };
 
 // ---------------------------------------------------------------------------
 // Types
@@ -130,16 +139,15 @@ export interface SystemTurnDeps {
   autoCommit: (sessionDir: string, summary: string) => Promise<string | null>;
   /** Schedule a debounced auto-push after a commit. */
   scheduleAutoPush: (sessionDir: string) => void;
-  /** Broadcast to SSE clients. */
-  sseBroadcast: (event: string, data: unknown) => void;
-  /** Persist a chat message to history. */
-  persistMessage: (sessionId: string, msg: { role: "user" | "assistant"; text: string }) => void;
-  /** Replace in-progress messages in chat history (incremental persistence). */
-  replaceInProgress?: (sessionId: string, messages: { role: "assistant"; text: string; inProgress: true }[]) => void;
-  /** Finalize in-progress messages (remove the flag) after turn completion. */
-  finalizeInProgress?: (sessionId: string) => void;
-  /** Clear in-progress messages on error/abort. */
-  clearInProgress?: (sessionId: string) => void;
+  /**
+   * Shared agent-listener deps. Same shape `wireAgentListeners` consumes on
+   * the WS path — sharing it means message-group accumulation + chat-history
+   * persistence behaves identically regardless of who initiated the turn
+   * (user message, Fix CI, child-session spawn, /agent/dispatch HTTP route,
+   * rebase conflict resolution). All listener-relevant managers (session,
+   * chatHistory, usage, auth) and broadcasters (sse, log) live here.
+   */
+  listenerDeps: AgentListenerDeps;
   /**
    * docs/149 — build the full `AgentRunParams` for this turn (system prompt,
    * model, settings, MCP, autoCreatePr, permissionMode, resume id). Without
@@ -167,149 +175,25 @@ export interface SystemTurnDeps {
 }
 
 /**
- * Minimal host interface for the shared runDispatchedTurn() free function.
- * Both SessionRunner and ContainerSessionRunner satisfy this contract.
+ * Reset every per-turn field on the runner before starting a new agent turn.
+ * Shared by all turn flows (WS user-typed, system-dispatched, rebase conflict
+ * resolution) so message-group accumulation always starts from a clean slate
+ * — without this, a stale `chatMessageGroups` from a previous turn would mix
+ * into the new turn's chat history. Pair with `wireAgentListeners`.
  */
-export interface SystemTurnHost {
-  readonly sessionId: string;
-  readonly sessionDir: string;
-  running: boolean;
-  accumulatedText: string;
-  turnSummary: string;
-  needsNewMessageGroup: boolean;
-  clearTurnEventBuffer(): void;
-  emitMessage(msg: WsServerMessage): void;
-  setAgent(a: AgentProcess | null): void;
-  dequeue(): QueuedMessage | undefined;
-  readonly queueLength: number;
-  getQueueSnapshot(): { text: string; position: number }[];
-  onAgentFinished(): void;
-}
-
-/**
- * Shared implementation for dispatched agent turns (docs/150). Used by both
- * SessionRunner and ContainerSessionRunner to avoid code duplication.
- *
- * docs/149 — async because run-params assembly is async (reads system prompt,
- * MCP config, etc). Callers fire-and-forget via `void this._runDispatchedTurn(...)`
- * — `dispatch` still returns `void`.
- */
-export async function runDispatchedTurn(
-  host: SystemTurnHost,
-  deps: SystemTurnDeps,
-  agentId: AgentId,
-  opts: AgentDispatchOptions,
-  createAgent: (agentId: AgentId) => AgentProcess,
-): Promise<void> {
-  const { text, activity } = opts;
-  const agent = createAgent(agentId);
-  host.running = true;
-  host.accumulatedText = "";
-  host.turnSummary = "";
-  host.needsNewMessageGroup = true;
-  host.clearTurnEventBuffer();
-
-  host.emitMessage({ type: "system_user_message", text, activity });
-  deps.persistMessage(host.sessionId, { role: "user", text });
-  deps.sseBroadcast("session_agent_started", { sessionId: host.sessionId, activity });
-
-  agent.on("event", (event: AgentEvent) => {
-    host.emitMessage({ type: "agent_event", event });
-
-    if (event.type === "agent_assistant") {
-      const contentArr = (event as { content?: { type: string; text?: string }[] }).content ?? [];
-      const agentText = contentArr
-        .filter((b): b is { type: "text"; text: string } => b.type === "text")
-        .map((b) => b.text)
-        .join("\n\n");
-      if (agentText) {
-        host.turnSummary = agentText;
-        host.accumulatedText += agentText;
-      }
-    }
-
-    if (event.type === "agent_tool_result" && host.accumulatedText) {
-      deps.replaceInProgress?.(host.sessionId, [
-        { role: "assistant", text: host.accumulatedText, inProgress: true },
-      ]);
-    }
-
-    if (event.type === "agent_result" && host.accumulatedText) {
-      deps.replaceInProgress?.(host.sessionId, [
-        { role: "assistant", text: host.accumulatedText, inProgress: true },
-      ]);
-      deps.finalizeInProgress?.(host.sessionId);
-    }
-  });
-
-  agent.on("error", (err: Error) => {
-    console.error("[system-turn] agent error:", err.message);
-    host.emitMessage({ type: "error", message: `Agent process error: ${err.message}` });
-    deps.clearInProgress?.(host.sessionId);
-    host.setAgent(null);
-  });
-
-  agent.on("done", async (code: number | null) => {
-    console.log("[system-turn] agent exited with code", code);
-    host.setAgent(null);
-
-    // docs/149 — write back any CLI-rotated OAuth token before doing further
-    // post-turn work. Matches the WS-path `syncTokenBackAfterTurn` behavior.
-    deps.finalizeAgentEnv?.(host.sessionId, agentId);
-
-    let commitHash: string | null = null;
-    try {
-      // docs/150 — fallback chain: prefer the assistant-derived summary (the
-      // first line of the agent's text output), then the dispatch's activity
-      // label, then a generic "agent turn" so the commit message is always
-      // meaningful instead of the legacy literal "CI fix".
-      const summary =
-        host.turnSummary.split("\n")[0]?.slice(0, 120) || activity || "agent turn";
-      commitHash = await deps.autoCommit(host.sessionDir, summary);
-      if (commitHash) {
-        host.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
-        deps.scheduleAutoPush(host.sessionDir);
-      }
-    } catch (err) {
-      console.error("[system-turn] auto-commit failed:", err);
-    }
-
-    // docs/149 — emit PR lifecycle card after the commit lands, same as the
-    // WS path. Optional dep; tests can leave it unwired.
-    if (commitHash) {
-      try {
-        await deps.postTurnPrFlow?.(host.sessionId, host.sessionDir, commitHash, (m) => host.emitMessage(m));
-      } catch (err) {
-        console.error("[system-turn] pr-lifecycle flow failed:", err);
-      }
-    }
-
-    host.running = false;
-    if (host.queueLength > 0) {
-      const next = host.dequeue();
-      if (next) {
-        host.emitMessage({ type: "queue_updated", queue: host.getQueueSnapshot() });
-        // docs/150 — thread every QueuedMessage field through, not just `text`.
-        // The previous implementation silently dropped images / files / uploads /
-        // permissionMode / reviewFilePath / activity from a queued message at drain time.
-        const nextOpts: AgentDispatchOptions = { text: next.text };
-        if (next.activity !== undefined) nextOpts.activity = next.activity;
-        if (next.images !== undefined) nextOpts.images = next.images;
-        if (next.files !== undefined) nextOpts.files = next.files;
-        if (next.uploads !== undefined) nextOpts.uploads = next.uploads;
-        if (next.permissionMode !== undefined) nextOpts.permissionMode = next.permissionMode;
-        if (next.reviewFilePath !== undefined) nextOpts.reviewFilePath = next.reviewFilePath;
-        void runDispatchedTurn(host, deps, agentId, nextOpts, createAgent);
-        return;
-      }
-    }
-
-    deps.sseBroadcast("session_agent_finished", { sessionId: host.sessionId });
-    host.onAgentFinished();
-  });
-
-  const runParams = await deps.buildRunParams(host.sessionId, agentId, text);
-  agent.run(runParams);
+export function resetRunnerTurnState(
+  runner: SessionRunnerInterface,
+  opts?: { reviewFilePath?: string | null },
+): void {
+  runner.clearTurnEventBuffer();
+  runner.turnSummary = "";
+  runner.accumulatedText = "";
+  runner.accumulatedToolUse = [];
+  runner.chatMessageGroups = [];
+  runner.needsNewMessageGroup = true;
+  runner.steeredMessages = [];
+  runner.wasInterrupted = false;
+  runner.activeReviewFilePath = opts?.reviewFilePath ?? null;
 }
 
 // ---------------------------------------------------------------------------
