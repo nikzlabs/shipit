@@ -928,7 +928,14 @@ export default function App() {
           title={currentSession.title}
           onRename={(title) => useSessionStore.getState().renameSession(currentSession.id, title)}
           onDownloadChat={handleDownloadChat}
-          onArchive={() => { void useSessionStore.getState().archiveSession(currentSession.id); if (activeRepoUrl) void handleNewSessionForRepo(activeRepoUrl); }}
+          onArchive={() => {
+            // Prefer the archived session's own repo. `activeRepoUrl` can be
+            // stale (it isn't re-synced on URL navigation), so falling through
+            // to it could land the replacement session in a different repo.
+            const repoUrl = currentSession.remoteUrl ?? activeRepoUrl;
+            void useSessionStore.getState().archiveSession(currentSession.id);
+            if (repoUrl) void handleNewSessionForRepo(repoUrl);
+          }}
         />
       )}
       {showHomeScreen ? (
