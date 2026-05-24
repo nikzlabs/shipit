@@ -4,11 +4,9 @@
 
 ### Server
 
-- [x] Add `prCommentSync` feature-flag setting to `CredentialStore` (default `false`)
-- [x] Thread the flag through `GlobalSettings` so it surfaces in the bootstrap payload
 - [x] Add `addPullRequestReviewThreadReply` / `resolveReviewThread` / `unresolveReviewThread` GraphQL helpers (`github-auth-review-threads.ts`)
 - [x] Wire those helpers onto `GitHubAuthManager`
-- [x] Create `services/github-pr-comments.ts` with feature-flag + auth gates
+- [x] Create `services/github-pr-comments.ts` with an auth gate
 - [x] Add HTTP routes:
   - [x] `POST /api/sessions/:id/pr/threads/:threadId/reply`
   - [x] `POST /api/sessions/:id/pr/threads/:threadId/resolve`
@@ -17,24 +15,18 @@
 
 ### Client
 
-- [x] Add `prCommentSync` slice + setter to `settings-store.ts`
-- [x] Add `prCommentSync` toggle to Settings → GitHub tab
 - [x] Add `replyToThread` / `resolveThread` / `unresolveThread` actions to `pr-store.ts` (optimistic + revert)
-- [x] Add reply box + Resolve/Reopen controls to `PrConversationSection.tsx`, gated by the flag
-- [x] Pick up `prCommentSync` from the bootstrap payload (`session-data.ts`, `App.tsx`)
-- [x] Update `WsGlobalSettings` handler so live-pushed settings include the flag
+- [x] Add reply box + Resolve/Reopen controls to `PrConversationSection.tsx`
 
 ### Tests
 
 - [x] Unit tests for the GraphQL helpers (`github-auth-review-threads.test.ts`)
 - [x] Integration tests for the three routes (`pr-comment-sync.test.ts`):
-  - [x] flag-off → 403 with no GitHub call
-  - [x] flag-on but no auth → 401
+  - [x] no auth → 401
   - [x] unknown session → 404
   - [x] empty body → 400
   - [x] happy path → forwards trimmed body + thread id
   - [x] GitHub failure → 502
-  - [x] settings PUT persists the flag and bootstrap surfaces it
 
 ### Wrap-up
 
@@ -56,10 +48,10 @@ as planning notes unless they grow into their own feature docs.
 
   This should follow inline rendering. Posting each line comment immediately is noisy and does not match GitHub's review workflow. A pending-review batch makes ShipIt behave like a real PR review surface instead of a comment proxy.
 
+- [x] Remove the `prCommentSync` opt-in flag
+
+  The flag gated only user-triggered write surfaces (Reply / Resolve / Send review), so it never guarded against background mutation. After the beta cycle the flag was retired; auth is the only remaining gate.
+
 - Add an auto-loop hook on new GitHub-sourced comments (per-session opt-in, similar to `autoFix`)
 
   This becomes valuable after comments are visible inline: a reviewer comment can prompt the agent to address feedback without the user manually copying context. Keep it opt-in because automatic agent action on teammate comments can be surprising.
-
-- Promote `prCommentSync` to default-on after a beta cycle
-
-  Default-on makes sense once inline rendering and write-back are trustworthy. Before then, the flag should stay off so a partial workflow is not exposed as the default experience.

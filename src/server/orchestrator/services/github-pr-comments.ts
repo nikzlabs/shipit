@@ -1,33 +1,21 @@
 /**
  * PR review-thread comment-sync services (docs/102).
  *
- * Three pure functions composed by the HTTP routes layer:
+ * Four pure functions composed by the HTTP routes layer:
  *   - replyToReviewThread(threadId, body)
  *   - resolveReviewThread(threadId)
  *   - unresolveReviewThread(threadId)
+ *   - submitReviewComments(...) — batches local line comments into one review
  *
- * Each enforces the `prCommentSync` feature flag in the CredentialStore — when
- * the flag is off the service throws `ServiceError(403, …)` so the route
- * returns a 403. The read side (the poller fetching `reviewThreads` on the
- * GraphQL query) ships unconditionally with docs/133 Phase 4 and is not gated
- * by this flag.
- *
- * Pulling the existence check into the service keeps both the HTTP routes and
- * any future WS handler that wants to call these in sync without duplicating
- * the flag check.
+ * Each enforces GitHub auth. The read side (the poller fetching
+ * `reviewThreads` on the GraphQL query) ships unconditionally with docs/133
+ * Phase 4.
  */
 
-import type { CredentialStore } from "../credential-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { GitManager } from "../../shared/git.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import { ServiceError } from "./types.js";
-
-function ensureEnabled(credentialStore: CredentialStore): void {
-  if (!credentialStore.getPrCommentSync()) {
-    throw new ServiceError(403, "PR comment sync is disabled. Enable it in Settings.");
-  }
-}
 
 function ensureAuthenticated(githubAuthManager: GitHubAuthManager): void {
   if (!githubAuthManager.authenticated) {
@@ -96,12 +84,10 @@ async function resolveGitHubRemote(
  * owner.
  */
 export async function replyToReviewThread(
-  credentialStore: CredentialStore,
   githubAuthManager: GitHubAuthManager,
   threadId: string,
   body: string,
 ): Promise<{ success: boolean; message: string }> {
-  ensureEnabled(credentialStore);
   ensureAuthenticated(githubAuthManager);
   ensureThreadId(threadId);
   const trimmed = typeof body === "string" ? body.trim() : "";
@@ -116,11 +102,9 @@ export async function replyToReviewThread(
 
 /** Mark a PR review thread as resolved. */
 export async function resolveReviewThread(
-  credentialStore: CredentialStore,
   githubAuthManager: GitHubAuthManager,
   threadId: string,
 ): Promise<{ success: boolean; message: string }> {
-  ensureEnabled(credentialStore);
   ensureAuthenticated(githubAuthManager);
   ensureThreadId(threadId);
 
@@ -133,11 +117,9 @@ export async function resolveReviewThread(
 
 /** Reopen (unresolve) a previously-resolved review thread. */
 export async function unresolveReviewThread(
-  credentialStore: CredentialStore,
   githubAuthManager: GitHubAuthManager,
   threadId: string,
 ): Promise<{ success: boolean; message: string }> {
-  ensureEnabled(credentialStore);
   ensureAuthenticated(githubAuthManager);
   ensureThreadId(threadId);
 
@@ -150,13 +132,11 @@ export async function unresolveReviewThread(
 
 /** Submit local diff comments to the current branch's PR as one GitHub review. */
 export async function submitReviewComments(
-  credentialStore: CredentialStore,
   githubAuthManager: GitHubAuthManager,
   git: GitManager,
   comments: unknown,
   remoteUrl?: string,
 ): Promise<{ success: boolean; message: string; count: number }> {
-  ensureEnabled(credentialStore);
   ensureAuthenticated(githubAuthManager);
   const reviewComments = ensureReviewComments(comments);
 

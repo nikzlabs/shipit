@@ -47,11 +47,6 @@ interface SettingsState {
   quickCaptureHotkey: string;
   autoCreatePr: boolean;
   liveSteering: boolean;
-  /**
-   * When true, the PR conversation panel shows reply/resolve controls that
-   * write through to GitHub (docs/102). Defaults off; toggled in Settings.
-   */
-  prCommentSync: boolean;
   /** Active Codex device-auth flow state — `null` when no flow is running. */
   codexDeviceAuth: CodexDeviceAuth | null;
   /** Last device-auth failure message — `null` when no error. */
@@ -68,7 +63,6 @@ interface SettingsState {
   setQuickCaptureHotkey: (hotkey: string) => void;
   setAutoCreatePr: (enabled: boolean) => void;
   setLiveSteering: (enabled: boolean) => void;
-  setPrCommentSync: (enabled: boolean) => void;
   setCodexDeviceAuth: (state: CodexDeviceAuth | null) => void;
   setCodexDeviceAuthError: (message: string | null) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
@@ -117,7 +111,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   quickCaptureHotkey: getSavedQuickCaptureHotkey(),
   autoCreatePr: false,
   liveSteering: false,
-  prCommentSync: false,
   codexDeviceAuth: null,
   codexDeviceAuthError: null,
   providerAccounts: [],
@@ -150,8 +143,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),
 
   setLiveSteering: (enabled) => set({ liveSteering: enabled }),
-
-  setPrCommentSync: (enabled) => set({ prCommentSync: enabled }),
 
   setCodexDeviceAuth: (state) => set({ codexDeviceAuth: state }),
 

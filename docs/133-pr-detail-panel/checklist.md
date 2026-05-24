@@ -127,8 +127,7 @@ can pick the right sequence instead of treating every unchecked box equally.
 ## Phase 4 — Conversation section (✅ done for docs/133)
 
 Shipped scope: issue comments read + post; review threads read + reply +
-resolve/reopen in the PR tab when `prCommentSync` is enabled; poller
-heavy-field gating via `pr_tab_active`.
+resolve/reopen in the PR tab; poller heavy-field gating via `pr_tab_active`.
 
 ### Server — data layer
 - [x] `github-types.ts`: add `PrCommentAuthor`, `PrIssueComment`,
