@@ -7,6 +7,7 @@ const MODEL_PREFERENCE_KEY = "vibe-model-id";
 const ACTIVE_REPO_KEY = "vibe-active-repo";
 const NOTIFY_ON_FINISH_KEY = "shipit-notify-on-finish";
 const SOUND_ON_FINISH_KEY = "shipit-sound-on-finish";
+const QUICK_CAPTURE_HOTKEY_KEY = "shipit-quick-capture-hotkey";
 
 export function getSavedSidebarCollapsed(): boolean {
   try {
@@ -134,6 +135,22 @@ export function getSavedSoundOnFinish(): boolean {
 export function saveSoundOnFinish(enabled: boolean): void {
   try {
     localStorage.setItem(SOUND_ON_FINISH_KEY, String(enabled));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export function getSavedQuickCaptureHotkey(): string {
+  try {
+    return localStorage.getItem(QUICK_CAPTURE_HOTKEY_KEY) ?? "mod+alt+n";
+  } catch {
+    return "mod+alt+n";
+  }
+}
+
+export function saveQuickCaptureHotkey(hotkey: string): void {
+  try {
+    localStorage.setItem(QUICK_CAPTURE_HOTKEY_KEY, hotkey);
   } catch {
     // localStorage may be unavailable
   }

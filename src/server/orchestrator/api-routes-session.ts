@@ -29,6 +29,7 @@ import {
   reorderRepos,
   createRepoWithTemplate,
   spawnChildSession,
+  createHeadlessSession,
   listSpawnedChildren,
   getSpawnedChild,
   sendChildMessage,
@@ -291,6 +292,52 @@ export async function registerSessionRoutes(
   // orchestrator. The orchestrator still enforces "child must be a direct
   // descendant of parent" on every read.
   // ===========================================================================
+
+  // POST /api/sessions/headless — quick-capture session creation.
+  app.post<{
+    Body: {
+      repoUrl?: string;
+      initialPrompt?: string;
+      branch?: string;
+      agent?: AgentId;
+      model?: string;
+    };
+  }>(
+    "/api/sessions/headless",
+    async (request, reply) => {
+      const body = request.body ?? {};
+      try {
+        const result = await createHeadlessSession(
+          sessionManager,
+          deps.runnerRegistry,
+          claimSessionService,
+          {
+            repoUrl: body.repoUrl ?? "",
+            prompt: body.initialPrompt ?? "",
+            ...(body.branch !== undefined ? { branch: body.branch } : {}),
+            ...(body.agent !== undefined ? { agent: body.agent } : {}),
+            ...(body.model !== undefined ? { model: body.model } : {}),
+          },
+          deps.defaultAgentId,
+          deps.credentialsDir,
+          deps.credentialStore,
+        );
+        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        return {
+          sessionId: result.sessionId,
+          branch: result.branch,
+          status: "running" as const,
+          session: result.session,
+        };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Couldn't start a session — try again: ${getErrorMessage(err)}` });
+      }
+    },
+  );
 
   // POST /api/sessions/:parentId/spawn — agent-driven session spawn
   app.post<{

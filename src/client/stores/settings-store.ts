@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { PermissionMode, FileContextRef, ProviderAccount } from "../../server/shared/types.js";
-import { getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, saveSoundOnFinish } from "../utils/local-storage.js";
+import { getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, saveSoundOnFinish, getSavedQuickCaptureHotkey, saveQuickCaptureHotkey } from "../utils/local-storage.js";
 
 /**
  * In-flight `codex login --device-auth` state. Server pushes this via SSE
@@ -44,6 +44,7 @@ interface SettingsState {
   agentSystemInstructions: string;
   notifyOnFinish: boolean;
   soundOnFinish: boolean;
+  quickCaptureHotkey: string;
   autoCreatePr: boolean;
   liveSteering: boolean;
   /**
@@ -64,6 +65,7 @@ interface SettingsState {
   setAgentSystemInstructions: (text: string) => void;
   setNotifyOnFinish: (enabled: boolean) => void;
   setSoundOnFinish: (enabled: boolean) => void;
+  setQuickCaptureHotkey: (hotkey: string) => void;
   setAutoCreatePr: (enabled: boolean) => void;
   setLiveSteering: (enabled: boolean) => void;
   setPrCommentSync: (enabled: boolean) => void;
@@ -112,6 +114,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   agentSystemInstructions: "",
   notifyOnFinish: getSavedNotifyOnFinish(),
   soundOnFinish: getSavedSoundOnFinish(),
+  quickCaptureHotkey: getSavedQuickCaptureHotkey(),
   autoCreatePr: false,
   liveSteering: false,
   prCommentSync: false,
@@ -137,6 +140,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setSoundOnFinish: (enabled) => {
     saveSoundOnFinish(enabled);
     set({ soundOnFinish: enabled });
+  },
+
+  setQuickCaptureHotkey: (hotkey) => {
+    saveQuickCaptureHotkey(hotkey);
+    set({ quickCaptureHotkey: hotkey });
   },
 
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),

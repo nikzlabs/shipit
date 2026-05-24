@@ -11,6 +11,7 @@ export * from "./skills.js";
 export * from "./session.js";
 export * from "./spawn-telemetry.js";
 export * from "./claim-session.js";
+export * from "./headless-sessions.js";
 export * from "./git.js";
 export * from "./github.js";
 export * from "./github-pr-comments.js";
