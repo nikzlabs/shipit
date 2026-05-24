@@ -314,7 +314,8 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
     });
     emitSnapshotAvailable(ctx, snapshot);
   } catch (err) {
-    ctx.send({ type: "error", message: `Rewind failed: ${getErrorMessage(err)}` });
+    const label = action === "fork" ? "Fork failed" : "Rewind failed";
+    ctx.send({ type: "error", message: `${label}: ${getErrorMessage(err)}` });
   }
 }
 
