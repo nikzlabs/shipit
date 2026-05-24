@@ -9,7 +9,8 @@ description: Connect user MCP servers (Linear, Notion, Sentry, etc.) to the inne
 > stdio + HTTP transports, tool allowlisting, crash detection, and native
 > OAuth (Linear + Notion, with RFC 7591 dynamic client registration via the
 > `docs/139-mcp-dynamic-client-registration/` follow-up) are all shipped and
-> covered by tests. Linear and Notion are confirmed working end-to-end.
+> covered by tests. Linear and Notion are confirmed working end-to-end for
+> Claude and Codex-backed sessions.
 > Remaining work is **Phase 3 — Advanced features** only (server sharing,
 > per-repo config, marketplace, base-image pre-install, multi-instance OAuth);
 > each is separate future scope and will get its own doc when picked up.
@@ -82,6 +83,16 @@ description: Connect user MCP servers (Linear, Notion, Sentry, etc.) to the inne
 > McpStore's last-write-wins `applyStatus()` means a successful init event
 > on a later turn clears the badge back to `loaded`. Non-`mcp__*` tool
 > failures are ignored (they don't belong to any user-configured server).
+
+> **Codex parity landed.** The same account-level `mcpServers` payload now
+> reaches Codex sessions. The session worker writes a ShipIt-managed
+> `[mcp_servers.*]` block into Codex's `config.toml` before `codex app-server`
+> starts, while preserving user-owned config outside that block and replacing
+> the managed block each turn so removed servers do not linger. For stdio
+> server env and HTTP headers, resolved secret values are supplied through the
+> Codex child process environment (`env_vars` / `env_http_headers`) instead of
+> being persisted in `config.toml`; secrets embedded in command arguments are
+> the one unavoidable literal case because Codex has no argv indirection.
 
 ## Overview
 
