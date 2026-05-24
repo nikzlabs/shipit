@@ -116,31 +116,51 @@ function ChecklistProgressBadge({
 }
 
 /**
- * Fuses the "In Progress" status and the `done/total` checklist count into a
- * single pill whose background doubles as a progress bar: the warning-tinted
- * fill spans `done/total` of the pill width, the rest is the neutral track.
- * The partial fill *is* the "in progress" signal, so we drop the separate
- * status label. Text stays neutral (`text-secondary`) because it sits over
- * both the fill and the track and must read on either.
+ * Per-status fill color for the fused progress pill. Mirrors the badge variant
+ * each status uses (warning/info/success/error) so the pill is recognizable
+ * as that status at a glance. `paused` has no semantic color — we use
+ * `border-secondary` so the fill is still visible against the `bg-tertiary`
+ * track in both themes.
+ */
+const STATUS_FILL_VAR: Record<DocStatus, string> = {
+  "in-progress": "--color-warning-subtle",
+  "planned": "--color-info-subtle",
+  "paused": "--color-border-secondary",
+  "done": "--color-success-subtle",
+  "rejected": "--color-error-subtle",
+};
+
+/**
+ * Fuses status and `done/total` checklist count into a single pill whose
+ * background doubles as a progress bar: a status-tinted fill spans `done/total`
+ * of the pill width, the rest is the neutral `bg-tertiary` track. The fill
+ * color *is* the status signal, so we drop the separate status label. Text
+ * stays neutral (`text-secondary`) because it sits over both the fill and the
+ * track and must read on either. Used for any typed-status doc that has a
+ * checklist; custom-status docs keep their separate label since the raw
+ * string conveys information we can't fold into a color.
  */
 function ProgressStatusBadge({
+  status,
   progress,
 }: {
+  status: DocStatus;
   progress: { total: number; done: number };
 }) {
   const pct =
     progress.total > 0
       ? Math.round((progress.done / progress.total) * 100)
       : 0;
+  const label = STATUS_CONFIG[status].label;
   return (
     <span
       className={`${DOC_BADGE_CLASS} relative inline-flex w-20 shrink-0 items-center justify-center overflow-hidden rounded-full border border-(--color-border-secondary)/50 px-2 font-medium tabular-nums bg-(--color-bg-tertiary) text-(--color-text-secondary)`}
-      title={`In progress — ${progress.done} of ${progress.total} checklist items complete`}
+      title={`${label} — ${progress.done} of ${progress.total} checklist items complete`}
     >
       <span
         aria-hidden
-        className="absolute inset-y-0 left-0 bg-(--color-warning-subtle)"
-        style={{ width: `${pct}%` }}
+        className="absolute inset-y-0 left-0"
+        style={{ width: `${pct}%`, backgroundColor: `var(${STATUS_FILL_VAR[status]})` }}
       />
       <span className="relative">
         {progress.done}/{progress.total}
@@ -150,9 +170,9 @@ function ProgressStatusBadge({
 }
 
 /**
- * The trailing badge cluster for a doc row. An in-progress doc that has
+ * The trailing badge cluster for a doc row. Any typed-status doc that carries
  * checklist progress collapses its count and status into a single
- * {@link ProgressStatusBadge}; everything else renders the count and status as
+ * {@link ProgressStatusBadge}; everything else renders count and status as
  * separate badges. `compact` (archived rows) omits priority and custom-status
  * badges, matching the reduced cluster those rows showed before.
  */
@@ -166,14 +186,21 @@ function DocStatusBadges({
   const checklist =
     doc.checklist && doc.checklist.total > 0 ? doc.checklist : null;
 
-  if (doc.status === "in-progress" && checklist) {
-    return <ProgressStatusBadge progress={checklist} />;
+  if (doc.status && checklist) {
+    return (
+      <>
+        {!compact && doc.priority && (
+          <PriorityBadge priority={doc.priority} />
+        )}
+        <ProgressStatusBadge status={doc.status} progress={checklist} />
+      </>
+    );
   }
 
   return (
     <>
       {checklist && <ChecklistProgressBadge progress={checklist} />}
-      {!compact && doc.status === "planned" && doc.priority && (
+      {!compact && doc.priority && (
         <PriorityBadge priority={doc.priority} />
       )}
       {doc.status && <StatusBadge status={doc.status} />}
@@ -225,20 +252,28 @@ function statusOrder(doc: DocEntry): number {
   return 99;
 }
 
-function sortByStatusThenPath(docs: DocEntry[]): DocEntry[] {
+/**
+ * Sort tracked docs. Priority is the primary key so high-priority work
+ * bubbles to the top regardless of status: a `high` in-progress doc and a
+ * `high` planned doc sit together above any unset-priority items. Within a
+ * priority bucket we fall back to status (in-progress before planned before
+ * paused before custom-status before done before rejected) and then path.
+ *
+ * Path tiebreaker is descending for prioritized buckets so the most recently
+ * added doc (highest `NNN-` prefix) bubbles up — matching the "what's hot
+ * right now" intent of having set a priority in the first place. Unset
+ * priority keeps the legacy ascending-path order so docs without any author
+ * signal stay in stable alphabetical order.
+ */
+function sortTrackedDocs(docs: DocEntry[]): DocEntry[] {
   return [...docs].sort((a, b) => {
-    const orderA = statusOrder(a);
-    const orderB = statusOrder(b);
-    if (orderA !== orderB) return orderA - orderB;
-    // Within the planned bucket, sort by priority (high → medium → low → unset),
-    // then by path *descending* so the most recently added planned items
-    // (highest NNN- prefix) bubble up within each priority tier.
-    if (a.status === "planned" && b.status === "planned") {
-      const pA = priorityOrder(a.priority);
-      const pB = priorityOrder(b.priority);
-      if (pA !== pB) return pA - pB;
-      return b.path.localeCompare(a.path);
-    }
+    const pA = priorityOrder(a.priority);
+    const pB = priorityOrder(b.priority);
+    if (pA !== pB) return pA - pB;
+    const sA = statusOrder(a);
+    const sB = statusOrder(b);
+    if (sA !== sB) return sA - sB;
+    if (a.priority && b.priority) return b.path.localeCompare(a.path);
     return a.path.localeCompare(b.path);
   });
 }
@@ -368,7 +403,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, sessionSta
     if (am !== bm) return am < bm ? 1 : -1;
     return a.path.localeCompare(b.path);
   });
-  const sortedTracked = sortByStatusThenPath(tracked);
+  const sortedTracked = sortTrackedDocs(tracked);
   // Split tracked into active work and archived (done + rejected) so we can
   // render archived items inside a collapsible group below the active list.
   const trackedActive = sortedTracked.filter((d) => !isArchivedStatus(d.status));
