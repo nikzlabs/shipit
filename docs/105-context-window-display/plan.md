@@ -111,6 +111,10 @@ This shipped a visible $1.31 vs $5.41-style discrepancy. The fix collapses the t
 - The standalone cost pill, the `showSessionCost` setting, and its localStorage key were removed.
 - `turnUsage` rehydration moved from "attach to the last message group of each turn in chat history" to "fetch from `/api/sessions/:id/history` (sourced from `usage_turns`)". `PersistedMessage.turnUsage` and `WsChatHistoryMessage.turnUsage` are gone; the `messages.turn_usage` SQLite column stays (read-only) for back-compat.
 
+### Codex token-only usage
+
+Codex app-server reports authoritative token telemetry via `thread/tokenUsage/updated` and the adapter emits it on `AgentResultEvent.tokens`, but the app-server does **not** report a per-turn dollar cost. `agent-listeners.ts` therefore records token-only turns in `UsageManager` with `costUsd: 0` instead of dropping them. This keeps `usage_update`, `turn_usage_update`, session turn counts, cumulative token totals, and `/api/sessions/:id/history` rehydration correct without inventing model pricing that the Codex API did not provide.
+
 ## Context occupancy includes cache tokens
 
 The dial originally read the "current context size" straight off `TurnUsage.inputTokens`. That was wrong under prompt caching (the default for Claude Code): the CLI reports `input_tokens` as **only the uncached** portion of the prompt, so a turn that actually occupies ~70K of the window can report `inputTokens: 4` while the rest shows up as `cache_read_input_tokens` / `cache_creation_input_tokens`. The dial displayed "Context: 4 / 200K".
