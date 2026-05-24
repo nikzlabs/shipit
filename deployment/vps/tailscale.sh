@@ -1,9 +1,10 @@
 #!/bin/bash
 # Optional private Tailscale access for an existing ShipIt VPS deployment.
 #
-# This is intentionally additive: it leaves the Cloudflare tunnel, firewall,
-# and Docker compose bindings alone. ShipIt continues to listen on localhost;
-# Tailscale Serve proxies tailnet-only HTTPS traffic to that local listener.
+# This is intentionally additive: it leaves any existing Cloudflare tunnel,
+# firewall, and Docker compose bindings alone. ShipIt continues to listen on
+# localhost; Tailscale Serve proxies tailnet-only HTTPS traffic to that local
+# listener.
 #
 # Usage:
 #   bash /opt/shipit/deployment/vps/tailscale.sh
@@ -25,7 +26,7 @@ echo "==========================================="
 echo "  ShipIt — Tailscale private access"
 echo "==========================================="
 echo ""
-echo "This keeps the existing Cloudflare path working and adds tailnet-only access."
+echo "This adds tailnet-only access without changing any existing Cloudflare path."
 echo "For subdomain previews, configure wildcard DNS for the hostname you use over Tailscale."
 echo ""
 
@@ -77,7 +78,7 @@ echo ""
 echo "  Serve status:"
 tailscale serve status || true
 echo ""
-echo "Cloudflare tunnel access is unchanged."
+echo "Any existing Cloudflare tunnel access is unchanged."
 echo "For Tailscale subdomain previews, ensure wildcard DNS resolves"
 echo "{sessionId}--{port}.<your-tailscale-shipit-host> to this machine."
 echo ""
