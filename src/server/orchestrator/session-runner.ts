@@ -845,3 +845,16 @@ export class SessionRunnerRegistry {
    */
   ids(): string[] { return [...this.runners.keys()]; }
 }
+
+/**
+ * Resolve/create a runner and start a server-initiated turn. Kept beside the
+ * runner registry so callers that only need to kick off a system prompt do not
+ * have to call runner methods across module boundaries.
+ */
+export function sendSystemMessageOnRunner(
+  runner: SessionRunnerInterface,
+  text: string,
+  activity?: string,
+): void {
+  runner.sendSystemMessage(text, activity);
+}
