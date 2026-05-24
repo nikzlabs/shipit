@@ -157,13 +157,20 @@ describe("SessionRunner", () => {
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
     });
-    const fakeAgent = { on: vi.fn(), run: vi.fn(), kill: vi.fn() } as any;
+    const fakeAgent = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
     runner.setSystemTurnDeps({
       agentFactory: () => fakeAgent,
       autoCommit: vi.fn().mockResolvedValue(null),
       scheduleAutoPush: vi.fn(),
-      sseBroadcast: vi.fn(),
-      persistMessage: vi.fn(),
+      listenerDeps: {
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn() } as any,
+        chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
+        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
+        authManager: { startOAuthFlow: vi.fn() } as any,
+        sseBroadcast: vi.fn(),
+        broadcastLog: vi.fn(),
+        getSelectedModel: () => undefined,
+      },
       buildRunParams: vi.fn().mockResolvedValue({
         prompt: "fix ci",
         cwd: "/tmp/s1",

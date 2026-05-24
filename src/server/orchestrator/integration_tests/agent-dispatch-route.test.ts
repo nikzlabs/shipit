@@ -204,6 +204,104 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
     client.close();
   });
 
+  it("dispatch persists tool calls and splits assistant text at tool-result boundary", async () => {
+    // Regression test for the "invisible tool calls + concatenated assistant
+    // text" bug class. Before the unification refactor, runDispatchedTurn
+    // had its own inline event listener that concatenated assistant text
+    // across events with no separator and dropped all tool_use blocks —
+    // producing a single assistant chat-history row like
+    //   { role: "assistant", text: "First half.Second half." }
+    // and silently losing any tool calls the agent made between the two
+    // utterances. After unification, runDispatchedTurn goes through the
+    // same `wireAgentListeners` the WS user-typed turn uses, so dispatched
+    // turns produce the same message-group structure (tool calls visible,
+    // assistant text split at tool-result boundaries).
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${client.sessionId}/agent/dispatch`,
+      payload: { text: "Please fix this", activity: "Auto-fixing CI…" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const claude = await waitForClaude(() => lastClaude);
+    expect(claude.lastPrompt).toBe("Please fix this");
+
+    // Drive the canonical bug sequence: assistant text + tool_use → tool_result
+    // → assistant text → result. FakeClaudeProcess translates raw Claude
+    // events to AgentEvent via `mapClaudeEvent`.
+    claude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "agent-session-dispatch",
+    });
+    await client.receiveType("session_started");
+
+    claude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "I'll examine the failing test and fix it." },
+          {
+            type: "tool_use",
+            id: "tool_x",
+            name: "Read",
+            input: { file_path: "src/some-file.ts" },
+          },
+        ],
+      },
+    });
+    claude.emit("event", {
+      type: "user",
+      message: {
+        content: [
+          { type: "tool_result", tool_use_id: "tool_x", content: "file contents..." },
+        ],
+      },
+    });
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Found it — patched the typo." }] },
+    });
+    claude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "agent-session-dispatch",
+      duration_ms: 10,
+    });
+    claude.emit("done", 0);
+
+    // Wait for the result to be persisted (the listener calls
+    // finalizeInProgress on agent_result, but persistence is fully synchronous;
+    // the test still needs to yield so async post-turn work settles).
+    await new Promise((r) => setTimeout(r, 50));
+
+    const history = chatHistoryManager.load(client.sessionId);
+    const userRows = history.filter((m) => m.role === "user");
+    const assistantRows = history.filter((m) => m.role === "assistant");
+
+    // One user message (the dispatched prompt) and TWO assistant rows.
+    // Before the fix, the assistant rows would have collapsed into one row
+    // with text="I'll examine the failing test and fix it.Found it — patched the typo."
+    // and `toolUse` undefined.
+    expect(userRows.length).toBe(1);
+    expect(userRows[0].text).toBe("Please fix this");
+
+    expect(assistantRows.length).toBe(2);
+    expect(assistantRows[0].text).toBe("I'll examine the failing test and fix it.");
+    expect(assistantRows[0].toolUse?.length).toBe(1);
+    expect(assistantRows[0].toolUse?.[0].name).toBe("Read");
+    expect(assistantRows[0].toolResults?.length).toBe(1);
+    expect(assistantRows[0].toolResults?.[0].toolUseId).toBe("tool_x");
+
+    expect(assistantRows[1].text).toBe("Found it — patched the typo.");
+    expect(assistantRows[1].toolUse).toBeUndefined();
+
+    client.close();
+  });
+
   it("queued dispatch threads activity through the drain (docs/150)", async () => {
     // The recursive drain at runDispatchedTurn:204 previously dropped every
     // QueuedMessage field except `text`. This test exercises the drain path

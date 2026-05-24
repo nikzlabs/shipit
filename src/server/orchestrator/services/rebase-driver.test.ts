@@ -12,6 +12,8 @@ import type { AgentProcess, AgentEvent, AgentRunParams, WsServerMessage } from "
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
+import type { UsageManager } from "../usage.js";
+import type { AuthManager } from "../auth.js";
 
 /**
  * Fake agent for rebase tests. The test injects a "resolution function" that
@@ -128,11 +130,29 @@ function makeStubAuth(authenticated: boolean): GitHubAuthManager {
   return { authenticated } as GitHubAuthManager;
 }
 
-/** Minimal stub for ChatHistoryManager — only `append` is used by the driver. */
+/**
+ * Stub ChatHistoryManager that captures every assistant + user write the
+ * driver and listener perform. The shared listener (`wireAgentListeners`)
+ * uses `replaceInProgress` to write incremental message groups on
+ * `agent_result`, then `finalizeInProgress` to clear the in-progress flag —
+ * we track the *finalized* set so assertions match what the user would see
+ * on reload.
+ */
 function makeStubHistory(captured: { role: string; text: string }[]): ChatHistoryManager {
+  let inProgress: { role: string; text: string }[] = [];
   return {
     append: (_sessionId: string, msg: { role: string; text: string }) => {
       captured.push(msg);
+    },
+    replaceInProgress: (_sessionId: string, messages: { role: string; text: string }[]) => {
+      inProgress = messages;
+    },
+    finalizeInProgress: (_sessionId: string) => {
+      captured.push(...inProgress);
+      inProgress = [];
+    },
+    clearInProgress: (_sessionId: string) => {
+      inProgress = [];
     },
   } as unknown as ChatHistoryManager;
 }
@@ -141,7 +161,28 @@ function makeStubHistory(captured: { role: string; text: string }[]): ChatHistor
 function makeStubSessionManager(): SessionManager {
   return {
     get: (sessionId: string) => ({ sessionId, agentSessionId: undefined }),
+    setAgentSessionId: () => {},
+    track: () => {},
+    list: () => [],
   } as unknown as SessionManager;
+}
+
+/**
+ * Minimal stubs for the listener-side managers (usage tracking and OAuth).
+ * The rebase flow funnels through `wireAgentListeners` shared with the WS
+ * path, so these need to exist even when the fake agent never produces
+ * usage or hits an auth gate.
+ */
+function makeStubUsageManager(): UsageManager {
+  return {
+    record: () => {},
+    getSessionUsage: () => undefined,
+    getSessionTokenTotals: () => undefined,
+  } as unknown as UsageManager;
+}
+
+function makeStubAuthManager(): AuthManager {
+  return { startOAuthFlow: () => {} } as unknown as AuthManager;
 }
 
 describe("rebase-driver: runRebaseFlow", () => {
@@ -186,6 +227,8 @@ describe("rebase-driver: runRebaseFlow", () => {
       sessionManager: makeStubSessionManager(),
       chatHistoryManager: makeStubHistory(captured),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -218,6 +261,8 @@ describe("rebase-driver: runRebaseFlow", () => {
       sessionManager: makeStubSessionManager(),
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -271,7 +316,9 @@ describe("rebase-driver: runRebaseFlow", () => {
         sessionManager: makeStubSessionManager(),
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
-        sseBroadcast: () => {},
+        usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
+      sseBroadcast: () => {},
       }, "main");
 
       expect(result.status).toBe("rebased");
@@ -311,6 +358,8 @@ describe("rebase-driver: runRebaseFlow", () => {
       sessionManager: makeStubSessionManager(),
       chatHistoryManager: makeStubHistory([]),
       agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -350,6 +399,8 @@ describe("rebase-driver: runRebaseFlow", () => {
         fs.writeFileSync(path.join(cwd, "shared.txt"), "merged result\n");
         return "Resolved shared.txt by merging both edits.";
       }) as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
       sseBroadcast: () => {},
     }, "main");
 
@@ -375,6 +426,121 @@ describe("rebase-driver: runRebaseFlow", () => {
     expect(assistantMsg?.text).toContain("Resolved shared.txt");
   });
 
+  it("conflicts — preserves tool calls and splits assistant messages at tool-result boundary", async () => {
+    // Regression test for the "invisible tool calls + concatenated assistant
+    // text" bug. Before the unification refactor, the rebase driver had its
+    // own custom event listener that joined assistant text blocks with no
+    // separator across events and dropped all tool_use blocks — producing
+    // chat-history rows like:
+    //   { role: "assistant", text: "I'll examine the conflict.Conflict resolved." }
+    // with no record of the file edit the agent made between the two
+    // utterances. After the refactor, the rebase flow goes through
+    // `wireAgentListeners` (same as the WS user-typed path), so message
+    // groups split at tool-result boundaries and tool_use blocks are
+    // preserved on each group. This test exercises the exact event sequence
+    // from the bug report.
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: workDir,
+      defaultAgentId: "claude",
+    });
+    const captured: { role: string; text: string; toolUse?: { id: string; name: string }[]; toolResults?: { toolUseId: string }[] }[] = [];
+
+    /**
+     * Fake agent that emits the canonical "assistant says X → tool call →
+     * tool result → assistant says Y → agent_result" sequence. The Read +
+     * Edit names mirror Claude's actual tool taxonomy so the listener treats
+     * them as ordinary tools (not standalone tools like AskUserQuestion).
+     */
+    class FakeToolUsingAgent extends FakeRebaseAgent {
+      constructor(private fileEditPath: string, private fileEditContent: string) {
+        super(() => "unused");
+      }
+      override run(params: AgentRunParams): void {
+        setImmediate(() => {
+          // 1. Assistant preamble + tool_use (Edit).
+          this.emit("event", {
+            type: "agent_assistant",
+            content: [
+              { type: "text", text: "I'll examine the conflict in shared.txt and resolve it." },
+              {
+                type: "tool_use",
+                id: "tool_1",
+                name: "Edit",
+                input: { file_path: this.fileEditPath, content: this.fileEditContent },
+              },
+            ],
+          } as AgentEvent);
+          // 2. Perform the edit (mirrors what a real tool result implies).
+          fs.writeFileSync(this.fileEditPath, this.fileEditContent);
+          // 3. Tool result. The listener's `agent_tool_result` branch flips
+          //    `needsNewMessageGroup` so the NEXT agent_assistant starts a
+          //    fresh group instead of concatenating into the first one.
+          this.emit("event", {
+            type: "agent_tool_result",
+            content: [{ type: "tool_result", tool_use_id: "tool_1", content: "File updated." }],
+          } as AgentEvent);
+          // 4. Assistant follow-up (post-tool).
+          this.emit("event", {
+            type: "agent_assistant",
+            content: [{ type: "text", text: "Conflict resolved." }],
+          } as AgentEvent);
+          // 5. Result + done.
+          this.emit("event", {
+            type: "agent_result",
+            status: "success",
+            sessionId: params.sessionId,
+          } as AgentEvent);
+          this.emit("done", 0);
+        });
+      }
+    }
+
+    const result = await runRebaseFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      agentFactory: () =>
+        new FakeToolUsingAgent(path.join(workDir, "shared.txt"), "merged result\n") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(result.status).toBe("conflicts_resolved");
+
+    // Captured rows: one user (the conflict prompt) + two assistant rows
+    // (preamble-with-tool-call, then post-tool-result text). Before the fix
+    // the second assistant row didn't exist — its text was concatenated
+    // into the first row's text and the tool_use was missing entirely.
+    const userRow = captured.find((m) => m.role === "user");
+    expect(userRow?.text).toContain("Rebasing onto");
+
+    const assistantRows = captured.filter((m) => m.role === "assistant");
+    expect(assistantRows).toHaveLength(2);
+
+    // First assistant row: the preamble TEXT + the tool_use block, plus the
+    // tool_result that came back. Without the fix this row's text would have
+    // been "I'll examine the conflict in shared.txt and resolve it.Conflict
+    // resolved." (no separator, two utterances joined) and `toolUse` would
+    // have been undefined.
+    expect(assistantRows[0].text).toBe("I'll examine the conflict in shared.txt and resolve it.");
+    expect(assistantRows[0].toolUse).toHaveLength(1);
+    expect(assistantRows[0].toolUse?.[0].name).toBe("Edit");
+    expect(assistantRows[0].toolResults).toHaveLength(1);
+    expect(assistantRows[0].toolResults?.[0].toolUseId).toBe("tool_1");
+
+    // Second assistant row: just the post-tool text, no tool_use.
+    expect(assistantRows[1].text).toBe("Conflict resolved.");
+    expect(assistantRows[1].toolUse).toBeUndefined();
+  });
+
   it("throws if agent is already running on the runner", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     const runner = new SessionRunner({
@@ -392,7 +558,9 @@ describe("rebase-driver: runRebaseFlow", () => {
         sessionManager: makeStubSessionManager(),
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
-        sseBroadcast: () => {},
+        usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
+      sseBroadcast: () => {},
       }, "main"),
     ).rejects.toThrow(/Cannot rebase while an agent turn is in progress/);
   });
@@ -413,7 +581,9 @@ describe("rebase-driver: runRebaseFlow", () => {
         sessionManager: makeStubSessionManager(),
         chatHistoryManager: makeStubHistory([]),
         agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
-        sseBroadcast: () => {},
+        usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
+      sseBroadcast: () => {},
       }, "nonexistent-branch-xyz"),
     ).rejects.toThrow(/Cannot resolve base branch/);
   });

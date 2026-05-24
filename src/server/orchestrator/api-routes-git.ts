@@ -249,6 +249,8 @@ export async function registerGitRoutes(
             runner,
             sessionManager: deps.sessionManager,
             chatHistoryManager: deps.chatHistoryManager,
+            usageManager: deps.usageManager,
+            authManager: deps.authManager,
             agentFactory: deps.agentFactory,
             sseBroadcast: deps.sseBroadcast,
           },
