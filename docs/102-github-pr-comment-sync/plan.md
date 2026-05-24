@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: high
 description: Bidirectionally sync GitHub PR review comments with ShipIt's inline diff viewer so teammates' comments appear in-app and replies write back to GitHub.
 ---
@@ -12,7 +12,7 @@ description: Bidirectionally sync GitHub PR review comments with ShipIt's inline
 - **Phase 1 write-back (this doc)** — reply, resolve, and unresolve via GraphQL. Gated by a `prCommentSync` setting (off by default). The mutation controls live in `PrConversationSection`.
 - **Inline render follow-up** — GitHub review threads now render as read-only Monaco diff widgets by mapping `PrReviewThread` data into `LineCommentLike` entries with `source: "github"`. Replies and resolve/reopen still live in `PrConversationSection`.
 - **Batched review write-back** — shipped: the open PR lifecycle card shows `Send review (N)` when local diff comments exist and `prCommentSync` is enabled. Submitting sends all local line comments as one GitHub PR review and clears the local draft only after GitHub accepts it.
-- **Deferred** — the agent auto-loop on new comment.
+- **Future extensions** — the agent auto-loop on new comments and default-on rollout remain separate follow-up work, not blockers for this feature's shipped scope.
 
 ## Summary
 
@@ -101,4 +101,4 @@ Deferred to a Phase 2 of this feature:
 - **Reactions** — GitHub thumbs/eyes mirrored in the widget.
 - **Suggested changes** — render GitHub's `suggestion` blocks as one-click apply buttons.
 - **Auto-loop on new comment** — when a reviewer leaves a comment, ShipIt can prompt Claude to address it automatically (gated by a per-session setting, similar to `autoFix`).
-- **MonacoCommentWidgets integration** — render GitHub-sourced review threads inline on the diff viewer (the read side currently lives only in the PR detail panel).
+- **Default-on rollout** — promote `prCommentSync` after a beta cycle once the team is comfortable making the workflow visible by default.
