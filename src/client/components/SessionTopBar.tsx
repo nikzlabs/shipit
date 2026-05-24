@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, DownloadSimpleIcon, PencilSimpleIcon, ArchiveIcon } from "@phosphor-icons/react";
+import { ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, DownloadSimpleIcon, MagnifyingGlassIcon, PencilSimpleIcon, ArchiveIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import {
   DropdownMenu,
@@ -13,11 +13,12 @@ interface SessionTopBarProps {
   onRename: (title: string) => void;
   onDownloadChat: () => void;
   onArchive: () => void;
+  onSearch: () => void;
   recoverRewindAvailable?: boolean;
   onRecoverRewind?: () => void;
 }
 
-export function SessionTopBar({ title, onRename, onDownloadChat, onArchive, recoverRewindAvailable, onRecoverRewind }: SessionTopBarProps) {
+export function SessionTopBar({ title, onRename, onDownloadChat, onArchive, onSearch, recoverRewindAvailable, onRecoverRewind }: SessionTopBarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editingTitle, setEditingTitle] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -78,8 +79,16 @@ export function SessionTopBar({ title, onRename, onDownloadChat, onArchive, reco
         )}
       </div>
 
-      {/* Right: overflow menu */}
-      <div className="shrink-0">
+      {/* Right: search + overflow menu */}
+      <div className="shrink-0 flex items-center gap-1">
+        <button
+          onClick={onSearch}
+          className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+          title="Search conversation"
+          aria-label="Search conversation"
+        >
+          <MagnifyingGlassIcon size={ICON_SIZE.SM} weight="bold" />
+        </button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
