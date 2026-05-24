@@ -152,6 +152,12 @@ export interface WsRewindAtGap {
   branchName?: string;
 }
 
+export interface WsRewindPreviewRequest {
+  type: "rewind_preview_request";
+  gapPosition: number;
+  action: RewindAtGapAction;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsSendReviewMessage
@@ -173,4 +179,5 @@ export type WsClientMessage =
   | WsForkSessionFromMessage
   | WsRewindToMessage
   | WsRewindAtGap
+  | WsRewindPreviewRequest
   | WsPrTabActive;

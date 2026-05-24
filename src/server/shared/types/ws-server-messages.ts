@@ -757,6 +757,15 @@ export type WsRewindComplete =
       commitHash: string;
     };
 
+export interface WsRewindPreview {
+  type: "rewind_preview";
+  gapPosition: number;
+  action: "chat" | "code" | "both" | "fork";
+  discardedTurnGroupCount?: number;
+  keptTurnGroupCount?: number;
+  fileCount?: number;
+}
+
 /** Server → Client: a new session was forked from a rollback point. */
 export interface WsSessionForked {
   type: "session_forked";
@@ -921,6 +930,7 @@ export type WsServerMessage =
   | WsCommitLinked
   | WsRollbackComplete
   | WsRewindComplete
+  | WsRewindPreview
   | WsSessionForked
   | WsForkBreadcrumb
   | WsSessionSpawned
