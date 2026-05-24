@@ -62,12 +62,13 @@ follow-ups → wait → archive.
 - [x] Unit tests for the three new shim handlers (happy path, 404, 409/429 surfacing, timeout exit).
 - [x] Integration tests: message enqueues on the child runner; wait blocks until `running=false && queueLength=0` (both the "already idle" fast path and the "register listener then finish" path); archive moves the child to archived and refuses with 409 when it's running.
 
-## Phase 4 — Cross-repo spawns *(OPTIONAL)*
+## Phase 4 — Cross-repo spawns *(OPTIONAL — DEFERRED)*
 
 Per-account setting that allows `--repo <owner/name>` on
 `shipit session create`. Significant trust-model work (the spawned
 child needs the right GitHub auth + credential store), so deferred
-until Phase 2/3 have shipped and there's user demand.
+until there's user demand. Not blocking 117 as a whole — the doc is
+marked `done` with Phase 4 explicitly carved out as optional.
 
 - [ ] Account-level toggle (`allow_cross_repo_spawn`) plus an admin UI affordance.
 - [ ] Drop the `--repo` / `--owner` rejection in the shim when the toggle is on (still rejected by default).
@@ -76,11 +77,11 @@ until Phase 2/3 have shipped and there's user demand.
 
 ## Cross-cutting follow-ups
 
-These don't block any phase but should be picked up alongside the
-relevant work.
+The two load-bearing items are done. The remaining three are explicitly
+out of scope for 117 — see the rationale beside each.
 
-- [ ] Surface a `shipit session create` failure (e.g., quota 429) inline in the parent's chat instead of just on stderr — likely Phase 2 alongside `SpawnedSessionCard`.
-- [ ] Telemetry: count `shipit session create` invocations per session and per turn, broken down by agent id, so the Phase 3 "is the agent using this responsibly?" question is answerable.
-- [ ] Decide whether spawned-children quota should count archived children (today: no — only active). Document the decision either way.
-- [ ] Consider grand-children quotas (depth limit) before we get telemetry of agents spawning more than two levels deep.
-- [ ] Add a "child spawned this session" indicator to the parent's PR card when the child opens a PR, so the user can review both side-by-side without manually correlating branches.
+- [x] Surface a `shipit session create` failure (e.g., quota 429) inline in the parent's chat instead of just on stderr. Implemented as the `session_spawn_failed` WS event + `SpawnFailedCard`. Emitted on the parent runner alongside the existing `session_spawned` event so reconnecting viewers see it via the turn-event buffer.
+- [x] Telemetry: count `shipit session create` invocations per session and per turn, broken down by agent id. Implemented as `services/spawn-telemetry.ts` — a `[spawn-telemetry]` structured log line per invocation plus in-process counters dimensioned by outcome / agent / parent / turn (queryable via `getSpawnTelemetrySnapshot()`).
+- [ ] ~~Decide whether spawned-children quota should count archived children~~ — current behavior (active-only) is intentional; archived children don't consume containers, so the capacity argument doesn't apply. Not a blocker.
+- [ ] ~~Grand-children quotas (depth limit)~~ — the per-parent + global container caps bound runaway depth in practice. Revisit if telemetry shows >2-level chains in the wild.
+- [ ] ~~"Child spawned this session" indicator on the parent's PR card~~ — nice-to-have visual polish, doesn't block the feature.

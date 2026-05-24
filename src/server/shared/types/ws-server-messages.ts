@@ -770,6 +770,52 @@ export interface WsSessionSpawned {
 }
 
 /**
+ * Server → Client: the parent agent's `shipit session create` invocation
+ * was rejected by the orchestrator (docs/117 cross-cutting follow-up).
+ *
+ * Counterpart to `WsSessionSpawned` for the failure path. Without this, a
+ * spawn rejection (quota hit, invalid branch, archived parent) only surfaces
+ * on the shim's stderr — invisible in the parent's chat lane. Emitted on the
+ * parent runner via `runner.emitMessage` so every attached viewer sees it
+ * and it lands in the turn-event buffer for reconnecting viewers.
+ *
+ * The shim still receives the HTTP error (and exits non-zero) — the chat
+ * event is purely the user-facing affordance so the user sees "the agent
+ * tried to spawn a session, here's why it didn't work."
+ */
+export interface WsSessionSpawnFailed {
+  type: "session_spawn_failed";
+  /** Parent session id — the runner that this event is emitted on. */
+  sessionId: string;
+  /** Human-readable error message, taken from the orchestrator's response body. */
+  message: string;
+  /** HTTP status code the spawn route returned (400, 404, 409, 429, 500…). */
+  statusCode: number;
+  /**
+   * Short outcome bucket (`quota_per_turn`, `quota_per_parent`, `invalid_request`,
+   * `parent_missing`, `error`) for the UI to pick a tailored copy line.
+   */
+  reason:
+    | "quota_per_turn"
+    | "quota_per_parent"
+    | "invalid_request"
+    | "parent_missing"
+    | "error";
+  /** Title the agent requested (or the prompt's derived slug). */
+  title?: string;
+  /** Branch the agent requested. */
+  branch?: string;
+  /**
+   * First line of the prompt the spawn was meant to kick off, truncated to
+   * 200 chars so the chat card has enough context to tell the user *what*
+   * failed without bloating the buffer.
+   */
+  promptPreview?: string;
+  /** ISO8601 timestamp the failure was recorded at. */
+  failedAt: string;
+}
+
+/**
  * Server → Client: a file review's comment set changed out-of-band (docs/125).
  * Emitted when the chat-native review subagent writes anchored comments via the
  * `submit_review_comments` tool. Carries the full updated draft so the file
@@ -844,6 +890,7 @@ export type WsServerMessage =
   | WsRewindComplete
   | WsSessionForked
   | WsSessionSpawned
+  | WsSessionSpawnFailed
   | WsServiceStatus
   | WsServiceList
   | WsServiceLog

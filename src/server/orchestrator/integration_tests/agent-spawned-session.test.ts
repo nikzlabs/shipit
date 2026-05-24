@@ -35,6 +35,10 @@ import {
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
+import {
+  getSpawnTelemetrySnapshot,
+  resetSpawnTelemetry,
+} from "../services/spawn-telemetry.js";
 
 describe("Integration: agent-spawned sessions (docs/117)", () => {
   let app: FastifyInstance;
@@ -50,6 +54,9 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-spawn-"));
     createdClaudes = [];
+    // Module-level singleton: zero between tests so counter assertions are
+    // independent of test order.
+    resetSpawnTelemetry();
 
     sessionManager = new SessionManager(dbManager);
 
@@ -316,6 +323,125 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     } finally {
       parentClient.close();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Cross-cutting follow-up: spawn failures surface inline + telemetry counted
+  // -------------------------------------------------------------------------
+
+  it("broadcasts a `session_spawn_failed` event on the parent's runner when the per-turn quota fires", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    const parentClient = await TestClient.connect(port, parentId);
+
+    try {
+      // Saturate the per-turn cap (default 4).
+      for (let i = 0; i < 4; i++) {
+        const ok = await app.inject({
+          method: "POST",
+          url: `/api/sessions/${parentId}/spawn`,
+          payload: { prompt: `child-${i}`, branch: `child-${i}`, spawnedByTurn: "turn-1" },
+        });
+        expect(ok.statusCode).toBe(200);
+      }
+
+      // The 5th spawn under the same turn should 429 and emit a failure event.
+      const limited = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: {
+          prompt: "Spin up another worker for the migration",
+          branch: "child-5",
+          title: "Worker 5",
+          spawnedByTurn: "turn-1",
+        },
+      });
+      expect(limited.statusCode).toBe(429);
+
+      const failedMsg = await parentClient.receiveType("session_spawn_failed", 5000) as {
+        type: "session_spawn_failed";
+        sessionId: string;
+        message: string;
+        statusCode: number;
+        reason: string;
+        title?: string;
+        branch?: string;
+        promptPreview?: string;
+        failedAt: string;
+      };
+
+      expect(failedMsg.sessionId).toBe(parentId);
+      expect(failedMsg.statusCode).toBe(429);
+      expect(failedMsg.reason).toBe("quota_per_turn");
+      expect(failedMsg.message).toContain("Per-turn spawn limit");
+      expect(failedMsg.title).toBe("Worker 5");
+      expect(failedMsg.branch).toBe("child-5");
+      expect(failedMsg.promptPreview).toContain("Spin up another worker");
+      expect(typeof failedMsg.failedAt).toBe("string");
+    } finally {
+      parentClient.close();
+    }
+  });
+
+  it("broadcasts a `session_spawn_failed` event when the request is malformed (400 invalid_request)", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    const parentClient = await TestClient.connect(port, parentId);
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "x", branch: "has spaces" },
+      });
+      expect(res.statusCode).toBe(400);
+
+      const failedMsg = await parentClient.receiveType("session_spawn_failed", 5000) as {
+        type: "session_spawn_failed";
+        reason: string;
+        statusCode: number;
+      };
+      expect(failedMsg.reason).toBe("invalid_request");
+      expect(failedMsg.statusCode).toBe(400);
+    } finally {
+      parentClient.close();
+    }
+  });
+
+  it("records a telemetry invocation for each spawn attempt, dimensioned by outcome and agent", { timeout: 30_000 }, async () => {
+    const parentId = await createParentSession();
+    resetSpawnTelemetry(); // ignore parent-setup noise
+
+    // Successful spawn under turn-1.
+    const ok1 = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "ok-1", branch: "ok-1", spawnedByTurn: "turn-1" },
+    });
+    expect(ok1.statusCode).toBe(200);
+
+    // 400 invalid branch under the same turn.
+    const bad = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "bad", branch: "has spaces", spawnedByTurn: "turn-1" },
+    });
+    expect(bad.statusCode).toBe(400);
+
+    // 404 nonexistent parent — counted against the route, not the parent.
+    const notFound = await app.inject({
+      method: "POST",
+      url: "/api/sessions/nonexistent/spawn",
+      payload: { prompt: "boom" },
+    });
+    expect(notFound.statusCode).toBe(404);
+
+    const snap = getSpawnTelemetrySnapshot();
+    expect(snap.total).toBe(3);
+    expect(snap.byOutcome.success).toBe(1);
+    expect(snap.byOutcome.invalid_request).toBe(1);
+    expect(snap.byOutcome.parent_missing).toBe(1);
+    expect(snap.byParent[parentId]).toBe(2);
+    expect(snap.byTurn["turn-1"]).toBe(2);
+    // Default agent in this test app is claude (see test-helpers).
+    expect(snap.byAgent.claude).toBeGreaterThanOrEqual(3);
   });
 
   // -------------------------------------------------------------------------

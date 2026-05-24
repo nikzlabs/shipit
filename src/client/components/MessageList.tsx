@@ -17,6 +17,7 @@ import { getSegmentMatches, HighlightedText } from "./message-highlighting.js";
 import { MessageFileAttachments, MessageImages } from "./message-media.js";
 import { SubagentCall } from "./SubagentCall.js";
 import { SpawnedSessionCard } from "./SpawnedSessionCard.js";
+import { SpawnFailedCard } from "./SpawnFailedCard.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
 
@@ -115,6 +116,27 @@ export interface ChatMessage {
     title: string;
     branch?: string;
     spawnedAt: string;
+  };
+  /**
+   * docs/117 cross-cutting follow-up — when set, this message renders a
+   * `SpawnFailedCard` inline in the parent's chat. Populated from
+   * `session_spawn_failed` WS events. Counterpart to `spawnedSession` for the
+   * failure path so a quota / invalid-branch rejection is visible alongside
+   * successful spawns instead of only on the shim's stderr.
+   */
+  spawnFailed?: {
+    title?: string;
+    branch?: string;
+    reason:
+      | "quota_per_turn"
+      | "quota_per_parent"
+      | "invalid_request"
+      | "parent_missing"
+      | "error";
+    message: string;
+    statusCode: number;
+    promptPreview?: string;
+    failedAt: string;
   };
 }
 
@@ -367,6 +389,27 @@ export function MessageList({
                   title={msg.spawnedSession.title}
                   {...(msg.spawnedSession.branch ? { branch: msg.spawnedSession.branch } : {})}
                   spawnedAt={msg.spawnedSession.spawnedAt}
+                />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/117 cross-cutting follow-up — failure counterpart to
+        // `spawnedSession`. Renders the inline `SpawnFailedCard` so a quota
+        // hit / invalid branch is visible alongside successful spawns.
+        if (msg.spawnFailed) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <SpawnFailedCard
+                  {...(msg.spawnFailed.title ? { title: msg.spawnFailed.title } : {})}
+                  {...(msg.spawnFailed.branch ? { branch: msg.spawnFailed.branch } : {})}
+                  reason={msg.spawnFailed.reason}
+                  message={msg.spawnFailed.message}
+                  statusCode={msg.spawnFailed.statusCode}
+                  {...(msg.spawnFailed.promptPreview ? { promptPreview: msg.spawnFailed.promptPreview } : {})}
+                  failedAt={msg.spawnFailed.failedAt}
                 />
               </div>
             </div>
