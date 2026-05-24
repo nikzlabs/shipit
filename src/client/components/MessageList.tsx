@@ -96,6 +96,12 @@ export interface ChatMessage {
   uploadPaths?: string[];
   /** When true, this message was rolled back and should appear dimmed. */
   rolledBack?: boolean;
+  codeRollbackHash?: string;
+  forkChild?: {
+    childSessionId: string;
+    title: string;
+    branch: string;
+  };
   /**
    * Events emitted by subagents (Claude's Task tool) under any tool in this
    * message's `toolUse`. The renderer groups these by `parentToolUseId` and
@@ -377,6 +383,21 @@ export function MessageList({
         const hideTools = el.hideTools;
         const msg = messages[i];
 
+        if (msg.forkChild) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <SpawnedSessionCard
+                  childSessionId={msg.forkChild.childSessionId}
+                  title={msg.forkChild.title}
+                  branch={msg.forkChild.branch}
+                  spawnedAt={new Date().toISOString()}
+                />
+              </div>
+            </div>
+          );
+        }
+
         // docs/117 Phase 2 — spawned-session marker carries no chat content
         // of its own; render the inline card and skip the bubble path. The
         // card itself reads live session state from the session store.
@@ -429,6 +450,13 @@ export function MessageList({
 
         return (
           <div key={i}>
+            {msg.rolledBack && msg.codeRollbackHash && (
+              <div className="flex justify-center">
+                <div className="rounded-full border border-(--color-border-primary) bg-(--color-bg-secondary) px-3 py-1 text-xs text-(--color-text-secondary)">
+                  Code rolled back to {msg.codeRollbackHash.slice(0, 7)}. The changes from the previous response have been reverted.
+                </div>
+              </div>
+            )}
             {!hideBubble && (
             <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
 

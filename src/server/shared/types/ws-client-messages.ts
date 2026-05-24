@@ -143,6 +143,15 @@ export interface WsRewindToMessage {
   mode: "fork_chat" | "rewind_code" | "rewind_all";
 }
 
+export type RewindAtGapAction = "chat" | "code" | "both" | "fork";
+
+export interface WsRewindAtGap {
+  type: "rewind_at_gap";
+  gapPosition: number;
+  action: RewindAtGapAction;
+  branchName?: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsSendReviewMessage
@@ -163,4 +172,5 @@ export type WsClientMessage =
   | WsRollbackCodeAndChat
   | WsForkSessionFromMessage
   | WsRewindToMessage
+  | WsRewindAtGap
   | WsPrTabActive;

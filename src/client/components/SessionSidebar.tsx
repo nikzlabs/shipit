@@ -257,6 +257,41 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
 /** Drop indicator: "before" puts the dragged repo above this one, "after" below. */
 type DropPosition = "before" | "after";
 
+function OrphanSessionGroup({
+  label,
+  sessions,
+  currentSessionId,
+  onResume,
+  onArchive,
+}: {
+  label: string;
+  sessions: SessionInfo[];
+  currentSessionId?: string;
+  onResume: (sessionId: string) => void;
+  onArchive: (sessionId: string) => void;
+}) {
+  if (sessions.length === 0) return null;
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10">
+        <span className="w-5 h-5 shrink-0" />
+        <span className="text-xs font-semibold text-(--color-text-secondary) truncate tracking-wide">
+          {label}
+        </span>
+      </div>
+      {sessions.map((session) => (
+        <SessionItem
+          key={session.id}
+          session={session}
+          isCurrent={session.id === currentSessionId}
+          onResume={onResume}
+          onArchive={onArchive}
+        />
+      ))}
+    </div>
+  );
+}
+
 /** A collapsible group of sessions for a single repo. */
 function RepoGroup({
   repo,
@@ -583,11 +618,31 @@ export function SessionSidebar({
       });
     }
 
-    // Preserve the server-provided order — see comment block above.
-    return repos.map((repo) => ({
+    const known = repos.map((repo) => ({
+      kind: "repo" as const,
       repo,
       sessions: grouped.get(repo.url) ?? [],
     }));
+    const knownUrls = new Set(repos.map((repo) => repo.url));
+    const orphan = [...grouped.entries()]
+      .filter(([url, group]) => !knownUrls.has(url) && group.length > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([url, group]) => {
+        let label = "Other sessions";
+        if (url === "") {
+          label = "Local sessions";
+        } else {
+          try {
+            label = new URL(url).host || url;
+          } catch {
+            label = url;
+          }
+        }
+        return { kind: "orphan" as const, url, label, sessions: group };
+      });
+
+    // Preserve the server-provided repo order, then append non-empty unmatched groups.
+    return [...known, ...orphan];
   }, [repos, sessions]);
 
   const handleViewAll = useCallback((repoUrl: string) => {
@@ -813,7 +868,7 @@ export function SessionSidebar({
 
       {/* Scrollable grouped repo sections */}
       <div className="flex-1 overflow-y-auto min-h-0 flex flex-col py-1">
-        {repos.length === 0 ? (
+        {repoGroups.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 px-4 py-8">
             <p className="text-xs text-(--color-text-tertiary) text-center">No repositories yet.</p>
             <Button variant="primary" onClick={onAddRepo} className="gap-1.5">
@@ -822,31 +877,40 @@ export function SessionSidebar({
             </Button>
           </div>
         ) : (
-          repoGroups.map(({ repo, sessions: repoSessions }) => (
+          repoGroups.map((group) => group.kind === "repo" ? (
             <RepoGroup
-              key={repo.url}
-              repo={repo}
-              sessions={repoSessions}
+              key={group.repo.url}
+              repo={group.repo}
+              sessions={group.sessions}
               currentSessionId={currentSessionId}
-              isNewSessionSelected={activeNewSessionRepoUrl === repo.url}
-              isCollapsed={!isSingleRepo && collapsedRepos.has(repo.url)}
-              onToggleCollapse={() => toggleRepoCollapsed(repo.url)}
+              isNewSessionSelected={activeNewSessionRepoUrl === group.repo.url}
+              isCollapsed={!isSingleRepo && collapsedRepos.has(group.repo.url)}
+              onToggleCollapse={() => toggleRepoCollapsed(group.repo.url)}
               collapsedParents={collapsedParents}
               onToggleParentCollapsed={toggleParentCollapsed}
               onResume={onResume}
               onArchive={onArchive}
-              onNewSession={() => onNewSessionForRepo(repo.url)}
-              onViewAll={() => handleViewAll(repo.url)}
-              onProjectSettings={() => handleProjectSettings(repo.url)}
-              onRemoveRepo={() => handleRemoveRepo(repo.url)}
+              onNewSession={() => onNewSessionForRepo(group.repo.url)}
+              onViewAll={() => handleViewAll(group.repo.url)}
+              onProjectSettings={() => handleProjectSettings(group.repo.url)}
+              onRemoveRepo={() => handleRemoveRepo(group.repo.url)}
               draggable={reorderEnabled}
-              isBeingDragged={draggedRepoUrl === repo.url}
-              dropIndicator={dropTarget?.url === repo.url ? dropTarget.position : null}
-              onDragStart={handleDragStart(repo.url)}
-              onDragOver={handleDragOver(repo.url)}
-              onDragLeave={handleDragLeave(repo.url)}
-              onDrop={handleDrop(repo.url)}
+              isBeingDragged={draggedRepoUrl === group.repo.url}
+              dropIndicator={dropTarget?.url === group.repo.url ? dropTarget.position : null}
+              onDragStart={handleDragStart(group.repo.url)}
+              onDragOver={handleDragOver(group.repo.url)}
+              onDragLeave={handleDragLeave(group.repo.url)}
+              onDrop={handleDrop(group.repo.url)}
               onDragEnd={handleDragEnd}
+            />
+          ) : (
+            <OrphanSessionGroup
+              key={`orphan:${group.url}`}
+              label={group.label}
+              sessions={group.sessions}
+              currentSessionId={currentSessionId}
+              onResume={onResume}
+              onArchive={onArchive}
             />
           ))
         )}
