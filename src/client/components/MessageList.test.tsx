@@ -628,7 +628,7 @@ describe("MessageList", () => {
       );
       fireEvent.pointerDown(screen.getAllByLabelText("Rewind options")[0]);
       fireEvent.click(screen.getByText("Rewind chat to here"));
-      expect(onRewindAtGap).toHaveBeenCalledWith(0, "chat");
+      expect(onRewindAtGap).toHaveBeenCalledWith(1, "chat");
     });
   });
 

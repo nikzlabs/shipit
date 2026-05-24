@@ -352,7 +352,7 @@ export function MessageList({
       if (previous.notice) continue;
       return previous.role !== current.role;
     }
-    return true;
+    return false;
   };
 
   const renderRewindPoint = (gapPosition: number, currentState = false) => {
@@ -573,7 +573,7 @@ export function MessageList({
               </div>
             )}
             {!hideBubble && (
-            <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
+            <div className={`group flex ${msg.role === "user" ? "justify-end py-2" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
 
             <div
               className={`relative text-sm ${
