@@ -116,9 +116,9 @@ export async function emitPrLifecycleAfterCommit(args: {
       return;
     }
 
+    // Ready card: diff stats vs. main so the user can click "open PR".
     const headBranch = session.branch || await git.getCurrentBranch();
-    const { insertions: totalInsertions, deletions: totalDeletions } =
-      await git.diffStatVsBranch("main");
+    const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
     emit({
       type: "pr_lifecycle_update",
       sessionId,
