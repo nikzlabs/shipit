@@ -14,7 +14,8 @@
 
 import { EventEmitter } from "node:events";
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type {
   AgentId,
@@ -184,6 +185,13 @@ function extractUnifiedDiff(change: { diff?: string }): string | undefined {
   return typeof change.diff === "string" && change.diff ? change.diff : undefined;
 }
 
+function contentToAddedDiff(content: string): string {
+  if (!content) return "";
+  const withoutFinalNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
+  if (!withoutFinalNewline) return "";
+  return withoutFinalNewline.split("\n").map((line) => `+${line}`).join("\n");
+}
+
 /**
  * Token usage snapshot from a `thread/tokenUsage/updated` notification.
  * `total` is the cumulative turn rollup (billing); `last` is the most recent
@@ -211,6 +219,10 @@ export class CodexAdapter
   extends EventEmitter<AgentProcessEvents>
   implements AgentProcess
 {
+  constructor(private readonly hasFileAuth = hasCodexFileAuth) {
+    super();
+  }
+
   readonly agentId: AgentId = "codex";
 
   readonly capabilities: AgentCapabilities = {
@@ -249,6 +261,7 @@ export class CodexAdapter
   private threadId: string | null = null;
   private initialized = false;
   private turnStartTime = 0;
+  private cwd = "";
 
   /**
    * Id of the turn currently in flight, captured from the `turn/started`
@@ -288,6 +301,7 @@ export class CodexAdapter
    */
   run(params: AgentRunParams): void {
     this.turnStartTime = Date.now();
+    this.cwd = params.cwd;
 
     // Check binary exists before attempting spawn
     try {
@@ -318,7 +332,7 @@ export class CodexAdapter
     // key from the spawned child so `codex` doesn't silently route through
     // Platform API billing — that's exactly the bug this feature exists to
     // fix.
-    const hasFileAuth = hasCodexFileAuth();
+    const hasFileAuth = this.hasFileAuth();
     const hasEnvAuth = !!env.OPENAI_API_KEY;
 
     if (!hasFileAuth && !hasEnvAuth) {
@@ -708,11 +722,14 @@ export class CodexAdapter
         // completed item; surface it as a tool call so the edit renders as a
         // diff (one block per file), matching how Claude's Edit/Write render.
         if (phase !== "completed") return;
-        const changes = (item.changes ?? []).map((c) => ({
-          path: c.path,
-          kind: fileChangeKindLabel(c.kind),
-          diff: extractUnifiedDiff(c),
-        }));
+        const changes = (item.changes ?? []).map((c) => {
+          const kind = fileChangeKindLabel(c.kind);
+          return {
+            path: c.path,
+            kind,
+            diff: extractUnifiedDiff(c) ?? this.synthesizeAddedFileDiff(c.path, kind),
+          };
+        });
         this.emitAssistant([
           {
             type: "tool_use",
@@ -771,6 +788,26 @@ export class CodexAdapter
       // imageView, etc. have no ShipIt mapping — ignore them.
       default:
         break;
+    }
+  }
+
+  /**
+   * Some Codex app-server builds omit the top-level `diff` for add/write
+   * changes. The file is already on disk when `item/completed` arrives, so for
+   * adds we can reconstruct the same all-`+` diff shape Claude-style write
+   * blocks need for line counts and the clickable diff affordance.
+   */
+  private synthesizeAddedFileDiff(filePath: string, kind: string): string | undefined {
+    if (kind !== "add") return undefined;
+    try {
+      const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(this.cwd, filePath);
+      const stat = statSync(absolutePath);
+      if (!stat.isFile()) return undefined;
+      const content = readFileSync(absolutePath, "utf8");
+      const diff = contentToAddedDiff(content);
+      return diff || undefined;
+    } catch {
+      return undefined;
     }
   }
 

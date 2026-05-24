@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { CodexAdapter, unwrapShellCommand } from "./codex-adapter.js";
 import type { AgentEvent } from "./agent-process.js";
 
@@ -91,14 +94,14 @@ describe("CodexAdapter", () => {
   });
 
   /** Helper: create adapter, run it, and complete the init handshake. */
-  async function createAndInit(prompt = "Hello", sessionId?: string): Promise<void> {
-    adapter = new CodexAdapter();
+  async function createAndInit(prompt = "Hello", sessionId?: string, cwd = "/workspace"): Promise<void> {
+    adapter = new CodexAdapter(() => false);
     adapter.on("event", (e) => events.push(e));
 
     adapter.run({
       prompt,
       sessionId,
-      cwd: "/workspace",
+      cwd,
     });
 
     // Allow the microtask for initializeAndRun to start
@@ -135,7 +138,7 @@ describe("CodexAdapter", () => {
   }
 
   it("has agentId 'codex'", () => {
-    adapter = new CodexAdapter();
+    adapter = new CodexAdapter(() => false);
     expect(adapter.agentId).toBe("codex");
   });
 
@@ -157,7 +160,7 @@ describe("CodexAdapter", () => {
   it("emits auth_required when OPENAI_API_KEY is not set", () => {
     delete process.env.OPENAI_API_KEY;
 
-    adapter = new CodexAdapter();
+    adapter = new CodexAdapter(() => false);
     let authRequired = false;
     adapter.on("auth_required", () => { authRequired = true; });
     adapter.run({ prompt: "Hello", cwd: "/workspace" });
@@ -543,6 +546,49 @@ describe("CodexAdapter", () => {
         },
       ],
     });
+  });
+
+  it("synthesizes a write diff for add fileChange items without a diff", async () => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "shipit-codex-write-"));
+    try {
+      writeFileSync(path.join(cwd, "new-file.ts"), "one\ntwo\n");
+      await createAndInit("Write a file", undefined, cwd);
+      events.length = 0;
+
+      fakeProc.sendNotification("item/completed", {
+        item: {
+          type: "fileChange",
+          id: "fc-add",
+          status: "completed",
+          changes: [
+            { path: "new-file.ts", kind: { type: "add" } },
+          ],
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.length).toBe(2);
+      });
+
+      expect(events[0]).toEqual({
+        type: "agent_assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "fc-add",
+            name: "apply_patch",
+            input: {
+              files: ["new-file.ts"],
+              changes: [
+                { path: "new-file.ts", kind: "add", diff: "+one\n+two" },
+              ],
+            },
+          },
+        ],
+      });
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("maps incremental message delta (a plain string) to agent_assistant", async () => {
@@ -970,14 +1016,10 @@ describe("CodexAdapter", () => {
 // ---------------------------------------------------------------------------
 // Feature 119 — Codex subscription auth dual-mode resolution
 //
-// Covers the env-key path; the file-auth (ChatGPT subscription) path can't
-// be exercised here because its detection probes /root/.codex/auth.json
-// directly via `node:fs`, and ESM doesn't permit spy-ing on namespace
-// exports. The dual-mode branch table is covered by
+// Covers the env-key path with file auth disabled through the adapter's
+// injectable probe. The real file-auth branch table is covered by
 // `src/server/shared/agent-registry.test.ts` (registry layer) and
-// `src/server/orchestrator/codex-auth.test.ts` (manager layer); the
-// `auth_required` branch tested here is the only one the adapter alone
-// owns.
+// `src/server/orchestrator/codex-auth.test.ts` (manager layer).
 // ---------------------------------------------------------------------------
 
 describe("CodexAdapter / dual-mode auth (feature 119)", () => {
@@ -991,7 +1033,7 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
   });
 
   it("emits auth_required when neither file auth nor OPENAI_API_KEY is present", () => {
-    const adapter = new CodexAdapter();
+    const adapter = new CodexAdapter(() => false);
     let authRequired = false;
     adapter.on("auth_required", () => { authRequired = true; });
     adapter.run({ prompt: "Hello", cwd: "/workspace" });
@@ -1001,7 +1043,7 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
   it("forwards OPENAI_API_KEY when only the env-key auth path is set", async () => {
     process.env.OPENAI_API_KEY = "sk-platform-billing";
 
-    const adapter = new CodexAdapter();
+    const adapter = new CodexAdapter(() => false);
     adapter.on("event", () => { /* drain */ });
     adapter.run({ prompt: "Hello", cwd: "/workspace" });
 
@@ -1015,7 +1057,7 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
   it("logs the auth path it chose (Platform API)", async () => {
     process.env.OPENAI_API_KEY = "sk-platform-billing";
 
-    const adapter = new CodexAdapter();
+    const adapter = new CodexAdapter(() => false);
     const logs: { source: string; text: string }[] = [];
     adapter.on("log", (source, text) => logs.push({ source, text }));
     adapter.run({ prompt: "Hello", cwd: "/workspace" });
