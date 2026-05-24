@@ -738,7 +738,16 @@ export function SessionSidebar({
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => { const url = useRepoStore.getState().activeRepoUrl ?? repos[0]?.url; if (url) onNewSessionForRepo(url); }}
+          onClick={() => {
+            // Prefer the current session's repo over `activeRepoUrl` —
+            // `activeRepoUrl` doesn't get re-synced on URL-based navigation,
+            // so it can point at a different repo than the session the user
+            // is actually viewing.
+            const session = useSessionStore.getState();
+            const currentRepo = session.sessions.find((s) => s.id === session.sessionId)?.remoteUrl;
+            const url = currentRepo ?? useRepoStore.getState().activeRepoUrl ?? repos[0]?.url;
+            if (url) onNewSessionForRepo(url);
+          }}
           disabled={repos.length === 0}
           className="p-0! w-6 h-6 text-(--color-success) hover:text-(--color-success)"
           aria-label="New Session"
