@@ -58,13 +58,13 @@ const CONVERSATION_SELECTIONS = `
  * Build the PR status GraphQL query.
  *
  * The connection sizes (`first: 30` PRs, `first: 10` contexts, `last: 3`
- * deployments) are intentionally bounded to keep the query cost down — at
- * 5s polling, a single actively-watched repo is right at the 5,000 points/hr
- * primary rate-limit budget. If a session's PR is past the `first: 30` cap
- * it gets a per-session REST verify instead (see `verifyMissingPr` in the
- * poller). Status rollups beyond the first 10 contexts are an extreme edge
- * case; if it bites, increase here rather than dropping back to a
- * paginated GraphQL.
+ * deployments) are intentionally bounded to keep the query cost down. At
+ * 15s polling, a single actively-watched repo stays comfortably below the
+ * 5,000 points/hr primary rate-limit budget. If a session's PR is past the
+ * `first: 30` cap it gets a per-session REST verify instead (see
+ * `verifyMissingPr` in the poller). Status rollups beyond the first 10
+ * contexts are an extreme edge case; if it bites, increase here rather than
+ * dropping back to a paginated GraphQL.
  *
  * NOTE: `files(first: 100)` is the hard ceiling — the GitHub GraphQL `files`
  * connection rejects any `first` above 100 with an EXCESSIVE_PAGINATION error

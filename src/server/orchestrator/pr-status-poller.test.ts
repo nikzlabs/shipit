@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { PrStatusPoller, parsePrNode, extractHeadSha, extractFailedCheckRuns } from "./pr-status-poller.js";
+import { PrStatusPoller, PR_STATUS_POLL_INTERVAL_MS, parsePrNode, extractHeadSha, extractFailedCheckRuns } from "./pr-status-poller.js";
 import {
   PR_STATUS_QUERY,
   PR_STATUS_QUERY_WITH_CONVERSATION,
@@ -527,7 +527,7 @@ describe("PrStatusPoller", () => {
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
 
     // Second poll — same data, no broadcast
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect(sseBroadcast).toHaveBeenCalledTimes(1);
   });
 
@@ -557,7 +557,7 @@ describe("PrStatusPoller", () => {
 
     // Closing it returns to the light query on the next tick.
     poller.setPrTabActive("s1", false);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect(githubAuth.graphqlQuery).toHaveBeenLastCalledWith(PR_STATUS_QUERY, expect.anything());
   });
 
@@ -580,7 +580,7 @@ describe("PrStatusPoller", () => {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ title: "Updated title" })] } } },
     });
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect(sseBroadcast).toHaveBeenCalledTimes(2);
     expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
       updates: expect.arrayContaining([
@@ -608,7 +608,7 @@ describe("PrStatusPoller", () => {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ body: "New description" })] } } },
     });
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect(sseBroadcast).toHaveBeenCalledTimes(2);
     expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
       updates: expect.arrayContaining([
@@ -654,7 +654,7 @@ describe("PrStatusPoller", () => {
     };
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue(withoutPr);
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     // Flush the REST verify's pending microtasks.
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
@@ -701,7 +701,7 @@ describe("PrStatusPoller", () => {
       data: { repository: { pullRequests: { nodes: [] } } },
     });
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     await vi.advanceTimersByTimeAsync(0);
 
     // REST verify ran but did NOT promote — no merge broadcast at all.
@@ -743,8 +743,8 @@ describe("PrStatusPoller", () => {
 
     // Subsequent polls with the PR still missing should NOT re-verify —
     // `verifiedAbsent` is sticky until the PR reappears in a bulk response.
-    await vi.advanceTimersByTimeAsync(5_000);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
   });
 
@@ -1056,7 +1056,7 @@ describe("PrStatusPoller", () => {
     poller.recordClientActivity();
 
     // Next poll tick should fire
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBeforeIdle);
   });
 });
@@ -1335,7 +1335,7 @@ describe("PrStatusPoller — catch-up probe", () => {
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
 
     // Second poll — no catch-up (already consumed)
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
 
     poller.destroy();
@@ -1620,7 +1620,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
 
     // Advance to the next poll tick.
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
 
     // Now the override should fire — state flips to "pending".
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
@@ -1775,7 +1775,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     // Advance well past the (20s) grace window. GitHub still reports no
     // checks. The override should drop and we should broadcast the flip to
     // "none", which unblocks the merge button on the client.
-    await vi.advanceTimersByTimeAsync(25_000);
+    await vi.advanceTimersByTimeAsync(31_000);
 
     const noneCall = sseBroadcast.mock.calls.find(([, payload]) => {
       const updates = (payload as { updates?: { checks?: { state?: string } }[] }).updates;
@@ -1826,7 +1826,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     });
 
     // Trigger a poll on the new SHA — grace resets to observedAt=15s.
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
 
     sseBroadcast.mockClear();
 
@@ -1898,7 +1898,7 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
       data: { repository: { pullRequests: { nodes: [pendingNode] } } },
     });
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
 
     // Then the check succeeds, well past the original grace window. If the
     // tracker hadn't been cleared when checks first arrived, a stale "grace
@@ -2009,7 +2009,7 @@ describe("PrStatusPoller — GitHub rate-limit handling", () => {
 
     // Limit lifts — next tick should clear and resume.
     limited = false;
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
 
     const clearedCalls = sseBroadcast.mock.calls.filter(([event]) => event === "gh_rate_limited_cleared");
     expect(clearedCalls).toHaveLength(1);

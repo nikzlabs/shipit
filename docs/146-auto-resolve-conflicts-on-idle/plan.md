@@ -30,7 +30,7 @@ This satisfies CLAUDE.md §1 ("ShipIt is the surface — the user does not leave
 
 ### Trigger: PR poller mergeable transition
 
-Piggyback on the existing per-repo poll (`pr-status-poller.ts`, 5s cadence). Inside `handleTransition`-style processing, after computing the new `PrStatusSummary`, look at `summary.mergeable`:
+Piggyback on the existing per-repo poll (`pr-status-poller.ts`, 15s cadence). Inside `handleTransition`-style processing, after computing the new `PrStatusSummary`, look at `summary.mergeable`:
 
 - If `prev?.mergeable !== "conflicting"` and `current.mergeable === "conflicting"`: this is the transition we care about. Hand off to the new `AutoConflictResolveManager`.
 - All other transitions: no-op.
