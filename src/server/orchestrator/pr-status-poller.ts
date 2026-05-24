@@ -2,7 +2,7 @@
  * PrStatusPoller — orchestrator-level PR status poller.
  *
  * One poller per repo, not per session. All sessions sharing a repo share
- * one polling loop. Polls every 3 seconds using a single GitHub GraphQL
+ * one polling loop. Polls every 15 seconds using a single GitHub GraphQL
  * query per repo (OPEN PRs only). Broadcasts changes via SSE.
  *
  * Phase 2 additions: auto-fix state management, per-check failure details,
@@ -43,13 +43,13 @@ import { CiGraceTracker } from "./ci-grace-tracker.js";
 export { parsePrNode, extractHeadSha, extractFailedCheckRuns, extractChangedFiles };
 
 /**
- * Per-repo polling cadence. Bumped from 3s to 5s as a cost-control measure:
+ * Per-repo polling cadence. Bumped from 5s to 15s as a cost-control measure:
  * paired with the GraphQL query downsizing in `pr-status-parser.ts`, this
- * keeps a single actively-watched repo safely inside the 5,000-points/hour
- * primary rate-limit budget. Idle-pause + per-session REST verifies cover
- * the rest. See docs/064-pr-lifecycle-flow/plan.md for the budget math.
+ * keeps a single actively-watched repo comfortably below GitHub's
+ * 5,000-points/hour primary rate-limit budget. Idle-pause + per-session REST
+ * verifies cover the rest. See docs/064-pr-lifecycle-flow/plan.md.
  */
-const POLL_INTERVAL_MS = 5_000;
+export const PR_STATUS_POLL_INTERVAL_MS = 15_000;
 /** How long after the last client heartbeat before we consider the user idle (ms). */
 const CLIENT_IDLE_TIMEOUT_MS = 30_000;
 
@@ -378,7 +378,7 @@ export class PrStatusPoller {
       this.pollRepo(repoKey, owner, repo).catch((err: unknown) => {
         console.error(`[pr-poller] Error polling ${repoKey}:`, err);
       });
-    }, POLL_INTERVAL_MS);
+    }, PR_STATUS_POLL_INTERVAL_MS);
 
     this.repoTimers.set(repoKey, timer);
 
