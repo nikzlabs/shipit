@@ -12,6 +12,7 @@ import { useNotification } from "./hooks/useNotification.js";
 import { useAttentionNotifications } from "./hooks/useAttentionNotifications.js";
 import { useTheme } from "./hooks/useTheme.js";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
+import { useQuickCaptureHotkey } from "./hooks/useQuickCaptureHotkey.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
 import { useActivityTracker } from "./hooks/useActivityTracker.js";
@@ -202,6 +203,7 @@ export default function App() {
   const modelInfo = useUiStore((s) => s.modelInfo);
   const contextTokens = useUiStore((s) => s.contextTokens);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
+  const quickCaptureHotkey = useSettingsStore((s) => s.quickCaptureHotkey);
   const projectSettingsRepoUrl = useUiStore((s) => s.projectSettingsRepoUrl);
   const projectSettingsTab = useUiStore((s) => s.projectSettingsTab);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
@@ -664,6 +666,10 @@ export default function App() {
     settingsOpen,
     handleInterrupt: () => send({ type: "interrupt_agent" }),
     handleNewSession: handleNewSessionShortcut,
+  });
+
+  useQuickCaptureHotkey(quickCaptureHotkey, () => {
+    useUiStore.getState().setQuickCaptureOpen(true);
   });
 
   const handleTabChange = useCallback(

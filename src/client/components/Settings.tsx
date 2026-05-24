@@ -10,6 +10,7 @@ import { GitHubTokenForm } from "./GitHubTokenForm.js";
 import { McpServerSettings } from "./McpServerSettings.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { isValidQuickCaptureHotkey } from "../hooks/useQuickCaptureHotkey.js";
 
 const MAX_LENGTH = 50_000;
 
@@ -104,6 +105,47 @@ function NotificationSettings() {
           </div>
           <ToggleSwitch enabled={soundOnFinish} onToggle={setSoundOnFinish} testId="settings-sound-on-finish" />
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ShortcutSettings() {
+  const quickCaptureHotkey = useSettingsStore((s) => s.quickCaptureHotkey);
+  const setQuickCaptureHotkey = useSettingsStore((s) => s.setQuickCaptureHotkey);
+  const [draft, setDraft] = useState(quickCaptureHotkey);
+  const valid = isValidQuickCaptureHotkey(draft);
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">Shortcuts</h3>
+      <div className="space-y-2">
+        <label className="block text-sm text-(--color-text-primary)" htmlFor="quick-capture-hotkey">
+          Quick capture
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            id="quick-capture-hotkey"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => {
+              if (valid) setQuickCaptureHotkey(draft.toLowerCase());
+            }}
+            className="w-48 rounded-md border border-(--color-border-secondary) bg-(--color-bg-tertiary) px-3 py-2 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+            placeholder="mod+alt+n"
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!valid}
+            onClick={() => setQuickCaptureHotkey(draft.toLowerCase())}
+          >
+            Save
+          </Button>
+        </div>
+        {!valid && (
+          <p className="text-xs text-(--color-error)">Use a key with Ctrl/Cmd plus Alt or Shift, for example mod+alt+n.</p>
+        )}
       </div>
     </div>
   );
@@ -908,6 +950,10 @@ export function Settings({
               <div className="border-t border-(--color-border-secondary)" />
 
               <NotificationSettings />
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              <ShortcutSettings />
 
               <div className="border-t border-(--color-border-secondary)" />
 

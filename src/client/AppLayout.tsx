@@ -17,6 +17,7 @@ import { SubscriptionLimitsBadge } from "./components/SubscriptionLimitsBadge.js
 import { MemoryPressureBanner } from "./components/MemoryPressureBanner.js";
 import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
 import { LocalModeBanner } from "./components/LocalModeBanner.js";
+import { QuickCaptureOverlay } from "./components/QuickCaptureOverlay.js";
 
 interface AppLayoutProps {
   // Header
@@ -233,6 +234,7 @@ export function AppLayout({
       )}
 
       {toast && <Toast toast={toast} onDismiss={onDismissToast} />}
+      <QuickCaptureOverlay onAddRepo={onAddRepo} />
     </>
   );
 }

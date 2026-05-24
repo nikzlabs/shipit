@@ -72,6 +72,7 @@ interface UiState {
   /** Cumulative output tokens across every turn in the session. */
   cumulativeOutputTokens: number;
   settingsOpen: boolean;
+  quickCaptureOpen: boolean;
   settingsTab: SettingsTab;
   /**
    * URL of the repo whose Project Settings dialog is open, or `null` when
@@ -125,6 +126,7 @@ interface UiState {
   setContextTokens: (tokens: number) => void;
   setCumulativeTokens: (input: number, output: number) => void;
   setSettingsOpen: (open: boolean) => void;
+  setQuickCaptureOpen: (open: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
   /**
    * Open (or close, with `null`) the per-repo Project Settings dialog. Pass a
@@ -161,6 +163,7 @@ const initialState = {
   cumulativeInputTokens: 0,
   cumulativeOutputTokens: 0,
   settingsOpen: false,
+  quickCaptureOpen: false,
   settingsTab: undefined as SettingsTab,
   projectSettingsRepoUrl: null as string | null,
   projectSettingsTab: "secrets" as ProjectSettingsTab,
@@ -214,6 +217,8 @@ export const useUiStore = create<UiState>((set) => ({
 
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
 
+  setQuickCaptureOpen: (quickCaptureOpen) => set({ quickCaptureOpen }),
+
   setSettingsTab: (settingsTab) => set({ settingsTab }),
 
   setProjectSettingsRepoUrl: (projectSettingsRepoUrl, tab = "secrets") =>
@@ -241,6 +246,7 @@ export const useUiStore = create<UiState>((set) => ({
   reset: () =>
     set({
       settingsOpen: false,
+      quickCaptureOpen: false,
       projectSettingsRepoUrl: null,
       currentSessionUsage: null,
       allUsageStats: null,

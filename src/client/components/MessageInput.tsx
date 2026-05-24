@@ -56,6 +56,7 @@ export function MessageInput({
   focusKey,
   hasPrCard = false,
   liveSteeringActive = false,
+  surface = "chat",
 }: {
   onSend: (text: string) => void;
   disabled: boolean;
@@ -94,6 +95,7 @@ export function MessageInput({
   hasPrCard?: boolean;
   /** When true, show both Stop and Send buttons simultaneously (live steering active). */
   liveSteeringActive?: boolean;
+  surface?: "chat" | "overlay";
 }) {
   const isMobile = useIsMobile();
   const [text, setText] = useState("");
@@ -154,6 +156,7 @@ export function MessageInput({
   // Consume prefill text from store (e.g. "Start Session" from docs viewer, "Send to Agent" from services panel)
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
+    if (surface === "overlay") return undefined;
     const consume = (prefill: string | undefined) => {
       if (!prefill) return;
       setText(prefill);
@@ -172,7 +175,7 @@ export function MessageInput({
     return useSessionStore.subscribe((state) => {
       consume(state.prefillText);
     });
-  }, []);
+  }, [surface]);
 
   // Auto-focus textarea on mount and on session change (e.g. "New Session" click,
   // session switch). The ref is intentionally seeded with `undefined` (not `focusKey`)
@@ -186,7 +189,7 @@ export function MessageInput({
   // advance prevFocusKeyRef so a later viewport resize from mobile → desktop
   // doesn't retroactively fire focus for a session change we already saw.
   const prevFocusKeyRef = useRef<string | undefined>(undefined);
-  if (focusKey && focusKey !== prevFocusKeyRef.current) {
+  if (surface === "chat" && focusKey && focusKey !== prevFocusKeyRef.current) {
     prevFocusKeyRef.current = focusKey;
     if (!isMobile) {
       // Schedule focus after paint — safe to call during render since it's a microtask
@@ -195,6 +198,15 @@ export function MessageInput({
       });
     }
   }
+
+  // The quick-capture overlay suppresses the chat/session focus path above so
+  // it cannot race the underlying chat composer, but it still needs to focus
+  // its own textarea when mounted.
+  // eslint-disable-next-line no-restricted-syntax -- overlay mount autofocus
+  useEffect(() => {
+    if (surface !== "overlay" || isMobile) return;
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [surface, isMobile]);
 
   // Guard against iframe focus theft: when the textarea is focused and an iframe
   // (e.g. preview loading) steals focus, the textarea fires a blur event with no
@@ -533,7 +545,7 @@ export function MessageInput({
              * and its popover row opens the usage modal. The standalone cost
              * pill was removed to eliminate a stale-vs-authoritative
              * discrepancy between the two. */}
-            {(modelInfo ?? contextTokens > 0) && (
+            {surface === "chat" && (modelInfo ?? contextTokens > 0) && (
               <ContextDialMount
                 modelInfo={modelInfo ?? null}
                 contextTokensFallback={contextTokens}
