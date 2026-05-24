@@ -716,7 +716,7 @@ export default function App() {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
-      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; defaultAgentId: string; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; prCommentSync?: boolean; providerAccounts?: ProviderAccount[] }; previewSubdomains?: "auto" | "always" }>("/api/bootstrap");
+      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; defaultAgentId: string; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; providerAccounts?: ProviderAccount[] }; previewSubdomains?: "auto" | "always" }>("/api/bootstrap");
       useGitStore.getState().setIdentity(data.settings.gitIdentity);
       useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
       useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
@@ -725,7 +725,6 @@ export default function App() {
       if (data.settings.agentSystemInstructions) useSettingsStore.getState().setAgentSystemInstructions(data.settings.agentSystemInstructions);
       if (data.settings.autoCreatePr !== undefined) useSettingsStore.getState().setAutoCreatePr(data.settings.autoCreatePr);
       if (data.settings.liveSteering !== undefined) useSettingsStore.getState().setLiveSteering(data.settings.liveSteering);
-      if (data.settings.prCommentSync !== undefined) useSettingsStore.getState().setPrCommentSync(data.settings.prCommentSync);
       if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
       useUiStore.getState().setAgentList(data.settings.agents);
       useUiStore.getState().setPreviewSubdomains(data.previewSubdomains ?? "auto");

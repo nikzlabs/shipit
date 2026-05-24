@@ -38,9 +38,8 @@ immediate poll. `App.tsx` emits the gate from an effect keyed on tab + session
 + connection (survives reconnects/switches). Issue comments are read + post
 (`POST /api/sessions/:id/pr/comments` → `addIssueComment`, optimistic append in
 `pr-store.postComment` with revert-on-error). `PrConversationSection` renders
-comments + review threads with reply and resolve/reopen write-back when the
-`prCommentSync` setting is enabled, backed by the docs/102 thread mutation
-routes and optimistic `pr-store` actions.
+comments + review threads with reply and resolve/reopen write-back, backed by
+the docs/102 thread mutation routes and optimistic `pr-store` actions.
 
 **Shipped (Phase 2, editable title + description):** the header title and
 description section gain inline editing when the PR is open (phase `open`).

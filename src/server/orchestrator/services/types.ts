@@ -45,11 +45,6 @@ export interface GlobalSettings {
    */
   liveSteering: boolean;
   /**
-   * When true, the PR conversation panel surfaces reply/resolve controls that
-   * write back to GitHub. (docs/102)
-   */
-  prCommentSync: boolean;
-  /**
    * Provider subscription accounts grouped by provider (docs/150). Reserved
    * env/API-key routes are not represented here.
    */

@@ -75,7 +75,6 @@ export async function getBootstrapData(deps: {
         agentSystemInstructions: "",
         autoCreatePr: false,
         liveSteering: false,
-        prCommentSync: false,
         providerAccounts: [],
       } as Awaited<ReturnType<typeof getGlobalSettings>>;
     }),
