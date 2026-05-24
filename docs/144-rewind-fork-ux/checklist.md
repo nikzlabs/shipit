@@ -17,17 +17,17 @@ status: in-progress
 
 ## Landing 2 — Between-Turn Rewind Points
 
-- [ ] Build `RewindPoint` for intermediate gaps, gap-after-last, streaming states, and the menu.
-- [ ] Render `RewindPoint` between role transitions in `MessageList`, plus the gap-after-last control.
-- [ ] Route all four menu actions through `rewind_at_gap`.
-- [ ] Add the Fork modal with editable branch slug.
+- [x] Build `RewindPoint` for intermediate gaps, gap-after-last, streaming states, and the menu.
+- [x] Render `RewindPoint` between role transitions in `MessageList`, plus the gap-after-last control.
+- [x] Route all four menu actions through `rewind_at_gap`.
+- [x] Add the Fork modal with editable branch slug.
 - [x] Add `rewind_preview_request` / `rewind_preview` server contract and count calculation.
-- [ ] Use `rewind_preview` for menu subtitles and modal counts.
-- [ ] Add selective confirmation modals.
+- [x] Use `rewind_preview` for menu subtitles and modal counts.
+- [x] Add selective confirmation modals.
 - [ ] Add undo toast and "Recover recent rewind" topbar overflow entry.
 - [ ] Add `rewind_snapshots` persistence and restore path.
 - [ ] Remove legacy per-message rewind/rollback dropdowns and old WS message types.
-- [ ] U6: Show an empty-chat notice after rewinding to the start.
+- [x] U6: Show an empty-chat notice after rewinding to the start.
 
 ## Landing 3 — Polish
 

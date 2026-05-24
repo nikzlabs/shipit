@@ -11,6 +11,13 @@ export const handleRewindComplete: Handler<WsRewindComplete> = (_ctx, data) => {
       if (i < gapPosition) return m;
       return { ...m, rolledBack: true, codeRollbackHash: i === gapPosition ? data.commitHash : m.codeRollbackHash };
     }));
+  } else if ("action" in data && data.action === "chat" && gapPosition === 0) {
+    session.setMessages([{
+      role: "assistant",
+      text: "Conversation rewound to start. Send a message to continue.",
+      notice: true,
+      noticeLevel: "info",
+    }]);
   } else {
     session.setMessages((prev) => prev.slice(0, gapPosition));
   }

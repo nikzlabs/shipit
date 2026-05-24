@@ -24,6 +24,7 @@ import { formatErrorForMessage } from "./components/PreviewFrame.js";
 import { SessionTopBar } from "./components/SessionTopBar.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList } from "./components/MessageList.js";
+import type { RewindGapAction } from "./components/RewindPoint.js";
 import { RocketLaunch } from "./components/RocketLaunch.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
@@ -104,6 +105,7 @@ export default function App() {
   const previousNewSessionRouteRef = useRef<string | undefined>(undefined);
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
+  const rewindPreviews = useSessionStore((s) => s.rewindPreviews);
   const isLoading = useSessionStore((s) => s.isLoading);
   const activity = useSessionStore((s) => s.activity);
   const sessions = useSessionStore((s) => s.sessions);
@@ -472,10 +474,20 @@ export default function App() {
     [send, status, requestPermission, disableAutoFix, navigate, isNewSessionRoute, getUploadRefs, clearUploads, uploads],
   );
 
-  const handleRewind = useCallback(
-    (messageIndex: number, mode: "fork_chat" | "rewind_code" | "rewind_all") => {
-      const action = mode === "fork_chat" ? "chat" : mode === "rewind_code" ? "code" : "both";
-      send({ type: "rewind_at_gap", gapPosition: messageIndex, action });
+  const handleRequestRewindPreview = useCallback(
+    (gapPosition: number, action: RewindGapAction) => {
+      send({ type: "rewind_preview_request", gapPosition, action });
+    },
+    [send],
+  );
+
+  const handleRewindAtGap = useCallback(
+    (gapPosition: number, action: RewindGapAction, branchName?: string) => {
+      if (action === "fork") {
+        send({ type: "rewind_at_gap", gapPosition, action, branchName: branchName?.trim() || undefined });
+        return;
+      }
+      send({ type: "rewind_at_gap", gapPosition, action });
     },
     [send],
   );
@@ -586,20 +598,6 @@ export default function App() {
       session.setActivity({ label: "Thinking..." });
       const pm = useSettingsStore.getState().getPermissionMode(session.sessionId);
       send({ type: "send_message", text, sessionId: session.sessionId, permissionMode: pm !== "auto" ? pm : undefined });
-    },
-    [send],
-  );
-
-  const handleRollback = useCallback(
-    (messageIndex: number, mode: "code" | "code_and_chat" | "fork", _parentCommitHash: string) => {
-      if (mode === "code") {
-        send({ type: "rewind_at_gap", gapPosition: messageIndex, action: "code" });
-      } else if (mode === "code_and_chat") {
-        send({ type: "rewind_at_gap", gapPosition: messageIndex, action: "both" });
-      } else {
-        const branchName = `fork-${Date.now().toString(36)}`;
-        send({ type: "rewind_at_gap", gapPosition: messageIndex, action: "fork", branchName });
-      }
     },
     [send],
   );
@@ -987,7 +985,18 @@ export default function App() {
               <RocketLaunch />
             </div>
           )}
-          <MessageList messages={messages} isLoading={isLoading} searchMatches={search.matches} currentMatch={search.currentMatch} onAnswerQuestion={handleAnswerQuestion} onSendFollowUp={handleSendFollowUp} onRollback={handleRollback} onRewind={handleRewind} />
+          <MessageList
+            messages={messages}
+            isLoading={isLoading}
+            searchMatches={search.matches}
+            currentMatch={search.currentMatch}
+            onAnswerQuestion={handleAnswerQuestion}
+            onSendFollowUp={handleSendFollowUp}
+            rewindPreviews={rewindPreviews}
+            sessionTitle={currentSession?.title}
+            onRequestRewindPreview={handleRequestRewindPreview}
+            onRewindAtGap={handleRewindAtGap}
+          />
           {/*
             Bottom stack: thinking indicator, rebase banner, PR card.
             `gap-2` gives a consistent 8px gap between every rendered sibling, so spacing

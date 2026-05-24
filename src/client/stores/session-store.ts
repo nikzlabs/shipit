@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo, TurnUsage, RescuePhase } from "../../server/shared/types.js";
+import type { SessionInfo, TurnUsage, RescuePhase, WsRewindPreview } from "../../server/shared/types.js";
 
 /**
  * Live state for an in-flight Rescue session ("Restart container") operation.
@@ -38,6 +38,7 @@ interface SessionState {
   authUrl: string | null;
   activeRunnerSessions: Set<string>;
   queuedMessages: { text: string; position: number }[];
+  rewindPreviews: Record<string, WsRewindPreview>;
   /** WS message to auto-send when the next per-session WS connection opens (e.g. new session from home). */
   pendingWsMessage: Record<string, unknown> | undefined;
   /** Text to prefill into the message input (consumed and cleared by MessageInput). */
@@ -118,6 +119,8 @@ interface SessionState {
           prev: { text: string; position: number }[],
         ) => { text: string; position: number }[]),
   ) => void;
+  setRewindPreview: (preview: WsRewindPreview) => void;
+  clearRewindPreviews: () => void;
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
   /**
    * Fill the composer textarea with text the user is expected to edit before
@@ -169,6 +172,7 @@ const initialResettableState = {
   selectedRepoUrl: null as string | null,
   creatingRepo: false,
   queuedMessages: [] as { text: string; position: number }[],
+  rewindPreviews: {} as Record<string, WsRewindPreview>,
   pendingWsMessage: undefined as Record<string, unknown> | undefined,
   prefillText: undefined as string | undefined,
   historyLoaded: false,
@@ -250,6 +254,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ? messages(state.queuedMessages)
           : messages,
     })),
+
+  setRewindPreview: (preview) =>
+    set((state) => ({
+      rewindPreviews: {
+        ...state.rewindPreviews,
+        [`${preview.gapPosition}:${preview.action}`]: preview,
+      },
+    })),
+
+  clearRewindPreviews: () => set({ rewindPreviews: {} }),
 
   setPendingWsMessage: (pendingWsMessage) => set({ pendingWsMessage }),
 
