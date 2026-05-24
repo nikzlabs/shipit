@@ -266,7 +266,6 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE messages ADD COLUMN code_rollback_hash TEXT;
     `);
   },
-<<<<<<< HEAD
   // Migration 18: provider-account routing (docs/150). Sessions persist both
   // the route kind and route id so account rows are never confused with
   // reserved env/API-key auth routes.
@@ -274,8 +273,25 @@ const MIGRATIONS: Migration[] = [
     db.exec("ALTER TABLE sessions ADD COLUMN provider_route_kind TEXT");
     db.exec("ALTER TABLE sessions ADD COLUMN provider_route_id TEXT");
     db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_provider_route ON sessions(provider_route_kind, provider_route_id)");
-=======
-  // Migration 18: marketplaces table (docs/149 — skill install UX). Holds the
+  },
+  // Migration 19: rewind undo snapshots (docs/144 Landing 2). Rows are small,
+  // short-lived restore records used by the undo toast and topbar recovery
+  // entry. Expiry is enforced lazily by the ChatHistoryManager helpers.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS rewind_snapshots (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        expires_at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_rewind_snapshots_session_expires
+        ON rewind_snapshots(session_id, expires_at_ms);
+    `);
+  },
+  // Migration 20: marketplaces table (docs/149 — skill install UX). Holds the
   // catalog list shown in Settings → Skills → Discover, keyed by short id
   // (e.g. `claude-plugins-official`). v1 seeds one row at startup and never
   // inserts/deletes after that; v2 adds the add/remove verbs. `source` is a
@@ -294,24 +310,6 @@ const MIGRATIONS: Migration[] = [
         fetch_error TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_marketplaces_agent ON marketplaces(agent_id);
-    `);
->>>>>>> d25a4ba02 (Agent turn)
-  },
-  // Migration 19: rewind undo snapshots (docs/144 Landing 2). Rows are small,
-  // short-lived restore records used by the undo toast and topbar recovery
-  // entry. Expiry is enforced lazily by the ChatHistoryManager helpers.
-  (db) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS rewind_snapshots (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        action TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        created_at_ms INTEGER NOT NULL,
-        expires_at_ms INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_rewind_snapshots_session_expires
-        ON rewind_snapshots(session_id, expires_at_ms);
     `);
   },
 ];
