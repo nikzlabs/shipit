@@ -3,7 +3,7 @@
  */
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
-import type { SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
+import type { ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 
 // ---- Types for service function results ----
 
@@ -49,6 +49,11 @@ export interface GlobalSettings {
    * write back to GitHub. (docs/102)
    */
   prCommentSync: boolean;
+  /**
+   * Provider subscription accounts grouped by provider (docs/150). Reserved
+   * env/API-key routes are not represented here.
+   */
+  providerAccounts: ProviderAccount[];
 }
 
 export interface GitHubStatus {
