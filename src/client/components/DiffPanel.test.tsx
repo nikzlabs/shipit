@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
-import { DiffPanel, type TurnDiffData } from "./DiffPanel.js";
+import { DiffPanel, githubReviewThreadsToLineComments, type TurnDiffData } from "./DiffPanel.js";
 import type { FileDiff } from "../../server/shared/types.js";
+import type { PrReviewThread } from "../../server/shared/types/github-types.js";
 
 // Mock Monaco DiffEditor — it doesn't work in jsdom
 vi.mock("@monaco-editor/react", () => ({
@@ -309,6 +310,74 @@ describe("DiffPanel", () => {
       const props = defaultProps();
       render(<DiffPanel {...props} />);
       expect(screen.getByText("Changes")).toBeInTheDocument();
+    });
+  });
+
+  describe("GitHub review thread mapping", () => {
+    it("maps anchored GitHub review threads into line comments for Monaco", () => {
+      const threads: PrReviewThread[] = [
+        {
+          id: "RT_1",
+          path: "src/app.ts",
+          line: 8,
+          isResolved: false,
+          isOutdated: false,
+          comments: [
+            {
+              id: "RC_1",
+              author: { login: "alice", avatarUrl: "https://avatars/alice.png" },
+              body: "Please rename this",
+              createdAt: "2026-05-20T10:00:00Z",
+            },
+          ],
+        },
+      ];
+
+      expect(githubReviewThreadsToLineComments(threads)).toEqual([
+        {
+          id: "github:RT_1",
+          kind: "line",
+          source: "github",
+          filePath: "src/app.ts",
+          line: 8,
+          text: "Please rename this",
+          author: { login: "alice", avatarUrl: "https://avatars/alice.png" },
+          createdAt: "2026-05-20T10:00:00Z",
+          isResolved: false,
+          isOutdated: false,
+          replies: [
+            {
+              id: "RC_1",
+              author: { login: "alice", avatarUrl: "https://avatars/alice.png" },
+              body: "Please rename this",
+              createdAt: "2026-05-20T10:00:00Z",
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("skips file-level or unanchored GitHub review threads", () => {
+      const threads: PrReviewThread[] = [
+        {
+          id: "RT_file",
+          path: null,
+          line: null,
+          isResolved: false,
+          isOutdated: true,
+          comments: [],
+        },
+        {
+          id: "RT_no_line",
+          path: "src/app.ts",
+          line: null,
+          isResolved: false,
+          isOutdated: true,
+          comments: [],
+        },
+      ];
+
+      expect(githubReviewThreadsToLineComments(threads)).toEqual([]);
     });
   });
 });

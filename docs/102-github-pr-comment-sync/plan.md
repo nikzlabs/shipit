@@ -9,8 +9,9 @@ description: Bidirectionally sync GitHub PR review comments with ShipIt's inline
 ## Status snapshot
 
 - **Read side** — shipped with docs/133 Phase 4 (poller fetches `reviewThreads`, `PrConversationSection` renders them).
-- **Phase 1 write-back (this doc)** — reply, resolve, and unresolve via GraphQL. Gated by a `prCommentSync` setting (off by default). Live in `PrConversationSection`; no MonacoCommentWidgets integration yet.
-- **Deferred** — MonacoCommentWidgets integration in the diff viewer, "Send review to GitHub (N)" batched pending review flow, the agent auto-loop on new comment.
+- **Phase 1 write-back (this doc)** — reply, resolve, and unresolve via GraphQL. Gated by a `prCommentSync` setting (off by default). The mutation controls live in `PrConversationSection`.
+- **Inline render follow-up** — GitHub review threads now render as read-only Monaco diff widgets by mapping `PrReviewThread` data into `LineCommentLike` entries with `source: "github"`. Replies and resolve/reopen still live in `PrConversationSection`.
+- **Deferred** — "Send review to GitHub (N)" batched pending review flow, the agent auto-loop on new comment.
 
 ## Summary
 
@@ -88,7 +89,8 @@ Deferred to a Phase 2 of this feature:
 
 | File | Change |
 |---|---|
-| `src/client/components/MonacoCommentWidgets.ts` | Render GitHub-sourced threads inline on the diff viewer with `source: 'local' \| 'github'`. |
+| `src/client/components/MonacoCommentWidgets.ts` | **Shipped follow-up** — Render GitHub-sourced threads inline on the diff viewer with `source: 'local' \| 'github'`; GitHub cards are read-only and show author/reply/resolved/outdated metadata. |
+| `src/client/components/DiffPanel.tsx` | **Shipped follow-up** — Merge `card.reviewThreads` from `pr-store` with local diff comments so the Monaco diff shows teammate review comments on matching file/line anchors. |
 | `src/client/components/PrLifecycleCard.tsx` | "Pending review (N)" pill. |
 | `src/server/orchestrator/services/github-pr-comments.ts` | `submitPullRequestReview` to batch-post local line comments as a single pending review. |
 
