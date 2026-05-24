@@ -39,6 +39,20 @@ describe("scanSkillsDir", () => {
     expect(skills).toEqual([{ name: "bare", description: undefined, source: "project" }]);
   });
 
+  it("exposes the source directory name when it diverges from the frontmatter name", async () => {
+    // Some upstream Claude plugins (e.g. hookify) ship `skills/writing-rules/`
+    // with frontmatter `name: writing-hookify-rules`. The scanner should
+    // surface the on-disk dir so callers that read SKILL.md from disk can find
+    // it, while still exposing the invocable frontmatter name to clients.
+    writeSkill("skills", "writing-rules", `---\nname: writing-hookify-rules\n---\nbody`);
+    writeSkill("skills", "matched", `---\nname: matched\n---\nbody`);
+    const skills = await scanSkillsDir(path.join(tmpDir, "skills"), "project");
+    const byName = Object.fromEntries(skills.map((s) => [s.name, s]));
+    expect(byName["writing-hookify-rules"]).toMatchObject({ dirName: "writing-rules" });
+    // Omit dirName when it would equal the invocable name (avoid serialized noise).
+    expect(byName.matched).not.toHaveProperty("dirName");
+  });
+
   it("ignores non-directory entries and dirs without SKILL.md", async () => {
     const root = path.join(tmpDir, "skills");
     fs.mkdirSync(root, { recursive: true });

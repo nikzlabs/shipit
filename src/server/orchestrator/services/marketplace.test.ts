@@ -23,6 +23,7 @@ import {
   scanInstalledPlugins,
   withWorkspaceLock,
   rewriteFrontmatterName,
+  readPluginSkillBody,
   INSTALL_MARKER_FILENAME,
 } from "./marketplace.js";
 import { ServiceError } from "./types.js";
@@ -232,6 +233,73 @@ describe("services/marketplace (docs/149)", () => {
           }),
         ),
       ).rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it("handles plugins where the skill's source directory name differs from its frontmatter name (e.g. hookify)", async () => {
+      // Some upstream Claude plugins ship a directory like `skills/writing-rules/`
+      // whose `SKILL.md` has frontmatter `name: writing-hookify-rules`. The
+      // listing exposes the invocable frontmatter name to the client, but the
+      // install reader must use the source directory name on disk. Regression
+      // for the bug surfaced during dogfooding of this branch.
+      const cacheDir = path.join(cacheRoot, "mismatch-catalog");
+      fs.mkdirSync(path.join(cacheDir, ".claude-plugin"), { recursive: true });
+      fs.writeFileSync(
+        path.join(cacheDir, ".claude-plugin", "marketplace.json"),
+        JSON.stringify({
+          name: "mismatch-catalog",
+          plugins: [{ name: "hookify", source: "./plugins/hookify" }],
+        }),
+      );
+      const srcSkillDir = path.join(cacheDir, "plugins", "hookify", "skills", "writing-rules");
+      fs.mkdirSync(srcSkillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(srcSkillDir, "SKILL.md"),
+        "---\nname: writing-hookify-rules\ndescription: rule writer\n---\n\nbody\n",
+      );
+      store.seedIfMissing({
+        id: "mismatch-catalog",
+        source: { kind: "github", ownerRepo: "test/mismatch" },
+        agentId: "claude",
+        autoUpdate: true,
+      });
+
+      // Listing exposes the frontmatter (invocable) name.
+      const plugins = await listPlugins(store, "mismatch-catalog", cacheRoot);
+      expect(plugins[0].skills[0].name).toBe("writing-hookify-rules");
+      expect(plugins[0].skills[0].dirName).toBe("writing-rules");
+
+      // The preview endpoint resolves the URL's invocable name back to the
+      // source directory and reads the right SKILL.md.
+      const body = await readPluginSkillBody(
+        store,
+        "mismatch-catalog",
+        cacheRoot,
+        "hookify",
+        "writing-hookify-rules",
+      );
+      expect(body).toContain("name: writing-hookify-rules");
+
+      // Install lands at `hookify__writing-hookify-rules/` (using the
+      // invocable name, since that's what the user types).
+      const workspace = path.join(tmp, "ws-mismatch");
+      const git = await initRepo(workspace);
+      const result = await withWorkspaceLock(workspace, async () =>
+        installPlugin({
+          workspaceDir: workspace,
+          agentId: "claude",
+          marketplaceId: "mismatch-catalog",
+          pluginName: "hookify",
+          cacheRoot,
+          store,
+          git,
+        }),
+      );
+      expect(result.invocationTokens).toEqual(["/hookify:writing-hookify-rules"]);
+      const installed = path.join(
+        workspace, ".claude", "skills", "hookify__writing-hookify-rules", "SKILL.md",
+      );
+      expect(fs.existsSync(installed)).toBe(true);
+      expect(fs.readFileSync(installed, "utf-8")).toMatch(/^name: hookify:writing-hookify-rules$/m);
     });
 
     it("refuses Codex installs in v1 (Codex is v1b)", async () => {

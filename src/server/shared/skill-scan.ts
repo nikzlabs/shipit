@@ -72,8 +72,14 @@ export async function scanSkillsDir(
     // exists, so the CLI will resolve `/<dir-name>`).
     if (fm && frontmatterField(fm, "user-invocable") === "false") continue;
 
+    const invocable = fm ? frontmatterField(fm, "name") ?? entry.name : entry.name;
     skills.push({
-      name: fm ? frontmatterField(fm, "name") ?? entry.name : entry.name,
+      name: invocable,
+      // Preserve the source directory name so callers that read SKILL.md from
+      // disk can find it even when the frontmatter `name:` (which we use as
+      // the invocable token) diverges from the folder. Omit when redundant to
+      // keep serialized output compact.
+      ...(invocable === entry.name ? {} : { dirName: entry.name }),
       description: fm ? frontmatterField(fm, "description") : undefined,
       source,
     });
