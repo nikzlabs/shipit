@@ -6,10 +6,16 @@
  * comments, and both share the same draft/sent/history lifecycle.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { FileReviewStore } from "../review-store.js";
 import type {
+  AgentReviewStore,
+  AgentReviewCommentInput as AgentReviewStoreCommentInput,
+} from "../agent-review-store.js";
+import type {
+  AgentReview,
   FileReview,
   FileReviewType,
   ReviewComment,
@@ -100,8 +106,7 @@ export function detectFileReviewType(filePath: string): FileReviewType {
 
 // ---- Hash utility ----
 
-async function hashContent(content: string): Promise<string> {
-  const { createHash } = await import("node:crypto");
+function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
@@ -159,7 +164,7 @@ export async function ensureDraftReview(
     throw new ServiceError(404, "File not found");
   }
 
-  const hash = await hashContent(content);
+  const hash = hashContent(content);
   return reviewStore.createDraft(sessionId, filePath, fileType, hash);
 }
 
@@ -389,7 +394,7 @@ export async function sendReview(
   return { prompt, review: updated ?? review };
 }
 
-// ---- Chat-native AI review write-back (docs/125) ----
+// ---- Agent-authored review write-back (docs/151) ----
 
 /** Max comments accepted in a single `submit_review_comments` call. */
 export const MAX_REVIEW_COMMENTS = 50;
@@ -398,9 +403,7 @@ export const MAX_REVIEW_COMMENT_CHARS = 2048;
 
 /**
  * Comment shape the review subagent submits via the `submit_review_comments`
- * MCP tool. snake_case to match the tool's JSON schema; `source` is
- * deliberately absent — it's set to `"ai"` server-side and cannot be supplied
- * by the caller.
+ * MCP tool. snake_case to match the tool's JSON schema.
  */
 export type AiReviewCommentInput =
   | {
@@ -412,109 +415,225 @@ export type AiReviewCommentInput =
     }
   | { kind: "line"; line: number; text: string };
 
-export interface SubmitAiReviewResult {
-  review: FileReview;
+export interface SubmitAgentReviewResult {
+  /** The persisted agent review (snapshot + comments). */
+  review: AgentReview;
   /** Number of comments persisted. */
   added: number;
-  /** Number of selection comments whose quoted text is not found in the current document (anchored as outdated). */
-  outdated: number;
+  /**
+   * Rendered tool-response text returned to the subagent. The subagent is
+   * instructed to echo this verbatim as its final assistant message so the
+   * parent receives the structured findings via the Task tool result.
+   */
+  rendered: string;
 }
 
 /**
- * Persist the chat-native review subagent's findings into the (session, file)
- * draft (docs/125). Called by the orchestrator's `review-submit` endpoint,
- * which the worker relays to from the `submit_review_comments` tool bridge.
+ * Validate that a payload item is a structurally well-formed review comment.
+ * Throws a ServiceError that names the actual problem and the index in the
+ * array that has it — so a malformed call yields actionable feedback instead
+ * of the misleading "non-empty text" error the old validator returned for
+ * shape-invalid input (docs/151 §6).
+ */
+function validateCommentShape(c: unknown, i: number): asserts c is { kind: string; text?: unknown; line?: unknown; quoted_text?: unknown; context_before?: unknown; context_after?: unknown } {
+  if (c === null || typeof c !== "object" || Array.isArray(c)) {
+    throw new ServiceError(
+      400,
+      `Comment at index ${i} is not an object. Each comment must be `
+      + `{kind: "line", line: number, text: string} or `
+      + `{kind: "selection", quoted_text: string, text: string}.`,
+    );
+  }
+  const obj = c as Record<string, unknown>;
+  if (obj.kind !== "line" && obj.kind !== "selection") {
+    throw new ServiceError(
+      400,
+      `Comment at index ${i} has invalid kind "${String(obj.kind)}". `
+      + `Expected "line" or "selection".`,
+    );
+  }
+  if (typeof obj.text !== "string" || !obj.text.trim()) {
+    throw new ServiceError(
+      400,
+      `Comment at index ${i} has empty or missing "text".`,
+    );
+  }
+}
+
+function truncateForRender(text: string, max = 200): string {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max)}…`;
+}
+
+/**
+ * Build the structured tool-response text returned to the subagent. The
+ * subagent is instructed to echo this verbatim so the parent receives it via
+ * the Task tool's existing return-the-final-assistant-message contract — no
+ * separate fetch tool needed.
+ */
+function renderReview(
+  filePath: string,
+  snapshotHash: string,
+  comments: { kind: "line" | "selection"; line?: number; quotedText?: string; text: string }[],
+): string {
+  const shortHash = snapshotHash.slice(0, 8);
+  if (comments.length === 0) {
+    return `Review of ${filePath} (snapshot ${shortHash}, no findings).`;
+  }
+  const lines: string[] = [
+    `Review of ${filePath} (snapshot ${shortHash}, ${comments.length} finding${comments.length === 1 ? "" : "s"}):`,
+    "",
+  ];
+  for (const c of comments) {
+    if (c.kind === "line") {
+      lines.push(`line ${c.line ?? 0}`);
+    } else {
+      lines.push(`«${truncateForRender(c.quotedText ?? "")}»`);
+    }
+    lines.push(`  ${c.text.trim()}`);
+    lines.push("");
+  }
+  lines.push("End of review.");
+  return lines.join("\n");
+}
+
+/**
+ * Persist the chat-native review subagent's findings as an immutable agent
+ * review card (docs/151). Called by the orchestrator's `review-submit`
+ * endpoint, which the worker relays to from the `submit_review_comments`
+ * tool bridge.
  *
  * Contract:
- * - `source: "ai"` is forced server-side; the caller cannot set it.
- * - Section comments are re-anchored against the CURRENT file (not the version
- *   the subagent read). A comment whose heading no longer exists is persisted
- *   anyway (kept, not dropped) and counted as `outdated` — same posture as Send.
- * - Refuses the call if no draft exists. The review turn ensures a draft at
- *   start, so absence means the user sent or discarded it mid-review; creating
- *   a fresh draft here would attach AI comments the user never asked for.
- * - Enforces the size guardrails (`MAX_REVIEW_COMMENTS`, `MAX_REVIEW_COMMENT_CHARS`).
+ * - Snapshots the file at call time and stores it on the row. Selection
+ *   anchors are matched against the snapshot (not the live file), so a
+ *   comment whose quote was present at review time stays locatable even
+ *   after the live file moves. A selection comment whose `quoted_text` is
+ *   not present in the snapshot is rejected — the subagent saw the file it's
+ *   quoting, so a miss here is a real bug on the agent side, not a
+ *   re-anchoring concern.
+ * - Returns a structured `rendered` string that the subagent is instructed
+ *   to echo verbatim as its final assistant message.
+ * - Enforces the size guardrails (`MAX_REVIEW_COMMENTS`,
+ *   `MAX_REVIEW_COMMENT_CHARS`).
+ * - Empty `comments` is a valid signal that the review ran and found
+ *   nothing; a row is still created so the chat history shows the review
+ *   happened.
  */
 export async function submitAiReviewComments(
-  reviewStore: FileReviewStore,
+  agentReviewStore: AgentReviewStore,
   sessionId: string,
   filePath: string,
   workspaceDir: string,
-  comments: AiReviewCommentInput[],
-): Promise<SubmitAiReviewResult> {
+  comments: unknown[],
+): Promise<SubmitAgentReviewResult> {
+  if (!Array.isArray(comments)) {
+    throw new ServiceError(400, "`comments` must be an array.");
+  }
   if (comments.length > MAX_REVIEW_COMMENTS) {
     throw new ServiceError(
       400,
       `Too many comments in one call (${comments.length}); the maximum is ${MAX_REVIEW_COMMENTS}.`,
     );
   }
-  for (const c of comments) {
-    if (typeof c.text !== "string" || !c.text.trim()) {
-      throw new ServiceError(400, "Each comment must have non-empty text.");
-    }
+
+  // Validate every item up front. Shape → kind → text, each with an
+  // index-tagged error that names the actual problem.
+  for (let i = 0; i < comments.length; i++) {
+    validateCommentShape(comments[i], i);
+    const c = comments[i] as { kind: string; text: string; line?: unknown; quoted_text?: unknown };
     if (c.text.length > MAX_REVIEW_COMMENT_CHARS) {
       throw new ServiceError(
         400,
-        `Comment text exceeds the ${MAX_REVIEW_COMMENT_CHARS}-character limit.`,
+        `Comment at index ${i} text exceeds the ${MAX_REVIEW_COMMENT_CHARS}-character limit.`,
       );
     }
-  }
-
-  // Resolve the draft to write into. Two no-draft cases, distinguished:
-  //   - the most recent review is `sent` (the user sent it mid-review) → refuse,
-  //     so we don't attach AI comments to a draft the user already shipped;
-  //   - no review at all (the user closed the modal mid-review) → ensure a fresh
-  //     draft so the review still lands somewhere.
-  let draft = reviewStore.getDraft(sessionId, filePath);
-  if (!draft) {
-    const all = reviewStore.listReviews(sessionId, filePath);
-    if (all.length > 0 && all[0].status === "sent") {
-      throw new ServiceError(
-        409,
-        "This review was already sent during the review run. Re-run the review to start a fresh draft.",
-      );
-    }
-    draft = await ensureDraftReview(reviewStore, sessionId, filePath, workspaceDir);
-  }
-
-  // Re-anchor selection comments against the current file, not the version the
-  // subagent read while it worked.
-  const content = (await readFileSafe(workspaceDir, filePath)) ?? "";
-
-  let added = 0;
-  let outdated = 0;
-  for (const c of comments) {
     if (c.kind === "line") {
-      // Line comments only make sense on code files; ignore mismatches rather
-      // than failing the whole batch.
-      if (draft.fileType !== "code") continue;
-      if (!Number.isInteger(c.line) || c.line < 1) continue;
-      reviewStore.addLineComment(draft.id, c.line, c.text, "ai");
-      added++;
+      if (!Number.isInteger(c.line) || (c.line as number) < 1) {
+        throw new ServiceError(
+          400,
+          `Comment at index ${i} has missing or invalid "line"; expected a positive integer.`,
+        );
+      }
+    } else {
+      if (typeof c.quoted_text !== "string" || !c.quoted_text.trim()) {
+        throw new ServiceError(
+          400,
+          `Comment at index ${i} has missing or empty "quoted_text".`,
+        );
+      }
+    }
+  }
+
+  // Snapshot the file. Read it fresh — the snapshot is the canonical record
+  // of "what the reviewer saw" for this card.
+  const snapshotContent = (await readFileSafe(workspaceDir, filePath)) ?? "";
+  const snapshotHash = hashContent(snapshotContent);
+  const fileType = detectFileReviewType(filePath);
+
+  // Anchor each comment against the snapshot. selection comments whose
+  // quoted_text isn't found in the snapshot are rejected outright — the
+  // subagent claimed to have quoted from this exact content, so a miss is a
+  // bug, not drift.
+  const storeInputs: AgentReviewStoreCommentInput[] = [];
+  for (let i = 0; i < comments.length; i++) {
+    const c = comments[i] as { kind: string; text: string; line?: number; quoted_text?: string; context_before?: string; context_after?: string };
+    if (c.kind === "line") {
+      if (fileType !== "code") {
+        throw new ServiceError(
+          400,
+          `Comment at index ${i} is a line comment, but ${filePath} is not a code file.`,
+        );
+      }
+      storeInputs.push({ kind: "line", line: c.line!, text: c.text });
       continue;
     }
-    if (draft.fileType !== "markdown") continue;
+    if (fileType !== "markdown") {
+      throw new ServiceError(
+        400,
+        `Comment at index ${i} is a selection comment, but ${filePath} is not a markdown file.`,
+      );
+    }
     const quotedText = c.quoted_text ?? "";
-    if (!quotedText.trim()) continue;
     const contextBefore = c.context_before ?? "";
     const contextAfter = c.context_after ?? "";
     if (
-      locateSelection(content, { quotedText, contextBefore, contextAfter }) < 0
+      locateSelection(snapshotContent, { quotedText, contextBefore, contextAfter }) < 0
     ) {
-      outdated++;
+      throw new ServiceError(
+        400,
+        `Comment at index ${i} quotes text that is not present in the snapshot. `
+        + `The reviewer must quote from the file's current contents verbatim.`,
+      );
     }
-    reviewStore.addSelectionComment(
-      draft.id,
+    storeInputs.push({
+      kind: "selection",
       quotedText,
       contextBefore,
       contextAfter,
-      c.text,
-      "ai",
-    );
-    added++;
+      text: c.text,
+    });
   }
 
-  const updated = reviewStore.getReview(draft.id) ?? draft;
-  return { review: updated, added, outdated };
+  const review = agentReviewStore.createReview({
+    sessionId,
+    filePath,
+    fileType,
+    snapshotContent,
+    snapshotHash,
+    comments: storeInputs,
+  });
+
+  const rendered = renderReview(
+    filePath,
+    snapshotHash,
+    storeInputs.map((c) => ({
+      kind: c.kind,
+      ...(c.kind === "line" ? { line: c.line } : { quotedText: c.quotedText }),
+      text: c.text,
+    })),
+  );
+
+  return { review, added: storeInputs.length, rendered };
 }
 

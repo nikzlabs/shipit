@@ -389,6 +389,52 @@ export interface SelectionReviewComment {
 
 export type ReviewComment = LineReviewComment | SelectionReviewComment;
 
+// ---- Agent review types (docs/151 — agent review cards) ----
+
+/** A line-anchored finding inside an immutable agent review snapshot. */
+export interface AgentReviewLineComment {
+  id: string;
+  kind: "line";
+  line: number;
+  text: string;
+}
+
+/** A selection-anchored finding inside an immutable agent review snapshot. */
+export interface AgentReviewSelectionComment {
+  id: string;
+  kind: "selection";
+  quotedText: string;
+  contextBefore: string;
+  contextAfter: string;
+  text: string;
+}
+
+export type AgentReviewComment =
+  | AgentReviewLineComment
+  | AgentReviewSelectionComment;
+
+/**
+ * An immutable record of one subagent review of one file. Owns a snapshot of
+ * the file contents at review time so anchors stay aligned with what the
+ * reviewer saw, regardless of how the live file evolves afterward. There is
+ * no draft phase, no status, and no send affordance — the row is created
+ * complete and never mutated.
+ */
+export interface AgentReview {
+  id: string;
+  sessionId: string;
+  filePath: string;
+  fileType: FileReviewType;
+  /** The file contents the reviewer saw. Anchors index into this string. */
+  snapshotContent: string;
+  /** SHA-256 of `snapshotContent`. */
+  snapshotHash: string;
+  /** Optional one-line takeaway from the subagent. */
+  summary?: string;
+  comments: AgentReviewComment[];
+  createdAt: string;
+}
+
 /**
  * A review of a single file inside one session. Drafts collect comments
  * from the user (and optionally from AI Review); sending freezes the

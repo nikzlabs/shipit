@@ -46,6 +46,7 @@ import { registerAgentRoutes } from "./api-routes-agent.js";
 import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
 import type { SecretStore } from "./secret-store.js";
 import type { FileReviewStore } from "./review-store.js";
+import type { AgentReviewStore } from "./agent-review-store.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
 
 /**
@@ -119,6 +120,8 @@ export interface ApiDeps {
   secretStore?: SecretStore;
   /** File review store — unified review surface persistence (per session/file). */
   reviewStore?: FileReviewStore;
+  /** Agent review store — immutable chat-card review history (docs/151). */
+  agentReviewStore?: AgentReviewStore;
   /**
    * Marketplace store (docs/149 — skill install UX). When present, the
    * Settings → Skills tab + install/uninstall routes are wired. Test setups

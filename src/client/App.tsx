@@ -141,6 +141,9 @@ export default function App() {
   const previewContent = useFileStore((s) => s.previewContent);
   const previewType = useFileStore((s) => s.previewType);
   const previewActions = useFileStore((s) => s.previewActions);
+  const previewMode = useFileStore((s) => s.previewMode);
+  const previewAgentReview = useFileStore((s) => s.previewAgentReview);
+  const previewLoading = useFileStore((s) => s.previewLoading);
 
   const previewStatus = usePreviewStore((s) => s.status);
   const selectedPort = usePreviewStore((s) => s.selectedPort);
@@ -1077,17 +1080,31 @@ export default function App() {
         onComplete={() => { setOnboardingDismissed(true); if (gitIdentityNeeded) useGitStore.getState().setIdentityNeeded(false); }}
       />
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
-      {previewFile && previewType && (
+      {(previewFile || (previewMode === "agent-review" && previewLoading)) && previewType && (
         <FilePreviewModal
-          filePath={previewFile}
+          filePath={previewFile ?? ""}
           content={previewContent}
           fileType={previewType}
-          actions={previewActions}
-          siblings={previewSiblings}
-          onSwitchSibling={handleSwitchSibling}
+          actions={previewMode === "agent-review" ? [] : previewActions}
+          {...(previewMode === "agent-review"
+            ? {}
+            : { siblings: previewSiblings, onSwitchSibling: handleSwitchSibling })}
+          mode={previewMode}
+          agentReview={previewAgentReview}
           onClose={() => useFileStore.getState().closePreview()}
-          onSendComments={handleFileSendComments}
-          onAskAgentReview={handleAskAgentReview}
+          {...(previewMode === "agent-review"
+            ? {}
+            : {
+                onSendComments: handleFileSendComments,
+                onAskAgentReview: handleAskAgentReview,
+              })}
+          onSwitchToLive={
+            previewMode === "agent-review" && wsSessionId && previewAgentReview
+              ? () => {
+                  void useFileStore.getState().openPreview(wsSessionId, previewAgentReview.filePath);
+                }
+              : undefined
+          }
         />
       )}
       {settingsOpen && (

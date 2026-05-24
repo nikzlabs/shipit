@@ -18,6 +18,9 @@ import { MessageFileAttachments, MessageImages } from "./message-media.js";
 import { SubagentCall } from "./SubagentCall.js";
 import { SpawnedSessionCard } from "./SpawnedSessionCard.js";
 import { SpawnFailedCard } from "./SpawnFailedCard.js";
+import { AgentReviewCard } from "./AgentReviewCard.js";
+import { useFileStore } from "../stores/file-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
 
@@ -153,6 +156,21 @@ export interface ChatMessage {
     statusCode: number;
     promptPreview?: string;
     failedAt: string;
+  };
+  /**
+   * docs/151 — when set, this message renders an `AgentReviewCard` inline in
+   * the chat. Populated from `agent_review_added` WS events. The card opens
+   * the file in snapshot-mode FilePreviewModal so pins line up with what the
+   * reviewer saw. The full snapshot + comment list is fetched lazily on click.
+   */
+  agentReview?: {
+    reviewId: string;
+    filePath: string;
+    fileType: "markdown" | "code";
+    findingCount: number;
+    snapshotHash: string;
+    summary?: string;
+    createdAt: string;
   };
 }
 
@@ -481,6 +499,32 @@ export function MessageList({
                   title={msg.spawnedSession.title}
                   {...(msg.spawnedSession.branch ? { branch: msg.spawnedSession.branch } : {})}
                   spawnedAt={msg.spawnedSession.spawnedAt}
+                />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/151 — agent review marker carries no chat text of its own;
+        // render the inline `AgentReviewCard` and skip the bubble path. The
+        // card's open action triggers a lazy fetch of the snapshot + comments
+        // via the file-store, opening the modal in agent-review mode.
+        if (msg.agentReview) {
+          const sid = useSessionStore.getState().sessionId;
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <AgentReviewCard
+                  reviewId={msg.agentReview.reviewId}
+                  filePath={msg.agentReview.filePath}
+                  findingCount={msg.agentReview.findingCount}
+                  snapshotHash={msg.agentReview.snapshotHash}
+                  {...(msg.agentReview.summary ? { summary: msg.agentReview.summary } : {})}
+                  createdAt={msg.agentReview.createdAt}
+                  onOpen={(reviewId) => {
+                    if (!sid) return;
+                    void useFileStore.getState().openAgentReview(sid, reviewId);
+                  }}
                 />
               </div>
             </div>
