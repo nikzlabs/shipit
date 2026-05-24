@@ -661,10 +661,13 @@ Token sync-in/sync-back from doc 142 becomes account-scoped:
 - Expiry/freshness guards remain provider-specific.
 - Today `syncAgentTokenIn` / `syncAgentTokenBack` are wired only inside
   `runAgentWithMessage`; `runSystemTurn`, `handleAnswerQuestion`, and
-  `rebase-driver`'s direct `agent.run(...)` paths skip them. Doc 142's gap
-  must be closed as a prerequisite to this work, otherwise account-scoping
-  these calls just moves the leak: account-A turns started by CI auto-fix or
-  rebase recovery would silently use whatever per-session token files exist,
+  `rebase-driver`'s direct `agent.run(...)` paths skip them. Doc 142's
+  checklist tracks A1/A3/A-copyback but **does not** track this non-WS gap.
+  Add it as an explicit prerequisite item on doc 150's own checklist —
+  closing it inside doc 150 is fine, but it must be visible work, not an
+  implicit assumption. Without it, account-scoping the existing sync calls
+  just moves the leak: account-A turns started by CI auto-fix or rebase
+  recovery would silently use whatever per-session token files exist,
   bypassing account selection entirely.
 - Re-auth re-push from doc 142 A3 becomes account-scoped too. On auth completion
   for account X, force-copy the fresh source token only into sessions pinned to
@@ -857,6 +860,16 @@ type SubscriptionLimitsMap = Partial<
 A missing inner key still means "do not render a pill"; an account that has
 been authenticated but has never produced a snapshot (Codex, see below) is
 absent rather than present-with-nulls.
+
+Reserved routes are not provider-account rows, so they have no `accountId`
+key for the v2 inner map. Today the env-OAuth path (dogfood/local) renders
+a Claude pill via doc 135's existing behavior. To preserve that under v2,
+reserved routes use a stable synthetic key per route id
+(`"__claude-env-oauth"`, `"__claude-api-key"`, `"__codex-api-key"`) in the
+inner map so the client can render a pill for them when present. API-key
+routes have no subscription quota and still render no pill (their
+synthetic key is omitted from the map); env-OAuth keeps its pill so the
+dogfood/local Claude pill behavior survives the wire-format change.
 
 This adds one nesting level inside the existing `SubscriptionLimitsMap`:
 the outer `Partial<Record<AgentId, …>>` is unchanged; the inner type goes
