@@ -182,8 +182,8 @@ export function useFileUpload(sessionId: string | undefined) {
 
   /** Mark all pending uploads as sent. */
   const clearUploads = useCallback(() => {
-    useFileStore.getState().markUploadsSent();
-  }, []);
+    useFileStore.getState().markUploadsSent(sessionId);
+  }, [sessionId]);
 
   return {
     /** Pending uploads — shown as input chips, cleared on send. */
