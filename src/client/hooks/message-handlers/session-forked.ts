@@ -3,14 +3,9 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
 export const handleSessionForked: Handler<WsSessionForked> = (_ctx, data) => {
-  const { sessionName } = data;
-  // Add a notification-style message in current chat
-  useSessionStore.getState().setMessages((prev) => [
-    ...prev,
-    {
-      role: "assistant" as const,
-      text: `Session forked as "${sessionName}". Switch to it from the sidebar.`,
-      streaming: false,
-    },
-  ]);
+  const childSessionId = data.childSessionId ?? data.sessionId;
+  if (!childSessionId) return;
+  useSessionStore.getState().setSessionId(childSessionId);
+  window.history.pushState({}, "", `/session/${childSessionId}`);
+  window.dispatchEvent(new PopStateEvent("popstate"));
 };

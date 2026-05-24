@@ -5,9 +5,15 @@ import type { Handler } from "./types.js";
 
 export const handleRewindComplete: Handler<WsRewindComplete> = (_ctx, data) => {
   const session = useSessionStore.getState();
-  const { messageIndex } = data;
-  // Remove the target user message and everything after it
-  session.setMessages((prev) => prev.slice(0, messageIndex));
+  const gapPosition = "gapPosition" in data ? data.gapPosition : (data.messageIndex ?? 0);
+  if ("action" in data && data.action === "code") {
+    session.setMessages((prev) => prev.map((m, i) => {
+      if (i < gapPosition) return m;
+      return { ...m, rolledBack: true, codeRollbackHash: i === gapPosition ? data.commitHash : m.codeRollbackHash };
+    }));
+  } else {
+    session.setMessages((prev) => prev.slice(0, gapPosition));
+  }
   // Refresh file tree
   const currentSessionId = useSessionStore.getState().sessionId;
   if (currentSessionId) {

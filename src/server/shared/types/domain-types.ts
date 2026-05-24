@@ -421,6 +421,11 @@ export interface WsChatHistoryMessage {
   parentCommitHash?: string;
   /** Upload paths consumed by this message (for hydration of pending vs sent state). */
   uploadPaths?: string[];
+  notice?: boolean;
+  noticeLevel?: "info" | "warn";
+  rolledBack?: boolean;
+  forkChild?: { childSessionId: string; title: string; branch: string };
+  codeRollbackHash?: string;
   /**
    * Events emitted by subagents (Claude's Task tool) under any tool in this
    * message's `toolUse`. The client groups these by `parentToolUseId` and

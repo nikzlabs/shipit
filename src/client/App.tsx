@@ -474,7 +474,8 @@ export default function App() {
 
   const handleRewind = useCallback(
     (messageIndex: number, mode: "fork_chat" | "rewind_code" | "rewind_all") => {
-      send({ type: "rewind_to_message", messageIndex, mode });
+      const action = mode === "fork_chat" ? "chat" : mode === "rewind_code" ? "code" : "both";
+      send({ type: "rewind_at_gap", gapPosition: messageIndex, action });
     },
     [send],
   );
@@ -558,13 +559,14 @@ export default function App() {
   );
 
   const handleRollback = useCallback(
-    (messageIndex: number, mode: "code" | "code_and_chat" | "fork", parentCommitHash: string) => {
+    (messageIndex: number, mode: "code" | "code_and_chat" | "fork", _parentCommitHash: string) => {
       if (mode === "code") {
-        send({ type: "rollback_code", messageIndex, parentCommitHash });
+        send({ type: "rewind_at_gap", gapPosition: messageIndex, action: "code" });
       } else if (mode === "code_and_chat") {
-        send({ type: "rollback_code_and_chat", messageIndex, parentCommitHash });
+        send({ type: "rewind_at_gap", gapPosition: messageIndex, action: "both" });
       } else {
-        send({ type: "fork_session_from_message", messageIndex, parentCommitHash });
+        const branchName = `fork-${Date.now().toString(36)}`;
+        send({ type: "rewind_at_gap", gapPosition: messageIndex, action: "fork", branchName });
       }
     },
     [send],

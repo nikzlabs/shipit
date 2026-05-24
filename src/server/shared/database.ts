@@ -256,6 +256,16 @@ const MIGRATIONS: Migration[] = [
        WHERE kind = 'section';
     `);
   },
+  // Migration 17: durable rewind/fork metadata (docs/144 Landing 1).
+  (db) => {
+    db.exec(`
+      ALTER TABLE messages ADD COLUMN rolled_back INTEGER DEFAULT 0;
+      ALTER TABLE messages ADD COLUMN notice INTEGER DEFAULT 0;
+      ALTER TABLE messages ADD COLUMN notice_level TEXT;
+      ALTER TABLE messages ADD COLUMN fork_child TEXT;
+      ALTER TABLE messages ADD COLUMN code_rollback_hash TEXT;
+    `);
+  },
 ];
 
 export class DatabaseManager {
