@@ -271,7 +271,14 @@ export async function readPluginSkillBody(
   if (!raw) throw new ServiceError(404, `Plugin not found: ${pluginName}`);
   const inRepoPath = inRepoSourcePath(raw.source);
   if (!inRepoPath) throw new ServiceError(400, `Plugin ${pluginName} is external — not previewable in v1`);
-  const skillFile = path.join(cacheDir, inRepoPath, "skills", skillName, "SKILL.md");
+  const pluginRoot = path.join(cacheDir, inRepoPath);
+  // The URL parameter is the *invocable* name (frontmatter `name:`), which may
+  // differ from the source directory — look it up via the scan so we read the
+  // right SKILL.md file off disk.
+  const skills = await readPluginSkills(pluginRoot);
+  const skill = skills.find((s) => s.name === skillName);
+  if (!skill) throw new ServiceError(404, `Skill not found: ${pluginName}/${skillName}`);
+  const skillFile = path.join(pluginRoot, "skills", skillSrcDirName(skill), "SKILL.md");
   try {
     return await fs.readFile(skillFile, "utf-8");
   } catch {
@@ -302,9 +309,15 @@ async function readPluginSkills(pluginRoot: string): Promise<SkillRef[]> {
   const entries = await scanSkillsDir(skillsDir, "project");
   return entries.map((s) => {
     const ref: SkillRef = { name: s.name };
+    if (s.dirName !== undefined) ref.dirName = s.dirName;
     if (s.description !== undefined) ref.description = s.description;
     return ref;
   });
+}
+
+/** Source directory name for a SkillRef inside its plugin's `skills/` folder. */
+function skillSrcDirName(skill: SkillRef): string {
+  return skill.dirName ?? skill.name;
 }
 
 async function estimatePluginContextBytes(
@@ -314,7 +327,7 @@ async function estimatePluginContextBytes(
   let total = 0;
   for (const s of skills) {
     try {
-      const stat = await fs.stat(path.join(pluginRoot, "skills", s.name, "SKILL.md"));
+      const stat = await fs.stat(path.join(pluginRoot, "skills", skillSrcDirName(s), "SKILL.md"));
       total += stat.size;
     } catch {
       // Skip skills we can't stat — the listing already gates on the file existing.
@@ -415,7 +428,7 @@ export async function installPlugin(opts: {
     const targetDir = path.join(skillsRoot, targetName);
     await fs.mkdir(targetDir, { recursive: true });
 
-    const srcSkillMd = path.join(pluginRoot, "skills", skill.name, "SKILL.md");
+    const srcSkillMd = path.join(pluginRoot, "skills", skillSrcDirName(skill), "SKILL.md");
     const body = await fs.readFile(srcSkillMd, "utf-8");
     const rewritten = rewriteFrontmatterName(body, `${pluginName}:${skill.name}`);
     const targetSkillMd = path.join(targetDir, "SKILL.md");

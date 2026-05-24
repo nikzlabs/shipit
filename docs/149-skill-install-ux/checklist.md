@@ -72,10 +72,36 @@
 ### Quality
 - [x] `npm run lint` — clean.
 - [x] `npm run typecheck` — clean.
-- [x] `npm run test:dev` — passes 199 tests (incl. all new ones).
-- [ ] Browser dogfooding via Playwright MCP — not done in this implementation
-  environment (no Docker stack available); covered by the integration test on
-  the HTTP route table. Worth doing before this lands on `main`.
+- [x] `npm run test:dev` — passes 125 tests in this branch's affected slice
+  (incl. the new dir-name regression + the scanner test) on top of the wider
+  suite.
+- [x] Browser dogfooding via Playwright MCP against a local `RUNTIME_MODE=local`
+  inner orchestrator and Vite. Surfaced and fixed two bugs that the v1a unit
+  tests didn't catch (see below). Verified end-to-end: Discover lists 14
+  plugins from `claude-plugins-official`, install sheet renders the Monaco
+  preview by default, install commit lands path-scoped, Installed sub-tab
+  updates, Uninstall removes the dir + commits, and the `/<plugin>:<skill>`
+  autocomplete fires in the composer (including for the hookify dir/name
+  mismatch case) without a page reload.
+
+### Bugs found during dogfooding (both fixed)
+- [x] **Install/uninstall didn't refresh the composer's `/`-autocomplete
+  cache.** `useSkillsStore.install` updated only `installed` (the Installed
+  sub-tab); the `useFileStore.skills` array that feeds `MessageInput`'s
+  autocomplete stayed stale until page reload. Fix: install/uninstall now also
+  call `useFileStore.getState().fetchSkills(sessionId, activeAgentId)` so the
+  next `/` keystroke sees the new skill.
+- [x] **Catalog `dirName` vs frontmatter `name:` mismatch broke install +
+  preview for some upstream plugins.** `hookify` (and any plugin whose
+  `skills/<dir>/SKILL.md` frontmatter `name:` doesn't equal `<dir>`) failed
+  both `readPluginSkillBody` (Monaco preview 404) and `installPlugin` (ENOENT
+  reading the source SKILL.md). Fix: `scanSkillsDir` now emits an optional
+  `dirName` field carrying the on-disk folder; `SkillRef` carries it through
+  the catalog listing; install + preview path-construction sites use
+  `dirName ?? name`. The invocable name, frontmatter rewrite, and install
+  target dir continue to use the user-facing `name` (so `/<plugin>:<name>`
+  resolves as before). Regression test added in `marketplace.test.ts` +
+  `skill-scan.test.ts`.
 
 ## v1b — Codex support
 

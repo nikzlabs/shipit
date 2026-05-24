@@ -8,12 +8,18 @@ description: Inline skill/plugin discovery and install surface in ShipIt, matchi
 
 ## Status (2026-05-24)
 
-**v1a (Claude-only) implemented on `shipit/skill-install-ux-docho7`.** Backend
-service + SQLite-backed marketplace store + path-scoped `commitPaths` +
-post-turn mutex coordination + Settings → Skills tab with inline Monaco
-preview all in place; lint, typecheck, and the dev test suite pass. Live
-browser dogfooding via Playwright MCP was not done in the implementation
-environment (no Docker stack); worth doing before this lands on `main`. See
+**v1a (Claude-only) implemented and dogfood-verified.** Backend service +
+SQLite-backed marketplace store + path-scoped `commitPaths` + post-turn mutex
+coordination + Settings → Skills tab with inline Monaco preview all in place;
+lint, typecheck, and the dev test suite pass. Live Playwright MCP dogfooding
+against a local `RUNTIME_MODE=local` inner orchestrator covered the golden
+path (catalog browse → Monaco preview → install → uninstall → `/`-autocomplete)
+and surfaced two bugs that have been fixed: (a) install/uninstall now refresh
+the composer's `useFileStore.skills` cache so new skills are invokable on the
+next message without a page reload; (b) catalog listings carry an optional
+`dirName` so plugins where the source directory name differs from the SKILL.md
+frontmatter `name:` (e.g. `hookify`'s `skills/writing-rules/` with
+`name: writing-hookify-rules`) install and preview correctly. See
 `checklist.md` for the full punch list and what remains for v1b (Codex), v2
 (custom marketplaces + Errors sub-tab), and v3 (full plugin composition).
 
