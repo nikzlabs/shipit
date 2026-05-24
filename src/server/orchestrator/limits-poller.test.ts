@@ -158,6 +158,108 @@ describe("LimitsPoller", () => {
     expect(claude.fetchCallCount).toBe(2);
   });
 
+  it("triggerProviderRefresh fetches when the debounce window has elapsed", async () => {
+    const claude = new StubLimitsProvider("claude")
+      .enqueue(makeSnapshot({ agentId: "claude", fetchedAt: 1_000 }))
+      .enqueue(makeSnapshot({ agentId: "claude", fetchedAt: 2_000, plan: "Max 20x" }));
+    const spy = makeBroadcastSpy();
+
+    const poller = new LimitsPoller({
+      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      sseBroadcast: spy.broadcast,
+      triggerDebounceMs: 20,
+    });
+    await poller.tick();
+    expect(claude.fetchCallCount).toBe(1);
+
+    // Wait past the debounce window and trigger — should fetch.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    poller.triggerProviderRefresh("claude");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(claude.fetchCallCount).toBe(2);
+  });
+
+  it("triggerProviderRefresh skips when called inside the debounce window", async () => {
+    const claude = new StubLimitsProvider("claude")
+      .enqueue(makeSnapshot({ agentId: "claude", fetchedAt: 1_000 }))
+      .enqueue(makeSnapshot({ agentId: "claude", fetchedAt: 2_000 }));
+    const spy = makeBroadcastSpy();
+
+    const poller = new LimitsPoller({
+      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      sseBroadcast: spy.broadcast,
+      triggerDebounceMs: 90_000,
+    });
+    await poller.tick();
+    expect(claude.fetchCallCount).toBe(1);
+
+    // Burst of triggers inside the debounce window — only the first call's
+    // attempt counted, the rest are no-ops. This is what prevents a tight
+    // burst of turns from earning a 429 from /api/oauth/usage.
+    poller.triggerProviderRefresh("claude");
+    poller.triggerProviderRefresh("claude");
+    poller.triggerProviderRefresh("claude");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(claude.fetchCallCount).toBe(1);
+  });
+
+  it("triggerProviderRefresh respects authStalled (does not defeat 401 halt)", async () => {
+    const claude = new StubLimitsProvider("claude").enqueue(
+      makeSnapshot({
+        agentId: "claude",
+        error: "auth expired",
+        session: null,
+        weekly: null,
+        weeklyOpus: null,
+      }),
+    );
+    const spy = makeBroadcastSpy();
+
+    const poller = new LimitsPoller({
+      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      sseBroadcast: spy.broadcast,
+    });
+    await poller.tick();
+    expect(claude.fetchCallCount).toBe(1);
+
+    // Even after the debounce expires, an auth-stalled provider stays
+    // halted until markAuthRefreshed — turn-driven refresh must not
+    // bypass that.
+    poller.triggerProviderRefresh("claude");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(claude.fetchCallCount).toBe(1);
+  });
+
+  it("triggerProviderRefresh respects 429 pollNotBefore backoff", async () => {
+    const claude = new StubLimitsProvider("claude").enqueue(
+      makeSnapshot({
+        agentId: "claude",
+        error: "rate limited",
+        session: null,
+        weekly: null,
+        weeklyOpus: null,
+      }),
+    );
+    const spy = makeBroadcastSpy();
+
+    const poller = new LimitsPoller({
+      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      sseBroadcast: spy.broadcast,
+      default429BackoffMs: 60_000,
+      triggerDebounceMs: 10,
+    });
+    await poller.tick();
+    expect(claude.fetchCallCount).toBe(1);
+
+    // Wait past the debounce window — but the 429 backoff is much longer
+    // (60s), so a turn-driven trigger must still be a no-op. Without this
+    // guard a busy user could defeat the upstream backoff.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    poller.triggerProviderRefresh("claude");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(claude.fetchCallCount).toBe(1);
+  });
+
   it("backs off after a transient error and clears on success", async () => {
     const claude = new StubLimitsProvider("claude")
       .enqueue(makeSnapshot({ agentId: "claude", error: "limits unavailable", session: null, weekly: null, weeklyOpus: null }));

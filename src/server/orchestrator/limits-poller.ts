@@ -56,9 +56,16 @@ export interface LimitsPollerOptions {
   /** Broadcast helper, typically `sseBroadcast` from index.ts. */
   sseBroadcast: (event: string, data: unknown) => void;
   /**
-   * Cadence for the main loop. Defaults to 5 minutes — usage
-   * numbers move slowly and the upstream rate limits are tight,
-   * so per-minute polling burned headroom for no perceptible gain.
+   * Cadence for the main loop. Defaults to 30 minutes — a long
+   * safety heartbeat. Fresh data primarily flows in via
+   * `triggerProviderRefresh()` on agent-turn completion (Claude)
+   * and `recordCodexRateLimits()` from the agent event stream
+   * (Codex); the periodic timer exists only to refresh idle tabs
+   * that haven't run a turn in a long time. Anthropic's
+   * `/api/oauth/usage` endpoint is aggressively rate-limited
+   * server-side (returns 429 with `retry-after: 0` after a few
+   * calls — see plan.md "Refresh strategy"), so the wall-clock
+   * cadence is deliberately lazy.
    */
   intervalMs?: number;
   /**
@@ -69,10 +76,18 @@ export interface LimitsPollerOptions {
   /**
    * Default backoff when a provider returns 429 without a
    * Retry-After header. Defaults to 30 minutes — meaningfully
-   * longer than the normal 5-minute cadence so a rate-limit
-   * response visibly slows polling down rather than nudging it.
+   * longer than the normal cadence so a rate-limit response
+   * visibly slows polling down rather than nudging it.
    */
   default429BackoffMs?: number;
+  /**
+   * Minimum interval between turn-driven `triggerProviderRefresh()`
+   * fetches for the same provider. A user running a tight burst of
+   * turns shouldn't spam `/api/oauth/usage` and earn a 429 — the
+   * upstream numbers don't change that fast anyway. Defaults to
+   * 90 seconds.
+   */
+  triggerDebounceMs?: number;
 }
 
 interface PerProviderState {
@@ -91,6 +106,13 @@ interface PerProviderState {
    * fix, no point hammering the endpoint.
    */
   authStalled: boolean;
+  /**
+   * Epoch ms of the most recent `fetch()` call (regardless of
+   * outcome). Used by `triggerProviderRefresh()` to debounce
+   * turn-driven refreshes so a tight burst of turns doesn't earn
+   * a 429.
+   */
+  lastFetchAttemptAt: number;
 }
 
 export class LimitsPoller {
@@ -99,6 +121,7 @@ export class LimitsPoller {
   private intervalMs: number;
   private maxBackoffMs: number;
   private default429BackoffMs: number;
+  private triggerDebounceMs: number;
 
   private cache = new Map<AgentId, SubscriptionLimits>();
   private state = new Map<AgentId, PerProviderState>();
@@ -109,14 +132,16 @@ export class LimitsPoller {
   constructor(opts: LimitsPollerOptions) {
     this.providers = opts.providers;
     this.sseBroadcast = opts.sseBroadcast;
-    this.intervalMs = opts.intervalMs ?? 5 * 60_000;
+    this.intervalMs = opts.intervalMs ?? 30 * 60_000;
     this.maxBackoffMs = opts.maxBackoffMs ?? 30 * 60_000;
     this.default429BackoffMs = opts.default429BackoffMs ?? 30 * 60_000;
+    this.triggerDebounceMs = opts.triggerDebounceMs ?? 90_000;
     for (const id of this.providers.keys()) {
       this.state.set(id, {
         consecutiveFailures: 0,
         pollNotBefore: 0,
         authStalled: false,
+        lastFetchAttemptAt: 0,
       });
     }
   }
@@ -182,6 +207,33 @@ export class LimitsPoller {
   }
 
   /**
+   * Trigger a refresh for a specific provider tied to a user action
+   * (typically an agent-turn completion). Unlike `markAuthRefreshed`
+   * this does NOT clear the authStalled / failure counters — it
+   * respects them so an active user can't defeat a 429 backoff.
+   *
+   * Debounced: if a `fetch()` for this provider ran within
+   * `triggerDebounceMs`, the trigger is a no-op. The upstream usage
+   * numbers don't change faster than that anyway, and Anthropic's
+   * `/api/oauth/usage` will 429 us into a 30-min penalty if we
+   * spam it during a tight burst of turns.
+   *
+   * This is the primary refresh path for Claude — see
+   * `agent-execution.ts`'s `agent_result` handler.
+   */
+  triggerProviderRefresh(agentId: AgentId): void {
+    const state = this.state.get(agentId);
+    if (!state) return;
+    if (state.authStalled) return;
+    const now = Date.now();
+    if (state.pollNotBefore > now) return;
+    if (now - state.lastFetchAttemptAt < this.triggerDebounceMs) return;
+    void this.refreshOne(agentId).catch((err: unknown) => {
+      console.error(`[limits-poller] triggered refresh for ${agentId} failed:`, err);
+    });
+  }
+
+  /**
    * Notify the poller that a provider's credentials have been
    * cleared. Deletes the cached snapshot and broadcasts so the
    * client drops the corresponding pill immediately. No fetch is
@@ -195,6 +247,7 @@ export class LimitsPoller {
       state.consecutiveFailures = 0;
       state.pollNotBefore = 0;
       state.lastSnapshot = undefined;
+      state.lastFetchAttemptAt = 0;
     }
     if (had) {
       this.broadcast();
@@ -230,11 +283,13 @@ export class LimitsPoller {
               if (!refreshed) {
                 return { agentId, snapshot: null };
               }
+              state.lastFetchAttemptAt = Date.now();
               return { agentId, snapshot: await provider.fetch() };
             })(),
           );
           continue;
         }
+        state.lastFetchAttemptAt = now;
         fetches.push(
           (async () => ({ agentId, snapshot: await provider.fetch() }))(),
         );
@@ -277,6 +332,7 @@ export class LimitsPoller {
     if (state.authStalled) return;
 
     const refreshed = await maybeRefreshFetchable(provider);
+    if (refreshed) state.lastFetchAttemptAt = Date.now();
     const snapshot = refreshed ? await provider.fetch() : null;
     if (snapshot === LIMITS_SKIP_TICK) return;
     if (this.applySnapshot(agentId, snapshot)) {
@@ -365,7 +421,7 @@ export class LimitsPoller {
   private ensureState(agentId: AgentId): PerProviderState {
     let s = this.state.get(agentId);
     if (!s) {
-      s = { consecutiveFailures: 0, pollNotBefore: 0, authStalled: false };
+      s = { consecutiveFailures: 0, pollNotBefore: 0, authStalled: false, lastFetchAttemptAt: 0 };
       this.state.set(agentId, s);
     }
     return s;
