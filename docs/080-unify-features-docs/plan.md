@@ -72,6 +72,7 @@ Each entry includes its path and optional status. The response replaces both the
 - For entries with `status`, shows a status badge inline (like FeaturesPanel today)
 - Optionally groups tracked docs at the top, or provides a filter toggle ("All" / "Tracked")
 - Keeps the "Start Session" button in DocModal for tracked docs
+- Treats `docs/NNN-feature/checklist.md` as a secondary sibling when a tracked `plan.md` exists in the same directory. The scanner may still parse checklist frontmatter and progress for sibling tabs and badges, but the docs list renders the tracked plan as the single primary row for that feature.
 
 **Store changes**:
 - Move `features` state from `ui-store` to `file-store` (where `docFiles` already lives), or just enhance `docFiles` to be `DocEntry[]`

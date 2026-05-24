@@ -5,7 +5,9 @@ import {
   siblingsOf,
   orderSiblingsForTabs,
   siblingTabLabel,
+  hasTrackedPlanSibling,
   hasTrackedSibling,
+  isChecklistPath,
   isTracked,
 } from "./doc-paths.js";
 import type { DocEntry } from "../../server/shared/types.js";
@@ -31,6 +33,15 @@ describe("basenameOf", () => {
 
   it("returns the whole string when no slash", () => {
     expect(basenameOf("readme.md")).toBe("readme.md");
+  });
+});
+
+describe("isChecklistPath", () => {
+  it("returns true only for checklist.md paths", () => {
+    expect(isChecklistPath("docs/095-foo/checklist.md")).toBe(true);
+    expect(isChecklistPath("docs/095-foo/CHECKLIST.md")).toBe(true);
+    expect(isChecklistPath("docs/095-foo/plan.md")).toBe(false);
+    expect(isChecklistPath("checklist-notes.md")).toBe(false);
   });
 });
 
@@ -153,5 +164,39 @@ describe("hasTrackedSibling", () => {
       { path: "README.md", title: "Root readme" },
     ];
     expect(hasTrackedSibling("README.md", rootEntries)).toBe(false);
+  });
+});
+
+describe("hasTrackedPlanSibling", () => {
+  const entries: DocEntry[] = [
+    { path: "docs/095-foo/plan.md", title: "Plan", status: "in-progress" },
+    { path: "docs/095-foo/checklist.md", title: "Checklist", status: "in-progress" },
+    { path: "docs/096-custom/plan.md", title: "Plan", customStatus: "blocked" },
+    { path: "docs/096-custom/checklist.md", title: "Checklist", customStatus: "blocked" },
+    { path: "docs/orphan/checklist.md", title: "Orphan checklist", status: "planned" },
+    { path: "docs/untracked-plan/plan.md", title: "Plan" },
+    { path: "docs/untracked-plan/checklist.md", title: "Checklist", status: "planned" },
+    { path: "README.md", title: "Root readme" },
+  ];
+
+  it("returns true for a checklist with a tracked plan sibling", () => {
+    expect(hasTrackedPlanSibling("docs/095-foo/checklist.md", entries)).toBe(true);
+  });
+
+  it("treats a custom-status plan as tracked", () => {
+    expect(hasTrackedPlanSibling("docs/096-custom/checklist.md", entries)).toBe(true);
+  });
+
+  it("returns false for non-checklist paths", () => {
+    expect(hasTrackedPlanSibling("docs/095-foo/plan.md", entries)).toBe(false);
+  });
+
+  it("returns false when there is no tracked plan sibling", () => {
+    expect(hasTrackedPlanSibling("docs/orphan/checklist.md", entries)).toBe(false);
+    expect(hasTrackedPlanSibling("docs/untracked-plan/checklist.md", entries)).toBe(false);
+  });
+
+  it("does not treat root-level files as feature siblings", () => {
+    expect(hasTrackedPlanSibling("README.md", entries)).toBe(false);
   });
 });
