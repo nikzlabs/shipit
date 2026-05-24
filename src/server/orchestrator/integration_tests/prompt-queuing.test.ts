@@ -23,7 +23,7 @@ vi.mock("../session-agent-env.js", async (importOriginal) => {
     ...mod,
     finalizeSessionAgentEnvironment: (...args: unknown[]) => {
       finalizeAgentEnvSpy(...args);
-      return real(...args);
+      real(...args);
     },
   };
 });
