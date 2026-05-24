@@ -820,6 +820,42 @@ describe("CodexAdapter", () => {
     });
   });
 
+  it("maps Codex spawn_agent collab calls to the Agent subagent tool shape", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      item: {
+        type: "collabToolCall",
+        id: "agent-001",
+        tool: "spawn_agent",
+        newThreadId: "thread-child-1",
+        prompt: "Review the session lifecycle code.\nFocus on reconnect behavior.",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(1);
+    });
+
+    expect(events[0]).toMatchObject({
+      type: "agent_assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "agent-001",
+          name: "Agent",
+          input: {
+            agent: "thread-child-1",
+            subagent_type: "Codex",
+            description: "Review the session lifecycle code.",
+            prompt: "Review the session lifecycle code.\nFocus on reconnect behavior.",
+          },
+        },
+      ],
+    });
+  });
+
   it("emits done event when process closes", async () => {
     await createAndInit("Hello");
 

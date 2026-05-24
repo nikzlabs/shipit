@@ -12,6 +12,11 @@ describe("activityFromTool", () => {
     expect(result).toEqual({ label: "Running task...", tool: "Task" });
   });
 
+  it("returns Agent label with description", () => {
+    const result = activityFromTool("Agent", { subagent_type: "Codex", description: "Review code" });
+    expect(result).toEqual({ label: "Agent: Review code", tool: "Agent" });
+  });
+
   it("returns skill label for Skill tool", () => {
     const result = activityFromTool("Skill", { skill: "commit" });
     expect(result).toEqual({ label: "Running skill: commit...", tool: "Skill" });
