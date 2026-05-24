@@ -345,6 +345,24 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     });
   };
 
+  // Sync-back has the same lost-signal hazard as the queue drain: `agent_done`
+  // can be missed (SSE drop in the narrow window between `agent_result` and
+  // process-exit, worker clearing its agent ref via a race) and was the
+  // exclusive trigger for the token write-back. When it was missed, a token
+  // the CLI just rotated stayed stranded in the per-session dir; the source
+  // never advanced and within an OAuth refresh cycle every fresh session
+  // bootstrapped with a dead refresh token → 401. So we fire on `agent_result`
+  // (the canonical turn-end signal) too, guarded so the first signal wins and
+  // the other becomes a no-op. Mirrors the `postTurnDrainFired` pattern below.
+  // Non-streaming only — the streaming block below has its own `syncTokenBackAfterTurn`
+  // call alongside `streamingPostTurnFired`.
+  let postTurnTokenSyncFired = false;
+  const trySyncTokenBack = (): void => {
+    if (postTurnTokenSyncFired) return;
+    postTurnTokenSyncFired = true;
+    syncTokenBackAfterTurn();
+  };
+
   // Guard the post-turn drain so whichever signal arrives first — `agent_result`
   // (the canonical turn-ended event) or `agent_done` (process exit) — advances
   // the queue, and the other becomes a no-op. Previously the drain only hung
@@ -371,12 +389,16 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     useStreaming,
   });
 
-  // Track whether we got a result event, and (for non-streaming) drain the
-  // queue immediately — don't wait for `agent_done`, which can be lost.
+  // Track whether we got a result event, and (for non-streaming) sync the
+  // token + drain the queue immediately — don't wait for `agent_done`, which
+  // can be lost. Sync-back must run BEFORE the next queued turn starts so the
+  // next turn's sync-in pulls the just-rotated token instead of the stale
+  // source.
   currentAgent.on("event", async (event: AgentEvent) => {
     if (event.type !== "agent_result") return;
     receivedResult = true;
     if (!useStreaming) {
+      trySyncTokenBack();
       await tryPostTurnDrain();
     }
   });
@@ -467,7 +489,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
 
     // Capture any OAuth token the CLI refreshed during this turn (non-streaming
     // path; the streaming path does this in the agent_result handler above).
-    if (!useStreaming) syncTokenBackAfterTurn();
+    // Idempotent via `trySyncTokenBack` — if `agent_result` arrived first, the
+    // sync already ran and this is a no-op; if `agent_done` arrived alone
+    // (SSE-drop scenario where `agent_result` was lost too, plus the
+    // process-exit-only crash path), this fires it for the first time.
+    if (!useStreaming) trySyncTokenBack();
 
     // For streaming agents, post-turn flow (commit, PR card, queue drain) already
     // ran in the agent_result listener above. done fires only on process exit
