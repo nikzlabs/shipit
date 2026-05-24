@@ -147,6 +147,13 @@ The shipped implementation matches the plan with a few clarifications:
   `groupEventsByParent` returns an empty map, so the work / final-report
   panels simply don't appear, leaving the header + collapsed prompt as the
   visible state. No data migration is required.
+- **Codex spawn-agent rendering.** Codex surfaces subagent orchestration as
+  `collabToolCall` items with tool names like `spawn_agent`. `CodexAdapter`
+  normalizes `spawn_agent` into ShipIt's existing `Agent` tool-use shape
+  (`subagent_type`, `description`, `prompt`) so the client extracts it into
+  the same standalone subagent block instead of grouping it with ordinary
+  shell/read/edit tools. Other collab tools (`send_input`, `wait_agent`,
+  `close_agent`, etc.) still render as regular tool calls.
 
 ## Future extensions
 
