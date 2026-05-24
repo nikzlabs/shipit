@@ -65,6 +65,29 @@ describe("useAttentionNotifications", () => {
     });
   });
 
+  it("fires when a newly-created headless session finishes before the user views it", () => {
+    const notify = vi.fn();
+    renderHook(() => useAttentionNotifications(notify));
+
+    act(() => {
+      useSessionStore.setState({
+        sessionId: "current",
+        sessions: [session("current"), session("quick", { title: "Quick fix" })],
+        activeRunnerSessions: new Set(["quick"]),
+      });
+    });
+    expect(notify).not.toHaveBeenCalled();
+
+    act(() => setAgentRunning("quick", false));
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("Waiting for your input", {
+      sessionName: "Quick fix",
+      repoLabel: "acme/app",
+    });
+  });
+
+
   it("fires when CI failure arrives for an idle session", () => {
     useSessionStore.setState({ sessions: [session("s1")] });
     setAgentRunning("s1", true);
