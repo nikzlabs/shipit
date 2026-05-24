@@ -13,6 +13,7 @@ type WsRollbackCode = Extract<WsClientMessage, { type: "rollback_code" }>;
 type WsRollbackCodeAndChat = Extract<WsClientMessage, { type: "rollback_code_and_chat" }>;
 type WsForkSessionFromMessage = Extract<WsClientMessage, { type: "fork_session_from_message" }>;
 type WsRewindAtGap = Extract<WsClientMessage, { type: "rewind_at_gap" }>;
+type WsRewindPreviewRequest = Extract<WsClientMessage, { type: "rewind_preview_request" }>;
 
 type RewindCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
@@ -26,6 +27,19 @@ function findCommitBeforeGap(messages: PersistedMessage[], gapPosition: number):
     if (parentCommitHash) return parentCommitHash;
   }
   return null;
+}
+
+function countTurnGroups(messages: PersistedMessage[]): number {
+  let count = 0;
+  let lastRole: PersistedMessage["role"] | null = null;
+  for (const message of messages) {
+    if (message.notice) continue;
+    if (message.role !== lastRole) {
+      count += 1;
+      lastRole = message.role;
+    }
+  }
+  return count;
 }
 
 function collectUploadPaths(messages: PersistedMessage[]): string[] {
@@ -63,6 +77,52 @@ function clearQueuedMessages(ctx: RewindCtx, sessionId: string): void {
     sessionId,
     message: `Cleared ${queuedCount} queued message${queuedCount === 1 ? "" : "s"} as part of rewind.`,
     level: "info",
+  });
+}
+
+export async function handleRewindPreviewRequest(ctx: RewindCtx, msg: WsRewindPreviewRequest): Promise<void> {
+  const sessionId = ctx.getActiveAppSessionId();
+  if (!sessionId) {
+    ctx.send({ type: "error", message: "No active session" });
+    return;
+  }
+
+  const { action, gapPosition } = msg;
+  if (!Number.isInteger(gapPosition) || gapPosition < 0 || !["chat", "code", "both", "fork"].includes(action)) {
+    ctx.send({ type: "error", message: "Invalid rewind preview parameters" });
+    return;
+  }
+
+  const allMessages = ctx.chatHistoryManager.load(sessionId);
+  if (gapPosition > allMessages.length) {
+    ctx.send({ type: "error", message: "Invalid rewind position" });
+    return;
+  }
+
+  const response = {
+    type: "rewind_preview" as const,
+    gapPosition,
+    action,
+  };
+
+  if (action === "fork") {
+    ctx.send({
+      ...response,
+      keptTurnGroupCount: countTurnGroups(allMessages.slice(0, gapPosition)),
+    });
+    return;
+  }
+
+  const rollbackHash = findCommitBeforeGap(allMessages, gapPosition);
+  const headHash = await ctx.getActiveGitManager().getHeadHash();
+  const fileCount = rollbackHash && headHash
+    ? (await ctx.getActiveGitManager().diffNameStatus(rollbackHash, headHash)).length
+    : 0;
+
+  ctx.send({
+    ...response,
+    discardedTurnGroupCount: countTurnGroups(allMessages.slice(gapPosition)),
+    ...(action === "code" || action === "both" ? { fileCount } : {}),
   });
 }
 
