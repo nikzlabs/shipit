@@ -13,8 +13,14 @@ const VALID_STATUSES = new Set<DocStatus>([
   "rejected",
 ]);
 
-/** Valid doc priorities. Only meaningful when status === "planned". */
+/** Valid doc priorities. Meaningful on `planned` and `in-progress` docs —
+ * i.e. the active stages where "which should I work on next?" is a question. */
 const VALID_PRIORITIES = new Set<DocPriority>(["high", "medium", "low"]);
+
+/** Statuses where a `priority:` value is honored. Other statuses (paused,
+ * done, rejected, custom) drop the field to prevent stale priorities from
+ * leaking into the UI after a doc moves out of active work. */
+const PRIORITY_STATUSES = new Set<DocStatus>(["planned", "in-progress"]);
 
 /** Frontmatter regex — matches `---\n...\n---` at start of file. */
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---/;
@@ -49,9 +55,10 @@ export function parseStatusFromFrontmatter(content: string): DocStatus | undefin
  * extraction. `description` is an optional single-line summary surfaced under
  * the title in the docs panel.
  *
- * `priority` is only returned when `status === "planned"` — it's a sort hint
- * for picking the next thing to work on, so it's meaningless on
- * in-progress/done/paused/rejected docs and we drop it there to prevent drift.
+ * `priority` is only returned for active-work statuses (`planned` and
+ * `in-progress`) — it answers "what should I focus on next?", so we drop it
+ * on paused/done/rejected/custom docs to prevent stale priorities from
+ * leaking into the UI after a doc moves out of active work.
  *
  * Unrecognized status values (e.g. `status: experimental`) are surfaced as
  * `customStatus` rather than being silently dropped. This keeps the closed
@@ -84,7 +91,7 @@ function parseFrontmatterFields(
   }
 
   let priority: DocPriority | undefined;
-  if (status === "planned") {
+  if (status && PRIORITY_STATUSES.has(status)) {
     const priorityMatch = /^priority:\s*(.+)$/m.exec(fm);
     if (priorityMatch) {
       const raw = priorityMatch[1].trim().toLowerCase();

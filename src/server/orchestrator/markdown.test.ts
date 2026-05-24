@@ -306,6 +306,15 @@ describe("findMarkdownFiles", () => {
       expect(docs[0]).toMatchObject({ status: "planned", priority: "high" });
     });
 
+    it("parses priority on in-progress docs", async () => {
+      fs.writeFileSync(
+        path.join(tmpDir, "feature.md"),
+        "---\nstatus: in-progress\npriority: medium\n---\n# Feature",
+      );
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0]).toMatchObject({ status: "in-progress", priority: "medium" });
+    });
+
     it("parses each valid priority value", async () => {
       for (const value of ["high", "medium", "low"] as const) {
         fs.writeFileSync(
@@ -339,11 +348,7 @@ describe("findMarkdownFiles", () => {
       expect(docs[0].priority).toBeUndefined();
     });
 
-    it("drops priority on non-planned docs", async () => {
-      fs.writeFileSync(
-        path.join(tmpDir, "in-progress.md"),
-        "---\nstatus: in-progress\npriority: high\n---",
-      );
+    it("drops priority on non-active statuses (paused, done, rejected, custom)", async () => {
       fs.writeFileSync(
         path.join(tmpDir, "done.md"),
         "---\nstatus: done\npriority: high\n---",
@@ -355,6 +360,10 @@ describe("findMarkdownFiles", () => {
       fs.writeFileSync(
         path.join(tmpDir, "rejected.md"),
         "---\nstatus: rejected\npriority: high\n---",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "custom.md"),
+        "---\nstatus: blocked\npriority: high\n---",
       );
       const docs = await findMarkdownFiles(tmpDir);
       for (const doc of docs) {

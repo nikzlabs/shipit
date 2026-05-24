@@ -204,10 +204,25 @@ describe("DocsViewer", () => {
       expect(screen.getByText("Delta")).toBeInTheDocument();
     });
 
-    it("does not render a priority badge for non-planned docs", () => {
+    it("renders a priority badge for in-progress docs that have one", () => {
       const props = defaultProps();
-      // Defensive: even if the field somehow leaks through, the UI shouldn't show it
-      // when status !== "planned".
+      props.files = [
+        makeDoc({
+          path: "docs/001/plan.md",
+          title: "Active",
+          status: "in-progress",
+          priority: "high",
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("High")).toBeInTheDocument();
+      expect(screen.getByText("In Progress")).toBeInTheDocument();
+    });
+
+    it("does not render a priority badge for archived (done/rejected) docs", () => {
+      // Defensive: even if the field somehow leaks through, the UI shouldn't show
+      // priority in the compact archived rows.
+      const props = defaultProps();
       props.files = [
         makeDoc({
           path: "docs/001/plan.md",
@@ -221,6 +236,30 @@ describe("DocsViewer", () => {
       fireEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
       expect(screen.getByText("Done")).toBeInTheDocument();
       expect(screen.queryByText("High")).not.toBeInTheDocument();
+    });
+
+    it("sorts tracked docs by priority first, status second", () => {
+      // A high-priority planned doc should beat an unset-priority in-progress
+      // doc even though in-progress normally sorts above planned: priority is
+      // the primary key.
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001-unset-inprog/plan.md", title: "Unset-InProgress", status: "in-progress" }),
+        makeDoc({ path: "docs/002-high-planned/plan.md", title: "High-Planned", status: "planned", priority: "high" }),
+        makeDoc({ path: "docs/003-high-inprog/plan.md", title: "High-InProgress", status: "in-progress", priority: "high" }),
+        makeDoc({ path: "docs/004-low-inprog/plan.md", title: "Low-InProgress", status: "in-progress", priority: "low" }),
+      ];
+      render(<DocsViewer {...props} />);
+      const items = screen.getAllByRole("button").filter(
+        (btn) => !btn.textContent?.includes("Reload"),
+      );
+      // High bucket, in-progress before planned within the bucket.
+      expect(items[0].textContent).toContain("High-InProgress");
+      expect(items[1].textContent).toContain("High-Planned");
+      // Low bucket (still beats unset).
+      expect(items[2].textContent).toContain("Low-InProgress");
+      // Unset priority sorts last regardless of status.
+      expect(items[3].textContent).toContain("Unset-InProgress");
     });
 
     it("shows path context for tracked docs in subdirectories", () => {

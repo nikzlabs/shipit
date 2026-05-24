@@ -173,7 +173,7 @@ function DocStatusBadges({
   return (
     <>
       {checklist && <ChecklistProgressBadge progress={checklist} />}
-      {!compact && doc.status === "planned" && doc.priority && (
+      {!compact && doc.priority && (
         <PriorityBadge priority={doc.priority} />
       )}
       {doc.status && <StatusBadge status={doc.status} />}
@@ -225,20 +225,28 @@ function statusOrder(doc: DocEntry): number {
   return 99;
 }
 
-function sortByStatusThenPath(docs: DocEntry[]): DocEntry[] {
+/**
+ * Sort tracked docs. Priority is the primary key so high-priority work
+ * bubbles to the top regardless of status: a `high` in-progress doc and a
+ * `high` planned doc sit together above any unset-priority items. Within a
+ * priority bucket we fall back to status (in-progress before planned before
+ * paused before custom-status before done before rejected) and then path.
+ *
+ * Path tiebreaker is descending for prioritized buckets so the most recently
+ * added doc (highest `NNN-` prefix) bubbles up — matching the "what's hot
+ * right now" intent of having set a priority in the first place. Unset
+ * priority keeps the legacy ascending-path order so docs without any author
+ * signal stay in stable alphabetical order.
+ */
+function sortTrackedDocs(docs: DocEntry[]): DocEntry[] {
   return [...docs].sort((a, b) => {
-    const orderA = statusOrder(a);
-    const orderB = statusOrder(b);
-    if (orderA !== orderB) return orderA - orderB;
-    // Within the planned bucket, sort by priority (high → medium → low → unset),
-    // then by path *descending* so the most recently added planned items
-    // (highest NNN- prefix) bubble up within each priority tier.
-    if (a.status === "planned" && b.status === "planned") {
-      const pA = priorityOrder(a.priority);
-      const pB = priorityOrder(b.priority);
-      if (pA !== pB) return pA - pB;
-      return b.path.localeCompare(a.path);
-    }
+    const pA = priorityOrder(a.priority);
+    const pB = priorityOrder(b.priority);
+    if (pA !== pB) return pA - pB;
+    const sA = statusOrder(a);
+    const sB = statusOrder(b);
+    if (sA !== sB) return sA - sB;
+    if (a.priority && b.priority) return b.path.localeCompare(a.path);
     return a.path.localeCompare(b.path);
   });
 }
@@ -344,7 +352,7 @@ export function DocsViewer({ files, onFileClick, onRefresh, sessionStartedAt }: 
     if (am !== bm) return am < bm ? 1 : -1;
     return a.path.localeCompare(b.path);
   });
-  const sortedTracked = sortByStatusThenPath(tracked);
+  const sortedTracked = sortTrackedDocs(tracked);
   // Split tracked into active work and archived (done + rejected) so we can
   // render archived items inside a collapsible group below the active list.
   const trackedActive = sortedTracked.filter((d) => !isArchivedStatus(d.status));
