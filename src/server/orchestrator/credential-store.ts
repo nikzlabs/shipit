@@ -6,6 +6,7 @@ import type {
   OAuthTokens,
   McpOAuthRegisteredClient,
 } from "../shared/types/mcp-types.js";
+import type { AgentId, ProviderAccount } from "../shared/types.js";
 
 interface CredentialData {
   agentEnv?: Record<string, string>;
@@ -56,6 +57,7 @@ interface CredentialData {
    * per account/provider.
    */
   mcpOAuthClients?: Record<string, McpOAuthRegisteredClient>;
+  providerAccounts?: Partial<Record<AgentId, ProviderAccount[]>>;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -96,6 +98,54 @@ export class CredentialStore {
     } catch (err) {
       console.error("[credential-store] Failed to save:", getErrorMessage(err));
     }
+  }
+
+  // ---- Provider accounts (docs/150) ----
+
+  listProviderAccounts(provider?: AgentId): ProviderAccount[] {
+    if (provider) {
+      return [...(this.data.providerAccounts?.[provider] ?? [])].map((a) => ({ ...a }));
+    }
+    return (["claude", "codex"] as AgentId[]).flatMap((id) => this.listProviderAccounts(id));
+  }
+
+  getProviderAccount(provider: AgentId, accountId: string): ProviderAccount | undefined {
+    const found = this.data.providerAccounts?.[provider]?.find((a) => a.id === accountId);
+    return found ? { ...found } : undefined;
+  }
+
+  getPrimaryProviderAccount(provider: AgentId): ProviderAccount | undefined {
+    const accounts = this.data.providerAccounts?.[provider] ?? [];
+    const found = accounts.find((a) => a.isPrimary) ?? accounts[0];
+    return found ? { ...found } : undefined;
+  }
+
+  upsertProviderAccount(account: ProviderAccount): void {
+    this.data.providerAccounts ??= {};
+    const accounts = [...(this.data.providerAccounts[account.provider] ?? [])];
+    const idx = accounts.findIndex((a) => a.id === account.id);
+    const next = { ...account, updatedAt: Date.now() };
+    if (next.isPrimary) {
+      for (const existing of accounts) existing.isPrimary = false;
+    }
+    if (idx >= 0) accounts[idx] = next;
+    else accounts.push(next);
+    if (!accounts.some((a) => a.isPrimary) && accounts[0]) {
+      accounts[0] = { ...accounts[0], isPrimary: true, updatedAt: Date.now() };
+    }
+    this.data.providerAccounts[account.provider] = accounts;
+    this.save();
+  }
+
+  deleteProviderAccount(provider: AgentId, accountId: string): void {
+    const accounts = this.data.providerAccounts?.[provider];
+    if (!accounts) return;
+    const next = accounts.filter((a) => a.id !== accountId);
+    if (next.length > 0 && !next.some((a) => a.isPrimary)) {
+      next[0] = { ...next[0], isPrimary: true, updatedAt: Date.now() };
+    }
+    this.data.providerAccounts![provider] = next;
+    this.save();
   }
 
   // ---- Agent environment variables ----

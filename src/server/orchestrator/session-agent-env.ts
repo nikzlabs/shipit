@@ -26,9 +26,13 @@ import type { AgentId } from "../shared/types.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   provisionAgentCredentials,
+  provisionProviderAccountCredentials,
   syncAgentTokenIn,
+  syncProviderAccountTokenIn,
   syncAgentTokenBack,
+  syncProviderAccountTokenBack,
 } from "./session-credentials.js";
+import type { ProviderAccountManager } from "./provider-account-manager.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
@@ -38,6 +42,7 @@ export interface SessionAgentEnvDeps {
   credentialsDir: string;
   credentialStore: CredentialStore;
   sessionManager: SessionManager;
+  providerAccountManager?: ProviderAccountManager;
 }
 
 /**
@@ -93,6 +98,10 @@ export async function prepareSessionAgentEnvironment(
   const { sessionId, agentId, deps } = args;
   const session = deps.sessionManager.get(sessionId);
   if (!session) return;
+  const selectedRoute =
+    session.providerRouteKind && session.providerRouteId
+      ? { kind: session.providerRouteKind, id: session.providerRouteId }
+      : deps.providerAccountManager?.selectRouteForTurn(agentId);
 
   // Step 1: provision the pinned agent's credential subtree (write-once),
   // then mark the session as pinned. After the first turn `session.agentPinned`
@@ -100,12 +109,17 @@ export async function prepareSessionAgentEnvironment(
   if (!session.agentPinned) {
     if (runner instanceof ContainerSessionRunner) {
       try {
-        provisionAgentCredentials(deps.credentialsDir, sessionId, agentId);
+        if (selectedRoute?.kind === "account") {
+          provisionProviderAccountCredentials(deps.credentialsDir, sessionId, agentId, selectedRoute.id);
+        } else {
+          provisionAgentCredentials(deps.credentialsDir, sessionId, agentId);
+        }
       } catch (err) {
         console.warn("[credentials] provisioning failed:", getErrorMessage(err));
       }
     }
     deps.sessionManager.setAgentId(sessionId, agentId);
+    if (selectedRoute) deps.sessionManager.setProviderRoute(sessionId, selectedRoute.kind, selectedRoute.id);
     deps.sessionManager.setAgentPinned(sessionId);
   }
 
@@ -115,7 +129,11 @@ export async function prepareSessionAgentEnvironment(
   // rotates the source.
   if (runner instanceof ContainerSessionRunner) {
     try {
-      syncAgentTokenIn(deps.credentialsDir, sessionId, agentId);
+      if (selectedRoute?.kind === "account") {
+        syncProviderAccountTokenIn(deps.credentialsDir, sessionId, agentId, selectedRoute.id);
+      } else if (selectedRoute?.id !== "claude-env-oauth") {
+        syncAgentTokenIn(deps.credentialsDir, sessionId, agentId);
+      }
     } catch (err) {
       console.warn("[credentials] token sync-in failed:", getErrorMessage(err));
     }
@@ -156,8 +174,18 @@ export function finalizeSessionAgentEnvironment(
   args: { sessionId: string; agentId: AgentId; deps: SessionAgentEnvDeps },
 ): void {
   if (!(runner instanceof ContainerSessionRunner)) return;
+  const session = args.deps.sessionManager.get(args.sessionId);
   try {
-    syncAgentTokenBack(args.deps.credentialsDir, args.sessionId, args.agentId);
+    if (session?.providerRouteKind === "account" && session.providerRouteId) {
+      syncProviderAccountTokenBack(
+        args.deps.credentialsDir,
+        args.sessionId,
+        args.agentId,
+        session.providerRouteId,
+      );
+    } else if (session?.providerRouteId !== "claude-env-oauth") {
+      syncAgentTokenBack(args.deps.credentialsDir, args.sessionId, args.agentId);
+    }
   } catch (err) {
     console.warn("[credentials] token sync-back failed:", getErrorMessage(err));
   }

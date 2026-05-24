@@ -95,6 +95,17 @@ describe("SessionManager", () => {
     expect(reloaded.agentPinned).toBe(true);
   });
 
+  it("docs/150: persists provider route kind and id", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("sess-1", "Route me");
+
+    mgr.setProviderRoute("sess-1", "account", "claude-default");
+
+    const reloaded = new SessionManager(dbManager).get("sess-1")!;
+    expect(reloaded.providerRouteKind).toBe("account");
+    expect(reloaded.providerRouteId).toBe("claude-default");
+  });
+
   it("persists sessions across manager instances", () => {
     const mgr1 = new SessionManager(dbManager);
     mgr1.track("sess-1", "Persisted");

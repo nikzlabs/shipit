@@ -8,10 +8,14 @@ import {
   sessionCredentialsRoot,
   ensureSessionCredentialsScaffold,
   provisionAgentCredentials,
+  provisionProviderAccountCredentials,
   removeSessionCredentials,
   syncAgentTokenIn,
+  syncProviderAccountTokenIn,
   syncAgentTokenBack,
+  syncProviderAccountTokenBack,
   repushAgentToken,
+  repushProviderAccountToken,
 } from "./session-credentials.js";
 
 /**
@@ -101,6 +105,19 @@ describe("session-credentials", () => {
   const readTail = (file: string) =>
     (JSON.parse(fs.readFileSync(file, "utf-8")).claudeAiOauth.accessToken as string).replace("tok-", "");
 
+  it("provisionProviderAccountCredentials copies only the selected account subtree", () => {
+    const accountA = path.join(root, "provider-accounts", "claude", "acct-a");
+    const accountB = path.join(root, "provider-accounts", "claude", "acct-b");
+    writeClaudeToken(accountA, "A", 3_000);
+    writeClaudeToken(accountB, "B", 4_000);
+
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
+
+    const sessionFile = path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json");
+    expect(readTail(sessionFile)).toBe("B");
+    expect(fs.existsSync(path.join(perSessionCredentialsDir(root, sid), ".codex"))).toBe(false);
+  });
+
   it("syncAgentTokenIn copies the freshest source token into the session dir", () => {
     writeClaudeToken(root, "SOURCE", 2_000);
     provisionAgentCredentials(root, sid, "claude"); // session starts with the source token
@@ -143,6 +160,23 @@ describe("session-credentials", () => {
     syncAgentTokenBack(root, sid, "claude");
 
     expect(readTail(path.join(root, ".claude", ".credentials.json"))).toBe("ROTATED");
+  });
+
+  it("provider account token sync-in/back compares against the same account source", () => {
+    const accountA = path.join(root, "provider-accounts", "claude", "acct-a");
+    const accountB = path.join(root, "provider-accounts", "claude", "acct-b");
+    writeClaudeToken(accountA, "A-OLD", 1_000);
+    writeClaudeToken(accountB, "B-NEW", 9_000);
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+
+    syncProviderAccountTokenIn(root, sid, "claude", "acct-b");
+    expect(readTail(path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json"))).toBe("B-NEW");
+
+    writeClaudeToken(perSessionCredentialsDir(root, sid), "B-ROTATED", 12_000);
+    syncProviderAccountTokenBack(root, sid, "claude", "acct-b");
+
+    expect(readTail(path.join(accountB, ".claude", ".credentials.json"))).toBe("B-ROTATED");
+    expect(readTail(path.join(accountA, ".claude", ".credentials.json"))).toBe("A-OLD");
   });
 
   it("syncAgentTokenBack does NOT clobber a fresher source (failed-refresh race guard)", () => {
@@ -229,6 +263,19 @@ describe("session-credentials", () => {
 
     expect(wrote).toBe(false);
     expect(fs.existsSync(path.join(perSessionCredentialsDir(root, sid), ".claude"))).toBe(false);
+  });
+
+  it("repushProviderAccountToken writes only from the matching account source", () => {
+    const accountA = path.join(root, "provider-accounts", "claude", "acct-a");
+    const accountB = path.join(root, "provider-accounts", "claude", "acct-b");
+    writeClaudeToken(accountA, "A", 1_000);
+    writeClaudeToken(accountB, "B", 2_000);
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+
+    const wrote = repushProviderAccountToken(root, sid, "claude", "acct-b");
+
+    expect(wrote).toBe(true);
+    expect(readTail(path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json"))).toBe("B");
   });
 
   it("removeSessionCredentials drops the subtree and is idempotent", () => {

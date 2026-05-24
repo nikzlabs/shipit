@@ -341,6 +341,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         credentialsDir: ctx.credentialsDir,
         credentialStore: ctx.credentialStore,
         sessionManager: ctx.sessionManager,
+        providerAccountManager: ctx.providerAccountManager,
       },
     });
   };
@@ -606,6 +607,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         credentialsDir: ctx.credentialsDir,
         credentialStore: ctx.credentialStore,
         sessionManager: ctx.sessionManager,
+        providerAccountManager: ctx.providerAccountManager,
       },
     });
   }

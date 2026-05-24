@@ -13,6 +13,7 @@ import { UsageManager } from "./usage.js";
 import { SecretStore } from "./secret-store.js";
 import { FileReviewStore } from "./review-store.js";
 import { CredentialStore } from "./credential-store.js";
+import { ProviderAccountManager } from "./provider-account-manager.js";
 import { initGlobalGitConfig } from "./git-config.js";
 import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
@@ -102,6 +103,8 @@ export interface AppDeps {
    * Defaults to `new CredentialStore(credentialsDir)`.
    */
   credentialStore?: CredentialStore;
+  /** Provider account registry/router (docs/150). */
+  providerAccountManager?: ProviderAccountManager;
   /**
    * Debounce delay in milliseconds for auto-push after commit.
    * Defaults to 5000 (5 seconds). Set lower in tests to avoid long waits.
@@ -167,6 +170,7 @@ export interface ManagerSet {
   authManager: AuthManager;
   codexAuthManager: CodexAuthManager;
   credentialStore: CredentialStore;
+  providerAccountManager: ProviderAccountManager;
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
   generateText: (prompt: string, cwd: string) => Promise<string>;
@@ -241,6 +245,16 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- Usage/cost tracking manager ----
   const usageManager = deps.usageManager ?? new UsageManager(databaseManager);
 
+  // ---- Credential store ----
+  const credentialStore = deps.credentialStore ?? new CredentialStore(credentialsDir);
+
+  // ---- Provider accounts (docs/150 Phase 1) ----
+  const providerAccountManager = deps.providerAccountManager ?? new ProviderAccountManager({
+    credentialsDir,
+    credentialStore,
+  });
+  providerAccountManager.migrateDefaultAccounts();
+
   // ---- Auth manager ----
   const authManager = deps.authManager ?? new AuthManager();
   const hasCredentials = authManager.checkCredentials();
@@ -252,9 +266,6 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const codexAuthManager = deps.codexAuthManager ?? new CodexAuthManager();
   const hasCodexAuth = codexAuthManager.checkCredentials();
   console.log("[server] Codex ChatGPT credentials found:", hasCodexAuth);
-
-  // ---- Credential store ----
-  const credentialStore = deps.credentialStore ?? new CredentialStore(credentialsDir);
 
   // ---- Global git config (single source of truth for identity) ----
   // Only initialize if not already configured (tests set this up via createTestCredentialStore).
@@ -272,8 +283,8 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Agent registry ----
   const agentRegistry = deps.agentRegistry ?? new AgentRegistry({
-    checkClaudeAuth: () => authManager.checkCredentials(),
-    checkCodexAuth: () => codexAuthManager.checkCredentials(),
+    checkClaudeAuth: () => providerAccountManager.hasAnyAuthForProvider("claude"),
+    checkCodexAuth: () => providerAccountManager.hasAnyAuthForProvider("codex"),
   });
   await agentRegistry.detect();
   const detectedAgents = agentRegistry.list();
@@ -351,6 +362,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     authManager,
     codexAuthManager,
     credentialStore,
+    providerAccountManager,
     agentRegistry,
     githubAuthManager,
     secretStore,
