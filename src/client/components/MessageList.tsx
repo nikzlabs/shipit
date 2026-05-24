@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: DOM scroll sync (scrollIntoView), window keydown listener, xterm auto-scroll
-import { useMemo, useEffect, useRef, useState } from "react";
+import { useMemo, useEffect, useRef } from "react";
 import {
   TypingDots,
 } from "./StreamingIndicator.js";
@@ -7,8 +7,8 @@ import { TodoPanel, type TodoItem } from "./TodoPanel.js";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../hooks/useSearch.js";
 import { buildVisualElements } from "./visual-elements.js";
-import { RollbackDropdown, type RollbackMode } from "./RollbackDropdown.js";
-import { RewindDropdown, type RewindMode } from "./RewindDropdown.js";
+import { RewindPoint, type RewindGapAction } from "./RewindPoint.js";
+import type { WsRewindPreview } from "../../server/shared/types.js";
 
 // Sub-component imports
 import { ToolCallGroup, ToolUseItem } from "./message-tools.js";
@@ -181,6 +181,17 @@ export { MessageFileAttachments, MessageImages } from "./message-media.js";
 
 export { buildVisualElements, STANDALONE_TOOLS, SUBAGENT_TOOLS, type VisualElement } from "./visual-elements.js";
 
+function slugifyBranchName(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/g, "");
+  return slug || "fork-from-here";
+}
+
 export function MessageList({
   messages,
   isLoading,
@@ -188,8 +199,10 @@ export function MessageList({
   currentMatch,
   onAnswerQuestion,
   onSendFollowUp,
-  onRollback,
-  onRewind,
+  rewindPreviews,
+  sessionTitle,
+  onRequestRewindPreview,
+  onRewindAtGap,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
@@ -197,15 +210,16 @@ export function MessageList({
   currentMatch?: SearchMatch;
   onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
   onSendFollowUp?: (text: string) => void;
-  onRollback?: (messageIndex: number, mode: RollbackMode, parentCommitHash: string) => void;
-  onRewind?: (messageIndex: number, mode: RewindMode) => void;
+  rewindPreviews?: Record<string, WsRewindPreview>;
+  sessionTitle?: string;
+  onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
+  onRewindAtGap?: (gapPosition: number, action: RewindGapAction, branchName?: string) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const currentMatchRef = useRef<HTMLElement | null>(null);
-  // Track which message has an open dropdown so the toolbar stays visible
-  const [openDropdownIndex, setOpenDropdownIndex] = useState<number | null>(null);
+  const hasRewindControls = !!onRewindAtGap;
 
   const lastTodoWriteId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -290,6 +304,53 @@ export function MessageList({
       matchesByMessage.set(m.messageIndex, arr);
     }
   }
+
+  const getPreview = (gapPosition: number, action: RewindGapAction): WsRewindPreview | undefined =>
+    rewindPreviews?.[`${gapPosition}:${action}`];
+
+  const getPreviewsForGap = (gapPosition: number): Partial<Record<RewindGapAction, WsRewindPreview>> => ({
+    chat: getPreview(gapPosition, "chat"),
+    code: getPreview(gapPosition, "code"),
+    both: getPreview(gapPosition, "both"),
+    fork: getPreview(gapPosition, "fork"),
+  });
+
+  const defaultBranchNameForGap = (gapPosition: number): string => {
+    for (let i = Math.min(gapPosition, messages.length) - 1; i >= 0; i--) {
+      const candidate = messages[i];
+      if (!candidate.notice && candidate.role === "user" && candidate.text.trim()) {
+        return slugifyBranchName(candidate.text);
+      }
+    }
+    return slugifyBranchName(sessionTitle ?? "fork-from-here");
+  };
+
+  const shouldShowGapBefore = (messageIndex: number): boolean => {
+    if (!hasRewindControls) return false;
+    const current = messages[messageIndex];
+    if (!current || current.notice || current.rolledBack) return false;
+    for (let i = messageIndex - 1; i >= 0; i--) {
+      const previous = messages[i];
+      if (previous.notice) continue;
+      return previous.role !== current.role;
+    }
+    return true;
+  };
+
+  const renderRewindPoint = (gapPosition: number, currentState = false) => {
+    if (!hasRewindControls || !onRewindAtGap) return null;
+    return (
+      <RewindPoint
+        gapPosition={gapPosition}
+        currentState={currentState}
+        disabled={!currentState && isLoading}
+        defaultBranchName={defaultBranchNameForGap(gapPosition)}
+        previews={getPreviewsForGap(gapPosition)}
+        onRequestPreview={onRequestRewindPreview}
+        onRewind={onRewindAtGap}
+      />
+    );
+  };
 
   return (
     <div ref={containerRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4">
@@ -451,7 +512,6 @@ export function MessageList({
         const segments = parseMessageSegments(msg.text);
         const hasCodeBlocks = segments.some((s) => s.type === "code");
         const useMarkdown = msg.role === "assistant" && !msg.isError && !msg.notice;
-        const showRewind = msg.role === "user" && !msg.isError && !msg.queued && !msg.rolledBack && !!onRewind;
         const latestTodoTool = msg.toolUse?.find((t) => t.name === "TodoWrite" && t.id === lastTodoWriteId);
         // Hide the bubble when it would be empty (no text/images/files
         // and every tool is a TodoWrite, which renders as null inside the bubble)
@@ -460,6 +520,7 @@ export function MessageList({
 
         return (
           <div key={i}>
+            {shouldShowGapBefore(i) && renderRewindPoint(i)}
             {msg.rolledBack && msg.codeRollbackHash && (
               <div className="flex justify-center">
                 <div className="rounded-full border border-(--color-border-primary) bg-(--color-bg-secondary) px-3 py-1 text-xs text-(--color-text-secondary)">
@@ -493,29 +554,6 @@ export function MessageList({
                   : "text-(--color-text-primary)"
               }`}
             >
-              {/* Rewind dropdown — shown on hover for user messages */}
-              {showRewind && (
-                <div className={`${openDropdownIndex === i ? "flex" : "hidden group-hover:flex"} absolute -top-3 -right-3 items-center bg-(--color-bg-secondary) border border-(--color-border-primary) rounded-md shadow-sm px-0.5 py-0.5 z-10`}>
-                  <RewindDropdown
-                    messageIndex={i}
-                    disabled={isLoading}
-                    onRewind={onRewind}
-                    onOpenChange={(open) => setOpenDropdownIndex(open ? i : null)}
-                  />
-                </div>
-              )}
-              {/* Rollback dropdown — shown on hover for assistant messages with a linked commit */}
-              {msg.role === "assistant" && msg.commitHash && msg.parentCommitHash && !msg.rolledBack && onRollback && (
-                <div className={`${openDropdownIndex === i ? "flex" : "hidden group-hover:flex"} absolute -top-3 -right-3 items-center bg-(--color-bg-secondary) border border-(--color-border-primary) rounded-md shadow-sm px-0.5 py-0.5 z-10`}>
-                  <RollbackDropdown
-                    messageIndex={i}
-                    parentCommitHash={msg.parentCommitHash}
-                    disabled={isLoading}
-                    onRollback={onRollback}
-                    onOpenChange={(open) => setOpenDropdownIndex(open ? i : null)}
-                  />
-                </div>
-              )}
               {msg.queued && (
                 <div className="flex items-center gap-1.5 mb-1.5 text-xs text-(--color-accent-text)/80 font-medium">
                   <CircleNotchIcon size={12} className="animate-spin" />
@@ -616,6 +654,7 @@ export function MessageList({
         );
       })}
 
+      {!isLoading && renderRewindPoint(messages.length, true)}
       <div ref={bottomRef} />
     </div>
   );

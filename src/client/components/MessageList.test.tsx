@@ -555,32 +555,44 @@ describe("MessageList", () => {
     });
   });
 
-  describe("rewind button", () => {
-    it("shows rewind button on user messages when handler provided", () => {
-      const onRewind = vi.fn();
+  describe("rewind points", () => {
+    it("shows a gap rewind control between role transitions", () => {
+      const onRewindAtGap = vi.fn();
       render(
         <MessageList
-          messages={[msg("user", "Hello")]}
+          messages={[msg("user", "Hello"), msg("assistant", "Response")]}
           isLoading={false}
-          onRewind={onRewind}
+          onRewindAtGap={onRewindAtGap}
         />
       );
-      expect(screen.getByLabelText("Rewind options")).toBeInTheDocument();
+      expect(screen.getAllByLabelText("Rewind options").length).toBeGreaterThan(0);
     });
 
-    it("does not show rewind button for assistant messages", () => {
-      const onRewind = vi.fn();
+    it("shows only the current-state fork control after the last message", () => {
+      const onRewindAtGap = vi.fn();
       render(
         <MessageList
           messages={[msg("assistant", "Response")]}
           isLoading={false}
-          onRewind={onRewind}
+          onRewindAtGap={onRewindAtGap}
         />
       );
+      expect(screen.getByLabelText("Fork current state")).toBeInTheDocument();
+    });
+
+    it("shows the current-state fork control for an effectively empty chat", () => {
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Conversation rewound to start.", notice: true }]}
+          isLoading={false}
+          onRewindAtGap={vi.fn()}
+        />
+      );
+      expect(screen.getByLabelText("Fork current state")).toBeInTheDocument();
       expect(screen.queryByLabelText("Rewind options")).not.toBeInTheDocument();
     });
 
-    it("does not show rewind button when no handler provided", () => {
+    it("does not show rewind controls when no handler provided", () => {
       render(
         <MessageList
           messages={[msg("user", "Hello")]}
@@ -588,19 +600,35 @@ describe("MessageList", () => {
         />
       );
       expect(screen.queryByLabelText("Rewind options")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Fork current state")).not.toBeInTheDocument();
     });
 
-    it("does not show rewind button for error messages", () => {
-      const onRewind = vi.fn();
+    it("does not show intermediate gap controls while loading", () => {
+      const onRewindAtGap = vi.fn();
       const errorMsg: ChatMessage = { role: "user", text: "bad", isError: true, streaming: false };
       render(
         <MessageList
-          messages={[errorMsg]}
-          isLoading={false}
-          onRewind={onRewind}
+          messages={[errorMsg, msg("assistant", "Response")]}
+          isLoading={true}
+          onRewindAtGap={onRewindAtGap}
         />
       );
-      expect(screen.queryByLabelText("Rewind options")).not.toBeInTheDocument();
+      expect(screen.getAllByLabelText("Rewind options")[0]).toBeDisabled();
+      expect(screen.queryByLabelText("Fork current state")).not.toBeInTheDocument();
+    });
+
+    it("routes chat rewind from the gap menu", () => {
+      const onRewindAtGap = vi.fn();
+      render(
+        <MessageList
+          messages={[msg("user", "Hello"), msg("assistant", "Response")]}
+          isLoading={false}
+          onRewindAtGap={onRewindAtGap}
+        />
+      );
+      fireEvent.pointerDown(screen.getAllByLabelText("Rewind options")[0]);
+      fireEvent.click(screen.getByText("Rewind chat to here"));
+      expect(onRewindAtGap).toHaveBeenCalledWith(0, "chat");
     });
   });
 
