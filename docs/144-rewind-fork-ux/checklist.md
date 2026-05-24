@@ -13,7 +13,7 @@ status: in-progress
 - [x] B5: Add `rewind_at_gap` and cut current dropdown actions over to it.
 - [x] B6: Auto-switch after fork and persist/broadcast the fork breadcrumb.
 - [x] U5: Persist code-only stale-message dimming via `rolled_back` and `code_rollback_hash`.
-- [ ] B7: Add integration coverage for the Landing 1 rewind/fork branches.
+- [x] B7: Add integration coverage for the Landing 1 rewind/fork branches.
 
 ## Landing 2 — Between-Turn Rewind Points
 
