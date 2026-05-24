@@ -54,14 +54,14 @@ describe("Integration: rewind and fork", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  async function createSession(): Promise<{ sessionId: string; workspaceDir: string }> {
+  async function createSession(): Promise<{ sessionId: string; sessionDir: string; workspaceDir: string }> {
     const res = await app.inject({
       method: "POST",
       url: "/api/_test/sessions",
       payload: { title: "Rewind test" },
     });
     expect(res.statusCode).toBe(200);
-    return res.json() as { sessionId: string; workspaceDir: string };
+    return res.json() as { sessionId: string; sessionDir: string; workspaceDir: string };
   }
 
   it("returns preview counts for gap actions with notice messages ignored", async () => {
@@ -128,6 +128,203 @@ describe("Integration: rewind and fork", () => {
     expect(loaded[1]).toMatchObject({ rolledBack: true, codeRollbackHash: initialHead });
     expect(loaded.some((m) => m.notice)).toBe(false);
     expect(await git.getHeadHash()).toBe(initialHead);
+
+    client.close();
+  });
+
+  it("truncates chat-only rewinds and removes uploads from discarded messages", async () => {
+    const { sessionId, sessionDir } = await createSession();
+    const uploadsDir = path.join(sessionDir, "uploads");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(path.join(uploadsDir, "discarded.txt"), "uploaded\n");
+
+    chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, {
+      role: "user",
+      text: "discard",
+      files: [{ path: "/uploads/discarded.txt", contentPreview: "uploaded" }],
+      uploadPaths: ["/uploads/discarded.txt"],
+    });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "chat" });
+    await expect(client.receiveType("rewind_complete")).resolves.toMatchObject({
+      type: "rewind_complete",
+      gapPosition: 2,
+      action: "chat",
+      droppedMessageCount: 1,
+    });
+
+    expect(chatHistoryManager.load(sessionId).map((m) => m.text)).toEqual(["keep", "kept response"]);
+    expect(fs.existsSync(path.join(uploadsDir, "discarded.txt"))).toBe(false);
+
+    client.close();
+  });
+
+  it("rewinds code and chat while persisting the rollback notice at the kept boundary", async () => {
+    const { sessionId, workspaceDir } = await createSession();
+    const git = new GitManager(workspaceDir);
+    const initialHead = await git.getHeadHash();
+    expect(initialHead).toBeTruthy();
+
+    fs.writeFileSync(path.join(workspaceDir, "feature.txt"), "changed\n");
+    const changedHead = await git.autoCommit("change feature");
+    expect(changedHead).toBeTruthy();
+
+    chatHistoryManager.append(sessionId, { role: "user", text: "change the file" });
+    chatHistoryManager.append(sessionId, {
+      role: "assistant",
+      text: "changed",
+      commitHash: changedHead ?? undefined,
+      parentCommitHash: initialHead ?? undefined,
+    });
+    chatHistoryManager.append(sessionId, { role: "user", text: "discard this follow-up" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 1, action: "both" });
+    await expect(client.receiveType("rewind_complete")).resolves.toMatchObject({
+      type: "rewind_complete",
+      gapPosition: 1,
+      action: "both",
+      droppedMessageCount: 2,
+      commitHash: initialHead,
+    });
+
+    const loaded = chatHistoryManager.load(sessionId);
+    expect(loaded).toHaveLength(2);
+    expect(loaded[0]).toMatchObject({ role: "user", text: "change the file" });
+    expect(loaded[1]).toMatchObject({
+      role: "assistant",
+      notice: true,
+      noticeLevel: "info",
+      text: expect.stringContaining(initialHead!.slice(0, 7)),
+    });
+    expect(await git.getHeadHash()).toBe(initialHead);
+
+    client.close();
+  });
+
+  it("forks from a gap, copies kept uploads, and persists the parent breadcrumb", async () => {
+    const { sessionId, sessionDir } = await createSession();
+    const uploadsDir = path.join(sessionDir, "uploads");
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(path.join(uploadsDir, "kept.txt"), "kept upload\n");
+
+    chatHistoryManager.append(sessionId, {
+      role: "user",
+      text: "keep upload",
+      files: [{ path: "/uploads/kept.txt", contentPreview: "kept upload" }],
+      uploadPaths: ["/uploads/kept.txt"],
+    });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "fork", branchName: "kept-upload" });
+    const forked = await client.receiveType("session_forked");
+    expect(forked).toMatchObject({
+      type: "session_forked",
+      parentSessionId: sessionId,
+      branch: "kept-upload",
+    });
+    if (forked.type !== "session_forked") throw new Error("Expected session_forked");
+
+    const child = sessionManager.get(forked.childSessionId);
+    expect(child).toMatchObject({ branch: "kept-upload" });
+    expect(chatHistoryManager.load(forked.childSessionId).map((m) => m.text)).toEqual(["keep upload", "kept response"]);
+    expect(child?.workspaceDir).toBeTruthy();
+    expect(fs.existsSync(path.join(path.dirname(child!.workspaceDir!), "uploads", "kept.txt"))).toBe(true);
+
+    const parentMessages = chatHistoryManager.load(sessionId);
+    expect(parentMessages.at(-1)).toMatchObject({
+      forkChild: {
+        childSessionId: forked.childSessionId,
+        title: child?.title,
+        branch: "kept-upload",
+      },
+    });
+
+    client.close();
+  });
+
+  it("rejects rewind while a turn is running", async () => {
+    const { sessionId } = await createSession();
+    chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    const runningRes = await app.inject({
+      method: "POST",
+      url: `/api/_test/runner/${sessionId}/running`,
+      payload: { running: true },
+    });
+    expect(runningRes.statusCode).toBe(200);
+
+    client.send({ type: "rewind_at_gap", gapPosition: 1, action: "chat" });
+    await expect(client.receiveType("error")).resolves.toMatchObject({
+      type: "error",
+      message: "Cannot rewind while a turn is running.",
+    });
+    expect(chatHistoryManager.load(sessionId)).toHaveLength(2);
+
+    client.close();
+  });
+
+  it("clears queued messages when a rewind succeeds", async () => {
+    const { sessionId } = await createSession();
+    chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "user", text: "discard" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    const runningRes = await app.inject({
+      method: "POST",
+      url: `/api/_test/runner/${sessionId}/running`,
+      payload: { running: true },
+    });
+    expect(runningRes.statusCode).toBe(200);
+
+    client.send({ type: "send_message", text: "queued prompt", sessionId });
+    await expect(client.receiveType("message_queued")).resolves.toMatchObject({
+      type: "message_queued",
+      text: "queued prompt",
+    });
+
+    const idleRes = await app.inject({
+      method: "POST",
+      url: `/api/_test/runner/${sessionId}/running`,
+      payload: { running: false },
+    });
+    expect(idleRes.statusCode).toBe(200);
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "chat" });
+    await expect(client.receiveType("system_notice")).resolves.toMatchObject({
+      type: "system_notice",
+      message: "Cleared 1 queued message as part of rewind.",
+      level: "info",
+    });
+    await expect(client.receiveType("rewind_complete")).resolves.toMatchObject({
+      type: "rewind_complete",
+      action: "chat",
+      gapPosition: 2,
+    });
+
+    const runnerRes = await app.inject({
+      method: "GET",
+      url: `/api/_test/runner/${sessionId}`,
+    });
+    expect(runnerRes.statusCode).toBe(200);
+    expect(runnerRes.json()).toMatchObject({ queueLength: 0 });
 
     client.close();
   });
