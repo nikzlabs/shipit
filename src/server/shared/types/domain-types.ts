@@ -199,6 +199,13 @@ export interface DocEntry {
 export interface SkillInfo {
   /** Invocable name, e.g. "my-skill" → `/my-skill` (Claude) or `$my-skill` (Codex). */
   name: string;
+  /**
+   * On-disk directory name. Usually equal to `name`, but some upstream catalog
+   * plugins ship a directory whose frontmatter `name:` doesn't match the
+   * folder. Callers that read SKILL.md from disk after a scan should prefer
+   * `dirName` (falling back to `name` for older scanner output).
+   */
+  dirName?: string;
   /** One-line description from the skill's frontmatter, if present. */
   description?: string;
   /**
@@ -243,8 +250,21 @@ export interface MarketplaceInfo {
 
 /** A skill bundled inside a plugin. v3 adds richer ref types alongside this. */
 export interface SkillRef {
-  /** Skill directory name inside the plugin (e.g. `commit`). */
+  /**
+   * Invocable name from the SKILL.md frontmatter `name:` field. This is what
+   * the user types after `/` (Claude) or `$` (Codex) and what's preserved in
+   * the install target's frontmatter as `<plugin>:<name>`.
+   */
   name: string;
+  /**
+   * On-disk directory name inside the source plugin's `skills/` folder.
+   * Usually equal to `name`, but upstream catalogs sometimes ship a directory
+   * whose frontmatter `name:` doesn't match (e.g. `skills/writing-rules/`
+   * with `name: writing-hookify-rules`). Used for source path lookups when
+   * reading SKILL.md from the marketplace cache; `name` is used everywhere
+   * user-facing.
+   */
+  dirName?: string;
   /** First line of the SKILL.md frontmatter `description`, if present. */
   description?: string;
 }

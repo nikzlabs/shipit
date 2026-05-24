@@ -19,6 +19,8 @@ import type {
   MarketplaceInfo,
   PluginInfo,
 } from "../../server/shared/types.js";
+import { useFileStore } from "./file-store.js";
+import { useUiStore } from "./ui-store.js";
 
 interface SkillsState {
   marketplaces: MarketplaceInfo[];
@@ -128,6 +130,11 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
         }),
       );
       await get().fetchInstalled(sessionId);
+      // Refresh the composer's `/`-autocomplete cache so the new skill is
+      // invokable on the next message without a page reload.
+      await useFileStore.getState()
+        .fetchSkills(sessionId, useUiStore.getState().activeAgentId)
+        .catch(() => {});
     } catch (err) {
       set({ error: (err as Error).message });
       throw err;
@@ -146,6 +153,9 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
         ),
       );
       await get().fetchInstalled(sessionId);
+      await useFileStore.getState()
+        .fetchSkills(sessionId, useUiStore.getState().activeAgentId)
+        .catch(() => {});
     } catch (err) {
       set({ error: (err as Error).message });
       throw err;
