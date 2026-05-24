@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 priority: medium
 description: The shipit-review MCP tool gets stuck in a permission-denied loop in subagents and re-invoked agents, with no UI prompt for the user to approve.
 ---
@@ -124,3 +124,44 @@ manually fold them into the doc (or, if line-anchored comments are
 critical, the user approves the tool out of band before the
 subagent runs). Both workarounds are friction-heavy and defeat the
 point of the review tool.
+
+## Root cause
+
+The `shipit-review` MCP server is registered in the per-run
+`mcp.json` that `session-worker.generateMcpConfig` writes — it sits
+alongside `playwright` as a *built-in* server, not a user-configured
+one, so it never flows through `params.mcpServers` /
+`mcpServerNames`. The `--allowedTools` glob assembly in
+`ClaudeProcess.run` / `StreamingClaudeProcess.run` only adds an
+`mcp__<name>__*` entry for *user* MCP servers, and the hardcoded
+allowlist mentions only `mcp__playwright__*`.
+
+The Claude CLI in `-p` (print) mode has no interactive prompt path:
+when a tool is connected but not allowlisted, it returns the
+literal "Claude requested permissions to use … but you haven't
+granted it yet" error and never escalates to the orchestrator's
+permission UI. The user sees nothing to approve, the agent retries
+into the same wall, and a subagent inherits the parent's allowlist
+so spawning a fresh one doesn't change the outcome.
+
+The misleading "two gates" feeling in the symptom is a side effect:
+`ToolSearch` runs in the harness's own deferred-tool plumbing
+(separate from the CLI allowlist), so loading the schema *did*
+surface a prompt; the actual tool *invocation* runs through the
+CLI's allowlist, which never prompted because there's nothing to
+prompt.
+
+## Fix
+
+Add `mcp__shipit-review__*` to both `AUTO_TOOLS` and `PLAN_TOOLS`
+in `src/server/session/claude.ts` (and the matching
+`StreamingClaudeProcess.run` copy). The tool only writes to
+ShipIt's review-draft state — not to source files — and the
+server-side authorization gate (`runner.activeReviewFilePath` in
+`api-routes-reviews.ts`) already restricts which file each turn
+can submit against, so allowlisting it under plan mode does not
+expand the trust boundary.
+
+Coverage lives in `src/server/session/claude.test.ts` —
+parameterized across `auto` / `plan` / `guarded` so future allowlist
+churn can't silently drop the entry from any mode.
