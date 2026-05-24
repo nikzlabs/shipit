@@ -266,6 +266,7 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE messages ADD COLUMN code_rollback_hash TEXT;
     `);
   },
+<<<<<<< HEAD
   // Migration 18: provider-account routing (docs/150). Sessions persist both
   // the route kind and route id so account rows are never confused with
   // reserved env/API-key auth routes.
@@ -273,6 +274,28 @@ const MIGRATIONS: Migration[] = [
     db.exec("ALTER TABLE sessions ADD COLUMN provider_route_kind TEXT");
     db.exec("ALTER TABLE sessions ADD COLUMN provider_route_id TEXT");
     db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_provider_route ON sessions(provider_route_kind, provider_route_id)");
+=======
+  // Migration 18: marketplaces table (docs/149 — skill install UX). Holds the
+  // catalog list shown in Settings → Skills → Discover, keyed by short id
+  // (e.g. `claude-plugins-official`). v1 seeds one row at startup and never
+  // inserts/deletes after that; v2 adds the add/remove verbs. `source` is a
+  // JSON-encoded `MarketplaceSource`. `agent_id` filters the Discover list to
+  // the active session's agent. `status` reflects the most recent fetch
+  // attempt (loading / ok / fetch-failed) so the UI can render a retry button.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS marketplaces (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        auto_update INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'loading',
+        last_fetched_at TEXT,
+        fetch_error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_marketplaces_agent ON marketplaces(agent_id);
+    `);
+>>>>>>> d25a4ba02 (Agent turn)
   },
   // Migration 19: rewind undo snapshots (docs/144 Landing 2). Rows are small,
   // short-lived restore records used by the undo toast and topbar recovery

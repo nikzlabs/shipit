@@ -206,6 +206,112 @@ export interface SkillInfo {
   source: "project" | "bundled";
 }
 
+// ---- Marketplace / plugin types (docs/149) ----
+
+/**
+ * Where a marketplace catalog is fetched from. v1 only seeds one source
+ * (a `github` ref to `anthropics/claude-plugins-official`), but the
+ * discriminated union is in place from day one so v2's "add a custom
+ * marketplace" verb doesn't need a schema migration.
+ */
+export type MarketplaceSource =
+  | { kind: "github"; ownerRepo: string; ref?: string }
+  | { kind: "git";    url: string;      ref?: string }
+  | { kind: "local";  path: string }
+  | { kind: "url";    url: string };
+
+/** Per-marketplace catalog status, surfaced in the Discover tab. */
+export type MarketplaceStatus = "ok" | "fetch-failed" | "loading";
+
+/**
+ * Metadata about a single catalog (e.g. `claude-plugins-official`). Lives in
+ * `marketplaces` SQLite table; v1 ships with one row pre-seeded.
+ */
+export interface MarketplaceInfo {
+  id: string;
+  source: MarketplaceSource;
+  agentId: AgentId;
+  autoUpdate: boolean;
+  status: MarketplaceStatus;
+  lastFetchedAt?: string;
+  /** When set, the catalog clone failed and this is the surfaced error. */
+  fetchError?: string;
+}
+
+/** A skill bundled inside a plugin. v3 adds richer ref types alongside this. */
+export interface SkillRef {
+  /** Skill directory name inside the plugin (e.g. `commit`). */
+  name: string;
+  /** First line of the SKILL.md frontmatter `description`, if present. */
+  description?: string;
+}
+
+/**
+ * A plugin entry parsed from a marketplace's `marketplace.json`. v1 only
+ * surfaces plugins whose source is an in-repo relative path AND that contain
+ * at least one `skills/<name>/SKILL.md` — those are installable as a simple
+ * file copy without secondary fetches. External plugins and plugins without
+ * skills are filtered out for v1 (deferred to v2/v3 — see docs/149 plan).
+ */
+export interface PluginInfo {
+  marketplaceId: string;
+  name: string;
+  description?: string;
+  author?: string;
+  category?: string;
+  homepage?: string;
+  /** Skills the plugin will install into `.claude/skills/<plugin>__<skill>/`. */
+  skills: SkillRef[];
+  /** Rough sum of skill `SKILL.md` byte sizes — the v1 "context cost" proxy. */
+  estimatedContextBytes: number;
+  /** Optional commit SHA the catalog pins this plugin to (for v3 diffs). */
+  pinnedSha?: string;
+  /** ISO timestamp of the catalog's last update (used in cards if present). */
+  lastUpdated?: string;
+}
+
+/**
+ * Recorded next to every ShipIt-managed skill directory as
+ * `.shipit-installed.json`. Used to differentiate ShipIt-installed skills
+ * from hand-written ones (collision detection, safe uninstall, upgrade hash
+ * check). Hand-written skills have no marker and are off-limits to the
+ * install flow.
+ */
+export interface InstallMarker {
+  marketplaceId: string;
+  pluginName: string;
+  /** Catalog's pinned SHA at install time, or `"head"` when none was pinned. */
+  version: string;
+  installedAt: string;
+  /** sha256 of `SKILL.md` at install time. Upgrade refuses if it diverged. */
+  skillMdHash: string;
+}
+
+/**
+ * One row of the Installed sub-tab. v1 lists ShipIt-managed installs only;
+ * hand-written skills are surfaced in the composer's `/`-autocomplete (doc 138)
+ * instead.
+ */
+export interface InstalledPluginInfo {
+  marketplaceId: string;
+  pluginName: string;
+  skillName: string;
+  version: string;
+  installedAt: string;
+  /** Filesystem path of the installed `<plugin>__<skill>/` directory. */
+  directory: string;
+}
+
+/** Returned from `installPlugin()` so the client can refresh + report status. */
+export interface InstallResult {
+  /** The directories written under `.claude/skills/` (one per skill). */
+  installedDirs: string[];
+  /** Auto-commit hash. `null` when nothing was committed (e.g. no-op upgrade). */
+  commitHash: string | null;
+  /** Token convention for the install confirmation toast. */
+  invocationTokens: string[];
+}
+
 // ---- Template types ----
 
 export interface ProjectTemplate {

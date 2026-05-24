@@ -403,4 +403,31 @@ export class GitManager {
     await this.git.add("-A");
   }
 
+  /**
+   * Stage only the given paths and commit them. Returns the commit hash, or
+   * null when there's nothing to commit (paths produced no staged changes —
+   * e.g. an uninstall that already happened).
+   *
+   * Unlike `autoCommit()`, this does NOT run `git add -A`. The skill-install
+   * flow (docs/149) needs path-scoped staging because the *user*, not the
+   * agent, is driving the change and there may be unrelated edits in the
+   * working tree. The next user turn's `postTurnCommit()` will still sweep
+   * those unrelated edits into a fresh commit — that's auto-commit's job.
+   * This method just keeps the install commit itself clean.
+   *
+   * Paths must be relative to the workspace root and must already exist on
+   * disk (for additions) or be staged-as-deleted (for removals — pass the
+   * deleted path; `git add` handles both).
+   */
+  async commitPaths(paths: string[], message: string): Promise<string | null> {
+    if (paths.length === 0) return null;
+    await this.git.add(paths);
+    const status = await this.git.status();
+    if (status.isClean()) return null;
+    const result = await this.git.commit(message);
+    const hash = result.commit || "";
+    console.log("[git] Committed (path-scoped):", hash, message);
+    return hash;
+  }
+
 }

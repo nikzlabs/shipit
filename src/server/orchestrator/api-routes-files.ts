@@ -22,14 +22,23 @@ import {
   deleteUpload,
   MAX_UPLOAD_FILES_PER_REQUEST,
   ServiceError,
+  installPlugin,
+  uninstallPlugin,
+  scanInstalledPlugins,
+  withWorkspaceLock,
+  getCatalogCacheRoot,
+  ensureCatalogCloned,
+  killAgent,
 } from "./services/index.js";
+import type { MarketplaceStore } from "./marketplace-store.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerFileRoutes(
   app: FastifyInstance,
-  deps: ApiDeps,
+  deps: ApiDeps & { marketplaceStore?: MarketplaceStore },
 ): Promise<void> {
-  const { sessionManager, defaultAgentId, runnerRegistry } = deps;
+  const { sessionManager, defaultAgentId, runnerRegistry, marketplaceStore } = deps;
+  const cacheRoot = getCatalogCacheRoot(deps.stateDir ?? deps.workspaceDir);
 
   // GET /api/sessions/:id/files — file tree
   app.get<{ Params: { id: string } }>("/api/sessions/:id/files", async (request, reply) => {
@@ -297,4 +306,159 @@ export async function registerFileRoutes(
       return { files };
     },
   );
+
+  // ---- Plugin install/uninstall (docs/149) ----
+  // These are session-scoped because the install writes into the session's
+  // workspace and auto-commits there. App-wide marketplace browsing lives in
+  // `api-routes-marketplace.ts`; the routes here are the action verbs that
+  // mutate the workspace.
+  //
+  // The install flow:
+  //   1. Refuses while `runner.running` (no install during a turn — see plan
+  //      §Concurrency case 1). The runner state mutex shared with
+  //      `postTurnCommit` covers the post-turn commit window.
+  //   2. Acquires the per-workspace install mutex (shared with `postTurnCommit`
+  //      via `withWorkspaceLock`) so install↔post-turn-commit and
+  //      install↔install on the same workspace are fully serialized.
+  //   3. Calls `installPlugin()` which uses a path-scoped `git add` (not -A).
+  //   4. Calls `killAgent` on the runner — noop for one-shot `claude -p`
+  //      between turns; SIGKILLs persistent backends so the next turn
+  //      respawns with the new skills picked up.
+
+  if (marketplaceStore) {
+    // GET /api/sessions/:id/plugins — installed plugin rows for the Installed sub-tab.
+    app.get<{ Params: { id: string } }>(
+      "/api/sessions/:id/plugins",
+      async (request, reply) => {
+        const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+        if (!dir) return;
+        const session = sessionManager.get(request.params.id);
+        const agentId = session?.agentId ?? defaultAgentId;
+        const installed = await scanInstalledPlugins(dir, agentId);
+        return { plugins: installed };
+      },
+    );
+
+    // POST /api/sessions/:id/plugins/install — install a plugin from a catalog.
+    app.post<{
+      Params: { id: string };
+      Body: { marketplaceId?: unknown; pluginName?: unknown };
+    }>("/api/sessions/:id/plugins/install", async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const session = sessionManager.get(request.params.id);
+      const agentId = session?.agentId ?? defaultAgentId;
+
+      const marketplaceId = typeof request.body.marketplaceId === "string"
+        ? request.body.marketplaceId : null;
+      const pluginName = typeof request.body.pluginName === "string"
+        ? request.body.pluginName : null;
+      if (!marketplaceId || !pluginName) {
+        reply.code(400).send({ error: "marketplaceId and pluginName are required" });
+        return;
+      }
+
+      // Refuse install while a turn is running — see plan §Concurrency case 1.
+      const runner = runnerRegistry.get(request.params.id) as
+        | { running?: boolean } | undefined;
+      if (runner?.running) {
+        reply.code(409).send({
+          error: "Agent is working — install will become available when it's done.",
+        });
+        return;
+      }
+
+      try {
+        await ensureCatalogCloned(marketplaceStore, marketplaceId, cacheRoot);
+        const git = deps.createGitManager(dir);
+        const result = await withWorkspaceLock(dir, async () => {
+          return installPlugin({
+            workspaceDir: dir,
+            agentId,
+            marketplaceId,
+            pluginName,
+            cacheRoot,
+            store: marketplaceStore,
+            git,
+          });
+        });
+
+        // Persistent backends need a kill so the next turn re-scans skills.
+        // For one-shot `claude -p` this is a noop between turns.
+        try {
+          await killAgent({
+            sessionManager,
+            containerManager: deps.containerManager ?? null,
+            runnerRegistry,
+            defaultAgentId: deps.defaultAgentId,
+          }, request.params.id);
+        } catch (err) {
+          // The worker may be unreachable during install (e.g. fresh session).
+          // That's fine — skills are read from disk on next agent spawn.
+          console.warn("[marketplace] post-install killAgent failed:", getErrorMessage(err));
+        }
+
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: getErrorMessage(err) });
+      }
+    });
+
+    // DELETE /api/sessions/:id/plugins/:marketplaceId/:pluginName — uninstall.
+    app.delete<{
+      Params: { id: string; marketplaceId: string; pluginName: string };
+    }>(
+      "/api/sessions/:id/plugins/:marketplaceId/:pluginName",
+      async (request, reply) => {
+        const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+        if (!dir) return;
+        const session = sessionManager.get(request.params.id);
+        const agentId = session?.agentId ?? defaultAgentId;
+
+        const runner = runnerRegistry.get(request.params.id) as
+          | { running?: boolean } | undefined;
+        if (runner?.running) {
+          reply.code(409).send({
+            error: "Agent is working — uninstall will become available when it's done.",
+          });
+          return;
+        }
+
+        try {
+          const git = deps.createGitManager(dir);
+          const result = await withWorkspaceLock(dir, async () => {
+            return uninstallPlugin({
+              workspaceDir: dir,
+              agentId,
+              marketplaceId: request.params.marketplaceId,
+              pluginName: request.params.pluginName,
+              git,
+            });
+          });
+          // Force respawn so any persistent agent drops the removed skills.
+          try {
+            await killAgent({
+              sessionManager,
+              containerManager: deps.containerManager ?? null,
+              runnerRegistry,
+              defaultAgentId: deps.defaultAgentId,
+            }, request.params.id);
+          } catch (err) {
+            console.warn("[marketplace] post-uninstall killAgent failed:", getErrorMessage(err));
+          }
+          return result;
+        } catch (err) {
+          if (err instanceof ServiceError) {
+            reply.code(err.statusCode).send({ error: err.message });
+            return;
+          }
+          reply.code(500).send({ error: getErrorMessage(err) });
+        }
+      },
+    );
+  }
 }

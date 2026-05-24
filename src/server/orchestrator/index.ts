@@ -61,6 +61,8 @@ import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes } from "./disk-janitor.js";
 import { resolveBuildId } from "./build-id.js";
+import { MarketplaceStore } from "./marketplace-store.js";
+import { ensureCatalogCloned, getCatalogCacheRoot } from "./services/marketplace.js";
 
 // ---- Re-exports for backwards compatibility ----
 export { CONTEXT_WINDOW_TOKENS } from "./ws-handlers/send-message.js";
@@ -170,6 +172,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // outer's source tree. Production keeps stateDir = workspaceDir.
   const getBareCacheDir = createBareCacheDirHelper(stateDir);
   const getDepCacheDir = createDepCacheDirHelper(stateDir);
+
+  // ---- Marketplace store (docs/149 — skill install UX) ----
+  // App-wide catalog list (Settings → Skills → Discover). v1 ships with one
+  // pre-seeded row (the official Claude catalog) and never inserts/deletes
+  // after that — v2 adds the add/remove verbs. The background pre-clone is
+  // kicked off below, after the route table is registered.
+  const marketplaceStore = new MarketplaceStore(databaseManager);
+  marketplaceStore.seedIfMissing({
+    id: "claude-plugins-official",
+    source: { kind: "github", ownerRepo: "anthropics/claude-plugins-official" },
+    agentId: "claude",
+    autoUpdate: true,
+  });
 
   // ---- SSE (Server-Sent Events) ----
   const { sseClients, sseBroadcast } = createSSE();
@@ -648,8 +663,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     providerAccountManager,
     defaultAgentId,
     workspaceDir,
+    stateDir,
     runtimeMode,
     credentialsDir,
+    marketplaceStore,
     usageManager,
     runnerRegistry,
     chatHistoryManager,
@@ -685,6 +702,24 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       ? { mcpOAuthFetchImpl: deps.mcpOAuthFetchImpl }
       : {}),
   });
+
+  // ---- Marketplace pre-clone (docs/149) ----
+  // Fire-and-forget background fetch of every seeded catalog so the Discover
+  // tab opens instantly the first time a user clicks it (the common case).
+  // Skipped in test mode so unit / integration tests don't hit GitHub.
+  if (!isTestMode) {
+    const cacheRoot = getCatalogCacheRoot(stateDir);
+    for (const mkt of marketplaceStore.list()) {
+      void ensureCatalogCloned(marketplaceStore, mkt.id, cacheRoot).catch((err: unknown) => {
+        // `ensureCatalogCloned` already records `fetch-failed` on the row;
+        // the Discover tab renders a Retry button against that state.
+        console.warn(
+          `[marketplace] pre-clone failed for ${mkt.id}:`,
+          (err as Error).message,
+        );
+      });
+    }
+  }
 
   // ---- Preview reverse proxy (container mode) ----
   if (containerManager) {

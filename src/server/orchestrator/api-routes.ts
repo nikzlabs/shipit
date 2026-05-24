@@ -43,8 +43,10 @@ import { registerMcpRoutes } from "./api-routes-mcp.js";
 import { registerReviewRoutes } from "./api-routes-reviews.js";
 import { registerUpdateRoutes } from "./api-routes-updates.js";
 import { registerAgentRoutes } from "./api-routes-agent.js";
+import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
 import type { SecretStore } from "./secret-store.js";
 import type { FileReviewStore } from "./review-store.js";
+import type { MarketplaceStore } from "./marketplace-store.js";
 
 /**
  * Dependencies needed by API routes. A subset of AppDeps — only the
@@ -61,6 +63,13 @@ export interface ApiDeps {
   providerAccountManager: ProviderAccountManager;
   defaultAgentId: AgentId;
   workspaceDir: string;
+  /**
+   * Directory for orchestrator-internal state (SQLite, repo cache, dep cache,
+   * marketplace cache). Defaults to `workspaceDir` when omitted, matching the
+   * shape used elsewhere in `app-di.ts`. In local-mode dogfooding this is
+   * outside the visible workspace.
+   */
+  stateDir?: string;
   /**
    * Orchestrator runtime mode (feature 118). Forwarded into the bootstrap
    * payload so the client can surface local-mode UI. Defaults to
@@ -110,6 +119,12 @@ export interface ApiDeps {
   secretStore?: SecretStore;
   /** File review store — unified review surface persistence (per session/file). */
   reviewStore?: FileReviewStore;
+  /**
+   * Marketplace store (docs/149 — skill install UX). When present, the
+   * Settings → Skills tab + install/uninstall routes are wired. Test setups
+   * that don't seed any marketplaces can omit this and the routes go away.
+   */
+  marketplaceStore?: MarketplaceStore;
   /** Service managers — per-session compose lifecycle (keyed by sessionId). */
   serviceManagers?: Map<string, ServiceManager>;
   /**
@@ -220,6 +235,16 @@ export async function registerApiRoutes(
   }
   await registerUpdateRoutes(app);
   await registerAgentRoutes(app, deps);
+
+  // Marketplace catalogs (docs/149). Wired only when a store is provided so
+  // test setups that don't need this surface keep their route table minimal.
+  if (deps.marketplaceStore) {
+    await registerMarketplaceRoutes(app, {
+      ...deps,
+      marketplaceStore: deps.marketplaceStore,
+      stateDir: deps.stateDir ?? deps.workspaceDir,
+    });
+  }
 
   // MCP server CRUD + connectivity test (docs/088-mcp-integration).
   await registerMcpRoutes(app, {
