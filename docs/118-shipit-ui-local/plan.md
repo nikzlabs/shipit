@@ -1,6 +1,6 @@
 ---
 status: in-progress
-priority: high
+priority: low
 description: Run a ShipIt orchestrator in local (no-Docker) mode inside a session container so developers can dogfood and iterate on the ShipIt source via chat.
 ---
 
