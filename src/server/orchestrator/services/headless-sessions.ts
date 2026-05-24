@@ -1,6 +1,6 @@
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
-import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo, AgentId } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
 import { generateBranchPrefix } from "../git-utils.js";
@@ -120,7 +120,7 @@ export async function createHeadlessSession(
   if (!session) throw new ServiceError(500, "Failed to read back headless session");
 
   const agentId = opts.agent ?? defaultAgentId;
-  const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, agentId);
+  const runner: SessionRunnerInterface = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, agentId);
   if (credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {
       sessionId: newSessionId,
