@@ -386,11 +386,11 @@ status: in-progress
 
 When creating a new feature doc, set `status: planned`. Update to `in-progress` when work begins and `done` when complete. Set `paused` for features that have a design but are not currently planned for implementation. Set `rejected` for proposals that were considered and explicitly declined — the doc captures the reasoning so the proposal isn't re-litigated later; `rejected` docs render with a red badge and live in the collapsed "Archived" group alongside `done`. A `checklist.md` can exist alongside any status — it tracks remaining work items regardless of whether the feature is actively in progress. When a feature is done, set `status: done` and mark all checklist items as complete (`[x]`).
 
-`plan.md` may also include a `priority` field — `high`, `medium`, or `low` — as a hint for "which planned thing should we pick up next." It's only honored when `status: planned`; on any other status the field is ignored. The docs viewer sorts planned items by priority bucket (high → medium → low → unset), and within each bucket by *descending* path so the most recently added planned features bubble up. Leaving `priority` unset is fine — it just sorts after the prioritized items.
+`plan.md` may also include a `priority` field — `high`, `medium`, or `low` — as a hint for "which active thing should we focus on next." Honored on `planned` and `in-progress` docs; dropped on `paused`, `done`, `rejected`, and custom-status docs so stale priorities don't linger after a doc moves out of active work. Priority is the **primary** sort key in the docs viewer (high → medium → low → unset), so a `high` planned doc bubbles above an unset-priority in-progress doc; within a priority bucket the viewer falls back to status (in-progress before planned) and then to *descending* path so the most recently added doc bubbles up. Leaving `priority` unset is fine — it just sorts after the prioritized items.
 
 ```yaml
 ---
-status: planned
+status: in-progress
 priority: high
 ---
 ```

@@ -158,8 +158,11 @@ export interface DocEntry {
    */
   customStatus?: string;
   /**
-   * Priority from YAML frontmatter, only surfaced when `status === "planned"`.
-   * Drives sort order in the docs viewer; otherwise advisory.
+   * Priority from YAML frontmatter, surfaced on the active-work statuses
+   * (`planned` and `in-progress`). Drives sort order in the docs viewer as
+   * the primary key — high-priority docs bubble above unset-priority ones
+   * regardless of status. Dropped on paused/done/rejected/custom to prevent
+   * stale priorities from leaking after a doc moves out of active work.
    */
   priority?: DocPriority;
   /** Human-readable title. Derived from frontmatter `title:` field, or from filename. */

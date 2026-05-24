@@ -65,11 +65,11 @@ title: Custom Feature Title
 
 If no `title` is provided, ShipIt derives one from the path. For files with generic names like `plan.md`, it uses the parent directory name (e.g., `042-user-auth/plan.md` becomes "User Auth"). Otherwise it uses the filename (e.g., `my-feature.md` becomes "My Feature").
 
-**Priority hint for planned features:** add a `priority` field — `high`, `medium`, or `low` — to indicate which planned doc should be picked up next. It's only honored when `status: planned` and is ignored on any other status. The docs viewer groups planned items by priority bucket (high first, then medium, low, then unset), and within each bucket the most recently added doc (highest `NNN-` prefix) sorts first.
+**Priority for active features:** add a `priority` field — `high`, `medium`, or `low` — to indicate which active doc should be focused on next. Honored on `planned` and `in-progress` docs; dropped on `paused`, `done`, `rejected`, and custom-status docs so stale priorities don't leak after a doc moves out of active work. Priority is the **primary** sort key in the docs viewer, so a `high` planned doc bubbles above an unset-priority in-progress doc. Within a priority bucket the viewer falls back to status (in-progress first, then planned), then to path *descending* so the most recently added doc (highest `NNN-` prefix) sorts first.
 
 ```yaml
 ---
-status: planned
+status: in-progress
 priority: high
 ---
 ```

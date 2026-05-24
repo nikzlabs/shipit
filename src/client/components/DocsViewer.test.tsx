@@ -207,10 +207,25 @@ describe("DocsViewer", () => {
       expect(screen.getByText("Delta")).toBeInTheDocument();
     });
 
-    it("does not render a priority badge for non-planned docs", () => {
+    it("renders a priority badge for in-progress docs that have one", () => {
       const props = defaultProps();
-      // Defensive: even if the field somehow leaks through, the UI shouldn't show it
-      // when status !== "planned".
+      props.files = [
+        makeDoc({
+          path: "docs/001/plan.md",
+          title: "Active",
+          status: "in-progress",
+          priority: "high",
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("High")).toBeInTheDocument();
+      expect(screen.getByText("In Progress")).toBeInTheDocument();
+    });
+
+    it("does not render a priority badge for archived (done/rejected) docs", () => {
+      // Defensive: even if the field somehow leaks through, the UI shouldn't show
+      // priority in the compact archived rows.
+      const props = defaultProps();
       props.files = [
         makeDoc({
           path: "docs/001/plan.md",
@@ -224,6 +239,39 @@ describe("DocsViewer", () => {
       fireEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
       expect(screen.getByText("Done")).toBeInTheDocument();
       expect(screen.queryByText("High")).not.toBeInTheDocument();
+    });
+
+    it("sorts tracked docs by priority first, status second", () => {
+      // A high-priority planned doc should beat an unset-priority in-progress
+      // doc even though in-progress normally sorts above planned: priority is
+      // the primary key.
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001-unset-inprog/plan.md", title: "Unset-InProgress", status: "in-progress" }),
+        makeDoc({ path: "docs/002-high-planned/plan.md", title: "High-Planned", status: "planned", priority: "high" }),
+        makeDoc({ path: "docs/003-high-inprog/plan.md", title: "High-InProgress", status: "in-progress", priority: "high" }),
+        makeDoc({ path: "docs/004-low-inprog/plan.md", title: "Low-InProgress", status: "in-progress", priority: "low" }),
+      ];
+      render(<DocsViewer {...props} />);
+      // Query the row buttons by the unique `-InProgress`/`-Planned` suffixes
+      // we put in the test titles. Filtering by hand against "Reload" /
+      // "Tracked" / "Archived" is fragile if a future header change adds a
+      // stray button — anchoring on the doc titles makes the assertion stable.
+      const items = screen.getAllByRole("button").filter(
+        (btn) => /-(InProgress|Planned)$/.test(
+          // Use the title span only so badge text never leaks in.
+          btn.querySelector("span")?.textContent ?? "",
+        ),
+      );
+      expect(items.map((btn) => btn.querySelector("span")?.textContent)).toEqual([
+        // High bucket, in-progress before planned within the bucket.
+        "High-InProgress",
+        "High-Planned",
+        // Low bucket (still beats unset).
+        "Low-InProgress",
+        // Unset priority sorts last regardless of status.
+        "Unset-InProgress",
+      ]);
     });
 
     it("shows path context for tracked docs in subdirectories", () => {
@@ -271,6 +319,69 @@ describe("DocsViewer", () => {
       const fill = pill?.querySelector("[aria-hidden]") as HTMLElement | null;
       expect(fill).not.toBeNull();
       expect(fill?.style.width).toBe("77%"); // round(58/75 * 100)
+    });
+
+    it("also fuses status and count for planned, paused, done, and rejected docs", () => {
+      // The fused pill is no longer in-progress-only — every typed status that
+      // carries a checklist collapses into one pill (status label dropped,
+      // fill color signals status). Custom-status is intentionally excluded
+      // since the raw label conveys information color can't replace.
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001/plan.md", title: "Planned-Doc", status: "planned", checklist: { total: 4, done: 1 } }),
+        makeDoc({ path: "docs/002/plan.md", title: "Paused-Doc", status: "paused", checklist: { total: 4, done: 2 } }),
+        makeDoc({ path: "docs/003/plan.md", title: "Done-Doc", status: "done", checklist: { total: 4, done: 4 } }),
+        makeDoc({ path: "docs/004/plan.md", title: "Rejected-Doc", status: "rejected", checklist: { total: 4, done: 3 } }),
+      ];
+      render(<DocsViewer {...props} />);
+      // Expand archived so done + rejected rows are visible too.
+      fireEvent.click(screen.getByRole("button", { name: /Archived \(2\)/ }));
+      // Counts are visible for every status.
+      expect(screen.getByText("1/4")).toBeInTheDocument();
+      expect(screen.getByText("2/4")).toBeInTheDocument();
+      expect(screen.getByText("4/4")).toBeInTheDocument();
+      expect(screen.getByText("3/4")).toBeInTheDocument();
+      // Status labels are dropped — the fill color is the status signal now.
+      expect(screen.queryByText("Planned")).not.toBeInTheDocument();
+      expect(screen.queryByText("Paused")).not.toBeInTheDocument();
+      expect(screen.queryByText("Done")).not.toBeInTheDocument();
+      expect(screen.queryByText("Rejected")).not.toBeInTheDocument();
+    });
+
+    it("colors the fused pill fill by status", () => {
+      const props = defaultProps();
+      props.files = [
+        makeDoc({ path: "docs/001/plan.md", title: "Planned-Doc", status: "planned", checklist: { total: 4, done: 2 } }),
+        makeDoc({ path: "docs/002/plan.md", title: "Done-Doc", status: "done", checklist: { total: 4, done: 4 } }),
+      ];
+      render(<DocsViewer {...props} />);
+      fireEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
+      const fillFor = (text: string): HTMLElement | null => {
+        const pill = screen.getByText(text).closest("span")?.parentElement;
+        return pill?.querySelector("[aria-hidden]") as HTMLElement | null;
+      };
+      // Planned uses the info-subtle fill; done uses success-subtle. We assert
+      // the CSS variable name rather than the resolved color so the test is
+      // theme-agnostic.
+      expect(fillFor("2/4")?.style.backgroundColor).toBe("var(--color-info-subtle)");
+      expect(fillFor("4/4")?.style.backgroundColor).toBe("var(--color-success-subtle)");
+    });
+
+    it("keeps the separate count + custom-status badges when status is a raw custom string", () => {
+      // Custom-status docs aren't fused because the raw label ("blocked",
+      // "experimental") conveys information that color alone can't replace.
+      const props = defaultProps();
+      props.files = [
+        makeDoc({
+          path: "docs/001/plan.md",
+          title: "Blocked-Doc",
+          customStatus: "blocked",
+          checklist: { total: 4, done: 2 },
+        }),
+      ];
+      render(<DocsViewer {...props} />);
+      expect(screen.getByText("2/4")).toBeInTheDocument();
+      expect(screen.getByText("blocked")).toBeInTheDocument();
     });
 
     it("keeps the separate status label for in-progress docs without a checklist", () => {
