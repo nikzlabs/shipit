@@ -843,15 +843,17 @@ export default function App() {
   const detectedPorts = effectivePreviewStatus?.detectedPorts ?? [];
   const showNewSessionView = isNewSessionRoute && !urlSessionId;
   const showHomeScreen = !showNewSessionView && (!sessionId || (showTemplates && messages.length === 0 && !isLoading));
-  // On mobile, the homepage's primary content is the session list — auto-open
-  // the drawer when the home route activates. Effect re-runs only when the
-  // home/mobile flags flip, so user-driven dismissal (backdrop tap) sticks.
+  // On mobile, the homepage's primary content is the session list — open the
+  // drawer on the home route and close it on any other route. URL-driven so
+  // the brief pre-hydration window on a session URL doesn't count as "home"
+  // and spuriously open the drawer; mirroring the route also guarantees the
+  // drawer can't linger over the session view after a navigation.
+  const isHomeRoute = !urlSessionId && !isNewSessionRoute;
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
-    if (isMobile && showHomeScreen) {
-      useUiStore.getState().setMobileSidebarOpen(true);
-    }
-  }, [isMobile, showHomeScreen]);
+    if (!isMobile) return;
+    useUiStore.getState().setMobileSidebarOpen(isHomeRoute);
+  }, [isMobile, isHomeRoute]);
   // Empty-state rocket: no messages yet, not mid-turn. We gate on historyLoaded
   // so we don't briefly flash the rocket on session switches before history
   // arrives — except for a brand-new-session route, where there's no history to
