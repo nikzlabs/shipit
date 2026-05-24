@@ -6,19 +6,27 @@ import {
   tierColor,
   formatPct,
   formatResetCountdown,
+  effectivePct,
 } from "./SubscriptionLimitsBadge.js";
 import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
 
 afterEach(() => cleanup());
 
+// Reset timestamps live in the future relative to the test clock so the
+// meter doesn't collapse to 0 via the elapsed-reset rule (see
+// `effectivePct`). Tests that want the elapsed behavior pass a past
+// timestamp explicitly.
+const FUTURE_SESSION_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
+const FUTURE_WEEKLY_RESET = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
+
 function makeSnap(overrides: Partial<SubscriptionLimits> = {}): SubscriptionLimits {
   return {
     agentId: "claude",
     plan: "Pro",
-    session: { usedPct: 30, resetAt: "2026-05-19T18:00:00Z" },
-    weekly: { usedPct: 50, resetAt: "2026-05-26T00:00:00Z" },
+    session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET },
+    weekly: { usedPct: 50, resetAt: FUTURE_WEEKLY_RESET },
     weeklyOpus: null,
-    fetchedAt: Date.parse("2026-05-19T12:00:00Z"),
+    fetchedAt: Date.now(),
     ...overrides,
   };
 }
@@ -43,6 +51,24 @@ describe("formatResetCountdown", () => {
     const now = Date.parse("2026-05-19T12:00:00Z");
     expect(formatResetCountdown("2026-05-19T11:59:00Z", now)).toBe("now");
     expect(formatResetCountdown("not-a-date", now)).toBe("not-a-date");
+  });
+});
+
+describe("effectivePct", () => {
+  it("returns the cached pct while the window is still open", () => {
+    const now = Date.parse("2026-05-19T12:00:00Z");
+    expect(effectivePct(96, "2026-05-19T17:00:00Z", now)).toBe(96);
+  });
+
+  it("collapses to 0 once the reset timestamp has elapsed", () => {
+    const now = Date.parse("2026-05-19T12:00:00Z");
+    expect(effectivePct(100, "2026-05-19T11:59:00Z", now)).toBe(0);
+    expect(effectivePct(100, "2026-05-19T12:00:00Z", now)).toBe(0);
+  });
+
+  it("preserves the cached pct when resetAt is unparseable", () => {
+    const now = Date.parse("2026-05-19T12:00:00Z");
+    expect(effectivePct(73, "not-a-date", now)).toBe(73);
   });
 });
 
@@ -104,8 +130,8 @@ describe("SubscriptionLimitPill", () => {
       <SubscriptionLimitPill
         label="Claude"
         snapshot={makeSnap({
-          session: { usedPct: 96, resetAt: "2026-05-19T17:00:00Z" },
-          weekly: { usedPct: 22, resetAt: "2026-05-26T00:00:00Z" },
+          session: { usedPct: 96, resetAt: FUTURE_SESSION_RESET },
+          weekly: { usedPct: 22, resetAt: FUTURE_WEEKLY_RESET },
         })}
       />,
     );
@@ -119,8 +145,8 @@ describe("SubscriptionLimitPill", () => {
       <SubscriptionLimitPill
         label="Claude"
         snapshot={makeSnap({
-          session: { usedPct: 96, resetAt: "2026-05-19T17:00:00Z" },
-          weekly: { usedPct: 22, resetAt: "2026-05-26T00:00:00Z" },
+          session: { usedPct: 96, resetAt: FUTURE_SESSION_RESET },
+          weekly: { usedPct: 22, resetAt: FUTURE_WEEKLY_RESET },
         })}
       />,
     );
@@ -133,8 +159,8 @@ describe("SubscriptionLimitPill", () => {
       <SubscriptionLimitPill
         label="Claude"
         snapshot={makeSnap({
-          session: { usedPct: 20, resetAt: "2026-05-19T17:00:00Z" },
-          weekly: { usedPct: 94, resetAt: "2026-05-26T00:00:00Z" },
+          session: { usedPct: 20, resetAt: FUTURE_SESSION_RESET },
+          weekly: { usedPct: 94, resetAt: FUTURE_WEEKLY_RESET },
         })}
       />,
     );
@@ -147,8 +173,8 @@ describe("SubscriptionLimitPill", () => {
       <SubscriptionLimitPill
         label="Claude"
         snapshot={makeSnap({
-          session: { usedPct: 90, resetAt: "2026-05-19T17:00:00Z" },
-          weekly: { usedPct: 90, resetAt: "2026-05-26T00:00:00Z" },
+          session: { usedPct: 90, resetAt: FUTURE_SESSION_RESET },
+          weekly: { usedPct: 90, resetAt: FUTURE_WEEKLY_RESET },
         })}
       />,
     );
@@ -215,6 +241,32 @@ describe("SubscriptionLimitPill", () => {
     const meters = container.querySelectorAll<HTMLElement>("[data-meter-pct]");
     expect(meters[0].style.color).toContain("--color-context-full");
     expect(meters[1].style.color).toContain("--color-text-secondary");
+  });
+
+  it("shows 0% (no countdown) once the meter's resetAt has elapsed", () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const future = new Date(Date.now() + 60 * 60_000).toISOString();
+    const { container } = render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({
+          session: { usedPct: 100, resetAt: past },
+          weekly: { usedPct: 91, resetAt: future },
+        })}
+      />,
+    );
+    // 5h window has elapsed → meter snaps to 0%, no "resets in now" text.
+    expect(screen.getByText(/5h 0%/)).toBeInTheDocument();
+    expect(screen.queryByText(/5h 100%/)).toBeNull();
+    expect(screen.getByText(/5h 0%/)).not.toHaveTextContent(/resets in/);
+    // Weekly window is still open — unchanged.
+    expect(screen.getByText(/7d 91%/)).toBeInTheDocument();
+    expect(screen.getByText(/7d 91%/)).toHaveTextContent(/resets in/);
+    // The post-reset meter also re-tiers (was full, now neutral) and
+    // its fill collapses to 0%.
+    const fills = container.querySelectorAll<HTMLElement>("[aria-hidden]");
+    expect(fills[0].style.width).toBe("0%");
+    expect(fills[0].style.backgroundColor).toContain("--color-text-secondary");
   });
 
   it("clamps fill width to the 0–100 range for out-of-range inputs", () => {
