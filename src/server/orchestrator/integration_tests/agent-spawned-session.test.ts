@@ -466,7 +466,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
    * Spawn a child and drive its FakeClaudeProcess to `finish()` so the
    * runner reports idle. Returns the child id.
    *
-   * `spawnChildSession` enqueues the initial prompt via `sendSystemMessage`,
+   * `spawnChildSession` enqueues the initial prompt via `runner.dispatch`,
    * which (with SystemTurnDeps wired by `createRunnerRegistry`) starts a
    * system turn against a freshly-created FakeClaudeProcess. Tests need to
    * finish that turn explicitly — the fake doesn't auto-emit `done`.
@@ -474,7 +474,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   async function spawnAndIdleChild(parentId: string, opts: { branch?: string } = {}): Promise<string> {
     const before = createdClaudes.length;
     const childId = await spawnChild(parentId, opts);
-    // The spawn fires `sendSystemMessage` synchronously, which calls
+    // The spawn fires `runner.dispatch` synchronously, which calls
     // `agentFactory(...)` — so the new FakeClaudeProcess lands in
     // `createdClaudes` before the spawn route returns. Poll defensively to
     // tolerate any async deferral.
@@ -673,7 +673,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const before = createdClaudes.length;
     await spawnChild(parentId, { branch: "params-parity" });
 
-    // Wait for the spawn's `sendSystemMessage` → buildRunParams → agent.run.
+    // Wait for the spawn's `runner.dispatch` → buildRunParams → agent.run.
     const deadline = Date.now() + 2000;
     while (createdClaudes.length === before && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 5));

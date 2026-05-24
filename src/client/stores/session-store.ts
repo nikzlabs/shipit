@@ -119,6 +119,17 @@ interface SessionState {
         ) => { text: string; position: number }[]),
   ) => void;
   setPendingWsMessage: (message: Record<string, unknown> | undefined) => void;
+  /**
+   * Fill the composer textarea with text the user is expected to edit before
+   * sending (docs/150).
+   *
+   * Use ONLY for affordances where the prefilled prompt is a starting point
+   * the user will refine — currently just "Start Session from doc". For
+   * send-direct affordances ("Send to agent", "Create PR", "Auto-fix
+   * errors"), POST to `/api/sessions/:id/agent/dispatch` via the
+   * `dispatchAgentMessage` helper instead. Prefill there forces the user
+   * into a two-click dance for what should be a one-click action.
+   */
   setPrefillText: (text: string | undefined) => void;
   /** Append a per-turn usage record for the given session. */
   appendTurnUsage: (sessionId: string, turn: TurnUsage) => void;

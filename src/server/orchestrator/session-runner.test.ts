@@ -120,20 +120,38 @@ describe("SessionRunner", () => {
     runner.dispose();
   });
 
-  it("sendSystemMessage enqueues when agent is running", () => {
+  it("dispatch enqueues when agent is running", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
     });
     runner.running = true;
-    runner.sendSystemMessage("fix ci");
+    runner.dispatch({ text: "fix ci" });
     expect(runner.queueLength).toBe(1);
     expect(runner.dequeue()?.text).toBe("fix ci");
     runner.dispose({ force: true });
   });
 
-  it("sendSystemMessage starts agent turn when idle with deps set", async () => {
+  it("dispatch broadcasts message_queued via emitMessage (docs/150)", () => {
+    // The enqueue branch must emit message_queued via the runner's broadcast
+    // channel so every attached viewer sees the update, not just the originating
+    // socket. Previously the WS handler did this with ctx.send.
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const received: any[] = [];
+    runner.on("message", (msg) => received.push(msg));
+    runner.running = true;
+    runner.dispatch({ text: "fix ci" });
+    const queued = received.find((m) => m.type === "message_queued");
+    expect(queued).toMatchObject({ type: "message_queued", text: "fix ci", position: 1 });
+    runner.dispose({ force: true });
+  });
+
+  it("dispatch starts agent turn when idle with deps set", async () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
@@ -153,8 +171,8 @@ describe("SessionRunner", () => {
       }),
     });
 
-    runner.sendSystemMessage("fix ci");
-    // runSystemTurn awaits buildRunParams; flush microtasks so the run call lands.
+    runner.dispatch({ text: "fix ci" });
+    // runDispatchedTurn awaits buildRunParams; flush microtasks so the run call lands.
     await new Promise((r) => setImmediate(r));
     // Should start a turn directly — not enqueue
     expect(runner.queueLength).toBe(0);
@@ -165,16 +183,49 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("sendSystemMessage falls back to enqueue when idle with no deps", () => {
+  it("dispatch falls back to enqueue when idle with no deps", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
       defaultAgentId: "claude" as AgentId,
     });
     // No system turn deps set
-    runner.sendSystemMessage("fix ci");
+    runner.dispatch({ text: "fix ci" });
     expect(runner.queueLength).toBe(1);
     runner.dispose();
+  });
+
+  it("dispatch threads attachments + permissionMode into the queued message (docs/150)", () => {
+    // The drain at runDispatchedTurn previously only carried `text`. This guards
+    // the round-trip: an enqueued dispatch retains images, files, uploads,
+    // permissionMode, and reviewFilePath so a queued review or attachment-bearing
+    // turn doesn't silently lose them when the previous turn finishes.
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.running = true;
+    runner.dispatch({
+      text: "review please",
+      activity: "Reviewing…",
+      images: [{ data: "AAA=", mediaType: "image/png" }],
+      files: [{ path: "src/foo.ts" }],
+      uploads: [{ path: "/uploads/screen.png", type: "upload" as const }],
+      permissionMode: "guarded",
+      reviewFilePath: "docs/foo.md",
+    });
+    const queued = runner.dequeue();
+    expect(queued).toMatchObject({
+      text: "review please",
+      activity: "Reviewing…",
+      images: [{ data: "AAA=", mediaType: "image/png" }],
+      files: [{ path: "src/foo.ts" }],
+      uploads: [{ path: "/uploads/screen.png", type: "upload" as const }],
+      permissionMode: "guarded",
+      reviewFilePath: "docs/foo.md",
+    });
+    runner.dispose({ force: true });
   });
 
   it("enforces message queue cap of 50", () => {

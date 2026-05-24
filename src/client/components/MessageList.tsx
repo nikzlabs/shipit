@@ -88,6 +88,16 @@ export interface ChatMessage {
   queued?: boolean;
   /** 1-indexed position in the queue, shown as a badge. */
   queuePosition?: number;
+  /**
+   * docs/150 — set on optimistic user bubbles created by the HTTP dispatch
+   * helper (Create PR, Send compose error, etc.). When the matching
+   * `system_user_message` echo arrives over the WS, the handler dedupes by
+   * clearing this flag in place instead of appending a duplicate bubble.
+   * Survives a tab reload via the normal optimistic-state lifecycle (the
+   * dispatch completes before reload anyway; this flag is only meaningful
+   * within the same session).
+   */
+  pendingDispatch?: true;
   /** Git commit hash produced by auto-commit after this assistant message. */
   commitHash?: string;
   /** Parent commit hash (HEAD before the auto-commit). Used for rollback. */

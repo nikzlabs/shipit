@@ -6,7 +6,7 @@
  * `runAgentWithMessage`. Pulled out so:
  *
  *   1. The two WS-handler branches share one implementation, and
- *   2. The system-turn path (`runSystemTurn` — used by spawned sessions and
+ *   2. The system-turn path (`runDispatchedTurn` — used by spawned sessions and
  *      CI auto-fix) can invoke the same flow via a single optional hook.
  *
  * The helper only fires when the session has a remote, hasn't been merged,

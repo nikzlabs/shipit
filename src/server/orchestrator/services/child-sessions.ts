@@ -125,8 +125,8 @@ export interface SpawnChildSessionResult {
  *   → `spawnChildSession`.
  *
  * Quotas are enforced fail-closed (the orchestrator returns 429 / ServiceError
- * before any disk work happens). The first prompt is enqueued on the child's
- * runner via `sendSystemMessage` so it kicks off the agent the moment the
+ * before any disk work happens). The first prompt is dispatched on the child's
+ * runner via `runner.dispatch` so it kicks off the agent the moment the
  * runner is ready — matching the home-screen "send a message" behaviour
  * without needing a WS to be attached.
  */
@@ -309,7 +309,7 @@ export async function spawnChildSession(
 
   // Enqueue the first prompt. `getOrCreate` on the runner registry creates a
   // container-backed runner (in production) or a SessionRunner (in tests);
-  // `sendSystemMessage` then either starts the turn directly (when
+  // `runner.dispatch` then either starts the turn directly (when
   // SystemTurnDeps are wired) or enqueues for the next agent start.
   //
   // We don't store the parent's agent id on `SessionInfo` (only the model is
@@ -341,7 +341,7 @@ export async function spawnChildSession(
     sessionManager.setAgentPinned(newSessionId);
   }
 
-  runner.sendSystemMessage(trimmedPrompt);
+  runner.dispatch({ text: trimmedPrompt });
 
   console.log(
     `[spawn-child] Spawned session ${newSessionId} under parent ${parentSessionId}: branch=${branchName} title="${title}"`,
@@ -538,7 +538,7 @@ export async function sendChildMessage(
   // follow-up turn fires. Mirrors the spawn path; idempotent so re-running
   // it on every message is fine. Without this, a child whose OAuth token
   // has been rotated by another session since the first turn 401s here too.
-  // Skipped while the agent is already running — `sendSystemMessage` will
+  // Skipped while the agent is already running — `runner.dispatch` will
   // enqueue, and the env-prep of the next-starting turn covers it.
   const wasRunning = runner.running;
   if (!wasRunning && credentialsDir && credentialStore) {
@@ -548,7 +548,7 @@ export async function sendChildMessage(
       deps: { credentialsDir, credentialStore, sessionManager },
     });
   }
-  runner.sendSystemMessage(trimmed);
+  runner.dispatch({ text: trimmed });
   return {
     queuePosition: wasRunning ? runner.queueLength : 0,
     enqueued: wasRunning,

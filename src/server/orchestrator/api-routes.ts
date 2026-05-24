@@ -41,6 +41,7 @@ import { registerSecretsRoutes } from "./api-routes-secrets.js";
 import { registerMcpRoutes } from "./api-routes-mcp.js";
 import { registerReviewRoutes } from "./api-routes-reviews.js";
 import { registerUpdateRoutes } from "./api-routes-updates.js";
+import { registerAgentRoutes } from "./api-routes-agent.js";
 import type { SecretStore } from "./secret-store.js";
 import type { FileReviewStore } from "./review-store.js";
 
@@ -216,6 +217,7 @@ export async function registerApiRoutes(
     });
   }
   await registerUpdateRoutes(app);
+  await registerAgentRoutes(app, deps);
 
   // MCP server CRUD + connectivity test (docs/088-mcp-integration).
   await registerMcpRoutes(app, {

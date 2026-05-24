@@ -69,6 +69,8 @@ export interface SteeredMessage {
 
 export interface QueuedMessage {
   text: string;
+  /** Spinner label shown in the chat bubble (e.g. "Creating PR…"). Carried through queue drain. */
+  activity?: string;
   images?: ImageAttachment[];
   files?: FileContextRef[];
   uploads?: UploadRef[];
@@ -78,8 +80,48 @@ export interface QueuedMessage {
 }
 
 /**
+ * Options accepted by `runner.dispatch(...)` and `runDispatchedTurn(...)`. The
+ * runner's send-or-queue entry point for a *new turn*: enqueued behind a
+ * running turn or started directly when idle. Carries every field a queued
+ * message can carry so the drain doesn't lose attachments, permission mode,
+ * or the review allow-list (docs/150).
+ */
+export interface AgentDispatchOptions {
+  text: string;
+  /** Spinner label shown in the chat bubble (e.g. "Creating PR…", "Auto-fixing CI…"). */
+  activity?: string;
+  /** Optional inline image attachments (already validated by the caller). */
+  images?: ImageAttachment[];
+  /** File context references resolved against the session workspace. */
+  files?: FileContextRef[];
+  /** Upload refs (resolved to ImageAttachment[] / FileAttachment[] before the agent runs). */
+  uploads?: UploadRef[];
+  /** Per-turn permission mode override. */
+  permissionMode?: PermissionMode;
+  /** docs/125 — chat-native review turn marker. */
+  reviewFilePath?: string;
+}
+
+/**
+ * Convert an AgentDispatchOptions payload into a QueuedMessage. Both shapes
+ * carry the same per-turn fields; this helper exists so `dispatch`'s enqueue
+ * branch doesn't open-code the field-by-field copy (and silently miss new
+ * fields the next time the shape grows).
+ */
+export function toQueuedMessage(opts: AgentDispatchOptions): QueuedMessage {
+  const queued: QueuedMessage = { text: opts.text };
+  if (opts.activity !== undefined) queued.activity = opts.activity;
+  if (opts.images !== undefined) queued.images = opts.images;
+  if (opts.files !== undefined) queued.files = opts.files;
+  if (opts.uploads !== undefined) queued.uploads = opts.uploads;
+  if (opts.permissionMode !== undefined) queued.permissionMode = opts.permissionMode;
+  if (opts.reviewFilePath !== undefined) queued.reviewFilePath = opts.reviewFilePath;
+  return queued;
+}
+
+/**
  * Dependencies for server-initiated (system) turns. Injected once after the
- * runner is created. Without these, sendSystemMessage() falls back to enqueue.
+ * runner is created. Without these, dispatch() falls back to enqueue.
  */
 export interface SystemTurnDeps {
   /** Create an AgentProcess for the given agent ID. */
@@ -125,7 +167,7 @@ export interface SystemTurnDeps {
 }
 
 /**
- * Minimal host interface for the shared runSystemTurn() free function.
+ * Minimal host interface for the shared runDispatchedTurn() free function.
  * Both SessionRunner and ContainerSessionRunner satisfy this contract.
  */
 export interface SystemTurnHost {
@@ -145,21 +187,21 @@ export interface SystemTurnHost {
 }
 
 /**
- * Shared implementation for server-initiated agent turns. Used by both
+ * Shared implementation for dispatched agent turns (docs/150). Used by both
  * SessionRunner and ContainerSessionRunner to avoid code duplication.
  *
  * docs/149 — async because run-params assembly is async (reads system prompt,
- * MCP config, etc). Callers fire-and-forget via `void this._runSystemTurn(...)`
- * — `sendSystemMessage` still returns `void`.
+ * MCP config, etc). Callers fire-and-forget via `void this._runDispatchedTurn(...)`
+ * — `dispatch` still returns `void`.
  */
-export async function runSystemTurn(
+export async function runDispatchedTurn(
   host: SystemTurnHost,
   deps: SystemTurnDeps,
   agentId: AgentId,
-  text: string,
+  opts: AgentDispatchOptions,
   createAgent: (agentId: AgentId) => AgentProcess,
-  activity?: string,
 ): Promise<void> {
+  const { text, activity } = opts;
   const agent = createAgent(agentId);
   host.running = true;
   host.accumulatedText = "";
@@ -217,7 +259,12 @@ export async function runSystemTurn(
 
     let commitHash: string | null = null;
     try {
-      const summary = host.turnSummary.split("\n")[0]?.slice(0, 120) || "CI fix";
+      // docs/150 — fallback chain: prefer the assistant-derived summary (the
+      // first line of the agent's text output), then the dispatch's activity
+      // label, then a generic "agent turn" so the commit message is always
+      // meaningful instead of the legacy literal "CI fix".
+      const summary =
+        host.turnSummary.split("\n")[0]?.slice(0, 120) || activity || "agent turn";
       commitHash = await deps.autoCommit(host.sessionDir, summary);
       if (commitHash) {
         host.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
@@ -242,7 +289,17 @@ export async function runSystemTurn(
       const next = host.dequeue();
       if (next) {
         host.emitMessage({ type: "queue_updated", queue: host.getQueueSnapshot() });
-        void runSystemTurn(host, deps, agentId, next.text, createAgent);
+        // docs/150 — thread every QueuedMessage field through, not just `text`.
+        // The previous implementation silently dropped images / files / uploads /
+        // permissionMode / reviewFilePath / activity from a queued message at drain time.
+        const nextOpts: AgentDispatchOptions = { text: next.text };
+        if (next.activity !== undefined) nextOpts.activity = next.activity;
+        if (next.images !== undefined) nextOpts.images = next.images;
+        if (next.files !== undefined) nextOpts.files = next.files;
+        if (next.uploads !== undefined) nextOpts.uploads = next.uploads;
+        if (next.permissionMode !== undefined) nextOpts.permissionMode = next.permissionMode;
+        if (next.reviewFilePath !== undefined) nextOpts.reviewFilePath = next.reviewFilePath;
+        void runDispatchedTurn(host, deps, agentId, nextOpts, createAgent);
         return;
       }
     }
@@ -393,14 +450,25 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** Attach a ServiceManager for compose lifecycle events. Optional — not all runners have compose. */
   setServiceManager?(mgr: ServiceManager): void;
 
-  // System-initiated turns
+  // Dispatched turns (docs/150)
   /** Inject dependencies needed for server-initiated agent turns. */
   setSystemTurnDeps(deps: SystemTurnDeps): void;
-  /** Start a server-initiated agent turn (e.g., CI auto-fix).
-   *  If running, enqueues. If idle and deps are set, starts a turn directly.
-   *  Falls back to enqueue if deps aren't configured.
-   *  @param activity Optional activity label shown in the UI (e.g. "Auto-fixing CI..."). */
-  sendSystemMessage(text: string, activity?: string): void;
+  /**
+   * Dispatch a new agent turn. The runner's send-or-queue entry point —
+   * serves both server-internal callers (Fix CI, child-session spawn) and
+   * user-clicked buttons routed through the HTTP dispatch endpoint.
+   *
+   * Behavior:
+   *   - If running: enqueues the message (carrying every field, not just text).
+   *   - If idle and SystemTurnDeps are set: starts a turn directly.
+   *   - If idle and deps are not configured: falls back to enqueue; the next
+   *     WS-initiated turn drains it.
+   *
+   * docs/150 — `dispatch` is the only writer to `runner.running` /
+   * `runner.messageQueue` from a turn-start path; WS handlers delegate here
+   * rather than reimplementing the queueing rule inline.
+   */
+  dispatch(opts: AgentDispatchOptions): void;
 
   // Lifecycle
   onAgentFinished(): void;
@@ -590,26 +658,32 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._systemTurnDeps = deps;
   }
 
-  sendSystemMessage(text: string, activity?: string): void {
+  dispatch(opts: AgentDispatchOptions): void {
     if (this._isRunning) {
-      this.enqueue({ text });
+      // docs/150 — enqueue branch broadcasts message_queued via emitMessage
+      // so every attached viewer (and any other HTTP-originated caller in
+      // this session) sees the update. Previously the WS handler did this
+      // emit on a single socket.
+      const position = this.enqueue(toQueuedMessage(opts));
+      this.emitMessage({ type: "message_queued", text: opts.text, position });
       return;
     }
     if (!this._systemTurnDeps) {
-      // No deps — fall back to enqueue (will drain on next WS-initiated turn)
-      this.enqueue({ text });
+      // No deps — fall back to enqueue (will drain on next WS-initiated turn).
+      const position = this.enqueue(toQueuedMessage(opts));
+      this.emitMessage({ type: "message_queued", text: opts.text, position });
       return;
     }
-    void this._runSystemTurn(text, activity);
+    void this._runDispatchedTurn(opts);
   }
 
-  private async _runSystemTurn(text: string, activity?: string): Promise<void> {
+  private async _runDispatchedTurn(opts: AgentDispatchOptions): Promise<void> {
     const deps = this._systemTurnDeps!;
-    await runSystemTurn(this, deps, this._agentId, text, (agentId) => {
+    await runDispatchedTurn(this, deps, this._agentId, opts, (agentId) => {
       const agent = deps.agentFactory(agentId);
       this.setAgent(agent);
       return agent;
-    }, activity);
+    });
   }
 
   onAgentFinished(): void {
