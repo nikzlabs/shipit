@@ -24,6 +24,7 @@ const shortcutGroups: ShortcutGroup[] = [
     title: "Sessions",
     shortcuts: [
       { keys: ["Ctrl", "Shift", "O"], description: "New session" },
+      { keys: ["Ctrl", "Alt", "N"], description: "Quick capture" },
     ],
   },
   {

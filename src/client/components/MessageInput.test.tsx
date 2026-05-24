@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { MessageInput } from "./MessageInput.js";
 import type { PermissionMode } from "../../server/shared/types.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 afterEach(cleanup);
 
@@ -295,6 +296,47 @@ describe("MessageInput", () => {
       await waitForFocusRaf();
 
       expect(document.activeElement).toBe(document.body);
+    });
+
+    it("does not run the chat focusKey path for overlay surface changes", async () => {
+      const { rerender } = render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="overlay-A" surface="overlay" />);
+      (document.activeElement as HTMLElement | null)?.blur();
+      document.body.focus();
+
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="overlay-B" surface="overlay" />);
+      await waitForFocusRaf();
+
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      expect(document.activeElement).toBe(textarea);
+    });
+  });
+
+  describe("overlay surface", () => {
+    afterEach(() => {
+      useSessionStore.getState().setPrefillText(undefined);
+    });
+
+    it("does not consume chat prefill text", async () => {
+      useSessionStore.getState().setPrefillText("send this to chat");
+      render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="overlay" surface="overlay" />);
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
+      expect(textarea.value).toBe("");
+      expect(useSessionStore.getState().prefillText).toBe("send this to chat");
+    });
+
+    it("hides the context dial even when model info is present", () => {
+      render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          surface="overlay"
+          modelInfo={{ model: "Opus", contextWindowTokens: 200000 }}
+          contextTokens={1200}
+        />,
+      );
+      expect(screen.queryByTestId("context-dial")).not.toBeInTheDocument();
     });
   });
 

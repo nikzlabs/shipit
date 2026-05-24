@@ -7,6 +7,7 @@ import { usePreviewStore } from "../preview-store.js";
 import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
+import type { AgentId, SessionInfo } from "../../../server/shared/types.js";
 /**
  * Resets all session-specific state across all stores.
  * Replaces the three duplicated reset blocks in the old codebase.
@@ -76,4 +77,30 @@ export function fullResetAllStores() {
   usePrStore.getState().reset();
   useSettingsStore.getState().reset();
   useRepoStore.getState().reset();
+}
+
+export async function createHeadlessSession(opts: {
+  repoUrl: string;
+  initialPrompt: string;
+  branch?: string;
+  agent?: AgentId;
+  model?: string;
+}): Promise<SessionInfo> {
+  const res = await fetch("/api/sessions/headless", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(opts),
+  });
+  const body = await res.json().catch(() => ({})) as { error?: string; session?: SessionInfo };
+  if (!res.ok || !body.session) {
+    throw new Error(body.error ?? `Failed to start quick session (${res.status})`);
+  }
+  useSessionStore.getState().setSessions((sessions) => {
+    const without = sessions.filter((s) => s.id !== body.session!.id);
+    return [body.session!, ...without];
+  });
+  return body.session;
 }

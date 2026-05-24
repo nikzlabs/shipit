@@ -62,6 +62,7 @@ function playNotificationSound(): void {
 export function useNotification() {
   const hiddenRef = useRef(document.hidden);
   const titleChangedRef = useRef(false);
+  const batchRef = useRef<{ count: number; timer: ReturnType<typeof setTimeout> | null }>({ count: 0, timer: null });
 
   // Track tab visibility
   // eslint-disable-next-line no-restricted-syntax -- existing usage
@@ -80,7 +81,7 @@ export function useNotification() {
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
-  const notify = useCallback((body: string, context?: NotifyContext) => {
+  const emitNotification = useCallback((body: string, context?: NotifyContext) => {
     const { notifyOnFinish, soundOnFinish } = useSettingsStore.getState();
 
     // Sound plays regardless of tab visibility
@@ -105,6 +106,36 @@ export function useNotification() {
       };
     }
   }, []);
+
+  const notify = useCallback((body: string, context?: NotifyContext) => {
+    const batch = batchRef.current;
+    batch.count += 1;
+    if (batch.count === 1) {
+      batch.timer = setTimeout(() => {
+        batchRef.current = { count: 0, timer: null };
+      }, 3000);
+      emitNotification(body, context);
+      return;
+    }
+
+    if (batch.timer) clearTimeout(batch.timer);
+    const count = batch.count;
+    batch.timer = setTimeout(() => {
+      const { notifyOnFinish } = useSettingsStore.getState();
+      batchRef.current = { count: 0, timer: null };
+      if (hiddenRef.current) {
+        document.title = `\u25cf ${count} sessions need attention \u2014 ShipIt`;
+        titleChangedRef.current = true;
+        if (notifyOnFinish && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          const n = new Notification("ShipIt", { body: `${count} sessions finished` });
+          n.onclick = () => {
+            window.focus();
+            n.close();
+          };
+        }
+      }
+    }, 3000);
+  }, [emitNotification]);
 
   const requestPermission = useCallback(() => {
     if (
