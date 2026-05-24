@@ -111,6 +111,11 @@ interface UiState {
    * Defaults to `"containerized"` for every production deploy.
    */
   runtimeMode: RuntimeMode;
+  /**
+   * Runtime preview-subdomain policy from `/api/bootstrap`. `"always"` is for
+   * deployments with wildcard DNS on every access hostname.
+   */
+  previewSubdomains: "auto" | "always";
 
   // Actions
   setRightTab: (tab: RightTab) => void;
@@ -142,6 +147,7 @@ interface UiState {
   setSubscriptionLimits: (limits: SubscriptionLimitsMap) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
   setRuntimeMode: (mode: RuntimeMode) => void;
+  setPreviewSubdomains: (mode: "auto" | "always") => void;
   reset: () => void;
 
   // Async actions
@@ -175,6 +181,7 @@ const initialState = {
   processStartedAt: null as number | null,
   subscriptionLimits: {} as SubscriptionLimitsMap,
   runtimeMode: "containerized" as RuntimeMode,
+  previewSubdomains: "auto" as "auto" | "always",
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -242,6 +249,8 @@ export const useUiStore = create<UiState>((set) => ({
   setBootstrapLoaded: (bootstrapLoaded) => set({ bootstrapLoaded }),
 
   setRuntimeMode: (runtimeMode) => set({ runtimeMode }),
+
+  setPreviewSubdomains: (previewSubdomains) => set({ previewSubdomains }),
 
   reset: () =>
     set({

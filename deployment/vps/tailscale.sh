@@ -26,6 +26,7 @@ echo "  ShipIt — Tailscale private access"
 echo "==========================================="
 echo ""
 echo "This keeps the existing Cloudflare path working and adds tailnet-only access."
+echo "For subdomain previews, configure wildcard DNS for the hostname you use over Tailscale."
 echo ""
 
 if command -v tailscale &>/dev/null; then
@@ -77,4 +78,6 @@ echo "  Serve status:"
 tailscale serve status || true
 echo ""
 echo "Cloudflare tunnel access is unchanged."
+echo "For Tailscale subdomain previews, ensure wildcard DNS resolves"
+echo "{sessionId}--{port}.<your-tailscale-shipit-host> to this machine."
 echo ""

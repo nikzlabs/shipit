@@ -28,12 +28,28 @@ describe("buildSubdomainUrl", () => {
     expect(buildSubdomainUrl("session-a", 3000, "shipit.tailnet.ts.net")).toBeNull();
     expect(buildSubdomainUrl("session-a", 3000, "shipit.tailnet.beta.tailscale.net")).toBeNull();
   });
+
+  it("forces preview subdomains for MagicDNS and Tailscale HTTPS names when configured", () => {
+    expect(buildSubdomainUrl("session-a", 3000, "shipit:4123", "always")).toBe(
+      "http://session-a--3000.shipit:4123/",
+    );
+    expect(buildSubdomainUrl("session-a", 3000, "shipit.tailnet.ts.net", "always")).toBe(
+      "http://session-a--3000.shipit.tailnet.ts.net/",
+    );
+  });
 });
 
 describe("computePreviewUrl", () => {
   it("uses the path proxy when preview subdomains are not resolvable", () => {
     expect(computePreviewUrl("session-a", 3000, preview, "shipit:4123")).toEqual({
       url: "/preview/session-a/3000/",
+      containerMode: true,
+    });
+  });
+
+  it("uses forced preview subdomains when configured", () => {
+    expect(computePreviewUrl("session-a", 3000, preview, "shipit:4123", "always")).toEqual({
+      url: "http://session-a--3000.shipit:4123/",
       containerMode: true,
     });
   });

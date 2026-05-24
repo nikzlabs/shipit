@@ -128,6 +128,7 @@ export function PreviewFrame({
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
+  const previewSubdomainMode = useUiStore((s) => s.previewSubdomains);
 
   // ---- Device frame measurement ----
   // When a preset is active, we resize the iframe to the preset width/height
@@ -167,6 +168,7 @@ export function PreviewFrame({
     pollUrl,
     isContainerMode,
     apiHost,
+    previewSubdomainMode,
     createdSlotsRef,
     pollingRef,
     promoteSlot,
@@ -234,7 +236,7 @@ export function PreviewFrame({
   }, [iframeRefs]);
 
   const isLocalPreview = /^(localhost|127\.\d+\.\d+\.\d+|::1)(:|$)/i.test(apiHost);
-  const previewSubdomainUrl = isContainerMode && sessionId ? buildSubdomainUrl(sessionId, activePort, apiHost) : null;
+  const previewSubdomainUrl = isContainerMode && sessionId ? buildSubdomainUrl(sessionId, activePort, apiHost, previewSubdomainMode) : null;
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
