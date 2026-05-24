@@ -162,8 +162,7 @@ export class SessionWorker extends EventEmitter {
   }
 
   /**
-   * Generate an MCP config file for Playwright browser tools.
-   * Only generated for the Claude agent (Codex doesn't support MCP).
+   * Generate an MCP config file for Claude Code.
    * Returns the config file path, or undefined if not applicable.
    *
    * NOTE on cwd: `--output-dir` only governs auto-generated filenames. When the
@@ -241,6 +240,143 @@ export class SessionWorker extends EventEmitter {
     return configPath;
   }
 
+  private static readonly CODEX_MCP_BEGIN = "# <shipit-managed-mcp>";
+  private static readonly CODEX_MCP_END = "# </shipit-managed-mcp>";
+
+  private tomlString(value: string): string {
+    return JSON.stringify(value);
+  }
+
+  private tomlArray(values: string[]): string {
+    return `[${values.map((v) => this.tomlString(v)).join(", ")}]`;
+  }
+
+  private tomlInlineStringMap(values: Record<string, string>): string {
+    const entries = Object.entries(values).map(
+      ([key, value]) => `${this.tomlString(key)} = ${this.tomlString(value)}`,
+    );
+    return `{ ${entries.join(", ")} }`;
+  }
+
+  private replaceManagedCodexMcpBlock(existing: string, block: string): string {
+    const start = existing.indexOf(SessionWorker.CODEX_MCP_BEGIN);
+    const end = existing.indexOf(SessionWorker.CODEX_MCP_END);
+    const normalizedBlock = block.endsWith("\n") ? block : `${block}\n`;
+    if (start !== -1 && end !== -1 && end > start) {
+      const afterEnd = end + SessionWorker.CODEX_MCP_END.length;
+      return `${existing.slice(0, start).trimEnd()}\n\n${normalizedBlock}${existing.slice(afterEnd).trimStart()}`;
+    }
+    return `${existing.trimEnd()}${existing.trimEnd() ? "\n\n" : ""}${normalizedBlock}`;
+  }
+
+  /**
+   * docs/088/docs/125 — register ShipIt-managed MCP servers for Codex.
+   *
+   * Codex reads MCP server definitions from `~/.codex/config.toml` at
+   * app-server startup. Unlike Claude's per-turn temp JSON, this file persists
+   * next to Codex auth state, so we avoid writing resolved secrets into it for
+   * the common env/header cases:
+   *
+   * - stdio `env` entries become Codex `env_vars`, with the actual values
+   *   supplied to the spawned child process environment for this run.
+   * - HTTP `headers` entries become Codex `env_http_headers`, backed by
+   *   synthetic per-run environment variables.
+   *
+   * Resolved secrets embedded in `args` still have to be written literally
+   * because Codex has no argv env indirection.
+   */
+  private ensureCodexMcpConfig(params?: AgentRunParams): Record<string, string> {
+    const codexHome = process.env.CODEX_HOME || "/root/.codex";
+    const configPath = path.join(codexHome, "config.toml");
+    const runtimeEnv: Record<string, string> = {};
+    const lines: string[] = [
+      SessionWorker.CODEX_MCP_BEGIN,
+      "# ShipIt-managed MCP servers. This block is regenerated before each Codex turn.",
+    ];
+
+    const bridge = this.reviewBridgePaths();
+    if (bridge) {
+      lines.push(
+        "",
+        "# docs/125 — internal review tool bridge.",
+        "[mcp_servers.shipit-review]",
+        `command = ${this.tomlString(bridge.tsxBin)}`,
+        `args = ${this.tomlArray([bridge.bridgePath])}`,
+      );
+    }
+
+    for (const server of params?.mcpServers ?? []) {
+      const { resolved, missing } = resolveMcpServer(server);
+      if (!resolved) {
+        const reason = `missing secret: ${missing.join(", ")}`;
+        console.warn(`[mcp] dropping server "${server.name}": ${reason}`);
+        this.broadcastSSE({
+          type: "mcp_server_status",
+          data: { name: server.name, state: "failed", reason },
+        });
+        continue;
+      }
+
+      lines.push("", `[mcp_servers.${server.name}]`);
+      if (server.type === "stdio") {
+        const command = resolved.command;
+        if (typeof command === "string") {
+          lines.push(`command = ${this.tomlString(command)}`);
+        }
+        const args = resolved.args;
+        if (Array.isArray(args) && args.every((arg) => typeof arg === "string")) {
+          lines.push(`args = ${this.tomlArray(args)}`);
+        }
+        const env = resolved.env;
+        if (env && typeof env === "object" && !Array.isArray(env)) {
+          const envKeys: string[] = [];
+          for (const [key, value] of Object.entries(env)) {
+            if (typeof value !== "string") continue;
+            runtimeEnv[key] = value;
+            envKeys.push(key);
+          }
+          if (envKeys.length > 0) {
+            lines.push(`env_vars = ${this.tomlArray(envKeys)}`);
+          }
+        }
+      } else {
+        const url = resolved.url;
+        if (typeof url === "string") {
+          lines.push(`url = ${this.tomlString(url)}`);
+        }
+        const headers = resolved.headers;
+        if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+          const envHeaders: Record<string, string> = {};
+          let i = 0;
+          for (const [header, value] of Object.entries(headers)) {
+            if (typeof value !== "string") continue;
+            const envKey = `SHIPIT_MCP_${server.name.toUpperCase()}_HTTP_HEADER_${i++}`;
+            runtimeEnv[envKey] = value;
+            envHeaders[header] = envKey;
+          }
+          if (Object.keys(envHeaders).length > 0) {
+            lines.push(`env_http_headers = ${this.tomlInlineStringMap(envHeaders)}`);
+          }
+        }
+      }
+    }
+
+    lines.push("", SessionWorker.CODEX_MCP_END, "");
+
+    try {
+      let existing = "";
+      try {
+        existing = fs.readFileSync(configPath, "utf-8");
+      } catch { /* no config yet */ }
+      fs.mkdirSync(codexHome, { recursive: true });
+      fs.writeFileSync(configPath, this.replaceManagedCodexMcpBlock(existing, lines.join("\n")));
+    } catch (err) {
+      console.warn(`[mcp] failed to register codex MCP config: ${getErrorMessage(err)}`);
+    }
+
+    return runtimeEnv;
+  }
+
   /**
    * Resolve the absolute paths needed to launch the review MCP bridge
    * (docs/125): the `tsx` binary and `mcp-review-bridge.ts`, both relative to
@@ -258,40 +394,27 @@ export class SessionWorker extends EventEmitter {
   }
 
   /**
-   * docs/125 — register the review bridge for Codex. Unlike Claude (which takes
-   * a per-run `mcpConfigPath` JSON file), the Codex CLI loads MCP servers from
-   * `[mcp_servers.*]` in `config.toml` at app-server startup. We append a
-   * managed `shipit-review` block to the Codex config dir (`CODEX_HOME` or
-   * `/root/.codex`, the same dir that holds `auth.json`) before spawn. The same
-   * bridge serves both backends; it reads `WORKER_PORT` from the inherited env.
-   *
-   * Idempotent (skips if our block is already present) and non-clobbering
-   * (appends — a user's existing config and any docs/088 servers are left
-   * intact). Best-effort: a write failure is logged and never blocks the turn.
+   * docs/125 — compatibility wrapper for tests and older call sites that only
+   * need the review bridge. The shared Codex MCP writer owns the generated
+   * block and preserves any user-owned config outside that block.
    */
   private ensureCodexReviewMcpConfig(): void {
-    const bridge = this.reviewBridgePaths();
-    if (!bridge) return;
-    const codexHome = process.env.CODEX_HOME || "/root/.codex";
-    const configPath = path.join(codexHome, "config.toml");
+    this.ensureCodexMcpConfig();
+  }
+
+  private withTemporaryEnv<T>(values: Record<string, string>, fn: () => T): T {
+    const previous = new Map<string, string | undefined>();
+    for (const [key, value] of Object.entries(values)) {
+      previous.set(key, process.env[key]);
+      process.env[key] = value;
+    }
     try {
-      let existing = "";
-      try {
-        existing = fs.readFileSync(configPath, "utf-8");
-      } catch { /* no config yet */ }
-      if (existing.includes("[mcp_servers.shipit-review]")) return;
-      const block = [
-        "",
-        "# docs/125 — internal review tool bridge (managed by ShipIt; do not edit).",
-        "[mcp_servers.shipit-review]",
-        `command = ${JSON.stringify(bridge.tsxBin)}`,
-        `args = [${JSON.stringify(bridge.bridgePath)}]`,
-        "",
-      ].join("\n");
-      fs.mkdirSync(codexHome, { recursive: true });
-      fs.appendFileSync(configPath, block);
-    } catch (err) {
-      console.warn(`[mcp] failed to register codex review bridge: ${getErrorMessage(err)}`);
+      return fn();
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) Reflect.deleteProperty(process.env, key);
+        else process.env[key] = value;
+      }
     }
   }
 
@@ -314,15 +437,16 @@ export class SessionWorker extends EventEmitter {
         // Generate MCP config — built-in Playwright + user-configured servers.
         const mcpConfigPath = this.generateMcpConfig(agentId, params);
 
-        // docs/125 — Codex loads MCP servers from config.toml, not a per-run
-        // path, so register the review bridge there before spawn.
-        if (agentId === "codex") {
-          this.ensureCodexReviewMcpConfig();
-        }
+        // docs/088/docs/125 — Codex loads MCP servers from config.toml, not a
+        // per-run path, so register ShipIt-managed servers before spawn and
+        // provide any resolved secret values through the child environment.
+        const codexMcpEnv = agentId === "codex" ? this.ensureCodexMcpConfig(params) : {};
 
         this.agent = this.agentFactory(agentId);
         this.wireAgentEvents(this.agent);
-        this.agent.run({ ...params, cwd: this.workspaceDir, mcpConfigPath });
+        this.withTemporaryEnv(codexMcpEnv, () => {
+          this.agent?.run({ ...params, cwd: this.workspaceDir, mcpConfigPath });
+        });
 
         // Clean up MCP config when agent finishes
         if (mcpConfigPath) {
