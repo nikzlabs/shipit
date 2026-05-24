@@ -1,10 +1,11 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { WsClientMessage } from "../../shared/types.js";
-import type { ConnectionCtx, AppCtx } from "./types.js";
+import type { ConnectionCtx, AppCtx, RunnerCtx } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import { buildConversationReplay } from "../services/replay.js";
 import type { PersistedMessage } from "../chat-history.js";
+import { resolveRunner } from "./resolve-runner.js";
 
 type WsRewindToMessage = Extract<WsClientMessage, { type: "rewind_to_message" }>;
 
@@ -55,10 +56,15 @@ async function deleteUploadsFromMessages(messages: PersistedMessage[], uploadsDi
  * - rewind_code: git reset to before this message, keep chat
  * - rewind_all: git reset + truncate chat + reset agent
  */
-export async function handleRewindToMessage(ctx: ConnectionCtx & AppCtx, msg: WsRewindToMessage): Promise<void> {
+export async function handleRewindToMessage(ctx: ConnectionCtx & RunnerCtx & AppCtx, msg: WsRewindToMessage): Promise<void> {
   const sessionId = ctx.getActiveAppSessionId();
   if (!sessionId) {
     ctx.send({ type: "error", message: "No active session" });
+    return;
+  }
+  const runner = resolveRunner(ctx, sessionId);
+  if (runner?.running) {
+    ctx.send({ type: "error", message: "Cannot rewind while a turn is running." });
     return;
   }
 
@@ -93,6 +99,16 @@ export async function handleRewindToMessage(ctx: ConnectionCtx & AppCtx, msg: Ws
   }
 
   try {
+    const queuedCount = runner?.messageQueue.length ?? 0;
+    if (queuedCount > 0 && runner) {
+      runner.clearQueue();
+      runner.emitMessage({
+        type: "system_notice",
+        sessionId,
+        message: `Cleared ${queuedCount} queued message${queuedCount === 1 ? "" : "s"} as part of rewind.`,
+        level: "info",
+      });
+    }
     switch (mode) {
       case "fork_chat": {
         // Truncate chat + reset agent, no git changes
@@ -118,6 +134,12 @@ export async function handleRewindToMessage(ctx: ConnectionCtx & AppCtx, msg: Ws
         }
         const git = ctx.getActiveGitManager();
         await git.rollback(rollbackHash);
+        ctx.chatHistoryManager.markRolledBackFromIndex(sessionId, messageIndex, rollbackHash);
+        const replay = buildConversationReplay(allMessages);
+        if (replay) {
+          ctx.sessionManager.setConversationReplay(sessionId, replay);
+        }
+        ctx.sessionManager.clearAgentSessionId(sessionId);
         ctx.send({ type: "rollback_complete", messageIndex, mode: "code", parentCommitHash: rollbackHash });
         break;
       }

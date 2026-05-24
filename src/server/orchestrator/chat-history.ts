@@ -40,6 +40,11 @@ export interface PersistedMessage {
   parentCommitHash?: string;
   /** Upload paths consumed by this message (for hydration of pending vs sent state). */
   uploadPaths?: string[];
+  notice?: boolean;
+  noticeLevel?: "info" | "warn";
+  rolledBack?: boolean;
+  forkChild?: { childSessionId: string; title: string; branch: string };
+  codeRollbackHash?: string;
   /**
    * Events emitted by subagents (Claude's Task tool) whose parent Task tool is
    * in this message's `toolUse`. Stored as a flat ordered list keyed by
@@ -63,6 +68,11 @@ interface MessageRow {
   in_progress: number;
   tool_results: string | null;
   upload_paths: string | null;
+  rolled_back: number;
+  notice: number;
+  notice_level: string | null;
+  fork_child: string | null;
+  code_rollback_hash: string | null;
   /**
    * Legacy column — older rows may carry a serialized per-turn usage record
    * here. The canonical per-turn series is now owned by `UsageManager`
@@ -76,15 +86,16 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash)
 `;
 
 const UPDATE_SQL = `
   UPDATE messages SET role=@role, content=@content, tool_use=@tool_use, images=@images,
     files=@files, is_error=@is_error, commit_hash=@commit_hash, parent_commit_hash=@parent_commit_hash,
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
-    turn_usage=@turn_usage, subagent_events=@subagent_events
+    turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
+    notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash
   WHERE id = @id
 `;
 
@@ -127,6 +138,11 @@ export class ChatHistoryManager {
       // per-turn series lives in `usage_turns`.
       turn_usage: null,
       subagent_events: msg.subagentEvents ? JSON.stringify(msg.subagentEvents) : null,
+      rolled_back: msg.rolledBack ? 1 : 0,
+      notice: msg.notice ? 1 : 0,
+      notice_level: msg.noticeLevel ?? null,
+      fork_child: msg.forkChild ? JSON.stringify(msg.forkChild) : null,
+      code_rollback_hash: msg.codeRollbackHash ?? null,
     };
   }
 
@@ -146,12 +162,17 @@ export class ChatHistoryManager {
     if (row.upload_paths) msg.uploadPaths = JSON.parse(row.upload_paths) as string[];
     // `turn_usage` column intentionally ignored — see `PersistedMessage`.
     if (row.subagent_events) msg.subagentEvents = JSON.parse(row.subagent_events) as PersistedMessage["subagentEvents"];
+    if (row.notice) msg.notice = true;
+    if (row.notice_level === "info" || row.notice_level === "warn") msg.noticeLevel = row.notice_level;
+    if (row.rolled_back) msg.rolledBack = true;
+    if (row.fork_child) msg.forkChild = JSON.parse(row.fork_child) as PersistedMessage["forkChild"];
+    if (row.code_rollback_hash) msg.codeRollbackHash = row.code_rollback_hash;
     return msg;
   }
 
   /** Append a message to a session's history. */
-  append(sessionId: string, message: PersistedMessage): void {
-    this.stmtInsert.run(this.toRow(sessionId, message));
+  append(sessionId: string, message: PersistedMessage): number {
+    return this.stmtInsert.run(this.toRow(sessionId, message)).lastInsertRowid as number;
   }
 
   /** Load all messages for a session. Returns [] if none exist. */
@@ -209,6 +230,34 @@ export class ChatHistoryManager {
         this.stmtInsert.run(this.toRow(sessionId, msg));
       }
     })();
+  }
+
+  markRolledBackFromIndex(sessionId: string, gapPosition: number, codeRollbackHash: string): number[] {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      const targetRows = rows.slice(gapPosition);
+      if (targetRows.length === 0) return [];
+
+      const firstId = targetRows[0].id;
+      this.db.prepare(`
+        UPDATE messages
+           SET rolled_back = 1,
+               code_rollback_hash = CASE WHEN id = ? THEN ? ELSE code_rollback_hash END
+         WHERE session_id = ? AND id >= ?
+      `).run(firstId, codeRollbackHash, sessionId, firstId);
+      return targetRows.map((r) => r.id);
+    })();
+  }
+
+  clearRolledBack(sessionId: string, messageIds: number[]): void {
+    if (messageIds.length === 0) return;
+    const placeholders = messageIds.map(() => "?").join(",");
+    this.db.prepare(`
+      UPDATE messages
+         SET rolled_back = 0,
+             code_rollback_hash = NULL
+       WHERE session_id = ? AND id IN (${placeholders})
+    `).run(sessionId, ...messageIds);
   }
 
   /**

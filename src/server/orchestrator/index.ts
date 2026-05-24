@@ -1293,6 +1293,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           case "rollback_code": return rollbackHandlers.handleRollbackCode(ctx, msg);
           case "rollback_code_and_chat": return rollbackHandlers.handleRollbackCodeAndChat(ctx, msg);
           case "fork_session_from_message": return rollbackHandlers.handleForkSessionFromMessage(ctx, msg);
+          case "rewind_at_gap": return rollbackHandlers.handleRewindAtGap(ctx, msg);
           case "rewind_to_message": return rewindHandlers.handleRewindToMessage(ctx, msg);
           case "cancel_queued_message": { miscHandlers.handleCancelQueuedMessage(ctx, msg); return; }
           case "interrupt_agent": { miscHandlers.handleInterruptAgent(ctx); return; }

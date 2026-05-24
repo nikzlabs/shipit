@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { PermissionMode } from "./attachment-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -729,16 +729,49 @@ export interface WsRollbackComplete {
 }
 
 /** Server → Client: rewind completed — remove messages after the rewind point. */
-export interface WsRewindComplete {
-  type: "rewind_complete";
-  messageIndex: number;
-}
+export type WsRewindComplete =
+  | {
+      type: "rewind_complete";
+      messageIndex: number;
+    }
+  | {
+      type: "rewind_complete";
+      messageIndex?: number;
+      gapPosition: number;
+      action: "chat";
+      droppedMessageCount: number;
+    }
+  | {
+      type: "rewind_complete";
+      messageIndex?: number;
+      gapPosition: number;
+      action: "code";
+      commitHash: string;
+    }
+  | {
+      type: "rewind_complete";
+      messageIndex?: number;
+      gapPosition: number;
+      action: "both";
+      droppedMessageCount: number;
+      commitHash: string;
+    };
 
 /** Server → Client: a new session was forked from a rollback point. */
 export interface WsSessionForked {
   type: "session_forked";
-  sessionId: string;
-  sessionName: string;
+  parentSessionId: string;
+  childSessionId: string;
+  title: string;
+  branch: string;
+  sessionId?: string;
+  sessionName?: string;
+}
+
+export interface WsForkBreadcrumb {
+  type: "fork_breadcrumb";
+  parentSessionId: string;
+  message: WsChatHistoryMessage;
 }
 
 /**
@@ -889,6 +922,7 @@ export type WsServerMessage =
   | WsRollbackComplete
   | WsRewindComplete
   | WsSessionForked
+  | WsForkBreadcrumb
   | WsSessionSpawned
   | WsSessionSpawnFailed
   | WsServiceStatus

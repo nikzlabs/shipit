@@ -13,6 +13,7 @@ import { handleError } from "./error.js";
 import { handleFileTree } from "./file-tree.js";
 import { handleFilesChanged } from "./files-changed.js";
 import { handleFullResetComplete } from "./full-reset-complete.js";
+import { handleForkBreadcrumb } from "./fork-breadcrumb.js";
 import { handleGithubStatus } from "./github-status.js";
 import { handleGitCommitted } from "./git-committed.js";
 import { handleGitIdentityRequired } from "./git-identity-required.js";
@@ -96,6 +97,7 @@ export const messageHandlers: MessageHandlerMap = {
   file_tree: handleFileTree,
   files_changed: handleFilesChanged,
   full_reset_complete: handleFullResetComplete,
+  fork_breadcrumb: handleForkBreadcrumb,
   git_committed: handleGitCommitted,
   git_identity_required: handleGitIdentityRequired,
   git_log: handleGitLog,
