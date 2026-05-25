@@ -94,6 +94,14 @@ description: Connect user MCP servers (Linear, Notion, Sentry, etc.) to the inne
 > being persisted in `config.toml`; secrets embedded in command arguments are
 > the one unavoidable literal case because Codex has no argv indirection.
 
+> **OAuth 401 recovery landed.** The Settings "Test" action treats a hosted
+> MCP `401` / `invalid_token` response as an access-token rejection, not as a
+> final server failure. If the tested config references `$platform:<source>`,
+> the route now force-refreshes that OAuth source, pushes the refreshed
+> `MCP_PLATFORM_*` env into the active session worker, and retries the MCP
+> connectivity test once. If refresh is unavailable or the retry still 401s,
+> the test result tells the user to reconnect the provider.
+
 ## Overview
 
 Allow users to connect their own MCP servers (e.g., Linear, Notion, Sentry, Datadog) to the Claude agent running inside session containers. This gives the inner agent access to external tools and data sources beyond the built-in filesystem/browser tools.
@@ -667,7 +675,7 @@ Covers ~80% of MCP servers. Users paste API keys or pre-obtained tokens. Builds 
 - [x] `AgentRunParams.mcpServers` field added; populated in `agent-execution.ts` with enabled (unresolved) configs; carried whole through `proxy-agent-process.ts` / `POST /agent/start`; `claude-adapter.ts` derives `mcpServerNames` for the allowlist.
 - [x] Settings UI (`McpServerSettings.tsx`, new "MCP Servers" tab in `Settings.tsx`) for add / edit / remove / toggle / test, with per-server status badges driven by the `mcp_server_status` WS message.
 - [x] Client store (`mcp-store.ts`); `mcp_server_status` WS message type added and relayed from the worker SSE through `container-session-runner.ts` → `useMessageHandler.ts`.
-- [x] **Real liveness signal from the Claude CLI init event.** `ClaudeSystemEvent` extended with `mcp_servers?: Array<{ name; status }>`. `ClaudeAdapter` parses this and emits an `mcp_status` event on a new `AgentProcessEvents.mcp_status` channel; `SessionWorker.wireAgentEvents()` broadcasts each entry as an `mcp_server_status` SSE event. The speculative `loaded` emit in `generateMcpConfig()` is gone — that path now only emits `failed` for missing secrets (a definitive pre-spawn failure). `mapCliMcpStatus()` maps `connected→loaded`, `needs-auth→failed("authentication required")`, `failed→failed("connection failed")`, unknown→`failed("unknown status: ...")` so we don't silently swallow a new CLI signal. Codex deliberately never emits `mcp_status` — it doesn't support MCP.
+- [x] **Real liveness signal from the Claude CLI init event.** `ClaudeSystemEvent` extended with `mcp_servers?: Array<{ name; status }>`. `ClaudeAdapter` parses this and emits an `mcp_status` event on a new `AgentProcessEvents.mcp_status` channel; `SessionWorker.wireAgentEvents()` broadcasts each entry as an `mcp_server_status` SSE event. The speculative `loaded` emit in `generateMcpConfig()` is gone — that path now only emits `failed` for missing secrets (a definitive pre-spawn failure). `mapCliMcpStatus()` maps `connected→loaded`, `needs-auth→failed("authentication required")`, `failed→failed("connection failed")`, unknown→`failed("unknown status: ...")` so we don't silently swallow a new CLI signal. Codex writes MCP config before `app-server` start but still does not emit per-server liveness because the app-server does not surface an equivalent init-status feed.
 - [x] **Mid-session `crashed` detection.** `agent-listeners.ts` records every
   tool_use it sees within a turn (id → name, top-level and subagent) and
   on `agent_tool_result` with `is_error: true` extracts the parent tool's

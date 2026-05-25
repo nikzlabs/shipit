@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Fastify from "fastify";
 import { buildApp } from "../index.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
@@ -27,6 +28,10 @@ import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig } from "../git-config.js";
 import { MAX_ENABLED_MCP_SERVERS } from "../services/mcp.js";
+import {
+  extractPlatformSourcesFromMcpConfig,
+  registerMcpRoutes,
+} from "../api-routes-mcp.js";
 
 describe("Integration: /api/mcp-servers routes (docs/088)", () => {
   let app: FastifyInstance;
@@ -338,5 +343,84 @@ describe("Integration: /api/mcp-servers routes (docs/088)", () => {
       url: "/api/mcp-servers/nonexistent/test",
     });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("MCP route OAuth refresh retry", () => {
+  it("extracts platform sources from nested MCP config placeholders", () => {
+    expect(
+      extractPlatformSourcesFromMcpConfig({
+        headers: { Authorization: "Bearer $platform:linear_oauth" },
+        args: ["--token=$platform:notion_oauth"],
+      }),
+    ).toEqual(["linear_oauth", "notion_oauth"]);
+  });
+
+  it("refreshes a rejected OAuth token, pushes agent env, and retries the test once", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-mcp-refresh-route-"));
+    const credentialStore = new CredentialStore(tmpDir);
+    credentialStore.setMcpServer("linear", {
+      name: "linear",
+      type: "http",
+      url: "https://mcp.linear.app/mcp",
+      headers: { Authorization: "Bearer $platform:linear_oauth" },
+      enabled: true,
+    });
+    credentialStore.setMcpOAuthTokens("linear_oauth", {
+      accessToken: "old_access",
+      refreshToken: "refresh_1",
+      clientId: "client_1",
+    });
+
+    const pushed: Record<string, string>[] = [];
+    let attempts = 0;
+    const runner = {
+      serviceManager: null,
+      async tryPushAgentSecrets(values: Record<string, string>) {
+        pushed.push(values);
+      },
+      async proxyMcpTest() {
+        attempts += 1;
+        if (attempts === 1) return { ok: false, error: "HTTP 401 Unauthorized" };
+        return pushed.at(-1)?.MCP_PLATFORM_LINEAR_OAUTH === "new_access"
+          ? { ok: true, tools: [{ name: "linear_search" }] }
+          : { ok: false, error: "still stale" };
+      },
+    };
+    const runnerRegistry = {
+      ids: () => ["s1"],
+      get: () => runner,
+    };
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      const params = new URLSearchParams(body);
+      expect(params.get("grant_type")).toBe("refresh_token");
+      expect(params.get("refresh_token")).toBe("refresh_1");
+      return new Response(
+        JSON.stringify({ access_token: "new_access", token_type: "Bearer" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const app = Fastify({ logger: false });
+    await registerMcpRoutes(app, {
+      credentialStore,
+      runnerRegistry: runnerRegistry as never,
+      serviceManagers: new Map(),
+      oauthFetchImpl: fetchImpl,
+    });
+
+    try {
+      const res = await app.inject({ method: "POST", url: "/api/mcp-servers/linear/test" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true, tools: [{ name: "linear_search" }] });
+      expect(attempts).toBe(2);
+      expect(credentialStore.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("new_access");
+      expect(pushed).toHaveLength(1);
+      expect(pushed[0].MCP_PLATFORM_LINEAR_OAUTH).toBe("new_access");
+    } finally {
+      await app.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

@@ -28,7 +28,9 @@ import {
   listMcpOAuthProviders,
   disconnectMcpOAuth,
   InMemoryOAuthStateStore,
+  refreshOAuthTokens,
 } from "./services/index.js";
+import { selectAgentEnvForPush } from "./session-agent-env.js";
 import { getErrorMessage } from "./validation.js";
 
 export interface McpRoutesDeps {
@@ -58,11 +60,52 @@ interface McpTestCapableRunner {
   proxyMcpTest(config: unknown): Promise<unknown>;
 }
 
+interface AgentSecretsCapableRunner {
+  serviceManager?: Pick<ServiceManager, "getSecretsSnapshot"> | null;
+  tryPushAgentSecrets(values: Record<string, string>): Promise<void>;
+}
+
 function isMcpTestCapable(runner: unknown): runner is McpTestCapableRunner {
   return (
     !!runner &&
     typeof (runner as McpTestCapableRunner).proxyMcpTest === "function"
   );
+}
+
+function isAgentSecretsCapable(runner: unknown): runner is AgentSecretsCapableRunner {
+  return (
+    !!runner &&
+    typeof (runner as AgentSecretsCapableRunner).tryPushAgentSecrets === "function"
+  );
+}
+
+export function extractPlatformSourcesFromMcpConfig(config: unknown): string[] {
+  const found = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (typeof value === "string") {
+      const re = /\$platform:([a-z][a-z0-9_]*)/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(value))) found.add(m[1]);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const item of Object.values(value as Record<string, unknown>)) visit(item);
+    }
+  };
+  visit(config);
+  return [...found];
+}
+
+function isMcpAuthFailure(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false;
+  const ok = (result as { ok?: unknown }).ok;
+  const error = (result as { error?: unknown }).error;
+  if (ok !== false || typeof error !== "string") return false;
+  return /\b401\b/.test(error) || /invalid[_ -]?token|unauthori[sz]ed/i.test(error);
 }
 
 /**
@@ -79,6 +122,21 @@ function refreshAgentEnvForAllSessions(serviceManagers: Map<string, ServiceManag
       console.warn(`[mcp] agent-env refresh failed for session ${sessionId}:`, getErrorMessage(err));
     });
   }
+}
+
+async function pushAgentEnvToRunner(
+  runner: unknown,
+  deps: {
+    credentialStore: Pick<CredentialStore, "getAllAgentEnv" | "getAllMcpOAuthTokens">;
+  },
+): Promise<void> {
+  if (!isAgentSecretsCapable(runner)) return;
+  await runner.tryPushAgentSecrets(
+    selectAgentEnvForPush({
+      serviceManager: runner.serviceManager ?? null,
+      credentialStore: deps.credentialStore,
+    }),
+  );
 }
 
 export async function registerMcpRoutes(
@@ -187,7 +245,46 @@ export async function registerMcpRoutes(
       }
 
       try {
-        return await runner.proxyMcpTest(server);
+        const first = await runner.proxyMcpTest(server);
+        if (!isMcpAuthFailure(first)) return first;
+
+        const platformSources = extractPlatformSourcesFromMcpConfig(server);
+        if (platformSources.length === 0) return first;
+
+        const refreshed: string[] = [];
+        const failed: string[] = [];
+        for (const source of platformSources) {
+          try {
+            await refreshOAuthTokens({
+              source,
+              credentialStore,
+              ...(oauthFetchImpl !== undefined ? { fetchImpl: oauthFetchImpl } : {}),
+            });
+            refreshed.push(source);
+          } catch (err) {
+            failed.push(`${source}: ${getErrorMessage(err)}`);
+          }
+        }
+
+        if (refreshed.length === 0) {
+          return {
+            ok: false,
+            error:
+              `MCP OAuth token was rejected and refresh failed. ` +
+              `Reconnect this provider in Settings. ${failed.join("; ")}`,
+          };
+        }
+
+        refreshAgentEnvForAllSessions(serviceManagers);
+        await pushAgentEnvToRunner(runner, { credentialStore });
+        const retry = await runner.proxyMcpTest(server);
+        if (!isMcpAuthFailure(retry)) return retry;
+        return {
+          ok: false,
+          error:
+            `MCP OAuth token was rejected even after refreshing ` +
+            `${refreshed.join(", ")}. Reconnect this provider in Settings.`,
+        };
       } catch (err) {
         return { ok: false, error: getErrorMessage(err) };
       }
