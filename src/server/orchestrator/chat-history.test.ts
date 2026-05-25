@@ -161,16 +161,16 @@ describe("ChatHistoryManager", () => {
   });
 
   describe("updateLastMessage", () => {
-    it("merges fields into the last message", () => {
+    it("merges fields into the last finalized message", () => {
       const mgr = new ChatHistoryManager(dbManager);
-      mgr.append("sess-1", { role: "assistant", text: "Working...", inProgress: true });
+      mgr.append("sess-1", { role: "assistant", text: "Done" });
 
-      mgr.updateLastMessage("sess-1", { inProgress: false, commitHash: "abc123" });
+      const updatedId = mgr.updateLastMessage("sess-1", { commitHash: "abc123" });
 
+      expect(updatedId).not.toBeNull();
       const messages = mgr.load("sess-1");
       expect(messages).toHaveLength(1);
-      expect(messages[0].text).toBe("Working...");
-      expect(messages[0].inProgress).toBeUndefined(); // false → omitted by fromRow
+      expect(messages[0].text).toBe("Done");
       expect(messages[0].commitHash).toBe("abc123");
     });
 
@@ -187,9 +187,32 @@ describe("ChatHistoryManager", () => {
       expect(messages[1].text).toBe("Updated hi");
     });
 
+    it("skips in-progress rows so postTurnCommit doesn't stamp commit info on a stale next-turn row", () => {
+      // Regression: the previous behavior selected the absolute last row by id.
+      // If the next turn had already inserted in_progress=1 rows when
+      // postTurnCommit ran, the commit_hash got stamped on one of those
+      // transient rows — and the next replaceInProgress wiped it. The result
+      // was an "0 files" rewind preview for a turn that genuinely committed.
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "first" });
+      mgr.append("sess-1", { role: "assistant", text: "finalized answer" });
+      // Next turn has begun and persisted an in-progress placeholder.
+      mgr.append("sess-1", { role: "assistant", text: "next turn streaming...", inProgress: true });
+
+      const updatedId = mgr.updateLastMessage("sess-1", { commitHash: "deadbeef" });
+
+      expect(updatedId).not.toBeNull();
+      const messages = mgr.load("sess-1");
+      const finalized = messages.find((m) => m.text === "finalized answer");
+      const transient = messages.find((m) => m.text === "next turn streaming...");
+      expect(finalized?.commitHash).toBe("deadbeef");
+      expect(transient?.commitHash).toBeUndefined();
+    });
+
     it("is a no-op for an empty session", () => {
       const mgr = new ChatHistoryManager(dbManager);
-      mgr.updateLastMessage("nonexistent", { text: "ghost" });
+      const id = mgr.updateLastMessage("nonexistent", { text: "ghost" });
+      expect(id).toBeNull();
       expect(mgr.load("nonexistent")).toEqual([]);
     });
   });

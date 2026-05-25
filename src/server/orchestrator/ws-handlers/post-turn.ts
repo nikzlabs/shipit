@@ -42,17 +42,21 @@ export async function postTurnCommit(
     ctx.scheduleAutoPush(git, opts.sessionId);
 
     if (opts.sessionId && parentHash) {
-      ctx.chatHistoryManager.updateLastMessage(opts.sessionId, {
+      const updatedId = ctx.chatHistoryManager.updateLastMessage(opts.sessionId, {
         commitHash,
         parentCommitHash: parentHash,
       });
-      const messages = ctx.chatHistoryManager.load(opts.sessionId);
-      opts.emit({
-        type: "commit_linked",
-        messageIndex: messages.length - 1,
-        commitHash,
-        parentCommitHash: parentHash,
-      });
+      if (updatedId !== null) {
+        const messageIndex = ctx.chatHistoryManager.indexOfMessageId(opts.sessionId, updatedId);
+        if (messageIndex >= 0) {
+          opts.emit({
+            type: "commit_linked",
+            messageIndex,
+            commitHash,
+            parentCommitHash: parentHash,
+          });
+        }
+      }
     }
     return commitHash;
   });

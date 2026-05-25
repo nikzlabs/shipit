@@ -302,6 +302,67 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
     client.close();
   });
 
+  it("dispatched turn links the auto-commit to the last chat message", async () => {
+    // Regression: runDispatchedTurn used to run `autoCommit` but never write
+    // `commit_hash` / `parent_commit_hash` back onto the chat message, so
+    // `findCommitBeforeGap` returned null and the Rewind dropdown always
+    // reported "0 files" for sessions whose turns came through dispatch
+    // (queued WS turns, HTTP /agent/dispatch, Fix CI, child sessions).
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    const workspaceDir = path.join(tmpDir, "sessions", client.sessionId, "workspace");
+    const initialHead = await new GitManager(workspaceDir).getHeadHash();
+    expect(initialHead).toBeTruthy();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${client.sessionId}/agent/dispatch`,
+      payload: { text: "Make a change" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const claude = await waitForClaude(() => lastClaude);
+
+    claude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "agent-session-link",
+    });
+    await client.receiveType("session_started");
+
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Done — patched it." }] },
+    });
+    claude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "agent-session-link",
+      duration_ms: 5,
+    });
+
+    // Simulate the agent's file change so post-turn autoCommit has something
+    // to commit. FakeClaudeProcess doesn't actually edit files.
+    fs.writeFileSync(path.join(workspaceDir, "patched.txt"), "patched\n");
+    claude.emit("done", 0);
+
+    // commit_linked fires from dispatched-turn after the autoCommit writes
+    // commit_hash / parent_commit_hash onto the last assistant message.
+    const linked = await drainUntil(client, (m) => m.type === "commit_linked");
+    expect(linked).toMatchObject({
+      type: "commit_linked",
+      parentCommitHash: initialHead,
+    });
+
+    const history = chatHistoryManager.load(client.sessionId);
+    const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+    expect(lastAssistant?.commitHash).toBeTruthy();
+    expect(lastAssistant?.parentCommitHash).toBe(initialHead);
+
+    client.close();
+  });
+
   it("queued dispatch threads activity through the drain (docs/150)", async () => {
     // The recursive drain at runDispatchedTurn:204 previously dropped every
     // QueuedMessage field except `text`. This test exercises the drain path
