@@ -29,6 +29,7 @@ Where ShipIt should go further:
 3. **Per-check failure breakdown** visible in the card (not just "CI failed")
 4. **Merge method selection** (squash/merge/rebase, not squash-only)
 5. **Post-merge archive** — session auto-archived, context preserved for future reuse
+6. **Post-merge preview cleanup** — merged-session preview iframes are pruned once they are no longer the active session, so completed PRs do not keep background previews alive
 
 ## Problem
 
@@ -168,7 +169,11 @@ Both toggles are per-session and persist until the session ends or the PR is mer
 
 The merge button has a dropdown caret for merge method (merge commit, squash, rebase). Defaults to squash (matching Desktop). Persists the user's last choice server-side (needed for auto-merge without a client connected). If CI is pending, clicking Merge enables GitHub native auto-merge. This goes beyond Desktop, which only supports squash.
 
-**6. `PrStatusBar` is removed.**
+**6. Merged-session preview iframes are pruned.**
+
+`PreviewFrame` keeps ordinary session iframes mounted in an iframe pool so switching between active sessions does not reload the app preview. A merged PR is terminal, so `App.tsx` derives merged session IDs from `pr-store` and passes them into `PreviewFrame`; the active merged preview remains visible while the user is on that session, but once the user switches away its background iframe slot is removed from the pool.
+
+**7. `PrStatusBar` is removed.**
 
 With the inline cards handling the full lifecycle, `PrStatusBar` is removed entirely. Its functionality (branch display, CI status, merge button, view PR link) moves into the inline card.
 
