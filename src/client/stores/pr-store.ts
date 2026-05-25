@@ -94,6 +94,8 @@ interface PrState {
   statusBySession: Record<string, PrStatusSummary>;
   /** sessionId → PrCardState for inline card rendering. */
   cardBySession: Record<string, PrCardState>;
+  /** sessionId → auto-merge preference/state, available before a PR card exists. */
+  autoMergeBySession: Record<string, NonNullable<PrCardState["autoMerge"]>>;
 
   // Repo import search (used by home page repo picker)
   importSearchResults: ImportSearchResult[];
@@ -172,6 +174,7 @@ interface PrState {
 const initialState = {
   statusBySession: {} as Record<string, PrStatusSummary>,
   cardBySession: {} as Record<string, PrCardState>,
+  autoMergeBySession: {} as Record<string, NonNullable<PrCardState["autoMerge"]>>,
   importSearchResults: [] as ImportSearchResult[],
 };
 
@@ -184,6 +187,7 @@ export const usePrStore = create<PrState>((set, get) => ({
     set((state) => {
       const nextStatus = { ...state.statusBySession };
       const nextCards = { ...state.cardBySession };
+      const nextAutoMerge = { ...state.autoMergeBySession };
 
       if (removals) {
         for (const sessionId of removals) {
@@ -191,11 +195,16 @@ export const usePrStore = create<PrState>((set, get) => ({
           delete nextStatus[sessionId];
           // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
           delete nextCards[sessionId];
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete nextAutoMerge[sessionId];
         }
       }
 
       for (const update of updates) {
         nextStatus[update.sessionId] = update;
+        if (update.autoMerge) {
+          nextAutoMerge[update.sessionId] = update.autoMerge;
+        }
 
         // Update the inline card to reflect poller data
         const existing = nextCards[update.sessionId];
@@ -216,6 +225,7 @@ export const usePrStore = create<PrState>((set, get) => ({
               deletions: update.deletions,
               files: update.files,
             },
+            autoMerge: update.autoMerge ?? nextAutoMerge[update.sessionId],
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
@@ -239,7 +249,7 @@ export const usePrStore = create<PrState>((set, get) => ({
             },
             checks: update.checks,
             autoFix: update.autoFix,
-            autoMerge: update.autoMerge,
+            autoMerge: update.autoMerge ?? nextAutoMerge[update.sessionId],
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
@@ -247,7 +257,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         }
       }
 
-      return { statusBySession: nextStatus, cardBySession: nextCards };
+      return { statusBySession: nextStatus, cardBySession: nextCards, autoMergeBySession: nextAutoMerge };
     });
   },
 
@@ -259,7 +269,18 @@ export const usePrStore = create<PrState>((set, get) => ({
           card.phase !== "merged" && card.phase !== "closed") {
         return state;
       }
-      return { cardBySession: { ...state.cardBySession, [sessionId]: card } };
+      return {
+        autoMergeBySession: card.autoMerge
+          ? { ...state.autoMergeBySession, [sessionId]: card.autoMerge }
+          : state.autoMergeBySession,
+        cardBySession: {
+          ...state.cardBySession,
+          [sessionId]: {
+            ...card,
+            autoMerge: card.autoMerge ?? existing?.autoMerge ?? state.autoMergeBySession[sessionId],
+          },
+        },
+      };
     });
   },
 
@@ -652,8 +673,28 @@ export const usePrStore = create<PrState>((set, get) => ({
       if (!res.ok) {
         const data = await res.json() as { error?: string };
         console.error("[pr-store] Auto-merge toggle failed:", data.error);
+        return;
       }
-      // State updates come from SSE
+      const data = await res.json() as { enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean };
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        const autoMerge = {
+          ...state.autoMergeBySession[sessionId],
+          enabled: data.enabled,
+          mergeMethod: data.mergeMethod,
+          managed: data.managed,
+        };
+        return {
+          autoMergeBySession: {
+            ...state.autoMergeBySession,
+            [sessionId]: autoMerge,
+          },
+          cardBySession: {
+            ...state.cardBySession,
+            ...(existing ? { [sessionId]: { ...existing, autoMerge } } : {}),
+          },
+        };
+      });
     } catch (err) {
       console.error("[pr-store] Auto-merge toggle failed:", err);
     }

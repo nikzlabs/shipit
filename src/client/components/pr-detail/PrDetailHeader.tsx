@@ -13,7 +13,6 @@ import {
   GitMergeIcon,
   GitBranchIcon,
   ArrowSquareOutIcon,
-  DotsThreeVerticalIcon,
   PencilSimpleIcon,
   CheckIcon,
   XIcon,
@@ -21,6 +20,7 @@ import {
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore, type PrCardState } from "../../stores/pr-store.js";
 import { Banner } from "../ui/banner.js";
+import { OverflowMenu } from "../ui/overflow-menu.js";
 
 function StateBadge({ phase }: { phase: PrCardState["phase"] }) {
   const base = "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium border";
@@ -64,7 +64,6 @@ export function PrDetailHeader({
   card: PrCardState;
   sessionId: string;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -206,31 +205,16 @@ export function PrDetailHeader({
             </span>
           </div>
         </div>
-        <div className="relative shrink-0">
-          <button
-            onClick={() => setMenuOpen((v) => !v)}
-            className="h-7 w-7 flex items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
-            aria-label="More options"
+        <OverflowMenu triggerClassName="h-7 w-7" contentClassName="min-w-44">
+          <a
+            href={pr.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 px-3 py-1.5 text-xs text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover)"
           >
-            <DotsThreeVerticalIcon size={ICON_SIZE.SM} weight="bold" />
-          </button>
-          {menuOpen && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-              <div className="absolute right-0 top-full mt-1 z-50 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl py-1 min-w-44">
-                <a
-                  href={pr.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => setMenuOpen(false)}
-                  className="flex items-center gap-2 px-3 py-1.5 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
-                >
-                  <ArrowSquareOutIcon size={ICON_SIZE.SM} /> View on GitHub
-                </a>
-              </div>
-            </>
-          )}
-        </div>
+            <ArrowSquareOutIcon size={ICON_SIZE.SM} /> View on GitHub
+          </a>
+        </OverflowMenu>
       </div>
     </div>
   );

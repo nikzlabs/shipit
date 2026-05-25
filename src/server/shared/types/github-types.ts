@@ -343,6 +343,16 @@ export interface WsPrLifecycleUpdate {
     failed: number;
     pending: number;
   };
+  /** Auto-merge state — present when auto-merge has been interacted with. */
+  autoMerge?: {
+    enabled: boolean;
+    mergeMethod: "squash" | "merge" | "rebase";
+    /** True when ShipIt manages the merge (GitHub native auto-merge unavailable). */
+    managed?: boolean;
+    /** GitHub settings URL for configuring branch protection. */
+    settingsUrl?: string;
+    error?: PrAutoMergeError;
+  };
   /** Present in "error" phase — error message. */
   errorMessage?: string;
 }

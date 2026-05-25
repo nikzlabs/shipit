@@ -23,7 +23,7 @@ import type { CredentialStore } from "../credential-store.js";
 import type { SessionManager } from "../sessions.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import { getErrorMessage } from "../validation.js";
-import { quickCreatePr } from "./github.js";
+import { activatePendingAutoMergeForPr, quickCreatePr } from "./github.js";
 
 export interface PrLifecycleDeps {
   sessionManager: SessionManager;
@@ -86,7 +86,15 @@ export async function emitPrLifecycleAfterCommit(args: {
         );
         if (session.remoteUrl) {
           deps.prStatusPoller.trackSession(sessionId, session.remoteUrl);
+          await activatePendingAutoMergeForPr(
+            deps.githubAuthManager,
+            deps.prStatusPoller,
+            sessionId,
+            result.url,
+            result.number,
+          );
         }
+        const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
         emit({
           type: "pr_lifecycle_update",
           sessionId,
@@ -102,6 +110,15 @@ export async function emitPrLifecycleAfterCommit(args: {
             insertions: result.insertions,
             deletions: result.deletions,
           },
+          autoMerge: autoMerge
+            ? {
+                enabled: autoMerge.enabled,
+                mergeMethod: autoMerge.mergeMethod,
+                managed: autoMerge.managed,
+                settingsUrl: autoMerge.settingsUrl,
+                error: autoMerge.error,
+              }
+            : undefined,
         });
       } catch (err) {
         console.error("[pr-lifecycle] Auto-create PR failed:", getErrorMessage(err));
@@ -119,6 +136,7 @@ export async function emitPrLifecycleAfterCommit(args: {
     // Ready card: diff stats vs. main so the user can click "open PR".
     const headBranch = session.branch || await git.getCurrentBranch();
     const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
+    const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
     emit({
       type: "pr_lifecycle_update",
       sessionId,
@@ -127,6 +145,15 @@ export async function emitPrLifecycleAfterCommit(args: {
       headBranch,
       totalInsertions,
       totalDeletions,
+      autoMerge: autoMerge
+        ? {
+            enabled: autoMerge.enabled,
+            mergeMethod: autoMerge.mergeMethod,
+            managed: autoMerge.managed,
+            settingsUrl: autoMerge.settingsUrl,
+            error: autoMerge.error,
+          }
+        : undefined,
     });
   } catch (err) {
     console.error("[pr-lifecycle] Failed to compute diff stats:", getErrorMessage(err));

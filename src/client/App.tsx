@@ -155,6 +155,7 @@ export default function App() {
 
   const importSearchResults = usePrStore((s) => s.importSearchResults);
   const hasPrCard = usePrStore((s) => wsSessionId ? !!s.cardBySession[wsSessionId] : false);
+  const sessionAutoMerge = usePrStore((s) => wsSessionId ? (s.autoMergeBySession[wsSessionId] ?? s.cardBySession[wsSessionId]?.autoMerge) : undefined);
   // The PR tab is shown only when the active session actually has a PR (open,
   // merged, or closed) — mirroring how the Services tab is conditional on
   // composeServices. The ready/creating/error phases have no PR to detail.
@@ -1008,7 +1009,10 @@ export default function App() {
       {searchOpen && <SearchBar query={search.query} onQueryChange={search.setQuery} matches={search.matches} currentMatchIndex={search.currentMatchIndex} onNext={search.goToNext} onPrev={search.goToPrev} onClose={() => { setSearchOpen(false); search.clear(); }} />}
       {!showHomeScreen && !showNewSessionView && currentSession && (
         <SessionTopBar
+          sessionId={currentSession.id}
           title={currentSession.title}
+          canAutoMerge={!!currentSession.remoteUrl}
+          autoMerge={sessionAutoMerge}
           onRename={(title) => useSessionStore.getState().renameSession(currentSession.id, title)}
           onDownloadChat={handleDownloadChat}
           onSearch={() => setSearchOpen(true)}

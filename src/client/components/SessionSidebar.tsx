@@ -1,19 +1,14 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, DotsSixVerticalIcon, GithubLogoIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsSixVerticalIcon, GithubLogoIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoName } from "../utils/repo-label.js";
 import { Button } from "./ui/button.js";
 import { WithTooltip } from "./ui/tooltip.js";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from "./ui/dropdown-menu.js";
+import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
+import { OverflowMenu } from "./ui/overflow-menu.js";
 import { RepoSwitcher } from "./RepoSwitcher.js";
 import { PrStateBadge } from "./PrLifecycleCard.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -415,24 +410,15 @@ function RepoGroup({
             <span className="shrink-0 text-[9px] text-(--color-warning) animate-pulse">cloning</span>
           )}
         </button>
-        <DropdownMenu
+        <OverflowMenu
+          label={`${repoName} repository menu`}
+          contentClassName="w-52"
           onOpenChange={(open) => {
             // Reset the destructive-confirm state every time the menu closes,
             // so a partial confirmation never carries to the next open.
             if (!open) setConfirmingRemove(false);
           }}
         >
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary) shrink-0"
-              aria-label={`${repoName} repository menu`}
-            >
-              <DotsThreeVerticalIcon size={ICON_SIZE.SM} />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
             <DropdownMenuItem onSelect={onViewAll}>
               <ListBulletsIcon size={ICON_SIZE.XS} className="shrink-0" />
               View All Sessions
@@ -458,8 +444,7 @@ function RepoGroup({
               <TrashIcon size={ICON_SIZE.XS} className="shrink-0" />
               {confirmingRemove ? "Click again to confirm" : "Remove Repository"}
             </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        </OverflowMenu>
       </div>
 
       {/* Session list — hidden when collapsed */}

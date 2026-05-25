@@ -12,6 +12,7 @@ export const handlePrLifecycleUpdate: Handler<WsPrLifecycleUpdate> = (_ctx, data
     totalDeletions: data.totalDeletions,
     pr: data.pr,
     checks: data.checks,
+    autoMerge: data.autoMerge,
     errorMessage: data.errorMessage,
   });
 };
