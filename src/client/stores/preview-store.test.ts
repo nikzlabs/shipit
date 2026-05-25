@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { usePreviewStore } from "./preview-store.js";
 import { findPresetById } from "../components/device-presets.js";
-import { getSavedDevicePresetId, saveDevicePresetId, DEVICE_PRESET_KEY } from "../utils/local-storage.js";
 
 describe("preview-store device viewport", () => {
   beforeEach(() => {
@@ -56,54 +55,66 @@ describe("preview-store device viewport", () => {
     });
   });
 
-  describe("localStorage persistence", () => {
-    it("writes the preset id to localStorage when setDevicePreset is called", () => {
-      const preset = findPresetById("ipad-mini")!;
-      usePreviewStore.getState().setDevicePreset(preset);
-      expect(localStorage.getItem(DEVICE_PRESET_KEY)).toBe("ipad-mini");
-    });
-
-    it("removes the preset id from localStorage when set to null", () => {
-      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-14"));
-      expect(localStorage.getItem(DEVICE_PRESET_KEY)).toBe("iphone-14");
-      usePreviewStore.getState().setDevicePreset(null);
-      expect(localStorage.getItem(DEVICE_PRESET_KEY)).toBeNull();
-    });
-
-    it("round-trips preset id via getSavedDevicePresetId", () => {
-      saveDevicePresetId("pixel-7");
-      expect(getSavedDevicePresetId()).toBe("pixel-7");
-      saveDevicePresetId(null);
-      expect(getSavedDevicePresetId()).toBeNull();
-    });
-
-    it("findPresetById resolves a saved id back to the preset object", () => {
-      saveDevicePresetId("iphone-14-pro-max");
-      const restored = findPresetById(getSavedDevicePresetId());
-      expect(restored?.id).toBe("iphone-14-pro-max");
-      expect(restored?.width).toBe(430);
-      expect(restored?.height).toBe(932);
-    });
-
+  describe("session snapshots", () => {
     it("findPresetById returns null for unknown id", () => {
       expect(findPresetById("nonexistent")).toBeNull();
       expect(findPresetById(null)).toBeNull();
       expect(findPresetById(undefined)).toBeNull();
     });
+
+    it("persists device viewport state per session snapshot", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-14"));
+      usePreviewStore.getState().toggleLandscape();
+      usePreviewStore.getState().snapshotSession("session-a");
+
+      usePreviewStore.getState().setDevicePreset(findPresetById("ipad-mini"));
+      usePreviewStore.getState().toggleLandscape();
+      usePreviewStore.getState().snapshotSession("session-b");
+
+      usePreviewStore.getState().restoreSession("session-a");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-14");
+      expect(usePreviewStore.getState().isLandscape).toBe(true);
+      expect(usePreviewStore.getState().customSize).toBeNull();
+
+      usePreviewStore.getState().restoreSession("session-b");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("ipad-mini");
+      expect(usePreviewStore.getState().isLandscape).toBe(false);
+    });
+
+    it("persists custom viewport state per session snapshot", () => {
+      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
+      usePreviewStore.getState().setDevicePreset({
+        id: "custom",
+        label: "500×900",
+        width: 500,
+        height: 900,
+        category: "custom",
+      });
+      usePreviewStore.getState().snapshotSession("session-a");
+
+      usePreviewStore.getState().restoreSession("session-b");
+      expect(usePreviewStore.getState().devicePreset).toBeNull();
+      expect(usePreviewStore.getState().customSize).toBeNull();
+
+      usePreviewStore.getState().restoreSession("session-a");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("custom");
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
+    });
   });
 
   describe("reset()", () => {
-    it("clears device state and localStorage", () => {
+    it("clears device state and session snapshots", () => {
       usePreviewStore.getState().setDevicePreset(findPresetById("iphone-14"));
       usePreviewStore.getState().toggleLandscape();
       usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
+      usePreviewStore.getState().snapshotSession("session-a");
 
       usePreviewStore.getState().reset();
 
       expect(usePreviewStore.getState().devicePreset).toBeNull();
       expect(usePreviewStore.getState().isLandscape).toBe(false);
       expect(usePreviewStore.getState().customSize).toBeNull();
-      expect(localStorage.getItem(DEVICE_PRESET_KEY)).toBeNull();
+      expect(usePreviewStore.getState().getSnapshot("session-a")).toBeUndefined();
     });
   });
 });

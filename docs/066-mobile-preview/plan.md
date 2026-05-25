@@ -70,7 +70,7 @@ interface DevicePreset {
   category: "phone" | "tablet" | "custom";
 }
 
-// New state fields
+// Session-specific state fields
 devicePreset: DevicePreset | null;     // null = responsive (fill panel)
 isLandscape: boolean;                   // swap width/height when true
 customSize: { width: number; height: number } | null;
@@ -81,7 +81,7 @@ toggleLandscape: () => void;
 setCustomSize: (size: { width: number; height: number } | null) => void;
 ```
 
-Persist the selected device preset ID in `localStorage` under `shipit:devicePreset` so it survives page reloads.
+Persist the viewport selection in the preview store's per-session snapshot (`SessionPreviewSnapshot`) along with preview status and selected port. This keeps each session's mobile/responsive mode independent when switching sessions. The selection is not a global `localStorage` preference.
 
 ### Component structure
 

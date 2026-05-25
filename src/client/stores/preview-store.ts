@@ -1,8 +1,6 @@
 import { create } from "zustand";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
 import type { DevicePreset } from "../components/device-presets.js";
-import { findPresetById } from "../components/device-presets.js";
-import { getSavedDevicePresetId, saveDevicePresetId } from "../utils/local-storage.js";
 import type { ComposeServiceStatus, ComposeServicePreviewMode } from "../../server/shared/types/ws-server-messages.js";
 import type { SecretRequirement } from "../../server/shared/types/domain-types.js";
 
@@ -84,6 +82,9 @@ export interface SessionPreviewSnapshot {
   composeError: string | null;
   composeNotConfigured: boolean;
   secrets: SecretsState;
+  devicePreset: DevicePreset | null;
+  isLandscape: boolean;
+  customSize: { width: number; height: number } | null;
 }
 
 interface PreviewState {
@@ -153,7 +154,7 @@ interface PreviewState {
   setPreviewProxyError: (error: PreviewState["previewProxyError"]) => void;
   /** Replace the secrets snapshot (from `secrets_status` WS message). */
   setSecrets: (secrets: SecretsState) => void;
-  /** Set the active device preset (or null to return to "Responsive"). Persists to localStorage. */
+  /** Set the active device preset (or null to return to "Responsive"). */
   setDevicePreset: (preset: DevicePreset | null) => void;
   /** Swap width and height on the active preset. */
   toggleLandscape: () => void;
@@ -217,14 +218,14 @@ const initialSessionState: SessionPreviewSnapshot = {
   composeError: null,
   composeNotConfigured: false,
   secrets: emptySecretsState,
+  devicePreset: null,
+  isLandscape: false,
+  customSize: null,
 };
 
 const initialState = {
   ...initialSessionState,
   autoFixEnabled: false,
-  devicePreset: findPresetById(getSavedDevicePresetId()),
-  isLandscape: false,
-  customSize: null as { width: number; height: number } | null,
   sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
   // Ephemeral state — never persisted into a session snapshot.
   previewProxyError: null as PreviewState["previewProxyError"],
@@ -300,11 +301,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   setPreviewProxyError: (previewProxyError) => set({ previewProxyError }),
 
-  setDevicePreset: (devicePreset) => {
-    saveDevicePresetId(devicePreset?.id ?? null);
-    // Switching to a named preset clears any pending custom size.
-    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null });
-  },
+  setDevicePreset: (devicePreset) =>
+    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null }),
 
   toggleLandscape: () => set((state) => ({ isLandscape: !state.isLandscape })),
 
@@ -341,6 +339,9 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
           composeError: state.composeError,
           composeNotConfigured: state.composeNotConfigured,
           secrets: state.secrets,
+          devicePreset: state.devicePreset,
+          isLandscape: state.isLandscape,
+          customSize: state.customSize,
         },
       },
     })),
@@ -359,15 +360,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   reset: () => {
     resetDedupState();
-    saveDevicePresetId(null);
     set({
       ...initialState,
-      // Always start fresh on reset — don't preserve the device preset from
-      // localStorage, since reset() is invoked on full-state teardown
-      // (logout, full reset, archive).
-      devicePreset: null,
-      isLandscape: false,
-      customSize: null,
       sessionSnapshots: {},
     });
   },
