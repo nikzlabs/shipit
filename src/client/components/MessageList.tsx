@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: DOM scroll sync (scrollIntoView), window keydown listener, xterm auto-scroll
-import { useMemo, useEffect, useRef } from "react";
+import { useMemo, useEffect, useRef, useState } from "react";
 import {
   TypingDots,
 } from "./StreamingIndicator.js";
@@ -227,7 +227,7 @@ function slugifyBranchName(value: string): string {
 }
 
 export function MessageList({
-  messages,
+  messages: messagesProp,
   isLoading,
   searchMatches,
   currentMatch,
@@ -254,6 +254,40 @@ export function MessageList({
   const autoScrollRef = useRef(true);
   const currentMatchRef = useRef<HTMLElement | null>(null);
   const hasRewindControls = !!onRewindAtGap;
+
+  // Freeze the rendered messages while the user has an active text selection
+  // inside the message list. Streaming tokens re-parse markdown and replace the
+  // `dangerouslySetInnerHTML` nodes that the browser's Selection Range points
+  // into, which silently clears the selection on every render. By snapshotting
+  // the array used for rendering, the DOM stays stable under the selection
+  // until the user releases it. Once the selection collapses, the next live
+  // `messagesProp` resumes streaming.
+  const messagesPropRef = useRef(messagesProp);
+  messagesPropRef.current = messagesProp;
+  const [frozenMessages, setFrozenMessages] = useState<ChatMessage[] | null>(null);
+  // eslint-disable-next-line no-restricted-syntax -- document-level selectionchange listener
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      const sel = typeof window !== "undefined" ? window.getSelection() : null;
+      const container = containerRef.current;
+      if (!sel || !container) {
+        setFrozenMessages(null);
+        return;
+      }
+      const inside =
+        (!!sel.anchorNode && container.contains(sel.anchorNode)) ||
+        (!!sel.focusNode && container.contains(sel.focusNode));
+      if (!sel.isCollapsed && inside) {
+        setFrozenMessages((prev) => prev ?? messagesPropRef.current);
+      } else {
+        setFrozenMessages(null);
+      }
+    };
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => document.removeEventListener("selectionchange", handleSelectionChange);
+  }, []);
+
+  const messages = frozenMessages ?? messagesProp;
 
   const lastTodoWriteId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
