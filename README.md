@@ -68,6 +68,8 @@ This builds the orchestrator + session-worker images and starts ShipIt with Dock
 
 ShipIt ships with a one-command provisioning script for Ubuntu VPS hosts. It installs Docker, raises the inotify limits session containers need, and optionally puts ShipIt behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (with optional Zero Trust SSO) and/or exposes it over [Tailscale](https://tailscale.com/) — no open inbound ports required.
 
+**Recommended sizing:** 8 GB RAM minimum, 16 GB recommended. Each active session runs its own container (agent CLI + dev server + any Compose services), so headroom matters once you have a few sessions open at once.
+
 ```bash
 ssh root@<server-ip>
 
