@@ -391,6 +391,24 @@ export async function registerFileRoutes(
             containerManager: deps.containerManager ?? null,
             runnerRegistry,
             defaultAgentId: deps.defaultAgentId,
+            // Plugin install/uninstall: killAgent is just here to force the
+            // next turn's CLI to re-scan skills. The install path already
+            // committed its own changes via withWorkspaceLock, so the
+            // post-interrupt fallback is a no-op (clean tree) but we wire
+            // the deps anyway for consistency with the recovery path.
+            ...(deps.prStatusPoller
+              ? {
+                  postInterruptCommitDeps: {
+                    sessionManager,
+                    chatHistoryManager: deps.chatHistoryManager,
+                    prStatusPoller: deps.prStatusPoller,
+                    githubAuthManager: deps.githubAuthManager,
+                    credentialStore: deps.credentialStore,
+                    generateText: deps.generateText,
+                    createGitManager: deps.createGitManager,
+                  },
+                }
+              : {}),
           }, request.params.id);
         } catch (err) {
           // The worker may be unreachable during install (e.g. fresh session).

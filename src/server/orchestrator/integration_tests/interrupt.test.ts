@@ -6,6 +6,7 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../auth.js";
+import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 
 
 import type { WsServerMessage } from "../../shared/types.js";
@@ -32,6 +33,12 @@ describe("Integration: Interrupt and Redirect", () => {
     dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-interrupt-"));
+
+    // Session workspaces inherit `user.name` / `user.email` from this global
+    // config — without it, the post-interrupt commit fallback's `git commit`
+    // fails the "Please tell me who you are" check.
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@example.com");
 
     sessionManager = new SessionManager(dbManager);
 
@@ -169,6 +176,45 @@ describe("Integration: Interrupt and Redirect", () => {
     expect(queueUpdates.length).toBeGreaterThanOrEqual(1);
     const lastUpdate = queueUpdates[queueUpdates.length - 1];
     expect(lastUpdate).toMatchObject({ type: "queue_updated", queue: [] });
+
+    client.close();
+  });
+
+  it("commits partial work after interrupt (deferred fallback)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Resolve the session's workspace dir so we can plant a file the
+    // post-interrupt commit fallback should pick up.
+    const session = sessionManager.get(client.sessionId);
+    expect(session?.workspaceDir).toBeTruthy();
+    const sessionDir = session!.workspaceDir!;
+
+    client.send({ type: "send_message", text: "edit a file" });
+    await waitForClaude(() => lastClaude);
+
+    // Establish the session so the post-turn flow has the agent's session_id.
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "test-session",
+    });
+    await client.receiveType("session_started");
+
+    // Simulate the agent writing a file partway through the turn — this is
+    // exactly the partial work that used to be lost on interrupt in streaming
+    // mode.
+    fs.writeFileSync(path.join(sessionDir, "partial-work.txt"), "in progress");
+
+    // Interrupt before the agent emits agent_result.
+    client.send({ type: "interrupt_agent" });
+    await client.receiveType("agent_interrupted");
+
+    // The fallback fires after INTERRUPT_COMMIT_FALLBACK_DELAY_MS (2s); allow
+    // a generous wait for the deferred commit to land.
+    const committed = await client.receiveType("git_committed", 5000);
+    expect((committed as { hash?: string }).hash).toBeTruthy();
+    expect((committed as { message?: string }).message).toBeTruthy();
 
     client.close();
   });

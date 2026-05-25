@@ -18,6 +18,7 @@ import type { ServiceManager } from "../service-manager.js";
 import type { SessionOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import type { SessionLoopDetector } from "../loop-detector.js";
 import { ServiceError } from "./types.js";
+import { scheduleInterruptCommit, type PostInterruptCommitDeps } from "./post-interrupt-commit.js";
 
 /** Short timeout for recovery-time worker calls — never block on a wedged worker. */
 const RECOVERY_WORKER_TIMEOUT_MS = 3000;
@@ -99,6 +100,15 @@ export interface RecoveryDeps {
    * factory, so a restart must clear both or it stays blocked.
    */
   loopDetector?: SessionLoopDetector;
+  /**
+   * Deps for the post-interrupt commit fallback. Without these, `killAgent`
+   * SIGTERMs the agent but never captures the partial working-tree changes
+   * — the orchestrator-side `agent_done` propagation is best-effort here
+   * (the comment on `runner.running = false` below explains why) and the
+   * streaming `done` handler returns early without committing. Optional so
+   * test setups that don't care about commit can omit them.
+   */
+  postInterruptCommitDeps?: PostInterruptCommitDeps;
 }
 
 export interface KillAgentResult {
@@ -177,6 +187,15 @@ export async function killAgent(
   // any "agent_done" event that would normally do this is no longer
   // guaranteed to arrive.
   runner.running = false;
+
+  // Capture any partial work the agent produced before the SIGTERM. The
+  // normal post-turn commit/PR flow rides on the `agent_done` SSE event,
+  // which the comment above explicitly says is unreliable here — so
+  // without this we lose the user's in-flight changes on every kill.
+  // Deferred + idempotent: see `post-interrupt-commit.ts` for details.
+  if (deps.postInterruptCommitDeps) {
+    scheduleInterruptCommit({ deps: deps.postInterruptCommitDeps, runner });
+  }
 
   return { killed: true, noop: false };
 }
