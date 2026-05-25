@@ -1,12 +1,10 @@
 import { useState, useRef, useCallback } from "react";
-import { ArrowCounterClockwiseIcon, DotsThreeVerticalIcon, DownloadSimpleIcon, MagnifyingGlassIcon, PencilSimpleIcon, ArchiveIcon } from "@phosphor-icons/react";
+import { ArrowCounterClockwiseIcon, DownloadSimpleIcon, MagnifyingGlassIcon, PencilSimpleIcon, ArchiveIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
   DropdownMenuItem,
 } from "./ui/dropdown-menu.js";
+import { OverflowMenu } from "./ui/overflow-menu.js";
 import { AutoMergeToggle } from "./PrStatusControls.js";
 import type { PrCardState } from "../stores/pr-store.js";
 
@@ -105,17 +103,7 @@ export function SessionTopBar({
         >
           <MagnifyingGlassIcon size={ICON_SIZE.SM} weight="bold" />
         </button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
-              title="Session actions"
-              aria-label="Session actions"
-            >
-              <DotsThreeVerticalIcon size={ICON_SIZE.SM} weight="bold" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+        <OverflowMenu label="Session actions" triggerClassName="h-auto w-auto p-1">
             {canAutoMerge && (
               <div className="px-2 py-1">
                 <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
@@ -139,8 +127,7 @@ export function SessionTopBar({
               <ArchiveIcon size={ICON_SIZE.SM} />
               Archive
             </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        </OverflowMenu>
       </div>
     </div>
   );

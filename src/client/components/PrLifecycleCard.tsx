@@ -16,6 +16,7 @@ import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
 import { Button } from "./ui/button.js";
+import { OverflowMenu } from "./ui/overflow-menu.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import { MarkdownContent } from "./message-markdown.js";
 import {
@@ -34,7 +35,6 @@ import {
   CircleNotchIcon,
   WarningIcon,
   GlobeIcon,
-  DotsThreeVerticalIcon,
   PaperPlaneTiltIcon,
 } from "@phosphor-icons/react";
 import type { GitHubDeploymentStatus } from "../../server/shared/types.js";
@@ -167,32 +167,6 @@ function BranchLabel({
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
-  );
-}
-
-/** Three-dot overflow menu for secondary actions (auto-merge, auto-fix, etc.). */
-function OverflowMenu({ children }: { children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <span className="relative shrink-0 -mr-2">
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
-        className="h-6 w-6 flex items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
-        aria-label="More options"
-      >
-        <DotsThreeVerticalIcon size={ICON_SIZE.SM} weight="bold" />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
-          <div className="absolute right-0 bottom-full mb-1 z-50 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-lg shadow-xl py-1 min-w-48"
-            onClick={(e) => e.stopPropagation()}>
-            {children}
-          </div>
-        </>
-      )}
-    </span>
   );
 }
 
@@ -386,7 +360,7 @@ function ReadyPhase({
       <BranchLabel headBranch={card.headBranch} />
       <span className="ml-auto shrink-0 flex items-center gap-3">
         {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
-        <OverflowMenu>
+        <OverflowMenu side="top" contentClassName="min-w-48">
           <div className="px-2 py-1">
             <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
           </div>
@@ -474,7 +448,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
           {showFixButton && (
             <FixCIButton sessionId={sessionId} />
           )}
-          <OverflowMenu>
+          <OverflowMenu side="top" contentClassName="min-w-48">
           {showAutoMergeToggle && (
             <div className="px-2 py-1">
               <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
