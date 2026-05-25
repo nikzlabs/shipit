@@ -20,12 +20,26 @@ import type {
   AgentRunParams,
 } from "./agent-process.js";
 import type { McpServerStatus } from "../../shared/types/mcp-types.js";
+import type { SubscriptionLimitsWindow } from "../../shared/types/usage-limits-types.js";
 
 export class ClaudeAdapter
   extends EventEmitter<AgentProcessEvents>
   implements AgentProcess
 {
   readonly agentId: AgentId = "claude";
+
+  /**
+   * Latest five_hour / seven_day windows accumulated from the CLI's
+   * stream-json `rate_limit_event` messages. The CLI emits ONE window per
+   * event (carrying `rateLimitType`), so we accumulate both locally and
+   * emit a combined `agent_rate_limits` AgentEvent whenever either changes
+   * — same shape Codex emits, single contract on the orchestrator side.
+   * Anthropic-side: this data comes from `anthropic-ratelimit-unified-*`
+   * response headers, so it's effectively free and bypasses the broken
+   * `/api/oauth/usage` polling endpoint.
+   */
+  private rateLimitSession: SubscriptionLimitsWindow | null = null;
+  private rateLimitWeekly: SubscriptionLimitsWindow | null = null;
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
@@ -186,6 +200,26 @@ export class ClaudeAdapter
         };
       }
 
+      case "rate_limit_event": {
+        const info = raw.rate_limit_info;
+        const type = info?.rateLimitType;
+        // We only track the headline windows. seven_day_opus / seven_day_sonnet
+        // / overage carry sub-quotas the badge UI doesn't render.
+        if (type !== "five_hour" && type !== "seven_day") return null;
+        const window = parseRateLimitWindow(info);
+        if (!window) return null;
+        if (type === "five_hour") {
+          this.rateLimitSession = window;
+        } else {
+          this.rateLimitWeekly = window;
+        }
+        return {
+          type: "agent_rate_limits",
+          session: this.rateLimitSession,
+          weekly: this.rateLimitWeekly,
+        };
+      }
+
       default:
         return null;
     }
@@ -257,6 +291,26 @@ export class ClaudeAdapter
  * UI's red badge with the reason text conveys the right action ("connect via
  * the provider"). Phase 2's OAuth flow is what removes this gap properly.
  */
+/**
+ * Normalize the Claude CLI's `rate_limit_info` payload (one window) into the
+ * shared `SubscriptionLimitsWindow` shape. The CLI reports `utilization` as
+ * 0–100 and `resetsAt` as Unix epoch seconds. Returns null when either field
+ * is missing or unusable — the caller leaves its last-known window in place
+ * rather than clobbering it with a partial update.
+ */
+function parseRateLimitWindow(
+  info: { utilization?: number; resetsAt?: number } | undefined,
+): SubscriptionLimitsWindow | null {
+  if (!info) return null;
+  const { utilization, resetsAt } = info;
+  if (typeof utilization !== "number" || !Number.isFinite(utilization)) return null;
+  if (typeof resetsAt !== "number" || !Number.isFinite(resetsAt) || resetsAt <= 0) return null;
+  const usedPct = Math.min(100, Math.max(0, utilization));
+  // resetsAt is epoch seconds; tolerate a ms value defensively.
+  const ms = resetsAt < 10_000_000_000 ? resetsAt * 1000 : resetsAt;
+  return { usedPct, resetAt: new Date(ms).toISOString() };
+}
+
 export function mapCliMcpStatus(entry: ClaudeMcpServerInit): McpServerStatus {
   switch (entry.status) {
     case "connected":

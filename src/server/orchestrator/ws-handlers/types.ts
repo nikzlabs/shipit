@@ -115,29 +115,24 @@ export interface AppCtx {
   prStatusPoller: PrStatusPoller;
 
   /**
-   * Push a Codex rate-limit snapshot (from an `agent_rate_limits` AgentEvent)
-   * into the subscription-limits badge. Optional because test contexts and
-   * non-WS callers don't wire it. See index.ts / `CodexLimitsProvider`.
+   * Push a fresh rate-limit snapshot for any agent (from an
+   * `agent_rate_limits` AgentEvent) into the subscription-limits badge.
+   * Both Claude and Codex go through this single callback — Claude's data
+   * comes from the CLI's `rate_limit_event` stream messages, Codex's from
+   * the app-server `account/rateLimits/updated` notification. Optional
+   * because test contexts and non-WS callers don't wire it. See
+   * `index.ts` and the per-provider `setRateLimits()` methods.
    */
-  recordCodexRateLimits?: (
+  recordAgentRateLimits?: (
+    agentId: AgentId,
     session: { usedPct: number; resetAt: string } | null,
     weekly: { usedPct: number; resetAt: string } | null,
   ) => void;
   /**
-   * Latest subscription-limits snapshot from the header badge poller. Used to
+   * Latest subscription-limits snapshot from the limits registry. Used to
    * classify agent result errors that upstream labels too generically.
    */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
-  /**
-   * Turn-driven refresh hook for the subscription-limits poller. Called from
-   * `agent-execution.ts` after each `agent_result` so the Claude pill stays
-   * fresh without a wall-clock poll burning calls against the aggressively
-   * rate-limited `/api/oauth/usage` endpoint (Anthropic returns 429 with
-   * `retry-after: 0` after a few calls — see plan.md "Refresh strategy").
-   * The poller internally debounces so a tight burst of turns can't earn a
-   * 429. Optional — test contexts and non-WS callers don't wire it.
-   */
-  refreshSubscriptionLimits?: (agentId: AgentId) => void;
 
   // Config
   workspaceDir: string;

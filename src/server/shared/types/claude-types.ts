@@ -156,8 +156,37 @@ export interface ClaudeResultEvent {
   }[];
 }
 
+/**
+ * Rate-limit change notification emitted by the CLI under
+ * `--output-format=stream-json` whenever a subscription rate-limit window
+ * changes (typically every API call for active subscribers). The CLI
+ * itself derives this from Anthropic's `anthropic-ratelimit-unified-*`
+ * response headers — i.e. it costs us nothing extra and avoids the
+ * heavily rate-limited `/api/oauth/usage` endpoint entirely.
+ *
+ * One event carries exactly one window (`rateLimitType`). We act on
+ * `five_hour` and `seven_day` and ignore `seven_day_opus`,
+ * `seven_day_sonnet`, and `overage` — see docs/135 "Refresh strategy."
+ *
+ * Schema reproduced from the embedded Zod schema in the Claude CLI
+ * binary (search the binary for `rate_limit_event`). Only the fields we
+ * consume are typed strictly; the rest pass through as `unknown`.
+ */
+export interface ClaudeRateLimitEvent {
+  type: "rate_limit_event";
+  rate_limit_info: {
+    status?: "allowed" | "allowed_warning" | "rejected";
+    resetsAt?: number;
+    rateLimitType?: "five_hour" | "seven_day" | "seven_day_opus" | "seven_day_sonnet" | "overage";
+    /** 0–100 (percentage of the window consumed). */
+    utilization?: number;
+  };
+  session_id?: string;
+}
+
 export type ClaudeEvent =
   | ClaudeSystemEvent
   | ClaudeAssistantEvent
   | ClaudeUserEvent
-  | ClaudeResultEvent;
+  | ClaudeResultEvent
+  | ClaudeRateLimitEvent;

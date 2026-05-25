@@ -502,7 +502,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     sseBroadcast: ctx.sseBroadcast,
     broadcastLog: ctx.broadcastLog,
     getSelectedModel: ctx.getSelectedModel,
-    recordCodexRateLimits: ctx.recordCodexRateLimits,
+    recordAgentRateLimits: ctx.recordAgentRateLimits,
     getSubscriptionLimitsSnapshot: ctx.getSubscriptionLimitsSnapshot,
   };
   wireAgentListeners(currentAgent, answerRunner, answerListenerDeps, {
