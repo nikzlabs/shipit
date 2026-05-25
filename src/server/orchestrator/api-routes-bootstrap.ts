@@ -238,9 +238,22 @@ export async function registerBootstrapRoutes(
       try {
         clearApiKey();
         deps.authManager.signOut();
+        // Drop the stored Claude provider-account rows so authConfigured
+        // actually flips to false. `hasAnyAuthForProvider("claude")` returns
+        // true if any account row exists (see docs/150), so leaving the
+        // migrated `claude-default` row in place would leave the UI showing
+        // "Authenticated" even though we just wiped the credentials. We only
+        // drop the row, not the on-disk dir, so the legacy symlinks at
+        // `<credentialsDir>/.claude` keep pointing at a usable target for the
+        // next sign-in. The `auth_complete` listener in `app-lifecycle.ts`
+        // re-registers the row via `migrateDefaultAccounts()`.
+        for (const account of deps.providerAccountManager.list("claude")) {
+          deps.credentialStore.deleteProviderAccount("claude", account.id);
+        }
         deps.agentRegistry.refreshAuth("claude");
         const agents = listAgents(deps.agentRegistry);
         deps.sseBroadcast("agent_list", { agents, defaultAgentId: deps.defaultAgentId });
+        deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         return { success: true, agents };
       } catch (err) {
         reply.code(500).send({ error: `Failed to sign out of Claude: ${getErrorMessage(err)}` });
@@ -329,6 +342,12 @@ export async function registerBootstrapRoutes(
       try {
         deps.codexAuthManager.cancel();
         deps.codexAuthManager.signOut();
+        // Mirror the Claude sign-out: drop stored Codex provider-account rows
+        // so `hasAnyAuthForProvider("codex")` reflects the wiped credentials.
+        // See the matching block in DELETE /api/auth/api-key for the rationale.
+        for (const account of deps.providerAccountManager.list("codex")) {
+          deps.credentialStore.deleteProviderAccount("codex", account.id);
+        }
         deps.agentRegistry.refreshAuth("codex");
         const agents = deps.agentRegistry.list().map((a) => ({
           id: a.id, name: a.name, installed: a.installed,
@@ -338,6 +357,7 @@ export async function registerBootstrapRoutes(
           supportedPermissionModes: a.capabilities.supportedPermissionModes,
         }));
         deps.sseBroadcast("agent_list", { agents, defaultAgentId: deps.defaultAgentId });
+        deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         return { success: true, agents };
       } catch (err) {
         reply.code(500).send({ error: `Failed to sign out of Codex: ${getErrorMessage(err)}` });
