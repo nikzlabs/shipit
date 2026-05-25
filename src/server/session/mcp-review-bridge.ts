@@ -32,8 +32,10 @@ const WORKER_URL = `http://127.0.0.1:${process.env.WORKER_PORT || "9100"}`;
 
 const TOOL_DESCRIPTION = [
   "Submit the results of a code/document review as anchored comments. Call this",
-  "exactly ONCE per review with ALL findings as a single array — do not call it",
-  "per comment. If the file needs no comments, still call it with an empty array;",
+  "exactly ONCE per review with the selected material findings as a single array",
+  "— do not call it per comment. Submit only issues with concrete user impact",
+  "and a specific fix; omit style opinions, speculative concerns, and nice-to-have",
+  "improvements. If the file needs no comments, still call it with an empty array;",
   "that is the signal that the review ran. Each item MUST be an object with a `kind`",
   "field — \"selection\" for a verbatim quote anchor or \"line\" for a 1-based line",
   "anchor — and a `text` field. Bare strings or string arrays are rejected. You",
