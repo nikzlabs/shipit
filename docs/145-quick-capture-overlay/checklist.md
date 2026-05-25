@@ -6,4 +6,4 @@
 - [x] Add shortcut settings persistence and Settings UI.
 - [x] Add notification coalescing for bursty session completions.
 - [x] Add broader test coverage for all planned edge cases.
-- [ ] Run cross-browser/manual hotkey verification.
+- [x] Run cross-browser/manual hotkey verification.
