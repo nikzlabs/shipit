@@ -145,17 +145,25 @@ export interface AgentResultEvent {
 /**
  * Subscription rate-limit snapshot pushed by an agent backend mid-turn.
  *
- * Codex emits this from the `account/rateLimits/updated` JSON-RPC
- * notification its app-server streams — the same numbers it uses to draw
- * its own `/status` line. The orchestrator routes it into the
- * subscription-limits badge (see `CodexLimitsProvider`). Percentages are
- * 0–100; `resetAt` is an ISO timestamp. Either window may be null if the
- * backend only reported one. Claude has no equivalent (its limits come
- * from a polled HTTP endpoint), so today only Codex emits this.
+ * - **Codex** emits this from the `account/rateLimits/updated` JSON-RPC
+ *   notification its app-server streams — same numbers it draws its own
+ *   `/status` line from. Both windows arrive in a single event.
+ * - **Claude** emits it from the CLI's `rate_limit_event` stream messages
+ *   (under `--output-format=stream-json`), which the CLI itself derives
+ *   from Anthropic's `anthropic-ratelimit-unified-*` API response headers.
+ *   The CLI emits one window per event, so `ClaudeAdapter` accumulates the
+ *   last-known five_hour + seven_day and re-emits this combined shape on
+ *   every change.
+ *
+ * The orchestrator routes both into the subscription-limits badge via
+ * `recordAgentRateLimits` (see index.ts and the per-provider
+ * `setRateLimits()` methods). Percentages are 0–100; `resetAt` is an ISO
+ * timestamp. Either window may be null when the backend has only ever
+ * reported one.
  */
 export interface AgentRateLimitsEvent {
   type: "agent_rate_limits";
-  /** Rolling short-window quota (Codex: 5h). */
+  /** Rolling short-window quota (Claude: 5h, Codex: 5h). */
   session: { usedPct: number; resetAt: string } | null;
   /** Weekly quota. */
   weekly: { usedPct: number; resetAt: string } | null;

@@ -25,7 +25,6 @@ function makeSnap(overrides: Partial<SubscriptionLimits> = {}): SubscriptionLimi
     plan: "Pro",
     session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET },
     weekly: { usedPct: 50, resetAt: FUTURE_WEEKLY_RESET },
-    weeklyOpus: null,
     fetchedAt: Date.now(),
     ...overrides,
   };
@@ -284,46 +283,15 @@ describe("SubscriptionLimitPill", () => {
     expect(fills[1].style.width).toBe("0%");
   });
 
-  it("renders the neutral em-dash form when error has no prior data", () => {
+  it("renders an em-dash when no windows are present", () => {
     const { container } = render(
       <SubscriptionLimitPill
         label="Claude"
-        snapshot={makeSnap({ error: "auth expired", session: null, weekly: null })}
+        snapshot={makeSnap({ session: null, weekly: null })}
       />,
     );
-    expect(screen.getByText("Claude —")).toBeInTheDocument();
-    expect(container.querySelector("span")?.getAttribute("title")).toContain("auth expired");
-  });
-
-  it("keeps stale meters visually identical, surfacing the reason only in the tooltip", () => {
-    const { container } = render(
-      <SubscriptionLimitPill
-        label="Claude"
-        snapshot={makeSnap({
-          error: "rate limited",
-          session: { usedPct: 96, resetAt: "x" },
-          weekly: { usedPct: 22, resetAt: "y" },
-        })}
-      />,
-    );
-    // Meters still render at full strength.
-    expect(screen.getByText(/5h 96%/)).toBeInTheDocument();
-    expect(screen.getByText(/7d 22%/)).toBeInTheDocument();
-    const row = container.querySelector("[data-stale=\"true\"]");
-    expect(row).not.toBeNull();
-    // No dimming — the user's read of "this is the right number" matters
-    // more than signalling that the refresh hiccup happened.
-    expect(row?.className).not.toContain("opacity-60");
-    expect(row?.getAttribute("title")).toMatch(/Last refresh failed.*rate limited/);
-  });
-
-  it("error pill has no tier color", () => {
-    const { container } = render(
-      <SubscriptionLimitPill label="Claude" snapshot={makeSnap({ error: "limits unavailable", session: null, weekly: null })} />,
-    );
-    const span = container.querySelector("span");
-    expect(span?.className).toContain("text-(--color-text-secondary)");
-    expect(span?.className).not.toContain("--color-context-full");
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(container.querySelector("span")?.className).toContain("text-(--color-text-secondary)");
   });
 
   it("includes plan name in the tooltip when present", () => {

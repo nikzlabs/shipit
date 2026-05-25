@@ -10,17 +10,16 @@
  * a turn. `CodexAdapter` captures that and emits an `agent_rate_limits`
  * AgentEvent; the orchestrator feeds it here via `setRateLimits()`.
  *
- * This provider is therefore *event-fed*, not polled: `fetch()` returns
- * the latest pushed snapshot (enriched with the plan tier read from the
- * auth token), and `canFetch()` is true once at least one turn has
- * delivered a snapshot. The `LimitsPoller` still polls it on its normal
- * cadence — that's cheap now (no network) and keeps the plan tier fresh
- * — but the badge updates within seconds because each incoming event
- * triggers an immediate `markAuthRefreshed("codex")` refresh.
+ * This provider is *event-fed*: `fetch()` returns the latest pushed
+ * snapshot (enriched with the plan tier read from the auth token), and
+ * `canFetch()` is true once at least one turn has delivered a snapshot.
+ * The orchestrator's `LimitsRegistry` rebroadcasts whenever a fresh
+ * `setRateLimits()` lands, so the badge updates within seconds of the
+ * incoming event.
  */
 
 import type { CodexAuthManager } from "../codex-auth.js";
-import type { LimitsProvider, LimitsSkipTick } from "./types.js";
+import type { LimitsProvider } from "./types.js";
 import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../shared/types.js";
 
 export interface CodexLimitsDeps {
@@ -52,8 +51,8 @@ export class CodexLimitsProvider implements LimitsProvider {
   /**
    * Record a fresh rate-limit snapshot pushed from a Codex turn. Called by
    * the orchestrator when an `agent_rate_limits` AgentEvent arrives. The
-   * caller should follow this with `LimitsPoller.markAuthRefreshed("codex")`
-   * so the badge updates immediately rather than on the next tick.
+   * caller should follow this with `LimitsRegistry.markAuthRefreshed("codex")`
+   * so the badge updates immediately rather than on the next event.
    */
   setRateLimits(
     session: SubscriptionLimitsWindow | null,
@@ -70,7 +69,7 @@ export class CodexLimitsProvider implements LimitsProvider {
     return this.latest !== null;
   }
 
-  async fetch(): Promise<SubscriptionLimits | null | LimitsSkipTick> {
+  async fetch(): Promise<SubscriptionLimits | null> {
     if (!this.latest) return null;
     // Plan tier isn't part of the rate-limit payload (`limitName` is null),
     // so — like Claude reading its tier from the credentials file — we pull

@@ -34,7 +34,7 @@ import { initializeManagers } from "./app-di.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
 import { ClaudeLimitsProvider, CodexLimitsProvider } from "./limits/index.js";
 import type { LimitsProvider } from "./limits/types.js";
-import { LimitsPoller } from "./limits-poller.js";
+import { LimitsRegistry } from "./limits-registry.js";
 import {
   setupContainerManager,
   buildRunnerFactory,
@@ -348,40 +348,43 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Subscription-limits poller ----
   // One pill per fetchable provider in the header (see
-  // docs/135-subscription-limits-badge). Polls every 60s; refreshes a
-  // specific provider on its auth-complete event so the pill appears
-  // within seconds of sign-in instead of waiting a full tick. Skipped in
-  // test mode to keep integration tests deterministic — the providers
-  // would otherwise read credential files / fire fetches against
-  // api.anthropic.com / chatgpt.com.
-  const limitsProviders = new Map<AgentId, LimitsProvider>();
-  limitsProviders.set("claude", new ClaudeLimitsProvider({ authManager }));
-  // Codex is event-fed, not polled: its numbers arrive as `agent_rate_limits`
-  // events from the app-server stream (see CodexLimitsProvider). We keep a
-  // typed handle so `recordCodexRateLimits` can push into it.
+  // docs/135-subscription-limits-badge). Both Claude and Codex are
+  // event-fed: their numbers arrive on the agent's stream
+  // (`rate_limit_event` for Claude, `account/rateLimits/updated` for Codex)
+  // and the orchestrator routes them through `recordAgentRateLimits` into
+  // the matching provider. Skipped in test mode to keep integration tests
+  // deterministic.
+  const claudeLimitsProvider = new ClaudeLimitsProvider({ authManager });
   const codexLimitsProvider = new CodexLimitsProvider({ codexAuthManager });
+  const limitsProviders = new Map<AgentId, LimitsProvider>();
+  limitsProviders.set("claude", claudeLimitsProvider);
   limitsProviders.set("codex", codexLimitsProvider);
-  const limitsPoller = !isTestMode
-    ? new LimitsPoller({ providers: limitsProviders, sseBroadcast })
+  const limitsRegistry = !isTestMode
+    ? new LimitsRegistry({ providers: limitsProviders, sseBroadcast })
     : null;
-  if (limitsPoller) {
+  if (limitsRegistry) {
     authManager.on("auth_complete", () => {
-      limitsPoller.markAuthRefreshed("claude");
+      limitsRegistry.markAuthRefreshed("claude");
     });
     codexAuthManager.on("codex_auth_complete", () => {
-      limitsPoller.markAuthRefreshed("codex");
+      limitsRegistry.markAuthRefreshed("codex");
     });
-    limitsPoller.start();
   }
 
   /**
-   * Push a Codex rate-limit snapshot (from an `agent_rate_limits` event) into
-   * the provider and refresh its pill immediately. No-op in test mode (no
-   * poller). See `CodexLimitsProvider` and agent-listeners.ts.
+   * Push a fresh rate-limit snapshot for any agent into its provider and
+   * refresh the badge immediately. No-op in test mode (no registry). The
+   * dispatch is keyed by `agentId` so a single callback serves every
+   * backend — same contract from `agent-listeners.ts` for both Claude and
+   * Codex.
    */
-  const recordCodexRateLimits: AppCtx["recordCodexRateLimits"] = (session, weekly) => {
-    codexLimitsProvider.setRateLimits(session, weekly);
-    limitsPoller?.markAuthRefreshed("codex");
+  const recordAgentRateLimits: AppCtx["recordAgentRateLimits"] = (agentId, session, weekly) => {
+    if (agentId === "claude") {
+      claudeLimitsProvider.setRateLimits(session, weekly);
+    } else if (agentId === "codex") {
+      codexLimitsProvider.setRateLimits(session, weekly);
+    }
+    limitsRegistry?.markAuthRefreshed(agentId);
   };
 
   // ---- Session directory creation ----
@@ -514,11 +517,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
 
     // Subscription-limits snapshot — one pill per fetchable provider in
-    // the header. May be empty on the very first connect after a
-    // restart (the poller's initial tick races SSE connect); the next
-    // 60s tick will broadcast a fresh map. See doc 135.
-    if (limitsPoller) {
-      const snapshot = limitsPoller.getSnapshot();
+    // the header. Both providers are event-fed, so the map is empty until
+    // the first turn on each backend delivers a `rate_limit_event` /
+    // `account/rateLimits/updated`. See doc 135.
+    if (limitsRegistry) {
+      const snapshot = limitsRegistry.getSnapshot();
       if (Object.keys(snapshot).length > 0) {
         client.write(`event: subscription_limits\ndata: ${JSON.stringify({ limits: snapshot })}\n\n`);
       }
@@ -1148,11 +1151,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         repoStore, warmSessionForRepo, generateText,
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
-        recordCodexRateLimits,
-        getSubscriptionLimitsSnapshot: () => limitsPoller?.getSnapshot() ?? {},
-        refreshSubscriptionLimits: limitsPoller
-          ? (agentId) => limitsPoller.triggerProviderRefresh(agentId)
-          : undefined,
+        recordAgentRateLimits,
+        getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},
         workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
       };
@@ -1433,7 +1433,6 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
   app.addHook("onClose", async () => {
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
-    if (limitsPoller) limitsPoller.stop();
     if (repoPrefetcher) repoPrefetcher.stop();
   });
   registerShutdownHook(app, {
