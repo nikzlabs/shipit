@@ -5,6 +5,8 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
+import { CredentialStore } from "../credential-store.js";
+import { ProviderAccountManager } from "../provider-account-manager.js";
 import { createHeadlessSession } from "./headless-sessions.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
@@ -202,6 +204,62 @@ describe("createHeadlessSession", () => {
       statusCode: 429,
       message: "You already have 1 quick sessions running. Open one from the sidebar before starting another.",
     });
+  });
+
+  it("routes credential provisioning through providerAccountManager when one is supplied", async () => {
+    // Regression for the quick-session "not logged in" bug. After
+    // `migrateDefaultAccounts()` runs at orchestrator startup, the legacy
+    // `<credentialsDir>/.claude` (and `.codex`) becomes a symlink into
+    // `provider-accounts/`. The headless path used to skip
+    // `providerAccountManager`, so `prepareSessionAgentEnvironment` fell into
+    // the legacy `provisionAgentCredentials` branch, which copied the symlink
+    // verbatim into the per-session subtree — pointing at an orchestrator path
+    // the container can't resolve. The fix forwards the manager so
+    // `selectRouteForTurn` picks the account route and provisions from the
+    // real account directory. Asserting `providerRoute*` metadata on the
+    // session is the cleanest way to prove the route selector was consulted
+    // without standing up a real container runner. The two agents share the
+    // exact same plumbing, so we exercise both to make sure the symmetry
+    // doesn't drift.
+    fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".claude.json"), "{}");
+    fs.mkdirSync(path.join(tmpDir, ".codex"), { recursive: true });
+    const credentialStore = new CredentialStore(tmpDir);
+    const providerAccountManager = new ProviderAccountManager({
+      credentialsDir: tmpDir,
+      credentialStore,
+    });
+    providerAccountManager.migrateDefaultAccounts();
+    expect(providerAccountManager.getPrimary("claude")?.id).toBe("claude-default");
+    expect(providerAccountManager.getPrimary("codex")?.id).toBe("codex-default");
+
+    await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      { repoUrl: "https://github.com/acme/app.git", prompt: "do it", agent: "claude" },
+      "claude",
+      tmpDir,
+      credentialStore,
+      providerAccountManager,
+    );
+    const claudeSession = sessionManager.get("quick-1");
+    expect(claudeSession?.providerRouteKind).toBe("account");
+    expect(claudeSession?.providerRouteId).toBe("claude-default");
+
+    await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      { repoUrl: "https://github.com/acme/app.git", prompt: "do it", agent: "codex" },
+      "claude",
+      tmpDir,
+      credentialStore,
+      providerAccountManager,
+    );
+    const codexSession = sessionManager.get("quick-2");
+    expect(codexSession?.providerRouteKind).toBe("account");
+    expect(codexSession?.providerRouteId).toBe("codex-default");
   });
 
   it("propagates claim failures as service errors", async () => {

@@ -648,6 +648,7 @@ export async function registerGitHubRoutes(
           deps.sessionManager,
           deps.credentialsDir,
           deps.credentialStore,
+          deps.providerAccountManager,
         );
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -691,6 +692,7 @@ export async function registerGitHubRoutes(
                 deps.sessionManager,
                 deps.credentialsDir,
                 deps.credentialStore,
+                deps.providerAccountManager,
               );
             } catch {
               // Non-fatal — the toggle still worked, fix just didn't trigger
