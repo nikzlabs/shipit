@@ -2,23 +2,42 @@
 
 A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Pluggable agent backend: [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) is the default, [Codex CLI](https://github.com/openai/codex) is supported, and the architecture is agent-agnostic so additional backends can be added later. Authentication uses your existing subscription with the chosen provider — no per-call API keys required.
 
-Chat panel on the left, live preview on the right, git history as your undo stack — all inside ShipIt itself, no jumping out to other tools.
+ShipIt is the surface: build, review, ship, and debug software inside one chat-shaped IDE. PRs, CI status, deploy status, diffs, commits, conversation history, terminal, and live preview all render inline — no jumping out to GitHub, your hosting dashboard, or a separate terminal.
 
 ## Features
 
-- **Chat-driven development** — describe what you want in natural language; the agent writes the code
-- **Live preview** — embedded iframe shows your app updating in real time via Vite HMR
-- **Git as undo** — every agent turn auto-commits; roll back to any previous state with one click
-- **Session persistence** — conversations survive page reloads and browser restarts
-- **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
-- **File browser** — read-only file tree with syntax-highlighted content viewer
-- **Markdown docs** — browse and read project documentation without leaving the app
-- **Terminal output** — agent stdout/stderr in a terminal-like panel for debugging
+### Build
+- **Chat-driven development** — describe what you want in natural language; the agent writes the code, runs the commands, and reads the logs
+- **Multi-agent backend** — Claude Code CLI by default, Codex CLI also supported; sign in with the subscription you already have
+- **Live preview** — embedded iframe shows your app updating in real time, with HMR proxied through ShipIt and multi-port support
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
-- **Port auto-detection** — preview pane works with any dev server, not just Vite
-- **Search in chat** — Ctrl+F / Cmd+F to find text across the conversation
+- **File upload & image input** — drop files into the chat; the agent reads them as context
+- **Interactive terminal** — full PTY (xterm.js) inside the session container for ad-hoc debugging
+- **Monaco code editor** — read and edit files with syntax highlighting and diff view
+- **MCP integration** — connect Model Context Protocol servers to extend the agent's tools
+
+### Review & ship
+- **Inline PR lifecycle card** — title, description, CI checks, deploy status, and merge state all render in chat; no GitHub tab required
+- **AI PR descriptions** — generated from the actual diff when you open a PR
+- **Cross-agent review** — have a second agent review the first agent's changes before merging
+- **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
+- **Auto-deploy on push** — deploy status surfaces inline on the PR card via the GitHub Deployments API
+- **PR comment sync** — review threads from GitHub appear inline in the conversation
+- **Auto-fix preview failures** — preview crashes are surfaced to the agent so it can fix them on the next turn
+
+### Iterate safely
+- **Git as undo** — every agent turn auto-commits; rewind to any previous state, and fork into a new branch from any point
+- **Parallel sessions** — spawn separate workspaces with their own branch, container, and chat history; review each as its own PR
+- **Worktree-backed sessions** — multiple sessions on the same repo share a bare cache and use git worktrees for isolation
+- **Permission modes** — choose how much autonomy the agent has per session
+- **Live steering** — interrupt and redirect the agent mid-turn without losing context
+- **Session sidebar** — pinned sessions, AI-generated session names, status indicators
+
+### Everywhere
 - **Mobile responsive** — tab-based layout on small screens, resizable split panels on desktop
+- **Android wrapper** — a thin WebView app under `android/` for native-feeling access on mobile
 - **Background notifications** — tab title change and browser notification when the agent finishes
+- **Self-update from UI** — pull the latest code, rebuild, and restart from Settings → Advanced
 
 ## Architecture
 
@@ -39,48 +58,57 @@ Three-layer system: browser → orchestrator → session containers.
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose (ShipIt always runs containerized — there is no bare-metal mode)
 - A subscription with the AI provider whose CLI you'll use:
   - For Claude Code: [Claude Pro or Max](https://claude.ai/upgrade)
   - For Codex: an OpenAI account with Codex CLI access
 
-For local development without Docker:
+For working on ShipIt's own source (not just running it), you also need:
 
-- Node.js 20+
-- npm
+- Node.js 20+ and npm
 - git
-- At least one agent CLI installed globally:
-  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
-  - [Codex CLI](https://github.com/openai/codex) — `npm install -g @openai/codex`
 
-## Quick Start (Docker)
+## Install locally (Docker)
 
 ```bash
 git clone https://github.com/nicolasalt/shipit.git
 cd shipit
 
-# Development (hot-reload, source mounted)
+# Development (hot-reload, source mounted) — http://localhost:3000
 docker/local/dev.sh
 
-# Production (optimized build)
+# Production (optimized build) — http://localhost:3000
 docker/local/prod.sh
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Both scripts build the orchestrator + session-worker images and start ShipIt with Docker Compose. On first run, ShipIt prompts you to authenticate with the agent provider you've chosen via an OAuth flow in the browser. Credentials are stored in a persistent Docker volume so you only need to do this once per provider.
 
-On first run, ShipIt prompts you to authenticate with the agent provider you've chosen via an OAuth flow in the browser. Credentials are stored in a persistent Docker volume so you only need to do this once per provider.
+## Install on a VPS
 
-## Local Development
+ShipIt ships with a one-command provisioning script for Ubuntu VPS hosts. It installs Docker, raises the inotify limits session containers need, and optionally puts ShipIt behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (with optional Zero Trust SSO) and/or exposes it over [Tailscale](https://tailscale.com/) — no open inbound ports required.
 
 ```bash
-# Install dependencies
+ssh root@<server-ip>
+
+apt-get update -qq && apt-get install -y -qq git
+git clone https://github.com/nicolasalt/shipit.git /opt/shipit
+bash /opt/shipit/deployment/vps/setup.sh
+```
+
+The script asks whether you want Cloudflare, Tailscale, both, or neither, then takes care of everything else: installing Docker, configuring host limits, building the images, installing the self-updater + restarter systemd units, and bringing ShipIt up.
+
+Once it's running, updates happen from inside the UI — **Settings → Advanced → Software Updates** — or via `bash /opt/shipit/deployment/vps/deploy.sh` on the host.
+
+See [`deployment/README.md`](deployment/README.md) for the full guide: Hetzner sizing recommendations, Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and troubleshooting.
+
+## Working on ShipIt itself
+
+The hot-reload Docker workflow above is the recommended dev loop — `docker/local/dev.sh` mounts the source tree into the orchestrator container and restarts on change. If you want to run the orchestrator outside Docker (note: session containers still require Docker):
+
+```bash
 npm install
-
-# Start the backend (Fastify on :3000)
-npm run dev
-
-# In a separate terminal, start Vite for frontend HMR (:5173)
-npx vite
+npm run dev          # Fastify orchestrator on :3000
+npx vite             # Vite dev server with HMR on :5173 (separate terminal)
 ```
 
 The Vite dev server proxies WebSocket connections to the backend at `localhost:3000`.
@@ -107,13 +135,13 @@ npx vitest run src/server/git.test.ts
 ## How It Works
 
 1. You type a prompt in the chat input
-2. The React frontend sends a JSON message over WebSocket
-3. The Fastify server spawns the configured agent CLI (e.g., `claude -p` for Claude Code, `codex` for Codex) as a child process inside the session container
+2. The React frontend sends a JSON message over the per-session WebSocket
+3. The orchestrator spawns the configured agent CLI (e.g., `claude -p` for Claude Code, `codex` for Codex) inside that session's Docker container via the session worker's HTTP API
 4. The agent CLI streams NDJSON events to stdout as it thinks, writes files, and runs commands
-5. The server parses each line and relays events to the browser over WebSocket
+5. The session worker parses each line and streams events to the orchestrator over SSE, which relays them to the browser over WebSocket
 6. The frontend updates in real time — streaming text, inline diffs, tool activity indicators
-7. When the agent finishes, all file changes are auto-committed to git
-8. The Vite dev server picks up changes via HMR and the preview iframe updates
+7. When the agent finishes, all file changes are auto-committed to git, debounced auto-push runs if a GitHub remote is wired up, and the PR lifecycle card updates inline
+8. The dev server picks up file changes and the preview iframe hot-reloads through the orchestrator's preview proxy
 
 Session continuity is maintained via the agent CLI's resume mechanism (e.g., Claude Code's `--resume` flag). Subsequent messages in the same session resume the conversation context.
 
@@ -146,12 +174,14 @@ src/
 
 ## Docker Volumes
 
-Two named volumes persist data across container restarts:
+Persistent volumes survive container restarts:
 
 | Volume | Mount Point | Purpose |
 |--------|-------------|---------|
 | `workspace` | `/workspace` | Project files that the agent reads and writes |
-| `claude-auth` | `/root/.claude` | Agent CLI OAuth credentials (Claude Code; analogous volumes exist for other providers) |
+| `credentials` | `/credentials` | Agent CLI OAuth credentials + GitHub tokens (shared by all sessions) |
+
+Session containers are ephemeral and rebuilt on demand; only the volumes above and the per-repo bare-cache directories on the host persist long-term state.
 
 ## Configuration
 
