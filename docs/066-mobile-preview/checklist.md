@@ -5,7 +5,7 @@
 - [x] Define `DevicePreset` interface and `DEVICE_PRESETS` constant array (presets table from plan)
 - [x] Add `devicePreset`, `isLandscape`, `customSize` state to `preview-store.ts`
 - [x] Add `setDevicePreset`, `toggleLandscape`, `setCustomSize` actions
-- [x] Persist selected preset ID to `localStorage` (`shipit:devicePreset`), restore on load
+- [x] Persist selected viewport state in the per-session preview snapshot, restore on session switch
 - [x] Add `reset()` handling — clear device state on session reset
 
 ## DeviceSelector component
@@ -45,4 +45,4 @@
 - [x] `PreviewFrame.test.tsx` — iframe fills container when "Responsive"
 - [x] `PreviewFrame.test.tsx` — scale factor computed correctly for small container
 - [x] Store tests — `setDevicePreset`, `toggleLandscape`, `setCustomSize` update state
-- [x] Store tests — localStorage persistence round-trips correctly
+- [x] Store tests — per-session viewport snapshot round-trips correctly
