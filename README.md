@@ -1,6 +1,11 @@
 # ShipIt
 
-A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Pluggable agent backend: [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) is the default, [Codex CLI](https://github.com/openai/codex) is supported, and the architecture is agent-agnostic so additional backends can be added later. Authentication uses your existing subscription with the chosen provider — no per-call API keys required.
+A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Pluggable agent backend — pick the one whose subscription you already have, no per-call API keys required:
+
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — sign in with Claude Pro or Max
+- [Codex CLI](https://github.com/openai/codex) — sign in with your OpenAI account
+
+The architecture is agent-agnostic, so additional backends can be added later.
 
 Three things set ShipIt apart from other AI editors:
 
@@ -14,7 +19,7 @@ Around that core, ShipIt is the surface: build, review, ship, and debug software
 
 ### Build
 - **Chat-driven development** — describe what you want in natural language; the agent writes the code, runs the commands, and reads the logs
-- **Multi-agent backend** — Claude Code CLI by default, Codex CLI also supported; sign in with the subscription you already have
+- **Multi-agent backend** — pick Claude Code CLI or Codex CLI per session; sign in with the subscription you already have
 - **Live preview** — embedded iframe shows your app updating in real time, with HMR proxied through ShipIt and multi-port support
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
 - **File upload & image input** — drop files into the chat; the agent reads them as context
