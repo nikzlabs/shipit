@@ -173,6 +173,12 @@ Uses the existing `enableAutoMerge` GraphQL mutation already in the codebase (`g
 4. Server updates `PrAutomationState.autoMerge.enabled = true`
 5. Card shows "Will merge when CI passes"
 
+If the session has no PR yet, the same endpoint stores the auto-merge intent
+on the session without calling GitHub. The ready-phase PR card exposes the
+toggle in its overflow menu, and PR creation paths apply the stored intent as
+soon as they have a PR number. If GitHub native auto-merge is unavailable at
+that point, the existing ShipIt-managed auto-merge fallback takes over.
+
 When toggled OFF:
 
 1. Client calls `POST /api/sessions/:id/pr/auto-merge` with `{ enabled: false }`

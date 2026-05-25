@@ -259,7 +259,15 @@ export const usePrStore = create<PrState>((set, get) => ({
           card.phase !== "merged" && card.phase !== "closed") {
         return state;
       }
-      return { cardBySession: { ...state.cardBySession, [sessionId]: card } };
+      return {
+        cardBySession: {
+          ...state.cardBySession,
+          [sessionId]: {
+            ...card,
+            autoMerge: card.autoMerge ?? existing?.autoMerge,
+          },
+        },
+      };
     });
   },
 
@@ -652,8 +660,27 @@ export const usePrStore = create<PrState>((set, get) => ({
       if (!res.ok) {
         const data = await res.json() as { error?: string };
         console.error("[pr-store] Auto-merge toggle failed:", data.error);
+        return;
       }
-      // State updates come from SSE
+      const data = await res.json() as { enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean };
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        if (!existing) return state;
+        return {
+          cardBySession: {
+            ...state.cardBySession,
+            [sessionId]: {
+              ...existing,
+              autoMerge: {
+                ...existing.autoMerge,
+                enabled: data.enabled,
+                mergeMethod: data.mergeMethod,
+                managed: data.managed,
+              },
+            },
+          },
+        };
+      });
     } catch (err) {
       console.error("[pr-store] Auto-merge toggle failed:", err);
     }

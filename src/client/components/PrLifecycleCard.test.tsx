@@ -129,6 +129,20 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Create PR")).toBeInTheDocument();
   });
 
+  it("renders auto-merge toggle in the ready phase options", () => {
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      totalInsertions: 30,
+      totalDeletions: 2,
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    fireEvent.click(screen.getByLabelText("More options"));
+    expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+  });
+
   it("keeps ready phase create button idle while a normal agent turn is running", () => {
     useSessionStore.setState({ isLoading: true, activity: { label: "Thinking..." } });
     setCard("s1", {

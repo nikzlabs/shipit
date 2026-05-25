@@ -378,6 +378,7 @@ function ReadyPhase({
   const del = card.totalDeletions ?? 0;
   const hasDiffStats = ins > 0 || del > 0;
   const openDiff = useOpenPrDiff();
+  const autoMerge = card.autoMerge;
 
   return (
     <div className="flex items-center gap-3 flex-nowrap">
@@ -386,6 +387,11 @@ function ReadyPhase({
       {hasDiffStats && (
         <span className="ml-auto shrink-0 flex items-center gap-3">
           <DiffStats ins={ins} del={del} onClick={openDiff} />
+          <OverflowMenu>
+            <div className="px-2 py-1">
+              <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
+            </div>
+          </OverflowMenu>
           <Button
             size="sm"
             onClick={onCreatePr}
