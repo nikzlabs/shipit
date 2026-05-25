@@ -1,12 +1,20 @@
 ---
 status: planned
 priority: medium
-description: Support Codex's experimental /goal command in ShipIt by routing chat slash commands to the Codex app-server goal API and rendering goal state inline.
+title: Goal command
+description: Support provider-native goal commands in ShipIt chat, starting with Codex's experimental app-server goal API and leaving room for a Claude design.
 ---
 
-# Codex `/goal` command
+# Goal command
 
 ## Problem
+
+ShipIt should support provider-native "goal" workflows in chat without adding a
+new command surface. Codex CLI has an experimental `/goal` slash command in its
+TUI, and a Claude design can be added here later if Claude exposes a comparable
+primitive or if we decide to build a ShipIt-managed goal layer for Claude.
+
+## Codex design
 
 Codex CLI has an experimental `/goal` slash command in its TUI. In Codex's
 native terminal UI, `/goal <objective>` creates a persistent objective for the

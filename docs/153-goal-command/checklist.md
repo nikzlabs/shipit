@@ -1,5 +1,6 @@
 # Checklist
 
+- [ ] Add Claude goal-command design when the desired Claude behavior is clear.
 - [ ] Probe and document the exact app-server behavior for `/goal resume`.
 - [ ] Enable Codex `goals` feature flag and `experimentalApi` initialize capability.
 - [ ] Add Codex adapter goal request methods and goal notification mapping.
