@@ -7,9 +7,14 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "./ui/dropdown-menu.js";
+import { AutoMergeToggle } from "./PrStatusControls.js";
+import type { PrCardState } from "../stores/pr-store.js";
 
 interface SessionTopBarProps {
+  sessionId: string;
   title: string;
+  canAutoMerge?: boolean;
+  autoMerge?: PrCardState["autoMerge"];
   onRename: (title: string) => void;
   onDownloadChat: () => void;
   onArchive: () => void;
@@ -18,7 +23,18 @@ interface SessionTopBarProps {
   onRecoverRewind?: () => void;
 }
 
-export function SessionTopBar({ title, onRename, onDownloadChat, onArchive, onSearch, recoverRewindAvailable, onRecoverRewind }: SessionTopBarProps) {
+export function SessionTopBar({
+  sessionId,
+  title,
+  canAutoMerge,
+  autoMerge,
+  onRename,
+  onDownloadChat,
+  onArchive,
+  onSearch,
+  recoverRewindAvailable,
+  onRecoverRewind,
+}: SessionTopBarProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editingTitle, setEditingTitle] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -100,6 +116,11 @@ export function SessionTopBar({ title, onRename, onDownloadChat, onArchive, onSe
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {canAutoMerge && (
+              <div className="px-2 py-1">
+                <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
+              </div>
+            )}
             {recoverRewindAvailable && (
               <DropdownMenuItem onSelect={onRecoverRewind}>
                 <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />

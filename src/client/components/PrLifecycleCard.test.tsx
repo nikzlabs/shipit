@@ -12,6 +12,7 @@ beforeEach(() => {
   usePrStore.setState({
     statusBySession: {},
     cardBySession: {},
+    autoMergeBySession: {},
   });
   // Reset stores that the merge-conflict UI reads (rebaseStatus, agent running).
   // Without this, leftover state from a prior test (e.g. rebaseStatus = "in_progress")
@@ -141,6 +142,20 @@ describe("PrLifecycleCard", () => {
 
     fireEvent.click(screen.getByLabelText("More options"));
     expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+  });
+
+  it("renders ready phase auto-merge options without diff stats", () => {
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      headBranch: "shipit/new-work",
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    fireEvent.click(screen.getByLabelText("More options"));
+    expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+    expect(screen.queryByText("Create PR")).toBeNull();
   });
 
   it("keeps ready phase create button idle while a normal agent turn is running", () => {

@@ -384,14 +384,14 @@ function ReadyPhase({
     <div className="flex items-center gap-3 flex-nowrap">
       <PrStateBadge sessionId={sessionId} />
       <BranchLabel headBranch={card.headBranch} />
-      {hasDiffStats && (
-        <span className="ml-auto shrink-0 flex items-center gap-3">
-          <DiffStats ins={ins} del={del} onClick={openDiff} />
-          <OverflowMenu>
-            <div className="px-2 py-1">
-              <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
-            </div>
-          </OverflowMenu>
+      <span className="ml-auto shrink-0 flex items-center gap-3">
+        {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
+        <OverflowMenu>
+          <div className="px-2 py-1">
+            <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
+          </div>
+        </OverflowMenu>
+        {hasDiffStats && (
           <Button
             size="sm"
             onClick={onCreatePr}
@@ -401,8 +401,8 @@ function ReadyPhase({
             {creating && <CircleNotchIcon size={14} className="animate-spin" />}
             {creating ? "Creating PR..." : "Create PR"}
           </Button>
-        </span>
-      )}
+        )}
+      </span>
     </div>
   );
 }
