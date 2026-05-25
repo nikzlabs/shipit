@@ -173,7 +173,7 @@ describe("file-review-store", () => {
     expect(comments.map((c) => c.id)).toEqual(["c2"]);
   });
 
-  it("sendDraft() returns the prompt, clears the draft, and prepends to history", async () => {
+  it("sendDraft() returns the structured payload, clears the draft, and prepends to history", async () => {
     const draft = makeDraft({ id: "d6", comments: [selectionComment("c1")] });
     const sentReview: FileReview = { ...draft, status: "sent", sentAt: "2025-01-03T00:00:00Z" };
     const fake = new FakeFetch();
@@ -186,8 +186,10 @@ describe("file-review-store", () => {
     fake.install();
 
     await useFileReviewStore.getState().load("s1", "plan.md");
-    const prompt = await useFileReviewStore.getState().sendDraft("s1", "plan.md");
-    expect(prompt).toContain("I've reviewed plan.md");
+    const result = await useFileReviewStore.getState().sendDraft("s1", "plan.md");
+    expect(result?.prompt).toContain("I've reviewed plan.md");
+    expect(result?.filePath).toBe("plan.md");
+    expect(result?.commentCount).toBe(1);
     expect(useFileReviewStore.getState().getDraft("s1", "plan.md")).toBeNull();
     expect(useFileReviewStore.getState().getHistory("s1", "plan.md")[0]?.id).toBe("d6");
   });
@@ -200,8 +202,8 @@ describe("file-review-store", () => {
     fake.install();
 
     await useFileReviewStore.getState().load("s1", "plan.md");
-    const prompt = await useFileReviewStore.getState().sendDraft("s1", "plan.md");
-    expect(prompt).toBeNull();
+    const result = await useFileReviewStore.getState().sendDraft("s1", "plan.md");
+    expect(result).toBeNull();
     expect(fake.calls.find((c) => c.url.endsWith("/send"))).toBeUndefined();
   });
 

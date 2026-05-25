@@ -80,6 +80,8 @@ import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug, shouldAdoptCla
 import { saveAgentId, saveModelId } from "./utils/local-storage.js";
 import { siblingsOf, orderSiblingsForTabs, siblingTabLabel } from "./utils/doc-paths.js";
 import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
+import { sendUserMessage } from "./utils/send-user-message.js";
+import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 
 export default function App() {
   const { sessionId: urlSessionId } = useParams<{ sessionId: string }>();
@@ -414,12 +416,12 @@ export default function App() {
           reviewStore.getDraft(sid, targetFile),
           reviewStore.getHistory(sid, targetFile),
         );
-        const session = useSessionStore.getState();
         useFileStore.getState().closePreview();
-        session.setMessages((prev) => [...prev, { role: "user", text: prompt }]);
-        session.setIsLoading(true);
-        session.setActivity({ label: "Reviewing..." });
-        send({ type: "send_review_message", text: prompt, sessionId: sid, reviewFilePath: targetFile });
+        sendUserMessage({
+          bubble: { role: "user", text: prompt },
+          activity: "Reviewing...",
+          dispatch: () => send({ type: "send_review_message", text: prompt, sessionId: sid, reviewFilePath: targetFile }),
+        });
         return;
       }
 
@@ -444,9 +446,6 @@ export default function App() {
         ? imageUploads.map((u) => ({ data: "", mediaType: u.mimeType ?? "image/png", src: u.dataUrl ?? u.previewUrl! }))
         : undefined;
       const uploadPathsForMessage = uploadRefs.length > 0 ? uploadRefs.map((u) => u.path) : undefined;
-      session.setMessages((prev) => [...prev, { role: "user", text, files: filesForMessage, images: imagesForMessage, uploadPaths: uploadPathsForMessage }]);
-      session.setIsLoading(true);
-      session.setActivity({ label: "Thinking..." });
 
       const currentSessionId = session.sessionId;
       if (currentSessionId) {
@@ -467,23 +466,30 @@ export default function App() {
           })(),
         };
 
-        if (status === "open") {
-          // Send directly over WS
-          send(message);
-        } else {
-          // The session exists but the WS isn't open yet — e.g. we just claimed
-          // a session on /{slug}/new and the socket is still connecting. Calling
-          // send() here would silently drop the message (useWebSocket.send only
-          // writes when readyState === OPEN), leaving the user with an optimistic
-          // bubble + spinner and no response. Stash it so useConnectionSync
-          // flushes it the moment the WS opens. (docs/144 fix #2)
-          useSessionStore.getState().setPendingWsMessage(message);
-        }
+        sendUserMessage({
+          bubble: { role: "user", text, files: filesForMessage, images: imagesForMessage, uploadPaths: uploadPathsForMessage },
+          activity: "Thinking...",
+          dispatch: () => {
+            if (status === "open") {
+              // Send directly over WS
+              send(message);
+            } else {
+              // The session exists but the WS isn't open yet — e.g. we just claimed
+              // a session on /{slug}/new and the socket is still connecting. Calling
+              // send() here would silently drop the message (useWebSocket.send only
+              // writes when readyState === OPEN), leaving the user with an optimistic
+              // bubble + spinner and no response. Stash it so useConnectionSync
+              // flushes it the moment the WS opens. (docs/144 fix #2)
+              useSessionStore.getState().setPendingWsMessage(message);
+            }
+          },
+        });
       } else {
-        // No session — can't send without one (sessions are created via claim-session)
+        // No session — can't send without one (sessions are created via claim-session).
+        // Still append the optimistic bubble so the user sees what they typed,
+        // but DON'T flip isLoading: there's no agent to wait on.
         console.warn("[session] No active session — cannot send message");
-        session.setIsLoading(false);
-        session.setActivity(undefined);
+        session.setMessages((prev) => [...prev, { role: "user", text, files: filesForMessage, images: imagesForMessage, uploadPaths: uploadPathsForMessage }]);
       }
       settings.clearPendingFiles();
       clearUploads();
@@ -598,11 +604,11 @@ export default function App() {
 
   const handleAnswerQuestion = useCallback(
     (toolUseId: string, answers: Record<string, string>) => {
-      send({ type: "answer_question", toolUseId, answers });
-      const session = useSessionStore.getState();
-      session.setMessages((prev) => [...prev, { role: "user", text: Object.values(answers).join(", ") }]);
-      session.setIsLoading(true);
-      session.setActivity({ label: "Thinking..." });
+      sendUserMessage({
+        bubble: { role: "user", text: Object.values(answers).join(", ") },
+        activity: "Thinking...",
+        dispatch: () => send({ type: "answer_question", toolUseId, answers }),
+      });
     },
     [send],
   );
@@ -610,11 +616,17 @@ export default function App() {
   const handleSendFollowUp = useCallback(
     (text: string) => {
       const session = useSessionStore.getState();
-      session.setMessages((prev) => [...prev, { role: "user", text }]);
-      session.setIsLoading(true);
-      session.setActivity({ label: "Thinking..." });
       const pm = useSettingsStore.getState().getPermissionMode(session.sessionId);
-      send({ type: "send_message", text, sessionId: session.sessionId, permissionMode: pm !== "auto" ? pm : undefined });
+      sendUserMessage({
+        bubble: { role: "user", text },
+        activity: "Thinking...",
+        dispatch: () => send({
+          type: "send_message",
+          text,
+          sessionId: session.sessionId,
+          permissionMode: pm !== "auto" ? pm : undefined,
+        }),
+      });
     },
     [send],
   );
@@ -818,9 +830,19 @@ export default function App() {
   );
 
   const handleFileSendComments = useCallback(
-    (prompt: string) => {
+    (payload: SendCommentsPayload) => {
+      const { prompt, filePaths, commentCount } = payload;
       useFileStore.getState().closePreview();
-      send({ type: "send_message", text: prompt });
+      const sid = useSessionStore.getState().sessionId;
+      sendUserMessage({
+        bubble: {
+          role: "user",
+          text: prompt,
+          userReview: { filePaths, commentCount },
+        },
+        activity: "Working on comments...",
+        dispatch: () => send({ type: "send_message", text: prompt, sessionId: sid ?? undefined }),
+      });
     },
     [send],
   );
@@ -831,12 +853,13 @@ export default function App() {
   // new AI comments stream back into the (reopened) modal via `review_updated`.
   const handleAskAgentReview = useCallback(
     (prompt: string, reviewFilePath: string) => {
-      const session = useSessionStore.getState();
+      const sid = useSessionStore.getState().sessionId;
       useFileStore.getState().closePreview();
-      session.setMessages((prev) => [...prev, { role: "user", text: prompt }]);
-      session.setIsLoading(true);
-      session.setActivity({ label: "Reviewing..." });
-      send({ type: "send_review_message", text: prompt, sessionId: session.sessionId, reviewFilePath });
+      sendUserMessage({
+        bubble: { role: "user", text: prompt },
+        activity: "Reviewing...",
+        dispatch: () => send({ type: "send_review_message", text: prompt, sessionId: sid, reviewFilePath }),
+      });
     },
     [send],
   );

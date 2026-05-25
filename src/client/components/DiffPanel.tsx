@@ -15,6 +15,7 @@ import type { FileDiff } from "../../server/shared/types.js";
 import type { PrReviewThread } from "../../server/shared/types/github-types.js";
 import { buildFileTree, type FileTreeNode } from "./diff-utils.js";
 import { DiffTreeNode } from "./DiffTreeNode.js";
+import type { SendCommentsPayload } from "./FilePreviewModal.js";
 
 /** Map file extensions to Monaco language IDs. */
 function getLanguageFromPath(filePath: string): string {
@@ -84,7 +85,7 @@ interface DiffPanelProps {
   diff: TurnDiffData;
   onClose: () => void;
   commitMessage?: string;
-  onSendComments?: (prompt: string) => void;
+  onSendComments?: (payload: SendCommentsPayload) => void;
 }
 
 /** Monaco DiffEditor options shared by all file sections. */
@@ -289,7 +290,8 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
     }
     prompt += "Please address each comment.";
 
-    onSendComments(prompt);
+    const filePaths = Array.from(byFile.keys());
+    onSendComments({ prompt, filePaths, commentCount });
     clearComments(sessionId);
   }, [commentCount, onSendComments, allComments, diff.files, clearComments, sessionId]);
 
