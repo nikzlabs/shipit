@@ -63,7 +63,7 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
   if (snapshot.error && !hasData) {
     return (
       <span
-        className="hidden sm:inline-flex items-center text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) text-(--color-text-secondary) font-medium tabular-nums"
+        className="inline-flex items-center text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) text-(--color-text-secondary) font-medium tabular-nums"
         title={buildErrorTooltip(label, snapshot)}
       >
         {label} —
@@ -78,7 +78,7 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
 
   return (
     <span
-      className="hidden sm:inline-flex items-center gap-2 text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) font-medium tabular-nums text-(--color-text-secondary)"
+      className="inline-flex items-center gap-2 text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) font-medium tabular-nums text-(--color-text-secondary)"
       title={buildTooltip(label, snapshot)}
       data-stale={isStale ? "true" : undefined}
     >

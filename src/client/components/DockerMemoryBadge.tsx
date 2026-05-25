@@ -33,7 +33,7 @@ export function DockerMemoryBadge({ stats }: DockerMemoryBadgeProps) {
 
   return (
     <span
-      className={`hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) ${colorClass} font-medium tabular-nums`}
+      className={`inline-block text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) ${colorClass} font-medium tabular-nums`}
       title={title}
     >
       {label}
