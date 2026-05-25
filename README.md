@@ -50,16 +50,18 @@ Around that core, ShipIt is the surface: build, review, ship, and debug software
 - **Background notifications** — tab title change and browser notification when the agent finishes
 - **Self-update from UI** — pull the latest code, rebuild, and restart from Settings → Advanced
 
-## Prerequisites
+## Installation
+
+If you want to hack on ShipIt itself instead of just running it, see [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture, dev loop, and module layout.
+
+### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`). Docker Desktop bundles it; on Linux install `docker-compose-plugin` alongside `docker-ce`. ShipIt always runs containerized — there is no bare-metal mode.
 - Credentials for at least one agent backend — a subscription or an API key works for either:
   - Claude Code: [Claude Pro/Max](https://claude.ai/upgrade) or an [Anthropic API key](https://console.anthropic.com/settings/keys)
   - Codex: a ChatGPT subscription or an [OpenAI API key](https://platform.openai.com/api-keys)
 
-If you want to hack on ShipIt itself, see [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture, dev loop, and module layout.
-
-## Install locally (Docker)
+### Local (Docker)
 
 ```bash
 git clone https://github.com/nicolasalt/shipit.git
@@ -69,7 +71,7 @@ docker/local/prod.sh
 
 This builds the orchestrator + session-worker images and starts ShipIt with Docker Compose at [http://localhost:3000](http://localhost:3000). On first run, ShipIt prompts you to authenticate with the agent provider you've chosen via an OAuth flow in the browser. Credentials are stored in a persistent Docker volume so you only need to do this once per provider.
 
-## Install on a VPS
+### VPS
 
 ShipIt ships with a one-command provisioning script for Ubuntu VPS hosts. It installs Docker, raises the inotify limits session containers need, and optionally puts ShipIt behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (with optional Zero Trust SSO) and/or exposes it over [Tailscale](https://tailscale.com/) — no open inbound ports required.
 
