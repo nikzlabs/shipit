@@ -92,6 +92,7 @@ describe("pr-store", () => {
 
     it("clears status and card for sessions in `removals`", () => {
       usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prState: "merged" })]);
+      usePrStore.setState({ autoMergeBySession: { s1: { enabled: true, mergeMethod: "squash" } } });
       expect(usePrStore.getState().statusBySession.s1).toBeDefined();
       expect(usePrStore.getState().cardBySession.s1).toBeDefined();
 
@@ -99,6 +100,7 @@ describe("pr-store", () => {
 
       expect(usePrStore.getState().statusBySession.s1).toBeUndefined();
       expect(usePrStore.getState().cardBySession.s1).toBeUndefined();
+      expect(usePrStore.getState().autoMergeBySession.s1).toBeUndefined();
     });
 
     it("applies removals before updates so an unarchive followed by a fresh PR works", () => {
@@ -117,6 +119,36 @@ describe("pr-store", () => {
       expect(pr?.createdAt).toBe("2026-05-20T10:00:00Z");
       expect(pr?.author?.login).toBe("alice");
       expect(pr?.files).toEqual([{ path: "src/index.ts", status: "M", insertions: 10, deletions: 5 }]);
+    });
+
+    it("copies auto-merge state into session state and the card", () => {
+      const autoMerge = { enabled: true, mergeMethod: "squash" as const };
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ autoMerge })]);
+
+      expect(usePrStore.getState().autoMergeBySession.s1).toEqual(autoMerge);
+      expect(usePrStore.getState().cardBySession.s1?.autoMerge).toEqual(autoMerge);
+    });
+  });
+
+  describe("toggleAutoMerge", () => {
+    it("stores auto-merge state even when no card exists yet", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+        enabled: true,
+        mergeMethod: "squash",
+      }), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
+
+      try {
+        await usePrStore.getState().toggleAutoMerge("s1", true);
+
+        expect(usePrStore.getState().autoMergeBySession.s1).toMatchObject({
+          enabled: true,
+          mergeMethod: "squash",
+        });
+        expect(usePrStore.getState().cardBySession.s1).toBeUndefined();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 

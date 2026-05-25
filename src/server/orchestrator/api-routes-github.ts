@@ -29,6 +29,7 @@ import {
   gitHubLogout,
   triggerCIFix,
   toggleAutoMerge,
+  activatePendingAutoMergeForPr,
   updateMergeMethod,
   replyToReviewThread,
   resolveReviewThread,
@@ -94,6 +95,13 @@ export async function registerGitHubRoutes(
         // Track the new PR in the poller
         if (deps.prStatusPoller && session.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
+          await activatePendingAutoMergeForPr(
+            deps.githubAuthManager,
+            deps.prStatusPoller,
+            request.params.id,
+            result.url,
+            result.number,
+          );
           void deps.prStatusPoller.forceRefreshSession(request.params.id);
         }
 
@@ -177,6 +185,13 @@ export async function registerGitHubRoutes(
         });
         if (deps.prStatusPoller && session.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);
+          await activatePendingAutoMergeForPr(
+            deps.githubAuthManager,
+            deps.prStatusPoller,
+            request.params.id,
+            result.url,
+            result.number,
+          );
           void deps.prStatusPoller.forceRefreshSession(request.params.id);
         }
         return result;

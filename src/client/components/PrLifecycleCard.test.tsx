@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { PrLifecycleCard, PrStateBadge } from "./PrLifecycleCard.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
@@ -12,6 +13,7 @@ beforeEach(() => {
   usePrStore.setState({
     statusBySession: {},
     cardBySession: {},
+    autoMergeBySession: {},
   });
   // Reset stores that the merge-conflict UI reads (rebaseStatus, agent running).
   // Without this, leftover state from a prior test (e.g. rebaseStatus = "in_progress")
@@ -127,6 +129,36 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("+30")).toBeInTheDocument();
     expect(screen.getByText("-2")).toBeInTheDocument();
     expect(screen.getByText("Create PR")).toBeInTheDocument();
+  });
+
+  it("renders auto-merge toggle in the ready phase options", async () => {
+    const user = userEvent.setup();
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      totalInsertions: 30,
+      totalDeletions: 2,
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    await user.click(screen.getByLabelText("More options"));
+    expect(await screen.findByText("Auto-merge")).toBeInTheDocument();
+  });
+
+  it("renders ready phase auto-merge options without diff stats", async () => {
+    const user = userEvent.setup();
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      headBranch: "shipit/new-work",
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    await user.click(screen.getByLabelText("More options"));
+    expect(await screen.findByText("Auto-merge")).toBeInTheDocument();
+    expect(screen.queryByText("Create PR")).toBeNull();
   });
 
   it("keeps ready phase create button idle while a normal agent turn is running", () => {
@@ -284,7 +316,8 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Fix CI")).toBeInTheDocument();
   });
 
-  it("shows auto-fix toggle when CI fails (inside overflow menu)", () => {
+  it("shows auto-fix toggle when CI fails (inside overflow menu)", async () => {
+    const user = userEvent.setup();
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
@@ -292,8 +325,8 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    fireEvent.click(screen.getByLabelText("More options"));
-    expect(screen.getByText("Auto-fix")).toBeInTheDocument();
+    await user.click(screen.getByLabelText("More options"));
+    expect(await screen.findByText("Auto-fix")).toBeInTheDocument();
   });
 
   it("shows auto-fix running state with attempt counter", () => {
@@ -439,7 +472,8 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Rebase and merge")).toBeInTheDocument();
   });
 
-  it("renders auto-merge toggle when CI passed (inside overflow menu)", () => {
+  it("renders auto-merge toggle when CI passed (inside overflow menu)", async () => {
+    const user = userEvent.setup();
     setCard("s1", {
       ...openPrCard,
       checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
@@ -447,8 +481,8 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    fireEvent.click(screen.getByLabelText("More options"));
-    expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+    await user.click(screen.getByLabelText("More options"));
+    expect(await screen.findByText("Auto-merge")).toBeInTheDocument();
   });
 
   it("resets the 'Merging...' state when the sessionId prop changes", async () => {
@@ -808,7 +842,8 @@ describe("PrLifecycleCard — open PR details", () => {
     expect(onOpenDetails).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT call onOpenDetails when an interactive control is clicked", () => {
+  it("does NOT call onOpenDetails when an interactive control is clicked", async () => {
+    const user = userEvent.setup();
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 2, failed: 1, pending: 0 },
@@ -818,11 +853,11 @@ describe("PrLifecycleCard — open PR details", () => {
     render(<PrLifecycleCard sessionId="s1" onOpenDetails={onOpenDetails} />);
 
     // Opening the overflow menu (a button) must not switch the tab.
-    fireEvent.click(screen.getByLabelText("More options"));
+    await user.click(screen.getByLabelText("More options"));
     expect(onOpenDetails).not.toHaveBeenCalled();
 
     // Toggling auto-fix (a button inside the menu) must not switch the tab.
-    fireEvent.click(screen.getByText("Auto-fix"));
+    await user.click(await screen.findByText("Auto-fix"));
     expect(onOpenDetails).not.toHaveBeenCalled();
   });
 

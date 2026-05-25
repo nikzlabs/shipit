@@ -818,6 +818,48 @@ async function generatePrDescriptionFromContext(
 
 // ---- Auto-merge operations ----
 
+const GRAPHQL_MERGE_METHOD = {
+  merge: "MERGE",
+  squash: "SQUASH",
+  rebase: "REBASE",
+} as const;
+
+function parseRepoFromPrUrl(prUrl: string): { owner: string; repo: string } | null {
+  const urlMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(prUrl);
+  if (!urlMatch) return null;
+  return { owner: urlMatch[1], repo: urlMatch[2] };
+}
+
+/**
+ * If auto-merge was enabled before a PR existed, apply that preference to the
+ * newly-created PR now that GitHub has a pull request number to target.
+ */
+export async function activatePendingAutoMergeForPr(
+  githubAuth: GitHubAuthManager,
+  prStatusPoller: PrStatusPoller,
+  sessionId: string,
+  prUrl: string,
+  prNumber: number,
+): Promise<void> {
+  const autoMergeState = prStatusPoller.getAutoMergeState(sessionId);
+  if (!autoMergeState?.enabled) return;
+
+  const resolved = parseRepoFromPrUrl(prUrl);
+  if (!resolved) return;
+
+  const graphqlMethod = GRAPHQL_MERGE_METHOD[autoMergeState.mergeMethod];
+  const result = await githubAuth.enableAutoMerge(resolved.owner, resolved.repo, prNumber, graphqlMethod);
+
+  if (!result.success) {
+    const branchSettingsUrl = `https://github.com/${resolved.owner}/${resolved.repo}/settings/branches`;
+    prStatusPoller.setAutoMergeManaged(sessionId, true, branchSettingsUrl);
+    return;
+  }
+
+  prStatusPoller.setAutoMergeEnabled(sessionId, true);
+  prStatusPoller.setAutoMergeManaged(sessionId, false);
+}
+
 /** Toggle auto-merge on/off for a session's PR. */
 export async function toggleAutoMerge(
   githubAuth: GitHubAuthManager,
@@ -828,17 +870,24 @@ export async function toggleAutoMerge(
   if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const prStatus = prStatusPoller.getStatus(sessionId);
-  if (!prStatus) throw new ServiceError(404, "No PR status found for this session");
+  if (!prStatus) {
+    const state = prStatusPoller.setAutoMergeEnabled(sessionId, enabled);
+    return {
+      enabled: state.enabled,
+      mergeMethod: state.mergeMethod,
+      managed: state.managed,
+    };
+  }
 
-  const urlMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(prStatus.prUrl);
-  if (!urlMatch) throw new ServiceError(400, "Cannot parse repository from PR URL");
-  const [, owner, repo] = urlMatch;
+  const resolved = parseRepoFromPrUrl(prStatus.prUrl);
+  if (!resolved) throw new ServiceError(400, "Cannot parse repository from PR URL");
+  const { owner, repo } = resolved;
 
   const autoMergeState = prStatusPoller.getAutoMergeState(sessionId);
   const mergeMethod = autoMergeState?.mergeMethod ?? "squash";
 
   if (enabled) {
-    const graphqlMethod = mergeMethod === "merge" ? "MERGE" as const : mergeMethod === "squash" ? "SQUASH" as const : "REBASE" as const;
+    const graphqlMethod = GRAPHQL_MERGE_METHOD[mergeMethod];
     const result = await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);
 
     if (!result.success) {

@@ -127,7 +127,7 @@ describe("POST /api/sessions/:id/pr/auto-merge", () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it("returns 404 when no PR status found", async () => {
+  it("stores auto-merge intent when no PR exists yet", async () => {
     await githubAuth.setToken("test-token");
 
     const res = await app.inject({
@@ -136,7 +136,12 @@ describe("POST /api/sessions/:id/pr/auto-merge", () => {
       headers: { "Content-Type": "application/json" },
       payload: JSON.stringify({ enabled: true }),
     });
-    expect(res.statusCode).toBe(404);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ enabled: true, mergeMethod: "squash" });
+    expect(prStatusPoller.getAutoMergeState(sessionId)).toMatchObject({
+      enabled: true,
+      mergeMethod: "squash",
+    });
   });
 });
 
