@@ -611,6 +611,48 @@ describe("PreviewFrame", () => {
     expect(iframe).toHaveAttribute("src", "http://localhost:5173");
   });
 
+  it("removes a merged session iframe from the background pool after session switch", async () => {
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
+    const { rerender } = render(
+      <PreviewFrame
+        preview={previewA}
+        sessionId="session-a"
+        mergedSessionIds={["session-a"]}
+        {...defaultProps}
+      />,
+    );
+    const iframeA = await screen.findByTitle("Live Preview");
+    expect(iframeA).toHaveAttribute("src", "http://localhost:5173");
+
+    // The merged session stays visible while it is active, then its iframe is
+    // unmounted once another session becomes active.
+    rerender(
+      <PreviewFrame
+        preview={previewB}
+        sessionId="session-b"
+        mergedSessionIds={["session-a"]}
+        {...defaultProps}
+      />,
+    );
+
+    await screen.findByTitle("Live Preview");
+    expect(screen.queryByTitle("Background Preview")).not.toBeInTheDocument();
+    expect(screen.getByTitle("Live Preview")).toHaveAttribute("src", "http://localhost:3000");
+  });
+
+  it("keeps a non-merged session iframe in the background pool after session switch", async () => {
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const previewB: PreviewStatus = { running: true, port: 3000, url: "http://localhost:3000", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={previewA} sessionId="session-a" {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+
+    rerender(<PreviewFrame preview={previewB} sessionId="session-b" {...defaultProps} />);
+
+    await screen.findByTitle("Live Preview");
+    expect(screen.getByTitle("Background Preview")).toHaveAttribute("src", "http://localhost:5173");
+  });
+
   it("shows spinner for fresh session start (no stale iframe)", () => {
     // No previous preview → stale ref is null → show spinner
     render(<PreviewFrame preview={null} sessionId="session-a" {...defaultProps} />);

@@ -163,6 +163,13 @@ export default function App() {
     const card = s.cardBySession[wsSessionId];
     return !!card?.pr && (card.phase === "open" || card.phase === "merged" || card.phase === "closed");
   });
+  const prCardsBySession = usePrStore((s) => s.cardBySession);
+  const mergedPreviewSessionIds = useMemo(
+    () => Object.entries(prCardsBySession)
+      .filter(([, card]) => card.phase === "merged")
+      .map(([id]) => id),
+    [prCardsBySession],
+  );
 
   // Permission mode is keyed per-session (with a fallback to the pre-session
   // default). This subscription recomputes whenever wsSessionId or any
@@ -970,7 +977,7 @@ export default function App() {
       <div className="flex-1 min-h-0 relative">
         {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active */}
         <div className={`absolute inset-0 ${(!isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr))) ? "" : "invisible pointer-events-none"}`}>
-          <PreviewFrame preview={effectivePreviewStatus} sessionId={sessionId} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} onStartService={(name) => send({ type: "start_service", name })} onStopService={(name) => send({ type: "stop_service", name })} />
+          <PreviewFrame preview={effectivePreviewStatus} sessionId={sessionId} mergedSessionIds={mergedPreviewSessionIds} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} onStartService={(name) => send({ type: "start_service", name })} onStopService={(name) => send({ type: "stop_service", name })} />
         </div>
         {rightTab === "docs" ? (
           <DocsViewer files={docFiles} sessionStartedAt={currentSession?.createdAt} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />

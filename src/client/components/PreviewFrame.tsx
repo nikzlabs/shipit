@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: auth-blocked detection + iframe refresh + ResizeObserver wiring (external system sync)
-import { useState, useEffect, useRef, useLayoutEffect } from "react";
+import { useState, useEffect, useRef, useLayoutEffect, useMemo } from "react";
 import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import {
@@ -55,6 +55,8 @@ interface PreviewFrameProps {
   preview: PreviewStatus | null;
   /** Current session ID — used in iframe key to force reload on session switch. */
   sessionId?: string;
+  /** Sessions whose PR has merged; background iframes for these sessions are torn down. */
+  mergedSessionIds?: string[];
   /** All detected ports available for selection. */
   detectedPorts: number[];
   /** The currently selected port override, or null to use the default. */
@@ -105,6 +107,7 @@ export { formatErrorForMessage };
 export function PreviewFrame({
   preview,
   sessionId,
+  mergedSessionIds = [],
   detectedPorts,
   selectedPort,
   onSelectPort,
@@ -146,10 +149,12 @@ export function PreviewFrame({
   // Slots are keyed by "sessionId:port". Only the active slot is visible.
   // Background slots keep their iframes alive in the DOM. See `useIframePool`
   // for LRU eviction and `usePreviewHealthPoller` for slot creation.
-  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot } = useIframePool();
+  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot, pruneSlots } = useIframePool();
 
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
+  const mergedSessionKey = mergedSessionIds.join("\0");
+  const mergedSessionIdSet = useMemo(() => new Set(mergedSessionIds), [mergedSessionKey]);
 
   // Container mode detection for the current preview
   const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
@@ -174,6 +179,26 @@ export function PreviewFrame({
     promoteSlot,
     setSlot,
   });
+
+  // Merged sessions are terminal: keep the active iframe mounted while the user
+  // is viewing that session, but tear down its background iframe as soon as the
+  // user switches away so completed PR previews do not keep running invisibly.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  useEffect(() => {
+    if (mergedSessionIdSet.size === 0) return;
+    for (const key of slotOrder) {
+      if (key === activeSlotKey) continue;
+      const [slotSessionId] = key.split(":");
+      if (mergedSessionIdSet.has(slotSessionId)) {
+        loadedSlotsRef.current.delete(key);
+      }
+    }
+    pruneSlots((key) => {
+      if (key === activeSlotKey) return false;
+      const [slotSessionId] = key.split(":");
+      return mergedSessionIdSet.has(slotSessionId);
+    });
+  }, [activeSlotKey, mergedSessionIdSet, pruneSlots, slotOrder]);
 
   // Derive active slot state for overlay/UI logic
   const activeSlotUrl = activeSlot?.url ?? null;
