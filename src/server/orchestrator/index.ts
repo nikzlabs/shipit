@@ -905,6 +905,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         runnerMessageListener = (msg: WsServerMessage) => { send(msg); };
         runner.on("message", runnerMessageListener);
         runner.attachViewer();
+        // Reopen the PR-status poller's gate. The supervisor was paused if
+        // the user closed every tab; a viewer is now back. activateSession
+        // will follow with a forceRefreshSession so the freshness is
+        // immediate — this just keeps the supervisor running for subsequent
+        // ticks. See docs/064 "Polling budget."
+        prStatusPoller.notifyViewerAttached();
         // Don't replay the turn event buffer here — persisted chat history is
         // loaded via HTTP (loadSessionHistory) and is the single source of truth.
         // Replaying buffer events races with the HTTP load and causes duplicates
@@ -980,6 +986,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           if (runnerMessageListener) attachedRunner.off("message", runnerMessageListener);
           if (previewRetryListener) attachedRunner.off("message", previewRetryListener);
           attachedRunner.detachViewer();
+          // Arm the PR-status poller's grace timer so the supervisor pauses
+          // itself if no one reconnects within the disconnect grace window.
+          // The poller decides — it knows whether any other viewer / runner /
+          // autonomous flow keeps the gate open.
+          prStatusPoller.notifyViewerDetached();
         }
         attachedRunner = null;
         runnerMessageListener = null;
@@ -1001,6 +1012,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             const branch = await pushToOrigin(git);
             if (branch) {
               runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+              // A push just landed → CI is about to register. Bump this
+              // session's repo to fast cadence for the post-push window so
+              // the first non-none check is observed quickly. The poller
+              // re-arms the supervisor if the gate was already open
+              // (a closed tab keeps the supervisor paused; the user will
+              // see fresh data on their next visit via forceRefreshSession).
+              prStatusPoller.notifyAutoPush(runner.sessionId);
             }
           } catch (err) {
             if (isNonFastForwardError(err)) {

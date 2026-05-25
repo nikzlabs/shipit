@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { PrStatusPoller, PR_STATUS_POLL_INTERVAL_MS, parsePrNode, extractHeadSha, extractFailedCheckRuns } from "./pr-status-poller.js";
+import { PrStatusPoller, PR_STATUS_POLL_INTERVAL_MS, PR_STATUS_SLOW_INTERVAL_MS, parsePrNode, extractHeadSha, extractFailedCheckRuns } from "./pr-status-poller.js";
 import {
   PR_STATUS_QUERY,
   PR_STATUS_QUERY_WITH_CONVERSATION,
@@ -11,6 +11,37 @@ import * as workflowLoader from "./workflow-loader.js";
 import type { ParsedWorkflow } from "./workflow-loader.js";
 import type { SessionManager } from "./sessions.js";
 import type { GitHubAuthManager } from "./github-auth.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
+
+/**
+ * Minimal SessionRunnerRegistry fake for tests that need to drive the
+ * viewer-gated supervisor. Lets a test attach/detach viewers and toggle a
+ * session's `running` flag without spinning up real runners.
+ */
+function makeFakeRegistry(): SessionRunnerRegistry & {
+  setViewers(sessionId: string, count: number): void;
+  setRunning(sessionId: string, running: boolean): void;
+} {
+  const runners = new Map<string, { viewerCount: number; running: boolean }>();
+  const ensure = (id: string) => {
+    let r = runners.get(id);
+    if (!r) { r = { viewerCount: 0, running: false }; runners.set(id, r); }
+    return r;
+  };
+  return {
+    ids: () => [...runners.keys()],
+    get: (id: string) => {
+      const r = runners.get(id);
+      if (!r) return undefined;
+      return { viewerCount: r.viewerCount, running: r.running } as unknown as SessionRunnerInterface;
+    },
+    setViewers(sessionId: string, count: number) { ensure(sessionId).viewerCount = count; },
+    setRunning(sessionId: string, running: boolean) { ensure(sessionId).running = running; },
+  } as unknown as SessionRunnerRegistry & {
+    setViewers(sessionId: string, count: number): void;
+    setRunning(sessionId: string, running: boolean): void;
+  };
+}
 
 // eslint-disable-next-line no-restricted-syntax -- vi.mock's importOriginal generic needs an inline import() type
 vi.mock("./workflow-loader.js", async (importOriginal: () => Promise<typeof import("./workflow-loader.js")>) => {
@@ -599,9 +630,10 @@ describe("PrStatusPoller", () => {
       expect.anything(),
     );
 
-    // Closing it returns to the light query on the next tick.
+    // Closing it returns to the light query on the next tick. The PR is
+    // settled, so the next poll lands at slow cadence (120 s).
     poller.setPrTabActive("s1", false);
-    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     expect(githubAuth.graphqlQuery).toHaveBeenLastCalledWith(PR_STATUS_QUERY, expect.anything());
   });
 
@@ -624,7 +656,8 @@ describe("PrStatusPoller", () => {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ title: "Updated title" })] } } },
     });
 
-    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    // Settled PR runs at slow cadence; the next poll lands at 120s.
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     expect(sseBroadcast).toHaveBeenCalledTimes(2);
     expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
       updates: expect.arrayContaining([
@@ -652,7 +685,8 @@ describe("PrStatusPoller", () => {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ body: "New description" })] } } },
     });
 
-    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    // Settled PR runs at slow cadence; the next poll lands at 120s.
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     expect(sseBroadcast).toHaveBeenCalledTimes(2);
     expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
       updates: expect.arrayContaining([
@@ -698,7 +732,8 @@ describe("PrStatusPoller", () => {
     };
     (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue(withoutPr);
 
-    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    // Settled PR cadence is slow (120s); advance past that for the next poll.
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     // Flush the REST verify's pending microtasks.
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
@@ -745,7 +780,8 @@ describe("PrStatusPoller", () => {
       data: { repository: { pullRequests: { nodes: [] } } },
     });
 
-    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    // Settled PR cadence is slow (120s); advance past that for the next poll.
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
     await vi.advanceTimersByTimeAsync(0);
 
     // REST verify ran but did NOT promote — no merge broadcast at all.
@@ -1012,7 +1048,9 @@ describe("PrStatusPoller", () => {
     expect(sseBroadcast).not.toHaveBeenCalled();
   });
 
-  it("skips polling when client is idle and no CI is pending", async () => {
+  // ---- Viewer-gated polling (Strategy 1) ----
+
+  it("does not poll when no viewers are attached and no autonomous action is in flight", async () => {
     const graphqlResult = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
     };
@@ -1020,36 +1058,165 @@ describe("PrStatusPoller", () => {
     sessionManager = makeSessionManager([
       { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
     ]);
+    const registry = makeFakeRegistry();
 
-    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // Initial poll fires (client just connected, considered active)
+    // No viewers ever attached — gate is closed from the start; the
+    // synchronous first-poll path in trackSession sees the closed gate and
+    // skips.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
+
+    // Drive time forward — still no polls.
+    await vi.advanceTimersByTimeAsync(10 * PR_STATUS_POLL_INTERVAL_MS);
+    expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
+  });
+
+  it("viewer attach kicks an immediate poll", async () => {
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const registry = makeFakeRegistry();
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
+
+    // Mimic the orchestrator: a viewer attaches → notifyViewerAttached, then
+    // the WS path immediately force-refreshes the session it activated.
+    registry.setViewers("s1", 1);
+    poller.notifyViewerAttached();
+    await poller.forceRefreshSession("s1");
+
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("viewer detach + grace pauses the supervisor", async () => {
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const registry = makeFakeRegistry();
+    registry.setViewers("s1", 1);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
+    poller.notifyViewerAttached();
+    poller.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
 
-    // Advance past the idle timeout (30s) — polls during this window still fire
-    await vi.advanceTimersByTimeAsync(31_000);
-    const callsBeforeIdle = (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length;
-    expect(callsBeforeIdle).toBeGreaterThan(1); // polls during the active window
+    // Viewer leaves. Within the 60s grace window the supervisor keeps
+    // running so a quick reconnect doesn't re-burn.
+    registry.setViewers("s1", 0);
+    poller.notifyViewerDetached();
 
-    // Now advance another 30s — client is idle & CI is success → polls should be skipped
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBeforeIdle);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    // Settled PR → cadence dropped to slow, so no fresh poll in this 15s tick.
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+
+    // After the grace window elapses, the next supervisor tick sees the
+    // gate closed and stops the supervisor — no further polls.
+    await vi.advanceTimersByTimeAsync(60_000);
+    const callsAfterPause = (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10 * PR_STATUS_POLL_INTERVAL_MS);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterPause);
   });
 
-  it("keeps polling when client is idle but CI is pending", async () => {
+  it("reconnect within the grace window does not re-burn the budget on resume", async () => {
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const registry = makeFakeRegistry();
+    registry.setViewers("s1", 1);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
+    poller.notifyViewerAttached();
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+
+    // Network blip: detach, then reattach within the grace window.
+    registry.setViewers("s1", 0);
+    poller.notifyViewerDetached();
+    await vi.advanceTimersByTimeAsync(20_000);
+    registry.setViewers("s1", 1);
+    poller.notifyViewerAttached();
+
+    // Supervisor never stopped, so we keep ticking; settled PR stays slow.
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+  });
+
+  it("auto-fix in flight keeps polling alive even with no viewers", async () => {
+    const failingNode = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            oid: "sha-1",
+            statusCheckRollup: {
+              state: "PENDING",
+              contexts: {
+                nodes: [
+                  { databaseId: 1, name: "test", status: "IN_PROGRESS", conclusion: null },
+                ],
+              },
+            },
+          },
+        }],
+      },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [failingNode] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const registry = makeFakeRegistry();
+    // No viewers anywhere.
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    // trackSession alone (with no viewers and no autonomous flag yet) sees
+    // a closed gate and skips the first poll.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
+
+    // Caller turns on auto-fix and the manager marks it running. That
+    // alone keeps the gate open and arms the supervisor.
+    poller.setAutoFixEnabled("s1", true);
+    poller.markAutoFixRunning("s1");
+
+    // Auto-fix keep-alive forces fast cadence → repeated polls fire over
+    // the next minute even though no browser is attached.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("headless turn (running runner, no viewer) keeps the gate open and polls continue", async () => {
+    // PR has pending CI so the cadence is fast — without the headless-gate
+    // signal, this would still be skipped (no viewer, no autonomous action).
     const pendingNode = makeGraphQLPrNode({
       commits: {
         nodes: [{
           commit: {
             statusCheckRollup: {
               state: "PENDING",
-              contexts: {
-                nodes: [
-                  { name: "test", status: "IN_PROGRESS", conclusion: null },
-                ],
-              },
+              contexts: { nodes: [{ name: "test", status: "IN_PROGRESS", conclusion: null }] },
             },
           },
         }],
@@ -1062,20 +1229,88 @@ describe("PrStatusPoller", () => {
     sessionManager = makeSessionManager([
       { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
     ]);
+    const registry = makeFakeRegistry();
+    registry.setRunning("s1", true);
+    // No viewer attached — only the runner's running flag keeps the gate open.
 
-    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
     poller.trackSession("s1", "https://github.com/owner/repo");
-
-    // Initial poll
+    // trackSession's initial-poll path fires because the headless-running
+    // gate is open. No need for an explicit forceRefreshSession here.
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
 
-    // Advance past idle timeout — but CI is pending, so polling should continue
-    await vi.advanceTimersByTimeAsync(31_000);
+    // Headless turn keeps fast cadence even with no viewer.
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
     expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
   });
 
-  it("resumes polling after recordClientActivity is called", async () => {
+  // ---- Per-repo cadence scaling (Strategy 2) ----
+
+  it("settled PRs poll at slow cadence (120s), not fast (15s)", async () => {
+    const successNode = makeGraphQLPrNode();
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [successNode] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const registry = makeFakeRegistry();
+    registry.setViewers("s1", 1);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
+    poller.notifyViewerAttached();
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    // Initial poll lands.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+
+    // 60 s in: cadence is slow (120 s) → no fresh poll.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+
+    // Past 120 s: a poll fires.
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("pending CI forces fast cadence — every 15s", async () => {
+    const pendingNode = makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: {
+              state: "PENDING",
+              contexts: { nodes: [{ name: "test", status: "IN_PROGRESS", conclusion: null }] },
+            },
+          },
+        }],
+      },
+    });
+    const graphqlResult = {
+      data: { repository: { pullRequests: { nodes: [pendingNode] } } },
+    };
+    githubAuth = makeGitHubAuth(graphqlResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const registry = makeFakeRegistry();
+    registry.setViewers("s1", 1);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
+    poller.notifyViewerAttached();
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("post-push transitions to fast cadence for 5 minutes, then back to slow", async () => {
     const graphqlResult = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
     };
@@ -1083,25 +1318,89 @@ describe("PrStatusPoller", () => {
     sessionManager = makeSessionManager([
       { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
     ]);
+    const registry = makeFakeRegistry();
+    registry.setViewers("s1", 1);
 
-    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
+    poller.notifyViewerAttached();
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // Initial poll + advance past idle timeout
     await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(31_000);
-    const callsBeforeIdle = (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
 
-    // Confirm idle — no more polls
-    await vi.advanceTimersByTimeAsync(9_000);
-    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBeforeIdle);
+    // Without a post-push signal: a settled PR sits at slow cadence and
+    // doesn't poll again in the next 60 s.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(githubAuth.graphqlQuery).toHaveBeenCalledTimes(1);
 
-    // User comes back — send heartbeat
-    poller.recordClientActivity();
+    // scheduleAutoPush ⇒ poller is notified. Fast cadence resumes.
+    poller.notifyAutoPush("s1");
 
-    // Next poll tick should fire
+    // Next supervisor tick polls.
     await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
-    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBeforeIdle);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+
+    // 5 minutes after the push, the window closes and the PR settles back
+    // to slow cadence — no fresh poll in the following 60 s after that.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    const callsAfterWindow = (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterWindow);
+  });
+
+  it("multi-repo: a pending-CI repo polls fast while a settled repo polls slow", async () => {
+    // Two repos, two sessions. Repo A has pending CI; repo B is settled.
+    // Only repo A should poll on every tick; repo B should poll on the
+    // slow cadence.
+    const pendingNode = makeGraphQLPrNode({
+      headRefName: "branch-a",
+      commits: {
+        nodes: [{
+          commit: {
+            statusCheckRollup: {
+              state: "PENDING",
+              contexts: { nodes: [{ name: "test", status: "IN_PROGRESS", conclusion: null }] },
+            },
+          },
+        }],
+      },
+    });
+    const settledNode = makeGraphQLPrNode({ headRefName: "branch-b" });
+    const graphql = vi.fn(async (_query: string, vars: { owner: string; name: string }) => {
+      const node = vars.name === "repoA" ? pendingNode : settledNode;
+      return { data: { repository: { pullRequests: { nodes: [node] } } } };
+    });
+    githubAuth = {
+      authenticated: true,
+      graphqlQuery: graphql,
+      findPullRequestAnyState: vi.fn(),
+      getRateLimitState: vi.fn().mockReturnValue({ limited: false, resetAt: null, remaining: null }),
+    } as unknown as GitHubAuthManager;
+    sessionManager = makeSessionManager([
+      { id: "sA", branch: "branch-a", remoteUrl: "https://github.com/owner/repoA" },
+      { id: "sB", branch: "branch-b", remoteUrl: "https://github.com/owner/repoB" },
+    ]);
+    const registry = makeFakeRegistry();
+    registry.setViewers("sA", 1);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
+    poller.notifyViewerAttached();
+    poller.trackSession("sA", "https://github.com/owner/repoA");
+    poller.trackSession("sB", "https://github.com/owner/repoB");
+
+    await vi.advanceTimersByTimeAsync(0);
+    // Both repos polled once at track time.
+    const a0 = graphql.mock.calls.filter((c) => (c[1] as { name: string }).name === "repoA").length;
+    const b0 = graphql.mock.calls.filter((c) => (c[1] as { name: string }).name === "repoB").length;
+    expect(a0).toBe(1);
+    expect(b0).toBe(1);
+
+    // Advance 60 s: repoA's fast cadence fires 4 polls; repoB stays put.
+    await vi.advanceTimersByTimeAsync(60_000);
+    const aAfter = graphql.mock.calls.filter((c) => (c[1] as { name: string }).name === "repoA").length;
+    const bAfter = graphql.mock.calls.filter((c) => (c[1] as { name: string }).name === "repoB").length;
+    expect(aAfter).toBeGreaterThan(a0);
+    expect(bAfter).toBe(b0);
   });
 });
 
@@ -1663,8 +1962,10 @@ describe("PrStatusPoller — workflow-aware CI state", () => {
     sseBroadcast.mockClear();
     mockLoadWorkflows.mockResolvedValue([ALWAYS_APPLIES]);
 
-    // Advance to the next poll tick.
-    await vi.advanceTimersByTimeAsync(PR_STATUS_POLL_INTERVAL_MS);
+    // Advance to the next poll tick. A PR observed as "none" sits at slow
+    // cadence (120 s); the workflow-retry discovery is therefore at most
+    // SLOW_INTERVAL_MS late — that's the deliberate cost of cadence scaling.
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
 
     // Now the override should fire — state flips to "pending".
     expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
