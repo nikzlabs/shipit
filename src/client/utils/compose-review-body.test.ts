@@ -37,8 +37,18 @@ describe("composeReviewMessage", () => {
     expect(body).toContain("Do not review it yourself.");
     expect(body).toContain("submit_review_comments");
     expect(body).toContain("empty array");
+    expect(body).toContain("Submit every material finding");
+    expect(body).not.toContain("at most 5 findings");
+    expect(body).toContain("Prefer no comment over a weak comment");
     // No comments block when there's nothing to embed.
     expect(body).not.toContain("Existing comments");
+  });
+
+  it("bounds re-review instead of asking for an open-ended review loop", () => {
+    const body = composeReviewMessage("docs/plan.md", null, []);
+    expect(body).toContain("one fresh subagent to re-review");
+    expect(body).toContain("Do not keep looping");
+    expect(body).not.toContain("Repeat the review-fix-review loop until");
   });
 
   it("embeds draft comments verbatim, newest first", () => {

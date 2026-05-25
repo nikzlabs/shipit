@@ -7,7 +7,7 @@
  *   - tells the parent agent to delegate the review to a subagent (the parent
  *     likely wrote the file, so a first-person review is biased);
  *   - instructs the subagent to call `submit_review_comments` exactly once with
- *     all findings (empty array if none);
+ *     only high-signal findings (empty array if none);
  *   - instructs the subagent to echo the tool result verbatim as its final
  *     assistant message so the structured findings reach the parent through
  *     the Task tool result (docs/151);
@@ -110,22 +110,30 @@ export function composeReviewMessage(
     "Brief the subagent to:",
     "- Approach the file fresh, treating it as work it has not seen.",
     "- Read related files in the repo as needed for context.",
-    "- Call the `submit_review_comments` MCP tool exactly once with all of its",
+    "- Report only material issues that would block correctness, safety,",
+    "  completeness, or the user's stated goal. Do not report style opinions,",
+    "  wording preferences, speculative concerns, or nice-to-have improvements.",
+    "- Before submitting any finding, verify that it has a concrete user impact",
+    "  and a specific fix. If you cannot name both, omit it.",
+    "- Submit every material finding, ordered by severity. Do not suppress an",
+    "  important issue because there are already several findings.",
+    "- Call the `submit_review_comments` MCP tool exactly once with the selected",
     "  findings as a single array. Do not call it per-comment.",
-    "- If the file needs no new comments, still call `submit_review_comments`",
+    "- If the file has no material findings, still call `submit_review_comments`",
     "  with an empty array — that is the signal that the review ran.",
     "- After calling `submit_review_comments`, return the tool result verbatim",
     "  as your final assistant message. Do not paraphrase, do not add",
     "  commentary, do not summarize — the parent needs the exact rendered list.",
     "",
-    "Focus areas: correctness, completeness, internal consistency, and",
-    "contradictions with the rest of the repo. Skip nits.",
+    "Review standard: this is a convergence pass, not an exhaustive critique.",
+    "Prefer no comment over a weak comment. Skip nits.",
     "",
     "After the subagent submits its findings: you (the parent) apply the fixes",
-    "— the subagent only reviews, it does not edit. Then spawn a fresh subagent",
-    "to re-review the updated file. Repeat the review-fix-review loop until the",
-    "reviewer returns an empty array (no remaining findings). Each re-review",
-    "must be a new subagent so the review stays first-person-unbiased.",
+    "for material findings only — the subagent only reviews, it does not edit.",
+    "Then spawn one fresh subagent to re-review the updated file. On that",
+    "re-review, fix only blockers or regressions introduced by the changes.",
+    "Do not keep looping on lower-severity follow-up suggestions; summarize",
+    "non-blocking leftovers in chat only if they are worth the user's attention.",
   ];
 
   if (embeds.length > 0) {

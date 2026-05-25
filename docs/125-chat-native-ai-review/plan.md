@@ -70,6 +70,13 @@ description: Replace the out-of-band AI review endpoint with a chat-native flow 
 > `shipit`) when the stamped hostname is stale. Production sets
 > `SHIPIT_ORCHESTRATOR_HOST=shipit`, so long-lived session containers can still
 > submit review comments after the orchestrator container is recreated.
+>
+> **Convergence update (2026-05).** The composed review prompt is now
+> severity-gated and bounded: reviewers submit only material findings with a
+> concrete user impact and fix, order findings by severity, and the parent
+> performs at most one fresh-subagent re-review after applying fixes. This
+> replaces the original open-ended "review-fix-review until empty" loop, which
+> encouraged low-severity nitpicks and made review rounds take too long.
 
 ## Summary
 
@@ -258,22 +265,30 @@ Clicking it does exactly two things on the client:
    Brief the subagent to:
    - Approach the file fresh, treating it as work it has not seen.
    - Read related files in the repo as needed for context.
-   - Call the `submit_review_comments` MCP tool exactly once with
-     all of its findings as a single array. Do not call it
-     per-comment.
-   - If the subagent decides the file does not need any new
-     comments, it must still call `submit_review_comments` with an
-     empty array — that is the signal that the review ran.
+   - Report only material issues that would block correctness, safety,
+     completeness, or the user's stated goal. Do not report style
+     opinions, wording preferences, speculative concerns, or nice-to-have
+     improvements.
+   - Before submitting any finding, verify that it has a concrete user
+     impact and a specific fix. If you cannot name both, omit it.
+   - Submit every material finding, ordered by severity. Do not suppress
+     an important issue because there are already several findings.
+   - Call the `submit_review_comments` MCP tool exactly once with the
+     selected findings as a single array. Do not call it per-comment.
+   - If the file has no material findings, still call
+     `submit_review_comments` with an empty array — that is the signal
+     that the review ran.
 
-   Focus areas: correctness, completeness, internal consistency,
-   contradictions with the rest of the repo. Skip nits.
+   Review standard: this is a convergence pass, not an exhaustive
+   critique. Prefer no comment over a weak comment. Skip nits.
 
    After the subagent submits its findings: you (the parent) apply
-   the fixes — the subagent only reviews, it does not edit. Then
-   spawn a fresh subagent to re-review the updated file. Repeat
-   the review-fix-review loop until the reviewer returns an empty
-   array (no remaining findings). Each re-review must be a new
-   subagent so the review stays first-person-unbiased.
+   the fixes for material findings only — the subagent only reviews, it
+   does not edit. Then spawn one fresh subagent to re-review the updated
+   file. On that re-review, fix only blockers or regressions introduced
+   by the changes. Do not keep looping on lower-severity follow-up
+   suggestions; summarize non-blocking leftovers in chat only if they
+   are worth the user's attention.
 
    --- Existing comments on this file (do not duplicate) ---
 
