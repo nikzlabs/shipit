@@ -15,41 +15,6 @@ Three things set ShipIt apart from other AI editors:
 
 Around that core, ShipIt is the surface: build, review, ship, and debug software inside one chat-shaped IDE. PRs, CI status, deploy status, diffs, commits, conversation history, terminal, and live preview all render inline — no jumping out to GitHub, your hosting dashboard, or a separate terminal.
 
-## Features
-
-### Build
-- **Chat-driven development** — describe what you want in natural language; the agent writes the code, runs the commands, and reads the logs
-- **Multi-agent backend** — pick Claude Code CLI or Codex CLI per session; sign in with the subscription you already have
-- **Live preview** — embedded iframe shows your app updating in real time, with HMR proxied through ShipIt and multi-port support
-- **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
-- **File upload & image input** — drop files into the chat; the agent reads them as context
-- **Interactive terminal** — full PTY (xterm.js) inside the session container for ad-hoc debugging
-- **Monaco code editor** — read and edit files with syntax highlighting and diff view
-- **MCP integration** — connect Model Context Protocol servers to extend the agent's tools
-
-### Review & ship
-- **Inline PR lifecycle card** — title, description, CI checks, deploy status, and merge state all render in chat; no GitHub tab required
-- **AI PR descriptions** — generated from the actual diff when you open a PR
-- **Cross-agent review** — have a second agent review the first agent's changes before merging
-- **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
-- **Auto-deploy on push** — deploy status surfaces inline on the PR card via the GitHub Deployments API
-- **PR comment sync** — review threads from GitHub appear inline in the conversation
-- **Auto-fix preview failures** — preview crashes are surfaced to the agent so it can fix them on the next turn
-
-### Iterate safely
-- **Git as undo** — every agent turn auto-commits; rewind to any previous state, and fork into a new branch from any point
-- **Parallel sessions** — spawn separate workspaces with their own branch, container, and chat history; review each as its own PR
-- **Worktree-backed sessions** — multiple sessions on the same repo share a bare cache and use git worktrees for isolation
-- **Permission modes** — choose how much autonomy the agent has per session
-- **Live steering** — interrupt and redirect the agent mid-turn without losing context
-- **Session sidebar** — pinned sessions, AI-generated session names, status indicators
-
-### Everywhere
-- **Mobile responsive** — tab-based layout on small screens, resizable split panels on desktop
-- **Android wrapper** — a thin WebView app under `android/` for native-feeling access on mobile
-- **Background notifications** — tab title change and browser notification when the agent finishes
-- **Self-update from UI** — pull the latest code, rebuild, and restart from Settings → Advanced
-
 ## Installation
 
 If you want to hack on ShipIt itself instead of just running it, see [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture, dev loop, and module layout.
@@ -90,6 +55,41 @@ The script asks whether you want Cloudflare, Tailscale, both, or neither, then t
 Once it's running, updates happen from inside the UI — **Settings → Advanced → Software Updates** — or via `bash /opt/shipit/deployment/vps/deploy.sh` on the host.
 
 See [`deployment/README.md`](deployment/README.md) for the full guide: sizing recommendations, Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and troubleshooting.
+
+## Features
+
+### Build
+- **Chat-driven development** — describe what you want in natural language; the agent writes the code, runs the commands, and reads the logs
+- **Multi-agent backend** — pick Claude Code CLI or Codex CLI per session; sign in with the subscription you already have
+- **Live preview** — embedded iframe shows your app updating in real time, with HMR proxied through ShipIt and multi-port support
+- **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
+- **File upload & image input** — drop files into the chat; the agent reads them as context
+- **Interactive terminal** — full PTY (xterm.js) inside the session container for ad-hoc debugging
+- **Monaco code editor** — read and edit files with syntax highlighting and diff view
+- **MCP integration** — connect Model Context Protocol servers to extend the agent's tools
+
+### Review & ship
+- **Inline PR lifecycle card** — title, description, CI checks, deploy status, and merge state all render in chat; no GitHub tab required
+- **AI PR descriptions** — generated from the actual diff when you open a PR
+- **Cross-agent review** — have a second agent review the first agent's changes before merging
+- **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
+- **Auto-deploy on push** — deploy status surfaces inline on the PR card via the GitHub Deployments API
+- **PR comment sync** — review threads from GitHub appear inline in the conversation
+- **Auto-fix preview failures** — preview crashes are surfaced to the agent so it can fix them on the next turn
+
+### Iterate safely
+- **Git as undo** — every agent turn auto-commits; rewind to any previous state, and fork into a new branch from any point
+- **Parallel sessions** — spawn separate workspaces with their own branch, container, and chat history; review each as its own PR
+- **Worktree-backed sessions** — multiple sessions on the same repo share a bare cache and use git worktrees for isolation
+- **Permission modes** — choose how much autonomy the agent has per session
+- **Live steering** — interrupt and redirect the agent mid-turn without losing context
+- **Session sidebar** — pinned sessions, AI-generated session names, status indicators
+
+### Everywhere
+- **Mobile responsive** — tab-based layout on small screens, resizable split panels on desktop
+- **Android wrapper** — a thin WebView app under `android/` for native-feeling access on mobile
+- **Background notifications** — tab title change and browser notification when the agent finishes
+- **Self-update from UI** — pull the latest code, rebuild, and restart from Settings → Advanced
 
 ## Contributing
 
