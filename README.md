@@ -1,9 +1,9 @@
 # ShipIt
 
-A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Pluggable agent backend — pick the one whose subscription you already have, no per-call API keys required:
+A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Pluggable agent backend — pick whichever provider you already pay for, and authenticate with either a subscription OAuth login or an API key:
 
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — sign in with Claude Pro or Max
-- [Codex CLI](https://github.com/openai/codex) — sign in with your OpenAI account
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or an Anthropic API key
+- [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
 
 The architecture is agent-agnostic, so additional backends can be added later.
 
@@ -53,9 +53,9 @@ Around that core, ShipIt is the surface: build, review, ship, and debug software
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`). Docker Desktop bundles it; on Linux install `docker-compose-plugin` alongside `docker-ce`. ShipIt always runs containerized — there is no bare-metal mode.
-- A subscription with the AI provider whose CLI you'll use:
-  - For Claude Code: [Claude Pro or Max](https://claude.ai/upgrade)
-  - For Codex: an OpenAI account with Codex CLI access
+- Credentials for at least one agent backend — a subscription or an API key works for either:
+  - Claude Code: [Claude Pro/Max](https://claude.ai/upgrade) or an [Anthropic API key](https://console.anthropic.com/settings/keys)
+  - Codex: a ChatGPT subscription or an [OpenAI API key](https://platform.openai.com/api-keys)
 
 If you want to hack on ShipIt itself, see [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture, dev loop, and module layout.
 
