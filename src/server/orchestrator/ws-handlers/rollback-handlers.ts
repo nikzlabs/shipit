@@ -198,6 +198,29 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       : findCommitBeforeGap(allMessages, gapPosition);
 
     if (!rollbackHash) {
+      // "both" degrades to chat-only when there's nothing on the code side
+      // to undo (session has had no auto-commits). The user asked to rewind
+      // both — satisfy the chat half rather than failing the whole action.
+      if (action === "both") {
+        const truncated = allMessages.slice(0, gapPosition);
+        const removed = allMessages.slice(gapPosition);
+        const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "chat", messages: allMessages });
+        if (sessionDir) await deleteUploadsFromMessages(removed, path.join(path.dirname(sessionDir), "uploads"));
+        ctx.chatHistoryManager.saveMessages(sessionId, truncated);
+        const replay = buildConversationReplay(truncated);
+        if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
+        ctx.sessionManager.clearAgentSessionId(sessionId);
+        ctx.send({
+          type: "rewind_complete",
+          gapPosition,
+          action: "both",
+          droppedMessageCount: removed.length,
+          snapshotSessionId: snapshot.sessionId,
+          snapshotExpiresAt: snapshot.expiresAt,
+        });
+        emitSnapshotAvailable(ctx, snapshot);
+        return;
+      }
       ctx.send({ type: "error", message: action === "fork" ? "No code state available to fork." : "No code changes to rewind from this point." });
       return;
     }

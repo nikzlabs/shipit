@@ -752,7 +752,8 @@ export type WsRewindComplete =
       gapPosition: number;
       action: "both";
       droppedMessageCount: number;
-      commitHash: string;
+      /** Omitted when the session had no auto-commits and "both" degraded to chat-only. */
+      commitHash?: string;
       snapshotSessionId?: string;
       snapshotExpiresAt?: number;
     };

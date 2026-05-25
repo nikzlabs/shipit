@@ -280,6 +280,38 @@ describe("Integration: rewind and fork", () => {
     client.close();
   });
 
+  it("rewinds chat when 'both' is requested but no code commits exist", async () => {
+    const { sessionId, workspaceDir } = await createSession();
+    const git = new GitManager(workspaceDir);
+    const initialHead = await git.getHeadHash();
+    expect(initialHead).toBeTruthy();
+
+    // No autoCommit calls — every message lacks commitHash and parentCommitHash,
+    // so findCommitBeforeGap returns null. Used to fail the action entirely;
+    // now degrades to chat-only.
+    chatHistoryManager.append(sessionId, { role: "user", text: "first message" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "first reply" });
+    chatHistoryManager.append(sessionId, { role: "user", text: "discard me" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "also discard" });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receiveType("preview_status");
+
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "both" });
+    await expect(client.receiveType("rewind_complete")).resolves.toMatchObject({
+      type: "rewind_complete",
+      gapPosition: 2,
+      action: "both",
+      droppedMessageCount: 2,
+    });
+
+    const loaded = chatHistoryManager.load(sessionId);
+    expect(loaded.map((m) => m.text)).toEqual(["first message", "first reply"]);
+    expect(await git.getHeadHash()).toBe(initialHead);
+
+    client.close();
+  });
+
   it("forks from a gap, copies kept uploads, and persists the parent breadcrumb", async () => {
     const { sessionId, sessionDir } = await createSession();
     const uploadsDir = path.join(sessionDir, "uploads");
