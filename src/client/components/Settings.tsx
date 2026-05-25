@@ -245,9 +245,15 @@ function ProviderAccountSection({ provider }: { provider: AgentId }) {
   const applyAccounts = (next: ProviderAccount[]) => setProviderAccounts(next);
 
   const request = async <T,>(url: string, init?: RequestInit): Promise<T> => {
+    // Only advertise a JSON content-type when we're actually sending a JSON
+    // body. Otherwise Fastify's JSON parser sees Content-Type: application/json
+    // with a zero-length body and rejects with FST_ERR_CTP_EMPTY_JSON_BODY
+    // (HTTP 400 "Bad Request") before the route handler ever runs — which
+    // showed up here as the Disconnect button surfacing a "Bad Request" toast.
+    const hasBody = init?.body !== undefined && init?.body !== null;
     const res = await fetch(url, {
       ...init,
-      headers: { "Content-Type": "application/json" },
+      headers: hasBody ? { "Content-Type": "application/json" } : {},
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({})) as { error?: string };

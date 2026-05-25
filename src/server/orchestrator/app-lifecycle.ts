@@ -18,6 +18,7 @@ import type { RepoGit } from "./repo-git.js";
 import type { AuthManager } from "./auth.js";
 import type { CodexAuthManager, CodexAuthFailedEvent, CodexAuthPendingEvent } from "./codex-auth.js";
 import type { GitHubAuthManager } from "./github-auth.js";
+import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, WsLogEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
@@ -705,6 +706,8 @@ export interface EventWiringDeps {
   codexAuthManager: CodexAuthManager;
   githubAuthManager: GitHubAuthManager;
   agentRegistry: AgentRegistry;
+  /** Used to re-register the default provider-account row after a fresh sign-in. */
+  providerAccountManager: ProviderAccountManager;
   defaultAgentId: AgentId;
   sseBroadcast: (event: string, data: unknown) => void;
   /** Source-of-truth credentials root — used to re-push a refreshed token into pinned sessions (A3). */
@@ -715,7 +718,7 @@ export interface EventWiringDeps {
 
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { authManager, codexAuthManager, githubAuthManager, agentRegistry, defaultAgentId, sseBroadcast, credentialsDir, sessionManager } = eventDeps;
+  const { authManager, codexAuthManager, githubAuthManager, agentRegistry, providerAccountManager, defaultAgentId, sseBroadcast, credentialsDir, sessionManager } = eventDeps;
 
   /**
    * A3 (docs/142): after a Claude/Codex re-auth, force the fresh source token
@@ -761,10 +764,17 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   });
 
   authManager.on("auth_complete", () => {
+    // After a fresh sign-in, re-register the default provider-account row if
+    // it was dropped on the previous sign-out. The migration is a no-op when
+    // any Claude account row already exists, so re-auth into an existing
+    // account stays untouched. See DELETE /api/auth/api-key for the matching
+    // teardown.
+    providerAccountManager.migrateDefaultAccounts();
     agentRegistry.refreshAuth("claude");
     repushTokenToPinnedSessions("claude");
     sseBroadcast("auth_complete", {});
     sseBroadcast("agent_list", agentListPayload());
+    sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
   });
 
   authManager.on("auth_failed", () => {
@@ -780,12 +790,16 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   });
 
   codexAuthManager.on("codex_auth_complete", () => {
+    // Mirror the Claude flow: re-register the default Codex provider-account
+    // row in case the previous sign-out dropped it.
+    providerAccountManager.migrateDefaultAccounts();
     agentRegistry.refreshAuth("codex");
     // No-op until Codex registers token files in AGENT_TOKEN_FILES; wired now
     // so extending the token sync to Codex (docs/142) covers A3 automatically.
     repushTokenToPinnedSessions("codex");
     sseBroadcast("codex_auth_complete", {});
     sseBroadcast("agent_list", agentListPayload());
+    sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
   });
 
   codexAuthManager.on("codex_auth_failed", (ev: CodexAuthFailedEvent) => {

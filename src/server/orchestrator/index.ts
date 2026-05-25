@@ -342,6 +342,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- Event wiring (deployment + auth) ----
   wireEventHandlers({
     authManager, codexAuthManager, githubAuthManager, agentRegistry,
+    providerAccountManager,
     defaultAgentId, sseBroadcast, credentialsDir, sessionManager,
   });
 
