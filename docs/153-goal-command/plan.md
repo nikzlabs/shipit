@@ -2,7 +2,7 @@
 status: planned
 priority: medium
 title: Goal command
-description: Support provider-native goal commands in ShipIt chat, starting with Codex's experimental app-server goal API and leaving room for a Claude design.
+description: Support provider-native goal commands in ShipIt chat — Codex's experimental app-server goal API and Claude's session-scoped Stop-hook goal slash command.
 ---
 
 # Goal command
@@ -10,9 +10,11 @@ description: Support provider-native goal commands in ShipIt chat, starting with
 ## Problem
 
 ShipIt should support provider-native "goal" workflows in chat without adding a
-new command surface. Codex CLI has an experimental `/goal` slash command in its
-TUI, and a Claude design can be added here later if Claude exposes a comparable
-primitive or if we decide to build a ShipIt-managed goal layer for Claude.
+new command surface. Both supported CLIs ship a `/goal` slash command today —
+Codex CLI as an experimental TUI command backed by an app-server JSON-RPC API,
+and Claude Code as an interactive slash command backed by a session-scoped
+Stop hook. They look the same in chat but use very different mechanisms, and
+ShipIt has to handle each on its own terms.
 
 ## Codex design
 
@@ -32,7 +34,7 @@ Supporting this well matters for two reasons:
 - It lets ShipIt expose long-running objective state inline instead of asking
   users to switch to a terminal-shaped surface.
 
-## Verified upstream behavior
+### Verified upstream behavior
 
 Verified against ShipIt's pinned Codex package:
 
@@ -87,17 +89,163 @@ The generated request schema exposes `thread/goal/get`, `thread/goal/set`, and
 uses the runtime continuation path after reading the paused goal, and needs a
 targeted probe before implementation.
 
+## Claude design
+
+Claude Code also ships a `/goal` slash command, but the mechanism is not an
+app-server JSON-RPC API. It is a slash command processed inside the running
+`claude` CLI itself, implemented on top of the existing hook system. The CLI
+registers a session-scoped Stop hook with the supplied condition, evaluates it
+after every turn, and surfaces achievement/cleared state as system messages in
+the same stream ShipIt already consumes.
+
+This is significant for ShipIt because there is nothing to call. The agent
+already does the work as long as the user's input reaches the CLI verbatim and
+the surrounding flags don't suppress slash-command or hook processing.
+
+### Verified upstream behavior
+
+Verified against ShipIt's pinned Claude CLI:
+
+- Package: `@anthropic-ai/claude-code@2.1.140` from `docker/agent-cli/package.json`,
+  resolved to the platform-specific ELF binary
+  (`@anthropic-ai/claude-code-linux-x64/bin/claude.exe`).
+- `claude --help` does not list `/goal`; the command is an interactive slash
+  command, not a CLI subcommand. There is no `claude goal …` entry point and
+  no JSON-RPC analogue to Codex's `thread/goal/*` methods.
+- Slash-command dispatch is on by default. The CLI accepts a
+  `--disable-slash-commands` flag, and ShipIt's spawn args
+  (`src/server/session/claude.ts`) deliberately do not pass it.
+
+Command forms observed in the CLI strings:
+
+| Chat input | Behavior |
+| --- | --- |
+| `/goal <condition>` | Set or replace the goal. CLI emits `Goal set: <condition>` and announces `A session-scoped Stop hook is now active with condition: …`. |
+| `/goal active` | Print the current goal (`Goal active: <condition>`) or `No goal set`. |
+| `/goal clear` | Drop the goal. CLI emits `Goal cleared: <condition>`. |
+| `/goal` (no args) | Help fallback: `No goal set. Usage: \`/goal <condition>\``. |
+
+Other observed behavior:
+
+- After each turn's Stop hook fires, if the condition is satisfied the CLI
+  emits `Goal achieved` and reports telemetry `tengu_goal_achieved` /
+  `goal_met`. The session-scoped Stop hook is then torn down.
+- The transcript persists the goal. On `--resume`, the CLI restores it via
+  `findGoalToRestore` / `restoreGoalFromTranscript` and emits telemetry
+  `tengu_goal_restored_on_resume`.
+- The condition string has a length cap (`Goal condition is limited to …`).
+- Two hard preconditions block `/goal`:
+  - `"/goal is only available in trusted workspaces. Restart, accept the trust dialog, and try again."`
+  - `"/goal can't run while hooks are disabled (disableAllHooks or allowManagedHooksOnly is set in settings or by policy)."`
+
+Unlike Codex's `/goal`, Claude has no pause/resume primitive and no token-budget
+knob. The model is "session-scoped Stop hook with a condition" — set, cleared,
+or achieved.
+
+### ShipIt context
+
+Three things have to stay true for Claude's `/goal` to work end-to-end inside
+ShipIt:
+
+1. **The text reaches the CLI verbatim.** ShipIt spawns Claude with
+   `--input-format stream-json --output-format stream-json --print` (see
+   `src/server/session/claude.ts`). Slash-command dispatch runs on stream-json
+   user messages just as it does on TUI input, so `/goal …` typed in the
+   composer arrives at the CLI's slash-command processor unchanged. ShipIt
+   must not strip or rewrite leading `/`.
+2. **Hooks are enabled.** ShipIt already relies on a managed Stop hook for
+   auto-PR (docs/130) and does not pass `--bare`, so `disableAllHooks` /
+   `allowManagedHooksOnly` are not in effect. If we ever add `--bare` for a
+   mode, `/goal` must visibly degrade.
+3. **The workspace is trusted.** ShipIt runs Claude non-interactively
+   (`-p`/print), which already bypasses the trust dialog. The trust gate is
+   relevant only if a future mode runs Claude interactively against an
+   un-trusted directory; we should not regress that path.
+
+### Design
+
+The Claude path is light: pass-through plus surfacing.
+
+#### 1. No interception
+
+Do not intercept `/goal …` for Claude sessions in
+`ws-handlers/send-message.ts`. The CLI handles it. The orchestrator should
+treat it as ordinary chat input. The Codex-only interception path described
+above must explicitly guard on `agentId === "codex"` so a future change does
+not accidentally route Claude `/goal` through a Codex code path.
+
+#### 2. Validate the pass-through guarantees in tests
+
+Add adapter regression tests that:
+
+- The Claude spawn args do not contain `--disable-slash-commands` and do not
+  contain `--bare`.
+- A `/goal …` user message passed through `ClaudeAdapter.sendUserMessage()` or
+  the streaming-input path is forwarded verbatim with no prefix stripping.
+- The managed Stop hook used for auto-PR coexists with Claude's
+  session-scoped Stop hook (the CLI supports multiple Stop hooks; this is
+  factual but worth a unit-level guard).
+
+#### 3. Optional: surface goal state inline
+
+Claude has no structured "goal updated" event. State arrives as system
+messages in the assistant stream. If we want a status chip parallel to the
+chat (and consistent with the Codex `agent_goal_updated` event), the cheapest
+v1 is **string detection in the assistant stream** for the announcement
+phrases:
+
+- `Goal set: <condition>` → `agent_goal_updated` with `status: "active"`.
+- `Goal active: <condition>` → status query result; emit the same event.
+- `Goal achieved` → `agent_goal_updated` with `status: "complete"` (or a
+  dedicated `agent_goal_achieved`), then `agent_goal_cleared`.
+- `Goal cleared: <condition>` → `agent_goal_cleared`.
+- `No goal set` → no event; ensure the chip is hidden.
+
+Implementation lives in `claude-adapter.ts`'s event mapping. Token budget /
+time-used fields stay `null`/`0` for Claude — those are Codex-only.
+
+This is brittle by nature (string scraping a vendor CLI), so it should be
+optional v2 work, gated behind a feature flag and covered by adapter tests
+that pin the exact phrases. If upstream changes them, the chip degrades but
+the underlying command still works because the CLI is doing the work, not
+ShipIt.
+
+#### 4. Resume parity
+
+Claude restores the active goal from the transcript on `--resume`. ShipIt's
+session activation already resumes via `--resume`, so this works for free. If
+we add the optional surfacing in step 3, the resume path needs to listen for
+the restore announcement (or call `/goal active` once on activation) so the
+chip rehydrates after reload. Verify against the
+`tengu_goal_restored_on_resume` telemetry path.
+
+#### 5. Do not paper over Claude's preconditions
+
+If we ever hit one of the two block messages
+(`"only available in trusted workspaces"`, `"can't run while hooks are
+disabled"`), the right behavior is to surface the CLI's own error inline.
+Don't suppress, retry, or rewrite it — the user needs to know which gate is
+closed.
+
 ## Product fit
 
-Support this as a chat command, not as a button or quick action. The user should
-type `/goal ...` in the composer, and ShipIt should handle the command inside
-the existing chat/session flow.
+Support this as a chat command for both providers, not as a button or quick
+action. The user types `/goal …` in the composer; the active agent (Codex or
+Claude) gets the same chat input, and ShipIt does only as much work as the
+provider's protocol requires.
 
 This preserves ShipIt's product principle that chat is the input surface and
-the agent is the actor. It also keeps Codex goal status inline in ShipIt rather
-than pushing the user to the Codex terminal UI.
+the agent is the actor. It also keeps goal status inline in ShipIt rather than
+pushing the user to either CLI's terminal UI.
 
-## Design
+The asymmetry between providers is load-bearing: Codex requires real
+orchestrator work (feature flag, JSON-RPC plumbing, dedicated proxy methods)
+because `/goal` is an app-server primitive; Claude requires almost no
+orchestrator work because `/goal` is handled inside the CLI. The design below
+spells out the Codex implementation in detail; the Claude implementation is
+covered above and reduces to "don't get in the way."
+
+## Codex implementation
 
 ### 1. Enable the app-server feature
 
@@ -233,7 +381,7 @@ render state. Gate automatic continuation/resume behavior behind explicit tests.
 
 ## Tests
 
-Adapter tests:
+Codex adapter tests:
 
 - Spawn args include `--enable goals`.
 - Initialize request includes `capabilities.experimentalApi: true`.
@@ -241,22 +389,33 @@ Adapter tests:
 - `thread/goal/cleared` maps to a normalized ShipIt event.
 - Goal request methods send the expected JSON-RPC payloads.
 
+Claude adapter tests:
+
+- Spawn args do **not** include `--disable-slash-commands` or `--bare`.
+- A user message starting with `/goal ` is forwarded verbatim to the CLI in
+  both one-shot and streaming-input modes (no prefix stripping or rewriting).
+- If optional inline surfacing (Claude design §3) is implemented, the
+  recognized announcement strings each map to the expected normalized event,
+  and unknown stream text never produces a spurious goal event.
+
 Orchestrator integration tests:
 
 - In a Codex session, `/goal Build X` calls the goal endpoint rather than
   starting a normal prompt turn.
 - `/goal status` renders the current goal.
 - `/goal clear` clears and renders confirmation.
-- In a Claude session, recognized `/goal` input does not accidentally call the
-  Codex path.
+- In a Claude session, `/goal Build X` is delivered to the CLI as a normal
+  user message and is **not** routed through the Codex goal endpoint.
 
 Client tests:
 
 - Goal status renders active, paused, budget-limited, complete, and cleared
-  states.
+  states. (Paused / budget-limited apply to Codex only.)
 - Goal UI is passive status display only; no shell-shaped command button.
 
 ## Key files
+
+Codex:
 
 - `src/server/session/agents/codex-adapter.ts` — app-server spawn args,
   initialize capabilities, goal request/notification handling.
@@ -269,10 +428,23 @@ Client tests:
 - `src/server/orchestrator/proxy-agent-process.ts` — proxy delegation.
 - `src/server/orchestrator/container-session-runner.ts` — runner method exposed
   to WebSocket handlers.
-- `src/server/orchestrator/ws-handlers/send-message.ts` — `/goal` chat command
-  interception.
+- `src/server/orchestrator/ws-handlers/send-message.ts` — Codex `/goal`
+  interception (Claude must remain a pass-through).
 - `src/server/shared/types/ws-server-messages.ts` — normalized goal state
-  message types if implemented as WS messages.
+  message types.
+
+Claude:
+
+- `src/server/session/claude.ts` — verify spawn args keep slash commands and
+  hooks enabled (no `--disable-slash-commands`, no `--bare`).
+- `src/server/session/agents/claude-adapter.ts` — pass-through verification
+  and (optional) string-detection mapping of CLI announcements onto the same
+  normalized goal events.
+- `src/server/session/agents/claude-adapter.test.ts` — pass-through regression
+  tests; if surfacing is added, pin the exact announcement phrases.
+
+Shared client:
+
 - `src/client/components/MessageList.tsx` or adjacent message rendering
   components — inline goal status display.
 
@@ -280,8 +452,11 @@ Client tests:
 
 - No command palette entry, toolbar button, or quick action for `/goal`.
 - No generic slash-command framework in v1; intercept only the Codex goal
-  command forms needed here.
+  command forms needed here, and leave Claude as a pure pass-through.
 - No attempt to mimic the full Codex TUI footer. ShipIt should render goal
   state in its own chat/session UI.
-- No support for Claude goals unless Claude exposes an equivalent native
-  primitive later.
+- No ShipIt-managed goal layer that re-implements goal checking on top of
+  Claude. Claude already does this via its own Stop hook; building a parallel
+  ShipIt mechanism would duplicate state, fight the CLI, and break on resume.
+- No pause / resume semantics for Claude (the CLI has none) — only `set`,
+  `active`, `clear`, and the CLI's own `achieved` lifecycle.
