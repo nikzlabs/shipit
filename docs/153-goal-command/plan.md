@@ -45,6 +45,20 @@ later starts dispatching `/goal` over stream-json input, or Codex's API
 becomes a documented stable surface), docs/132's classification is the
 governing doc — update it first, then this one.
 
+**One amendment to docs/132 is required as part of landing this doc.**
+docs/132 §"`/goal` as a native feature" says the goal is "Injected into
+the agent's context each turn via `agent-instructions.ts`". That
+injection point is wrong: `buildAgentSystemInstructions` is contractually
+static within a session (its docstring and the identity-equality test in
+`agent-instructions.test.ts` enforce determinism for prompt-cache
+stability), and under the persistent-process model (live steering today;
+goal-managed Codex under this doc) the system-prompt path doesn't re-run
+on reused agents at all. The correct injection point is
+`assembleAgentPrompt` in `agent-execution.ts`, as a user-turn prelude —
+see "Context injection" below. Updating docs/132 to reflect this is a
+small, contained edit and is a precondition for this doc's "Substrate"
+section being fully consistent with the governing classification.
+
 ## Why not pass-through
 
 The instinctive design ("the user types `/goal X`, ShipIt forwards it to the
@@ -54,16 +68,53 @@ agent, the CLI handles it") fails on both backends, for different reasons.
 
 The pinned `@anthropic-ai/claude-code@2.1.140` advertises a slash-command set
 in the stream-json `init` event that includes `goal`. Despite that
-advertisement, slash-command **dispatch** is gated on the interactive TUI
-input path. An empirical probe — piping `/goal Make all tests pass` into
-`claude -p --output-format stream-json` — confirms the CLI treats the text
-as a model prompt, not as a slash command: the model echoes back something
-like "Goal acknowledged: make all tests pass …" and no session-scoped Stop
-hook is installed. The CLI does emit the announcements (`Goal set: …`,
-`A session-scoped Stop hook is now active …`, `Goal achieved`,
-`Goal cleared: …`) when run interactively, and the binary contains the
-expected machinery (`tengu_goal_achieved`, `restoreGoalFromTranscript`, hook
-preconditions), but none of that fires through ShipIt's spawn paths today.
+advertisement, slash-command **dispatch** appears to be gated on the
+interactive TUI input path. An initial ad-hoc probe — piping
+`/goal Make all tests pass` into `claude -p --output-format stream-json`
+— shows the CLI treating the text as a model prompt rather than a slash
+command: the model echoes back something like "Goal acknowledged: make
+all tests pass …" and no session-scoped Stop hook is installed.
+
+Caveat on probe shape: ShipIt's legacy `ClaudeProcess` doesn't actually
+pipe the prompt on stdin — it passes the prompt as a positional argument
+(`claude.ts:132-137`) into a `pty.spawn`-allocated session. The ad-hoc
+probe above (stdin pipe, no PTY) is therefore a stand-in, not a faithful
+reproduction. Two probes are needed before this conclusion is fully
+substantiated:
+
+1. **Legacy path probe.** `claude -p "/goal Make all tests pass"
+   --output-format stream-json --verbose` over a PTY, mirroring
+   `ClaudeProcess.run`. Expected: same behavior as the ad-hoc probe
+   (model treats text as a prompt). Confirms the legacy path.
+2. **Streaming-input path probe.** `claude --print --input-format
+   stream-json --output-format stream-json` with a stream-json `user`
+   message whose content begins with `/goal …`, mirroring
+   `StreamingClaudeProcess`. This is the path live-steering sessions
+   use today (docs/140, in-progress). Whether the CLI's slash-command
+   dispatcher fires on stream-json `user` messages is the load-bearing
+   open question for any future Claude augmentation.
+
+The CLI does emit the announcements (`Goal set: …`, `A session-scoped
+Stop hook is now active …`, `Goal achieved`, `Goal cleared: …`) when
+run interactively, and the binary contains the expected machinery
+(`tengu_goal_achieved`, `restoreGoalFromTranscript`, hook preconditions)
+— none of which fires through the ad-hoc probe. Until both spawn-shape
+probes above run, the doc's "Claude has no augmentation path" stance
+is the **conservative default** rather than a fully proven conclusion.
+If probe 2 shows stream-json dispatches `/goal`, this doc's Claude
+section gets revisited — and docs/132's Bucket-4 classification gets
+revisited first.
+
+**Both probes are gating for any future Claude-augmentation work**,
+not for the substrate. The substrate's correctness doesn't depend on
+either probe outcome — `/goal …` is intercepted in `send-message.ts`
+and never reaches `claude` under the substrate alone. The probes
+matter when ShipIt later revisits whether a Claude augmentation path
+exists. Run them against the pinned CLI directly (outside ShipIt's
+spawn paths) so the substrate intercept doesn't have to be temporarily
+disabled. Recording the result here as a "Probe results" subsection
+before any Claude-augmentation revisit is the right gate; the
+substrate itself ships independently.
 
 `--disable-slash-commands` is **not** a useful counter-test: its help text in
 2.1.140 is "Disable all skills," and the doc-138 work establishes that the
@@ -102,21 +153,32 @@ slash command itself is not parsed on the app-server side, so a literal
 A real Codex augmentation is possible. Two upstream gates apply, and one
 runtime question is open:
 
-1. **API surface is present on the pinned CLI.** Against
-   `@openai/codex@0.130.0` (the version `docker/agent-cli/package.json`
-   currently pins), `app-server --help` lists `--enable <FEATURE>`, and
-   `codex app-server generate-json-schema --out DIR --experimental` emits
-   all six `ThreadGoalGet/Set/Clear{Params,Response}` schemas plus the two
-   notification schemas. Without `--experimental` the dump contains only
-   the two notification schemas. So the API *shape* is observable on the
-   pinned CLI; what is **not yet probed in this repo** is the runtime path:
-   does the 0.130 app-server actually accept `--enable goals`,
-   `experimentalApi: true`, and the three request methods, and emit the
-   notifications? That probe is the substantive precondition for the
-   augmentation in this doc — not a CLI version bump. If the probe fails
-   on 0.130, the precondition becomes "bump to the first 0.13x where it
-   succeeds," coordinated through Renovate per CLAUDE.md's Dependency
-   policy.
+1. **API surface and runtime acceptance are both present on the pinned
+   CLI.** Against `@openai/codex@0.130.0` (the version
+   `docker/agent-cli/package.json` currently pins):
+   - **Schema dump**: `app-server --help` lists `--enable <FEATURE>`,
+     and `codex app-server generate-json-schema --out DIR --experimental`
+     emits all six `ThreadGoalGet/Set/Clear{Params,Response}` schemas
+     plus the two notification schemas. Without `--experimental` the
+     dump contains only the two notification schemas.
+   - **Runtime probe (confirmed against the pinned binary)**:
+     - `codex app-server --enable goals` accepts the flag and the
+       process initializes normally.
+     - With `initialize.capabilities.experimentalApi: true`,
+       `thread/goal/get` returns `{ "goal": null }` on a fresh thread.
+     - Without `--enable goals`, `thread/goal/get` rejects with
+       `"goals feature is disabled"` — the exact string the
+       Error-handling section names.
+     - Without `experimentalApi`, it rejects with
+       `"thread/goal/get requires experimentalApi capability"`.
+
+   So the augmentation's runtime path works on the pinned CLI today.
+   What the doc still calls out as a precondition is the **contract
+   test** (docs/141 Axis-3 + a goal-flow extension) that ratchets a
+   committed `CODEX_GOALS_RUNTIME_VERIFIED` constant and gates Renovate
+   bumps — not a question of whether the API works on 0.130 (it does),
+   but a question of whether ShipIt's CI prevents a future bump from
+   regressing it silently.
 2. **Feature flag at runtime.** Requests are accepted only when both gates
    hold: `codex app-server --enable goals` and
    `initialize.capabilities.experimentalApi: true`. The `goals` feature is
@@ -142,16 +204,71 @@ Per docs/132, the goal is stored on the session. Concrete shape:
 ```ts
 type SessionGoal = {
   text: string;            // user-supplied objective
-  setAt: number;           // ms epoch
+  setAt: number;           // ms epoch — when the current goal record was created
+  updatedAt: number;       // ms epoch — last write to this record (rename, pause, resume, ...)
   setBy: "user";           // reserved for future system-set goals
-  status: "active" | "cleared" | "achieved";
-  clearedAt?: number;
+  status: "active" | "paused" | "cleared" | "achieved";
+  pausedAt?: number;       // ms epoch — set when status transitions to "paused", cleared on resume
+  achievedAt?: number;     // ms epoch — set when status transitions to "achieved"
+  clearedAt?: number;      // ms epoch — set when status transitions to "cleared"
 };
 ```
 
-Persisted alongside other session metadata in `sessions.ts`. Survives
-session switches, reconnects, and `--resume` because it is not tied to the
-agent process.
+`updatedAt` lets `Source-of-truth reconciliation` distinguish "renamed
+since the app-server's cached copy" from "unchanged" without relying
+on `text` string comparison alone. `achievedAt` is what the chip's
+"achieved 30 seconds ago" relative-time UI reads. `pausedAt` is set
+on every `paused` transition and cleared on resume; it's what makes
+"pause survives orchestrator restart" actually work (the rehydrate
+handler reads `status === "paused"` and re-arms the runtime with
+`thread/goal/set { status: "paused" }`, with `pausedAt` available
+for chip relative-time display).
+
+`paused` is on `SessionGoal.status` for an augmentation-driven reason
+even though it lives in the substrate's persistence type. `/goal
+pause` itself is only available on Codex augmentation sessions (the
+substrate has no continuation to pause), but **if** such a session
+pauses its goal and the orchestrator restarts before resume,
+`paused` must survive the restart — otherwise the activation
+predicate would see `status === "active"` after rehydrate, flip
+keep-alive on, re-issue `thread/goal/set { status: "active" }` per
+the rehydrate rules, and silently resume runtime continuation
+(consuming tokens) against a goal the user explicitly paused.
+
+**Substrate-only sessions (Claude today, plus any future adapter
+without `supportsGoals`) only ever traverse `active → cleared`** —
+they never produce `paused` (no pause UX) and never produce
+`achieved` (the substrate's achievement model is "model declares,
+user confirms with `/goal clear`," which lands the record at
+`cleared`). So `paused`, `pausedAt`, `achieved`, and `achievedAt`
+are augmentation-only transitions and writes. The substrate's
+contribution to these fields is persistence-of-shape only — it
+defines the column and the type union but doesn't write the values.
+The activation predicate is `status === "active" && supportsGoals &&
+agentId === "codex"`; `paused` is treated identically to `active`
+for purposes of "the goal exists; the prelude is injected; the chip
+is visible," but it does *not* activate keep-alive.
+
+Persisted alongside other session metadata in `sessions.ts` as a
+single `goal_json` TEXT column (`JSON.stringify`/`JSON.parse` on the
+boundary). This matches the existing `pr_status` precedent at
+`sessions.ts:338` (`setPrStatus` does `JSON.stringify(status)` into
+`pr_status`) and `sessions.ts:354` (`getAllPrStatuses` does
+`JSON.parse(row.pr_status)`), so the JSON-column shape is already
+established in this file. Splitting `SessionGoal` into four columns
+(`goal_text`, `goal_set_at`, `goal_status`, `goal_cleared_at`) is
+cheap follow-up if a future feature wants to query active goals
+across sessions; the v1 chip's hot path is `goal_json IS NOT NULL`,
+which is identical against either shape.
+
+The `SessionInfo` type in `src/server/shared/types/domain-types.ts`
+(the shape the orchestrator emits on session activation and SSE
+catch-up) gains an optional `goal?: SessionGoal | null` field. This
+is the load-bearing hydration channel — see "Persistence and
+hydration" below.
+
+`SessionGoal` survives session switches, reconnects, and `--resume`
+because it is not tied to the agent process.
 
 ### Slash-command interception
 
@@ -167,17 +284,22 @@ pause). The intercept is the first thing the handler does after image
 validation, and `/goal pause` / `/goal resume` are explicitly allowed to
 fire mid-turn — subject to the mid-turn pause probe below.
 
-The substrate handles every command; when the session has Codex
-augmentation active, the handler routes through the adapter's goal methods
-instead of writing session metadata directly.
+The substrate handles every command. **Session-metadata writes
+happen on both paths** — the intercept always writes `SessionGoal`
+to session metadata first; under Codex augmentation the handler
+*additionally* calls the adapter's goal methods to drive runtime
+continuation. The metadata write is unconditional (it closes the
+persistence-window race between RPC-ack and notification-arrival);
+the augmentation adapter call is the optional second step.
 
 | Composer input | Substrate behavior | With Codex augmentation active |
 |---|---|---|
-| `/goal <text>` | Write `SessionGoal` to session metadata; emit `goal_updated`; optionally proceed with `<text>` as the first turn. | **Write `SessionGoal` to session metadata first** (so the orchestrator-restart-between-ack-and-notification window doesn't lose the goal); then call `setGoal({ objective: text, status: "active" })`. The `thread/goal/updated` notification handler re-applies state via `runner.applyGoalEvent` — idempotent against the metadata that's already there, but also the path that surfaces budget/time telemetry. |
-| `/goal status` | Read session metadata, emit `goal_status` (the query-response variant — see "WS message shape" below). | Call `getGoal()`; reconcile result with session metadata per "Source-of-truth reconciliation"; emit `goal_status`. |
+| `/goal <text>` when runner is **idle** | Write `SessionGoal` to session metadata; emit `goal_updated`. **Do not** kick off a turn — `/goal …` is a control command, not a turn-starter. If the user wants to immediately work on the goal, they type their first prompt as a separate message; the prelude carries the goal context. (Symmetric with `/goal clear` / `/goal pause` / `/goal resume`, none of which start turns.) | **Write `SessionGoal` to session metadata first** (so the orchestrator-restart-between-ack-and-notification window doesn't lose the goal); then call `setGoal({ objective: text, status: "active" })`. The `thread/goal/updated` notification handler re-applies state via `runner.applyGoalEvent` — idempotent against the metadata that's already there, but also the path that surfaces budget/time telemetry. |
+| `/goal <text>` when runner is **running** (mid-turn) | Write metadata + emit `goal_updated` exactly as the idle case. Do **not** enqueue a turn carrying the text. The prelude rides on the *next* turn the user starts (or the next queued one drains). | Same intercept; the augmentation's `setGoal` call goes through the JSON-RPC channel synchronously — see "Mid-turn pause probe" for whether `thread/goal/set` is JSON-RPC-safe concurrent with an in-flight turn. Until that probe passes, the augmentation's `setGoal` call is **deferred** until the current turn completes (the substrate's metadata write still happens immediately). |
+| `/goal status` | Read session metadata; emit `goal_status` carrying the full record for `active`/`paused`/`achieved`, or `goal: null` if `SessionGoal` is absent or `status` is `cleared`. | Call `getGoal()`; reconcile result with session metadata per "Source-of-truth reconciliation"; emit `goal_status` using the same mapping. |
 | `/goal clear` | Update session metadata to `status: "cleared"`; emit `goal_cleared`. | **Update session metadata first** (same persistence-window rationale); then call `clearGoal()`. The notification handler is idempotent. |
-| `/goal pause` | Not exposed — autocomplete hides it. | Call `setGoal({ status: "paused" })`, pending the mid-turn probe below. Session metadata stays `active` per the status-mapping table. |
-| `/goal resume` | Not exposed — autocomplete hides it. | Call `setGoal({ status: "active" })`. Session metadata already `active`; no write. |
+| `/goal pause` | Not exposed — autocomplete hides it. | Update `SessionGoal.status` to `paused` on session metadata first; then call `setGoal({ status: "paused" })`, pending the mid-turn probe below. Persisting `paused` is what prevents an orchestrator restart from silently resuming continuation (see §Storage). |
+| `/goal resume` | Not exposed — autocomplete hides it. | Update `SessionGoal.status` from `paused` to `active` on session metadata first; then call `setGoal({ status: "active" })`. This transition flips `hasActiveGoal()` back on so keep-alive re-activates. |
 | `/goal` (no args) | Emit a help/usage system message. | Same. |
 
 The "write-first, RPC-second" ordering on the augmentation path closes
@@ -219,36 +341,70 @@ depends on whether the turn is a slash-invocation:
   toward the goal.]
   ```
 
-- **Slash-invocation turn** (`userText` starts with `/skill-name`): order
-  stays `[userText, fileContext, imageContext]` so the `/` token remains at
+- **Skill-invocation turn** (`userText` starts with `/skill-name` and
+  the slash command resolves to a Bucket-3 skill per
+  `docs/138-skill-invocation`): order stays
+  `[userText, fileContext, imageContext]` so the `/` token remains at
   position 0 — the existing contract from docs/138 that
   `assembleAgentPrompt` was specifically written to protect. The
-  `goalContext` strand is **omitted** on slash-invocation turns: skills are
-  short, scoped, one-off invocations, and bracketing them with goal
-  framing would re-purpose the skill's prompt. Skipping the prelude for
-  the single slash-invocation turn does not lose the goal — the session
-  record still has it, and the next non-slash turn re-injects.
+  `goalContext` strand is **omitted** on skill-invocation turns:
+  skills are short, scoped, one-off invocations, and bracketing them
+  with goal framing would re-purpose the skill's prompt. Skipping the
+  prelude for the single skill-invocation turn does not lose the
+  goal — the session record still has it, and the next non-skill
+  turn re-injects.
 
-- **Augmentation-active Codex turn** (Codex session with
-  `goalsEnabled` true and `supportsGoals` resolved true on the registry):
-  the prelude is **omitted**. Codex's own goal scaffolding ("keep working
-  across turns until the goal is met") is already informing the model
-  via the runtime continuation path; layering ShipIt's prelude on top
-  produces two goal voices that frame the work differently (the prelude
-  says "treat each turn as one step…do the per-turn work the user asks
-  for"; Codex's scaffolding pushes the model to keep going autonomously).
-  The chip and the session record still drive ShipIt-side state; the
-  model just hears the goal once, from Codex. On augmentation-active
-  Codex, the per-turn behavior reverts to Codex's native goal framing.
+  Note: today's `assembleAgentPrompt` slash check
+  (`/^\/[a-zA-Z0-9._-]+/`, agent-execution.ts:83) matches *any*
+  leading slash token, not only Bucket-3 skills. That's fine for
+  Bucket-1 (`/diff`, `/review`, etc.) and Bucket-2 (`/model`, `/plan`,
+  etc.) commands because docs/132 routes them at the
+  `send-message.ts` intercept layer **before** `assembleAgentPrompt`
+  runs — by the time prompt assembly happens, the only leading-slash
+  text reaching `assembleAgentPrompt` is a skill invocation that
+  needs the `/` at position 0. The substrate's own `/goal` intercept
+  is in the same position: a `/goal …` typed in the composer is
+  consumed by the substrate handler and never reaches
+  `assembleAgentPrompt` at all. So in practice the slash check here
+  fires only for Bucket-3 skills, which is the intent.
 
-  This is also the path that makes the substrate's PR-hook composition
-  work asymmetrically across backends: the "do not skip turn-end
-  actions" clause only ships to Claude (where the prelude is the only
-  goal voice) and to substrate-only Codex sessions (`goalsEnabled` off
-  or `supportsGoals` not resolved). Augmentation-active Codex sessions
-  rely on the broader product principle that turn-end actions are
-  standing instructions (already in the cached system prompt) rather
-  than on the prelude restating them.
+- **Augmentation-active Codex turn** (Codex session with an active goal
+  and `supportsGoals` resolved true on the registry): the prelude is
+  **still sent**. The doc's "Verified upstream behavior" section limits
+  its claims to API shape; whether `--enable goals` actually injects
+  any goal framing into the model's context on the pinned CLI is
+  **not** verified. Omitting the prelude on that assumption risks the
+  failure mode "augmentation active, chip updates correctly, but the
+  model has no idea a goal exists" — which is silent and worse than
+  the merely-stylistic concern of two voices framing the same goal.
+
+  **Open tension this defers.** The prelude says "Treat each turn as
+  one step toward this goal: do the per-turn work the user asks for,
+  including the normal turn-end actions ShipIt requires." On Codex
+  under `keepAliveAcrossTurns`, the runtime continuation lifecycle is
+  what's supposed to keep working autonomously across turns — and the
+  prelude's framing nudges in the opposite direction (stop at the turn
+  boundary, do per-turn work). These two compose fine on Claude (the
+  Stop hook is the interlock) but on Codex there is no Stop hook, and
+  the prelude becomes a deliberate brake on Codex's own autonomous
+  continuation. Two possible futures:
+
+  - **The prelude wins.** Codex's runtime continuation only fires
+    when the model decides not to end the turn — and the prelude is
+    explicit that it should end the turn correctly. In that case the
+    augmentation reduces to "structured chip state + auto-detected
+    achievement," with the autonomous continuation surface
+    effectively dormant.
+  - **Codex's continuation wins.** The model leans toward continuing
+    because that's what `--enable goals` orients it toward, despite
+    the prelude. In that case the prelude is a partial brake and
+    augmentation v1 ships with some autonomous turns.
+
+  Augmentation v1 ships the prelude as-is and observes which way the
+  model leans. The mid-turn-pause probe and the broader augmentation
+  rollout will surface which behavior dominates; a Codex-specific
+  prelude rewording (or full suppression) is a v2 decision based on
+  observed behavior, not a v1 design choice.
 
 Why not the system prompt: `buildAgentSystemInstructions` in
 `agent-instructions.ts` is contractually **static within a session** (its
@@ -262,37 +418,144 @@ agent: under the persistent-process model below (`keepAliveAcrossTurns`),
 subsequent turns reuse `existingAgent` via `sendUserMessage()` and
 **never** re-call `buildAgentRunParams` / `buildAgentSystemInstructions`
 (agent-execution.ts:261-263, 628-637). On Claude streaming the
-`--append-system-prompt` is fixed at spawn (claude.ts:369-374); on Codex
+`--append-system-prompt` is fixed at spawn (claude.ts:370-374,
+inside the `if (systemPrompt)` block at line 369); on Codex
 `developerInstructions` is sent only once at `thread/start`/`thread/resume`
 (codex-adapter.ts:979-998). The user-turn prelude is the only injection
 point that works on both fresh and reused agents.
+
+**All four turn-start paths must thread the prelude**, not just
+`assembleAgentPrompt`. Today these paths feed text to the agent
+independently:
+
+1. **`runAgentWithMessage` (the primary path).** Already calls
+   `assembleAgentPrompt`. Extending the function signature to accept a
+   `goalContext` strand is mechanical.
+2. **`handleAnswerQuestion` (AskUserQuestion answer turns).** Three
+   sub-paths today, all bypassing `assembleAgentPrompt`: the
+   non-streaming fresh-spawn path passes `answerText` directly to
+   `agent.run({ prompt: answerText, ... })` (send-message.ts:583-588);
+   the streaming path uses `existingAgent.sendUserMessage(answerText)`
+   (line 403); the non-streaming reuse path
+   (`existingAgent.writeStdin(`${answerText}\n`)`, line 421) feeds a
+   paused `claude -p --resume` process. The first two sites need the
+   helper. The third (writeStdin into a resumed process) does **not**
+   need re-injection because the prior turn that triggered the
+   AskUserQuestion already carried the prelude into the resumed
+   context; re-injecting would duplicate the directive each AskUser
+   answer. Call this asymmetry out at the helper's call site so a
+   future contributor doesn't add the helper to all three.
+3. **Live-steering injection in `handleSendMessage`.** When a runner is
+   already running and live steering is on, the message is sent via
+   `steeringAgent.sendUserMessage(msg.text)` (line 116) — also bypassing
+   `assembleAgentPrompt`. **This path does *not* get the prelude.** A
+   steered message is by design a mid-turn nudge (a single line the
+   user is sliding into a turn that already received the prelude via
+   path 1), so re-injecting `[Active goal …]` would (a) duplicate the
+   prelude inside one turn for every steer call, (b) reframe the
+   steer as standing context rather than the immediate instruction
+   the user intended, and (c) inflate token usage on a path designed
+   to be a thin pass-through. The narrower contract — "prelude rides
+   on turn-start, not on mid-turn injections" — is the explicit rule.
+4. **`runDispatchedTurn` (`src/server/orchestrator/dispatched-turn.ts`).**
+   Calls `agent.run(runParams)` with `prompt` from `buildRunParams`
+   (dispatched-turn.ts:136-137), never through `assembleAgentPrompt`.
+   This path is for **system-dispatched turns** — CI-fix, rebase
+   driver, child-session spawns, `/agent/dispatch` — and for its own
+   internal queue-drain recursion (dispatched-turn.ts:115-129). The
+   WS-typed user-message queue drain (`drainNextQueuedMessage` in
+   agent-execution.ts:118-194) routes back through
+   `runAgentWithMessage`, which is already covered by path 1; do not
+   plumb the helper into `drainNextQueuedMessage` itself.
+
+A new shared helper, e.g. `applyGoalPrelude(text, goal)`, is the right
+shape: each of the four call sites wraps the outgoing text in the
+prelude before sending. The substrate's intercept handler installs the
+helper at the appropriate site depending on which path the turn is
+taking. Without this, the goal would silently fail to ride along on
+AskUserQuestion answers, every live-steered message, and every drained
+queue message — exactly the "reach a live agent" failure mode this
+section is meant to close.
+
+System-turn paths route through helper (4) with per-site decisions on
+whether to inject the prelude:
+
+- **CI-fix system turn** — inject. The agent benefits from knowing
+  the overall objective even when fixing a CI failure.
+- **Rebase driver** (`services/rebase-driver.ts`) — **suppress**
+  (`{ suppressPrelude: true }`). Rebase is mechanical conflict
+  resolution; the agent is supposed to resolve merge conflicts, not
+  "make progress toward the goal." Wrapping a rebase turn in
+  `[Active goal for this session: … treat each turn as one step
+  toward this goal …]` confuses the rebase framing and risks the
+  agent doing extra goal-related work mid-rebase. Suppress.
+- **Child-session spawn** — inject if the spawn inherits the parent's
+  goal; suppress if it's an unrelated child task. The call site
+  decides.
+
+The helper takes an explicit `suppressPrelude` flag; the default is
+"inject if there's an active goal." Each new system-turn call site
+must make the inject/suppress choice deliberately.
 
 Trade-offs of the prelude shape:
 
 - **Goal updates take effect on the very next turn**, including on
   persistent processes. `/goal set` and `/goal clear` are immediate, with
   no kill+respawn dance.
-- The bracketed framing keeps the prelude visually distinct from the
-  user's actual request so the model treats it as standing context, not
-  the latest instruction.
+- The bracketed framing does two things. (1) Visually distinct from the
+  user's actual request, so the model treats it as standing context
+  rather than the latest instruction. (2) **Structural** — it defends
+  against goal text whose first character is `/` (e.g. a user sets
+  their goal to `/init the project`). If the Claude stream-json probe
+  ever shows the CLI dispatches slash commands on `user`-content text
+  whose first token is `/`, an unbracketed prelude that *starts* with
+  the user-supplied goal text would risk re-dispatching as a slash
+  command. The `[Active goal …]` framing keeps the `/` away from
+  position 0 even on the streaming path.
 - The prelude is sent every turn (not just the first); cleared goals omit
   the strand entirely. Goal text is not duplicated as a separate user
   message — it lives inside the prompt the user already sent.
 
-The "do not skip turn-end actions" clause is load-bearing: with
-`autoCreatePr: true`, `docker/agent-hooks/managed-settings.json`'s Stop
-hook (docs/129) refuses to let a turn end without an open PR for the
-branch. A goal directive that read "keep working until the goal is met"
-would interleave with that hook — either by nudging the agent past the
-hook's expectations, or (with the hook active) by trapping the agent in a
-no-exit state where it can't end the turn and can't open a PR either. The
-prompt above explicitly subordinates "make progress" to "end the turn
-correctly," so the two systems compose: each turn does its scoped work
-(including PR creation), the goal carries across turns via the next turn's
-prelude, the user remains the achievement-confirmer. When `autoCreatePr`
-is false (the hook is registered but inert because it self-gates on
-`SHIPIT_AUTO_CREATE_PR=1`), the same prompt still produces correct
-behavior — the PR clause is a no-op.
+The "do not skip turn-end actions" clause is **load-bearing on Claude**
+specifically. `docker/agent-hooks/managed-settings.json`'s Stop hook
+(docs/129) is wired into Claude via `--settings`
+(`session-agent-run-params.ts:106` only sets `settingsPath` for
+`agentId === "claude"`), and when `autoCreatePr: true` it refuses to
+let a turn end without an open PR for the branch. A goal directive that
+read "keep working until the goal is met" would interleave with that
+hook — either by nudging the agent past the hook's expectations, or
+(with the hook active) by trapping the agent in a no-exit state where
+it can't end the turn and can't open a PR either. The prompt above
+explicitly subordinates "make progress" to "end the turn correctly,"
+so the two systems compose on Claude.
+
+On **Codex** sessions the managed-settings.json hook does not apply —
+Codex never receives `--settings` — so the clause is a generic nudge,
+not a load-bearing Stop-hook interlock. **This is a real
+augmentation-only risk worth naming**: with the goal-managed Codex
+process kept alive and runtime-continuing across turns, the prelude
+is the *entire* interlock between "make progress" and "end the turn
+correctly." If the model interprets the prelude liberally and chains
+another turn instead of ending one (especially likely if Codex's own
+goal scaffolding emphasizes autonomous continuation), there is no
+Stop-hook backstop to enforce the boundary the way docs/129 does on
+Claude.
+
+Mitigations baked into v1: (1) the prelude's explicit "do not skip
+or defer the normal turn-end actions" clause; (2) the
+runtime-acceptance probe captured a "completes" baseline against the
+pinned CLI, which is how autonomous achievement is supposed to wind
+the goal down; (3) auto-PR on Codex sessions is not a feature in
+production today, so the missing Stop-hook backstop is not a missed
+PR — it is a "the model kept working past where the user wanted it
+to" failure mode, surfaced inline as continuation turns the user
+would see and could `/goal pause` or `/goal clear`. Continued
+monitoring through the mid-turn-pause probe results will inform
+whether a stronger interlock is needed before augmentation v2.
+
+When `autoCreatePr` is false on Claude (the hook is registered but
+inert because it self-gates on `SHIPIT_AUTO_CREATE_PR=1`), the same
+prompt still produces correct behavior — the PR clause is a no-op.
 
 ### Achievement model
 
@@ -326,23 +589,41 @@ not the per-runner event buffer:
   an optional `goal: SessionGoal | null` field. A fresh client (new tab,
   reconnect after the turn has long ended) picks the goal up from this
   payload at activation time, not from the turn-event buffer. The chip
-  populates from `SessionInfo.goal` immediately.
+  populates from `SessionInfo.goal` immediately. **`SessionInfo.goal`
+  is the load-bearing hydration channel** — clients should never depend
+  on `goal_status` to bootstrap initial chip state. `goal_status` is
+  reserved for the `/goal status` user-command response (and the
+  augmentation's reconcile-on-rehydrate flow that surfaces it to
+  attached viewers).
 - Change path: `runner.emitMessage()` carries `goal_updated` /
-  `goal_cleared` / `goal_status` to clients currently attached during the
-  change. That replays correctly inside a turn but is **not** the
-  hydration mechanism for late attachers — bootstrap is. The two paths
-  are complementary, not redundant.
+  `goal_cleared` to clients currently attached during the change.
+  That replays correctly inside a turn but is **not** the hydration
+  mechanism for late attachers — bootstrap is.
 
 ### Rendering
 
 - A compact inline assistant/system message when the goal is set or
   cleared (change events only — `goal_status` does not emit a chat
   message), rendered in chat history.
-- A session-level status chip on the chat surface while a goal is active,
-  fed by a small Zustand slice (e.g. `session-store` or a new `goal-store`)
-  keyed by session id. The chip is initially populated from
-  `SessionInfo.goal` on session activation and updated by subsequent
-  `goal_updated` / `goal_cleared` / `goal_status` messages.
+- A session-level status chip on the chat surface while a goal is active
+  or paused, fed by a small Zustand slice (e.g. `session-store` or a
+  new `goal-store`) keyed by session id. The chip is initially populated
+  from `SessionInfo.goal` on session activation and updated by
+  subsequent `goal_updated` / `goal_cleared` / `goal_status` messages.
+- **Achievement rendering** (augmentation only): when
+  `thread/goal/updated { status: "complete" }` arrives, the substrate
+  maps it to `SessionGoal.status = "achieved"` and emits a
+  `goal_updated` message. The client renders one inline "Goal
+  achieved: <text>" system message in chat history (analogous to the
+  "Goal set" / "Goal cleared" inline messages, but as a one-shot
+  congratulation), and the chip transitions to an "achieved" visual
+  state with an explicit "/goal clear" affordance shown in the chip's
+  hover/menu. The chip **does not** auto-dismiss — the user confirms
+  achievement by clearing, mirroring the substrate's user-confirmation
+  model on Claude. This keeps the UX symmetric across backends: under
+  augmentation Codex auto-detects achievement; under substrate the
+  model declares achievement in its reply; either way the user
+  performs the clear.
 - No separate command button — per CLAUDE.md §5, the user types the
   command in chat; the chip is passive status only.
 
@@ -359,13 +640,25 @@ side-effects off each:
 ```
 
 `goal_updated` and `goal_cleared` are *change* notifications: clients
-update the chip and emit an inline "Goal set: …" / "Goal cleared" message
-into chat history. `goal_status` is the response to `/goal status` (and
-to the bootstrap-hydration path described in "Persistence and hydration"
-below): the chip refreshes from `goal`, but no inline chat message is
-emitted and no clearedAt timestamp is recorded for the `null` case. This
-prevents `/goal status` on an empty session from firing the clear-side-
-effects of `goal_cleared`.
+update the chip and emit an inline "Goal set: …" / "Goal cleared"
+message into chat history. `goal_status` is the response to
+`/goal status`: the chip refreshes from `goal`, but no inline chat
+message is emitted and no `clearedAt` timestamp is recorded for the
+`null` case. This prevents `/goal status` on an empty (or
+cleared/achieved) session from firing the clear-side-effects of
+`goal_cleared`.
+
+**`goal` mapping rule.** `goal_status.goal` (and `SessionInfo.goal`,
+which uses the same rule) is `null` whenever the session has no
+goal record at all, **or** when the record's `status` is `"cleared"`.
+For `"active"`, `"paused"`, and `"achieved"`, the full `SessionGoal`
+is surfaced — the chip needs the `achieved` state to render its
+one-shot congratulation and "awaiting `/goal clear`" affordance per
+the Rendering section. So the surface is: `active`, `paused`,
+`achieved` → non-null; `cleared` or absent → `null`. The persisted
+historical `cleared` record stays on the session row (the substrate's
+"sessions that ever had a goal" predicate, used for the rehydrate
+gate, depends on it) but is not surfaced as goal state to the client.
 
 These ride the existing per-session WebSocket. `useMessageHandler` on the
 client dispatches them into the goal store. They are **not** `AgentEvent`s
@@ -397,8 +690,17 @@ per session, matching docs/132's "the `/` menu only lists what the active
 agent supports" requirement:
 
 - All sessions see: `/goal`, `/goal status`, `/goal clear`.
-- Codex sessions with `goalsEnabled` true **and** registry-resolved
-  `supportsGoals` true additionally see: `/goal pause`, `/goal resume`.
+- `/goal pause` is gated on `supportsGoals` true on the registry **and**
+  `SessionGoal.status === "active"` (there's an active goal to pause)
+  **and** the mid-turn-pause probe has passed (see "Mid-turn pause
+  probe" below). Until that probe lands — which it must, before this
+  row of the augmentation ships — the autocomplete entry stays hidden
+  so we don't surface a command the doc itself says hasn't been
+  validated as mid-turn-safe.
+- `/goal resume` is gated on `supportsGoals` true on the registry
+  **and** `SessionGoal.status === "paused"` (there's something to
+  resume). Symmetric with `/goal pause`: each only appears when its
+  precondition is met.
 
 The capability check uses the same registry-vs-`ProxyAgentProcess`
 discipline as `supportsSteering` (see "Activation split" below). The
@@ -433,9 +735,11 @@ the runtime probe described in "Why not pass-through → Codex" above.
 
 ### Verified upstream behavior
 
-Verified against `@openai/codex@0.130.0` (the pinned CLI). The API *shape*
-is fully observable on this version; runtime acceptance on 0.130 is the
-open probe described above.
+Verified against `@openai/codex@0.130.0` (the pinned CLI). The API shape
+is fully observable via `generate-json-schema --experimental`, and a
+runtime probe of the request methods against the live app-server with
+`--enable goals` + `experimentalApi: true` succeeds (see "Why not
+pass-through → Codex" above for the probe results).
 
 - Top-level CLI help does not list `/goal`; the command is a TUI slash
   command, not a normal CLI subcommand.
@@ -457,7 +761,7 @@ JSON-RPC methods (request **and** response shapes both pinned from the
 |---|---|---|
 | `thread/goal/get` | `ThreadGoalGetParams { threadId }` → `ThreadGoalGetResponse { goal: ThreadGoal \| null }` | Reads the current goal. |
 | `thread/goal/set` | `ThreadGoalSetParams { threadId, objective?, status?, tokenBudget? }` → `ThreadGoalSetResponse { goal: ThreadGoal }` | Creates or updates; emits `thread/goal/updated`. |
-| `thread/goal/clear` | `ThreadGoalClearParams { threadId }` → `ThreadGoalClearResponse` | Clears; emits `thread/goal/cleared`. |
+| `thread/goal/clear` | `ThreadGoalClearParams { threadId }` → `ThreadGoalClearResponse { cleared: boolean }` | Clears; emits `thread/goal/cleared`. `cleared` is `true` when an active goal was actually cleared, `false` if there was nothing to clear. |
 
 `ThreadGoal` shape from the generated schema:
 
@@ -480,16 +784,18 @@ create and update, and pause/resume are
 `thread/goal/set { threadId, status: "paused" | "active" }`. There is no
 separate `thread/goal/resume`.
 
-**Substrate-write rule.** Because the schema accepts `objective: null`,
-the substrate's intercept must enforce its own non-empty rule before
-writing anywhere. Specifically: `SessionGoal.text` is mandatory and
-user-supplied, so an empty composer input under `/goal <text>` is rejected
-with a `system_notice` (see "WS message shape" above) and **does not**
-write session metadata or call `thread/goal/set`. A `thread/goal/set`
-issued by the augmentation handler with `objective: null` is reserved for
-status-only updates (pause/resume/tokenBudget changes) and is never used
-to create or rename a goal — the chip's display text must always reflect
-a real user-supplied objective, not a server-side null.
+**Substrate-write rule.** A goal must have user-supplied text; an empty
+composer input under `/goal <text>` is rejected with a `system_notice`
+(see "WS message shape" above) and **does not** write session metadata
+or call `thread/goal/set`. This is a user-facing UX rule, not a schema
+constraint — `ThreadGoalSetParams.objective` is a nullable optional, so
+the wire protocol accepts `objective: null`, but the substrate's
+intercept never constructs such a call for the "create or rename" path.
+A `thread/goal/set` issued with `objective` omitted is reserved for
+status-only updates (pause/resume/tokenBudget changes) on the
+augmentation path and is never used to create or rename a goal — the
+chip's display text must always reflect a real user-supplied objective,
+not a server-side null.
 
 **Defensive read advice.** Even though the response envelope is pinned in
 the schema, the existing adapter has burned-in evidence that Codex's
@@ -500,15 +806,28 @@ double-reads in `codex-adapter.ts`, added specifically to absorb 0.130 →
 same pattern (e.g. `response.goal ?? response`) so the adapter survives
 the same class of mid-CLI re-shaping.
 
-**Mid-turn pause probe.** docs/140 documents that the app-server rejects
-`turn/steer` during review and manual-compaction turns with
+**Mid-turn pause probe.** docs/140 documents that the app-server
+rejects `turn/steer` during review and manual-compaction turns with
 `ActiveTurnNotSteerable`. `/goal pause` is specifically a mid-turn
 affordance (the user types it while a goal-managed turn is running).
-Whether `thread/goal/set { status: "paused" }` is accepted concurrently
-with an in-flight turn on the same JSON-RPC channel — and whether it
-actually interrupts the running work or only takes effect at the next turn
-boundary — is unstated upstream and must be probed before the augmentation
-exposes a mid-turn pause affordance.
+The probe must answer two distinct questions, **both** before the
+augmentation exposes `/goal pause`:
+
+1. **Acceptance.** Is `thread/goal/set { status: "paused" }` accepted
+   concurrent with an in-flight turn on the same JSON-RPC channel —
+   and if so, does it interrupt the running work or take effect at
+   the next turn boundary?
+2. **JSON-RPC interleaving safety.** The pause arrives as a
+   `sendRequest` that needs an `id` correlation, while the adapter is
+   mid-turn holding the stream open and emitting notifications. Does
+   the existing `pendingRequests` correlation map handle interleaved
+   request/response while a turn is still pumping notifications, or
+   does it strand either the goal-set response or the in-flight turn
+   notifications? An "acceptance" probe against an idle thread passes
+   while the real mid-turn case still hangs.
+
+Both probes use the same harness; both results must be green for
+`/goal pause` to surface in the composer autocomplete.
 
 ### Adapter wiring
 
@@ -539,47 +858,72 @@ but it cannot coexist with Codex's goal-managed continuation. Under
 augmentation, the adapter must keep the process alive across turns.
 
 **This doc introduces Codex keep-alive that docs/140 deliberately
-deferred.** docs/140's "Codex live-steering" section explicitly notes that
-Codex still kills its app-server at `turn/completed` because steering
-happens *within* a live turn — "Codex needs no lifecycle rework for this
-feature." The unconditional `this.kill()` at codex-adapter.ts:895 today
-confirms that. So this doc is *the* lifecycle change for Codex; it isn't
-ratifying an existing flag. The implementation:
+deferred.** docs/140's Codex live-steering section observes that
+Codex's steering happens *within* a live turn (`turn/steer` mid-turn),
+so the same persistent-process work it does on the Claude side is not
+required for Codex live-steering to function — and the codex adapter's
+unconditional `this.kill()` at codex-adapter.ts:895 today reflects that.
+So this doc is *the* lifecycle change for Codex; it isn't ratifying an
+existing flag. The implementation:
 
-- `CodexAdapter` gains an `isKeepingAlive(): boolean` getter that returns
-  `params.goalsEnabled === true` (set at `run()` time). The orchestrator
-  uses this getter — not a flag it derives independently — to compute
-  `keepAliveAcrossTurns`. There is one boolean, owned by the adapter,
-  surfaced through a method, consumed by the orchestrator. No
-  same-named flag exists in two places with different definitions.
-- `handleTurnCompleted` skips `this.kill()` when `isKeepingAlive()` is
-  true.
-- `params.goalsEnabled` **does not include `params.useStreaming`** for
-  Codex. Live steering on Codex today does not require cross-turn
-  keep-alive (the existing live-steering path already works on Codex
-  without keep-alive because steering is mid-turn only), and widening
-  `liveSteering` to flip Codex into keep-alive would change the
-  live-steering surface area (cross-turn steering of an already-completed
-  turn, idle process accounting on every steering-enabled Codex session)
-  without explicit product sign-off. Until that decision is made
-  elsewhere, only `goalsEnabled` activates Codex keep-alive.
+- `CodexAdapter` decides whether to keep alive on each
+  `handleTurnCompleted` by reading a single `goalsKeepAlive` boolean
+  **delivered with every turn-start payload** from the orchestrator.
+  The orchestrator computes the boolean from
+  `hasActiveGoal(session) && registry.supportsGoals && agentId === "codex"`
+  and writes it into `AgentRunParams` for fresh-spawn turns and into
+  the `/agent/message` envelope for between-turn message delivery.
+  One wire name, one meaning — distinct from the orchestrator-side
+  derived gate `keepAliveAcrossTurns` defined above (which is a
+  per-agent multiplexer over `goalsKeepAlive` and `useStreaming`).
+
+  - `AgentRunParams.goalsKeepAlive?: boolean` — set on the first
+    spawn of a session.
+  - `POST /agent/message` body gains an optional
+    `goalsKeepAlive?: boolean` field, written by the orchestrator at
+    every turn-start so a mid-session `/goal clear` flips the boolean
+    to `false` on the very next message.
+  - `AgentProcess.sendUserMessage(text)` signature gains an optional
+    `opts.goalsKeepAlive?: boolean` argument; existing call sites
+    pass `undefined` (Claude path is unaffected).
+
+  Compat: omitting the field preserves today's behavior on every
+  non-augmentation path.
+- `handleTurnCompleted` skips `this.kill()` when the locally derived
+  predicate matches what the orchestrator independently computed; the
+  two stay aligned because they consult the same session-record snapshot
+  on the same turn.
+- **Codex live steering does not trigger keep-alive.** Live steering on
+  Codex today works without keep-alive because steering is mid-turn
+  only, and widening `liveSteering` to flip Codex into keep-alive would
+  change the live-steering surface area (cross-turn steering of an
+  already-completed turn, idle process accounting on every
+  steering-enabled Codex session) without explicit product sign-off.
+  The only signal that activates Codex keep-alive in this doc is the
+  presence of an active goal on a session whose adapter reports
+  `supportsGoals`.
 - Per-turn bookkeeping (`streamedAgentItems`, `lastTokenUsage`) is reset
-  at the next `turn/start` boundary instead of by process death.
+  on the next `turn/started` notification (the boundary the adapter
+  already dispatches on at codex-adapter.ts:624) instead of by process
+  death.
   **`pendingRequests` is per-process, not per-turn**, and must survive
   the boundary: it's the JSON-RPC client's `id → {resolve, reject}`
-  correlation map (codex-adapter.ts:300, 480, 553-555) that tracks
-  every in-flight RPC, including the between-turn `getGoal()` /
-  `setGoal()` / `clearGoal()` calls this augmentation specifically
-  introduces. Today the only path that clears `pendingRequests` is
-  `kill()` (lines 467-468); that contract is preserved.
+  correlation map in `codex-adapter.ts` (declaration at line 300, `set`
+  at line 480, resolve/reject sites at lines 553-557) that tracks every
+  in-flight RPC, including the between-turn `getGoal()` / `setGoal()` /
+  `clearGoal()` calls this augmentation specifically introduces. Today
+  the only path that clears `pendingRequests` is `kill()`; that contract
+  is preserved.
 
 On the Claude side, `StreamingClaudeProcess` already keeps the process
 alive across turns under `useStreaming` (docs/140), and that path is
 unchanged by this doc. The two backends now have analogous keep-alive
 behavior but are gated by separate per-feature signals; the orchestrator
-treats both uniformly via `keepAliveAcrossTurns`, defined as
-`useStreaming || adapter.isKeepingAlive()` so it stays in lockstep with
-whatever the adapter actually does.
+treats both uniformly via `keepAliveAcrossTurns` — defined below in
+"Post-turn flow rides `agent_result`" purely from the session record,
+the registry, and `agentId`, **not** from a method on the orchestrator-
+side `agent` (which is a `ProxyAgentProcess` and would fall into the
+`supportsSteering` capability trap).
 
 **Post-turn flow rides `agent_result`, not `done`.** docs/140 already
 solved this for streaming agents by gating three call sites in
@@ -590,60 +934,201 @@ signal:
 ```ts
 // Existing live-steering predicate, unchanged in meaning:
 const useStreaming = liveSteering && capabilities.supportsSteering;
-// New unified keep-alive predicate. Sourced from the adapter's own
-// `isKeepingAlive()` so the orchestrator and adapter cannot drift apart.
-const keepAliveAcrossTurns = useStreaming || agent.isKeepingAlive();
+// Goal-driven keep-alive predicate. Derived from session state +
+// registry capability + agent id, NOT from a method on `agent` — the
+// orchestrator-side `agent` is a `ProxyAgentProcess` whose
+// `capabilities` field is the deliberately conservative hardcoded
+// default (proxy-agent-process.ts:60-74). Asking the proxy "are you
+// keeping alive?" falls into the same trap as `supportsSteering` (see
+// "Activation split → Capability"). The orchestrator already has all
+// three inputs synchronously: the session record, the agent registry,
+// and the agent id.
+const goalsKeepAlive =
+  agentId === "codex" &&
+  agentInfo?.capabilities.supportsGoals === true &&
+  hasActiveGoal(session);
+// Per-agent gate, NOT a union. This is what fixes the live-steering-
+// Codex regression: under live-steering-only Codex (no active goal),
+// `useStreaming` is true but `goalsKeepAlive` is false, and the
+// adapter side still kills at turn/completed. If the orchestrator
+// here took the union, it would reuse a worker agent that was just
+// killed. Per-agent split keeps both sides aligned:
+//   - Claude takes the reuse branch under live steering only.
+//   - Codex takes the reuse branch under goalsKeepAlive only.
+const keepAliveAcrossTurns =
+  (agentId === "claude" && useStreaming) ||
+  (agentId === "codex" && goalsKeepAlive);
 ```
+
+The wire signal to the worker carries **`goalsKeepAlive`** only —
+under a name distinct from the orchestrator's three-site gate to
+avoid the overloaded-name pitfall. Claude's keep-alive is already
+gated independently inside `claude-adapter.ts` via the
+`useStreaming` path (docs/140); the orchestrator and the Claude
+adapter both consult `liveSteering` directly, so no extra wire field
+is needed for Claude.
+
+The adapter's own `handleTurnCompleted` decision is logically the same
+boolean but **reads the inputs locally inside the worker**, not from the
+proxy. The worker passes `goalsKeepAlive` from the orchestrator into
+`AgentRunParams` (a new field), and `CodexAdapter` reads it from
+`params` at `run()` time (and re-reads on each `turn/completed`
+decision via the per-turn refresh on `/agent/message` — see "Process
+lifetime" below). Same name, same value, same source of truth on the
+adapter side; the orchestrator's `keepAliveAcrossTurns` is a derived
+gate that consults `goalsKeepAlive` for Codex and `useStreaming` for
+Claude.
 
 The three sites in `agent-execution.ts` then key off
 `keepAliveAcrossTurns` instead of `useStreaming`:
 
 | Site | Today | Under this doc |
 |---|---|---|
-| (a) `existingAgent` reuse path (line 261) — `useStreaming ? runner?.getAgent() ?? null : null` | The branch already fires for **both** Codex and Claude when `liveSteering` is on (the registry sets `supportsSteering: true` on both adapters, agent-registry.ts:40, 73). It just degrades to a fresh spawn on Codex because the adapter kills the process at `turn/completed`. | Same predicate, but with this doc removing the Codex kill under `goalsEnabled`, the reuse branch actually keeps a process alive for goal-managed Codex sessions. Live-steering-only Codex (no goals) is **not** changed by this doc — the kill stays for that case. |
+| (a) `existingAgent` reuse path (line 261) — `useStreaming ? runner?.getAgent() ?? null : null` | The branch already fires for **both** Codex and Claude when `liveSteering` is on (the registry sets `supportsSteering: true` on both adapters, agent-registry.ts:40, 73). It just degrades to a fresh spawn on Codex because the adapter kills the process at `turn/completed`. | Same predicate, but with this doc removing the Codex kill when an active goal is present, the reuse branch actually keeps a process alive for goal-managed Codex sessions. Live-steering-only Codex (no active goal) is **not** changed by this doc — the kill stays for that case. |
 | (b) `agent_result` post-turn block (lines ~425–470) — runs `postTurnCommit`, `scheduleAutoPush`, PR-card emission, queue drain, token-sync, `session_agent_finished`. | Only fires for `useStreaming`. | Fires whenever `keepAliveAcrossTurns` is true. |
-| (c) `done`-handler short-circuit (lines ~512–530) — skips the duplicate post-turn block because (b) already ran. | Skips when `useStreaming`. | Skips when `keepAliveAcrossTurns`. |
+| (c) `done`-handler short-circuit (lines ~512–530) — skips the duplicate post-turn block because (b) already ran. | Skips when `useStreaming`. | Skips when `keepAliveAcrossTurns`. The `runner.setAgent(null)` call near `done` is **identity-gated** today (`if (runner?.getAgent() === currentAgent) runner.setAgent(null)`, agent-execution.ts:502), not `useStreaming`-gated, so no boolean widening is needed there — under keep-alive, `done` only fires on process exit anyway, and on exit it's correct to null the ref. |
 
 `useStreaming` keeps its meaning (live steering on a steering-capable
-adapter); the existing live-steering surface area is unchanged.
-`goalsKeepAlive` is additive and applies only to Codex sessions where
-`goalsEnabled` is true. Without this remap, none of the post-turn actions
-would fire after a goal-managed Codex turn (no auto-commit, no auto-push,
-no PR card, no queue drain, no `session_agent_finished`).
+adapter); the existing live-steering surface area is unchanged. The
+`goalsKeepAlive` clause is additive and only true on Codex sessions
+with an active goal. Without this remap, none of the post-turn actions
+would fire after a goal-managed Codex turn (no auto-commit, no
+auto-push, no PR card, no queue drain, no `session_agent_finished`).
 
-**Listener-wiring.** `agent-listeners.ts:wireAgentListeners` is per-turn
-today, gating "Agent process started" on a local `hasLoggedAgentStart`
-flag. `runAgentWithMessage` calls `existingAgent.removeAllListeners()` at
-agent-execution.ts:275-277 on every reuse turn — so any goal-event
-listener registered on the EventEmitter (`adapter.on("event", …)`) would
-be torn off at the start of the next turn, and a `thread/goal/updated`
-notification that arrives between turns (the augmentation specifically
-permits this — runtime continuation, autonomous status transitions like
-`complete` / `budgetLimited`) would have no listener at all.
+**Goal-event delivery across the container boundary.** Goal events are
+`AgentEvent` variants and must ride the same path every other
+adapter-emitted event takes:
 
-Goal-event delivery therefore does **not** flow through the per-turn
-EventEmitter at all. Instead:
+1. `CodexAdapter` (running inside the worker container) emits
+   `agent_goal_updated` / `agent_goal_cleared` as `AgentEvent`s from its
+   JSON-RPC notification dispatcher, alongside `agent_assistant` /
+   `agent_result`.
+2. The worker forwards them through its existing SSE relay (the
+   `agent_event` channel that `session-worker.ts` already pumps).
+3. The orchestrator's `ContainerSessionRunner.handleSSEEvent`
+   (container-session-runner.ts:1101-1143) is the runner-side SSE
+   consumer that today calls `this._agent.emit("event", data)` for
+   `agent_event` messages. **This is where the goal-event branch
+   lives**, *before* the `_agent.emit` fan-out:
 
-- `CodexAdapter` translates `thread/goal/updated` and
-  `thread/goal/cleared` notifications *inside its own internal JSON-RPC
-  dispatch path*, before any `emit("event", …)` fan-out. The adapter
-  calls a direct method on a reference it holds for the runner (set
-  once at adapter construction / `setAgent` time): `runner.applyGoalEvent(event)`.
-- `runner.applyGoalEvent(event)` is a session-lifetime method on
-  `ContainerSessionRunner`. It writes `SessionGoal` to session metadata
-  and emits the `goal_updated` / `goal_cleared` WS notification via
-  `runner.emitMessage`. It is **not** an EventEmitter listener; it is
-  not registered with `adapter.on` and is unaffected by
-  `removeAllListeners()`.
-- The per-turn `agent-listeners.ts` listeners (`agent_init`,
-  `agent_result`, etc.) continue to wire and tear down per turn the way
-  they do today; `hasLoggedAgentStart` resets per turn just as for
-  `StreamingClaudeProcess` reuse.
+   ```ts
+   case "agent_event":
+     if (data.type === "agent_goal_updated" || data.type === "agent_goal_cleared") {
+       this.applyGoalEvent(data);   // session-lifetime, runner-owned
+       // fall through to also fan out to attached viewers if needed
+     }
+     if (this._agent) this._agent.emit("event", data);
+     break;
+   ```
 
-This keeps goal-event wiring on a session-lifetime surface (a direct
-runner method call from the adapter), independent of the per-turn
-EventEmitter lifecycle, and resolves the conflict with
-`removeAllListeners()`.
+4. `applyGoalEvent` is a `ContainerSessionRunner` method that writes
+   `SessionGoal` to session metadata (per the persistence rules below)
+   and emits `goal_updated` / `goal_cleared` via `runner.emitMessage`.
+
+   **DI prerequisite** (substrate-level work): `ContainerSessionRunner`
+   does not currently hold a `SessionManager` reference (grep
+   `sessionManager` in `container-session-runner.ts` and
+   `session-runner.ts` returns nothing). The substrate must plumb either
+   `SessionManager` or a narrow `setSessionGoal(sessionId, goal)`
+   callback into the runner constructor, threaded through
+   `SessionRunnerRegistry`, `app-di.ts`, and the warm-session pool. This
+   is mechanical DI work but it touches enough sites to be worth
+   calling out — without it, `applyGoalEvent` has no obvious home for
+   the metadata write.
+
+This puts the goal-event branch at the runner level, *upstream of the
+per-turn EventEmitter*, so `existingAgent.removeAllListeners()` at
+agent-execution.ts:275-277 (which clears `_agent`'s listeners between
+turns) never affects goal delivery in container mode.
+
+**Local / dogfood mode** is a smaller wiring problem and is scoped
+separately: `buildLocalAgentFactory` in `app-di.ts` is a bare
+`switch` that returns a `ClaudeAdapter` / `CodexAdapter` instance,
+and there is no runner-level SSE consumer (no container boundary to
+demux). The local-mode factory is therefore extended to wrap the
+local adapter in a small `LocalRunnerAdapter` that intercepts
+`agent_goal_updated` / `agent_goal_cleared` events from the adapter's
+event stream and forwards them to the runner via the same
+`applyGoalEvent` method used in container mode.
+
+This is structurally required, not optional: under the
+augmentation's persistence contract, `thread/goal/updated` is *also*
+a session-metadata write. If local mode dropped between-turn goal
+events (the "no listener attached between turns" case under the
+per-turn listener tear-down), an autonomous `complete` transition
+during local dogfooding would mutate the live `ThreadGoal` cache but
+never reach session metadata, leaving `SessionInfo.goal` stuck at
+`"active"`, and the rehydrate reconciliation rules would then
+*override* the runtime ("session record wins") on the next resume —
+reverting the achievement. The wrapper is what keeps local mode
+honest with the persistence contract; the listener-tear-down problem
+that motivated `applyGoalEvent` in container mode applies in local
+mode too, and the fix is the same shape.
+
+The Tests section's "`agent-listeners.ts` short-circuits goal events out
+of the chat-message accumulator (mirroring `agent_rate_limits`)" reads
+correctly under this model — the SSE branch in the runner is the
+primary path, and `agent-listeners.ts` still short-circuits if the
+per-turn handler happens to also see the event during the brief
+inside-turn window when listeners are attached. Both paths exist; the
+runner is the load-bearing one.
+
+**Cross-turn user-message delivery.** This is the inbound counterpart
+to the kill suppression. `CodexAdapter.sendUserMessage` today
+(codex-adapter.ts:452-455) delegates to `writeStdin`, which emits
+`turn/steer` (codex-adapter.ts:436-449). `turn/steer` requires an
+active `currentTurnId`, but `handleTurnCompleted` clears
+`this.currentTurnId = null` right before returning (line 891). So
+between turns on a kept-alive process the next `sendUserMessage` would
+be a silent no-op — the agent stays alive but never gets the next
+message, and the keep-alive path is structurally inert.
+
+`CodexAdapter.sendUserMessage` therefore gains a second branch: when
+`this.currentTurnId === null` (between turns on a goal-managed thread),
+issue `turn/start` with the same load-bearing fields the initial
+`turn/start` in `initializeAndRun` (codex-adapter.ts:1039-1056)
+supplies: `threadId: this.threadId`, `input: <user message>`,
+`approvalPolicy: "never"`, `sandboxPolicy: { type: "dangerFullAccess" }`,
+`cwd: this.cwd`, `model: this.model`. The first two are non-optional —
+without `approvalPolicy: "never"` every shell command stalls on
+`item/commandExecution/requestApproval`; without
+`sandboxPolicy: { type: "dangerFullAccess" }` Codex's bubblewrap
+sandbox fails in-container ("No permissions to create a new
+namespace"). The adapter's own comments at `initializeAndRun` call
+these load-bearing.
+
+`cwd` is already cached on the adapter (line 311); **`model` is not**
+cached today, so the augmentation adds it: `CodexAdapter` stashes
+`params.model` at `run()` time and reuses it for between-turn
+`turn/start` calls. The reuse path in `agent-execution.ts:637`
+(`existingAgent.sendUserMessage(prompt)`) keeps its existing call
+site; the adapter picks the right RPC based on whether a turn is in
+flight. Mid-turn steering (the existing `turn/steer` path) is
+unchanged.
+
+**Error surface.** `sendUserMessage` is `(text, _opts?) => void` —
+the call doesn't await. `writeStdin` swallows failures today because
+`turn/steer` failure modes are narrow. `turn/start` between turns has
+broader failure modes (stale `threadId`, thread-not-yet-initialized
+race on fresh respawn, post-resume re-establishment failure) that
+must reach the runner, otherwise a between-turn message can be
+silently dropped.
+
+`this.emit("error", …)` is **not** the right signal for this case:
+the existing `agent_error` cascade nulls `this.agent` on the worker
+side (session-worker.ts:1233-1238) and broadcasts a hard error chat
+message, which would tear down the kept-alive process the
+augmentation is built around — exactly the lifetime regression to
+avoid. The adapter needs a soft-error signal that surfaces as a
+`system_notice` in chat without nulling the agent. The cleanest fit
+is a new `AgentProcess` event `soft_error` (or reuse the existing
+`log` event with a structured payload the runner translates), wired
+in `agent-listeners.ts` to emit a `system_notice` at `level: "warn"`
+and **not** propagate to the agent-disposal path. The new branch
+wraps the `turn/start` call in
+`.catch(err => this.emit("soft_error", err))`; existing call sites
+that emit `error` for hard failures (process death, auth, etc.)
+keep that signal.
 
 **Worker-side state.** `session-worker.ts` nulls `this.agent` only on the
 adapter's `done` and `error` events (lines 1228-1236, 1321). Under
@@ -651,24 +1136,89 @@ augmentation, `done` fires only on process exit (kill / crash) — so
 `this.agent` survives across turns when `keepAliveAcrossTurns` is true.
 Two contract changes follow.
 
-**1. `/agent/start` against an already-alive persistent process.**
+**1. `/agent/start` against an already-alive persistent process — only
+on the respawn-after-crash path.** The steady-state reuse case
+(persistent agent is alive between turns) does **not** issue a fresh
+`/agent/start`: `runAgentWithMessage` takes the `existingAgent` branch
+at agent-execution.ts:261 and routes the next turn via `sendUserMessage`
+on the live `_agent`. So between-turn `/agent/start` against an alive
+persistent process should not happen during normal operation. It only
+happens on the recovery path described in point 2 below: the worker's
+`this.agent` is null (process actually died), the goal-op handler
+respawns via `_startAgentViaProxy`, and the worker is in a state where a
+*stale* agent from a previous session may still be lingering in
+`this.agent` even though the runner believed it was gone.
+
 `_startAgentViaProxy` today (container-session-runner.ts:648-681) does
 *not* unconditionally kill on 409 — it does a 150ms retry first to absorb
 the post-`agent_done` cleanup race, and only escalates to `/agent/kill`
-+ re-spawn if the retry *also* 409s (docs/142 Problem B2). Under
-augmentation that recovery escalates too eagerly: it would kill the
-intended persistent Codex on every between-turn `/agent/start`.
++ re-spawn if the retry *also* 409s (docs/142 Problem B2). That tuning
+was for the `agent_done`-cleanup race, not for cross-session bleed. The
+augmentation introduces a longer-lived process, which widens the window
+where a stale agent from a previous session can outlive the runner that
+spawned it (orchestrator restart while the worker container survived,
+session-switch within a recycled container).
 
-`agentId` alone (`claude` | `codex`) is not sufficient to distinguish "the
-persistent process this session intended" from "a stale process from a
-previous session reusing the container." The contract needs a
-**per-spawn token**: `/agent/start` writes a `runId` (a fresh uuid generated
-by the orchestrator at spawn time, persisted on the runner) into both the
-spawn request payload and the worker's `this.agentRunId`. `/agent/start`
-against an existing agent returns success **iff** `this.agentRunId ===
-params.runId`; mismatch falls back to the existing 409 retry → kill →
-respawn path. This keeps the docs/142 race fix intact while distinguishing
-intentional reuse from cross-session bleed.
+The contract therefore adds a **per-spawn token** `runId` (a fresh uuid
+generated by the orchestrator at every `_startAgentViaProxy` call,
+persisted on the runner for that spawn's lifetime). `/agent/start`'s
+body schema becomes
+`{ agentId: AgentId, params: AgentRunParams, runId: string }` — `runId`
+sits as a **sibling top-level field**, not inside `AgentRunParams`.
+Reason: `AgentRunParams` is the shared shape passed to every adapter,
+including local-mode `ClaudeAdapter`/`CodexAdapter` instances that
+have no container boundary; threading a container-mode identity token
+through the local-mode type drags worker-coordination concerns into
+adapter code. Keeping `runId` at the body-envelope level lets
+`session-worker.ts` strip it before calling
+`this.agentFactory(agentId, params)` and lets local-mode tests
+construct `AgentRunParams` without a fake uuid.
+
+The worker's existing 409 + 150ms retry path is unchanged — that race
+fix is preserved. On the post-retry escalation, the worker compares
+`this.agentRunId` against `body.runId`: a match means "persistent
+agent from this same runner; reuse it" and the worker returns success
+without killing; a mismatch means "stale agent from a previous runner"
+and falls through to the existing kill+respawn path. This is the
+addition, not a replacement of the docs/142 race fix.
+
+**Event-history bound on `runId` reuse.** When `_startAgentViaProxy`
+is called with a matching `runId` against an already-alive worker
+agent, the orchestrator has just constructed a fresh
+`ProxyAgentProcess` with no knowledge of events the live worker agent
+may have emitted in the gap (between the previous orchestrator-side
+teardown and this new spawn). To avoid chat-history group accumulation
+starting mid-stream, `runId` reuse is **gated on the worker reporting
+no in-flight turn** — assertable via the same `verifyRunningState()`
+machinery already used elsewhere. If the worker has a turn in flight
+when the runId reuse arrives, the orchestrator falls back to
+kill+respawn (clean turn boundary) rather than attaching to mid-stream
+state.
+
+**`runId` must survive orchestrator restart.** A bare in-memory
+`runId` would be regenerated on every orchestrator boot, so after an
+orchestrator restart against a still-alive worker agent every
+`/agent/start` would mismatch and trigger kill+respawn — defeating
+the augmentation's keep-alive contract for exactly the recovery case
+it's supposed to handle. The `runId` is therefore persisted on the
+session record as part of session metadata (a separate column on
+`sessions.ts`, not part of `SessionGoal`). On orchestrator startup,
+the runner restores its `runId` from the session record before any
+`/agent/start` call so the comparison against the worker's
+`this.agentRunId` survives the restart. New sessions get a fresh
+`runId` on first spawn and write it to the record at that point.
+
+**Mixed-version compatibility.** This is a wire-shape change to
+`/agent/start`'s body schema and a new instance field on the worker.
+Container-mode deployments can have a newer orchestrator talking to
+an older worker image (build cadence drift across the orchestrator
+binary and the agent-CLI image). The compat rule: when `params.runId`
+is omitted (older orchestrator), the worker preserves today's
+unconditional-409-on-existing-agent behavior; when `this.agentRunId`
+is null (older worker that doesn't know about the field), the
+orchestrator falls back to the existing 150ms-retry → kill+respawn
+path. Both directions degrade to the pre-change behavior, so neither
+side regresses if the other lags a rollout.
 
 **2. `/agent/goal` against a null `this.agent`.** The worker cannot
 respawn the agent on its own — `/agent/start` requires the full
@@ -710,10 +1260,34 @@ Two orthogonal axes must be kept distinct:
   sane responses on the three request methods? That is a real
   spawn-and-handshake probe, not a synchronous env-var read like the
   existing `authConfigured` refresh — so it doesn't share that
-  precedent. The closer pattern is the CLI contract test introduced in
-  docs/141 (`docs/141-cli-version-strategy`): the agent CLI is the
-  source of truth, and a contract test verifies the surface against the
-  pinned version. Concretely:
+  precedent. The runtime path itself is already verified working on
+  0.130.0 (see the live-probe results in "Why not pass-through →
+  Codex"). What's missing is the **regression-prevention machinery**
+  for future Renovate bumps: without a CI gate, a future bump that
+  drops the API would land silently and break sessions with active
+  goals.
+
+  That machinery is docs/141 Axis-3 plus a goal-flow extension. At
+  the time of this writing, every
+  [Axis-3 task](../141-cli-version-strategy/checklist.md) is
+  unchecked, and the Axis-3 scope as written covers only the `claude`
+  stream-json handshake and the base `codex app-server` handshake +
+  flag acceptance — **not** `--enable goals` + `experimentalApi: true`
+  + the three `thread/goal/*` request methods + the two notifications.
+  Axis-3 itself is a multi-PR effort that cannot land in the same PR
+  as this doc; the realistic ordering is:
+
+  1. Axis-3 ships (CI job, contract-test scaffold, required merge
+     gate on Renovate bumps) — a separate work stream this doc
+     depends on but does not drive.
+  2. A goal-flow extension to that CI job is added when Axis-3 lands,
+     captured as a checklist task on
+     `docs/141-cli-version-strategy/checklist.md` to make the
+     dependency build-orderable.
+  3. The ratcheting constant `CODEX_GOALS_RUNTIME_VERIFIED` becomes
+     real once both (1) and (2) pass on the current pin.
+
+  Concretely once both ship:
   - **Where the probe runs.** The agent CLI lives in the worker
     container, not the orchestrator host. The probe is therefore a
     one-time contract test invoked during the agent-CLI build / publish
@@ -723,11 +1297,18 @@ Two orthogonal axes must be kept distinct:
     pin is current) — committed alongside the lockfile.
   - **How the registry consumes it.** `agent-registry.ts` resolves
     `supportsGoals` at orchestrator init by comparing the current Codex
-    pin against `CODEX_GOALS_RUNTIME_VERIFIED`. A match → `true`; a
-    mismatch (Renovate landed a bump that the contract test hasn't
-    re-verified yet) → `false`, with an explicit log line. No
-    cold-start spawn cost is incurred per orchestrator boot; the
-    expensive probe is amortized into the build.
+    pin against `CODEX_GOALS_RUNTIME_VERIFIED`. The "current Codex pin"
+    is read at orchestrator startup from a generated constant that the
+    build emits by parsing `docker/agent-cli/package.json` at build
+    time — analogous to how the Codex CLI version is already surfaced
+    elsewhere in the project — so the orchestrator has a synchronous,
+    in-process value to compare against
+    `CODEX_GOALS_RUNTIME_VERIFIED`. A match → `true`; a mismatch
+    (Renovate landed a bump that the contract test hasn't re-verified
+    yet) → `false`, with an explicit log line. No cold-start spawn
+    cost is incurred per orchestrator boot; the expensive probe is
+    amortized into the build, and both the verified constant and the
+    pin constant ratchet through the same agent-CLI build pipeline.
   - **Invalidation.** A Codex pin bump triggers a fresh contract-test
     run as part of the CI gate that already exists for the agent CLI
     (docs/141). If the new pin passes, `CODEX_GOALS_RUNTIME_VERIFIED`
@@ -735,10 +1316,10 @@ Two orthogonal axes must be kept distinct:
     augmentation is brought back in line. `supportsGoals` flips off
     automatically in the meantime.
   - **Failure mode.** If `supportsGoals` is `false` registry-wide,
-    `goalsEnabled` toggles silently degrade to substrate behavior —
-    setting the session bit still works (the substrate uses it), the
-    augmentation just doesn't activate. No user-facing capability
-    rejection in the common case.
+    every Codex session silently degrades to substrate behavior —
+    setting a goal still works (the substrate uses session metadata
+    and the prelude), the augmentation just doesn't activate. No
+    user-facing capability rejection in the common case.
 
   `ClaudeAdapter` reports `false` statically (no probe needed).
   Resolved at call sites via the **shared `agent-registry`**, not via
@@ -753,46 +1334,37 @@ Two orthogonal axes must be kept distinct:
   to substrate" bullet describes the runtime-failure path *despite* the
   contract test having passed (Renovate landed a Codex bump mid-
   orchestrator-lifetime that regressed the API, or a feature flag was
-  removed upstream and not caught in CI): the orchestrator flips
-  `goalsEnabled` off for the affected session (not the capability) and
-  surfaces a `system_notice`. The next registry init will re-read
-  `CODEX_GOALS_RUNTIME_VERIFIED` against the new pin and `supportsGoals`
-  may flip globally then.
-- **Activation setting** (`goalsEnabled`). Gates the Codex spawn args
-  (`--enable goals` + `experimentalApi: true`) and the lifetime change
-  above. Important framing note: live steering's
-  `credentialStore.getLiveSteering()` (the obvious "parallel" reference)
-  is in fact an **app-wide** boolean stored once on
-  `credential-store.data.liveSteering` — not a per-session setting. So
-  `goalsEnabled` is a sibling-axis decision, not a copy of an existing
-  pattern. Two options for where it lives:
-  1. Same shape as `liveSteering` — an app-wide
-     `credentialStore.getGoalsEnabled()`. Simplest; matches the
-     experimental-feature precedent. Lose the ability to enable goals on
-     one session but not another.
-  2. New per-session record field on `sessions.ts`. Genuinely new
-     pattern; lets sessions opt in independently. Requires schema and
-     migration work that doesn't exist for live steering.
-  The plan picks option 2: per-session, because `/goal` is itself a
-  per-session concept (one session can have an active goal while another
-  doesn't) and stamping an app-wide flag on top of that creates two
-  global-vs-session toggles for the same effective question. Implementer
-  note: the per-session boolean *schema* already exists — `SessionInfo`
-  carries `archived`, `warm`, `branchRenamed`, `agentPinned`, and
-  `sessions.ts` exposes setters like `setBranchRenamed(id, renamed)` and
-  `setAgentPinned(id)` against a SQLite-backed column. `goalsEnabled`
-  lifts that pattern (add a `goals_enabled` column, mirror
-  `setBranchRenamed`'s shape with a new `setGoalsEnabled(id, enabled)`
-  method). What's new is that `goalsEnabled` is user-settable from the
-  chat composer rather than implicit, but the persistence shape is
-  off-the-shelf.
+  removed upstream and not caught in CI): the orchestrator stops issuing
+  augmentation calls for the affected session (treats it as if
+  `supportsGoals` were false locally) and surfaces a `system_notice`.
+  The next registry init will re-read `CODEX_GOALS_RUNTIME_VERIFIED`
+  against the new pin and `supportsGoals` may flip globally then.
+- **No separate activation setting.** The augmentation activates
+  automatically when `hasActiveGoal(session)` **and**
+  `agent-registry.get(session.agentId).capabilities.supportsGoals`. There
+  is no `goalsEnabled` per-session toggle, no `/goal enable` command,
+  no settings-panel switch. The lifecycle follows the goal:
+  - `/goal <text>` on a Codex session with `supportsGoals` true: the
+    substrate writes session metadata; the adapter's next spawn (or the
+    currently-alive process, if there is one) keeps alive across turns.
+  - `/goal clear`: session metadata clears; the kill-suppressor turns
+    off; the next `turn/completed` kills the app-server as before.
+  - Codex session with no active goal: identical to today's behavior
+    (kill at every `turn/completed`).
+  This removes a redundant axis (`/goal` is itself per-session;
+  toggling a separate "goals enabled" boolean on top of that just
+  produces two questions for the same answer) and dodges the "first
+  user-settable per-session boolean" schema work. The keep-alive
+  predicate is computed on each `handleTurnCompleted` from the session
+  record + registry capability + agentId — see §"Post-turn flow rides
+  `agent_result`" for the orchestrator-side definition and §"Process
+  lifetime" for how the worker delivers the snapshot.
 
 The `/goal pause` / `/goal resume` composer commands and the chip's
-budget/time fields are surfaced *only* when both axes hold:
-`agent.capabilities.supportsGoals` (from the registry) **and**
-`session.goalsEnabled`. If the user has goals enabled on a Claude session,
-the augmentation-only commands are unavailable and the session degrades
-to the substrate; the chip drops the budget/time fields.
+budget/time fields surface *only* when `supportsGoals` is true on the
+registry. On Claude sessions (`supportsGoals: false` statically), the
+augmentation-only commands are unavailable and the chip drops the
+budget/time fields.
 
 ### `AgentProcess` interface shape
 
@@ -815,15 +1387,21 @@ Adapter implementations:
 - `ClaudeAdapter` — leaves the methods undefined (does **not** implement
   them). The substrate intercept never calls into the adapter for Claude
   sessions; it writes directly to session metadata.
-- `ProxyAgentProcess` — implements pass-through forwards to the worker
-  endpoint *only* when the resolved registry capability says
-  `supportsGoals`; otherwise undefined so call-site checks see the
-  capability gap.
+- `ProxyAgentProcess` — implements all three methods unconditionally
+  as HTTP forwards to `POST /agent/goal`. The methods are always defined
+  on the prototype; activation is gated entirely by the registry
+  capability + active-goal check at the call site (`send-message.ts`'s
+  intercept handler resolves both before invoking the proxy). The
+  proxy's `capabilities` field stays `supportsGoals: false` per the
+  docs/140 precedent — call sites read capability from the registry, not
+  from the proxy.
 
-Call sites use `typeof agent.setGoal === "function"` as the activation
-check in code, but the gating decision is driven by the registry capability
-+ session setting described above — the `typeof` check is the type-system
-expression of that decision, not the source of truth.
+Call sites gate on the **registry capability + active-goal check**, not
+on `typeof agent.setGoal`. On `ClaudeAdapter` the methods are not
+defined and the `typeof` check would fail anyway; on `ProxyAgentProcess`
+the methods are always defined; on `CodexAdapter` the methods are
+defined when constructed via the factory. The capability gate at the
+call site is the single source of truth.
 
 ### Container-boundary proxy
 
@@ -835,11 +1413,25 @@ agent proxy chain (`session-worker.ts` already exposes `/agent/start`,
 - `POST /agent/goal` on the worker with body
   `{ op: "get" | "set" | "clear", goal?: …, status?: … }`. Operates on
   `this.agent`, which under the lifetime change above is the long-lived
-  process. If `this.agent` is null when the request lands, the worker
-  returns a typed "no agent" response; the orchestrator-side proxy
-  catches it, respawns via `_startAgentViaProxy` (using the session's
-  current `runId`), and retries the goal op. See "Worker-side state"
-  above for why the worker can't respawn on its own.
+  process. The worker has three responses:
+
+  1. **Null agent** — `this.agent` is null. Worker returns a typed
+     `{ status: "no-agent" }` response. The orchestrator-side proxy
+     catches it, respawns via `_startAgentViaProxy` (using the session's
+     current `runId`), and retries the goal op. See "Worker-side state"
+     above.
+  2. **Agent without goal support** — `this.agent` exists but is a
+     Claude adapter (no `setGoal`/`getGoal`/`clearGoal` methods). Worker
+     returns a typed `{ status: "unsupported", agentId }` response. The
+     orchestrator surfaces a `system_notice` ("`/goal pause` is only
+     available on Codex sessions with goal management enabled") and
+     does not throw. This case should not happen during normal
+     operation — the WS-handler capability gate catches it earlier —
+     but the worker treats it as an in-band response rather than a
+     throw, because a stray `/agent/goal` reaching the worker is
+     diagnostic, not catastrophic.
+  3. **Success** — worker invokes the adapter's goal method and returns
+     the JSON-RPC response.
 - `worker-http.ts` helper.
 - `ContainerSessionRunner` method.
 - `ProxyAgentProcess` method (guarded as above).
@@ -860,27 +1452,59 @@ runtime continuation and for cheap reads via `getGoal()`, but not what
 ShipIt relies on for persistence.
 
 **Status type-space mapping.** `SessionGoal.status` is
-`"active" | "cleared" | "achieved"` (substrate-flavored, matches the
-user-confirmation lifecycle); `ThreadGoal.status` is
+`"active" | "paused" | "cleared" | "achieved"` (substrate-flavored,
+extended with `paused` so an explicit user pause survives orchestrator
+restart — see §Storage above); `ThreadGoal.status` is
 `"active" | "paused" | "budgetLimited" | "complete"` (augmentation-
 flavored, matches the runtime continuation lifecycle). Translation:
 
 | `ThreadGoal.status` → `SessionGoal.status` | Rule |
 |---|---|
 | `active` | `active` |
-| `paused` | `active` (the goal is still set; the substrate record doesn't model "paused" because it has no continuation to pause — paused is a runtime-only concept) |
-| `budgetLimited` | `active` (same rationale; budget limit is a runtime telemetry signal, surfaced on the chip but not as a metadata state change) |
+| `paused` | `paused` (persisted; pause survives orchestrator restart so continuation doesn't silently resume) |
+| `budgetLimited` | `active` (budget limit is runtime telemetry surfaced on the chip; the persisted state stays `active` so the user can keep extending the goal or clear it) |
 | `complete` | `achieved` |
 
 | `SessionGoal.status` → `ThreadGoalSetParams.status` (used on rehydrate) | Rule |
 |---|---|
 | `active` | `active` |
+| `paused` | `paused` (rehydrate restores the pause so the user's explicit pause survives) |
 | `cleared` | (do not call `thread/goal/set` — no active goal to restore) |
 | `achieved` | (do not call `thread/goal/set` — the user already confirmed achievement; the runtime should start fresh on the next user-set goal) |
 
-The session record fields `paused` and `budgetLimited` are surfaced on
-the chip via the in-memory `ThreadGoal` cache, not from `SessionGoal` —
-they are transient runtime states, not persistent ones.
+`budgetLimited` is the only runtime status that isn't persisted on the
+substrate. The chip surfaces it from the in-memory `ThreadGoal` cache;
+across an orchestrator restart it zeroes out until the next
+`thread/goal/updated` arrives.
+
+**Rehydrate mechanism.** `thread/resume`'s response does **not**
+include a goal field. So on rehydrate the adapter issues an
+out-of-band `thread/goal/get` after the initialize / `thread/resume`
+handshake completes, reads the returned `goal: ThreadGoal | null`, and
+reconciles it against `SessionGoal` per the authority rules below.
+
+This is **gated**: the adapter issues `thread/goal/get` only when
+the session has *ever* had a goal — derivable from the existing
+`SessionGoal` shape without a separate sticky bit. The predicate is
+`session.goal != null` (any goal record present, regardless of
+status: `active`, `paused`, `cleared`, or `achieved`). Once `/goal
+clear` runs, the record stays on the session with
+`status: "cleared"` rather than being deleted, so this predicate is
+true for any session that has ever set a goal and false for
+cold-start sessions that never have. No new column or sticky bit
+required.
+
+Cold-start sessions that never had a goal don't pay the round-trip
+— which is the common case until `/goal` adoption is wide.
+
+The rehydrate call **blocks the first turn after resume**: the
+`Source-of-truth reconciliation` rules below may issue
+`thread/goal/clear` or `thread/goal/set` based on the result, and a
+user message arriving on a thread whose goal state hasn't been
+reconciled yet races those calls. Blocking adds one round-trip of
+latency per resume on sessions that ever had a goal — measured in
+single-digit ms against the local app-server, acceptable for a
+once-per-resume cost.
 
 **Authority on conflict.** If the resumed thread reports an `active`
 goal but `SessionGoal.status` is `cleared` or `achieved`, the session
@@ -960,9 +1584,9 @@ still holds).
   `codex-adapter.ts`).
 - Process lifetime: under `--enable goals`, the adapter does **not** kill
   the app-server at `turn/completed`; `streamedAgentItems` and
-  `lastTokenUsage` are reset on the next `turn/start`; `pendingRequests`
-  survives across turns (it's a JSON-RPC correlation map, not turn
-  state); `agent-listeners.ts` rewiring is explicit.
+  `lastTokenUsage` are reset on the next `turn/started` notification;
+  `pendingRequests` survives across turns (it's a JSON-RPC correlation
+  map, not turn state); `agent-listeners.ts` rewiring is explicit.
 - Capability gating: `/goal` augmentation activates from
   `agent-registry.ts`, not from `ProxyAgentProcess.capabilities` (regress
   the docs/140 trap).
@@ -989,40 +1613,51 @@ still holds).
 Substrate:
 
 - Empty goal text → emit a usage system message; do not write metadata.
-- `/goal status` with no active goal → emit `goal_status` with
-  `goal: null`. The client refreshes the chip (which stays hidden) but
-  does not record a clearedAt timestamp or render an inline "Goal
-  cleared" message — that's what `goal_cleared` is for.
+- `/goal status` with no record (or a cleared record) → emit
+  `goal_status` with `goal: null`. The client refreshes the chip
+  (which stays hidden) but does not record a clearedAt timestamp or
+  render an inline "Goal cleared" message — that's what
+  `goal_cleared` is for. (An achieved record returns a populated
+  `goal_status.goal` so the chip can render the achieved state.)
 
 Codex augmentation:
 
 - App-server rejects `--enable goals` (CLI moved between the registry
   probe and the session spawn — rare but possible after a Renovate bump
   mid-orchestrator-lifetime): surface a `system_notice` at `level: "warn"`,
-  flip `goalsEnabled` off for the affected session (not the
-  registry-wide capability), and fall back to the substrate
-  transparently. A later registry refresh re-evaluates the probe and may
-  drop `supportsGoals` globally if the new CLI doesn't accept the flag.
+  treat the session as if `supportsGoals` were false (the adapter falls
+  back to substrate behavior — no `--enable goals` retry, no augmentation
+  spawn args), and let the substrate carry the goal. A later registry
+  refresh re-evaluates the probe constant and may drop `supportsGoals`
+  globally if the new CLI doesn't accept the flag.
 - App-server returns "goals feature is disabled": configuration bug in
   the adapter — log the raw response.
 - `thread/goal/set` fails because the thread hasn't been created: surface
   the error inline; the substrate's session-stored goal is already
   persisted, so the chip still shows the goal even though continuation
   hasn't started.
-- Persistent app-server crashes mid-session: existing recovery semantics
-  apply — `verifyRunningState()` resets the local `running` flag, and the
-  next operation (turn or `/goal` op) respawns the agent transparently via
-  `_startAgentViaProxy`. No new "no agent" response shape is introduced
-  for goal ops; they share the same respawn-on-next-op contract as
-  `send_message`.
+- Persistent app-server crashes mid-session: `verifyRunningState()`
+  resets the local `running` flag, and the next operation transparently
+  respawns via `_startAgentViaProxy`. For send-message, the existing
+  contract applies as-is. For `/goal` ops, the worker returns the typed
+  `{ status: "no-agent" }` response described in "Container-boundary
+  proxy → 1. Null agent"; the orchestrator-side proxy catches it,
+  respawns via `_startAgentViaProxy`, and retries the goal op. From the
+  user's perspective the behavior is identical to send-message respawn
+  (a slightly slower op one time, no surfaced error); the typed
+  response is the wire-level mechanism the proxy uses to drive the
+  respawn rather than parsing 5xx errors out of `/agent/goal`.
 
 ## Key files
 
 Substrate (docs/132 Bucket-4 wiring):
 
-- `src/server/orchestrator/sessions.ts` — persist `SessionGoal` on session
-  metadata (new per-session schema; not modeled on `getLiveSteering()`,
-  which is app-wide).
+- `src/server/orchestrator/sessions.ts` — persist `SessionGoal` on
+  session metadata (new `goal_json` SQLite column + DatabaseManager
+  migration + setters mirroring `setBranchRenamed` / `setAgentPinned`).
+  Not modeled on `getLiveSteering()`, which is app-wide.
+- `src/server/shared/types/domain-types.ts` — `SessionInfo` gains
+  optional `goal?: SessionGoal | null`.
 - `src/server/orchestrator/ws-handlers/agent-execution.ts` — extend
   `assembleAgentPrompt` to take a `goalContext` strand and prepend it to
   the assembled prompt; goal is read from session metadata at the
@@ -1059,7 +1694,10 @@ Codex augmentation:
   `agent_goal_cleared` variants on `AgentEvent`; `supportsGoals` capability.
 - `src/server/shared/agent-registry.ts` — capability resolution (per
   docs/140).
-- `src/server/session/session-worker.ts` — `POST /agent/goal` endpoint.
+- `src/server/session/session-worker.ts` — `POST /agent/goal`
+  endpoint; new `runId` field on `POST /agent/start`'s request body and
+  the worker's per-agent state (`this.agentRunId`); extended
+  already-running comparison logic.
 - `src/server/orchestrator/worker-http.ts` — orchestrator → worker helper.
 - `src/server/orchestrator/proxy-agent-process.ts` — proxy delegation
   (and the docs/140 precedent that capability resolution does **not** go
@@ -1084,7 +1722,15 @@ Related plans:
   `supportsSteering` trap that `supportsGoals` must avoid) and for
   persistent-process lifetime management (the `done` → `agent_result`
   post-turn remap that the augmentation rides on, and the kill-suppressor
-  that this doc unifies with `goalsEnabled`).
+  this doc extends to Codex via the `goalsKeepAlive` predicate
+  computed in the orchestrator from session-record + registry +
+  agentId — gated on the presence of an active goal, *not* on live
+  steering).
+- [docs/141-cli-version-strategy/plan.md](../141-cli-version-strategy/plan.md)
+  and its checklist — the contract-test scaffolding (Axis 3) that
+  `supportsGoals` resolution depends on. The Codex augmentation cannot
+  ship before Axis 3 lands; this doc consumes the
+  `CODEX_GOALS_RUNTIME_VERIFIED` constant Axis 3 will ratchet.
 - [docs/129-stop-hook-pr-enforcement/plan.md](../129-stop-hook-pr-enforcement/plan.md)
   — owns the managed auto-PR Stop hook in
   `docker/agent-hooks/managed-settings.json`. Directly relevant to the
