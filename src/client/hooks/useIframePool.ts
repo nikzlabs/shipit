@@ -23,6 +23,8 @@ export interface IframePool {
   promoteSlot: (key: string) => void;
   /** Add or update a slot with the given URL/containerMode metadata. */
   setSlot: (key: string, slot: IframeSlot) => void;
+  /** Remove slots matching a predicate and clear their tracking refs. */
+  pruneSlots: (shouldRemove: (key: string) => boolean) => void;
 }
 
 /**
@@ -74,6 +76,29 @@ export function useIframePool(): IframePool {
     });
   }, []);
 
+  const pruneSlots = useCallback((shouldRemove: (key: string) => boolean) => {
+    const removed = new Set<string>();
+    setSlotOrder((prev) => {
+      const next = prev.filter((key) => {
+        if (!shouldRemove(key)) return true;
+        removed.add(key);
+        return false;
+      });
+      return next.length === prev.length ? prev : next;
+    });
+    if (removed.size === 0) return;
+    setSlots((prev) => {
+      const updated = new Map(prev);
+      for (const key of removed) {
+        updated.delete(key);
+        iframeRefs.current.delete(key);
+        createdSlotsRef.current.delete(key);
+        pollingRef.current.delete(key);
+      }
+      return updated;
+    });
+  }, []);
+
   return {
     slots,
     slotOrder,
@@ -82,5 +107,6 @@ export function useIframePool(): IframePool {
     pollingRef,
     promoteSlot,
     setSlot,
+    pruneSlots,
   };
 }
