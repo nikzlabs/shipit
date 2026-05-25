@@ -105,6 +105,19 @@ export async function registerContainerRoutes(
             containerManager: deps.containerManager ?? null,
             runnerRegistry: deps.runnerRegistry,
             defaultAgentId: deps.defaultAgentId,
+            ...(deps.prStatusPoller
+              ? {
+                  postInterruptCommitDeps: {
+                    sessionManager: deps.sessionManager,
+                    chatHistoryManager: deps.chatHistoryManager,
+                    prStatusPoller: deps.prStatusPoller,
+                    githubAuthManager: deps.githubAuthManager,
+                    credentialStore: deps.credentialStore,
+                    generateText: deps.generateText,
+                    createGitManager: deps.createGitManager,
+                  },
+                }
+              : {}),
           },
           request.params.id,
         );
