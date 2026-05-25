@@ -22,6 +22,20 @@ import { composeReviewMessage } from "../utils/compose-review-body.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import type * as MonacoEditor from "monaco-editor";
 
+/**
+ * Payload handed to `onSendComments` when the user submits review comments
+ * from this modal or the diff panel. Carries the full prompt the server
+ * built plus structured metadata (filePaths + commentCount) so the chat
+ * surface can render a "Sent comments" card without re-parsing the prompt.
+ */
+export interface SendCommentsPayload {
+  prompt: string;
+  /** Files the comments are anchored to. May contain multiple entries for diffs. */
+  filePaths: string[];
+  /** Number of comments included in the submission. */
+  commentCount: number;
+}
+
 export interface FilePreviewAction {
   label: string;
   onClick: () => void;
@@ -55,10 +69,11 @@ export interface FilePreviewModalProps {
   onClose: () => void;
   /**
    * Called after the user clicks Send. Receives the prompt the server already
-   * built from the (now-sent) review. Caller dispatches the prompt via the
-   * existing `send_message` flow.
+   * built from the (now-sent) review, plus structured metadata so the chat
+   * surface can render a "Sent comments" card without parsing the prompt
+   * back. Caller dispatches the prompt via the existing `send_message` flow.
    */
-  onSendComments?: (prompt: string) => void;
+  onSendComments?: (payload: SendCommentsPayload) => void;
   /**
    * docs/125 — called when the user clicks "Ask agent to review". Receives the
    * composed review prompt and the file path to authorize the review tool for.
@@ -436,8 +451,14 @@ export function FilePreviewModal({
 
   const handleSend = useCallback(async () => {
     if (!sessionId || !onSendComments) return;
-    const prompt = await sendDraft(sessionId, filePath);
-    if (prompt) onSendComments(prompt);
+    const result = await sendDraft(sessionId, filePath);
+    if (result) {
+      onSendComments({
+        prompt: result.prompt,
+        filePaths: [result.filePath],
+        commentCount: result.commentCount,
+      });
+    }
   }, [sessionId, filePath, sendDraft, onSendComments]);
 
   // In agent-review mode, the comments come from the immutable agent_reviews

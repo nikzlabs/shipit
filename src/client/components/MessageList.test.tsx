@@ -67,6 +67,32 @@ describe("MessageList", () => {
       expect(assistantEl?.className).toContain("w-full");
       expect(assistantEl?.className).not.toContain("bg-");
     });
+
+    it("renders a UserReviewCard for user messages carrying userReview metadata", () => {
+      render(
+        <MessageList
+          messages={[
+            {
+              role: "user",
+              text: "I've reviewed plan.md and have the following feedback:\n\n- comment 1",
+              userReview: { filePaths: ["docs/149/plan.md"], commentCount: 3 },
+            },
+          ]}
+          isLoading={false}
+        />,
+      );
+      const card = screen.getByTestId("user-review-card");
+      expect(card).toBeInTheDocument();
+      expect(card.textContent).toContain("Sent comments");
+      expect(card.textContent).toContain("docs/149/plan.md");
+      expect(card.textContent).toContain("3 comments");
+      // Prompt body is collapsed by default — the toggle is visible, the body isn't.
+      expect(screen.getByTestId("user-review-prompt-toggle")).toBeInTheDocument();
+      expect(screen.queryByTestId("user-review-prompt")).not.toBeInTheDocument();
+      // Clicking the toggle expands the prompt body.
+      fireEvent.click(screen.getByTestId("user-review-prompt-toggle"));
+      expect(screen.getByTestId("user-review-prompt").textContent).toContain("comment 1");
+    });
   });
 
   describe("tool use rendering", () => {

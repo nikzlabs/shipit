@@ -19,6 +19,7 @@ import { SubagentCall } from "./SubagentCall.js";
 import { SpawnedSessionCard } from "./SpawnedSessionCard.js";
 import { SpawnFailedCard } from "./SpawnFailedCard.js";
 import { AgentReviewCard } from "./AgentReviewCard.js";
+import { UserReviewCard } from "./UserReviewCard.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 
@@ -171,6 +172,21 @@ export interface ChatMessage {
     snapshotHash: string;
     summary?: string;
     createdAt: string;
+  };
+  /**
+   * User-side counterpart to `agentReview`: when the user submits comments on
+   * a doc or diff, the optimistic user bubble carries this payload so the
+   * chat renders a dedicated `UserReviewCard` (header + comment count +
+   * collapsed prompt disclosure) instead of dumping the raw prompt as a
+   * plain text bubble. Without this, the "Send comments" button looked like
+   * it did nothing — the agent silently kicked off with no preceding user
+   * card and no spinner.
+   */
+  userReview?: {
+    /** Files the comments are anchored to (empty for multi-file diffs). */
+    filePaths: string[];
+    /** Number of comments included in the submission. */
+    commentCount: number;
   };
 }
 
@@ -525,6 +541,25 @@ export function MessageList({
                     if (!sid) return;
                     void useFileStore.getState().openAgentReview(sid, reviewId);
                   }}
+                />
+              </div>
+            </div>
+          );
+        }
+
+        // User-side review submission — renders the dedicated "Sent comments"
+        // card in place of a raw text bubble so the user gets a clear receipt
+        // that their doc/diff comments shipped to the agent. The prompt body
+        // lives on `msg.text` (kept as the source of truth so chat-history
+        // reload, search, and existing text-handling still work).
+        if (msg.role === "user" && msg.userReview) {
+          return (
+            <div key={i} className="flex justify-end py-2">
+              <div className="max-w-2xl w-full">
+                <UserReviewCard
+                  filePaths={msg.userReview.filePaths}
+                  commentCount={msg.userReview.commentCount}
+                  prompt={msg.text}
                 />
               </div>
             </div>

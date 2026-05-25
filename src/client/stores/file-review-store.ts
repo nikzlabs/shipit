@@ -16,6 +16,15 @@ function makeKey(sessionId: string, filePath: string): string {
   return `${sessionId}::${filePath}`;
 }
 
+/** Result of `sendDraft` — the constructed prompt plus structured metadata
+ *  so the chat surface can render a "Sent comments" card without parsing
+ *  the prompt body. */
+export interface SentDraftPayload {
+  prompt: string;
+  filePath: string;
+  commentCount: number;
+}
+
 class FileReviewApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -95,11 +104,13 @@ interface FileReviewState {
   applyReviewUpdate: (review: FileReview) => void;
 
   /**
-   * Send the draft. Marks it sent, returns the constructed prompt, moves the
-   * sent review into history, and clears the draft locally so the modal can
-   * fetch a fresh one on next open.
+   * Send the draft. Marks it sent, returns the constructed prompt + the
+   * sent review (so callers can render a structured "Sent comments" card
+   * with filePath + commentCount), moves the sent review into history, and
+   * clears the draft locally so the modal can fetch a fresh one on next
+   * open.
    */
-  sendDraft: (sessionId: string, filePath: string) => Promise<string | null>;
+  sendDraft: (sessionId: string, filePath: string) => Promise<SentDraftPayload | null>;
 
   /**
    * Discard an empty draft. Called when the user closes the modal without
@@ -260,7 +271,7 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
           [key]: [review, ...(s.historyByKey[key] ?? [])],
         },
       }));
-      return prompt;
+      return { prompt, filePath: review.filePath, commentCount: review.comments.length };
     } catch (err) {
       console.error("[file-review-store] sendDraft failed:", err);
       return null;
