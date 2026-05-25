@@ -2,7 +2,13 @@
 
 A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Pluggable agent backend: [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) is the default, [Codex CLI](https://github.com/openai/codex) is supported, and the architecture is agent-agnostic so additional backends can be added later. Authentication uses your existing subscription with the chosen provider — no per-call API keys required.
 
-ShipIt is the surface: build, review, ship, and debug software inside one chat-shaped IDE. PRs, CI status, deploy status, diffs, commits, conversation history, terminal, and live preview all render inline — no jumping out to GitHub, your hosting dashboard, or a separate terminal.
+Three things set ShipIt apart from other AI editors:
+
+- **Container-isolated sessions** — every agent turn runs in its own Docker container, so concurrent sessions can't step on each other's files, processes, or installed dependencies.
+- **Self-hostable on a remote server** — ShipIt is Docker-based end to end. Run it on a VPS and your laptop doesn't need to be open for the agent to keep working.
+- **First-class previews from Docker Compose** — declare your dev server (and anything else: databases, queues, log tailers) in `docker-compose.yml`; ShipIt surfaces each service as an automatic or manual preview inside the app.
+
+Around that core, ShipIt is the surface: build, review, ship, and debug software inside one chat-shaped IDE. PRs, CI status, deploy status, diffs, commits, conversation history, terminal, and live preview all render inline — no jumping out to GitHub, your hosting dashboard, or a separate terminal.
 
 ## Features
 
