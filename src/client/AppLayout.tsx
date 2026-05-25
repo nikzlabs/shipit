@@ -15,6 +15,7 @@ import type { SessionInfo, RepoInfo, DockerMemoryStats, SubscriptionLimitsMap } 
 import { DockerMemoryBadge } from "./components/DockerMemoryBadge.js";
 import { UptimeBadge } from "./components/UptimeBadge.js";
 import { SubscriptionLimitsBadge } from "./components/SubscriptionLimitsBadge.js";
+import { MobileStatusPanel } from "./components/MobileStatusPanel.js";
 import { MemoryPressureBanner } from "./components/MemoryPressureBanner.js";
 import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
 import { LocalModeBanner } from "./components/LocalModeBanner.js";
@@ -169,11 +170,11 @@ export function AppLayout({
                   </button>
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-auto max-w-[calc(100vw-1.5rem)] p-3">
-                  <div className="flex flex-col items-start gap-2">
-                    <SubscriptionLimitsBadge limits={subscriptionLimits} />
-                    {processStartedAt !== null && <UptimeBadge processStartedAt={processStartedAt} />}
-                    {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
-                  </div>
+                  <MobileStatusPanel
+                    subscriptionLimits={subscriptionLimits}
+                    dockerMemory={dockerMemory}
+                    processStartedAt={processStartedAt}
+                  />
                 </PopoverContent>
               </Popover>
             </div>
