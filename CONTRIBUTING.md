@@ -1,6 +1,8 @@
 # Contributing to ShipIt
 
-Thanks for your interest in contributing! This file covers everything you need to work on ShipIt itself: the architecture, the dev loop, how the pieces talk to each other, and how to ship a change.
+Thanks for your interest in ShipIt! This file covers everything you need to work on ShipIt itself: the architecture, the dev loop, and how the pieces talk to each other.
+
+**Heads up:** ShipIt isn't accepting pull requests right now. Bug reports, feature requests, and design discussion are welcome — please [open an issue](https://github.com/nicolasalt/shipit/issues).
 
 For installing and using ShipIt, see the [README](README.md). For platform docs that the agent reads from inside session containers, see `src/server/shipit-docs/`. For per-feature design notes, see `docs/NNN-feature-name/plan.md`.
 
@@ -133,17 +135,15 @@ For the full module-level map and the per-subsystem skills (server architecture,
 
 ## Submitting changes
 
-1. Fork the repository
-2. Create a feature branch from `main`
-3. Make your changes
-4. Run the quality checks:
-   ```bash
-   npm run typecheck
-   npm run lint
-   npm run test:dev
-   ```
-5. Commit with a clear, descriptive message
-6. Open a pull request
+ShipIt isn't accepting pull requests right now. If you've found a bug, have a feature idea, or want to discuss a design, please [open an issue](https://github.com/nicolasalt/shipit/issues) instead.
+
+If you're hacking on your own fork, the quality checks the project gates on are:
+
+```bash
+npm run typecheck
+npm run lint
+npm run test:dev
+```
 
 ## Code conventions
 

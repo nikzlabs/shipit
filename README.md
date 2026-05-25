@@ -69,13 +69,13 @@ cd shipit
 docker/local/prod.sh
 ```
 
-This builds the orchestrator + session-worker images and starts ShipIt with Docker Compose at [http://localhost:3000](http://localhost:3000). On first run, ShipIt prompts you to authenticate with the agent provider you've chosen via an OAuth flow in the browser. Credentials are stored in a persistent Docker volume so you only need to do this once per provider.
+This builds the orchestrator + session-worker images and starts ShipIt with Docker Compose at [http://localhost:4123](http://localhost:4123). On first run, ShipIt prompts you to authenticate with the agent provider you've chosen via an OAuth flow in the browser. Credentials are stored in a persistent Docker volume so you only need to do this once per provider.
 
 ### VPS
 
 ShipIt ships with a one-command provisioning script for Ubuntu VPS hosts. It installs Docker, raises the inotify limits session containers need, and optionally puts ShipIt behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (with optional Zero Trust SSO) and/or exposes it over [Tailscale](https://tailscale.com/) — no open inbound ports required.
 
-**Recommended sizing:** 8 GB RAM minimum, 16 GB recommended. Each active session runs its own container (agent CLI + dev server + any Compose services), so headroom matters once you have a few sessions open at once.
+**Recommended sizing:** 8 GB RAM minimum, 16 GB recommended. Each active session runs its own container (agent CLI plus the session's Compose services — optional, but usually at least a dev server), so headroom matters once you have a few sessions open at once.
 
 ```bash
 ssh root@<server-ip>
@@ -89,11 +89,11 @@ The script asks whether you want Cloudflare, Tailscale, both, or neither, then t
 
 Once it's running, updates happen from inside the UI — **Settings → Advanced → Software Updates** — or via `bash /opt/shipit/deployment/vps/deploy.sh` on the host.
 
-See [`deployment/README.md`](deployment/README.md) for the full guide: Hetzner sizing recommendations, Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and troubleshooting.
+See [`deployment/README.md`](deployment/README.md) for the full guide: sizing recommendations, Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and troubleshooting.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture, dev loop, code conventions, and how to submit a PR.
+ShipIt isn't accepting pull requests right now — if you have a bug report, idea, or feature request, please [open an issue](https://github.com/nicolasalt/shipit/issues). For the architecture, dev loop, and module layout, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
