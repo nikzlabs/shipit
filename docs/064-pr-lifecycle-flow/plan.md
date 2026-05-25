@@ -288,6 +288,98 @@ Merge button with method dropdown (squash/merge/rebase), auto-merge via GitHub's
 
 See [phase-3.md](./phase-3.md) for the full design: split button, `PrAutomationState`, error handling for missing repo settings, merge detection via poller, and session archive flow.
 
+## Polling budget
+
+The PR status poller (`src/server/orchestrator/pr-status-poller.ts`) is the
+sole consumer of GitHub GraphQL for ShipIt's PR lifecycle. Its cost budget
+is GitHub's primary 5,000-points/hour rate limit per user; each
+`pullRequests(first:30) { files / commits / statusCheckRollup / deployments }`
+call costs roughly 4–7 points. With one timer per repo at a fixed 15 s
+cadence, a user with 5 active repos can comfortably exhaust the budget in
+under an hour (5 repos × 4 polls/min × ~5 points ≈ 6,000/hr) — and we saw
+exactly that in production. The poller is now smarter about when to call
+and at what cadence.
+
+**Two-strategy design.** The global *gate* decides whether *any* polling
+runs. When it's open, a per-repo *cadence* decides how often each repo
+polls.
+
+**Global gate (Strategy 1).** Open when any of the following is true:
+
+- a browser viewer is attached to any session runner (read off
+  `SessionRunnerRegistry`);
+- a viewer detached within the last 60 s (grace window for reloads /
+  brief network blips);
+- an autonomous flow is in flight: `AutoFixManager` has a session in
+  `status: "running"`, `AutoMergeManager` has a session in
+  `managed + enabled`, or a runner is `running` with `viewerCount === 0`
+  (headless turn).
+
+Closed otherwise. A closed gate stops the single supervisor timer entirely
+— *zero* GraphQL polls until the gate reopens.
+
+**Per-repo cadence (Strategy 2).** Each tracked session picks a per-session
+cadence; the repo's cadence is the minimum (fastest) across its sessions.
+Fast = `PR_STATUS_POLL_INTERVAL_MS` (15 s); slow = `PR_STATUS_SLOW_INTERVAL_MS`
+(120 s).
+
+| Per-session signal | Cadence |
+|---|---|
+| Auto-fix `status: "running"` for this session | Fast |
+| ShipIt-managed auto-merge `enabled` for this session | Fast |
+| `scheduleAutoPush` fired within the last 5 min | Fast |
+| `checks.state === "pending"` | Fast |
+| `mergeable === "unknown"` AND `checks.state !== "none"` | Fast |
+| Anything else (success, none, settled) | Slow |
+
+**Composition.** The supervisor wakes every fast tick (15 s). On each
+tick it (1) closes the gate if it should be closed (in which case it stops
+itself) and (2) for each tracked repo, issues a GraphQL poll iff the
+repo's per-repo interval has elapsed since its last poll. There are no
+per-repo timers — only the single supervisor — so a repo whose cadence
+shifts from slow to fast picks up the new cadence on the next tick.
+
+**Immediate freshness on user actions.** `forceRefreshSession` /
+`setPrTabActive(true)` / WS viewer attach (via the orchestrator's
+`attachToRunner` calling `notifyViewerAttached`) all wake the supervisor
+and (for the explicit force paths) issue a one-shot poll, so the user-
+perceived freshness on tab return is ≤ 1 s. The supervisor never bypasses
+the GitHub rate-limit gate in `github-auth.ts`.
+
+**Expected budget.** Typical day, 5 repos, one actively churning under a
+viewer: ~290 polls/hour, comfortably under the 5,000-point budget. Worst
+case (all 5 repos with pending CI simultaneously, user watching) is the
+same as today's 15 s cadence — bounded to the short window CI takes to
+complete.
+
+**Open-question decisions.** Choices documented here so future contributors
+don't re-litigate them when they look unusual.
+
+1. **Disconnect grace window: 60 s.** Tolerates page reloads and short
+   network blips. Aligned with `IDLE_GRACE_PERIOD_MS` in `idle-enforcer.ts`
+   so a viewer hovering at the boundary doesn't see divergent behavior
+   between the two systems.
+2. **Slow cadence: 120 s.** Meaningfully cuts cost (~8× cheaper than 15 s)
+   while keeping external-change latency — teammate review comments,
+   manual merges from github.com — in the "barely noticed" range. 300 s
+   would visibly lag external actions, violating "inline beats link-out."
+3. **Post-push fast window: fixed 5 min.** Simpler bookkeeping than
+   tracking "first non-none check appeared + buffer," and CI almost
+   always registers within that window on small PRs.
+4. **Autonomous-action keep-alive runs at fast cadence.** An auto-fix
+   loop or managed auto-merge waiting for CI is the whole reason to
+   refuse the global pause; sleeping it at 120 s would feel sluggish.
+5. **UI surfacing: silent.** No "polling paused" indicator. The
+   on-activation immediate refresh makes the user perceive instant
+   freshness; adding a status badge burns screen real-estate for a
+   detail nobody asked for.
+
+**No webhooks.** The design is deliberately polling-only — ShipIt doesn't
+require users to configure GitHub webhooks. The agent-internal signals
+(`notifyAutoPush`, `markAutoFixRunning`, `setAutoMergeManaged`,
+`notifyViewerAttached/Detached`) replace what a webhook would carry, and
+the gate + cadence keep the polling budget bounded.
+
 ## Implementation Order
 
 1. **Phase 1** (inline card + CI status poller + conversation-aware descriptions) — the foundation. See [phase-1.md](./phase-1.md).
