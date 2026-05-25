@@ -265,5 +265,76 @@ Context body.
       // Anchored (not orphaned) because the quoted text exists.
       expect(screen.queryByText("Orphaned comments")).not.toBeInTheDocument();
     });
+
+    it("anchors comments to their own top-level block when quoted text is unique per block", () => {
+      // docs/153 Phase 2: confirm the new mdast-split block boundaries route
+      // each comment to the correct top-level block instead of dumping them
+      // all onto the first one. Each comment quotes text that only appears in
+      // one block so the assignment is unambiguous.
+      const content = "First block mentions kestrels here.\n\nSecond block mentions albatross there.";
+      const comments: SelectionCommentData[] = [
+        {
+          id: "c1",
+          quotedText: "kestrels",
+          contextBefore: "",
+          contextAfter: "",
+          text: "about kestrels",
+          source: "human",
+        },
+        {
+          id: "c2",
+          quotedText: "albatross",
+          contextBefore: "",
+          contextAfter: "",
+          text: "about albatross",
+          source: "human",
+        },
+      ];
+      const { container } = render(
+        <MarkdownSelectionComments {...makeProps({ content, comments })} />,
+      );
+      const firstBlock = within(container).getByText(/First block/).parentElement!.parentElement!;
+      const secondBlock = within(container).getByText(/Second block/).parentElement!.parentElement!;
+      expect(within(firstBlock).getByText("about kestrels")).toBeInTheDocument();
+      expect(within(firstBlock).queryByText("about albatross")).toBeNull();
+      expect(within(secondBlock).getByText("about albatross")).toBeInTheDocument();
+      expect(within(secondBlock).queryByText("about kestrels")).toBeNull();
+    });
+
+    it("anchors a comment that selects across a code-block boundary into the block whose text contains it", () => {
+      // Selections near block boundaries (heading → fenced code, code → next
+      // paragraph) used to be a hazard with the marked + DOMParser pipeline
+      // because the splitter normalised whitespace differently than the
+      // rendered DOM. Pin the mdast-split boundary so that quoted text from
+      // inside a fenced code block routes to that code block's wrapper.
+      const content = "Header text.\n\n```\nspecial_token_inside_code\n```\n\nFollowing paragraph.";
+      const comments: SelectionCommentData[] = [
+        {
+          id: "c1",
+          quotedText: "special_token_inside_code",
+          contextBefore: "",
+          contextAfter: "",
+          text: "about the code",
+          source: "human",
+        },
+      ];
+      render(<MarkdownSelectionComments {...makeProps({ content, comments })} />);
+      expect(screen.getByText("about the code")).toBeInTheDocument();
+      expect(screen.queryByText("Orphaned comments")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("heading anchors", () => {
+    it("adds stable id slugs to headings without leaking extra characters into textContent", () => {
+      const { container } = render(<MarkdownSelectionComments {...makeProps()} />);
+      const heading = container.querySelector("h2#architecture");
+      expect(heading).toBeInTheDocument();
+      // rehype-autolink-headings wrap-mode places the heading text inside an <a>,
+      // so the visible text content must remain exactly the original heading.
+      expect(heading?.textContent).toBe("Architecture");
+      const anchor = heading?.querySelector("a");
+      expect(anchor).toBeInTheDocument();
+      expect(anchor?.getAttribute("href")).toBe("#architecture");
+    });
   });
 });

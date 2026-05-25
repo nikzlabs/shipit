@@ -1,7 +1,10 @@
-import { useMemo, useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import hljs from "highlight.js";
-import { Marked } from "marked";
 import { CopyIcon, CheckIcon } from "@phosphor-icons/react";
+import Markdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
+import type { Element as HastElement, Text as HastText } from "hast";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { MessageSegment } from "./MessageList.js";
@@ -9,7 +12,9 @@ import type { MessageSegment } from "./MessageList.js";
 /**
  * Parse message text into alternating text and fenced code block segments.
  * Each segment tracks its character offset in the original text so that
- * search-match positions can be mapped back correctly.
+ * search-match positions can be mapped back correctly. Used by `MessageList`
+ * to split non-markdown messages (user messages with code blocks) so the
+ * `CodeBlock` Copy affordance lines up with the surrounding `HighlightedText`.
  */
 export function parseMessageSegments(text: string): MessageSegment[] {
   const segments: MessageSegment[] = [];
@@ -49,72 +54,87 @@ export function parseMessageSegments(text: string): MessageSegment[] {
   return segments;
 }
 
-// Configured Marked instance for rendering assistant messages as markdown.
-// Uses highlight.js for fenced code blocks, matching the existing CodeBlock styling.
-const chatMarked = new Marked({
-  breaks: true,
-  gfm: true,
-  renderer: {
-    link({ href, title, tokens }) {
-      const text = this.parser.parseInline(tokens);
-      const titleAttr = title ? ` title="${title}"` : "";
-      return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
-    },
-    code({ text, lang }) {
-      // Fallback HTML rendering for code blocks marked encounters directly
-      // (e.g. indented code). The primary path in MarkdownContent splits
-      // fenced blocks into React CodeBlock components with a Copy button —
-      // this string version has no copy affordance because marked can't
-      // host React handlers, but matches the same visual styling.
-      const language = lang || "";
-      const highlighted =
-        language && hljs.getLanguage(language)
-          ? hljs.highlight(text, { language }).value
-          : hljs.highlightAuto(text).value;
-      const langLabel = `<div class="text-xs text-(--color-text-secondary) px-3 py-1 border-b border-(--color-border-primary)">${language || "code"}</div>`;
-      return `<div class="my-2 rounded-md overflow-hidden bg-(--color-bg-secondary) w-0 min-w-full">${langLabel}<pre class="p-4 overflow-x-auto text-xs leading-relaxed"><code class="hljs">${highlighted}</code></pre></div>`;
-    },
-  },
-});
+/**
+ * Pull the raw fenced-code text out of the hast `<code>` child of a `<pre>`.
+ * react-markdown turns ```lang … ``` into `pre > code(.language-lang) > text`;
+ * we read the text node directly rather than stringifying React children so
+ * whitespace, leading hashes, etc. survive verbatim.
+ */
+function extractCodeFromPreNode(node: HastElement | undefined): { code: string; language: string } | null {
+  if (node?.type !== "element" || node.tagName !== "pre") return null;
+  const codeEl = node.children.find(
+    (c): c is HastElement => c.type === "element" && c.tagName === "code",
+  );
+  if (!codeEl) return null;
+  const classNames = codeEl.properties?.className;
+  const classList = Array.isArray(classNames)
+    ? classNames.map(String)
+    : classNames !== undefined && classNames !== null
+      ? [String(classNames)]
+      : [];
+  const langClass = classList.find((cn) => cn.startsWith("language-"));
+  const language = langClass ? langClass.slice("language-".length) : "";
+  const text = codeEl.children
+    .filter((c): c is HastText => c.type === "text")
+    .map((c) => c.value)
+    .join("")
+    .replace(/\n$/, "");
+  return { code: text, language };
+}
 
 /**
- * Render markdown text as HTML for assistant messages.
- *
- * Fenced code blocks are split out of the marked render path and rendered as
- * React `CodeBlock` components instead. This is what gives them their per-block
- * "Copy" button (a marked HTML string can't host React event handlers).
- * Non-code text between blocks is still rendered through marked so paragraphs,
- * lists, headings, etc. work normally.
+ * Component overrides shared by every markdown surface. They centralise:
+ * - Fenced code blocks → React `CodeBlock` (Copy button + hljs styling). We
+ *   intercept at `pre` so inline `<code>` keeps its lightweight inline render.
+ * - External links → `target="_blank"` with `rel="noopener noreferrer"`.
+ * `react-markdown`'s default `urlTransform` already filters dangerous protocols
+ * (`javascript:`, `data:`, etc.), so we don't need to repeat that check here.
+ */
+export const markdownComponents: Components = {
+  pre({ node, children }) {
+    const extracted = extractCodeFromPreNode(node);
+    if (extracted) {
+      return <CodeBlock code={extracted.code} language={extracted.language} />;
+    }
+    return <pre>{children}</pre>;
+  },
+  a({ href, title, children }) {
+    return (
+      <a href={href} title={title} target="_blank" rel="noopener noreferrer">
+        {children}
+      </a>
+    );
+  },
+};
+
+const remarkPlugins = [remarkGfm, remarkBreaks];
+
+/**
+ * Render markdown text for assistant messages, PR bodies, plan approval, and
+ * subagent reports. Backed by `react-markdown`, so streaming updates diff into
+ * existing text nodes instead of replacing whole subtrees — the user's text
+ * selection survives token-by-token streaming without the freeze hack that
+ * used to live in `MessageList`.
  */
 export function MarkdownContent({ text }: { text: string }) {
-  const segments = useMemo(() => parseMessageSegments(text), [text]);
-
   return (
     <div
       className="prose dark:prose-invert prose-sm max-w-none"
       data-testid="markdown-content"
     >
-      {segments.map((seg, idx) => {
-        if (seg.type === "code") {
-          return (
-            <CodeBlock
-              key={idx}
-              code={seg.content}
-              language={seg.language}
-            />
-          );
-        }
-        const html = chatMarked.parse(seg.content, { async: false });
-        return <div key={idx} dangerouslySetInnerHTML={{ __html: html }} />;
-      })}
+      <Markdown
+        remarkPlugins={remarkPlugins}
+        components={markdownComponents}
+        skipHtml
+      >
+        {text}
+      </Markdown>
     </div>
   );
 }
 
 /** Hover tooltip that renders its content as markdown. Scrollable. */
 export function MarkdownTooltip({ content, children }: { content: string; children: React.ReactNode }) {
-  const html = useMemo(() => chatMarked.parse(content, { async: false }), [content]);
-
   return (
     <TooltipProvider>
       <Tooltip>
@@ -122,10 +142,15 @@ export function MarkdownTooltip({ content, children }: { content: string; childr
           <div>{children}</div>
         </TooltipTrigger>
         <TooltipContent side="bottom" align="start" className="max-w-lg max-h-80 overflow-auto p-3">
-          <div
-            className="prose dark:prose-invert prose-sm max-w-none text-xs"
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+          <div className="prose dark:prose-invert prose-sm max-w-none text-xs">
+            <Markdown
+              remarkPlugins={remarkPlugins}
+              components={markdownComponents}
+              skipHtml
+            >
+              {content}
+            </Markdown>
+          </div>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>

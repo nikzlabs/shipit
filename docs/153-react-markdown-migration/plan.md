@@ -1,7 +1,7 @@
 ---
-status: planned
+status: done
 priority: high
-description: Evaluate replacing marked + dangerouslySetInnerHTML with react-markdown to fix selection loss during streaming and improve docs-viewer rendering.
+description: Replaced marked + dangerouslySetInnerHTML with react-markdown to fix selection loss during streaming and improve docs-viewer rendering.
 ---
 
 # react-markdown migration
