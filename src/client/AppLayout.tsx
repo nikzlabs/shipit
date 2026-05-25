@@ -77,7 +77,6 @@ interface AppLayoutProps {
 
   // Toast
   toast: { message: string } | null;
-  onDismissToast: () => void;
 }
 
 export function AppLayout({
@@ -122,7 +121,6 @@ export function AppLayout({
   onAddRepo,
   onCreateNewRepo,
   toast,
-  onDismissToast,
 }: AppLayoutProps) {
   return (
     <>
@@ -233,7 +231,7 @@ export function AppLayout({
         </div>
       )}
 
-      {toast && <Toast toast={toast} onDismiss={onDismissToast} />}
+      {toast && <Toast toast={toast} />}
       <QuickCaptureOverlay onAddRepo={onAddRepo} />
     </>
   );

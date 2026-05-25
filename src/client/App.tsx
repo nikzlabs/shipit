@@ -1234,7 +1234,6 @@ export default function App() {
           useRepoStore.getState().setNewRepoDialogOpen(true);
         }}
         toast={toast}
-        onDismissToast={() => useUiStore.getState().setToast(null)}
       />
       <AddRepoDialog
         open={addRepoDialogOpen}
