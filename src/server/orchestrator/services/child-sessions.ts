@@ -16,6 +16,7 @@ import type { RepoStore } from "../repo-store.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { SessionInfo, AgentId } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
+import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { ServiceError } from "./types.js";
@@ -144,6 +145,7 @@ export async function spawnChildSession(
   defaultAgentId: AgentId,
   credentialsDir: string | undefined,
   credentialStore: CredentialStore | undefined,
+  providerAccountManager?: ProviderAccountManager,
 ): Promise<SpawnChildSessionResult> {
   const trimmedPrompt = opts.prompt?.trim();
   if (!trimmedPrompt) {
@@ -332,7 +334,12 @@ export async function spawnChildSession(
     await prepareSessionAgentEnvironment(runner, {
       sessionId: newSessionId,
       agentId: childAgentId,
-      deps: { credentialsDir, credentialStore, sessionManager },
+      deps: {
+        credentialsDir,
+        credentialStore,
+        sessionManager,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      },
     });
   } else {
     // Tests without credentialsDir / credentialStore still need the pin so
@@ -513,6 +520,7 @@ export async function sendChildMessage(
   defaultAgentId: AgentId,
   credentialsDir: string | undefined,
   credentialStore: CredentialStore | undefined,
+  providerAccountManager?: ProviderAccountManager,
 ): Promise<SendChildMessageResult> {
   const trimmed = text?.trim();
   if (!trimmed) throw new ServiceError(400, "Message text is required");
@@ -545,7 +553,12 @@ export async function sendChildMessage(
     await prepareSessionAgentEnvironment(runner, {
       sessionId: childSessionId,
       agentId: runner.agentId,
-      deps: { credentialsDir, credentialStore, sessionManager },
+      deps: {
+        credentialsDir,
+        credentialStore,
+        sessionManager,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      },
     });
   }
   runner.dispatch({ text: trimmed });
