@@ -32,6 +32,7 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const restoreFocusRef = useRef<{ element: HTMLTextAreaElement; start: number | null; end: number | null } | null>(null);
+  const wasOpenRef = useRef(false);
 
   const activeSessionRepo = useMemo(
     () => sessions.find((s) => s.id === sessionId)?.remoteUrl,
@@ -43,14 +44,21 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
 
   // eslint-disable-next-line no-restricted-syntax -- captures browser focus for restoration after dialog close
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
     const active = document.activeElement;
     restoreFocusRef.current = active instanceof HTMLTextAreaElement
       ? { element: active, start: active.selectionStart, end: active.selectionEnd }
       : null;
+    if (!wasOpenRef.current) {
+      setSelectedRepoUrl(defaultRepoUrl);
+    }
+    wasOpenRef.current = true;
     setSelectedAgentId(getSavedAgentId());
     setSelectedModel(getSavedModelId());
-  }, [open]);
+  }, [defaultRepoUrl, open]);
 
   const close = () => {
     useUiStore.getState().setQuickCaptureOpen(false);

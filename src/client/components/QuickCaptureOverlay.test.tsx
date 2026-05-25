@@ -114,6 +114,31 @@ describe("QuickCaptureOverlay", () => {
     expect(lastMessageInputProps?.hasActiveSession).toBe(false);
   });
 
+  it("resets the repo selector to the current session repo each time the overlay opens", () => {
+    const firstUrl = "https://github.com/acme/first.git";
+    const secondUrl = "https://github.com/acme/second.git";
+    useRepoStore.setState({
+      repos: [repo(firstUrl), repo(secondUrl)],
+      activeRepoUrl: firstUrl,
+    });
+    useSessionStore.setState({
+      sessionId: "s1",
+      sessions: [session("s1", firstUrl), session("s2", secondUrl)],
+    });
+    openOverlay();
+
+    const { rerender } = render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: secondUrl } });
+    expect(screen.getByRole("combobox")).toHaveValue(secondUrl);
+
+    useUiStore.setState({ quickCaptureOpen: false });
+    rerender(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    openOverlay();
+    rerender(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+
+    expect(screen.getByRole("combobox")).toHaveValue(firstUrl);
+  });
+
   it("shows a loading state and disables input until bootstrap has loaded", () => {
     useUiStore.setState({ quickCaptureOpen: true, bootstrapLoaded: false });
 
