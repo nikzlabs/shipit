@@ -1,266 +1,99 @@
 # ShipIt
 
-A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Pluggable agent backend: [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) is the default, [Codex CLI](https://github.com/openai/codex) is supported, and the architecture is agent-agnostic so additional backends can be added later. Authentication uses your existing subscription with the chosen provider — no per-call API keys required.
+A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Pluggable agent backend — pick whichever provider you already pay for, and authenticate with either a subscription OAuth login or an API key:
 
-Chat panel on the left, live preview on the right, git history as your undo stack — all inside ShipIt itself, no jumping out to other tools.
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or an Anthropic API key
+- [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
 
-## Features
+The architecture is agent-agnostic, so additional backends can be added later.
 
-- **Chat-driven development** — describe what you want in natural language; the agent writes the code
-- **Live preview** — embedded iframe shows your app updating in real time via Vite HMR
-- **Git as undo** — every agent turn auto-commits; roll back to any previous state with one click
-- **Session persistence** — conversations survive page reloads and browser restarts
-- **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
-- **File browser** — read-only file tree with syntax-highlighted content viewer
-- **Markdown docs** — browse and read project documentation without leaving the app
-- **Terminal output** — agent stdout/stderr in a terminal-like panel for debugging
-- **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
-- **Port auto-detection** — preview pane works with any dev server, not just Vite
-- **Search in chat** — Ctrl+F / Cmd+F to find text across the conversation
-- **Mobile responsive** — tab-based layout on small screens, resizable split panels on desktop
-- **Background notifications** — tab title change and browser notification when the agent finishes
+Three things set ShipIt apart from other AI editors:
 
-## Architecture
+- **Container-isolated sessions** — every agent turn runs in its own Docker container, so concurrent sessions can't step on each other's files, processes, or installed dependencies.
+- **Self-hostable on a remote server** — ShipIt is Docker-based end to end. Run it on a VPS and your laptop doesn't need to be open for the agent to keep working.
+- **First-class previews from Docker Compose** — declare your dev server (and anything else: databases, queues, log tailers) in `docker-compose.yml`; ShipIt surfaces each service as an automatic or manual preview inside the app.
 
-Three-layer system: browser → orchestrator → session containers.
+Around that core, ShipIt is the surface: build, review, ship, and debug software inside one chat-shaped IDE. PRs, CI status, deploy status, diffs, commits, conversation history, terminal, and live preview all render inline — no jumping out to GitHub, your hosting dashboard, or a separate terminal.
 
-```
-┌──────────────┐     ┌──────────────────────────────┐     ┌─────────────────────────┐
-│   Browser    │     │     Orchestrator Container    │     │  Session Container(s)   │
-│  (React SPA) │◄───►│  Fastify + WebSocket + SSE   │◄───►│  Agent CLI, terminal,   │
-│              │     │  Routes, services, managers   │     │  preview server, files  │
-└──────────────┘     └──────────────────────────────┘     └─────────────────────────┘
-     WS + SSE              HTTP proxy to containers            HTTP + SSE back
-```
+## Installation
 
-- **Browser** — React 19 SPA with Zustand stores, dual-channel communication (per-session WebSocket + global SSE)
-- **Orchestrator** — Fastify server handling auth, session management, git repos, and proxying to containers
-- **Session containers** — isolated Docker containers running the AI agent CLI (Claude Code or Codex), terminal PTY, preview dev server, and file watcher
+If you want to hack on ShipIt itself instead of just running it, see [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture, dev loop, and module layout.
 
-## Prerequisites
+### Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
-- A subscription with the AI provider whose CLI you'll use:
-  - For Claude Code: [Claude Pro or Max](https://claude.ai/upgrade)
-  - For Codex: an OpenAI account with Codex CLI access
+- [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`). Docker Desktop bundles it; on Linux install `docker-compose-plugin` alongside `docker-ce`. ShipIt always runs containerized — there is no bare-metal mode.
+- Credentials for at least one agent backend — a subscription or an API key works for either:
+  - Claude Code: [Claude Pro/Max](https://claude.ai/upgrade) or an [Anthropic API key](https://console.anthropic.com/settings/keys)
+  - Codex: a ChatGPT subscription or an [OpenAI API key](https://platform.openai.com/api-keys)
 
-For local development without Docker:
-
-- Node.js 20+
-- npm
-- git
-- At least one agent CLI installed globally:
-  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
-  - [Codex CLI](https://github.com/openai/codex) — `npm install -g @openai/codex`
-
-## Quick Start (Docker)
+### Local (Docker)
 
 ```bash
 git clone https://github.com/nicolasalt/shipit.git
 cd shipit
-
-# Development (hot-reload, source mounted)
-docker/local/dev.sh
-
-# Production (optimized build)
 docker/local/prod.sh
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+This builds the orchestrator + session-worker images and starts ShipIt with Docker Compose at [http://localhost:4123](http://localhost:4123). On first run, ShipIt prompts you to authenticate with the agent provider you've chosen via an OAuth flow in the browser. Credentials are stored in a persistent Docker volume so you only need to do this once per provider.
 
-On first run, ShipIt prompts you to authenticate with the agent provider you've chosen via an OAuth flow in the browser. Credentials are stored in a persistent Docker volume so you only need to do this once per provider.
+### VPS
 
-## Local Development
+ShipIt ships with a one-command provisioning script for Ubuntu VPS hosts. It installs Docker, raises the inotify limits session containers need, and optionally puts ShipIt behind a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (with optional Zero Trust SSO) and/or exposes it over [Tailscale](https://tailscale.com/) — no open inbound ports required.
 
-```bash
-# Install dependencies
-npm install
-
-# Start the backend (Fastify on :3000)
-npm run dev
-
-# In a separate terminal, start Vite for frontend HMR (:5173)
-npx vite
-```
-
-The Vite dev server proxies WebSocket connections to the backend at `localhost:3000`.
-
-### Available Scripts
-
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start the backend dev server (tsx) |
-| `npm run build` | Build the frontend with Vite |
-| `npm run test:dev` | Run changed tests + smoke tests (fast local iteration) |
-| `npm run test:smoke` | Run only smoke tests (core startup/connectivity) |
-| `npm test` | Run all tests (Vitest) |
-| `npm run test:watch` | Run tests in watch mode |
-| `npm run lint` | Lint `src/` with ESLint |
-| `npm run typecheck` | Type-check with `tsc --noEmit` |
-
-### Running a Single Test
+**Recommended sizing:** 8 GB RAM minimum, 16 GB recommended. Each active session runs its own container (agent CLI plus the session's Compose services — optional, but usually at least a dev server), so headroom matters once you have a few sessions open at once.
 
 ```bash
-npx vitest run src/server/git.test.ts
+ssh root@<server-ip>
+
+apt-get update -qq && apt-get install -y -qq git
+git clone https://github.com/nicolasalt/shipit.git /opt/shipit
+bash /opt/shipit/deployment/vps/setup.sh
 ```
 
-## How It Works
+The script asks whether you want Cloudflare, Tailscale, both, or neither, then takes care of everything else: installing Docker, configuring host limits, building the images, installing the self-updater + restarter systemd units, and bringing ShipIt up.
 
-1. You type a prompt in the chat input
-2. The React frontend sends a JSON message over WebSocket
-3. The Fastify server spawns the configured agent CLI (e.g., `claude -p` for Claude Code, `codex` for Codex) as a child process inside the session container
-4. The agent CLI streams NDJSON events to stdout as it thinks, writes files, and runs commands
-5. The server parses each line and relays events to the browser over WebSocket
-6. The frontend updates in real time — streaming text, inline diffs, tool activity indicators
-7. When the agent finishes, all file changes are auto-committed to git
-8. The Vite dev server picks up changes via HMR and the preview iframe updates
+Once it's running, updates happen from inside the UI — **Settings → Advanced → Software Updates** — or via `bash /opt/shipit/deployment/vps/deploy.sh` on the host.
 
-Session continuity is maintained via the agent CLI's resume mechanism (e.g., Claude Code's `--resume` flag). Subsequent messages in the same session resume the conversation context.
+See [`deployment/README.md`](deployment/README.md) for the full guide: sizing recommendations, Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and troubleshooting.
 
-## Project Structure
+## Features
 
-```
-src/
-├── server/
-│   ├── orchestrator/       # Main process — HTTP routes, services, DI, WebSocket handlers
-│   ├── session/            # Session container worker — agent CLI, terminal, preview, file watcher
-│   ├── shared/             # Code shared between orchestrator and session (types, git, utils)
-│   └── shipit-docs/        # Platform docs served to the agent inside containers
-│
-└── client/                 # React 19 SPA
-    ├── components/         # UI components (MessageList, FileTree, PreviewFrame, etc.)
-    ├── hooks/              # Custom hooks (useWebSocket, useSearch, useResizablePanel, etc.)
-    ├── stores/             # Zustand state stores
-    └── themes/             # Theme CSS files
-```
+### Build
+- **Chat-driven development** — describe what you want in natural language; the agent writes the code, runs the commands, and reads the logs
+- **Multi-agent backend** — pick Claude Code CLI or Codex CLI per session; sign in with the subscription you already have
+- **Live preview** — embedded iframe shows your app updating in real time, with HMR proxied through ShipIt and multi-port support
+- **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
+- **File upload & image input** — drop files into the chat; the agent reads them as context
+- **Interactive terminal** — full PTY (xterm.js) inside the session container for ad-hoc debugging
+- **Monaco code editor** — read and edit files with syntax highlighting and diff view
+- **MCP integration** — connect Model Context Protocol servers to extend the agent's tools
 
-## Tech Stack
+### Review & ship
+- **Inline PR lifecycle card** — title, description, CI checks, deploy status, and merge state all render in chat; no GitHub tab required
+- **AI PR descriptions** — generated from the actual diff when you open a PR
+- **Cross-agent review** — have a second agent review the first agent's changes before merging
+- **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
+- **Auto-deploy on push** — deploy status surfaces inline on the PR card via the GitHub Deployments API
+- **PR comment sync** — review threads from GitHub appear inline in the conversation
+- **Auto-fix preview failures** — preview crashes are surfaced to the agent so it can fix them on the next turn
 
-| Layer | Technology |
-|-------|-----------|
-| Backend | [Fastify](https://fastify.dev/) 5, @fastify/websocket, TypeScript |
-| Frontend | [React](https://react.dev/) 19, [Vite](https://vite.dev/) 7, [Tailwind CSS](https://tailwindcss.com/) 4 |
-| Agent backends | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex) — pluggable, more can be added |
-| Runtime | Node.js 20, Docker |
-| Testing | [Vitest](https://vitest.dev/) 4, @testing-library/react, jsdom |
+### Iterate safely
+- **Git as undo** — every agent turn auto-commits; rewind to any previous state, and fork into a new branch from any point
+- **Parallel sessions** — spawn separate workspaces with their own branch, container, and chat history; review each as its own PR
+- **Worktree-backed sessions** — multiple sessions on the same repo share a bare cache and use git worktrees for isolation
+- **Permission modes** — choose how much autonomy the agent has per session
+- **Live steering** — interrupt and redirect the agent mid-turn without losing context
+- **Session sidebar** — pinned sessions, AI-generated session names, status indicators
 
-## Docker Volumes
-
-Two named volumes persist data across container restarts:
-
-| Volume | Mount Point | Purpose |
-|--------|-------------|---------|
-| `workspace` | `/workspace` | Project files that the agent reads and writes |
-| `claude-auth` | `/root/.claude` | Agent CLI OAuth credentials (Claude Code; analogous volumes exist for other providers) |
-
-## Configuration
-
-ShipIt uses environment variables for configuration:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | Server listening port |
-| `NODE_ENV` | — | Set to `production` in Docker |
-
-### `shipit.yaml`
-
-Each project can include a `shipit.yaml` at the workspace root to configure preview and dependency installation. All built-in templates ship with one pre-configured.
-
-```yaml
-install: npm install        # optional — shell command to install dependencies
-preview:                    # required — how to show the live preview
-  command: npm run dev      # either: shell command to start a dev server
-  # html: index.html        # or: path to an HTML file for static serving
-  ports: [5173]             # optional — ports to monitor for readiness
-  directory: packages/app   # optional — subdirectory to run from (monorepos)
-```
-
-**Fields:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `install` | string | No | Shell command run once before preview starts (e.g. `npm install`, `pip install -r requirements.txt`). Tracked via a marker file so it only runs once per session. |
-| `preview` | object | Yes | Preview configuration. Must contain exactly one of `command` or `html`. |
-| `preview.command` | string | One of `command`/`html` | Shell command that starts the dev server. |
-| `preview.html` | string | One of `command`/`html` | Path to an HTML file served via ShipIt's bundled Vite with HMR. |
-| `preview.ports` | integer array | No | Explicit ports to watch for server readiness. If omitted, ShipIt auto-detects from common ports. |
-| `preview.directory` | string | No | Subdirectory (relative to workspace root) where install and preview commands run. |
-
-**Resolution fallbacks** — when `shipit.yaml` is absent, ShipIt infers the config automatically:
-
-1. `package.json` with a `scripts.dev` field → runs `<pm> run dev` and `<pm> install` (package manager detected from `packageManager` field, then lock files, defaulting to `npm`)
-2. `index.html` at the workspace root → static HTML mode
-3. Nothing found → no preview
-
-**Examples:**
-
-```yaml
-# Static site — no dependencies, just serve a file
-preview:
-  html: index.html
-```
-
-```yaml
-# React + Vite
-install: npm install
-preview:
-  command: npm run dev
-  ports: [5173]
-```
-
-```yaml
-# Next.js on a custom port
-install: npm install
-preview:
-  command: next dev --port 3001
-  ports: [3001]
-```
-
-```yaml
-# Python app
-install: pip install -r requirements.txt
-preview:
-  command: python -m http.server 8000
-  ports: [8000]
-```
-
-## Testing
-
-Tests use [Vitest](https://vitest.dev/) with two project configurations:
-
-- **Server tests** (`src/server/**/*.test.ts`) — run in Node environment
-- **Client tests** (`src/client/**/*.test.{ts,tsx}`) — run in jsdom with React Testing Library
-
-The backend uses dependency injection (`buildApp()` accepts an `AppDeps` object) so integration tests can inject stubs instead of spawning real processes.
-
-```bash
-npm run test:dev                      # Preferred during development (fast)
-npm run test:smoke                    # Smoke coverage only
-npm test                              # Full suite
-npx vitest run src/server/git.test.ts # Run a specific file
-npm run test:watch                    # Watch mode
-```
+### Everywhere
+- **Mobile responsive** — tab-based layout on small screens, resizable split panels on desktop
+- **Android wrapper** — a thin WebView app under `android/` for native-feeling access on mobile
+- **Background notifications** — tab title change and browser notification when the agent finishes
+- **Self-update from UI** — pull the latest code, rebuild, and restart from Settings → Advanced
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run the quality checks:
-   ```bash
-   npm run typecheck
-   npm run lint
-   npm test
-   ```
-5. Submit a pull request
-
-### Code Conventions
-
-- ESM throughout — use `.js` extensions in relative imports
-- Type-only imports: `import type { X } from "./path.js"`
-- Node built-ins with `node:` prefix: `import fs from "node:fs"`
-- Functional React components only, hooks for all state and effects
-- Tailwind CSS utility classes for styling (dark-mode-only color scheme)
+ShipIt isn't accepting pull requests right now — if you have a bug report, idea, or feature request, please [open an issue](https://github.com/nicolasalt/shipit/issues). For the architecture, dev loop, and module layout, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
