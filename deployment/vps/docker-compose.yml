@@ -1,4 +1,4 @@
-# Production deployment for Hetzner (or any VPS with Docker).
+# Production deployment for any Linux VPS with Docker.
 # Binds to localhost only — Caddy reverse proxy handles public traffic + TLS.
 #
 # Usage:

@@ -1,6 +1,6 @@
-# Deploying ShipIt to Hetzner Cloud
+# Deploying ShipIt to a VPS
 
-Self-host ShipIt on a Hetzner VPS with optional Cloudflare Tunnel and/or Tailscale access.
+Self-host ShipIt on any Linux VPS with optional Cloudflare Tunnel and/or Tailscale access.
 
 ## What you get
 
@@ -12,15 +12,15 @@ Self-host ShipIt on a Hetzner VPS with optional Cloudflare Tunnel and/or Tailsca
 
 ## Prerequisites
 
-- Hetzner Cloud account — CX32 (4 vCPU, 8GB RAM, ~€7/mo) recommended
+- A Linux VPS — Ubuntu 24.04 is what the setup script targets. Recommended sizing: 8 GB RAM minimum, 16 GB recommended (each active session runs its own container).
 - For Cloudflare: a domain on Cloudflare with **Advanced Certificate Manager** ($10/mo) if you need wildcard certs on nested subdomains (`*.shipit.example.com`). Alternatively, use a dedicated domain (e.g. `shipit.dev`) where the free plan's `*.shipit.dev` wildcard is sufficient.
 - For Tailscale: access to a tailnet where you can authenticate this VPS.
 
 ## Step 1: Create server
 
-1. Create a Hetzner CX32 server with Ubuntu 24.04
+1. Provision an Ubuntu 24.04 VPS with at least 8 GB of RAM
 2. Note the server IP
-3. SSH in with the root password Hetzner provides (or add your SSH key during creation)
+3. SSH in as `root` (or as a user with sudo)
 
 ## Step 2: Provision the server
 
