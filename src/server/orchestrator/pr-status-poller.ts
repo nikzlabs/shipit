@@ -43,23 +43,58 @@ import { CiGraceTracker } from "./ci-grace-tracker.js";
 export { parsePrNode, extractHeadSha, extractFailedCheckRuns, extractChangedFiles };
 
 /**
- * Per-repo polling cadence. Bumped from 5s to 15s as a cost-control measure:
- * paired with the GraphQL query downsizing in `pr-status-parser.ts`, this
- * keeps a single actively-watched repo comfortably below GitHub's
- * 5,000-points/hour primary rate-limit budget. Idle-pause + per-session REST
- * verifies cover the rest. See docs/064-pr-lifecycle-flow/plan.md.
+ * Per-repo polling cadences. The poller picks an interval per repo on every
+ * supervisor tick based on the "most expectant" tracked session — fast when
+ * CI is mid-flight or a push just landed, slow when everything has settled.
+ *
+ * See docs/064-pr-lifecycle-flow/plan.md "Polling budget" for the math and
+ * the open-question answers that fixed these constants.
+ *
+ * `PR_STATUS_POLL_INTERVAL_MS` is the fast bucket. It is also the supervisor
+ * tick: the supervisor wakes every FAST_INTERVAL_MS, then per repo decides
+ * whether the SLOW_INTERVAL has elapsed before issuing a GraphQL call.
  */
 export const PR_STATUS_POLL_INTERVAL_MS = 15_000;
-/** How long after the last client heartbeat before we consider the user idle (ms). */
-const CLIENT_IDLE_TIMEOUT_MS = 30_000;
+/** Slow bucket: settled repos (success state, no recent push, mergeable known). */
+export const PR_STATUS_SLOW_INTERVAL_MS = 120_000;
+/**
+ * After a session's auto-push fires, that session's repo stays at fast
+ * cadence for this long — that's how long it takes CI to register and
+ * usually finish on small PRs. After this elapses (and nothing else holds
+ * the session at fast), the repo drops back to slow.
+ */
+const POST_PUSH_FAST_WINDOW_MS = 5 * 60_000;
+/**
+ * After the last viewer detaches, keep polling for this long before pausing.
+ * Tolerates page reloads and short network blips so a quick reconnect doesn't
+ * pay the cost of a re-burn. Aligned with the idle-enforcer's grace window
+ * (see `idle-enforcer.ts:IDLE_GRACE_PERIOD_MS`) so both timers fire on the
+ * same schedule from the user's perspective.
+ */
+const VIEWER_DETACH_GRACE_MS = 60_000;
 
 export class PrStatusPoller {
   private githubAuth: GitHubAuthManager;
   private sessionManager: SessionManager;
   private sseBroadcast: (event: string, data: unknown) => void;
 
-  /** repoKey (owner/repo) → interval timer */
-  private repoTimers = new Map<string, ReturnType<typeof setInterval>>();
+  /**
+   * Single supervisor timer (one for the whole poller, not one per repo). Wakes
+   * every PR_STATUS_POLL_INTERVAL_MS, decides per repo whether enough time has
+   * elapsed under its current cadence, then issues GraphQL calls for those
+   * repos. `null` when the global gate is closed — see `globalGateOpen()`.
+   */
+  private supervisor: ReturnType<typeof setInterval> | null = null;
+  /** repoKey (owner/repo) → timestamp when this repo last issued a GraphQL poll. */
+  private lastPolledAt = new Map<string, number>();
+  /** sessionId → timestamp of the last auto-push the orchestrator notified about. */
+  private lastAutoPushAt = new Map<string, number>();
+  /**
+   * Timestamp when the last viewer detached. `0` means "currently has viewers
+   * attached, or no viewer has ever been seen." Used to keep the supervisor
+   * running through brief reconnects (within VIEWER_DETACH_GRACE_MS).
+   */
+  private lastViewerDetachAt = 0;
   /** sessionId → last known PrStatusSummary (for diffing) */
   private lastKnown = new Map<string, PrStatusSummary>();
   /** sessionId → repo key tracking */
@@ -105,9 +140,6 @@ export class PrStatusPoller {
   /** sessionId → last known GraphQL PR node (cached for extracting check details). */
   private lastPrNodes = new Map<string, GraphQLPrNode>();
 
-  /** Timestamp of the last client activity heartbeat. */
-  private lastClientActivity = Date.now();
-
   constructor(opts: {
     githubAuth: GitHubAuthManager;
     sessionManager: SessionManager;
@@ -131,35 +163,179 @@ export class PrStatusPoller {
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);
   }
 
-  /** Record a heartbeat from a connected client — resets the idle timer. */
-  recordClientActivity(): void {
-    this.lastClientActivity = Date.now();
-  }
+  // ---- Global gate (Strategy 1) ----
+  //
+  // The supervisor only runs when the gate is open. The gate is open when ANY
+  // of these is true:
+  //   - a browser viewer is attached to any runner;
+  //   - we're inside the disconnect grace window after the last viewer left;
+  //   - an autonomous action is in flight on any tracked session (auto-fix
+  //     running, ShipIt-managed auto-merge enabled, or a viewerless runner
+  //     that's mid-turn — the headless flow).
+  // When all three are false, the supervisor is stopped — zero GraphQL polls
+  // fire until a viewer comes back or an autonomous flow kicks in.
 
-  /** True when no client heartbeat has arrived within the idle timeout. */
-  private isClientIdle(): boolean {
-    return Date.now() - this.lastClientActivity > CLIENT_IDLE_TIMEOUT_MS;
+  /**
+   * True when at least one runner in the registry has a viewer attached.
+   *
+   * When no registry is wired (legacy callers, lightweight tests that don't
+   * exercise the gate) treat the gate as always open so behavior matches the
+   * pre-viewer-gating era. Production always wires the registry.
+   */
+  private anyViewersConnected(): boolean {
+    const registry = this.runnerRegistry;
+    if (!registry) return true;
+    for (const id of registry.ids()) {
+      const r = registry.get(id);
+      if (r && r.viewerCount > 0) return true;
+    }
+    return false;
   }
 
   /**
-   * True when polling can be skipped — the user is idle AND no CI checks
-   * are currently pending across all tracked sessions.
+   * True when an autonomous action that depends on PR/CI status updates is in
+   * flight: an auto-fix loop, a managed auto-merge, or a headless agent turn
+   * (running runner with no viewer — e.g. a child session spawned from chat).
    */
-  private canSkipPoll(): boolean {
-    if (!this.isClientIdle()) return false;
-
-    // If any tracked session has pending CI, keep polling so auto-fix /
-    // auto-merge can react promptly.
-    for (const [sessionId] of this.sessionRepos) {
+  private anyAutonomousActionInFlight(): boolean {
+    for (const sessionId of this.sessionRepos.keys()) {
       if (this.mergedSessions.has(sessionId)) continue;
-      const status = this.lastKnown.get(sessionId);
-      if (status?.checks.state === "pending") return false;
-    }
 
-    return true;
+      const fix = this.autoFix.get(sessionId);
+      if (fix?.enabled && fix.status === "running") return true;
+
+      const merge = this.autoMerge.get(sessionId);
+      // ShipIt-managed auto-merge needs the poller to detect CI-success → merge.
+      // Native auto-merge runs on GitHub's side and doesn't need our polling.
+      if (merge?.enabled && merge.managed) return true;
+
+      const runner = this.runnerRegistry?.get(sessionId);
+      if (runner?.running && runner.viewerCount === 0) return true;
+    }
+    return false;
   }
 
-  /** Register a session as having an open PR. Starts polling for its repo. */
+  /**
+   * The global gate. True when the supervisor should keep running.
+   *
+   * Note this is intentionally distinct from the per-repo cadence decision:
+   * the gate decides whether polling runs at all; the cadence decides how
+   * often. See docs/064-pr-lifecycle-flow/plan.md "Polling budget."
+   */
+  private globalGateOpen(): boolean {
+    if (this.anyViewersConnected()) return true;
+    if (this.anyAutonomousActionInFlight()) return true;
+    // No viewers, no autonomous action — but maybe we're inside the
+    // disconnect grace window (a viewer just left and may reconnect).
+    if (
+      this.lastViewerDetachAt > 0
+      && Date.now() - this.lastViewerDetachAt < VIEWER_DETACH_GRACE_MS
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  // ---- Per-repo cadence (Strategy 2) ----
+  //
+  // For each tracked session on a repo, pick a per-session cadence based on
+  // what we expect to change. The repo runs at the minimum (fastest) of its
+  // tracked sessions' cadences. Fast = 15 s, slow = 120 s.
+
+  private perSessionInterval(sessionId: string): number {
+    // Autonomous action keep-alive: the loop needs prompt feedback.
+    const fix = this.autoFix.get(sessionId);
+    if (fix?.enabled && fix.status === "running") return PR_STATUS_POLL_INTERVAL_MS;
+    const merge = this.autoMerge.get(sessionId);
+    if (merge?.enabled && merge.managed) return PR_STATUS_POLL_INTERVAL_MS;
+
+    // Recent auto-push: CI is registering, fast cadence so the user (or the
+    // auto-fix loop) sees the first non-none check promptly.
+    const pushAt = this.lastAutoPushAt.get(sessionId);
+    if (pushAt !== undefined && Date.now() - pushAt < POST_PUSH_FAST_WINDOW_MS) {
+      return PR_STATUS_POLL_INTERVAL_MS;
+    }
+
+    const last = this.lastKnown.get(sessionId);
+    if (!last) {
+      // Haven't polled this session yet — fast so the first observation lands
+      // quickly (the orchestrator usually pairs trackSession with a force).
+      return PR_STATUS_POLL_INTERVAL_MS;
+    }
+
+    if (last.checks.state === "pending") return PR_STATUS_POLL_INTERVAL_MS;
+
+    // mergeable: UNKNOWN means GitHub is still computing — poll fast until it
+    // resolves. "none" + unknown is the no-CI case and should stay slow.
+    if (last.mergeable === "unknown" && last.checks.state !== "none") {
+      return PR_STATUS_POLL_INTERVAL_MS;
+    }
+
+    return PR_STATUS_SLOW_INTERVAL_MS;
+  }
+
+  private repoInterval(repoKey: string): number {
+    let interval = PR_STATUS_SLOW_INTERVAL_MS;
+    for (const [sessionId, key] of this.sessionRepos) {
+      if (key !== repoKey) continue;
+      if (this.mergedSessions.has(sessionId)) continue;
+      const sessionInterval = this.perSessionInterval(sessionId);
+      if (sessionInterval < interval) interval = sessionInterval;
+      if (interval === PR_STATUS_POLL_INTERVAL_MS) break;
+    }
+    return interval;
+  }
+
+  // ---- Public hooks (called by the orchestrator) ----
+
+  /**
+   * Notify the poller that a viewer has attached to a runner. Opens the
+   * global gate (if it was closed) and clears the disconnect grace timer so
+   * the supervisor stays running. The orchestrator's WS `attachToRunner`
+   * pairs this with `forceRefreshSession(sessionId)` to make the user-
+   * perceived freshness instant.
+   */
+  notifyViewerAttached(): void {
+    this.lastViewerDetachAt = 0;
+    this.ensureSupervisor();
+  }
+
+  /**
+   * Notify the poller that a viewer has detached. If that was the last
+   * viewer (and no autonomous action is keeping the gate open), arms the
+   * grace timer; the supervisor will pause itself on the next tick after
+   * VIEWER_DETACH_GRACE_MS elapses without a reconnect.
+   */
+  notifyViewerDetached(): void {
+    if (this.anyViewersConnected()) return;
+    if (this.lastViewerDetachAt === 0) this.lastViewerDetachAt = Date.now();
+  }
+
+  /**
+   * Notify the poller that a session just initiated an auto-push to origin.
+   * Bumps that session's cadence to fast for POST_PUSH_FAST_WINDOW_MS so CI
+   * registration is observed promptly. Called from the orchestrator's
+   * `scheduleAutoPush` after the push lands; tests call it directly.
+   */
+  notifyAutoPush(sessionId: string): void {
+    this.lastAutoPushAt.set(sessionId, Date.now());
+    // A push lands → we expect CI signal → keep the supervisor running so
+    // the cadence picks it up. If the gate is otherwise closed (no viewer,
+    // no autonomous action), this still doesn't open it on its own — the
+    // user closed their tab, and waiting for them to come back is fine.
+    if (this.globalGateOpen()) this.ensureSupervisor();
+  }
+
+  /**
+   * Register a session as having an open PR.
+   *
+   * Issues an immediate one-shot poll if the global gate is open (i.e. the
+   * caller is observing — the orchestrator's WS attach path pairs this with
+   * a viewer attach). At server startup, when `app-lifecycle.ts` tracks
+   * persisted sessions before any viewer has connected, the gate is closed
+   * and tracking is just bookkeeping — the first poll happens on the next
+   * viewer attach via `forceRefreshSession`.
+   */
   trackSession(sessionId: string, repoUrl: string): void {
     const parsed = parseGitHubRemote(repoUrl);
     if (!parsed) return;
@@ -174,16 +350,24 @@ export class PrStatusPoller {
     // the poller retries on every poll until a successful load.
     this.graceTracker.ensureWorkflowsLoaded(repoKey, repoUrl).catch(() => {});
 
-    if (!this.repoTimers.has(repoKey)) {
-      this.startPolling(repoKey, parsed.owner, parsed.repo);
+    if (this.globalGateOpen()) {
+      this.ensureSupervisor();
+      // Preserve the "first poll is immediate" contract from the old
+      // per-repo-timer design — without it the freshly-tracked session
+      // would wait up to one fast-tick (15 s) for its first observation.
+      this.pollRepo(repoKey, parsed.owner, parsed.repo, { force: true }).catch((err: unknown) => {
+        console.error(`[pr-poller] Error on initial poll ${repoKey}:`, err);
+      });
     }
   }
 
   /**
    * Force a one-shot refresh for the repo that owns a session's PR status.
    * This is used for user-visible events (session activation, PR creation,
-   * merge button) so the 15s background cadence remains cheap without making
-   * the UI wait for the next tick.
+   * merge button) so the background cadence remains cheap without making the
+   * UI wait for the next tick. A forced refresh is also the one path that
+   * bypasses the global gate — a viewer is by definition active when this
+   * runs, even if `notifyViewerAttached` hasn't landed yet.
    */
   async forceRefreshSession(
     sessionId: string,
@@ -195,7 +379,8 @@ export class PrStatusPoller {
 
     // A user action is a strong activity signal, and a forced refresh should
     // not be suppressed by a previous "missing from bulk GraphQL" episode.
-    this.recordClientActivity();
+    this.lastViewerDetachAt = 0;
+    this.ensureSupervisor();
     this.verifiedAbsent.delete(sessionId);
 
     const owner = repoKey.slice(0, slash);
@@ -219,7 +404,8 @@ export class PrStatusPoller {
     const session = this.sessionManager.get(sessionId);
     if (!session?.branch) return;
 
-    this.recordClientActivity();
+    this.lastViewerDetachAt = 0;
+    this.ensureSupervisor();
     this.verifiedAbsent.delete(sessionId);
 
     const owner = repoKey.slice(0, slash);
@@ -239,10 +425,11 @@ export class PrStatusPoller {
     this.inFlightVerify.delete(sessionId);
     this.verifiedAbsent.delete(sessionId);
     this.prTabActiveSessions.delete(sessionId);
+    this.lastAutoPushAt.delete(sessionId);
     this.graceTracker.untrack(sessionId);
 
-    if (repoKey) {
-      this.maybeStopPolling(repoKey);
+    if (repoKey && !this.repoHasTrackedSessions(repoKey)) {
+      this.lastPolledAt.delete(repoKey);
     }
   }
 
@@ -263,8 +450,11 @@ export class PrStatusPoller {
       if (repoKey && slash > 0) {
         const owner = repoKey.slice(0, slash);
         const repo = repoKey.slice(slash + 1);
-        // Treat activation as user activity so an idle-paused repo resumes.
-        this.recordClientActivity();
+        // Treat PR-tab activation as a viewer signal so a paused supervisor
+        // wakes up and the user sees the heavier conversation fields without
+        // waiting a tick.
+        this.lastViewerDetachAt = 0;
+        this.ensureSupervisor();
         this.pollRepo(repoKey, owner, repo, { force: true }).catch((err: unknown) => {
           console.error(`[pr-poller] Error on PR-tab-activated poll ${repoKey}:`, err);
         });
@@ -345,6 +535,9 @@ export class PrStatusPoller {
   /** Increment attempt count for auto-fix and set status to running. */
   markAutoFixRunning(sessionId: string): void {
     this.autoFix.markRunning(sessionId);
+    // Auto-fix running ⇒ autonomous-action keep-alive: the loop wants prompt
+    // CI feedback even if the user's tab is closed. Open the gate.
+    this.ensureSupervisor();
   }
 
   // ---- Auto-merge state management ----
@@ -362,6 +555,9 @@ export class PrStatusPoller {
   /** Mark auto-merge as ShipIt-managed (GitHub native unavailable). */
   setAutoMergeManaged(sessionId: string, managed: boolean, settingsUrl?: string): void {
     this.autoMerge.setManaged(sessionId, managed, settingsUrl);
+    // Managed auto-merge depends on the poller to detect CI-success → merge.
+    // Open the gate so a closed tab doesn't strand the flow.
+    if (managed) this.ensureSupervisor();
   }
 
   /** Set an auto-merge error (toggle reverts to OFF). */
@@ -376,10 +572,8 @@ export class PrStatusPoller {
 
   /** Clean up all timers. */
   destroy(): void {
-    for (const timer of this.repoTimers.values()) {
-      clearInterval(timer);
-    }
-    this.repoTimers.clear();
+    this.stopSupervisor();
+    this.lastPolledAt.clear();
   }
 
   /** Broadcast current status for a single session. */
@@ -422,34 +616,65 @@ export class PrStatusPoller {
     return result;
   }
 
-  private startPolling(repoKey: string, owner: string, repo: string): void {
-    const timer = setInterval(() => {
+  /**
+   * Arm the supervisor if it isn't running and the global gate is open. A
+   * single supervisor handles every tracked repo — there is no per-repo
+   * timer. The supervisor wakes every fast tick and decides per repo whether
+   * the slow interval has elapsed before issuing a GraphQL call.
+   */
+  private ensureSupervisor(): void {
+    if (this.supervisor) return;
+    if (!this.globalGateOpen()) return;
+    this.supervisor = setInterval(() => this.supervisorTick(), PR_STATUS_POLL_INTERVAL_MS);
+  }
+
+  private stopSupervisor(): void {
+    if (this.supervisor) {
+      clearInterval(this.supervisor);
+      this.supervisor = null;
+    }
+  }
+
+  /**
+   * Supervisor tick. Closes the gate if it should be closed; otherwise for
+   * each tracked repo, polls iff the repo's per-repo interval has elapsed
+   * since its last poll. Errors per repo are isolated so one repo's GraphQL
+   * failure doesn't stop the others.
+   */
+  private supervisorTick(): void {
+    if (!this.globalGateOpen()) {
+      this.stopSupervisor();
+      return;
+    }
+
+    const now = Date.now();
+    const repoKeysSeen = new Set<string>();
+    for (const [sessionId, repoKey] of this.sessionRepos) {
+      if (this.mergedSessions.has(sessionId)) continue;
+      if (repoKeysSeen.has(repoKey)) continue;
+      repoKeysSeen.add(repoKey);
+
+      const interval = this.repoInterval(repoKey);
+      const last = this.lastPolledAt.get(repoKey) ?? 0;
+      if (now - last < interval) continue;
+
+      const slash = repoKey.indexOf("/");
+      if (slash <= 0) continue;
+      const owner = repoKey.slice(0, slash);
+      const repo = repoKey.slice(slash + 1);
       this.pollRepo(repoKey, owner, repo).catch((err: unknown) => {
         console.error(`[pr-poller] Error polling ${repoKey}:`, err);
       });
-    }, PR_STATUS_POLL_INTERVAL_MS);
-
-    this.repoTimers.set(repoKey, timer);
-
-    // Run the first poll immediately
-    this.pollRepo(repoKey, owner, repo, { force: true }).catch((err: unknown) => {
-      console.error(`[pr-poller] Error on initial poll ${repoKey}:`, err);
-    });
+    }
   }
 
-  private maybeStopPolling(repoKey: string): void {
-    // Check if any active (non-merged) sessions still use this repo
-    const hasActive = [...this.sessionRepos.entries()].some(
-      ([sid, key]) => key === repoKey && !this.mergedSessions.has(sid),
-    );
-
-    if (!hasActive) {
-      const timer = this.repoTimers.get(repoKey);
-      if (timer) {
-        clearInterval(timer);
-        this.repoTimers.delete(repoKey);
-      }
+  /** True when at least one non-merged session is still tracked on this repo. */
+  private repoHasTrackedSessions(repoKey: string): boolean {
+    for (const [sid, key] of this.sessionRepos) {
+      if (key !== repoKey) continue;
+      if (!this.mergedSessions.has(sid)) return true;
     }
+    return false;
   }
 
   private async pollRepo(
@@ -476,7 +701,11 @@ export class PrStatusPoller {
     }
 
     if (stillLimited) return;
-    if (!opts.force && this.canSkipPoll()) return;
+
+    // Record the poll attempt timestamp before the GraphQL call so the
+    // supervisor's cadence check (in `supervisorTick`) doesn't fire a second
+    // poll for the same repo while this one is in flight.
+    this.lastPolledAt.set(repoKey, Date.now());
 
     // docs/133 Phase 4: fetch the heavier conversation fields only when a
     // session on this repo has its PR tab open. Idle polls stay cheap.
