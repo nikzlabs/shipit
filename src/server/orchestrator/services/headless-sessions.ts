@@ -3,6 +3,7 @@ import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo, AgentId } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
+import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { ServiceError } from "./types.js";
@@ -56,6 +57,7 @@ export async function createHeadlessSession(
   defaultAgentId: AgentId,
   credentialsDir: string | undefined,
   credentialStore: CredentialStore | undefined,
+  providerAccountManager?: ProviderAccountManager,
 ): Promise<CreateHeadlessSessionResult> {
   const repoUrl = opts.repoUrl?.trim();
   if (!repoUrl) throw new ServiceError(400, "Add a repo first.");
@@ -125,7 +127,12 @@ export async function createHeadlessSession(
     await prepareSessionAgentEnvironment(runner, {
       sessionId: newSessionId,
       agentId,
-      deps: { credentialsDir, credentialStore, sessionManager },
+      deps: {
+        credentialsDir,
+        credentialStore,
+        sessionManager,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      },
     });
   } else {
     sessionManager.setAgentId(newSessionId, agentId);

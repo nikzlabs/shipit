@@ -323,6 +323,7 @@ export async function registerSessionRoutes(
           deps.defaultAgentId,
           deps.credentialsDir,
           deps.credentialStore,
+          deps.providerAccountManager,
         );
         deps.sseBroadcast("session_list", { sessions: result.sessions });
         return {
@@ -385,6 +386,7 @@ export async function registerSessionRoutes(
           deps.defaultAgentId,
           deps.credentialsDir,
           deps.credentialStore,
+          deps.providerAccountManager,
         );
         // Broadcast the updated session list so the parent's sidebar shows
         // the new child immediately — same pattern as `fork` / `unarchive`.
@@ -569,6 +571,7 @@ export async function registerSessionRoutes(
           deps.defaultAgentId,
           deps.credentialsDir,
           deps.credentialStore,
+          deps.providerAccountManager,
         );
         return { queuePosition: result.queuePosition, enqueued: result.enqueued };
       } catch (err) {

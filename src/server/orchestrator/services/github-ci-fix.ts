@@ -12,6 +12,7 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
+import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { CIFailureLog } from "../../shared/types/github-types.js";
 import { extractFailedCheckRuns } from "../pr-status-poller.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
@@ -234,6 +235,7 @@ export async function triggerCIFix(
   sessionManager: SessionManager,
   credentialsDir: string | undefined,
   credentialStore: CredentialStore | undefined,
+  providerAccountManager?: ProviderAccountManager,
 ): Promise<{ status: "sent" | "queued"; attemptNumber: number }> {
   if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
@@ -272,7 +274,12 @@ export async function triggerCIFix(
     await prepareSessionAgentEnvironment(runner, {
       sessionId,
       agentId: runner.agentId,
-      deps: { credentialsDir, credentialStore, sessionManager },
+      deps: {
+        credentialsDir,
+        credentialStore,
+        sessionManager,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      },
     });
   }
 
