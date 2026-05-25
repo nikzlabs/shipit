@@ -52,7 +52,7 @@ export function UptimeBadge({ processStartedAt }: UptimeBadgeProps) {
 
   return (
     <span
-      className="hidden sm:inline text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) text-(--color-text-secondary) font-medium tabular-nums"
+      className="inline-block text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) text-(--color-text-secondary) font-medium tabular-nums"
       title={`Orchestrator uptime: ${label} (started ${new Date(processStartedAt).toLocaleString()})`}
     >
       {label}

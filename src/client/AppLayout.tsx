@@ -1,6 +1,7 @@
 import type { ReactNode, RefObject } from "react";
-import { GearSixIcon, ListIcon, QuestionIcon } from "@phosphor-icons/react";
+import { GaugeIcon, GearSixIcon, ListIcon, QuestionIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
+import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover.js";
 import { WithTooltip } from "./components/ui/tooltip.js";
 import { ThemePicker } from "./components/ThemePicker.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
@@ -14,6 +15,7 @@ import type { SessionInfo, RepoInfo, DockerMemoryStats, SubscriptionLimitsMap } 
 import { DockerMemoryBadge } from "./components/DockerMemoryBadge.js";
 import { UptimeBadge } from "./components/UptimeBadge.js";
 import { SubscriptionLimitsBadge } from "./components/SubscriptionLimitsBadge.js";
+import { MobileStatusPanel } from "./components/MobileStatusPanel.js";
 import { MemoryPressureBanner } from "./components/MemoryPressureBanner.js";
 import { GitHubRateLimitBanner } from "./components/GitHubRateLimitBanner.js";
 import { LocalModeBanner } from "./components/LocalModeBanner.js";
@@ -149,9 +151,32 @@ export function AppLayout({
           </div>
         )}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          <SubscriptionLimitsBadge limits={subscriptionLimits} />
-          {processStartedAt !== null && <UptimeBadge processStartedAt={processStartedAt} />}
-          {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
+          <div className="hidden sm:contents">
+            <SubscriptionLimitsBadge limits={subscriptionLimits} />
+            {processStartedAt !== null && <UptimeBadge processStartedAt={processStartedAt} />}
+            {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
+          </div>
+          {(processStartedAt !== null || dockerMemory !== null || Object.values(subscriptionLimits).some((s) => s)) && (
+            <div className="sm:hidden">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
+                    aria-label="Status"
+                  >
+                    <GaugeIcon size={ICON_SIZE.MD} />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-auto max-w-[calc(100vw-1.5rem)] p-3">
+                  <MobileStatusPanel
+                    subscriptionLimits={subscriptionLimits}
+                    dockerMemory={dockerMemory}
+                    processStartedAt={processStartedAt}
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
+          )}
           <WithTooltip label="Keyboard shortcuts">
           <button onClick={onShortcutsOpen} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Keyboard shortcuts">
             <QuestionIcon size={ICON_SIZE.SM} />
