@@ -47,7 +47,7 @@ Around that core, ShipIt is the surface: build, review, ship, and debug software
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) and Docker Compose (ShipIt always runs containerized — there is no bare-metal mode)
+- [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`). Docker Desktop bundles it; on Linux install `docker-compose-plugin` alongside `docker-ce`. ShipIt always runs containerized — there is no bare-metal mode.
 - A subscription with the AI provider whose CLI you'll use:
   - For Claude Code: [Claude Pro or Max](https://claude.ai/upgrade)
   - For Codex: an OpenAI account with Codex CLI access
