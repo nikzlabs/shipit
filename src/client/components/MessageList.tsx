@@ -767,7 +767,7 @@ export function MessageList({
         );
       })}
 
-      {!isLoading && renderRewindPoint(messages.length, true)}
+      {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
       <div ref={bottomRef} />
     </div>
   );
