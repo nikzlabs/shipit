@@ -87,17 +87,6 @@ Once it's running, updates happen from inside the UI — **Settings → Advanced
 
 See [`deployment/README.md`](deployment/README.md) for the full guide: Hetzner sizing recommendations, Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and troubleshooting.
 
-## Docker Volumes
-
-Persistent volumes survive container restarts:
-
-| Volume | Mount Point | Purpose |
-|--------|-------------|---------|
-| `workspace` | `/workspace` | Project files that the agent reads and writes |
-| `credentials` | `/credentials` | Agent CLI OAuth credentials + GitHub tokens (shared by all sessions) |
-
-Session containers are ephemeral and rebuilt on demand; only the volumes above and the per-repo bare-cache directories on the host persist long-term state.
-
 ## Configuration
 
 ShipIt uses environment variables for configuration:
