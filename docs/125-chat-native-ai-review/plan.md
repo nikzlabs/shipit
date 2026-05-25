@@ -73,7 +73,7 @@ description: Replace the out-of-band AI review endpoint with a chat-native flow 
 >
 > **Convergence update (2026-05).** The composed review prompt is now
 > severity-gated and bounded: reviewers submit only material findings with a
-> concrete user impact and fix, cap the list at five findings, and the parent
+> concrete user impact and fix, order findings by severity, and the parent
 > performs at most one fresh-subagent re-review after applying fixes. This
 > replaces the original open-ended "review-fix-review until empty" loop, which
 > encouraged low-severity nitpicks and made review rounds take too long.
@@ -271,9 +271,8 @@ Clicking it does exactly two things on the client:
      improvements.
    - Before submitting any finding, verify that it has a concrete user
      impact and a specific fix. If you cannot name both, omit it.
-   - Submit at most 5 findings, ordered by severity. If there are more
-     than 5, keep only the ones most likely to change whether this
-     should ship.
+   - Submit every material finding, ordered by severity. Do not suppress
+     an important issue because there are already several findings.
    - Call the `submit_review_comments` MCP tool exactly once with the
      selected findings as a single array. Do not call it per-comment.
    - If the file has no material findings, still call

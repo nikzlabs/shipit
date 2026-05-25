@@ -37,7 +37,8 @@ describe("composeReviewMessage", () => {
     expect(body).toContain("Do not review it yourself.");
     expect(body).toContain("submit_review_comments");
     expect(body).toContain("empty array");
-    expect(body).toContain("at most 5 findings");
+    expect(body).toContain("Submit every material finding");
+    expect(body).not.toContain("at most 5 findings");
     expect(body).toContain("Prefer no comment over a weak comment");
     // No comments block when there's nothing to embed.
     expect(body).not.toContain("Existing comments");

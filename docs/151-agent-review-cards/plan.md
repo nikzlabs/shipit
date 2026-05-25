@@ -202,11 +202,11 @@ the chat-card UI still has the structured findings, so the parent's
 copy is the only thing degraded.
 
 The prompt also keeps reviews convergent: the subagent reports only
-material findings with concrete user impact and a specific fix, caps the
-submission at five findings, and treats an empty array as success when no
-material issue remains. The parent applies material fixes, runs at most
-one fresh-subagent re-review, and does not loop on lower-severity
-follow-up suggestions.
+material findings with concrete user impact and a specific fix, orders
+them by severity, and treats an empty array as success when no material
+issue remains. The parent applies material fixes, runs at most one
+fresh-subagent re-review, and does not loop on lower-severity follow-up
+suggestions.
 
 This is what removes the need for a `get_review_comments` fetch tool:
 the tool's *response* is the delivery mechanism, and the Task tool's
@@ -378,8 +378,8 @@ deletion and references this doc.
   the substantive change is server-side.
 - **`compose-review-body.ts`** — update the composed review prompt to
   instruct the subagent to echo the tool result verbatim as its final
-  response, gate findings to material issues only, cap findings at five,
-  and bound re-review to one fresh-subagent pass. Drop the
+  response, gate findings to material issues only, order findings by
+  severity, and bound re-review to one fresh-subagent pass. Drop the
   `--- Existing comments ---` embed for AI-source comments (now lives in
   chat history, not in any draft); keep the human-draft embed.
 - **Integration tests** — `integration_tests/review-chat-native.test.ts`
