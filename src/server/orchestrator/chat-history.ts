@@ -140,7 +140,14 @@ export class ChatHistoryManager {
     this.stmtInsert = this.db.prepare(INSERT_SQL);
     this.stmtUpdate = this.db.prepare(UPDATE_SQL);
     this.stmtLoadAll = this.db.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id");
-    this.stmtLoadLast = this.db.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 1");
+    // Filters in_progress=0 because `updateLastMessage` (the only caller) is
+    // invoked from post-turn auto-commit to write `commit_hash` /
+    // `parent_commit_hash` onto the just-finalized assistant message. If the
+    // next turn has already begun and inserted in_progress=1 rows, we must
+    // skip those — otherwise the commit info gets stamped on a transient row
+    // that the very next replaceInProgress() deletes, and the user sees
+    // "0 files" in the Rewind preview for a turn that actually committed.
+    this.stmtLoadLast = this.db.prepare("SELECT * FROM messages WHERE session_id = ? AND in_progress = 0 ORDER BY id DESC LIMIT 1");
     this.stmtDeleteBySession = this.db.prepare("DELETE FROM messages WHERE session_id = ?");
     this.stmtDeleteInProgress = this.db.prepare("DELETE FROM messages WHERE session_id = ? AND in_progress = 1");
     this.stmtFinalizeInProgress = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE session_id = ? AND in_progress = 1");
@@ -222,17 +229,30 @@ export class ChatHistoryManager {
     return row?.content;
   }
 
-  /** Update the last message in a session's history by merging fields. */
-  updateLastMessage(sessionId: string, update: Partial<PersistedMessage>): void {
-    this.db.transaction(() => {
+  /**
+   * Update the last finalized message in a session's history by merging
+   * fields. Returns the row id that was updated, or null if none. The caller
+   * uses the id to derive the message index for `commit_linked` — without
+   * this, computing the index via `load().length - 1` would point at a stale
+   * in_progress row from the next turn instead of the just-finalized one.
+   */
+  updateLastMessage(sessionId: string, update: Partial<PersistedMessage>): number | null {
+    return this.db.transaction(() => {
       const lastRow = this.stmtLoadLast.get(sessionId) as MessageRow | undefined;
-      if (!lastRow) return;
+      if (!lastRow) return null;
 
       const last = this.fromRow(lastRow);
       Object.assign(last, update);
       const row = this.toRow(sessionId, last);
       this.stmtUpdate.run({ ...row, id: lastRow.id });
+      return lastRow.id;
     })();
+  }
+
+  /** Index of a row id within the session's full ordered history. */
+  indexOfMessageId(sessionId: string, id: number): number {
+    const ids = this.db.prepare("SELECT id FROM messages WHERE session_id = ? ORDER BY id").all(sessionId) as { id: number }[];
+    return ids.findIndex((r) => r.id === id);
   }
 
   /** Truncate a session's history to the first `count` messages. */

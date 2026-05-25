@@ -135,8 +135,17 @@ export function toQueuedMessage(opts: AgentDispatchOptions): QueuedMessage {
 export interface SystemTurnDeps {
   /** Create an AgentProcess for the given agent ID. */
   agentFactory: (agentId: AgentId) => AgentProcess;
-  /** Auto-commit working tree changes. Returns commit hash or null. */
-  autoCommit: (sessionDir: string, summary: string) => Promise<string | null>;
+  /**
+   * Auto-commit working tree changes. Returns the new commit's hash and the
+   * pre-commit HEAD ("parent") so `dispatched-turn` can link both onto the
+   * last chat message — without this link `findCommitBeforeGap` returns null
+   * and the rewind preview reports "0 files". Returns null if nothing to
+   * commit.
+   */
+  autoCommit: (
+    sessionDir: string,
+    summary: string,
+  ) => Promise<{ commitHash: string; parentHash: string | null } | null>;
   /** Schedule a debounced auto-push after a commit. */
   scheduleAutoPush: (sessionDir: string) => void;
   /**

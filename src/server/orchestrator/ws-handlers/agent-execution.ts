@@ -5,7 +5,7 @@ import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode }
 import type { AgentEvent } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
-import { wireAgentListeners, type AgentListenerDeps } from "./agent-listeners.js";
+import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
@@ -511,6 +511,21 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           : "Agent process ended without a response";
         emitDone({ type: "error", message: reason });
       }
+      // Preserve the partial turn when an interrupt (user-typed Stop, or the
+      // AskUserQuestion auto-interrupt in agent-listeners) ends the agent
+      // without an `agent_result`. The listener's replaceInProgress writes
+      // accumulated rows with in_progress=1, and the NEXT turn's first
+      // replaceInProgress would wipe them — that's the "first turn erased
+      // from history" bug. Flip them to in_progress=0 here so they persist.
+      if (capturedSessionId && !receivedResult && runner?.wasInterrupted) {
+        const partial = buildTurnMessages(
+          runner.chatMessageGroups,
+          runner.steeredMessages ?? [],
+          { inProgress: false },
+        );
+        ctx.chatHistoryManager.replaceInProgress(capturedSessionId, partial);
+        ctx.chatHistoryManager.finalizeInProgress(capturedSessionId);
+      }
       stopRunner(runner);
       if (capturedSessionId && !(runner?.running ?? false)) {
         ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
@@ -528,6 +543,19 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         ? `Agent process exited with code ${code}`
         : "Agent process ended without a response";
       emitDone({ type: "error", message: reason });
+    }
+
+    // Mirror the streaming branch: preserve in-progress rows when an interrupt
+    // ends the agent without `agent_result`. Without this, the next turn's
+    // replaceInProgress wipes the interrupted turn's accumulated work.
+    if (capturedSessionId && !receivedResult && runner?.wasInterrupted) {
+      const partial = buildTurnMessages(
+        runner.chatMessageGroups,
+        runner.steeredMessages ?? [],
+        { inProgress: false },
+      );
+      ctx.chatHistoryManager.replaceInProgress(capturedSessionId, partial);
+      ctx.chatHistoryManager.finalizeInProgress(capturedSessionId);
     }
 
     // Process the message queue FIRST so the client clears queued visual state

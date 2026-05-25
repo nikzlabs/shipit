@@ -5,6 +5,7 @@ import path from "node:path";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
+import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../auth.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 
@@ -26,6 +27,7 @@ describe("Integration: Interrupt and Redirect", () => {
   let port: number;
   let tmpDir: string;
   let sessionManager: SessionManager;
+  let chatHistoryManager: ChatHistoryManager;
   let lastClaude: FakeClaudeProcess;
   let dbManager: DatabaseManager;
 
@@ -41,11 +43,13 @@ describe("Integration: Interrupt and Redirect", () => {
     setGitIdentity("Test User", "test@example.com");
 
     sessionManager = new SessionManager(dbManager);
+    chatHistoryManager = new ChatHistoryManager(dbManager);
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
+      chatHistoryManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess();
@@ -215,6 +219,64 @@ describe("Integration: Interrupt and Redirect", () => {
     const committed = await client.receiveType("git_committed", 5000);
     expect((committed as { hash?: string }).hash).toBeTruthy();
     expect((committed as { message?: string }).message).toBeTruthy();
+
+    client.close();
+  });
+
+  it("preserves the interrupted turn's assistant work in chat history", async () => {
+    // Regression: when the user interrupted mid-turn the agent exited without
+    // an `agent_result`, leaving in_progress=1 rows. The next turn's first
+    // replaceInProgress wiped them — so the work the user just SAW the agent
+    // do disappeared from the chat history on reload.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "design a new enemy" });
+    const claude = await waitForClaude(() => lastClaude);
+
+    // Agent emits some progress (assistant text + a tool call) before the
+    // user interrupts. agent-listeners persists these as in_progress=1 rows.
+    claude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "agent-interrupt-preserve",
+    });
+    await client.receiveType("session_started");
+    claude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "I'll add a Bomber enemy." },
+          { type: "tool_use", id: "t1", name: "Read", input: { file_path: "src/entities/EnemyTank.js" } },
+        ],
+      },
+    });
+    claude.emit("event", {
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "t1", content: "..." }],
+      },
+    });
+
+    // Wait for the in-progress rows to settle.
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Interrupt — FakeClaudeProcess emits done(1) without agent_result.
+    client.send({ type: "interrupt_agent" });
+    await client.receiveType("agent_interrupted");
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Send a second message, which kicks off a new turn whose first
+    // replaceInProgress would have wiped the interrupted turn under the
+    // pre-fix behavior.
+    client.send({ type: "send_message", text: "continue" });
+    await waitForClaude(() => lastClaude, claude);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const history = chatHistoryManager.load(client.sessionId);
+    const assistantTexts = history.filter((m) => m.role === "assistant").map((m) => m.text);
+    // The interrupted turn's text must still be visible after the new turn began.
+    expect(assistantTexts).toContain("I'll add a Bomber enemy.");
 
     client.close();
   });

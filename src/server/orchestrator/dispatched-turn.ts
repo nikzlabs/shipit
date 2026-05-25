@@ -88,10 +88,34 @@ export async function runDispatchedTurn(
       // meaningful instead of the legacy literal "CI fix".
       const summary =
         runner.turnSummary.split("\n")[0]?.slice(0, 120) || activity || "agent turn";
-      commitHash = await deps.autoCommit(runner.sessionDir, summary);
-      if (commitHash) {
-        runner.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
+      const result = await deps.autoCommit(runner.sessionDir, summary);
+      if (result) {
+        commitHash = result.commitHash;
+        runner.emitMessage({ type: "git_committed", hash: result.commitHash, message: summary });
         deps.scheduleAutoPush(runner.sessionDir);
+        // Link the commit to the last persisted assistant message so the
+        // rewind preview can compute `fileCount` (without this, every
+        // dispatched-turn session shows "0 files" in the Rewind dropdown
+        // because `findCommitBeforeGap` finds no `commitHash` or
+        // `parentCommitHash` to anchor the diff). Matches `postTurnCommit`
+        // on the WS path.
+        if (result.parentHash) {
+          const updatedId = deps.listenerDeps.chatHistoryManager.updateLastMessage(runner.sessionId, {
+            commitHash: result.commitHash,
+            parentCommitHash: result.parentHash,
+          });
+          if (updatedId !== null) {
+            const messageIndex = deps.listenerDeps.chatHistoryManager.indexOfMessageId(runner.sessionId, updatedId);
+            if (messageIndex >= 0) {
+              runner.emitMessage({
+                type: "commit_linked",
+                messageIndex,
+                commitHash: result.commitHash,
+                parentCommitHash: result.parentHash,
+              });
+            }
+          }
+        }
       }
     } catch (err) {
       console.error("[system-turn] auto-commit failed:", err);
