@@ -141,12 +141,13 @@ export interface RunnerRegistryDeps {
    */
   authManager: AuthManager;
   /**
-   * Optional — push a Codex rate-limit snapshot (from an `agent_rate_limits`
-   * AgentEvent) into the subscription-limits badge. Mirrors the WS-path
-   * `AppCtx.recordCodexRateLimits`. Wired by `index.ts` after the limits
-   * provider is constructed.
+   * Optional — push a fresh rate-limit snapshot for any agent (from an
+   * `agent_rate_limits` AgentEvent) into the subscription-limits badge.
+   * Mirrors the WS-path `AppCtx.recordAgentRateLimits`. Wired by
+   * `index.ts` after the limits providers are constructed.
    */
-  recordCodexRateLimits?: (
+  recordAgentRateLimits?: (
+    agentId: AgentId,
     session: { usedPct: number; resetAt: string } | null,
     weekly: { usedPct: number; resetAt: string } | null,
   ) => void;
@@ -171,7 +172,7 @@ export function createRunnerRegistry(
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
-    usageManager, authManager, recordCodexRateLimits, getSubscriptionLimitsSnapshot,
+    usageManager, authManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -199,7 +200,7 @@ export function createRunnerRegistry(
         broadcastLog: (source: WsLogEntry["source"], text: string) =>
           broadcastLog(runner.sessionId, source, text),
         getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
-        ...(recordCodexRateLimits ? { recordCodexRateLimits } : {}),
+        ...(recordAgentRateLimits ? { recordAgentRateLimits } : {}),
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
       };
       runner.setSystemTurnDeps({

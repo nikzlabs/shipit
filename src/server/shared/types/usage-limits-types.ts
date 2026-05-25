@@ -29,28 +29,8 @@ export interface SubscriptionLimits {
   session: SubscriptionLimitsWindow | null;
   /** Weekly quota across all models. */
   weekly: SubscriptionLimitsWindow | null;
-  /**
-   * Optional weekly Opus-only sub-quota — Claude Max only. Null
-   * otherwise (and absent for non-Claude providers).
-   */
-  weeklyOpus?: SubscriptionLimitsWindow | null;
-  /**
-   * Optional weekly Sonnet-only sub-quota — present on some Claude
-   * plans. Null otherwise (and absent for non-Claude providers).
-   */
-  weeklySonnet?: SubscriptionLimitsWindow | null;
-  /** Epoch ms when this snapshot was fetched. */
+  /** Epoch ms when this snapshot was last updated. */
   fetchedAt: number;
-  /**
-   * Populated when the *most recent* fetch failed (auth expired,
-   * 5xx, schema mismatch, rate limit, ...). When `session` / `weekly`
-   * are still populated alongside `error`, the orchestrator is
-   * preserving the last successful snapshot — the data is stale and
-   * the UI dims the meters + surfaces the reason in the tooltip
-   * rather than collapsing to a "—". When the data fields are null
-   * we never had a successful fetch and the UI falls back to "—".
-   */
-  error?: string;
 }
 
 /**

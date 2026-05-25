@@ -54,33 +54,12 @@ interface SubscriptionLimitPillProps {
 }
 
 export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPillProps) {
-  const sessionPct = snapshot.session?.usedPct ?? null;
-  const weeklyPct = snapshot.weekly?.usedPct ?? null;
-  const hasData = sessionPct !== null || weeklyPct !== null;
-
-  // No data ever (or sign-out / never-fetched) → keep the neutral
-  // em-dash form. The error reason lives in the tooltip.
-  if (snapshot.error && !hasData) {
-    return (
-      <span
-        className="inline-flex items-center text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) text-(--color-text-secondary) font-medium tabular-nums"
-        title={buildErrorTooltip(label, snapshot)}
-      >
-        {label} —
-      </span>
-    );
-  }
-
-  // Stale = we have data but the most recent refresh failed. We keep the
-  // visual presentation identical (per user request) and surface the
-  // staleness in the tooltip only.
-  const isStale = !!snapshot.error && hasData;
+  const hasData = snapshot.session !== null || snapshot.weekly !== null;
 
   return (
     <span
       className="inline-flex items-center gap-2 text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) font-medium tabular-nums text-(--color-text-secondary)"
       title={buildTooltip(label, snapshot)}
-      data-stale={isStale ? "true" : undefined}
     >
       <span>{label}</span>
       {snapshot.session && <Meter shortLabel="5h" pct={snapshot.session.usedPct} resetAt={snapshot.session.resetAt} />}
@@ -109,9 +88,9 @@ interface MeterProps {
  */
 function Meter({ shortLabel, pct, resetAt }: MeterProps) {
   // Once `resetAt` has elapsed the window has rolled over — the cached
-  // pct is no longer meaningful (poller refreshes every 5min, so the
-  // pill would otherwise sit at "5h 100% resets in now" until the next
-  // tick lands).
+  // pct is no longer meaningful (badge updates on the next agent turn's
+  // rate_limit_event, so otherwise the pill would sit at "5h 100% resets
+  // in now" until the next turn lands).
   const displayPct = effectivePct(pct, resetAt);
   const fillWidth = `${Math.max(0, Math.min(100, displayPct))}%`;
   const color = tierColor(displayPct);
@@ -194,32 +173,7 @@ function buildTooltip(label: string, snap: SubscriptionLimits): string {
   if (snap.weekly) {
     lines.push(`Weekly: ${formatPct(snap.weekly.usedPct)} used (resets ${formatReset(snap.weekly.resetAt)})`);
   }
-  if (snap.weeklyOpus) {
-    lines.push(`Weekly Opus: ${formatPct(snap.weeklyOpus.usedPct)} used (resets ${formatReset(snap.weeklyOpus.resetAt)})`);
-  }
-  if (snap.weeklySonnet) {
-    lines.push(`Weekly Sonnet: ${formatPct(snap.weeklySonnet.usedPct)} used (resets ${formatReset(snap.weeklySonnet.resetAt)})`);
-  }
-  if (snap.error && (snap.session || snap.weekly || snap.weeklyOpus || snap.weeklySonnet)) {
-    lines.push(`Last refresh failed (${snap.error}) — showing data from ${formatRelative(snap.fetchedAt)}.`);
-  }
   return lines.join("\n");
-}
-
-function formatRelative(epochMs: number): string {
-  const diffMs = Date.now() - epochMs;
-  if (!Number.isFinite(diffMs) || diffMs < 0) return "just now";
-  const sec = Math.round(diffMs / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.round(sec / 60);
-  if (min < 60) return `${min} min ago`;
-  const hr = Math.round(min / 60);
-  return `${hr}h ago`;
-}
-
-function buildErrorTooltip(label: string, snap: SubscriptionLimits): string {
-  const reason = snap.error ?? "limits unavailable";
-  return `${label}: ${reason}`;
 }
 
 function formatReset(iso: string): string {

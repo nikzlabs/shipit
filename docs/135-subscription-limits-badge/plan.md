@@ -108,74 +108,43 @@ endpoints.
 | `claude auth status --json` | Returns subscription type + auth state, **no** usage numbers. |
 | `~/.claude/stats-cache.json` | Client-side aggregated counters only. Does not contain server-side limits (Anthropic owns the cap, not the CLI). |
 | `~/.claude/projects/*.jsonl` | Per-turn token counts. Can be aggregated locally but does not include the *server-side* cap (the cap depends on plan + Anthropic's burst smoothing, which the CLI doesn't recompute). |
-| Per-request response headers | `anthropic-ratelimit-unified-status` and `anthropic-ratelimit-unified-reset` are returned on every API call and *are* what the CLI parses to populate `/usage`. They tell us "what percentage of the unified rate-limit window is currently used" and "when does it reset." Available only after a turn has run. |
-| **`GET https://api.anthropic.com/api/oauth/usage`** | **Undocumented** OAuth-scoped endpoint Claude Code calls to populate `/usage`. Returns session %, weekly %, weekly-Opus-only %, reset times. Auth: the OAuth bearer token already stored in `/root/.claude/.credentials.json`. This is the canonical source. |
+| Per-request response headers | `anthropic-ratelimit-unified-*` returned on every API call. The CLI surfaces these to ShipIt via stream-json `rate_limit_event` messages — **this is the source we use** (see below). |
+| **`rate_limit_event` messages under `claude --output-format=stream-json`** | **What we consume.** The CLI emits one `rate_limit_event` per window every time `anthropic-ratelimit-unified-*` headers change (typically every API call for active subscribers). Free, real-time, no extra HTTP call. Payload: `{ type: "rate_limit_event", rate_limit_info: { status, rateLimitType: "five_hour" \| "seven_day" \| ..., utilization, resetsAt } }`. |
+| `GET https://api.anthropic.com/api/oauth/usage` | **Not used.** Undocumented OAuth-scoped endpoint. Aggressively server-side rate-limited (returns `HTTP 429` with `retry-after: 0` after a handful of calls, ~30 min lockout — see [#31637](https://github.com/anthropics/claude-code/issues/31637), [#30930](https://github.com/anthropics/claude-code/issues/30930)). Wall-clock polling at any cadence eventually trips this and leaves the badge stuck on 30-minute-old data. Doesn't carry any data the stream events don't. |
 | Anthropic Admin API `GET /v1/organizations/usage_report/claude_code` | Org/Team/Enterprise only, requires admin API key (`sk-ant-admin-…`). Not viable for individual Pro/Max subscribers, which is most ShipIt users. |
 
-**Primary source (verified, Phase 0 capture, 2026-05-19):** `GET
-/api/oauth/usage` on `api.anthropic.com`, authenticated with the
-OAuth access token the existing `AuthManager` persists at
-`/root/.claude/.credentials.json` under `claudeAiOauth.accessToken`.
-Plain `Authorization: Bearer <token>` is sufficient — the
-`anthropic-beta: oauth-2025-04-20` header is a no-op for this
-endpoint (200 OK either way), but the provider sends it anyway for
-parity with the CLI's outgoing calls in case Anthropic later
-tightens a server-side filter.
+**Implemented source (event-driven):** `rate_limit_event` messages on
+the Claude CLI's stream-json output. The CLI itself derives them from
+the `anthropic-ratelimit-unified-*` response headers on every API call
+— no extra HTTP request from us, no chance of 429ing ourselves, and the
+data refreshes on the very next turn after any usage change.
 
-The token's existing scopes are sufficient — no re-auth needed:
+`ClaudeAdapter` (in `src/server/session/agents/claude-adapter.ts`)
+parses each event, ignores the `seven_day_opus` / `seven_day_sonnet` /
+`overage` sub-types (the badge only renders the headline 5h and 7d
+windows), and accumulates the last-known `five_hour` + `seven_day`
+windows. Whenever either changes, it emits a normalized
+`AgentRateLimitsEvent` carrying both windows — the same shape Codex
+already uses, so the orchestrator's `recordAgentRateLimits` handler is
+the single contract for both providers.
 
-    user:file_upload, user:inference, user:mcp_servers,
-    user:profile, user:sessions:claude_code
+The plan label is derived from the credentials file —
+`claudeAiOauth.subscriptionType` + `rateLimitTier` (e.g. `"max"` +
+`"default_claude_max_20x"` → `"Max 20x"`) — via
+`AuthManager.getAccessToken()`, not from the event payload.
 
-Response body shape (verified against a Max-20x account; fixture
-checked in at
-`src/server/orchestrator/limits/__fixtures__/claude-usage-max-20x.json`):
+**Consequence:** the Claude pill is blank until the first turn of a
+session delivers a `rate_limit_event` — identical UX to Codex.
+Acceptable trade for a path that's free and never goes stale.
 
-```json
-{
-  "five_hour":       { "utilization": 0..100, "resets_at": ISO },
-  "seven_day":       { "utilization": 0..100, "resets_at": ISO },
-  "seven_day_opus":  null | { utilization, resets_at },
-  "seven_day_sonnet":null | { utilization, resets_at },
-  "seven_day_oauth_apps": null | { ... },
-  "extra_usage":     { is_enabled, monthly_limit, used_credits,
-                       utilization, currency, disabled_reason }
-}
-```
-
-**Important finding:** the response does **not** carry a `plan` /
-`subscription` field. The provider derives the plan label from the
-credentials file instead — `claudeAiOauth.subscriptionType` +
-`rateLimitTier` (e.g. `"max"` + `"default_claude_max_20x"` →
-`"Max 20x"`). `AuthManager.getAccessToken()` returns this in its
-result so the provider doesn't need to re-open the file.
-
-**Fallback when the endpoint fails or returns unexpected shape:**
-shipping nothing in Phase 1. The badge shows "Claude —" with the
-plan label still rendered (it's derived from the credentials file,
-not the endpoint — so it stays accurate even when `/usage` is down)
-and the failure reason in the tooltip. We do **not** plan to MITM
-the agent's outbound HTTPS to sniff `anthropic-ratelimit-unified-*`
-response headers — that's significantly more invasive than this doc
-presented in earlier drafts (the Claude CLI talks directly to
-`api.anthropic.com` from inside the session container; capturing
-headers requires either a proxy injected between the CLI and the
-network, or a CLI change to write them somewhere accessible). See
-[Phase 3](#phasing) for why we treat this as a separate, optional
-follow-up rather than a Phase-1 fallback.
-
-**Risk: the endpoint is undocumented.** Anthropic could change or
-remove it without notice. Mitigation: the provider interface (see
-[Architecture](#architecture)) isolates the call to one function — if
-the endpoint changes, that's the only file that moves. And: the same
-risk applies to `/usage` in the CLI itself — both surfaces depend on
-this endpoint, so if Anthropic breaks it, the CLI breaks too and the
-user already knows.
-
-**Risk (resolved): OAuth scope.** Phase 0 verified that the CLI's
-existing OAuth scopes are sufficient for `/api/oauth/usage` — the
-endpoint returns 200 with the current token. No re-auth flow is
-needed.
+**Why not poll `/api/oauth/usage`?** Earlier iterations of this design
+polled the undocumented OAuth-scoped endpoint Anthropic's CLI uses for
+`/usage`. That endpoint is so aggressively server-side rate-limited
+(`HTTP 429` with `retry-after: 0` after a handful of calls, ~30 min
+lockout) that any cadence we picked — 60s, 5min, even 30min with
+turn-driven 90s debounce — eventually tripped it, leaving the badge
+stuck on 30-minute-old data. The CLI itself works around the same
+limitation by exposing the data over the stream instead.
 
 ### Codex (OpenAI)
 
@@ -206,14 +175,13 @@ it draws its own `/status` line from:
 weekly. `CodexAdapter` captures the notification and emits an
 `agent_rate_limits` AgentEvent; it flows through the normal agent event
 stream (worker SSE → `ProxyAgentProcess` → `wireAgentListeners`), where
-the orchestrator calls `recordCodexRateLimits()` to push it into a now
-**event-fed** `CodexLimitsProvider`. The provider no longer does HTTP:
-`fetch()` returns the latest pushed windows enriched with the plan tier
-(read from the `chatgpt_plan_type` JWT claim via
+the orchestrator calls the unified `recordAgentRateLimits("codex", …)`
+to push it into the **event-fed** `CodexLimitsProvider`. The provider
+does no HTTP: `fetch()` returns the latest pushed windows enriched with
+the plan tier (read from the `chatgpt_plan_type` JWT claim via
 `CodexAuthManager.extractCodexPlan`, since the payload's `limitName` is
-null). The `LimitsPoller` still polls it on its cadence (cheap — no
-network) and each incoming event triggers `markAuthRefreshed("codex")` so
-the pill updates within seconds.
+null). `LimitsRegistry.markAuthRefreshed("codex")` immediately
+rebroadcasts so the pill updates within seconds.
 
 The adapter also keeps the most recent pushed snapshot locally for error
 classification. Codex app-server has been observed returning the generic
@@ -267,42 +235,43 @@ export interface SubscriptionLimits {
   session: { usedPct: number; resetAt: string /* ISO */ } | null;
   /** Weekly quota across all models. */
   weekly: { usedPct: number; resetAt: string /* ISO */ } | null;
-  /** Optional: weekly Opus-only sub-quota (Claude Max only). null otherwise. */
-  weeklyOpus?: { usedPct: number; resetAt: string } | null;
-  /** Epoch ms when this snapshot was fetched. */
+  /** Epoch ms when this snapshot was last updated. */
   fetchedAt: number;
-  /** Set when the fetch failed; rendered as a neutral "—" with this tooltip. */
-  error?: string;
 }
 
 // src/server/orchestrator/limits/types.ts  (orchestrator-only)
 export interface LimitsProvider {
   agentId: AgentId;
-  /** True if there's enough info (auth, plan) to even try a fetch. */
+  /** True once the first event-fed snapshot has landed. */
   canFetch(): boolean;
-  /** Returns a fresh snapshot, or { error } on failure. Never throws. */
-  fetch(): Promise<SubscriptionLimits>;
+  /** Returns the cached snapshot enriched with derived fields (plan tier). */
+  fetch(): Promise<SubscriptionLimits | null>;
 }
 ```
 
-Each agent backend ships a provider:
+Each agent backend ships an event-fed provider — neither does HTTP
+itself; both expose a `setRateLimits(session, weekly)` method that the
+orchestrator calls from `recordAgentRateLimits` when an
+`agent_rate_limits` AgentEvent arrives:
 
-- `src/server/orchestrator/limits/claude-limits.ts` — calls the
-  candidate Anthropic endpoint with the bearer token read out of
-  `AuthManager`'s persisted credentials (see "AuthManager surface to
-  add" below).
-- `src/server/orchestrator/limits/codex-limits.ts` — calls the
-  candidate Codex endpoint with the access token read out of
-  `CodexAuthManager`'s persisted `auth.json` (see "CodexAuthManager
-  surface to add" below).
+- `src/server/orchestrator/limits/claude-limits.ts` — fed by
+  `ClaudeAdapter`'s parser for `rate_limit_event` stream messages.
+- `src/server/orchestrator/limits/codex-limits.ts` — fed by
+  `CodexAdapter`'s parser for `account/rateLimits/updated` JSON-RPC
+  notifications.
 
-Providers are registered in the orchestrator's DI layer (`app-di.ts`)
+Plan tier is derived from each manager's persisted credentials
+(`AuthManager.getAccessToken().plan` for Claude,
+`CodexAuthManager.getAccessToken().plan` for Codex) since the
+event payloads don't carry it.
+
+Providers are registered in the orchestrator's DI layer (`index.ts`)
 in a `Map<AgentId, LimitsProvider>` and injected into the
-`LimitsPoller`. They do **not** live on `AgentRegistry` /
+`LimitsRegistry`. They do **not** live on `AgentRegistry` /
 `agent-registry.ts` — that registry describes *static* agent metadata
 (name, models, capabilities) and is imported by client code via
-`AGENT_REGISTRY` exports; hanging a server-only HTTP fetcher off it
-would either leak HTTP code into the client bundle or force a split
+`AGENT_REGISTRY` exports; hanging a server-only stateful cache off it
+would either leak server code into the client bundle or force a split
 that doesn't pay for itself. The existing precedent in
 `agent-registry.ts` is *constructor-injected callbacks*
 (`checkClaudeAuth`, `checkCodexAuth`) — those are simple booleans;
@@ -359,140 +328,54 @@ Both `getAccessToken()` methods are added as *new* code — neither
 currently exists. This is explicitly *not* a "reuse what's there"
 plan.
 
-### Polling on the orchestrator
+### Registry on the orchestrator
 
-A new `LimitsPoller` lives next to `pr-status-poller.ts`:
+`LimitsRegistry` (in `src/server/orchestrator/limits-registry.ts`) is
+a passive cache + SSE broadcaster. It does **no polling, no HTTP, no
+backoff state machinery** — both providers are event-fed.
 
-- **Cadence:** 30 minutes per provider — a long safety heartbeat.
-  Originally 60s, then 5min, now 30min. Anthropic's
-  `/api/oauth/usage` is aggressively server-side rate-limited
-  (returns 429 with `retry-after: 0` after a handful of calls,
-  then stays 429 for ~30 minutes; this is a known Anthropic-side
-  bug affecting Claude Code itself and the entire community
-  status-line ecosystem — see
-  [anthropics/claude-code#31637](https://github.com/anthropics/claude-code/issues/31637),
-  [#30930](https://github.com/anthropics/claude-code/issues/30930)).
-  Wall-clock polling at any cadence eventually trips this and
-  leaves the badge stuck on 30-minute-old data. **Fresh data
-  primarily flows in via `triggerProviderRefresh()` on agent-turn
-  completion (Claude) and `recordCodexRateLimits()` from the agent
-  event stream (Codex);** the 30-minute timer exists only to
-  refresh idle tabs that haven't run a turn in a long time. The
-  poller still fires one *immediate* tick on `start()` so the
-  first SSE snapshot doesn't wait for the interval to elapse.
-- **Turn-driven refresh (Claude):** `agent-execution.ts` calls
-  `refreshSubscriptionLimits(agentId)` after each `agent_result`
-  event. The poller's `triggerProviderRefresh(agentId)` debounces
-  to ≥90s between fetches per provider, respects `authStalled` and
-  the 429 `pollNotBefore` backoff (so a busy user can't defeat
-  either), and otherwise issues an immediate `refreshOne(agentId)`.
-  This synchronizes upstream calls with the user's actual usage —
-  no calls when idle, fresh numbers after every turn the debounce
-  allows.
-- **Trigger:** runs whenever there is at least one connected SSE
-  client AND at least one registered provider returns
-  `canFetch() === true`. Notably: an *active runner* is **not**
-  required — gating on an active runner would leave the badges blank
-  on the home screen and for the first ~5min after a session opens.
-  Cost: one HTTP call every 5 minutes *per fetchable provider* while
-  the user has the tab open. With both Claude and Codex subscriptions
-  authenticated, that's 2 calls per 5 minutes, issued in parallel.
+- **Update path:** when an `agent_rate_limits` AgentEvent arrives from
+  any backend's adapter, `wireAgentListeners` routes it into the
+  single `recordAgentRateLimits(agentId, session, weekly)` callback on
+  `AppCtx` (the unified contract across providers). The callback in
+  `index.ts` dispatches to the right provider's `setRateLimits(…)`
+  method and then calls `limitsRegistry.markAuthRefreshed(agentId)`,
+  which re-pulls the provider's snapshot (now enriched with plan tier
+  from the credentials file) and broadcasts an SSE
+  `subscription_limits` event if it changed.
 - **Caching:** snapshots are held in a `Map<AgentId, SubscriptionLimits>`.
-  Every fetchable provider gets its own entry; providers with
-  `canFetch() === false` are omitted entirely from the map (not
-  stored as `null`). This is the part that changes from
-  `docker_memory`'s single-value cache — there are now N pills, so
-  there are N cache entries.
-- **No active-agent tracking.** The poller has no notion of "which
-  session is focused." All fetchable providers are polled in parallel
-  on the same 60s cadence; the client renders one pill per map entry
-  in stable order. This is intentional and matches the rest of the
-  header (everything global, nothing focus-driven).
-- **Broadcast:** on every successful fetch (or on transition into an
-  `error` state for any provider), emit a new SSE event
+  Every event-fed provider gets its own entry; providers that haven't
+  received their first event yet are omitted entirely from the map
+  (not stored as `null`). The client renders one pill per entry.
+- **No active-agent tracking.** All providers share the same registry;
+  the client renders one pill per map entry in stable registration
+  order. This matches the rest of the header (everything global,
+  nothing focus-driven).
+- **Broadcast:** every change emits a new SSE event
   `subscription_limits` whose payload is the full
   `Record<AgentId, SubscriptionLimits>`. The full map is sent on every
-  broadcast — partial deltas are not worth the complexity for an
-  N≤3 collection updated once a minute. The initial-connect snapshot
-  is included in the existing burst sent at `/api/events` connect
-  time, alongside `docker_memory`.
+  broadcast — partial deltas aren't worth the complexity for N≤3
+  entries. The initial-connect snapshot is included in the existing
+  burst sent at `/api/events` connect time.
+- **Sign-in:** after a successful Claude or Codex login the auth
+  managers emit `auth_complete` / `codex_auth_complete`. The registry
+  listens for these and refreshes that provider's snapshot so the
+  plan-tier change propagates to the pill immediately.
+- **Sign-out:** the registry's `markSignedOut(agentId)` deletes the
+  provider's entry and broadcasts the smaller map so the client drops
+  the pill.
 - **Error classification:** `wireAgentListeners()` can read the latest
-  poller cache through `getSubscriptionLimitsSnapshot()`. When a Claude
-  result error says the generic "org monthly usage limit" but the cached
+  cache through `getSubscriptionLimitsSnapshot()`. When a Claude result
+  error says the generic "org monthly usage limit" but the cached
   Claude 5h window is already at 100%, the listener rewrites the
-  chat-facing `agent_result.error` to name Claude's 5h usage limit and
-  show the cached reset timestamp. This mirrors the Codex adapter's
-  app-server classification, but happens in the orchestrator because
-  Claude's limit data comes from the polled `/usage` endpoint rather than
-  the CLI event stream.
-- **Authenticate-then-refresh:** after a successful Claude or Codex
-  login the auth managers already emit `auth_complete` /
-  `codex_auth_complete`. The poller listens for these and triggers an
-  immediate refresh of *just that provider* so its pill doesn't sit
-  blank for up to 60s after first sign-in. After sign-out (or a
-  forced credential clear), the provider's entry is *deleted* from
-  the map — not retained — so the user doesn't see stale numbers
-  attributed to an account they're no longer signed into. The next
-  broadcast omits that key and the client drops the corresponding
-  pill.
-- **Failure handling (per provider, independent):** when a refresh
-  fails for a provider that already has a cached successful snapshot,
-  the poller **preserves the prior data fields** (`session`,
-  `weekly`, `weeklyOpus`, `plan`, `fetchedAt`) and merges only the
-  fresh `error` reason on top. The UI keeps rendering the meters at
-  full strength and surfaces the failure in the tooltip only ("Last
-  refresh failed (…) — showing data from N min ago") rather than
-  collapsing to a "—" or dimming the pill. When there's never been a
-  successful snapshot (cold start with an error), the error-only form
-  is stored and the UI renders the em-dash. A subsequent successful
-  fetch replaces the snapshot wholesale, clearing both the staleness
-  and the error. Each provider has its own backoff counter — Claude
-  failing doesn't slow Codex down. Distinct cases per provider:
-  - **Idle access-token expiry (the common false alarm):** Claude and
-    Codex credentials live in *one shared file* (`/credentials/.claude`
-    + the Codex `auth.json`) that every session's CLI refreshes *on
-    each turn*. The access token in that file is short-lived (hours);
-    the refresh token is long-lived (~1yr). When a session sits idle
-    past the access-token TTL nobody refreshes the file, so the token
-    on disk goes stale even though auth is fundamentally valid —
-    hitting the usage endpoint then returns 401 and *looks* like
-    "auth expired" when it isn't. The providers pre-empt this: before
-    fetching, they check the credential's `expiresAt` (exposed by
-    `AuthManager.getAccessToken()` / `CodexAuthManager.getAccessToken()`)
-    and, if it's past `now + 60s`, return the `LIMITS_SKIP_TICK`
-    sentinel instead of firing the doomed request. The poller leaves
-    the cache and per-provider state untouched on a skip (no
-    broadcast, no error), so the badge keeps its last-known numbers
-    and self-heals the moment any session runs a turn (which refreshes
-    the shared credential). We deliberately do **not** refresh the
-    token ourselves: the credential is shared by every agent, so a
-    botched write or mishandled refresh-token rotation would break
-    *all* agent auth, not just the badge — too much blast radius for a
-    header indicator. See `LIMITS_SKIP_TICK` /
-    `isAccessTokenExpired()` in `limits/types.ts`.
-  - **401 / 403 (auth) despite a non-expired token:** a genuine auth
-    problem. Mark `error: "auth expired"`, stop polling *that
-    provider* until its auth manager re-emits `auth_complete`. Other
-    providers keep polling normally. Don't back off; re-auth is the
-    only fix.
-  - **429 (rate-limited by the usage endpoint itself):** respect
-    `Retry-After` if present; otherwise back off to **30 minutes**
-    *for that provider* — visibly longer than the normal 5-minute
-    cadence so a rate-limit response actually slows polling rather
-    than nudging it. Do not increment the generic
-    consecutive-failure counter — a 429 isn't an outage, it's a
-    signal to slow down.
-  - **5xx / network / unexpected schema:** consecutive-failure
-    exponential backoff (5min → 30min cap), generic `error: "limits
-    unavailable"`. Per-provider counter.
+  chat-facing `agent_result.error` to name the 5h usage limit and show
+  the cached reset timestamp. Mirrors the Codex equivalent.
 
-This mirrors the existing `docker_memory` flow in `index.ts:406–423` in
-shape (cache + SSE broadcast + initial-connect snapshot) but with a
-map-valued cache and a 30-minute heartbeat rather than the unconditional
-10s timer — the upstream cost matters here, the cost of `docker stats`
-locally does not. The primary refresh signal for Claude is the
-turn-driven `triggerProviderRefresh()` path described above, not the
-heartbeat.
+**Cold-start trade-off.** Because there's no polling, each provider's
+pill stays blank until that backend has run at least one turn (which
+is what triggers the first `rate_limit_event` / `account/rateLimits/updated`).
+Same UX as Codex has had since day one — acceptable in exchange for
+zero stale data and zero HTTP calls.
 
 ### Multi-provider display
 
@@ -607,11 +490,16 @@ Touches:
 
 - `src/server/orchestrator/auth.ts` — add `getAccessToken()`.
 - `src/server/orchestrator/codex-auth.ts` — add `getAccessToken()`.
-- `src/server/orchestrator/app-di.ts` — register
-  `Map<AgentId, LimitsProvider>`, wire `LimitsPoller`.
-- `src/server/orchestrator/index.ts` — start the poller, include the
-  snapshot in the `/api/events` initial-state burst, broadcast
-  `subscription_limits` events.
+- `src/server/orchestrator/index.ts` — register
+  `Map<AgentId, LimitsProvider>`, construct `LimitsRegistry`, wire
+  `recordAgentRateLimits` dispatch, include the snapshot in the
+  `/api/events` initial-state burst, broadcast `subscription_limits`
+  events.
+- `src/server/session/agents/claude-adapter.ts` — parse
+  `rate_limit_event` stream messages into `agent_rate_limits` events.
+- `src/server/orchestrator/ws-handlers/agent-listeners.ts` — route
+  `agent_rate_limits` events into the unified
+  `recordAgentRateLimits(agent.agentId, …)` callback.
 - `src/server/shared/types/ws-server-messages.ts` — add the
   `subscription_limits` SSE event type.
 - `src/client/hooks/useServerEvents.ts` — add the `subscription_limits`
@@ -627,15 +515,14 @@ Touches:
 These must be answered before each phase ships. Claude (1, 3, 4) is
 done; Codex (2) is still outstanding.
 
-1. **Capture the Claude endpoint.** ✅ **Done 2026-05-19.** Verified
-   by direct fetch with the credentials file's OAuth bearer. URL:
-   `https://api.anthropic.com/api/oauth/usage`. Headers: plain
-   `Authorization: Bearer`. Body shape captured as a test fixture
-   (`src/server/orchestrator/limits/__fixtures__/claude-usage-max-20x.json`)
-   and locked in via `parseClaudeUsage` tests. No mitmproxy needed
-   in the end — the credentials file already contains the same
-   OAuth token the CLI sends, so a direct HTTP call from the
-   orchestrator is the cleanest capture.
+1. **Capture the Claude data source.** ✅ **Done.** Originally we
+   used `GET /api/oauth/usage` (HTTP fixture under
+   `__fixtures__/claude-usage-max-20x.json`, parsed by a now-deleted
+   `parseClaudeUsage`). Later replaced with the CLI's `rate_limit_event`
+   stream messages after the HTTP endpoint proved too aggressively
+   rate-limited to keep the badge fresh. Schema for the stream event
+   was recovered from the embedded Zod schema in the Claude CLI binary
+   (search for `rate_limit_event`).
 2. **Capture the Codex endpoint.** Still outstanding. Same exercise
    against a ChatGPT-plan-authenticated `codex` CLI. Confirm the
    path (it has shifted across versions) and save the fixture. See
@@ -747,32 +634,35 @@ even with a valid token. The verified source turned out to be the
 App Server's `account/rateLimits/updated` stream (observed in prod
 session logs), so the Codex provider is event-fed, not polled.
 
-**Phase 1 — Claude.** ✅ **Implementation complete and verified
-end-to-end against the real endpoint.** Provider +
-`AuthManager.getAccessToken()` + poller + SSE + badge all wired and
-parsing the real Anthropic response shape. Plan label
-(`"Max 20x"` / `"Pro"` / ...) is derived from the credentials file
-because `/usage` doesn't return one.
+**Phase 1 — Claude (HTTP, superseded).** Initially shipped polling
+`GET /api/oauth/usage`. Worked but the endpoint is so aggressively
+rate-limited that the badge spent most of its life on 30-minute-old
+data, even after a turn-driven debounce (`refreshSubscriptionLimits`)
+was added in PR #703. Replaced wholesale by Phase 4 below.
 
-**Phase 2 — Codex.** ✅ **Complete (event-driven).** After the HTTP
-endpoint proved unusable, the provider was reworked to consume the
-App Server's `account/rateLimits/updated` notification: `CodexAdapter`
+**Phase 2 — Codex.** ✅ **Complete (event-driven).** The
+`/backend-api/codex/usage` HTTP path proved unusable (401/403 even
+with a valid token), so the provider consumes the App Server's
+`account/rateLimits/updated` notification instead: `CodexAdapter`
 emits an `agent_rate_limits` event, the orchestrator pushes it into an
-event-fed `CodexLimitsProvider` via `recordCodexRateLimits()`, and the
-plan tier is read from the `chatgpt_plan_type` JWT claim. The pill is
-blank until a session's first turn delivers a snapshot — the accepted
-trade for using the one verified source.
+event-fed `CodexLimitsProvider`, and the plan tier is read from the
+`chatgpt_plan_type` JWT claim. The pill is blank until a session's
+first turn delivers a snapshot.
 
-**Phase 3 (optional, separate doc) — Header-fallback for Claude.**
-Capture `anthropic-ratelimit-unified-*` headers from completed turns.
-This is *significantly* more invasive than it sounds: the Claude CLI
-talks directly to `api.anthropic.com` from inside the session
-container, so capturing those headers requires either (a) injecting an
-egress proxy between the CLI and the network, or (b) waiting for a
-CLI change that writes them to disk. Both are larger than this whole
-doc. If Phase 1 ships and proves reliable, Phase 3 is probably not
-worth doing — call it out for completeness rather than as a planned
-follow-up.
+**Phase 3 (skipped) — Header-fallback for Claude.** Would have
+captured `anthropic-ratelimit-unified-*` headers from completed turns
+via an egress proxy. Phase 4 made it unnecessary — the CLI already
+exposes the same data on its stream.
+
+**Phase 4 — Claude (event-driven, current).** ✅ **Shipped.** Found
+that the Claude CLI emits `rate_limit_event` messages on stream-json
+output (free, derived from the same response headers Phase 3 would
+have proxied for). `ClaudeAdapter` parses them into the same
+`agent_rate_limits` AgentEvent Codex uses; the orchestrator routes
+both providers through one `recordAgentRateLimits(agentId, …)`
+callback into the matching `setRateLimits()` method.
+`ClaudeLimitsProvider` no longer does HTTP. Cold-start UX matches
+Codex: blank until the session's first turn.
 
 ## Key files (to read before implementing)
 
@@ -780,15 +670,19 @@ follow-up.
   each pill copies.
 - `src/client/AppLayout.tsx:144–153` — header right-hand cluster;
   insertion point is immediately before `<UptimeBadge>` on line 145.
-- `src/server/orchestrator/docker-memory.ts` — the polling + caching
-  pattern this poller copies.
-- `src/server/orchestrator/index.ts:406–423` — the 10s memory-stats
-  interval the 60s limits-poller mirrors.
+- `src/server/orchestrator/limits-registry.ts` — the cache +
+  broadcaster both providers feed into.
+- `src/server/orchestrator/limits/claude-limits.ts` /
+  `codex-limits.ts` — the two event-fed providers.
+- `src/server/session/agents/claude-adapter.ts` — `rate_limit_event`
+  parser for Claude.
+- `src/server/session/agents/codex-adapter.ts` —
+  `account/rateLimits/updated` parser for Codex.
+- `src/server/orchestrator/ws-handlers/agent-listeners.ts` — routes
+  `agent_rate_limits` events into `recordAgentRateLimits`.
 - `src/server/orchestrator/auth.ts` — Claude OAuth credentials path.
 - `src/server/orchestrator/codex-auth.ts` — Codex auth path (per
   doc 119).
-- `src/server/orchestrator/pr-status-poller.ts` — closest existing
-  precedent for a polled-external-API service in the orchestrator.
 - `src/server/shared/agent-registry.ts` — read for the
   *constructor-injected-callbacks* pattern (`checkClaudeAuth`,
   `checkCodexAuth`) so the new DI registration follows house style.

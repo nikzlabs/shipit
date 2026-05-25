@@ -29,8 +29,9 @@ export interface AgentListenerDeps {
   broadcastLog: (source: WsLogEntry["source"], text: string) => void;
   /** Model the caller wants the turn to start with (before agent_init confirms). */
   getSelectedModel: () => string | undefined;
-  /** Optional: push a Codex rate-limit snapshot to the subscription badge. */
-  recordCodexRateLimits?: (
+  /** Optional: push a fresh rate-limit snapshot (any agent) to the subscription badge. */
+  recordAgentRateLimits?: (
+    agentId: AgentId,
     session: { usedPct: number; resetAt: string } | null,
     weekly: { usedPct: number; resetAt: string } | null,
   ) => void;
@@ -396,9 +397,12 @@ export function wireAgentListeners(
     // Subscription rate-limits are account-wide telemetry, not chat content:
     // route them into the limits badge (which broadcasts its own SSE) and
     // stop — forwarding as an `agent_event` would just be noise for the chat
-    // message grouping. See CodexLimitsProvider / docs/135.
+    // message grouping. Both Claude (via the CLI's `rate_limit_event` stream
+    // messages) and Codex (via `account/rateLimits/updated`) feed this same
+    // single callback — the orchestrator dispatches to the right provider.
+    // See docs/135.
     if (event.type === "agent_rate_limits") {
-      deps.recordCodexRateLimits?.(event.session, event.weekly);
+      deps.recordAgentRateLimits?.(agent.agentId, event.session, event.weekly);
       return;
     }
 

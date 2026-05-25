@@ -331,6 +331,100 @@ describe("ClaudeAdapter", () => {
     expect(logs).toEqual([["stderr", "debug info"]]);
   });
 
+  it("maps rate_limit_event(five_hour) to agent_rate_limits with the session window", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "allowed",
+        rateLimitType: "five_hour",
+        utilization: 42,
+        resetsAt: 1_800_000_000,
+      },
+    } satisfies ClaudeEvent);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      type: "agent_rate_limits",
+      session: { usedPct: 42, resetAt: new Date(1_800_000_000 * 1000).toISOString() },
+      weekly: null,
+    });
+  });
+
+  it("accumulates five_hour + seven_day across separate events and re-emits both", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", utilization: 12, resetsAt: 1_800_000_000 },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "seven_day", utilization: 80, resetsAt: 1_900_000_000 },
+    } satisfies ClaudeEvent);
+
+    expect(events).toHaveLength(2);
+    // Second event carries BOTH windows now that the adapter has seen each.
+    expect(events[1].session?.usedPct).toBe(12);
+    expect(events[1].weekly?.usedPct).toBe(80);
+  });
+
+  it("ignores rate_limit_event for sub-quotas (opus / sonnet / overage)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    for (const rateLimitType of ["seven_day_opus", "seven_day_sonnet", "overage"] as const) {
+      inner.emit("event", {
+        type: "rate_limit_event",
+        rate_limit_info: { rateLimitType, utilization: 50, resetsAt: 1_800_000_000 },
+      } satisfies ClaudeEvent);
+    }
+
+    expect(events).toHaveLength(0);
+  });
+
+  it("drops rate_limit_event with no parseable window (missing utilization or resetsAt)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", utilization: 42 },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", resetsAt: 1_800_000_000 },
+    } satisfies ClaudeEvent);
+
+    expect(events).toHaveLength(0);
+  });
+
+  it("clamps utilization >100 and tolerates ms-shaped resetsAt", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", utilization: 120, resetsAt: 1_800_000_000_000 },
+    } satisfies ClaudeEvent);
+
+    expect(events[0].session?.usedPct).toBe(100);
+    expect(events[0].session?.resetAt).toBe(new Date(1_800_000_000_000).toISOString());
+  });
+
   it("delegates run() to inner process with options object", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
