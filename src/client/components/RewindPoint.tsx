@@ -124,7 +124,7 @@ export function RewindPoint({
 
   return (
     <div
-      className="group/rewind relative -mt-3 flex h-6 items-center gap-0 transition-[gap] duration-150 hover:gap-24 sm:-mt-4 data-[menu-open=true]:gap-24"
+      className="group/rewind relative flex h-6 items-center gap-0 transition-[gap] duration-150 hover:gap-24 data-[menu-open=true]:gap-24"
       data-testid="rewind-point"
       data-menu-open={menuOpen}
     >
