@@ -422,6 +422,17 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
           text: answerText,
           sessionId: answerSessionId,
         });
+        // The AskUserQuestion-interrupt in `agent-listeners.ts` ended the
+        // previous turn (agent_result → `running=false`). Re-arm the runner so
+        // the UI shows "thinking" while the streaming process processes this
+        // answer as the next turn.
+        runnerEarly.running = true;
+        runnerEarly.emitMessage({
+          type: "session_status",
+          sessionId: answerSessionId,
+          running: true,
+          queueLength: runnerEarly.queueLength,
+        });
       }
       return;
     }
