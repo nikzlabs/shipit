@@ -185,7 +185,7 @@ describe("markMergedAndPruneExcess — branch cleanup", () => {
     expect(deleteBranch).not.toHaveBeenCalled();
   });
 
-  it("returns early without invoking branch deletion for standalone sessions", async () => {
+  it("returns early without invoking branch deletion when remoteUrl is missing (defensive)", async () => {
     const sessionId = trackMergedSession({ branch: "shipit/local", remoteUrl: null });
 
     const deleteBranch = vi.fn().mockResolvedValue(undefined);

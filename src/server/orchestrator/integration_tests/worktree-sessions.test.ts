@@ -220,9 +220,8 @@ describe("Integration: Session clones", () => {
     const child = sessionManager.get(childId);
     expect(child?.archived).toBe(true);
 
-    // Standalone clones (no remoteUrl) preserve their directory on archive.
-    // Only repo-backed clones have their directories removed.
-    expect(fs.existsSync(childDir)).toBe(true);
+    // Archive removes the session clone — unarchive re-creates it from the bare cache.
+    expect(fs.existsSync(childDir)).toBe(false);
   }, 15_000);
 
   // ---- merge_session (HTTP) ----

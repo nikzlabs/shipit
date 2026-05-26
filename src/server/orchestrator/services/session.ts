@@ -273,9 +273,9 @@ export async function archiveSession(
     await pruneVolumes(sessionId);
   }
 
-  // Clean up session workspace directory for repo-backed clones only.
-  // Standalone sessions preserve their directory so they can be unarchived.
-  if (session?.remoteUrl && session?.workspaceDir) {
+  // Clean up the session's git clone — the bare cache + unarchive flow
+  // re-creates it from scratch on restore.
+  if (session?.workspaceDir) {
     try {
       await fs.rm(session.workspaceDir, { recursive: true, force: true });
       console.log("[server] Removed session workspace:", session.workspaceDir);
@@ -334,9 +334,6 @@ export async function markMergedAndPruneExcess(
   sessionManager.markMerged(sessionId);
 
   // Scope pruning to the same repository as the merged session.
-  // Sessions without a remoteUrl (e.g. standalone sessions) cannot be merged
-  // via PRs anyway, so this branch is effectively unreachable — but we guard
-  // against it to keep the function total.
   const session = sessionManager.get(sessionId);
   if (!session?.remoteUrl) {
     return { sessions: sessionManager.list() };
