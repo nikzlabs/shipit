@@ -161,7 +161,11 @@ verify your work:
   for understanding layout)
 - **browser_click** / **browser_type** — interact with elements
 - **browser_take_screenshot** — capture a visual screenshot for layout/styling.
-  Save screenshots to `/tmp/`, not `/workspace/`, to keep them out of git.
+  Save screenshots to `/tmp/.playwright-mcp/`, not `/workspace/`, to keep them
+  out of git. The Playwright MCP only allows writes under
+  `/tmp/.playwright-mcp/` or `/workspace/` — bare `/tmp/foo.png` paths are
+  rejected. You can also omit the filename and let the MCP auto-generate one
+  in that directory.
 
 Use browser tools proactively after UI changes to catch issues early.
 
