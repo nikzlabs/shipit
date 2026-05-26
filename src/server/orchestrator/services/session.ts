@@ -236,6 +236,14 @@ export function renameSession(
  * fallback prune is skipped — used by tests so we don't shell out to a
  * real Docker daemon. Production wires this to `pruneSessionVolumes`
  * from `disk-janitor.ts`.
+ *
+ * `containerManager` actually destroys the agent container before we `fs.rm`
+ * the workspace dir. `runnerRegistry.dispose()` deliberately leaves the
+ * container alive (so transient lifecycle events can reconnect to it), so
+ * without this step the container survives archive with its workspace bind
+ * mount pinned to the about-to-be-unlinked inode. After unarchive re-clones
+ * a fresh inode at the same path, reconnects to the orphan container see
+ * an empty `/workspace`. Optional only so tests without Docker can omit it.
  */
 export async function archiveSession(
   sessionManager: SessionManager,
@@ -243,6 +251,7 @@ export async function archiveSession(
   getBareCacheDir: (url: string) => string,
   sessionId: string,
   pruneVolumes?: (sessionId: string) => Promise<void>,
+  containerManager?: { destroy(sessionId: string): Promise<void> } | null,
 ): Promise<{ sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
 
@@ -259,6 +268,17 @@ export async function archiveSession(
   // Dispose runner (forced — user explicitly archived this session, so we
   // tear it down even if an agent is still running)
   runnerRegistry.dispose(sessionId, { force: true });
+
+  // Destroy the agent container so its workspace bind mount is released
+  // before we unlink the host directory. See the docblock above for why
+  // dispose() alone isn't enough.
+  if (containerManager) {
+    try {
+      await containerManager.destroy(sessionId);
+    } catch (err) {
+      console.warn(`[server] Failed to destroy container for ${sessionId}:`, String(err));
+    }
+  }
 
   // Fallback path: if no runner existed (e.g. idle eviction already
   // disposed it), the `removeVolumesOnDispose` flag never had a chance
@@ -330,6 +350,7 @@ export async function markMergedAndPruneExcess(
   pruneVolumes?: (sessionId: string) => Promise<void>,
   createRepoGit?: (dir: string) => RepoGit,
   githubAuthManager?: GitHubAuthManager,
+  containerManager?: { destroy(sessionId: string): Promise<void> } | null,
 ): Promise<{ sessions: SessionInfo[] }> {
   sessionManager.markMerged(sessionId);
 
@@ -374,6 +395,7 @@ export async function markMergedAndPruneExcess(
   // restart's disk-janitor pass.
   const toArchive = merged.slice(MAX_MERGED_SESSIONS_PER_REPO);
   for (const excess of toArchive) {
+<<<<<<< HEAD
     // Skip sessions with live (non-archived) child sessions. Archiving a
     // parent disposes its runner, removes its workspace, and drops its
     // volumes — but the children are independent sessions whose users may
@@ -386,6 +408,9 @@ export async function markMergedAndPruneExcess(
       continue;
     }
     await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, excess.id, pruneVolumes);
+=======
+    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, excess.id, pruneVolumes, containerManager);
+>>>>>>> fdef72212 (PR #745 now covers both the cleanup and the fix.)
   }
 
   return { sessions: sessionManager.list() };
