@@ -47,6 +47,18 @@ maps Cursor's stream output into ShipIt's normalized `AgentEvent` contract.
   ACP mode becomes a stable documented contract, it can be evaluated as a later
   adapter transport.
 
+  Considered and rejected: starting with a generic ACP adapter so any
+  ACP-speaking CLI (Cursor, Gemini CLI, etc.) shares one transport. The reuse
+  argument is thinner than it looks — Claude Code is already driven via native
+  stream-json, Codex does not speak ACP, and Cursor's ACP mode is still
+  undocumented (the reason it was excluded above). An ACP-first path would
+  trade Cursor's documented headless contract for an undocumented one without
+  unifying the existing adapters. Better sequencing: ship Cursor on its
+  documented stream-json surface now, then add a separate `AcpAdapter` as its
+  own backend when ACP becomes a published Cursor contract or Gemini CLI
+  warrants a backend — that is the point where one adapter pays for multiple
+  CLIs.
+
 ## Current agent architecture
 
 Relevant existing files:
