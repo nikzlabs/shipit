@@ -61,7 +61,7 @@ export async function registerBootstrapRoutes(
     async (request, reply) => {
       try {
         return await saveGlobalSettings(
-          deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir, deps.credentialStore,
+          deps.agentRegistry, deps.workspaceDir, deps.credentialStore,
           request.body.gitIdentity, request.body.systemPrompt, request.body.maxIdleContainers,
           request.body.agentSystemInstructionsEnabled, request.body.autoCreatePr, request.body.liveSteering,
           deps.providerAccountManager,
@@ -101,7 +101,7 @@ export async function registerBootstrapRoutes(
           deps.agentRegistry, deps.credentialStore,
           request.params.id as AgentId, request.body.key, request.body.value,
         );
-        return { agentId: result.agentId, key: result.key, success: true, agents: result.agents, defaultAgentId: deps.defaultAgentId };
+        return { agentId: result.agentId, key: result.key, success: true, agents: result.agents };
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -168,7 +168,7 @@ export async function registerBootstrapRoutes(
         );
         deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
-        deps.sseBroadcast("agent_list", { agents: listAgents(deps.agentRegistry), defaultAgentId: deps.defaultAgentId });
+        deps.sseBroadcast("agent_list", { agents: listAgents(deps.agentRegistry) });
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -193,7 +193,7 @@ export async function registerBootstrapRoutes(
         );
         deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
-        deps.sseBroadcast("agent_list", { agents: listAgents(deps.agentRegistry), defaultAgentId: deps.defaultAgentId });
+        deps.sseBroadcast("agent_list", { agents: listAgents(deps.agentRegistry) });
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -252,7 +252,7 @@ export async function registerBootstrapRoutes(
         }
         deps.agentRegistry.refreshAuth("claude");
         const agents = listAgents(deps.agentRegistry);
-        deps.sseBroadcast("agent_list", { agents, defaultAgentId: deps.defaultAgentId });
+        deps.sseBroadcast("agent_list", { agents });
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         return { success: true, agents };
       } catch (err) {
@@ -356,7 +356,7 @@ export async function registerBootstrapRoutes(
           supportsSteering: a.capabilities.supportsSteering,
           supportedPermissionModes: a.capabilities.supportedPermissionModes,
         }));
-        deps.sseBroadcast("agent_list", { agents, defaultAgentId: deps.defaultAgentId });
+        deps.sseBroadcast("agent_list", { agents });
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });
         return { success: true, agents };
       } catch (err) {

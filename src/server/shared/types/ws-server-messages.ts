@@ -192,7 +192,6 @@ export interface WsGlobalSettings {
      */
     supportedPermissionModes: PermissionMode[];
   }[];
-  defaultAgentId: AgentId;
   /** When true, mid-turn messages steer the running agent. (docs/140) */
   liveSteering: boolean;
 }
@@ -301,7 +300,6 @@ export interface WsAgentListMessage {
      */
     supportedPermissionModes: PermissionMode[];
   }[];
-  defaultAgentId: AgentId;
 }
 
 /** Server → Client: the agent was interrupted by user. */

@@ -10,7 +10,6 @@ import type { RepoStore } from "../repo-store.js";
 import type { GitManager } from "../../shared/git.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import type { AgentId } from "../../shared/types.js";
 import type { UsageManager } from "../usage.js";
 import type { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
@@ -46,7 +45,6 @@ export async function getBootstrapData(deps: {
   githubAuthManager: GitHubAuthManager;
   credentialStore?: CredentialStore;
   providerAccountManager?: ProviderAccountManager;
-  defaultAgentId: AgentId;
   workspaceDir: string;
   /**
    * Orchestrator runtime mode (feature 118). Forwarded verbatim to the client
@@ -63,13 +61,12 @@ export async function getBootstrapData(deps: {
       console.error("[bootstrap] Failed to list sessions:", err);
       return [] as Awaited<ReturnType<typeof listSessions>>;
     }),
-    getGlobalSettings(deps.agentRegistry, deps.defaultAgentId, deps.workspaceDir, deps.credentialStore, deps.providerAccountManager).catch((err: unknown) => {
+    getGlobalSettings(deps.agentRegistry, deps.workspaceDir, deps.credentialStore, deps.providerAccountManager).catch((err: unknown) => {
       console.error("[bootstrap] Failed to get global settings:", err);
       return {
         gitIdentity: { name: "", email: "" },
         systemPrompt: "",
         agents: listAgents(deps.agentRegistry),
-        defaultAgentId: deps.defaultAgentId,
         maxIdleContainers: deps.credentialStore?.getMaxIdleContainers() ?? 5,
         agentSystemInstructionsEnabled: true,
         agentSystemInstructions: "",
@@ -84,7 +81,6 @@ export async function getBootstrapData(deps: {
     sessions,
     repos: deps.repoStore ? listRepos(deps.repoStore) : [],
     agents: settings.agents,
-    defaultAgentId: deps.defaultAgentId,
     templates: listTemplates(),
     githubStatus: getGitHubStatus(deps.githubAuthManager),
     settings,

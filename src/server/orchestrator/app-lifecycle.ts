@@ -708,7 +708,6 @@ export interface EventWiringDeps {
   agentRegistry: AgentRegistry;
   /** Used to re-register the default provider-account row after a fresh sign-in. */
   providerAccountManager: ProviderAccountManager;
-  defaultAgentId: AgentId;
   sseBroadcast: (event: string, data: unknown) => void;
   /** Source-of-truth credentials root — used to re-push a refreshed token into pinned sessions (A3). */
   credentialsDir: string;
@@ -718,7 +717,7 @@ export interface EventWiringDeps {
 
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { authManager, codexAuthManager, githubAuthManager, agentRegistry, providerAccountManager, defaultAgentId, sseBroadcast, credentialsDir, sessionManager } = eventDeps;
+  const { authManager, codexAuthManager, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager } = eventDeps;
 
   /**
    * A3 (docs/142): after a Claude/Codex re-auth, force the fresh source token
@@ -755,7 +754,6 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       supportsSteering: a.capabilities.supportsSteering,
       supportedPermissionModes: a.capabilities.supportedPermissionModes,
     })),
-    defaultAgentId,
   });
 
   // ---- Claude auth event handlers ----

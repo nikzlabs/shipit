@@ -34,7 +34,6 @@ export interface GlobalSettings {
   gitIdentity: { name: string; email: string };
   systemPrompt: string;
   agents: AgentInfo[];
-  defaultAgentId: AgentId;
   maxIdleContainers: number;
   agentSystemInstructionsEnabled: boolean;
   agentSystemInstructions: string;
@@ -61,7 +60,6 @@ export interface BootstrapData {
   sessions: SessionInfo[];
   repos: RepoInfo[];
   agents: AgentInfo[];
-  defaultAgentId: AgentId;
   templates: Omit<ProjectTemplate, "files">[];
   githubStatus: GitHubStatus;
   settings: GlobalSettings;
