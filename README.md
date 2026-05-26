@@ -1,6 +1,6 @@
 # ShipIt
 
-A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Pluggable agent backend — pick whichever provider you already pay for, and authenticate with either a subscription OAuth login or an API key:
+A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see results live. Use the AI subscription you already pay for, or bring an API key. ShipIt has a pluggable agent backend:
 
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or an Anthropic API key
 - [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
@@ -15,7 +15,7 @@ Five product choices set ShipIt apart from other AI coding harnesses:
 - **Tight GitHub integration** — branches, auto-commits, pushes, PR creation, CI checks, deploy status, review comments, and merge state are rendered inline instead of punting you to GitHub.
 - **Smooth browser IDE UX** — chat, file tree, Monaco editor, terminal, preview, diffs, session history, and PR lifecycle all live in one interface.
 
-Around that core, ShipIt is the surface: build, review, ship, and debug software inside one chat-shaped IDE. The agent runs the commands, edits the files, reads the logs, opens PRs, watches checks, and fixes failures while the user stays in ShipIt.
+Around that core, ShipIt is the surface: build, review, ship, and debug software inside one chat-shaped IDE. Terminal output, diffs, previews, CI, deploys, PR comments, rollback points, and session history are inline by default. The agent runs the commands, edits the files, reads the logs, opens PRs, watches checks, and fixes failures while the user stays in ShipIt.
 
 ## Installation
 
@@ -62,7 +62,8 @@ See [`deployment/README.md`](deployment/README.md) for the full guide: sizing re
 
 ### Build
 - **Chat-driven development** — describe what you want in natural language; the agent writes the code, runs the commands, and reads the logs
-- **Multi-agent backend** — pick Claude Code CLI or Codex CLI per session; sign in with the subscription you already have
+- **Existing subscription auth** — sign in with Claude Pro/Max or ChatGPT, or use Anthropic/OpenAI API keys when that fits your setup better
+- **Agent-agnostic backend** — pick Claude Code CLI or Codex CLI per session; the backend boundary is designed for more agent runtimes over time
 - **Compose-native live preview** — embedded iframes show your app updating in real time, with HMR proxied through ShipIt, multi-port support, and Docker Compose services managed per session
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
 - **File upload & image input** — drop files into the chat; the agent reads them as context
@@ -78,11 +79,11 @@ See [`deployment/README.md`](deployment/README.md) for the full guide: sizing re
 - **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
 - **Auto-deploy on push** — deploy status surfaces inline on the PR card via the GitHub Deployments API
 - **PR comment sync** — review threads from GitHub appear inline in the conversation
-- **Auto-fix preview failures** — preview crashes are surfaced to the agent so it can fix them on the next turn
+- **Auto-fix failure loop** — preview crashes and CI failures are surfaced to the agent so it can inspect logs and fix them on the next turn
 
 ### Iterate safely
 - **Git as undo** — every agent turn auto-commits; rewind to any previous state, and fork into a new branch from any point
-- **Parallel sessions** — spawn separate workspaces with their own branch, container, and chat history; review each as its own PR
+- **Parallel PR-shaped sessions** — spawn separate workspaces with their own branch, container, and chat history; review each as its own PR
 - **Container + worktree isolation** — multiple sessions on the same repo share a bare cache and use git worktrees, while each session's agent and services run in their own containerized environment
 - **Permission modes** — choose how much autonomy the agent has per session
 - **Live steering** — interrupt and redirect the agent mid-turn without losing context
