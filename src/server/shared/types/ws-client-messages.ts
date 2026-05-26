@@ -179,10 +179,6 @@ export type WsClientMessage =
   | WsStartService
   | WsStopService
   | WsSubscribeServiceLogs
-  | WsRollbackCode
-  | WsRollbackCodeAndChat
-  | WsForkSessionFromMessage
-  | WsRewindToMessage
   | WsRewindAtGap
   | WsRewindPreviewRequest
   | WsRewindRestoreRequest

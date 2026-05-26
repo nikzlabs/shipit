@@ -714,23 +714,10 @@ export interface WsCommitLinked {
   parentCommitHash: string;
 }
 
-/** Server → Client: rollback completed. */
-export interface WsRollbackComplete {
-  type: "rollback_complete";
-  messageIndex: number;
-  mode: "code" | "code_and_chat";
-  parentCommitHash: string;
-}
-
 /** Server → Client: rewind completed — remove messages after the rewind point. */
 export type WsRewindComplete =
   | {
       type: "rewind_complete";
-      messageIndex: number;
-    }
-  | {
-      type: "rewind_complete";
-      messageIndex?: number;
       gapPosition: number;
       action: "chat";
       droppedMessageCount: number;
@@ -739,7 +726,6 @@ export type WsRewindComplete =
     }
   | {
       type: "rewind_complete";
-      messageIndex?: number;
       gapPosition: number;
       action: "code";
       commitHash: string;
@@ -748,7 +734,6 @@ export type WsRewindComplete =
     }
   | {
       type: "rewind_complete";
-      messageIndex?: number;
       gapPosition: number;
       action: "both";
       droppedMessageCount: number;
@@ -969,7 +954,6 @@ export type WsServerMessage =
   | WsSystemUserMessage
   | WsSystemNotice
   | WsCommitLinked
-  | WsRollbackComplete
   | WsRewindComplete
   | WsRewindPreview
   | WsRewindSnapshotAvailable
