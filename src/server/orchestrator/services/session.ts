@@ -377,6 +377,17 @@ export async function markMergedAndPruneExcess(
   // restart's disk-janitor pass.
   const toArchive = merged.slice(MAX_MERGED_SESSIONS_PER_REPO);
   for (const excess of toArchive) {
+    // Skip sessions with live (non-archived) child sessions. Archiving a
+    // parent disposes its runner, removes its workspace, and drops its
+    // volumes — but the children are independent sessions whose users may
+    // still be working in them, and they reference the parent via
+    // `parent_session_id`. Leaving the parent alive keeps the breadcrumb
+    // intact until the user explicitly archives it (which still works via
+    // the UI / DELETE route — this guard only fires on the automatic
+    // post-merge prune).
+    if (sessionManager.findChildren(excess.id).length > 0) {
+      continue;
+    }
     await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, excess.id, pruneVolumes);
   }
 
