@@ -247,6 +247,7 @@ const attachToRunner = (runner: SessionRunner) => {
   // The client queues early agent_event messages until loadSessionHistory()
   // completes, then applies them on top of that persisted baseline.
   for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
+    if (buffered.type === "log_entry") continue;
     send(buffered);
   }
 
@@ -282,7 +283,7 @@ When a client reconnects to a session that has an active agent, it needs to see:
 1. **The turn's unpersisted events so far** — `agent_event`/`claude_event` messages since the current turn started that have not yet been folded into chat history. These are buffered in `SessionRunner.turnEventBuffer` and replayed from `lastPersistedBufferIndex`.
 2. **Session metadata** — running state, queue, model info. Sent via `session_status` message.
 
-The turn event buffer is cleared when a new turn starts (new `send_message`), so it only holds events for the current/most-recent turn. For older turns, the client loads persisted chat history as it does today. On reconnect, the client treats HTTP history as the baseline and queues replayed/live `agent_event` messages until that history load completes; this avoids duplicates while still preserving long Codex text streams that have not hit a tool-result or final persistence boundary yet.
+The turn event buffer is cleared when a new turn starts (new `send_message`), so it only holds events for the current/most-recent turn. For older turns, the client loads persisted chat history as it does today. On reconnect, the client treats HTTP history as the baseline and queues replayed/live `agent_event` messages until that history load completes; this avoids duplicates while still preserving long Codex text streams that have not hit a tool-result or final persistence boundary yet. `log_entry` messages are deliberately not replayed from this buffer because logs have their own per-session ring and `clear_logs` must remain authoritative.
 
 **Buffer size limit**: Cap `turnEventBuffer` at ~1000 messages. If exceeded, keep the first few (init, model_info) and the most recent N. This prevents unbounded memory growth for very long agent turns.
 

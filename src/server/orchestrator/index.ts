@@ -994,6 +994,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // client queues these early agent events until its history load
         // completes, then applies them on top of that baseline.
         for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
+          if (buffered.type === "log_entry") continue;
           send(buffered);
         }
         if (runner.getQueueSnapshot().length > 0) {
