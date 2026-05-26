@@ -254,6 +254,69 @@ exited":
 6. Handle the lifecycle paths (dispose, restartAgent, container-OOM,
    resume-on-respawn) + settings UI toggle + docs.
 
+## Post-stabilization cleanup
+
+Two follow-ups that depend on the feature being battle-tested first. Both are
+deliberately deferred until after Phase 6 lands and steering has soaked in
+real use.
+
+### Fix the "toggle ON mid-turn" dead-letter
+
+Today's gate (`send-message.ts:111`, `agent-execution.ts:258`) reads the
+**adapter** capability (`supportsSteering`) plus the user setting. It does NOT
+check whether *this particular running process* was actually spawned in
+streaming mode. So if the user has live steering off, starts a turn (one-shot
+PTY process), then flips the toggle on mid-turn and sends another message, the
+gate evaluates true and the orchestrator calls `sendUserMessage` on a
+non-streaming agent. The adapter's default falls through to raw stdin, which
+the headless `-p` CLI ignores — the message silently vanishes.
+
+The fix is to gate on a **runtime** signal from the agent rather than the
+adapter-level capability:
+
+- Add `AgentProcess.canSteer(): boolean` (or an `isStreaming` flag set when
+  the streaming spawn path was taken). For the legacy one-shot Claude process
+  and any non-streaming codex turn, this returns `false`.
+- Change the steering gate to
+  `runner.getAgent()?.canSteer() && !reviewFilePath`.
+- On `false`, fall through to the existing queue path — the queued message
+  gets picked up by the next turn, which spawns in streaming mode and applies
+  the new setting from then on.
+- Wire it through `ProxyAgentProcess` and `container-session-runner.ts` too:
+  the proxy currently lies about capabilities (hardcoded defaults), so the
+  worker needs to report live spawn mode back over the existing HTTP/SSE
+  channel.
+
+Window for hitting this in practice is whatever a non-streaming turn lasts —
+in the seconds-to-minutes range, occasionally longer for big refactors — so
+it's a real (if quiet) user-visible bug, not a theoretical one. Worth doing
+once the rest of the feature is stable.
+
+### Collapse the dual-mode plumbing once steering is stable
+
+The `liveSteering` user setting was scaffolded as a reversible escape hatch
+while the streaming path bedded in. Once steering has soaked, the user-facing
+toggle should be retired:
+
+- **Drop the user toggle.** Streaming becomes the only behavior for adapters
+  with `supportsSteering: true`. Removes the gate in `send-message.ts:109/172/400`,
+  the `useStreaming` branch in `agent-execution.ts:258`, the "stale agent kill"
+  carve-out (`send-message.ts:168–176`), and the dead-letter edge case above
+  by construction. The setting can survive one release as a hidden/dev-mode
+  flag for self-rescue if a regression sneaks in, then be deleted.
+- **Keep the capability gate.** `supportsSteering` stays load-bearing — it's
+  the seam that lets future agent backends without a steering primitive
+  (or Codex during review / manual compaction turns) fall through to the
+  queue path. CLAUDE.md explicitly commits to an agent-agnostic architecture,
+  so the queue path can't go away; only the user-toggle layer on top of it can.
+- Net result: one path per adapter capability, not two paths gated by a
+  user setting. The dual-mode tax in `send-message.ts`, `agent-execution.ts`,
+  and the `result`-vs-`done` post-turn bifurcation is paid down considerably.
+
+Sequencing matters: do the runtime `canSteer()` fix **before** dropping the
+toggle, so the legacy queue path stays exercised by tests until the moment
+the toggle is removed.
+
 ## Open questions to resolve during build
 
 - Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.

@@ -73,6 +73,13 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 - [x] Keep `QueueIndicator` for the non-steering path (gated) — only the steering path skips the queue; the indicator renders queued messages as before
 - [ ] Component tests: input enabled-while-running, inline steered message render, queue path unchanged when off
 
+## Phase 7 — post-stabilization cleanup (deferred until after Phase 6 soaks)
+
+- [ ] **Fix "toggle ON mid-turn" dead-letter.** Today's gate reads adapter capability + setting, not whether *this* running process is actually streaming. Toggling on during a non-streaming turn → `sendUserMessage` is called on a one-shot agent and falls through to raw stdin, which the `-p` CLI ignores. Add `AgentProcess.canSteer(): boolean` (or `isStreaming` flag set when the streaming spawn path was taken); change the gate in `send-message.ts:111` to `runner.getAgent()?.canSteer() && !reviewFilePath`; on false, fall through to the queue. Wire through `ProxyAgentProcess` + `container-session-runner.ts` (proxy currently lies about capabilities — worker must report live spawn mode back).
+- [ ] Tests: toggle-on-mid-non-streaming-turn → message lands in queue, not dropped; queued message resumes correctly via the next (now streaming) turn.
+- [ ] **Drop the `liveSteering` user toggle once streaming has soaked.** Streaming becomes the only behavior for adapters with `supportsSteering: true`. Remove the gate at `send-message.ts:109/172/400`, the `useStreaming` branch at `agent-execution.ts:258`, and the "stale agent kill" carve-out at `send-message.ts:168–176`. Keep `supportsSteering` capability gate so non-steering adapters (future backends, Codex review/compaction) still hit the queue path. Sequence: do the `canSteer()` fix above first so the legacy queue stays test-covered until the moment the toggle is removed.
+- [ ] Survive-one-release: keep `liveSteering` as a hidden/dev-mode flag for one release as a self-rescue lever, then delete from `credentialStore`, `settings.ts` service, settings UI, `MessageInput` gating, and the bootstrap payload.
+
 ## Cross-cutting
 
 - [x] `npm run lint` + `npm run typecheck` clean
