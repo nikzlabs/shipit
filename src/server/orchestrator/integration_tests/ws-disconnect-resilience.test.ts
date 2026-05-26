@@ -194,6 +194,38 @@ describe("Integration: WebSocket disconnect resilience", () => {
     client2.close();
   });
 
+  it("unpersisted streaming events emitted after WS close are replayed on reconnect", async () => {
+    const client1 = await TestClient.connect(port);
+    await client1.receive();
+    const sessionId = client1.sessionId;
+
+    client1.send({ type: "send_message", text: "stream while hidden" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("agent-replay-1");
+    await drainUntil(client1, (m) => m.type === "session_started");
+
+    client1.close();
+    await settle(50);
+
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "background chunk" }] },
+    });
+    await settle(50);
+
+    const client2 = await TestClient.connect(port, sessionId);
+    const replayed = await drainUntil(
+      client2,
+      (m) =>
+        m.type === "agent_event"
+        && m.event?.type === "agent_assistant"
+        && m.event.content?.some((b: AnyMsg) => b.type === "text" && b.text === "background chunk"),
+    );
+
+    expect(replayed).toBeTruthy();
+    client2.close();
+  });
+
   // -------------------------------------------------------------------------
   // Invariant: queue drain works after WS close
   // -------------------------------------------------------------------------
