@@ -36,16 +36,27 @@ create or switch branches first, you are already on the session branch and
 ```sh
 gh pr create -t "Short clear title" -b "$(cat <<'EOF'
 ## Summary
-Why this change exists, in 1–3 bullets.
+The user goal and why this change exists.
+
+## Rationale
+- Key implementation decisions and why they were chosen.
+- Rejected simpler alternatives, if they matter.
 
 ## Changes
-- Bullet list of what changed.
+- What changed, grouped by behavior/module.
+- For each meaningful behavior change, why it was needed.
 
 ## Test plan
 - How to verify the change.
 EOF
 )"
 ```
+
+Do not only describe what changed. Explain why the change was made, what user
+request or bug it traces back to, and any tradeoff made. After creating a PR,
+or when continuing work in a session that already has one, keep the PR body
+current with `gh pr edit` whenever the turn materially changes behavior or
+rationale. Maintain a stable rationale section instead of appending raw logs.
 
 The shim:
 
