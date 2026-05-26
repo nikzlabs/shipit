@@ -368,12 +368,7 @@ export async function registerSessionRoutes(
         const result = await spawnChildSession(
           sessionManager,
           deps.runnerRegistry,
-          createRepoGit,
-          deps.getSharedRepoDir,
-          deps.sessionsRoot,
-          deps.githubAuthManager,
           claimSessionService,
-          deps.repoStore,
           request.params.parentId,
           {
             prompt: body.prompt ?? "",

@@ -7,17 +7,12 @@
  * with its own clone, branch, chat history, and runner.
  */
 
-import path from "node:path";
-import fs from "node:fs/promises";
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
-import type { RepoGit } from "../repo-git.js";
-import type { RepoStore } from "../repo-store.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { SessionInfo, AgentId } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
-import { generateBranchPrefix, fetchAndResolveDefaultBranch } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
@@ -64,13 +59,10 @@ export interface SpawnChildSessionOptions {
    * freshly-fetched `origin/main` (or `origin/HEAD` / `origin/master`) of
    * the parent's repo — matching what a manual new session would do — so
    * the child's "Changes vs main" diff doesn't inherit the parent's WIP.
-   * Truly-local repos (no `remoteUrl`) have no remote to branch off and
-   * fall back to the parent's HEAD instead.
    *
-   * When provided, this is passed verbatim to `git checkout -b
-   * <child-branch> <base>` (or `git reset --hard <base>` on the claim
-   * path) in the child's workspace, so any value `git` accepts there is
-   * allowed (commit hash, `origin/main`, a tag, etc.).
+   * When provided, this is passed verbatim to `git reset --hard <base>` in
+   * the child's workspace, so any value `git` accepts there is allowed
+   * (commit hash, `origin/main`, a tag, etc.).
    */
   base?: string;
   /** Optional agent id override. Defaults to the parent's selected agent. */
@@ -110,8 +102,13 @@ export interface SpawnChildSessionResult {
 
 /**
  * Spawn a sibling session under `parentSessionId`. The new session shares
- * the parent's repo (or local-only fallback) but gets its own clone, branch,
- * chat history, and runner — exactly like a session created from the UI.
+ * the parent's repo but gets its own clone, branch, chat history, and
+ * runner — exactly like a session created from the UI. Spawn is *only* a
+ * thin wrapper around the home-screen claim flow: it requires the parent
+ * to have a registered, ready remote URL and delegates workspace
+ * provisioning to `ClaimSessionService`. There is no local-clone fallback
+ * — production sessions always come from a registered repo, and tests
+ * must register one too.
  *
  * The agent never reaches this function directly; the call chain is:
  *   `shipit session create` (shim)
@@ -128,12 +125,7 @@ export interface SpawnChildSessionResult {
 export async function spawnChildSession(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
-  createRepoGit: (dir: string) => RepoGit,
-  getBareCacheDir: (repoUrl: string) => string,
-  sessionsRoot: string,
-  githubAuthManager: { authenticated: boolean; configureGitCredentials: (dir: string) => void },
   claimService: ClaimSessionService,
-  repoStore: RepoStore,
   parentSessionId: string,
   opts: SpawnChildSessionOptions,
   defaultAgentId: AgentId,
@@ -185,138 +177,58 @@ export async function spawnChildSession(
   // `shipit/` namespace and broke our branch conventions).
   const title = opts.title?.trim() || trimmedPrompt.slice(0, 60) || "Spawned session";
 
-  // When the parent's repo is registered and ready, route through the same
-  // warm-pool-aware claim path the home screen uses (`claimSessionService`).
-  // The claim gives us a workspace branched off a freshly-fetched
-  // `origin/main`, so the child's "Changes vs main" diff is accurate from
-  // the moment it appears — instead of inheriting whatever stale `origin/main`
-  // snapshot the parent's bare cache happened to have, plus the parent's
-  // committed-but-not-merged WIP on top.
-  //
-  // The fallback path below is preserved for parents without a registered
-  // remote (integration tests, ad-hoc local repos) — there's no `origin/main`
-  // to branch off, so we keep the original "branch off parent's HEAD" behavior.
-  const useClaim = !!(parent.remoteUrl && repoStore.get(parent.remoteUrl)?.status === "ready");
+  // Spawn requires the parent to be backed by a registered, ready remote.
+  // We route the workspace creation through the same warm-pool-aware claim
+  // path the home-screen "new session" flow uses (`claimSessionService`) so
+  // the child gets a workspace branched off freshly-fetched `origin/main` —
+  // identical shape to a manual new session, with no chance of inheriting
+  // the parent's WIP. There is no local-only fallback: in production every
+  // session is created from a registered repo, and tests must register one
+  // too (use `claimGraduatedParent` / the home-screen claim endpoint).
+  if (!parent.remoteUrl) {
+    throw new ServiceError(
+      400,
+      "Cannot spawn a child session: the parent has no remote URL. Spawn requires the parent's repo to be registered.",
+    );
+  }
+  const claimed = await claimService.claim(parent.remoteUrl);
+  const newSessionId = claimed.sessionId;
+  const newWorkspaceDir = claimed.workspaceDir;
 
-  let newSessionId: string;
-  let newWorkspaceDir: string;
+  // The claim cut a `shipit/<random>` branch off freshly-fetched origin/HEAD.
+  // That's already the shape we want for the child's branch, so we adopt it
+  // verbatim instead of renaming.
   let branchName: string;
+  try {
+    branchName = (await simpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
+    if (!branchName) {
+      throw new Error("claim produced an empty branch name");
+    }
+  } catch (err) {
+    throw new ServiceError(500, `Failed to read claimed branch: ${String(err)}`);
+  }
 
-  if (useClaim && parent.remoteUrl) {
-    const claimed = await claimService.claim(parent.remoteUrl);
-    newSessionId = claimed.sessionId;
-    newWorkspaceDir = claimed.workspaceDir;
-
-    // The claim cut a `shipit/<random>` branch off freshly-fetched origin/HEAD.
-    // That's already the shape we want for the child's branch, so we adopt it
-    // verbatim instead of renaming.
+  // Honor an explicit `--base`. The claim placed HEAD at `origin/HEAD`; a
+  // caller-supplied base needs a hard reset to take effect. Safe because
+  // the claim's workspace has no user changes yet.
+  if (opts.base) {
     try {
-      branchName = (await simpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
-      if (!branchName) {
-        throw new Error("claim produced an empty branch name");
-      }
+      await simpleGit(newWorkspaceDir).raw(["reset", "--hard", opts.base]);
     } catch (err) {
-      throw new ServiceError(500, `Failed to read claimed branch: ${String(err)}`);
-    }
-
-    // Honor an explicit `--base`. The claim placed HEAD at `origin/HEAD`; a
-    // caller-supplied base needs a hard reset to take effect. Safe because
-    // the claim's workspace has no user changes yet.
-    if (opts.base) {
-      try {
-        await simpleGit(newWorkspaceDir).raw(["reset", "--hard", opts.base]);
-      } catch (err) {
-        throw new ServiceError(400, `Failed to reset to base '${opts.base}': ${String(err)}`);
-      }
-    }
-
-    // Graduate the warm session into a user-visible spawn and override the
-    // claim-assigned title. The claim already set the branch row to the
-    // current `shipit/<random>` name; we just flip `branchRenamed = true` so
-    // PR lifecycle / auto-PR gates treat it as a real session branch instead
-    // of a warm-pool placeholder. Credentials, gc.auto config, and the
-    // remoteUrl row were all set during the claim itself.
-    sessionManager.rename(newSessionId, title);
-    sessionManager.setBranchRenamed(newSessionId, true);
-    sessionManager.setWarm(newSessionId, false);
-  } else {
-    // Fallback path: parent isn't backed by a "ready" registered remote
-    // (integration tests, ad-hoc local repos, or a repo whose status flipped
-    // away from "ready" mid-flight). We still want the child to look like a
-    // manual new session — branched off the latest `origin/main` whenever a
-    // remote is available. Only truly-local repos (no `remoteUrl`) fall back
-    // to the parent's HEAD, since there's no remote main to fetch.
-    branchName = generateBranchPrefix();
-    const crypto = await import("node:crypto");
-    newSessionId = crypto.randomUUID();
-    const newSessionDir = path.join(sessionsRoot, newSessionId);
-    newWorkspaceDir = path.join(newSessionDir, "workspace");
-    await fs.mkdir(newSessionDir, { recursive: true });
-
-    if (parent.remoteUrl) {
-      // Remote URL exists but the repo isn't registered (yet/anymore) —
-      // mirror the original bare-cache clone for graceful degradation.
-      const cacheDir = getBareCacheDir(parent.remoteUrl);
-      const cacheGit = createRepoGit(cacheDir);
-      try {
-        await cacheGit.fetchCache();
-      } catch (err) {
-        console.warn("[spawn-child] fetchCache failed (non-fatal):", String(err));
-      }
-      await cacheGit.cloneFromCache(newWorkspaceDir, parent.remoteUrl);
-    } else {
-      await simpleGit().raw(["clone", "--local", parent.workspaceDir, newWorkspaceDir]);
-      await simpleGit(newWorkspaceDir).raw(["config", "gc.auto", "0"]);
-    }
-
-    // Configure credentials BEFORE the workspace fetch so a private remote
-    // can resolve. `fetchAndResolveDefaultBranch` degrades gracefully when
-    // the fetch fails (offline, no auth) and falls back to local refs —
-    // which point at the just-fetched bare cache's tip, still fresher than
-    // the parent's HEAD.
-    if (githubAuthManager.authenticated) {
-      githubAuthManager.configureGitCredentials(newWorkspaceDir);
-    }
-
-    let startPoint = opts.base?.trim();
-    if (!startPoint && parent.remoteUrl) {
-      // Mirror the claim path: branch off freshly-fetched origin/main so
-      // the child's "Changes vs main" diff doesn't inherit the parent's
-      // committed-but-unmerged work.
-      const { resetTarget } = await fetchAndResolveDefaultBranch(newWorkspaceDir);
-      if (resetTarget) startPoint = resetTarget;
-    }
-    if (!startPoint) {
-      // No remote (truly-local repos / integration tests) OR origin/HEAD
-      // couldn't be resolved — fall back to the parent's HEAD so the
-      // child sees the parent's committed state.
-      try {
-        const parentHead = await simpleGit(parent.workspaceDir).revparse(["HEAD"]);
-        startPoint = parentHead.trim();
-      } catch {
-        // Empty repo / detached HEAD — fall through.
-        startPoint = undefined;
-      }
-    }
-
-    const branchArgs = ["checkout", "-b", branchName];
-    if (startPoint) branchArgs.push(startPoint);
-    try {
-      await simpleGit(newWorkspaceDir).raw(branchArgs);
-    } catch (err) {
-      await fs.rm(newSessionDir, { recursive: true, force: true }).catch(() => {});
-      throw new ServiceError(400, `Failed to create branch '${branchName}': ${String(err)}`);
-    }
-
-    sessionManager.track(newSessionId, title, newWorkspaceDir);
-    sessionManager.setBranch(newSessionId, branchName);
-    sessionManager.setBranchRenamed(newSessionId, true);
-    if (parent.remoteUrl) {
-      sessionManager.setRemoteUrl(newSessionId, parent.remoteUrl);
+      throw new ServiceError(400, `Failed to reset to base '${opts.base}': ${String(err)}`);
     }
   }
 
-  // Common metadata (both paths).
+  // Graduate the warm session into a user-visible spawn and override the
+  // claim-assigned title. The claim already set the branch row to the
+  // current `shipit/<random>` name; we just flip `branchRenamed = true` so
+  // PR lifecycle / auto-PR gates treat it as a real session branch instead
+  // of a warm-pool placeholder. Credentials, gc.auto config, and the
+  // remoteUrl row were all set during the claim itself.
+  sessionManager.rename(newSessionId, title);
+  sessionManager.setBranchRenamed(newSessionId, true);
+  sessionManager.setWarm(newSessionId, false);
+
   sessionManager.setParentSession(newSessionId, parentSessionId, opts.spawnedByTurn);
   const modelToSet = opts.model ?? parent.model;
   if (modelToSet) {
