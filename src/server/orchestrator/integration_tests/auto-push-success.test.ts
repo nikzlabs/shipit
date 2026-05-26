@@ -160,6 +160,31 @@ describe("auto-push: success and failure", () => {
     });
   });
 
+  it("pushes when HEAD moves during a clean turn", { timeout: 15_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    createBareRemote(sessionDir);
+
+    client.send({ type: "send_message", text: "rebase cleanly", sessionId });
+    const prevClaude = latestClaude;
+    const claude2 = await waitForClaude(() => latestClaude, prevClaude);
+
+    execSync("git commit --allow-empty -m 'manual clean head move'", {
+      cwd: sessionDir,
+      env: { ...process.env, HOME: tmpDir },
+    });
+
+    claude2.finish("test-session-1");
+
+    const messages = await drainMessages();
+    const pushResult = messages.find((m) => m.type === "github_push_result");
+    expect(pushResult).toBeDefined();
+    expect(pushResult).toMatchObject({
+      type: "github_push_result",
+      success: true,
+    });
+  });
+
   it("push failure is non-fatal and emits a log entry", { timeout: 15_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();

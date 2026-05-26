@@ -459,6 +459,9 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   // Capture session context at turn start — immune to session switches
   const capturedSessionId = ctx.getActiveAppSessionId();
   const capturedSessionDir = ctx.getActiveSessionDir();
+  const turnStartHeadHash = capturedSessionDir
+    ? await ctx.createGitManager(capturedSessionDir).getHeadHash()
+    : null;
 
   // Resolve runner via the registry so it survives WS disconnect.
   const answerRunner = resolveRunner(ctx, capturedSessionId);
@@ -527,6 +530,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
           // Pass the captured runner's summary explicitly — ctx.getTurnSummary()
           // returns "" after WS disconnect (it routes through attachedRunner).
           turnSummary: answerRunner?.turnSummary ?? "",
+          turnStartHeadHash,
         });
       }
     } catch (err) {
