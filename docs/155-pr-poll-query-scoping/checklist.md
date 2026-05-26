@@ -2,11 +2,10 @@
 
 ## Phase 0 — measure GraphQL cost (gates Phase 2 and Phase 3)
 
-- [ ] Write `scripts/measure-pr-poll-cost.ts` that issues both query shapes via `GitHubAuthManager.graphqlQuery` and logs `rateLimit { cost }`.
-- [ ] Run against a real repo with ≥20 open PRs (ShipIt itself, or pick a candidate).
-- [ ] Capture results: bulk `first: N` for N ∈ {1, 5, 10, 20, 30}, aliased K-way for K ∈ {1, 5, 10, 20, 30}, mixed (conversation on focused session only).
-- [ ] Compare per-call cost AND projected hourly cost given a representative active/settled session mix.
-- [ ] Write findings to `docs/155-pr-poll-query-scoping/cost-measurements.md`.
+- [x] Write `scripts/measure-pr-poll-cost.ts` and wire it as `npm run measure-pr-poll-cost`.
+- [ ] Run against a real repo with ≥20 open PRs (ShipIt itself, or pick a candidate). Needs a `GITHUB_TOKEN` with `repo` scope: `GITHUB_TOKEN=… npm run measure-pr-poll-cost -- --owner X --repo Y --out docs/155-pr-poll-query-scoping/cost-measurements.md`
+- [ ] Review the per-call cost AND project an hourly cost given a representative active/settled session mix.
+- [ ] Commit `docs/155-pr-poll-query-scoping/cost-measurements.md` so the baseline lives in-repo.
 - [ ] Decide: proceed with Phase 2/3 as designed, restructure plan, or abandon in favor of expanded Phase 1.
 
 ## Phase 1 — quick wins (independent of Phase 0 outcome)

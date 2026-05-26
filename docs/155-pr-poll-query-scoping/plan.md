@@ -36,7 +36,20 @@ Measure before restructuring.
 - Use the ShipIt repo itself or a real busy repo with ≥20 open PRs as the test target. A near-empty repo won't surface the divergence point.
 - Capture results in `docs/155-pr-poll-query-scoping/cost-measurements.md` — keep the raw numbers in-repo so future tuning has a baseline.
 
-**Tooling:** one-off script `scripts/measure-pr-poll-cost.ts` that calls `GitHubAuthManager.graphqlQuery` with each query shape and logs `rateLimit.cost`. Doesn't need to be wired into CI — it's a measurement, not a regression test.
+**Tooling:** `scripts/measure-pr-poll-cost.ts` (wired as `npm run measure-pr-poll-cost`) issues each query shape against the GitHub GraphQL API and logs the authoritative `rateLimit.cost` value. Standalone — talks directly to `api.github.com/graphql` with a PAT, no orchestrator boot needed. Run:
+
+```bash
+GITHUB_TOKEN=ghp_xxx npm run measure-pr-poll-cost -- \
+  --owner nicolasalt --repo shipit \
+  --out docs/155-pr-poll-query-scoping/cost-measurements.md
+```
+
+The script fetches the first 30 open PR numbers from the target repo, then issues:
+
+- Bulk `pullRequests(first: N)` for N ∈ {1, 5, 10, 20, 30}, light + heavy variants.
+- Aliased `pullRequest(number: $n)` for K ∈ {1, 5, 10, 20, 30}, light + heavy + mixed (heavy on one alias, light on the rest — Phase 1's "scoped conversation fields" preview).
+
+It writes the full results table to the `--out` path so the numbers stay in-repo as the baseline for future tuning. Doesn't need to be wired into CI — it's a measurement, not a regression test.
 
 **Decision branches:**
 
