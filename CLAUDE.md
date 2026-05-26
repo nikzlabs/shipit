@@ -403,3 +403,33 @@ status: in-progress
 description: Show a short doc description from frontmatter under the title in the docs panel.
 ---
 ```
+
+## Cursor Cloud specific instructions
+
+### Running the dev server
+
+The orchestrator requires a `/credentials` directory. In Cursor Cloud VMs (running as `ubuntu`), create it before starting the server:
+
+```bash
+sudo mkdir -p /credentials && sudo chown ubuntu:ubuntu /credentials
+```
+
+Start the dev server in local mode (no Docker needed):
+
+```bash
+RUNTIME_MODE=local SHIPIT_STATE_DIR=/workspace/.inner-shipit PORT=3000 npm run dev
+```
+
+- `RUNTIME_MODE=local` skips Docker container orchestration entirely — agent processes spawn in-process.
+- `SHIPIT_STATE_DIR` keeps the SQLite DB and caches out of the workspace source tree.
+- The `disk-janitor` will log `spawn docker ENOENT` errors at startup — these are harmless in local mode.
+- Agent CLIs (Claude/Codex) are not installed in the Cloud VM, so the UI will show agents as "Not installed" on the Agent Setup screen. This is expected; tests use fakes.
+
+### Commands reference
+
+All standard commands are documented in the Setup/Commands section above. Key ones for Cloud agents:
+
+- `npm run test:dev` — fast progressive tests (preferred for iteration)
+- `npm run test:smoke` — smoke tests only (4 files, ~100 tests)
+- `npm run lint` and `npm run typecheck` — must pass before any PR
+- `npm run build` — builds the client to `dist/client` (needed for the orchestrator to serve the UI in local mode)
