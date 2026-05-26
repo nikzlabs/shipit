@@ -227,6 +227,7 @@ export async function registerSessionRoutes(
           deps.getSharedRepoDir,
           request.params.id,
           deps.pruneSessionVolumes,
+          deps.containerManager,
         );
         return result;
       } catch (err) {
@@ -600,6 +601,7 @@ export async function registerSessionRoutes(
           deps.getSharedRepoDir,
           request.params.childId,
           deps.pruneSessionVolumes,
+          deps.containerManager,
         );
         deps.sseBroadcast("session_list", { sessions: result.sessions });
         return { archived: true, sessions: result.sessions };
