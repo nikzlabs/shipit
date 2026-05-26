@@ -20,7 +20,6 @@ import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
-import * as rewindHandlers from "./ws-handlers/rewind-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -1437,13 +1436,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             return;
           }
           // new_session and activate_session are NOT handled — session is implicit from URL
-          case "rollback_code": return rollbackHandlers.handleRollbackCode(ctx, msg);
-          case "rollback_code_and_chat": return rollbackHandlers.handleRollbackCodeAndChat(ctx, msg);
-          case "fork_session_from_message": return rollbackHandlers.handleForkSessionFromMessage(ctx, msg);
           case "rewind_at_gap": return rollbackHandlers.handleRewindAtGap(ctx, msg);
           case "rewind_preview_request": return rollbackHandlers.handleRewindPreviewRequest(ctx, msg);
           case "rewind_restore_request": return rollbackHandlers.handleRewindRestoreRequest(ctx, msg);
-          case "rewind_to_message": return rewindHandlers.handleRewindToMessage(ctx, msg);
           case "cancel_queued_message": { miscHandlers.handleCancelQueuedMessage(ctx, msg); return; }
           case "interrupt_agent": { miscHandlers.handleInterruptAgent(ctx); return; }
           case "pr_tab_active": { miscHandlers.handlePrTabActive(ctx, msg); return; }

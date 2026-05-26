@@ -107,42 +107,6 @@ export interface WsPrTabActive {
   active: boolean;
 }
 
-// ---- Rollback messages (client → server) ----
-
-/** Client → Server: rollback code only (git reset, chat stays). */
-export interface WsRollbackCode {
-  type: "rollback_code";
-  messageIndex: number;
-  parentCommitHash: string;
-}
-
-/** Client → Server: rollback code + chat (git reset, fresh CLI session). */
-export interface WsRollbackCodeAndChat {
-  type: "rollback_code_and_chat";
-  messageIndex: number;
-  parentCommitHash: string;
-}
-
-/** Client → Server: fork as a new session from a rollback point. */
-export interface WsForkSessionFromMessage {
-  type: "fork_session_from_message";
-  messageIndex: number;
-  parentCommitHash: string;
-}
-
-// ---- Rewind messages (client → server) ----
-
-/** Client → Server: rewind conversation/code to a user message.
- *  - fork_chat: new conversation branch from this point, code unchanged
- *  - rewind_code: git reset to before this message, keep conversation
- *  - rewind_all: git reset + new conversation branch
- */
-export interface WsRewindToMessage {
-  type: "rewind_to_message";
-  messageIndex: number;
-  mode: "fork_chat" | "rewind_code" | "rewind_all";
-}
-
 export type RewindAtGapAction = "chat" | "code" | "both" | "fork";
 
 export interface WsRewindAtGap {
@@ -179,10 +143,6 @@ export type WsClientMessage =
   | WsStartService
   | WsStopService
   | WsSubscribeServiceLogs
-  | WsRollbackCode
-  | WsRollbackCodeAndChat
-  | WsForkSessionFromMessage
-  | WsRewindToMessage
   | WsRewindAtGap
   | WsRewindPreviewRequest
   | WsRewindRestoreRequest

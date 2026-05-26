@@ -26,7 +26,7 @@ status: in-progress
 - [x] Add selective confirmation modals.
 - [x] Add undo toast and "Recover recent rewind" topbar overflow entry.
 - [x] Add `rewind_snapshots` persistence and restore path.
-- [ ] Remove legacy per-message rewind/rollback dropdowns and old WS message types.
+- [x] Remove legacy per-message rewind/rollback dropdowns and old WS message types.
 - [x] U6: Show an empty-chat notice after rewinding to the start.
 
 ## Landing 3 — Polish
