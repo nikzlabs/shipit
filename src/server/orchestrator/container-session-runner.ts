@@ -150,6 +150,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   ]);
 
   private _disposed = false;
+  pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
   private _workerResourcesStarted = false;
 
   constructor(opts: {

@@ -1,5 +1,6 @@
 import type { WsServerMessage } from "../../shared/types.js";
 import type { ConnectionCtx, AppCtx } from "./types.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
 import { withWorkspaceLock } from "../services/marketplace.js";
 
 /** Minimal handler context — postTurnCommit only needs git + chat history + auto-push. */
@@ -29,6 +30,16 @@ export async function postTurnCommit(
     sessionId: string | undefined;
     emit: (msg: WsServerMessage) => void;
     turnSummary: string;
+    /**
+     * The runner that owns this turn. When provided, the commit info is also
+     * stashed on `runner.pendingCommitLink` so the agent_result handler in
+     * `wireAgentListeners` can apply it after `replaceInProgress` finalizes
+     * the chat rows. Without this fallback, a turn where `agent_result`
+     * persists the rows AFTER `postTurnCommit` runs (codex sometimes emits
+     * two `turn/completed` events) ends up with a successful commit but no
+     * commit_hash on any chat row — so the rewind preview shows "0 files".
+     */
+    runner?: SessionRunnerInterface | null;
   },
 ): Promise<string | null> {
   return withWorkspaceLock(opts.sessionDir, async () => {
@@ -42,11 +53,18 @@ export async function postTurnCommit(
     ctx.scheduleAutoPush(git, opts.sessionId);
 
     if (opts.sessionId && parentHash) {
+      // Stash the link info on the runner FIRST so the agent_result handler
+      // can retry the link if our updateLastMessage call below finds no
+      // in_progress=0 rows yet (the racy case described above).
+      if (opts.runner) {
+        opts.runner.pendingCommitLink = { commitHash, parentCommitHash: parentHash };
+      }
       const updatedId = ctx.chatHistoryManager.updateLastMessage(opts.sessionId, {
         commitHash,
         parentCommitHash: parentHash,
       });
       if (updatedId !== null) {
+        if (opts.runner) opts.runner.pendingCommitLink = null;
         const messageIndex = ctx.chatHistoryManager.indexOfMessageId(opts.sessionId, updatedId);
         if (messageIndex >= 0) {
           opts.emit({

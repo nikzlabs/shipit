@@ -796,6 +796,32 @@ export function wireAgentListeners(
       deps.chatHistoryManager.finalizeInProgress(usageSessionId);
       if (runner) runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
 
+      // If `postTurnCommit` ran earlier in this turn (e.g. the codex CLI's
+      // first `turn/completed` arrived BEFORE the final assistant text events)
+      // but couldn't link the commit because there were no in_progress=0 rows
+      // yet, the link info was stashed on the runner. Apply it now that the
+      // rows actually exist. This is the second half of the fix described in
+      // `postTurnCommit` (see `opts.runner` there).
+      if (runner?.pendingCommitLink) {
+        const { commitHash, parentCommitHash } = runner.pendingCommitLink;
+        const updatedId = deps.chatHistoryManager.updateLastMessage(usageSessionId, {
+          commitHash,
+          parentCommitHash,
+        });
+        if (updatedId !== null) {
+          runner.pendingCommitLink = null;
+          const messageIndex = deps.chatHistoryManager.indexOfMessageId(usageSessionId, updatedId);
+          if (messageIndex >= 0) {
+            emitToViewers({
+              type: "commit_linked",
+              messageIndex,
+              commitHash,
+              parentCommitHash,
+            });
+          }
+        }
+      }
+
       // Mark turn as complete immediately — don't wait for async post-turn
       // work (git commit, PR lifecycle) in the "done" handler. This closes
       // the timing window where a reconnecting viewer sees running=true.

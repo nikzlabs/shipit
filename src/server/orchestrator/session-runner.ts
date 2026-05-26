@@ -203,6 +203,7 @@ export function resetRunnerTurnState(
   runner.steeredMessages = [];
   runner.wasInterrupted = false;
   runner.activeReviewFilePath = opts?.reviewFilePath ?? null;
+  runner.pendingCommitLink = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +259,23 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   needsNewMessageGroup: boolean;
   steeredMessages: SteeredMessage[];
   agentId: AgentId;
+  /**
+   * Commit info captured by `postTurnCommit` that couldn't be linked
+   * synchronously because the agent_result handler hadn't yet persisted the
+   * final chat-history rows. The `wireAgentListeners` agent_result branch
+   * picks this up after replaceInProgress + finalizeInProgress so the link
+   * happens on the SAME rows that get rendered. Cleared after a successful
+   * link or on the next turn's reset.
+   *
+   * Why this exists: for codex sessions the CLI sometimes emits two
+   * `agent_result` events per turn — once before the final assistant text
+   * streams in, once after. The first triggers `postTurnCommit` (which
+   * commits the on-disk changes from earlier tool calls) but
+   * `updateLastMessage` finds no in_progress=0 rows yet. Without this
+   * field the commit_hash never lands on the final row and the rewind
+   * preview reports "0 files" for a turn that genuinely committed.
+   */
+  pendingCommitLink: { commitHash: string; parentCommitHash: string } | null;
 
   getAgent(): AgentProcess | null;
   setAgent(a: AgentProcess | null): void;
@@ -426,6 +444,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _viewerCount = 0;
   private _detectedPorts: number[] = [];
   private _disposed = false;
+  pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
 
   constructor(opts: {
     sessionId: string;

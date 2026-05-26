@@ -451,6 +451,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
             sessionId: capturedSessionId,
             emit: emitDone,
             turnSummary: runner?.turnSummary ?? "",
+            runner,
           });
         }
       } catch (err) {
@@ -580,6 +581,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           // per-connection attachedRunner. Use the captured (registry-backed)
           // runner so commit messages are correct even for queue-drained turns.
           turnSummary: runner?.turnSummary ?? "",
+          runner,
         });
       }
     } catch (err) {

@@ -48,6 +48,7 @@ let app: Awaited<ReturnType<typeof buildApp>>;
 let client: TestClient;
 let githubAuth: StubGitHubAuthManager;
 let sessionManager: SessionManager;
+let chatHistoryManager: ChatHistoryManager;
 let credentialStore: CredentialStore;
 let latestClaude: FakeClaudeProcess | null = null;
 let dbManager: DatabaseManager;
@@ -62,6 +63,7 @@ beforeEach(async () => {
   githubAuth.setPrData(null); // No pre-existing PR
 
   sessionManager = new SessionManager(dbManager);
+  chatHistoryManager = new ChatHistoryManager(dbManager);
   credentialStore = createTestCredentialStore(tmpDir);
 
   app = await buildApp({
@@ -88,7 +90,7 @@ beforeEach(async () => {
     authManager: new StubAuthManager() as never,
     githubAuthManager: githubAuth as never,
     sessionManager,
-    chatHistoryManager: new ChatHistoryManager(dbManager),
+    chatHistoryManager,
     usageManager: new UsageManager(dbManager),
     serveStatic: false,
     // The harness fallback's generateText. We deliberately make this return
@@ -358,6 +360,57 @@ describe("agent-driven PR creation (Phase 2)", () => {
         env: { ...process.env, HOME: tmpDir },
       }).toString().trim();
       expect(filesInCommit).toContain("widget.ts");
+    },
+  );
+
+  // Regression: the flush commit from `/pr/agent-create` used to leave
+  // `commit_hash` and `parent_commit_hash` null on every chat row, so the
+  // rewind preview reported "0 files" for a turn that genuinely committed.
+  // Now the flush stashes `pendingCommitLink` on the runner; the agent_result
+  // handler applies it after replaceInProgress finalizes the rows.
+  it(
+    "/pr/agent-create links the flush commit to the final assistant message",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+
+      // Start a fresh turn so the agent_result handler can pick up the
+      // pendingCommitLink stashed by the flush.
+      client.send({ type: "send_message", text: "add a feature", sessionId });
+      const claude = await waitForClaude(() => latestClaude, latestClaude);
+
+      // Mid-turn the agent edits a file and calls `gh pr create`.
+      fs.writeFileSync(path.join(sessionDir, "widget.ts"), "export const widget = 42;\n");
+      const headBefore = execSync("git rev-parse HEAD", {
+        cwd: sessionDir,
+        env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/agent-create`,
+        payload: { title: "Add widget", body: "## Summary\nAdds the widget." },
+      });
+      expect(res.statusCode).toBe(200);
+      const headAfter = execSync("git rev-parse HEAD", {
+        cwd: sessionDir,
+        env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      expect(headAfter).not.toBe(headBefore);
+
+      // Agent finishes the turn — replaceInProgress finalizes the rows and
+      // the agent_result handler applies the deferred commit link.
+      claude.emit("event", {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Opened PR with the widget." }] },
+      });
+      claude.finish("agent-session-1");
+      await drainMessages(2000);
+
+      const history = chatHistoryManager.load(sessionId);
+      const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+      expect(lastAssistant?.commitHash).toBe(headAfter);
+      expect(lastAssistant?.parentCommitHash).toBe(headBefore);
     },
   );
 
