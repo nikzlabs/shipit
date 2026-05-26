@@ -17,7 +17,7 @@ import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-r
 import type { SessionInfo, AgentId } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
-import { generateBranchPrefix } from "../git-utils.js";
+import { generateBranchPrefix, fetchAndResolveDefaultBranch } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
@@ -60,11 +60,17 @@ export interface SpawnChildSessionOptions {
   /** Session title. Defaults to a slug derived from `prompt`. */
   title?: string;
   /**
-   * Git ref to branch off. Defaults to the parent's current HEAD via
-   * `git rev-parse HEAD`. When provided, this is passed verbatim to
-   * `git checkout -b <child-branch> <base>` in the child's workspace, so
-   * any value `git` accepts there is allowed (commit hash, `origin/main`,
-   * a tag, etc.).
+   * Git ref to branch off. When omitted, the child is branched off the
+   * freshly-fetched `origin/main` (or `origin/HEAD` / `origin/master`) of
+   * the parent's repo — matching what a manual new session would do — so
+   * the child's "Changes vs main" diff doesn't inherit the parent's WIP.
+   * Truly-local repos (no `remoteUrl`) have no remote to branch off and
+   * fall back to the parent's HEAD instead.
+   *
+   * When provided, this is passed verbatim to `git checkout -b
+   * <child-branch> <base>` (or `git reset --hard <base>` on the claim
+   * path) in the child's workspace, so any value `git` accepts there is
+   * allowed (commit hash, `origin/main`, a tag, etc.).
    */
   base?: string;
   /** Optional agent id override. Defaults to the parent's selected agent. */
@@ -234,26 +240,18 @@ export async function spawnChildSession(
     sessionManager.setBranchRenamed(newSessionId, true);
     sessionManager.setWarm(newSessionId, false);
   } else {
-    // Local-repo fallback: parent isn't backed by a registered remote (tests,
-    // ad-hoc repos). Branch off parent's HEAD so the child sees the parent's
-    // committed state — preserves the docs/117 v1 behavior for this path.
+    // Fallback path: parent isn't backed by a "ready" registered remote
+    // (integration tests, ad-hoc local repos, or a repo whose status flipped
+    // away from "ready" mid-flight). We still want the child to look like a
+    // manual new session — branched off the latest `origin/main` whenever a
+    // remote is available. Only truly-local repos (no `remoteUrl`) fall back
+    // to the parent's HEAD, since there's no remote main to fetch.
     branchName = generateBranchPrefix();
     const crypto = await import("node:crypto");
     newSessionId = crypto.randomUUID();
     const newSessionDir = path.join(sessionsRoot, newSessionId);
     newWorkspaceDir = path.join(newSessionDir, "workspace");
     await fs.mkdir(newSessionDir, { recursive: true });
-
-    let startPoint = opts.base?.trim();
-    if (!startPoint) {
-      try {
-        const parentHead = await simpleGit(parent.workspaceDir).revparse(["HEAD"]);
-        startPoint = parentHead.trim();
-      } catch {
-        // Empty repo / detached HEAD — fall through.
-        startPoint = undefined;
-      }
-    }
 
     if (parent.remoteUrl) {
       // Remote URL exists but the repo isn't registered (yet/anymore) —
@@ -271,6 +269,36 @@ export async function spawnChildSession(
       await simpleGit(newWorkspaceDir).raw(["config", "gc.auto", "0"]);
     }
 
+    // Configure credentials BEFORE the workspace fetch so a private remote
+    // can resolve. `fetchAndResolveDefaultBranch` degrades gracefully when
+    // the fetch fails (offline, no auth) and falls back to local refs —
+    // which point at the just-fetched bare cache's tip, still fresher than
+    // the parent's HEAD.
+    if (githubAuthManager.authenticated) {
+      githubAuthManager.configureGitCredentials(newWorkspaceDir);
+    }
+
+    let startPoint = opts.base?.trim();
+    if (!startPoint && parent.remoteUrl) {
+      // Mirror the claim path: branch off freshly-fetched origin/main so
+      // the child's "Changes vs main" diff doesn't inherit the parent's
+      // committed-but-unmerged work.
+      const { resetTarget } = await fetchAndResolveDefaultBranch(newWorkspaceDir);
+      if (resetTarget) startPoint = resetTarget;
+    }
+    if (!startPoint) {
+      // No remote (truly-local repos / integration tests) OR origin/HEAD
+      // couldn't be resolved — fall back to the parent's HEAD so the
+      // child sees the parent's committed state.
+      try {
+        const parentHead = await simpleGit(parent.workspaceDir).revparse(["HEAD"]);
+        startPoint = parentHead.trim();
+      } catch {
+        // Empty repo / detached HEAD — fall through.
+        startPoint = undefined;
+      }
+    }
+
     const branchArgs = ["checkout", "-b", branchName];
     if (startPoint) branchArgs.push(startPoint);
     try {
@@ -278,10 +306,6 @@ export async function spawnChildSession(
     } catch (err) {
       await fs.rm(newSessionDir, { recursive: true, force: true }).catch(() => {});
       throw new ServiceError(400, `Failed to create branch '${branchName}': ${String(err)}`);
-    }
-
-    if (githubAuthManager.authenticated) {
-      githubAuthManager.configureGitCredentials(newWorkspaceDir);
     }
 
     sessionManager.track(newSessionId, title, newWorkspaceDir);

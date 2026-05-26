@@ -942,6 +942,58 @@ describe("Integration: spawn from registered remote (claim path, docs/117 + this
     expect(child?.remoteUrl).toBe(SPAWN_REPO_URL);
   });
 
+  it("fallback path also branches off origin/main when the repo flips out of 'ready'", { timeout: 30_000 }, async () => {
+    // Stand up the parent through claim so it gets a proper workspace +
+    // `remoteUrl` set. Then drop the repo from the store: the next spawn
+    // sees `parent.remoteUrl` but `repoStore.get(...)?.status !== "ready"`,
+    // which trips `useClaim = false` and forces the fallback path.
+    const { parentId, workspaceDir: parentWorkspace } = await claimGraduatedParent();
+
+    const mainSha = execSync("git rev-parse origin/main", {
+      cwd: parentWorkspace,
+      encoding: "utf8",
+    }).trim();
+
+    // Parent diverges from main with a committed WIP — the leak we're guarding against.
+    fs.writeFileSync(path.join(parentWorkspace, "wip.txt"), "parent WIP\n");
+    execSync(
+      'git add wip.txt && git -c user.email=t@t.com -c user.name=Test commit -m "parent wip" --no-gpg-sign',
+      { cwd: parentWorkspace },
+    );
+    const parentHead = execSync("git rev-parse HEAD", {
+      cwd: parentWorkspace,
+      encoding: "utf8",
+    }).trim();
+    expect(parentHead).not.toBe(mainSha);
+
+    // Force the fallback: parent keeps its `remoteUrl`, but the repo is no
+    // longer in `repoStore`, so `useClaim` is false.
+    repoStore.remove(SPAWN_REPO_URL);
+
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "do the thing", branch: "fallback-child" },
+    });
+    expect(spawnRes.statusCode).toBe(200);
+    const { sessionId: childId } = spawnRes.json() as { sessionId: string };
+
+    const child = sessionManager.get(childId);
+    const childHead = execSync("git rev-parse HEAD", {
+      cwd: child!.workspaceDir!,
+      encoding: "utf8",
+    }).trim();
+    expect(childHead).toBe(mainSha);
+    expect(childHead).not.toBe(parentHead);
+
+    const childBranch = execSync("git branch --show-current", {
+      cwd: child!.workspaceDir!,
+      encoding: "utf8",
+    }).trim();
+    expect(childBranch).toBe("fallback-child");
+    expect(child?.remoteUrl).toBe(SPAWN_REPO_URL);
+  });
+
   it("honors opts.base by resetting HEAD after the claim", { timeout: 30_000 }, async () => {
     // Add an extra commit to the cache so we have a non-HEAD commit reachable
     // from origin/main's history. `opts.base` must resolve in the child's
