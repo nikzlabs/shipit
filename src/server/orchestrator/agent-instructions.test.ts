@@ -24,6 +24,7 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("gh pr create");
     // Required sections the agent should write in the body.
     expect(out).toContain("## Summary");
+    expect(out).toContain("## Rationale");
     expect(out).toContain("## Changes");
     expect(out).toContain("## Test plan");
     // Mentions that this is a ShipIt shim, not the real gh CLI.
@@ -45,6 +46,18 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("typo");
     expect(out).toContain("config");
     expect(out).toContain("one-line");
+  });
+
+  it("requires rationale-rich PR bodies and static update guidance", () => {
+    const out = buildAgentSystemInstructions();
+    expect(out).toContain("the user goal and why this change exists");
+    expect(out).toContain("key implementation decisions");
+    expect(out).toContain("rejected simpler alternatives");
+    expect(out).toContain("Do not only describe what changed");
+    expect(out).toContain("Explain why the change was made");
+    expect(out).toContain("gh pr edit");
+    expect(out).toContain("stable rationale section");
+    expect(out).toContain("raw logs");
   });
 
   it("tells the agent not to use git state to decide whether to open a PR", () => {

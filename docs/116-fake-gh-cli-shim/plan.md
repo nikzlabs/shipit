@@ -146,17 +146,18 @@ There is no need to coordinate the two paths beyond the existing dedup.
 Update `src/server/shipit-docs/github.md` to tell the agent:
 
 - It can run `gh pr create -t "<title>" -b "<body>"` at end-of-work.
-- It should write a real title and a body that explains *why* (Summary / Changes / Test plan).
+- It should write a real title and a body that explains *why* (Summary / Rationale / Changes / Test plan).
+- It should keep the PR body current with `gh pr edit` after later turns materially change behavior or rationale, maintaining a stable rationale section rather than appending raw logs.
 - The list of supported subcommands and the rejected ones.
 - That `gh` here is a ShipIt shim, not the real `gh`.
 
 ### Agent system prompt
 
-In a follow-up, when `autoCreatePr` is on, append a short instruction to `agent-instructions.ts`:
+The PR instruction in `agent-instructions.ts` is unconditional and static so prompt caching stays stable. It tells the agent:
 
-> When you finish a meaningful chunk of work and there isn't already an open PR for this branch, run `gh pr create -t "<title>" -b "<body>"` to open one. Write a clear title and a markdown body with `## Summary`, `## Changes`, and `## Test plan` sections.
+> When you finish a meaningful chunk of work and there isn't already an open PR for this branch, run `gh pr create -t "<title>" -b "<body>"` to open one. Write a clear title and a markdown body with `## Summary`, `## Rationale`, `## Changes`, and `## Test plan` sections. Explain why meaningful behavior changes were needed, and use `gh pr edit` to keep that rationale current on later turns.
 
-Whether to include this is gated by the same `autoCreatePr` setting the harness path uses, so users who turn off auto-PR don't get the prompt either.
+The prompt does not branch on whether a PR exists, whether files changed, or on the `autoCreatePr` setting; those runtime checks happen in the agent's actions and the orchestrator fallback, not in prompt assembly.
 
 ## Phasing
 
