@@ -122,20 +122,23 @@ export function RewindPoint({
 
   const confirmDisabled = pendingAction === "fork" && branchName.trim().length === 0;
 
+  const interactive = !disabled;
   return (
     <div
-      className="group/rewind relative flex h-6 items-center gap-0 transition-[gap] duration-0 delay-200 hover:gap-24 hover:delay-0 data-[menu-open=true]:gap-24 data-[menu-open=true]:delay-0"
+      className={`group/rewind relative flex h-6 items-center gap-0 transition-[gap] duration-0 delay-200 ${
+        interactive ? "hover:gap-24 hover:delay-0 data-[menu-open=true]:gap-24 data-[menu-open=true]:delay-0" : ""
+      }`}
       data-testid="rewind-point"
       data-menu-open={menuOpen}
     >
-      <div className="h-px flex-1 bg-(--color-border-secondary) opacity-15 transition-opacity duration-200 group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" />
-      <div className="h-px flex-1 bg-(--color-border-secondary) opacity-15 transition-opacity duration-200 group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" />
+      <div className={`h-px flex-1 bg-(--color-border-secondary) opacity-15 transition-opacity duration-200 ${interactive ? "group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" : ""}`} />
+      <div className={`h-px flex-1 bg-(--color-border-secondary) opacity-15 transition-opacity duration-200 ${interactive ? "group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" : ""}`} />
       <DropdownMenu onOpenChange={requestPreviews}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
             disabled={disabled}
-            className="absolute left-1/2 top-1/2 inline-flex h-6 -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 text-xs font-medium text-(--color-text-secondary) opacity-0 transition-opacity hover:bg-(--color-bg-tertiary) hover:text-(--color-text-primary) focus:opacity-100 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100"
+            className={`absolute left-1/2 top-1/2 inline-flex h-6 -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 text-xs font-medium text-(--color-text-secondary) opacity-0 transition-opacity hover:bg-(--color-bg-tertiary) hover:text-(--color-text-primary) focus:opacity-100 focus:outline-none ${interactive ? "group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" : "pointer-events-none"}`}
             title={disabled ? "Wait for the current turn to finish" : currentState ? "Fork current state" : "Rewind options"}
             aria-label={currentState ? "Fork current state" : "Rewind options"}
           >
