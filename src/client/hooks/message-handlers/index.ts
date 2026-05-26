@@ -41,7 +41,6 @@ import { handleRewindComplete } from "./rewind-complete.js";
 import { handleRewindPreview } from "./rewind-preview.js";
 import { handleRewindRestored } from "./rewind-restored.js";
 import { handleRewindSnapshotAvailable } from "./rewind-snapshot-available.js";
-import { handleRollbackComplete } from "./rollback-complete.js";
 import { handleSecretsStatus } from "./secrets-status.js";
 import { handleServiceList } from "./service-list.js";
 import { handleServiceLog } from "./service-log.js";
@@ -129,7 +128,6 @@ export const messageHandlers: MessageHandlerMap = {
   rewind_preview: handleRewindPreview,
   rewind_restored: handleRewindRestored,
   rewind_snapshot_available: handleRewindSnapshotAvailable,
-  rollback_complete: handleRollbackComplete,
   secrets_status: handleSecretsStatus,
   service_list: handleServiceList,
   service_log: handleServiceLog,

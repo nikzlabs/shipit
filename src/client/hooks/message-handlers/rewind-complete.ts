@@ -6,7 +6,7 @@ import type { Handler } from "./types.js";
 
 export const handleRewindComplete: Handler<WsRewindComplete> = (_ctx, data) => {
   const session = useSessionStore.getState();
-  const gapPosition = "gapPosition" in data ? data.gapPosition : (data.messageIndex ?? 0);
+  const { gapPosition } = data;
   if ("action" in data && data.action === "code") {
     session.setMessages((prev) => prev.map((m, i) => {
       if (i < gapPosition) return m;
