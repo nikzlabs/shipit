@@ -209,3 +209,73 @@ describe("markMergedAndPruneExcess — branch cleanup", () => {
     expect(deleteBranch).not.toHaveBeenCalled();
   });
 });
+
+describe("markMergedAndPruneExcess — subsession guard", () => {
+  it("does not auto-archive merged sessions that have live child sessions", async () => {
+    // Seed four already-merged sessions in the same repo with explicit
+    // merged_at timestamps so the sort order is deterministic. `parentId`
+    // is the oldest (so it would normally be pruned), and `secondOldestId`
+    // is the next oldest (so it should still be pruned).
+    const seeded: { id: string; mergedAt: string }[] = [
+      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:00:00" }, // parent — oldest
+      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:30:00" }, // second oldest
+      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:45:00" }, // kept
+      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:50:00" }, // kept
+    ];
+    for (const s of seeded) {
+      dbManager.db.prepare("UPDATE sessions SET merged_at = ? WHERE id = ?").run(s.mergedAt, s.id);
+    }
+    const [parentId, secondOldestId] = seeded.map((s) => s.id);
+
+    // Give the parent a non-archived child session.
+    const childId = crypto.randomUUID();
+    sessionManager.track(childId, "Child session", `${tmpDir}/${childId}`);
+    sessionManager.setParentSession(childId, parentId);
+
+    // Mark a fifth session merged — this triggers the prune. With five
+    // merged sessions in the repo and a limit of three, the two oldest are
+    // candidates for archive.
+    const triggerId = trackMergedSession({});
+
+    await markMergedAndPruneExcess(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      triggerId,
+    );
+
+    // Parent stayed alive (has a live child); second-oldest was archived.
+    expect(sessionManager.get(parentId)?.archived).toBeFalsy();
+    expect(sessionManager.get(secondOldestId)?.archived).toBe(true);
+  });
+
+  it("still auto-archives a merged session whose only children are already archived", async () => {
+    const seeded: { id: string; mergedAt: string }[] = [
+      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:00:00" },
+      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:30:00" },
+      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:45:00" },
+      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:50:00" },
+    ];
+    for (const s of seeded) {
+      dbManager.db.prepare("UPDATE sessions SET merged_at = ? WHERE id = ?").run(s.mergedAt, s.id);
+    }
+    const oldestId = seeded[0].id;
+
+    // Child exists but is archived → parent is not "blocked" anymore.
+    const childId = crypto.randomUUID();
+    sessionManager.track(childId, "Child session", `${tmpDir}/${childId}`);
+    sessionManager.setParentSession(childId, oldestId);
+    sessionManager.archive(childId);
+
+    const triggerId = trackMergedSession({});
+
+    await markMergedAndPruneExcess(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      triggerId,
+    );
+
+    expect(sessionManager.get(oldestId)?.archived).toBe(true);
+  });
+});
