@@ -369,13 +369,13 @@ describe("runDiskJanitor", () => {
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
 
-    const oldDir = path.join(tmpDir, "sessions", "standalone-session", "workspace");
+    const oldDir = path.join(tmpDir, "sessions", "no-remote-session", "workspace");
     fs.mkdirSync(oldDir, { recursive: true });
     const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
     // No remote_url — should be skipped even though it's older than the threshold.
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, archived) VALUES (?, ?, ?, ?, ?, 1)",
-    ).run("standalone-session", "Standalone", old, old, oldDir);
+    ).run("no-remote-session", "No remote", old, old, oldDir);
 
     const result = await runDiskJanitor({
       sessionManager,
