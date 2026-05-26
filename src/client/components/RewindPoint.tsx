@@ -124,12 +124,12 @@ export function RewindPoint({
 
   return (
     <div
-      className="group/rewind relative flex h-6 items-center gap-0 transition-[gap] duration-150 hover:gap-24 data-[menu-open=true]:gap-24"
+      className="group/rewind relative flex h-6 items-center gap-0 transition-[gap] duration-0 delay-200 hover:gap-24 hover:delay-0 data-[menu-open=true]:gap-24 data-[menu-open=true]:delay-0"
       data-testid="rewind-point"
       data-menu-open={menuOpen}
     >
-      <div className="h-px flex-1 bg-(--color-border-secondary) opacity-30 transition-opacity group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" />
-      <div className="h-px flex-1 bg-(--color-border-secondary) opacity-30 transition-opacity group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" />
+      <div className="h-px flex-1 bg-(--color-border-secondary) opacity-15 transition-opacity duration-200 group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" />
+      <div className="h-px flex-1 bg-(--color-border-secondary) opacity-15 transition-opacity duration-200 group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" />
       <DropdownMenu onOpenChange={requestPreviews}>
         <DropdownMenuTrigger asChild>
           <button
