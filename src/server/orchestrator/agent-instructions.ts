@@ -129,9 +129,12 @@ Asking "want me to open a PR?" is wrong — by the time you're considering it, t
 
 Write a clear, descriptive title and a markdown body with the following sections:
 
-- \`## Summary\` — 1-2 sentences explaining *why* this change exists.
-- \`## Changes\` — bullet list of the key changes.
+- \`## Summary\` — 1-2 sentences explaining the user goal and why this change exists.
+- \`## Rationale\` — the key implementation decisions and why they were chosen; include rejected simpler alternatives if they matter.
+- \`## Changes\` — bullet list of the key changes, grouped by behavior/module. For each meaningful behavior change, include the reason it was needed and the user request, bug, or tradeoff it traces back to.
 - \`## Test plan\` — how to verify the change works.
+
+Do not only describe what changed. Explain why the change was made. After creating a PR, or when continuing work in a session that already has one, keep the PR body current with \`gh pr edit\` whenever the turn materially changes behavior or rationale. Maintain a stable rationale section instead of appending raw logs.
 
 \`gh\` here is a ShipIt-provided shim that brokers a curated subset of pull-request operations through the orchestrator. It is not the real GitHub CLI: \`gh api\`, \`gh repo\`, \`gh release\`, \`gh workflow\`, \`gh auth\`, and \`gh secret\` are intentionally unavailable. See /shipit-docs/github.md for the full list of supported subcommands.
 
