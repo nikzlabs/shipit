@@ -247,28 +247,38 @@ export async function handleSendMessage(
       // finalizeBranchRenamed below).
       if (session.workspaceDir) {
         const namingAgentId = session.agentId ?? ctx.getActiveAgentId();
-        // Helper: mark branch as renamed and emit PR "ready" card
+        // Helper: mark branch as renamed and emit PR "ready" card. The whole
+        // body is wrapped in try/catch because the only callers — the
+        // `generateSessionName` `.then` / `.catch` chain below — are
+        // fire-and-forget. A throw from the synchronous DB writes here (the
+        // canonical case is a test that closes its in-memory DB before the
+        // naming chain resolves) would otherwise escape the chain's outer
+        // `.catch` and surface as an unhandled rejection.
         const finalizeBranchRenamed = async () => {
-          ctx.sessionManager.setBranchRenamed(effectiveSessionId, true);
-          const s = ctx.sessionManager.get(effectiveSessionId);
-          if (!s?.remoteUrl || !s.workspaceDir) return;
-          if (ctx.prStatusPoller.getStatus(effectiveSessionId)) return; // PR already exists
-          if (s.mergedAt) return; // PR was already merged
           try {
-            const git = ctx.createGitManager(s.workspaceDir);
-            const headBranch = s.branch || await git.getCurrentBranch();
-            const { insertions, deletions } = await git.diffStatVsBranch("main");
-            ctx.send({
-              type: "pr_lifecycle_update",
-              sessionId: effectiveSessionId,
-              cardId: `pr-card-${effectiveSessionId}`,
-              phase: "ready",
-              headBranch,
-              totalInsertions: insertions,
-              totalDeletions: deletions,
-            });
-          } catch {
-            // Diff stats may fail if no commits yet — that's fine, post-commit will retry
+            ctx.sessionManager.setBranchRenamed(effectiveSessionId, true);
+            const s = ctx.sessionManager.get(effectiveSessionId);
+            if (!s?.remoteUrl || !s.workspaceDir) return;
+            if (ctx.prStatusPoller.getStatus(effectiveSessionId)) return; // PR already exists
+            if (s.mergedAt) return; // PR was already merged
+            try {
+              const git = ctx.createGitManager(s.workspaceDir);
+              const headBranch = s.branch || await git.getCurrentBranch();
+              const { insertions, deletions } = await git.diffStatVsBranch("main");
+              ctx.send({
+                type: "pr_lifecycle_update",
+                sessionId: effectiveSessionId,
+                cardId: `pr-card-${effectiveSessionId}`,
+                phase: "ready",
+                headBranch,
+                totalInsertions: insertions,
+                totalDeletions: deletions,
+              });
+            } catch {
+              // Diff stats may fail if no commits yet — that's fine, post-commit will retry
+            }
+          } catch (err) {
+            console.warn("[send-message] finalizeBranchRenamed failed:", getErrorMessage(err));
           }
         };
 

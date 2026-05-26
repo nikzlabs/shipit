@@ -132,57 +132,76 @@ export function scheduleStartupTasks(
     void runMcpOAuthStartupRefresh({ credentialStore });
   }
 
+  // Defensive: `warmSessionForRepo` starts with synchronous DB reads
+  // (`repoStore.get`, `sessionManager.get`). If a caller `void`-discards the
+  // returned promise, a sync throw turns into an unhandled rejection — which
+  // vitest treats as a fatal "UNHANDLED ERRORS" condition. We surface every
+  // failure to stderr so production loses no visibility, but we never let one
+  // escape as an unhandled rejection.
+  const fireAndForgetWarm = (url: string): void => {
+    warmSessionForRepo(url).catch((err: unknown) => {
+      console.error(`[startup-tasks] warm failed for ${url}:`, getErrorMessage(err));
+    });
+  };
+
   return setTimeout(() => {
-    // Collect current warm session IDs so we can clean up zombies.
-    const activeWarmIds = new Set<string>();
-    for (const repo of repoStore.list()) {
-      if (repo.warmSessionId) activeWarmIds.add(repo.warmSessionId);
-    }
-
-    // Delete zombie warm sessions — previously-claimed warm sessions that were
-    // never graduated (user clicked "New Session" but never sent a message).
-    // Without this, `findUngraduatedWarm()` returns these zombies instead of
-    // claiming from the warm pool, preventing re-warming + standby.
-    // Also cleans up already-unflagged zombies (title "Warm session", no messages).
-    let zombieCount = 0;
-    for (const id of sessionManager.allIds()) {
-      if (activeWarmIds.has(id)) continue;
-      const s = sessionManager.get(id);
-      if (s?.warm || (s?.title === "Warm session" && !s.archived)) {
-        deleteSession(sessionManager, id, chatHistoryManager, usageManager);
-        zombieCount++;
+    // The whole sweep is wrapped because every step calls into the DB-backed
+    // stores. A `databaseManager.close()` racing this setTimeout would
+    // otherwise throw out of the setTimeout callback (uncaughtException).
+    try {
+      // Collect current warm session IDs so we can clean up zombies.
+      const activeWarmIds = new Set<string>();
+      for (const repo of repoStore.list()) {
+        if (repo.warmSessionId) activeWarmIds.add(repo.warmSessionId);
       }
-    }
-    if (zombieCount > 0) {
-      console.log(`[warm] Deleted ${zombieCount} stale ungraduated warm session(s)`);
-    }
 
-    for (const repo of repoStore.list()) {
-      if (repo.warmSessionId && repo.status === "ready") {
-        const ws = sessionManager.get(repo.warmSessionId);
-        if (!ws?.workspaceDir || !existsSync(ws.workspaceDir)) {
-          console.log(`[warm] Stale warm session ${repo.warmSessionId} — clone missing, re-warming`);
-          if (containerManager?.isStandby(repo.warmSessionId)) {
-            containerManager.destroy(repo.warmSessionId).catch((err: unknown) => {
-              console.error(`[warm] Failed to destroy stale standby:`, getErrorMessage(err));
-            });
-          }
-          repoStore.setWarmSessionId(repo.url, undefined);
-          void warmSessionForRepo(repo.url);
-        } else {
-          console.log(`[warm] Warm session ${repo.warmSessionId} validated (clone exists)`);
+      // Delete zombie warm sessions — previously-claimed warm sessions that were
+      // never graduated (user clicked "New Session" but never sent a message).
+      // Without this, `findUngraduatedWarm()` returns these zombies instead of
+      // claiming from the warm pool, preventing re-warming + standby.
+      // Also cleans up already-unflagged zombies (title "Warm session", no messages).
+      let zombieCount = 0;
+      for (const id of sessionManager.allIds()) {
+        if (activeWarmIds.has(id)) continue;
+        const s = sessionManager.get(id);
+        if (s?.warm || (s?.title === "Warm session" && !s.archived)) {
+          deleteSession(sessionManager, id, chatHistoryManager, usageManager);
+          zombieCount++;
         }
       }
-    }
-    // Re-warm repos that have no warm session at all (+ migrated repos).
-    for (const url of migratedRepoUrls) {
-      void warmSessionForRepo(url);
-    }
-    for (const repo of repoStore.list()) {
-      if (!repo.warmSessionId && repo.status === "ready"
-          && !migratedRepoUrls.includes(repo.url)) {
-        void warmSessionForRepo(repo.url);
+      if (zombieCount > 0) {
+        console.log(`[warm] Deleted ${zombieCount} stale ungraduated warm session(s)`);
       }
+
+      for (const repo of repoStore.list()) {
+        if (repo.warmSessionId && repo.status === "ready") {
+          const ws = sessionManager.get(repo.warmSessionId);
+          if (!ws?.workspaceDir || !existsSync(ws.workspaceDir)) {
+            console.log(`[warm] Stale warm session ${repo.warmSessionId} — clone missing, re-warming`);
+            if (containerManager?.isStandby(repo.warmSessionId)) {
+              containerManager.destroy(repo.warmSessionId).catch((err: unknown) => {
+                console.error(`[warm] Failed to destroy stale standby:`, getErrorMessage(err));
+              });
+            }
+            repoStore.setWarmSessionId(repo.url, undefined);
+            fireAndForgetWarm(repo.url);
+          } else {
+            console.log(`[warm] Warm session ${repo.warmSessionId} validated (clone exists)`);
+          }
+        }
+      }
+      // Re-warm repos that have no warm session at all (+ migrated repos).
+      for (const url of migratedRepoUrls) {
+        fireAndForgetWarm(url);
+      }
+      for (const repo of repoStore.list()) {
+        if (!repo.warmSessionId && repo.status === "ready"
+            && !migratedRepoUrls.includes(repo.url)) {
+          fireAndForgetWarm(repo.url);
+        }
+      }
+    } catch (err) {
+      console.error("[startup-tasks] background sweep failed:", getErrorMessage(err));
     }
   }, 0);
 }

@@ -174,6 +174,11 @@ export default class LLMReporter {
       output.push("UNHANDLED ERRORS:");
       for (const err of unhandledErrors) {
         output.push(`  ${err.message}`);
+        if (err.stack) {
+          for (const line of err.stack.split("\n")) {
+            output.push(`    ${line}`);
+          }
+        }
       }
       output.push("");
     }
