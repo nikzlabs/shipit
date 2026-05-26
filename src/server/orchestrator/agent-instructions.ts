@@ -113,7 +113,7 @@ Available tools:
 - **browser_click** / **browser_type** — interact with elements
 - **browser_take_screenshot** — capture a visual screenshot when layout/styling matters
 
-**Save screenshots to /tmp/**, not the workspace directory. Screenshots saved to /workspace end up in git commits and pollute the repo.
+**Save screenshots to /tmp/.playwright-mcp/**, not the workspace directory. The Playwright MCP only allows writes under \`/tmp/.playwright-mcp/\` or \`/workspace/\`; bare \`/tmp/foo.png\` paths are rejected with "File access denied". Screenshots under \`/workspace\` end up in git commits and pollute the repo, so \`/tmp/.playwright-mcp/\` is the right choice. You can also omit the filename entirely and the MCP will auto-generate one in that directory.
 
 If you get a connection error, the dev server may still be starting — wait a moment and retry.
 
