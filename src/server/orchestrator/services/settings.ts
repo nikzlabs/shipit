@@ -36,7 +36,6 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
 /** Get global settings (git identity, system prompt, agents, resource limits). */
 export async function getGlobalSettings(
   agentRegistry: AgentRegistry,
-  defaultAgentId: AgentId,
   workspaceDir: string,
   credentialStore?: CredentialStore,
   providerAccountManager?: ProviderAccountManager,
@@ -63,15 +62,16 @@ export async function getGlobalSettings(
   const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
   const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
   const liveSteering = credentialStore?.getLiveSteering() ?? false;
-  // Pass `defaultAgentId` so the Settings preview shows the same per-agent
-  // "Parallel sessions" guidance the running agent gets (docs/117 Phase 2).
-  // A session that picks a non-default agent will see that agent's variant at
-  // turn time. `agentId` is the only conditional axis — the PR nudge and
-  // browser-tools section are unconditional, which keeps the rendered prompt
-  // stable across turns so the Anthropic prompt cache stays warm.
-  const agentSystemInstructions = buildAgentSystemInstructions({ agentId: defaultAgentId });
+  // Settings page renders the per-agent "Parallel sessions" guidance as a
+  // preview. Pick the first installed-and-authed agent so a Codex-only host
+  // shows Codex's variant, not Claude's. Fall back to the first registered
+  // agent so the preview is never empty.
+  const previewAgent = agentRegistry.available()[0] ?? agentRegistry.list()[0];
+  const agentSystemInstructions = previewAgent
+    ? buildAgentSystemInstructions({ agentId: previewAgent.id })
+    : "";
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
-  return { gitIdentity, systemPrompt, agents, defaultAgentId, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, providerAccounts };
+  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -94,7 +94,6 @@ export function setGitIdentityService(
 /** Save global settings (git identity, system prompt, and/or maxIdleContainers). */
 export async function saveGlobalSettings(
   agentRegistry: AgentRegistry,
-  defaultAgentId: AgentId,
   workspaceDir: string,
   credentialStore: CredentialStore,
   gitIdentity?: { name: string; email: string },
@@ -152,7 +151,7 @@ export async function saveGlobalSettings(
     credentialStore.setLiveSteering(liveSteering);
   }
 
-  return getGlobalSettings(agentRegistry, defaultAgentId, workspaceDir, credentialStore, providerAccountManager);
+  return getGlobalSettings(agentRegistry, workspaceDir, credentialStore, providerAccountManager);
 }
 
 /** Validate and set the active agent. Returns the agent ID or throws. */

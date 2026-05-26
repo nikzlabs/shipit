@@ -7,7 +7,7 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId } from "../../server/shared/types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 
 let reloadingForClientUpdate = false;
@@ -163,14 +163,26 @@ export function useServerEvents(): void {
           supportedPermissionModes?: PermissionMode[];
         }[];
       };
-      useUiStore.getState().setAgentList(
-        data.agents.map((a) => ({
-          ...a,
-          models: a.models ?? [],
-          supportsReview: a.supportsReview ?? false,
-          supportedPermissionModes: a.supportedPermissionModes,
-        })),
-      );
+      const agents = data.agents.map((a) => ({
+        ...a,
+        models: a.models ?? [],
+        supportsReview: a.supportsReview ?? false,
+        supportedPermissionModes: a.supportedPermissionModes,
+      }));
+      useUiStore.getState().setAgentList(agents);
+      // If the currently selected agent isn't installed-and-authed, redirect
+      // the picker to the first agent that is. Avoids the home-screen picker
+      // sitting on "claude" by default on a Codex-only install (the picker
+      // initially hydrates from localStorage with a "claude" fallback, which
+      // is wrong if Claude isn't authed).
+      const activeAgentId = useUiStore.getState().activeAgentId;
+      const active = agents.find((a) => a.id === activeAgentId);
+      if (!active || !active.installed || !active.authConfigured) {
+        const firstAuthed = agents.find((a) => a.installed && a.authConfigured);
+        if (firstAuthed && firstAuthed.id !== activeAgentId) {
+          useUiStore.getState().setActiveAgentId(firstAuthed.id as AgentId);
+        }
+      }
     });
 
     // ---- Codex (ChatGPT subscription) device-auth events ----

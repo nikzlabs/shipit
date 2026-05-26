@@ -71,7 +71,6 @@ describe("Integration: GET /api/bootstrap", () => {
 
     expect(body).toHaveProperty("sessions");
     expect(body).toHaveProperty("agents");
-    expect(body).toHaveProperty("defaultAgentId");
     expect(body).toHaveProperty("templates");
     expect(body).toHaveProperty("githubStatus");
     expect(body).toHaveProperty("settings");
@@ -173,7 +172,7 @@ describe("Integration: GET /api/bootstrap", () => {
     }
   });
 
-  it("returns agents list with default agent ID", async () => {
+  it("returns agents list", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/api/bootstrap",
@@ -182,7 +181,6 @@ describe("Integration: GET /api/bootstrap", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
 
-    expect(body.defaultAgentId).toBe("claude");
     expect(Array.isArray(body.agents)).toBe(true);
     // At minimum, claude should be listed
     const claude = body.agents.find((a: any) => a.id === "claude");
