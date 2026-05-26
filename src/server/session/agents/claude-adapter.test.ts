@@ -392,7 +392,30 @@ describe("ClaudeAdapter", () => {
     expect(events).toHaveLength(0);
   });
 
-  it("drops rate_limit_event with no parseable window (missing utilization or resetsAt)", () => {
+  it("emits rate_limit_event with usedPct=null when utilization is missing but resetsAt is present", () => {
+    // Claude CLI 2.1.140 only includes `utilization` once a warning threshold
+    // trips (anthropics/claude-code#50518) — until then the rate_limit_event
+    // carries just {rateLimitType, resetsAt}. The adapter must still surface
+    // the window so the badge can render a countdown-only pill.
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", resetsAt: 1_800_000_000 },
+    } satisfies ClaudeEvent);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      type: "agent_rate_limits",
+      session: { usedPct: null, resetAt: new Date(1_800_000_000 * 1000).toISOString() },
+      weekly: null,
+    });
+  });
+
+  it("drops rate_limit_event when resetsAt is missing (nothing to render)", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
     const events: any[] = [];
@@ -401,10 +424,6 @@ describe("ClaudeAdapter", () => {
     inner.emit("event", {
       type: "rate_limit_event",
       rate_limit_info: { rateLimitType: "five_hour", utilization: 42 },
-    } satisfies ClaudeEvent);
-    inner.emit("event", {
-      type: "rate_limit_event",
-      rate_limit_info: { rateLimitType: "five_hour", resetsAt: 1_800_000_000 },
     } satisfies ClaudeEvent);
 
     expect(events).toHaveLength(0);

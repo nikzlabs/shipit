@@ -71,7 +71,7 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
 
 interface MeterProps {
   shortLabel: string;
-  pct: number;
+  pct: number | null;
   resetAt: string;
 }
 
@@ -85,6 +85,12 @@ interface MeterProps {
  * instead of nesting pills inside the pill. The tier colors come from
  * the per-theme `--color-context-*` tokens (shared with `ContextDial`),
  * which are tuned for contrast on both dark and light themes.
+ *
+ * When `pct` is `null` (Claude reported the window's existence and reset
+ * time but not utilization — see anthropics/claude-code#50518) the meter
+ * degrades to a countdown-only "5h · resets in 4h 12m" with no fill bar,
+ * staying at the neutral secondary color. It re-upgrades to the full
+ * percentage meter the moment a later event carries a number.
  */
 function Meter({ shortLabel, pct, resetAt }: MeterProps) {
   // Once `resetAt` has elapsed the window has rolled over — the cached
@@ -92,6 +98,18 @@ function Meter({ shortLabel, pct, resetAt }: MeterProps) {
   // rate_limit_event, so otherwise the pill would sit at "5h 100% resets
   // in now" until the next turn lands).
   const displayPct = effectivePct(pct, resetAt);
+
+  if (displayPct === null) {
+    return (
+      <span
+        className="inline-flex items-center whitespace-nowrap text-(--color-text-secondary)"
+        data-meter-pct="unknown"
+      >
+        {shortLabel} · resets in {formatResetCountdown(resetAt)}
+      </span>
+    );
+  }
+
   const fillWidth = `${Math.max(0, Math.min(100, displayPct))}%`;
   const color = tierColor(displayPct);
   const countdown = displayPct > 90 ? formatResetCountdown(resetAt) : null;
@@ -119,9 +137,15 @@ function Meter({ shortLabel, pct, resetAt }: MeterProps) {
  * elapsed (the window has rolled over since the last poll), otherwise
  * returns the cached `pct` unchanged. Unparseable `resetAt` values
  * preserve the cached value so a bad payload doesn't silently zero out
- * the meter.
+ * the meter. A `null` input stays `null` — the provider hasn't reported
+ * utilization yet and we don't fake a number to fill the gap.
  */
-export function effectivePct(pct: number, resetAt: string, nowMs = Date.now()): number {
+export function effectivePct(
+  pct: number | null,
+  resetAt: string,
+  nowMs = Date.now(),
+): number | null {
+  if (pct === null) return null;
   const resetMs = Date.parse(resetAt);
   if (!Number.isNaN(resetMs) && resetMs <= nowMs) return 0;
   return pct;
@@ -168,12 +192,22 @@ function buildTooltip(label: string, snap: SubscriptionLimits): string {
   const lines: string[] = [];
   lines.push(snap.plan ? `${label} — ${snap.plan}` : label);
   if (snap.session) {
-    lines.push(`5h window: ${formatPct(snap.session.usedPct)} used (resets ${formatReset(snap.session.resetAt)})`);
+    lines.push(formatWindowLine("5h window", snap.session));
   }
   if (snap.weekly) {
-    lines.push(`Weekly: ${formatPct(snap.weekly.usedPct)} used (resets ${formatReset(snap.weekly.resetAt)})`);
+    lines.push(formatWindowLine("Weekly", snap.weekly));
   }
   return lines.join("\n");
+}
+
+function formatWindowLine(
+  label: string,
+  window: { usedPct: number | null; resetAt: string },
+): string {
+  if (window.usedPct === null) {
+    return `${label}: resets ${formatReset(window.resetAt)} (utilization not reported)`;
+  }
+  return `${label}: ${formatPct(window.usedPct)} used (resets ${formatReset(window.resetAt)})`;
 }
 
 function formatReset(iso: string): string {
