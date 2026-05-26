@@ -593,17 +593,15 @@ export function wireAgentListeners(
       // interrupt for malformed calls so the CLI's auto-resolved error reaches
       // the model and it can retry within the same turn.
       //
-      // docs/140 — live steering: in streaming mode the CLI has a bidirectional
-      // stdin channel and CAN genuinely block awaiting the user's answer (the
-      // answer flows back via `sendUserMessage`/NDJSON on stdin instead of a
-      // fresh `--resume` spawn). Interrupting here would tear down a turn that
-      // would otherwise patiently wait — skip the hack and let the user steer
-      // their answer in.
-      if (
-        runner
-        && !opts.useStreaming
-        && toolBlocks.some(isWellFormedAskUserQuestion)
-      ) {
+      // docs/140 — live steering: the original assumption was that the CLI in
+      // `--input-format stream-json` mode would genuinely block awaiting the
+      // user's answer. In practice it auto-resolves the tool call the same way
+      // headless `-p` mode does, so the model moved on before the user could
+      // pick an answer. Interrupt in both modes. In streaming mode `interrupt()`
+      // is a `control_request` that ends the turn with `error_during_execution`
+      // while keeping the persistent process alive, so the answer can still
+      // flow back via `sendUserMessage`/NDJSON in `handleAnswerQuestion`.
+      if (runner && toolBlocks.some(isWellFormedAskUserQuestion)) {
         runner.wasInterrupted = true;
         agent.interrupt();
         deps.broadcastLog("server", "Agent interrupted: waiting for AskUserQuestion answer");
