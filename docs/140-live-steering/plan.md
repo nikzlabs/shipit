@@ -254,6 +254,43 @@ exited":
 6. Handle the lifecycle paths (dispose, restartAgent, container-OOM,
    resume-on-respawn) + settings UI toggle + docs.
 
+## Post-stabilization cleanup
+
+Once Phase 6 lands and steering has soaked in real use, the `liveSteering`
+user setting should be retired. It was scaffolded as a reversible escape
+hatch while the streaming path bedded in; once that's no longer needed, the
+dual-mode plumbing becomes pure tax.
+
+- **Drop the user toggle.** Streaming becomes the only behavior for adapters
+  with `supportsSteering: true`. Removes the gate in `send-message.ts:109/172/400`,
+  the `useStreaming` branch in `agent-execution.ts:258`, and the "stale agent
+  kill" carve-out (`send-message.ts:168–176`).
+- **Keep the capability gate.** `supportsSteering` stays load-bearing — it's
+  the seam that lets future agent backends without a steering primitive (or
+  Codex during review / manual compaction turns) fall through to the queue
+  path. CLAUDE.md explicitly commits to an agent-agnostic architecture, so
+  the queue path can't go away; only the user-toggle layer on top of it can.
+- **One-release transition.** Keep `liveSteering` as a hidden/dev-mode flag
+  for one release as a self-rescue lever, then fully delete it from
+  `credentialStore`, `settings.ts`, the settings UI, `MessageInput` gating,
+  and the bootstrap payload.
+
+This also closes a latent bug by construction. Today's gate
+(`send-message.ts:111`, `agent-execution.ts:258`) reads the **adapter**
+capability plus the user setting — it does NOT check whether *this particular
+running process* was actually spawned in streaming mode. So if a user has the
+toggle off, starts a turn (one-shot PTY process), then flips the toggle on
+mid-turn and sends another message, the orchestrator calls `sendUserMessage`
+on a non-streaming agent. The adapter's default falls through to raw stdin,
+which the headless `-p` CLI ignores — the message silently vanishes. Removing
+the toggle eliminates the "non-streaming process running under a steering
+gate" state entirely; no runtime `canSteer()` check or proxy capability
+plumbing is needed.
+
+Net result: one path per adapter capability, not two paths gated by a user
+setting. The dual-mode tax in `send-message.ts`, `agent-execution.ts`, and
+the `result`-vs-`done` post-turn bifurcation is paid down considerably.
+
 ## Open questions to resolve during build
 
 - Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.
