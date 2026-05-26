@@ -30,7 +30,7 @@ See /shipit-docs/sessions.md for the full list.`;
 const HELP = `${SHIM_NAME} — agent-driven session management.
 
 Supported subcommands:
-  shipit session create  -p "PROMPT" [--title T] [--branch NAME]
+  shipit session create  -p "PROMPT" [--title T]
                           [--base REF] [--agent claude|codex] [--model M]
                           [--turn ID] [--json]
   shipit session list    [--turn ID] [--json]
@@ -263,7 +263,6 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
       "-p": "prompt", "--prompt": "prompt",
       "-m": "prompt", // alias for symmetry with `gh pr comment -b`
       "-t": "title", "--title": "title",
-      "-b": "branch", "--branch": "branch",
       "-B": "base", "--base": "base",
       "--agent": "agent",
       "--model": "model",
@@ -301,7 +300,6 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
 
   const payload: Record<string, unknown> = { prompt };
   if (parsed.values.title) payload.title = parsed.values.title;
-  if (parsed.values.branch) payload.branch = parsed.values.branch;
   if (parsed.values.base) payload.base = parsed.values.base;
   if (parsed.values.agent) payload.agent = parsed.values.agent;
   if (parsed.values.model) payload.model = parsed.values.model;

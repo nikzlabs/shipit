@@ -11,7 +11,7 @@ import { SpawnFailedCard } from "./SpawnFailedCard.js";
  *   - Each `reason` bucket maps to a distinct headline.
  *   - The orchestrator error message is rendered verbatim.
  *   - The status code is surfaced.
- *   - Title / branch / promptPreview are all optional.
+ *   - Title / promptPreview are optional.
  */
 
 const BASE_PROPS = {
@@ -19,7 +19,6 @@ const BASE_PROPS = {
   message: "Per-turn spawn limit reached (4).",
   statusCode: 429,
   title: "Port API to TypeScript",
-  branch: "port-api-ts",
   promptPreview: "Port the REST API to TypeScript",
   failedAt: "2026-01-01T00:00:00Z",
 };
@@ -27,10 +26,9 @@ const BASE_PROPS = {
 afterEach(cleanup);
 
 describe("SpawnFailedCard", () => {
-  it("renders the title, branch, and prompt preview baked in by the spawn event", () => {
+  it("renders the title and prompt preview baked in by the spawn event", () => {
     render(<SpawnFailedCard {...BASE_PROPS} />);
     expect(screen.getByTestId("spawn-failed-title")).toHaveTextContent("Port API to TypeScript");
-    expect(screen.getByText("port-api-ts")).toBeInTheDocument();
     expect(screen.getByTestId("spawn-failed-prompt")).toHaveTextContent(/Port the REST API to TypeScript/);
   });
 
@@ -69,12 +67,6 @@ describe("SpawnFailedCard", () => {
     const { title: _omit, ...rest } = BASE_PROPS;
     render(<SpawnFailedCard {...rest} />);
     expect(screen.getByTestId("spawn-failed-title")).toHaveTextContent("Spawned session");
-  });
-
-  it("omits the branch line when no branch is supplied", () => {
-    const { branch: _omit, ...rest } = BASE_PROPS;
-    render(<SpawnFailedCard {...rest} />);
-    expect(screen.queryByText("port-api-ts")).not.toBeInTheDocument();
   });
 
   it("omits the prompt preview when not supplied", () => {

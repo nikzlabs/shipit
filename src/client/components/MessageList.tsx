@@ -141,12 +141,11 @@ export interface ChatMessage {
    * docs/117 cross-cutting follow-up — when set, this message renders a
    * `SpawnFailedCard` inline in the parent's chat. Populated from
    * `session_spawn_failed` WS events. Counterpart to `spawnedSession` for the
-   * failure path so a quota / invalid-branch rejection is visible alongside
+   * failure path so a quota / archived-parent rejection is visible alongside
    * successful spawns instead of only on the shim's stderr.
    */
   spawnFailed?: {
     title?: string;
-    branch?: string;
     reason:
       | "quota_per_turn"
       | "quota_per_parent"
@@ -570,14 +569,13 @@ export function MessageList({
 
         // docs/117 cross-cutting follow-up — failure counterpart to
         // `spawnedSession`. Renders the inline `SpawnFailedCard` so a quota
-        // hit / invalid branch is visible alongside successful spawns.
+        // hit / archived-parent rejection is visible alongside successful spawns.
         if (msg.spawnFailed) {
           return (
             <div key={i} className="flex justify-start">
               <div className="max-w-2xl w-full">
                 <SpawnFailedCard
                   {...(msg.spawnFailed.title ? { title: msg.spawnFailed.title } : {})}
-                  {...(msg.spawnFailed.branch ? { branch: msg.spawnFailed.branch } : {})}
                   reason={msg.spawnFailed.reason}
                   message={msg.spawnFailed.message}
                   statusCode={msg.spawnFailed.statusCode}

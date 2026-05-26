@@ -348,7 +348,6 @@ export async function registerSessionRoutes(
     Body: {
       prompt?: string;
       title?: string;
-      branch?: string;
       base?: string;
       agent?: AgentId;
       model?: string;
@@ -377,7 +376,6 @@ export async function registerSessionRoutes(
           {
             prompt: body.prompt ?? "",
             ...(body.title !== undefined ? { title: body.title } : {}),
-            ...(body.branch !== undefined ? { branch: body.branch } : {}),
             ...(body.base !== undefined ? { base: body.base } : {}),
             ...(body.agent !== undefined ? { agent: body.agent } : {}),
             ...(body.model !== undefined ? { model: body.model } : {}),
@@ -450,7 +448,6 @@ export async function registerSessionRoutes(
             statusCode,
             reason: classifySpawnFailure(statusCode, errorMessage),
             ...(body.title ? { title: body.title } : {}),
-            ...(body.branch ? { branch: body.branch } : {}),
             ...(promptPreview ? { promptPreview } : {}),
             failedAt: new Date().toISOString(),
           });
