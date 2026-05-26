@@ -189,7 +189,7 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); onToggleChildren?.(); }}
-          className="shrink-0 -ml-1 w-4 h-4 mt-px flex items-center justify-center text-(--color-text-tertiary) hover:text-(--color-text-primary) rounded"
+          className="shrink-0 -ml-1.5 w-4 h-4 mt-px flex items-center justify-center text-(--color-text-tertiary) hover:text-(--color-text-primary) rounded"
           aria-label={isChildrenCollapsed ? `Show ${childCount} spawned session${childCount === 1 ? "" : "s"}` : `Hide ${childCount} spawned session${childCount === 1 ? "" : "s"}`}
           title={isChildrenCollapsed ? `Show ${childCount} spawned` : `Hide ${childCount} spawned`}
         >
