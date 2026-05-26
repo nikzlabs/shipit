@@ -20,6 +20,8 @@ const _noLegacyClient: AssertNoLegacyClient = true;
 const _noLegacyServer: AssertNoLegacyServer = true;
 
 describe("rewind WS legacy types", () => {
+  // The expect() calls below are tautologies at runtime (esbuild strips the types above).
+  // CI must run `npm run typecheck` for the AssertNoLegacy* assignments to catch regressions.
   it("keeps legacy client/server rewind message types out of the wire protocol", () => {
     expect(_noLegacyClient).toBe(true);
     expect(_noLegacyServer).toBe(true);
