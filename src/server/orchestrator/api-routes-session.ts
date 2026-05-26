@@ -358,11 +358,13 @@ export async function registerSessionRoutes(
     "/api/sessions/:parentId/spawn",
     async (request, reply) => {
       const body = request.body ?? {};
-      // Effective agent id — same precedence the spawn service uses. Captured
-      // here so the telemetry record always carries an `agent` dimension, even
-      // when the request fails before `spawnChildSession` reaches its own
+      // Effective agent id — same precedence the spawn service uses
+      // (`opts.agent ?? parent.agentId ?? defaultAgentId`). Captured here so
+      // the telemetry record always carries an `agent` dimension, even when
+      // the request fails before `spawnChildSession` reaches its own
       // resolution.
-      const effectiveAgentId = body.agent ?? deps.defaultAgentId;
+      const parentAgentId = sessionManager.get(request.params.parentId)?.agentId;
+      const effectiveAgentId = body.agent ?? parentAgentId ?? deps.defaultAgentId;
       try {
         const result = await spawnChildSession(
           sessionManager,

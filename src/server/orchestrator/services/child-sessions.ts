@@ -314,13 +314,13 @@ export async function spawnChildSession(
   // `runner.dispatch` then either starts the turn directly (when
   // SystemTurnDeps are wired) or enqueues for the next agent start.
   //
-  // We don't store the parent's agent id on `SessionInfo` (only the model is
-  // persisted). For v1, children inherit `defaultAgentId` unless the caller
-  // passes an explicit `--agent`. The parent agent can specify
-  // `opts.agent` to override; otherwise the orchestrator's configured
-  // default is used. (A future iteration could carry the parent's runner
-  // agent id through.)
-  const childAgentId: AgentId = opts.agent ?? defaultAgentId;
+  // Precedence: explicit `opts.agent` (e.g. `--agent` on the shim) wins;
+  // otherwise inherit the parent's pinned `agentId` so a child spawned from
+  // a Codex session stays on Codex (the orchestrator's `defaultAgentId` is
+  // global and may point at a provider the user hasn't authenticated). Fall
+  // back to `defaultAgentId` only when the parent hasn't been pinned yet
+  // (fresh parent, no turn taken).
+  const childAgentId: AgentId = opts.agent ?? parent.agentId ?? defaultAgentId;
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, childAgentId);
 
   // docs/149 — bring the child to full env-prep parity with the WS path
@@ -537,10 +537,12 @@ export async function sendChildMessage(
 
   // Resolve or create the runner. `getOrCreate` matches the spawn path —
   // creating a runner here is fine: it just primes the registry and the
-  // runner picks the message up on its next start. The child's agent id is
-  // not persisted on `SessionInfo`, so we fall back to the orchestrator's
-  // default; this matches `spawnChildSession`'s behavior.
-  const runner = runnerRegistry.getOrCreate(childSessionId, child.workspaceDir, defaultAgentId);
+  // runner picks the message up on its next start. Prefer the child's
+  // pinned `agentId` (set by `spawnChildSession` / first-turn provisioning)
+  // so a Codex child stays on Codex even if the orchestrator's
+  // `defaultAgentId` points elsewhere. Only newly-created, never-run children
+  // are missing `agentId`, in which case the default is the right fallback.
+  const runner = runnerRegistry.getOrCreate(childSessionId, child.workspaceDir, child.agentId ?? defaultAgentId);
 
   // docs/149 — refresh per-session credentials + OAuth + MCP env before the
   // follow-up turn fires. Mirrors the spawn path; idempotent so re-running
