@@ -133,6 +133,15 @@ export interface AppCtx {
    * classify agent result errors that upstream labels too generically.
    */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
+  /**
+   * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
+   * refresher. Invoked from the session-level `auth_required` handler so that
+   * a stale per-session token gets healed even if the next scheduled tick is
+   * still minutes away. Single-flight inside the refresher; safe to call on
+   * every auth_required without coordination. Optional — not wired in test
+   * or local-runtime contexts.
+   */
+  nudgeClaudeOAuthRefresh?: () => void;
 
   // Config
   workspaceDir: string;

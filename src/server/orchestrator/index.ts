@@ -60,6 +60,8 @@ import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes } from "./disk-janitor.js";
+import { ClaudeOAuthRefresher } from "./claude-oauth-refresher.js";
+import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import { resolveBuildId } from "./build-id.js";
 import { MarketplaceStore } from "./marketplace-store.js";
 import { ensureCatalogCloned, getCatalogCacheRoot } from "./services/marketplace.js";
@@ -289,6 +291,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // PR lifecycle hook needs to reach it at runtime. Wired below, after the
   // poller exists.
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
+
+  // docs/153 — lazy holder for the Claude OAuth refresher. Constructed below
+  // (after `wireEventHandlers` so `repushTokenToPinnedSessions` is in scope),
+  // referenced from the runner-registry's listener deps (built first) via this
+  // forward ref so `nudgeClaudeOAuthRefresh` resolves to the live instance at
+  // runtime. Stays `null` in test mode / local runtime.
+  const claudeOAuthRefresherRef: { ref: ClaudeOAuthRefresher | null } = { ref: null };
+  const nudgeClaudeOAuthRefresh = (): void => {
+    const r = claudeOAuthRefresherRef.ref;
+    if (!r) return;
+    r.refreshNow().catch((err: unknown) => {
+      console.error("[claude-oauth-refresh] nudge failed:", err);
+    });
+  };
   // docs/149 — same shape as the WS handler's readSystemPrompt, hoisted to
   // app scope so the system-turn hook can read it without per-connection state.
   const readSystemPromptApp = async (): Promise<string | undefined> => {
@@ -306,6 +322,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, runtimeMode, broadcastLog,
     usageManager, authManager,
+    nudgeClaudeOAuthRefresh,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     ...(credentialsDir ? { credentialsDir } : {}),
     readSystemPrompt: readSystemPromptApp,
@@ -345,6 +362,62 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     providerAccountManager,
     defaultAgentId, sseBroadcast, credentialsDir, sessionManager,
   });
+
+  // ---- Claude OAuth refresher (docs/153) ----
+  //
+  // The orchestrator becomes the single entity that refreshes Claude OAuth
+  // tokens, eliminating the multi-session refresh stampede that was 429'ing
+  // every session ~8h after fresh auth (see docs/153 §Root cause). Skipped in
+  // test mode (no real auth, no per-session containers) and in local runtime
+  // (dogfood — no per-session containers either). The refresher iterates
+  // every Claude account, propagates a rotated token to all pinned sessions
+  // for that account via `repushProviderAccountToken` (or
+  // `repushAgentToken` for legacy sessions whose `provider_route_*` is null).
+  if (!isTestMode) {
+    const repushClaudeAccountToken = (agentId: AgentId, accountId: string): void => {
+      let healed = 0;
+      for (const session of sessionManager.list()) {
+        if (!session.agentPinned || session.agentId !== agentId) continue;
+        // Match either route-aware sessions pinned to this account, or legacy
+        // (null route) sessions which still resolve to the source via the
+        // legacy `.claude/.credentials.json` symlink that the provider-account
+        // migration stamped on disk.
+        const accountMatches =
+          (session.providerRouteKind === "account" && session.providerRouteId === accountId) ||
+          (session.providerRouteKind === null || session.providerRouteKind === undefined);
+        if (!accountMatches) continue;
+        try {
+          const wrote =
+            session.providerRouteKind === "account" && session.providerRouteId
+              ? repushProviderAccountToken(credentialsDir, session.id, agentId, session.providerRouteId)
+              : repushAgentToken(credentialsDir, session.id, agentId);
+          if (wrote) healed++;
+        } catch (err) {
+          console.error(`[claude-oauth-refresh] repush failed for session ${session.id}:`, err);
+        }
+      }
+      if (healed > 0) {
+        console.log(`[claude-oauth-refresh] propagated refreshed ${agentId}/${accountId} token to ${healed} pinned session(s)`);
+      }
+    };
+    const refresher = new ClaudeOAuthRefresher({
+      credentialsDir,
+      providerAccountManager,
+      repushAccountToken: repushClaudeAccountToken,
+      sseBroadcast,
+      runtimeMode,
+    });
+    claudeOAuthRefresherRef.ref = refresher;
+    refresher.start();
+    // Rearm immediately on a fresh sign-in. `wireEventHandlers` also listens
+    // to this event for its own bookkeeping; EventEmitter supports multiple
+    // handlers so the two coexist without ordering constraints.
+    authManager.on("auth_complete", () => {
+      refresher.refreshNow().catch((err: unknown) => {
+        console.error("[claude-oauth-refresh] post-auth refresh failed:", err);
+      });
+    });
+  }
 
   // ---- Subscription-limits poller ----
   // One pill per fetchable provider in the header (see
@@ -1171,6 +1244,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         prStatusPoller,
         recordAgentRateLimits,
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},
+        nudgeClaudeOAuthRefresh,
         workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
       };
@@ -1452,6 +1526,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
     if (repoPrefetcher) repoPrefetcher.stop();
+    claudeOAuthRefresherRef.ref?.stop();
   });
   registerShutdownHook(app, {
     startupTimer, authManager, codexAuthManager, runnerRegistry,
