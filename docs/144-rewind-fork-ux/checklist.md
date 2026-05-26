@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 ---
 
 # Rewind & Fork UX Checklist
@@ -29,6 +29,6 @@ status: in-progress
 - [x] Remove legacy per-message rewind/rollback dropdowns and old WS message types.
 - [x] U6: Show an empty-chat notice after rewinding to the start.
 
-## Landing 3 — Polish
+## Landing 3 — Polish (postponed)
 
-- [ ] U8: Enrich conversation replay with tool result summaries and attachment manifests.
+- [ ] U8: Enrich conversation replay with tool result summaries and attachment manifests. **Postponed** — reopen when replay token cost is measured and scoped (see plan open question #1).
