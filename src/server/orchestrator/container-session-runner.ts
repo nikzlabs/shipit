@@ -599,52 +599,30 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   /**
    * Called by ProxyAgentProcess.run(). Waits for worker readiness, POSTs
-   * /agent/start, and ensures the SSE stream is connected for events.
+   * /agent/start, and kicks off SSE setup in the background.
    *
    * The HTTP call is deliberately unbounded (`timeoutMs: 0`). The worker
    * accepts /agent/start synchronously, spawns the CLI, and returns
-   * `{ started: true }` — but in practice the agent has already started
-   * streaming events over SSE by the time the ack arrives. A slow ack
-   * (busy worker event loop, head-of-line blocking on the keep-alive
-   * connection, etc.) is NOT a failure mode worth surfacing as
-   * "container unreachable" to the user, because the agent is already
-   * running and the in-progress chat-history clear that the error path
-   * would trigger destroys the visible turn. Worker liveness is
-   * monitored separately via the SSE idle timer; if the worker is
-   * genuinely dead, the SSE stream fails and the Rescue-session UI
-   * surfaces it. (Refines doc 124 §1.3.)
+   * `{ started: true }`. Agent events stream over SSE, but the worker
+   * also buffers them in a ring keyed by monotonic seq — so we no
+   * longer need SSE to be connected before /agent/start. If SSE comes
+   * up late (spawned-child sessions never have a viewer attached at
+   * dispatch time) the events are replayed via `?since=<seq>` on
+   * connect. Worker liveness is still monitored via the SSE idle timer;
+   * if the worker is genuinely dead, the SSE stream fails and the
+   * Rescue-session UI surfaces it. (Refines doc 124 §1.3.)
    */
   async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
     await this._workerReady;
     await this._waitForInstallBeforeAgent();
 
-    // Connect SSE BEFORE POSTing /agent/start so the worker's first agent
-    // events aren't dropped. The worker spawns the CLI synchronously when
-    // /agent/start lands and the CLI begins streaming events on `/events`
-    // before our POST ack returns (see the timeoutMs:0 comment below). If
-    // SSE is connected after the POST — the path taken by spawned-child
-    // sessions, which call `runner.dispatch` without any viewer attached
-    // to wire it up first — the initial `agent_init` / `agent_assistant` /
-    // `agent_result` / `agent_done` events are lost and the runner is
-    // stuck at running=true forever. The worker's `GET /events` only
-    // replays terminal + install state, not agent events.
-    //
-    // Mirror attachViewer()'s lazy-start of worker resources so SSE
-    // auto-reconnect (gated on `_workerResourcesStarted` in the SSE
-    // manager's onClose) keeps working through a long agent turn. The
-    // attachViewer guard on `_workerResourcesStarted` makes a later
-    // viewer attach idempotent against this path.
-    //
-    // Bound the SSE wait — if the worker is unreachable, the SSE manager
-    // keeps retrying with exponential backoff and the connect promise
-    // never resolves. We'd rather surface the real "worker unreachable"
-    // error from the /agent/start POST below than hang here. On a healthy
-    // worker SSE opens in single-digit milliseconds, so the timeout is
-    // never the limiting factor in the happy path.
-    await Promise.race([
-      this.ensureWorkerResourcesStarted(),
-      new Promise<void>((resolve) => setTimeout(resolve, 2000)),
-    ]);
+    // Kick off SSE setup in the background. We deliberately do NOT await
+    // it: the worker buffers agent events (see sse-broadcaster.ts) so a
+    // slow SSE handshake no longer drops events, and agent execution
+    // must not be coupled to the orchestrator's event-consumer state.
+    // The attachViewer() guard on `_workerResourcesStarted` makes a
+    // later viewer attach idempotent against this path.
+    void this.ensureWorkerResourcesStarted();
 
     try {
       await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
@@ -711,12 +689,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const proxy = new ProxyAgentProcess(agentId, this);
     this._agent = proxy;
 
-    // Ensure SSE is connected before /agent/start — see the matching comment
-    // in `_startAgentViaProxy`. Same race, same fix.
-    await Promise.race([
-      this.ensureWorkerResourcesStarted(),
-      new Promise<void>((resolve) => setTimeout(resolve, 2000)),
-    ]);
+    // SSE setup is fire-and-forget — see the matching comment in
+    // `_startAgentViaProxy`. The worker buffers events for replay so
+    // agent execution does not depend on the orchestrator's SSE
+    // consumer being connected.
+    void this.ensureWorkerResourcesStarted();
 
     await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
 
