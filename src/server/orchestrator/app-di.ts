@@ -38,6 +38,7 @@ export function resolveRuntimeMode(): RuntimeMode {
   return v === "local" ? "local" : "containerized";
 }
 
+
 /**
  * Dependencies that can be injected for testing. Every field is optional —
  * production uses real implementations, tests can supply mocks/stubs.
@@ -77,7 +78,12 @@ export interface AppDeps {
    * orchestrator never spawns agents directly.
    */
   agentFactory?: (agentId: AgentId) => AgentProcess;
-  /** Default agent ID for new sessions. Defaults to "claude". */
+  /**
+   * Pin the initial agent id used for fresh runners and in-process AI calls.
+   * Production omits this — `initializeManagers` derives it from auth state
+   * via {@link resolveInitialAgentId}. Tests pin it to keep behavior
+   * deterministic.
+   */
   defaultAgentId?: AgentId;
   /** Root workspace directory. Defaults to `/workspace`. */
   workspaceDir?: string;
@@ -189,7 +195,6 @@ export interface ManagerSet {
  */
 export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const {
-    defaultAgentId = "claude" as AgentId,
     workspaceDir = "/workspace",
     credentialsDir = "/credentials",
     serveStatic: shouldServeStatic = true,
@@ -294,6 +299,15 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const authStr = detectedAgents.map((a) => `${a.binary} ${a.authConfigured ? "\u2713" : "\u2717"}`).join(", ");
   console.log(`[server] Agent CLIs detected: ${installedStr}`);
   console.log(`[server] Agent auth status: ${authStr}`);
+
+  // Starting agent id for fresh runners and the in-process `generateText`.
+  // NOT a user-facing fallback: every user session pins its own `agentId` at
+  // first turn, the home-screen picker derives its own default from the
+  // auth-tagged agent list (client-side, in `useServerEvents`), and spawned
+  // children inherit the parent's `agentId`. This value only matters for
+  // the seconds between runner construction and the first turn pinning the
+  // session \u2014 and for the dogfood-only `generateText` helper.
+  const defaultAgentId: AgentId = deps.defaultAgentId ?? "claude";
 
   // ---- GitHub auth manager ----
   const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir, credentialStore);

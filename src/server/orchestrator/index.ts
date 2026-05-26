@@ -359,7 +359,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   wireEventHandlers({
     authManager, codexAuthManager, githubAuthManager, agentRegistry,
     providerAccountManager,
-    defaultAgentId, sseBroadcast, credentialsDir, sessionManager,
+    sseBroadcast, credentialsDir, sessionManager,
   });
 
   // ---- Claude OAuth refresher (docs/153) ----
@@ -557,7 +557,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       supportsSteering: a.capabilities.supportsSteering,
       supportedPermissionModes: a.capabilities.supportedPermissionModes,
     }));
-    client.write(`event: agent_list\ndata: ${JSON.stringify({ agents, defaultAgentId })}\n\n`);
+    client.write(`event: agent_list\ndata: ${JSON.stringify({ agents })}\n\n`);
     client.write(`event: provider_accounts\ndata: ${JSON.stringify({ accounts: providerAccountManager.list() })}\n\n`);
 
     // In-flight Codex device-auth flow — replay the pending event so a
