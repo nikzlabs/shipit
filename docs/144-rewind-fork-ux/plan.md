@@ -550,36 +550,34 @@ Landing 3 has no Landing-1 or Landing-2 hard dependencies — its items (U8 rich
 ## Key files
 
 **Server**
-- `src/server/orchestrator/ws-handlers/rewind-handlers.ts` — current three-mode rewind handler; deprecated in Landing 2.
-- `src/server/orchestrator/ws-handlers/rollback-handlers.ts` — current code / code+chat / fork handlers; deprecated in Landing 2.
-- `src/server/orchestrator/ws-handlers/resolve-runner.ts` — `resolveRunner(ctx)` for B4.
-- `src/server/orchestrator/services/session-fork-merge.ts` — `forkSession()` clone + branch logic. The existing title-derivation template at line 69 (`` `${activeSession?.title ?? "Session"} (${trimmed})` ``) is exactly what the new fork flow wants, so the function signature is unchanged. The only ripples for B5/B6 are the new WS handler calling `forkSession()` with the user-edited branch slug, plus appending the breadcrumb + emitting `fork_breadcrumb` after `forkSession()` returns. `POST /api/sessions/:id/fork` (`api-routes-session.ts:257-280`) likewise needs no body-shape change.
-- `src/server/orchestrator/services/replay.ts` — `buildConversationReplay()`.
-- `src/server/orchestrator/chat-history.ts` — `PersistedMessage` interface (10-50), `toRow`/`fromRow` (112-150), `truncate` (191-202), `saveMessages` (205-212); B2 migration target.
-- `src/server/orchestrator/api-routes-session.ts:257-280` — HTTP `POST /api/sessions/:id/fork`. Not on B3's path — this route only creates the cloned workspace/branch via `forkSession()`; it doesn't copy chat history, so it has no upload references to mirror. B3 is purely about the WS `handleForkSessionFromMessage` handler at `rollback-handlers.ts:80-139`, which *does* copy chat history (lines 117-120) and is the actual leak surface.
+- `src/server/orchestrator/ws-handlers/rollback-handlers.ts` — `handleRewindAtGap`, preview, restore; snapshot restore.
+- `src/server/orchestrator/ws-handlers/resolve-runner.ts` — `resolveRunner(ctx)` for turn-running guard (B4).
+- `src/server/orchestrator/services/session-fork-merge.ts` — `forkSession()` clone + branch logic.
+- `src/server/orchestrator/services/replay.ts` — `buildConversationReplay()` (U8 would extend this).
+- `src/server/orchestrator/chat-history.ts` — rewind metadata columns + `rewind_snapshots`.
 - `src/server/shared/git.ts` — `rollback()`; reused for snapshot restore.
-- `src/server/shared/database.ts` — migration adding `rolled_back`, `notice`, `notice_level`, `fork_child`, and `code_rollback_hash` columns to `messages` (B2 / B6 / D7 / U5), plus the new `rewind_snapshots` table.
+- `src/server/shared/database.ts` — `messages` rewind columns + `rewind_snapshots` table.
 
 **Client**
-- `src/client/components/SessionSidebar.tsx` — `repoGroups` `useMemo` (currently 521-557, returning `repos.map(...)` at 553-556) is the repo-group rendering bug (B1).
-- `src/client/components/SessionTopBar.tsx` — overflow `DropdownMenu` (currently 81-104, rename / download chat / archive items) hosts the new "Recover recent rewind" entry (U4 / D8).
-- `src/client/components/MessageList.tsx:380-437` — current rewind/rollback trigger placement; goes away in Landing 2. Also `MessageList.tsx:390` is where `rolledBack` applies `opacity-40` to both user and assistant messages (U5).
-- `src/client/components/RewindDropdown.tsx` + `RollbackDropdown.tsx` — deleted in Landing 2.
-- `src/client/components/SpawnedSessionCard.tsx` — reused (rendering only) by the fork breadcrumb. The persistence channel is new — see B6 / D7.
-- `src/client/hooks/message-handlers/rewind-complete.ts`, `rollback-complete.ts`, `session-forked.ts` — rewritten or deleted in Landing 2 depending on WS message changes.
-- `src/client/App.tsx` — `handleRewind` (currently ~475-480) and `handleRollback` (currently ~542-553) send-side; collapses to one `handleRewindAtGap`.
+- `src/client/components/SessionSidebar.tsx` — orphan repo groups (B1).
+- `src/client/components/SessionTopBar.tsx` — "Recover recent rewind" overflow (D8).
+- `src/client/components/MessageList.tsx` — `RewindPoint` gaps; `rolledBack` dimming (U5).
+- `src/client/components/RewindPoint.tsx` — between-turn menu + fork modal.
+- `src/client/components/SpawnedSessionCard.tsx` — fork breadcrumb (B6 / D7).
+- `src/client/hooks/message-handlers/rewind-complete.ts`, `rewind-preview.ts`, `rewind-restored.ts`, `session-forked.ts`.
+- `src/client/App.tsx` — `handleRewindAtGap` WS send.
 
 **Shared types**
-- `src/server/shared/types/ws-client-messages.ts` — add `WsRewindAtGap`, `WsRewindPreviewRequest`; remove the four old types in Landing 2.
-- `src/server/shared/types/ws-server-messages.ts` — add `WsRewindPreview` and `WsForkBreadcrumb`; align `WsRewindComplete` / `WsSessionForked` with the new discriminated payload shapes from B5.
+- `src/server/shared/types/ws-client-messages.ts` — `WsRewindAtGap`, `WsRewindPreviewRequest`, `WsRewindRestoreRequest`.
+- `src/server/shared/types/ws-server-messages.ts` — `WsRewindComplete`, `WsRewindPreview`, `WsForkBreadcrumb`, snapshot events.
+- `src/server/shared/types/rewind-ws-legacy.test.ts` — compile-time guard against reintroducing old wire types.
 
-**Tests (to add)**
-- `src/server/orchestrator/integration_tests/rewind-fork.test.ts` (new — Landing 1 + Landing 2 cases per B7's per-landing split).
-- `src/client/hooks/message-handlers/session-forked.test.ts` (new — Landing 1; covers the auto-switch hook behavior referenced by B7).
-- `src/client/components/RewindPoint.test.tsx` (new — Landing 2).
+**Tests**
+- `src/server/orchestrator/integration_tests/rewind-fork.test.ts`
+- `src/client/components/MessageList.test.tsx` — rewind gap coverage
 
 **Related docs**
-- `docs/007-threads-checkpoints/plan.md` — original rollback design. Add a cross-reference pointing here once this ships.
+- `docs/007-threads-checkpoints/plan.md` — original rollback design (superseded by gap-based rewind here).
 - `docs/095-runner-ctx-simplification/plan.md` — capture-at-entry pattern used in B4.
 - `docs/117-agent-spawned-sessions/plan.md` — source of the `SpawnedSessionCard` pattern reused by D7.
 
