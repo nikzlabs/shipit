@@ -7,13 +7,15 @@ A browser-based AI editor — describe what you want in chat, the agent writes t
 
 The architecture is agent-agnostic, so additional backends can be added later.
 
-Three things set ShipIt apart from other AI editors:
+Five product choices set ShipIt apart from other AI coding harnesses:
 
-- **Container-isolated sessions** — every agent turn runs in its own Docker container, so concurrent sessions can't step on each other's files, processes, or installed dependencies.
-- **Self-hostable on a remote server** — ShipIt is Docker-based end to end. Run it on a VPS and your laptop doesn't need to be open for the agent to keep working.
-- **First-class previews from Docker Compose** — declare your dev server (and anything else: databases, queues, log tailers) in `docker-compose.yml`; ShipIt surfaces each service as an automatic or manual preview inside the app.
+- **Compose-based previews** — declare your dev server, databases, queues, log tailers, and other app services in `docker-compose.yml`; ShipIt manages them and surfaces automatic or manual previews inside the app.
+- **Container-isolated sessions** — each session gets its own Docker container, branch, chat history, and workspace, so concurrent agents can't step on each other's files, processes, or installed dependencies.
+- **Self-hostable on a VPS** — ShipIt is Docker-based end to end. Run it on a remote server and your laptop doesn't need to stay open for agents, previews, or CI-followup work to continue.
+- **Tight GitHub integration** — branches, auto-commits, pushes, PR creation, CI checks, deploy status, review comments, and merge state are rendered inline instead of punting you to GitHub.
+- **Smooth browser IDE UX** — chat, file tree, Monaco editor, terminal, preview, diffs, session history, and PR lifecycle all live in one interface.
 
-Around that core, ShipIt is the surface: build, review, ship, and debug software inside one chat-shaped IDE. PRs, CI status, deploy status, diffs, commits, conversation history, terminal, and live preview all render inline — no jumping out to GitHub, your hosting dashboard, or a separate terminal.
+Around that core, ShipIt is the surface: build, review, ship, and debug software inside one chat-shaped IDE. The agent runs the commands, edits the files, reads the logs, opens PRs, watches checks, and fixes failures while the user stays in ShipIt.
 
 ## Installation
 
@@ -61,7 +63,7 @@ See [`deployment/README.md`](deployment/README.md) for the full guide: sizing re
 ### Build
 - **Chat-driven development** — describe what you want in natural language; the agent writes the code, runs the commands, and reads the logs
 - **Multi-agent backend** — pick Claude Code CLI or Codex CLI per session; sign in with the subscription you already have
-- **Live preview** — embedded iframe shows your app updating in real time, with HMR proxied through ShipIt and multi-port support
+- **Compose-native live preview** — embedded iframes show your app updating in real time, with HMR proxied through ShipIt, multi-port support, and Docker Compose services managed per session
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
 - **File upload & image input** — drop files into the chat; the agent reads them as context
 - **Interactive terminal** — full PTY (xterm.js) inside the session container for ad-hoc debugging
@@ -70,6 +72,7 @@ See [`deployment/README.md`](deployment/README.md) for the full guide: sizing re
 
 ### Review & ship
 - **Inline PR lifecycle card** — title, description, CI checks, deploy status, and merge state all render in chat; no GitHub tab required
+- **GitHub without leaving ShipIt** — create PRs, follow CI, read review threads, track deploys, and merge from the browser IDE
 - **AI PR descriptions** — generated from the actual diff when you open a PR
 - **Cross-agent review** — have a second agent review the first agent's changes before merging
 - **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
@@ -80,7 +83,7 @@ See [`deployment/README.md`](deployment/README.md) for the full guide: sizing re
 ### Iterate safely
 - **Git as undo** — every agent turn auto-commits; rewind to any previous state, and fork into a new branch from any point
 - **Parallel sessions** — spawn separate workspaces with their own branch, container, and chat history; review each as its own PR
-- **Worktree-backed sessions** — multiple sessions on the same repo share a bare cache and use git worktrees for isolation
+- **Container + worktree isolation** — multiple sessions on the same repo share a bare cache and use git worktrees, while each session's agent and services run in their own containerized environment
 - **Permission modes** — choose how much autonomy the agent has per session
 - **Live steering** — interrupt and redirect the agent mid-turn without losing context
 - **Session sidebar** — pinned sessions, AI-generated session names, status indicators
