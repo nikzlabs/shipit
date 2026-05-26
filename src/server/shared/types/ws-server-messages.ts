@@ -818,8 +818,8 @@ export interface WsSessionSpawned {
  * was rejected by the orchestrator (docs/117 cross-cutting follow-up).
  *
  * Counterpart to `WsSessionSpawned` for the failure path. Without this, a
- * spawn rejection (quota hit, invalid branch, archived parent) only surfaces
- * on the shim's stderr — invisible in the parent's chat lane. Emitted on the
+ * spawn rejection (quota hit, archived parent, bad payload) only surfaces on
+ * the shim's stderr — invisible in the parent's chat lane. Emitted on the
  * parent runner via `runner.emitMessage` so every attached viewer sees it
  * and it lands in the turn-event buffer for reconnecting viewers.
  *
@@ -847,8 +847,6 @@ export interface WsSessionSpawnFailed {
     | "error";
   /** Title the agent requested (or the prompt's derived slug). */
   title?: string;
-  /** Branch the agent requested. */
-  branch?: string;
   /**
    * First line of the prompt the spawn was meant to kick off, truncated to
    * 200 chars so the chat card has enough context to tell the user *what*

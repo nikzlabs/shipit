@@ -54,23 +54,11 @@ export const DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS =
 export const DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN =
   readPositiveIntEnv("MAX_SPAWNED_SESSIONS_PER_TURN") ?? 4;
 
-/**
- * Tiny regex-style validation reused from `forkSession`. Rejects anything
- * that's not a sane git ref. Keep in sync with `forkSession`.
- */
-function assertValidBranchName(name: string): void {
-  if (/[\s~^:?*[\\]/.test(name) || name.includes("..")) {
-    throw new ServiceError(400, "Invalid branch name");
-  }
-}
-
 export interface SpawnChildSessionOptions {
   /** The required initial user prompt that the spawned session's agent runs. */
   prompt: string;
   /** Session title. Defaults to a slug derived from `prompt`. */
   title?: string;
-  /** Child branch name. Defaults to a generated prefix (`shipit/<slug>`). */
-  branch?: string;
   /**
    * Git ref to branch off. Defaults to the parent's current HEAD via
    * `git rev-parse HEAD`. When provided, this is passed verbatim to
@@ -185,9 +173,10 @@ export async function spawnChildSession(
     }
   }
 
-  // Validate and compute branch + title up front so we fail fast before disk work.
-  const branchName = opts.branch?.trim() || generateBranchPrefix();
-  assertValidBranchName(branchName);
+  // Title up front so we fail fast before disk work. The child's branch is
+  // always a generated `shipit/<slug>` — the agent cannot pick it (dropping
+  // `--branch` is intentional: agent-supplied names drifted outside the
+  // `shipit/` namespace and broke our branch conventions).
   const title = opts.title?.trim() || trimmedPrompt.slice(0, 60) || "Spawned session";
 
   // When the parent's repo is registered and ready, route through the same
@@ -205,22 +194,23 @@ export async function spawnChildSession(
 
   let newSessionId: string;
   let newWorkspaceDir: string;
+  let branchName: string;
 
   if (useClaim && parent.remoteUrl) {
     const claimed = await claimService.claim(parent.remoteUrl);
     newSessionId = claimed.sessionId;
     newWorkspaceDir = claimed.workspaceDir;
 
-    // The claim cut a warm-prefix branch (`shipit/<random>`). Rename it to
-    // the spawn's chosen name so the child appears with the right branch
-    // from the start.
+    // The claim cut a `shipit/<random>` branch off freshly-fetched origin/HEAD.
+    // That's already the shape we want for the child's branch, so we adopt it
+    // verbatim instead of renaming.
     try {
-      const currentBranch = (await simpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
-      if (currentBranch && currentBranch !== branchName) {
-        await simpleGit(newWorkspaceDir).raw(["branch", "-m", currentBranch, branchName]);
+      branchName = (await simpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
+      if (!branchName) {
+        throw new Error("claim produced an empty branch name");
       }
     } catch (err) {
-      throw new ServiceError(400, `Failed to rename branch to '${branchName}': ${String(err)}`);
+      throw new ServiceError(500, `Failed to read claimed branch: ${String(err)}`);
     }
 
     // Honor an explicit `--base`. The claim placed HEAD at `origin/HEAD`; a
@@ -235,16 +225,19 @@ export async function spawnChildSession(
     }
 
     // Graduate the warm session into a user-visible spawn and override the
-    // claim-assigned title / branch. Credentials, gc.auto config, and the
+    // claim-assigned title. The claim already set the branch row to the
+    // current `shipit/<random>` name; we just flip `branchRenamed = true` so
+    // PR lifecycle / auto-PR gates treat it as a real session branch instead
+    // of a warm-pool placeholder. Credentials, gc.auto config, and the
     // remoteUrl row were all set during the claim itself.
     sessionManager.rename(newSessionId, title);
-    sessionManager.setBranch(newSessionId, branchName);
     sessionManager.setBranchRenamed(newSessionId, true);
     sessionManager.setWarm(newSessionId, false);
   } else {
     // Local-repo fallback: parent isn't backed by a registered remote (tests,
     // ad-hoc repos). Branch off parent's HEAD so the child sees the parent's
     // committed state — preserves the docs/117 v1 behavior for this path.
+    branchName = generateBranchPrefix();
     const crypto = await import("node:crypto");
     newSessionId = crypto.randomUUID();
     const newSessionDir = path.join(sessionsRoot, newSessionId);

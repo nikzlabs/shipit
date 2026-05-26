@@ -223,7 +223,6 @@ describe("shipit session create", () => {
         "session", "create",
         "-p", "Port API to TS",
         "--title", "Port API",
-        "--branch", "port-api-ts",
         "--turn", "turn-123",
       ],
       {
@@ -231,7 +230,7 @@ describe("shipit session create", () => {
           status: 200,
           body: {
             sessionId: "ses_abc",
-            branch: "port-api-ts",
+            branch: "shipit/k7p2qz",
             status: "running",
             session: { id: "ses_abc" },
           },
@@ -241,7 +240,7 @@ describe("shipit session create", () => {
 
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("session-id: ses_abc");
-    expect(out.stdout).toContain("branch:     port-api-ts");
+    expect(out.stdout).toContain("branch:     shipit/k7p2qz");
     expect(out.stdout).toContain("status:     running");
 
     expect(out.calls).toHaveLength(1);
@@ -251,7 +250,6 @@ describe("shipit session create", () => {
     expect(out.calls[0].body).toMatchObject({
       prompt: "Port API to TS",
       title: "Port API",
-      branch: "port-api-ts",
       spawnedByTurn: "turn-123",
     });
     // Don't send fields the agent didn't pass:
@@ -259,6 +257,20 @@ describe("shipit session create", () => {
     expect("agent" in body).toBe(false);
     expect("base" in body).toBe(false);
     expect("model" in body).toBe(false);
+    // The agent cannot pick its own branch name — `--branch` was dropped
+    // because agent-supplied names drifted outside the `shipit/` namespace.
+    expect("branch" in body).toBe(false);
+  });
+
+  it("rejects --branch as an unsupported flag", async () => {
+    const { run } = makeRunner();
+    const out = await run([
+      "session", "create",
+      "-p", "x",
+      "--branch", "port-api-ts",
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--branch");
   });
 
   it("forwards --agent, --model, --base when supplied", async () => {

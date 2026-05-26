@@ -132,7 +132,6 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       payload: {
         prompt: "Port API to TS",
         title: "Port API",
-        branch: "port-api-ts",
         spawnedByTurn: "turn-1",
       },
     });
@@ -144,7 +143,9 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       status: string;
       session: { id: string; title: string; parentSessionId?: string; spawnedByTurn?: string };
     };
-    expect(body.branch).toBe("port-api-ts");
+    // The agent cannot pick the branch name; it's always auto-generated
+    // under the `shipit/` namespace.
+    expect(body.branch).toMatch(/^shipit\//);
     expect(body.status).toBe("running");
     expect(body.session.title).toBe("Port API");
     expect(body.session.parentSessionId).toBe(parentId);
@@ -155,7 +156,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const reloaded = sessionManager.get(body.sessionId);
     expect(reloaded?.parentSessionId).toBe(parentId);
     expect(reloaded?.spawnedByTurn).toBe("turn-1");
-    expect(reloaded?.branch).toBe("port-api-ts");
+    expect(reloaded?.branch).toBe(body.branch);
   });
 
   it("POST /spawn rejects an empty prompt with 400", { timeout: 15_000 }, async () => {
@@ -170,16 +171,16 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(res.json().error).toContain("prompt is required");
   });
 
-  it("POST /spawn rejects an invalid branch name with 400", { timeout: 15_000 }, async () => {
+  it("POST /spawn rejects an over-long prompt with 400", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
 
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", branch: "has spaces" },
+      payload: { prompt: "x".repeat(50_001) },
     });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toContain("Invalid branch name");
+    expect(res.json().error).toContain("50,000");
   });
 
   it("POST /spawn returns 404 for a nonexistent parent", async () => {
@@ -199,20 +200,20 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const parentId = await createParentSession();
 
     // Default per-turn cap is 4. Spawning a 5th with the same turn id should
-    // hit the limit. Each spawn uses a unique branch name to avoid
-    // `git checkout -b` collisions.
+    // hit the limit. Branch names are auto-generated per spawn so there's no
+    // collision concern.
     for (let i = 0; i < 4; i++) {
       const ok = await app.inject({
         method: "POST",
         url: `/api/sessions/${parentId}/spawn`,
-        payload: { prompt: `child-${i}`, branch: `child-${i}`, spawnedByTurn: "turn-1" },
+        payload: { prompt: `child-${i}`, spawnedByTurn: "turn-1" },
       });
       expect(ok.statusCode).toBe(200);
     }
     const limited = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "child-5", branch: "child-5", spawnedByTurn: "turn-1" },
+      payload: { prompt: "child-5", spawnedByTurn: "turn-1" },
     });
     expect(limited.statusCode).toBe(429);
     expect(limited.json().error).toContain("Per-turn spawn limit");
@@ -228,13 +229,13 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const r1 = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "first", branch: "first" },
+      payload: { prompt: "first" },
     });
     expect(r1.statusCode).toBe(200);
     const r2 = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "second", branch: "second" },
+      payload: { prompt: "second" },
     });
     expect(r2.statusCode).toBe(200);
 
@@ -245,10 +246,10 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(list.statusCode).toBe(200);
     const body = list.json() as { children: { id: string; branch: string }[] };
     expect(body.children).toHaveLength(2);
-    // Should include both branches we just spawned.
+    // Branch names are auto-generated; just assert both got distinct shipit/ branches.
     const branches = body.children.map((c) => c.branch);
-    expect(branches).toContain("first");
-    expect(branches).toContain("second");
+    expect(branches.every((b) => b.startsWith("shipit/"))).toBe(true);
+    expect(new Set(branches).size).toBe(2);
   });
 
   it("GET /children/:childId returns the child + denies cross-tenancy access", { timeout: 15_000 }, async () => {
@@ -259,7 +260,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const spawn = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentAId}/spawn`,
-      payload: { prompt: "child", branch: "child-a" },
+      payload: { prompt: "child" },
     });
     const childId = (spawn.json() as { sessionId: string }).sessionId;
 
@@ -298,7 +299,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       const res = await app.inject({
         method: "POST",
         url: `/api/sessions/${parentId}/spawn`,
-        payload: { prompt: "Port API to TS", title: "Port API", branch: "port-api-ts" },
+        payload: { prompt: "Port API to TS", title: "Port API" },
       });
       expect(res.statusCode).toBe(200);
       const { sessionId: childId } = res.json() as { sessionId: string };
@@ -318,7 +319,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       expect(spawnedMsg.sessionId).toBe(parentId);
       expect(spawnedMsg.childSessionId).toBe(childId);
       expect(spawnedMsg.title).toBe("Port API");
-      expect(spawnedMsg.branch).toBe("port-api-ts");
+      expect(spawnedMsg.branch).toMatch(/^shipit\//);
       expect(typeof spawnedMsg.spawnedAt).toBe("string");
     } finally {
       parentClient.close();
@@ -339,7 +340,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
         const ok = await app.inject({
           method: "POST",
           url: `/api/sessions/${parentId}/spawn`,
-          payload: { prompt: `child-${i}`, branch: `child-${i}`, spawnedByTurn: "turn-1" },
+          payload: { prompt: `child-${i}`, spawnedByTurn: "turn-1" },
         });
         expect(ok.statusCode).toBe(200);
       }
@@ -350,7 +351,6 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
         url: `/api/sessions/${parentId}/spawn`,
         payload: {
           prompt: "Spin up another worker for the migration",
-          branch: "child-5",
           title: "Worker 5",
           spawnedByTurn: "turn-1",
         },
@@ -364,7 +364,6 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
         statusCode: number;
         reason: string;
         title?: string;
-        branch?: string;
         promptPreview?: string;
         failedAt: string;
       };
@@ -374,7 +373,6 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       expect(failedMsg.reason).toBe("quota_per_turn");
       expect(failedMsg.message).toContain("Per-turn spawn limit");
       expect(failedMsg.title).toBe("Worker 5");
-      expect(failedMsg.branch).toBe("child-5");
       expect(failedMsg.promptPreview).toContain("Spin up another worker");
       expect(typeof failedMsg.failedAt).toBe("string");
     } finally {
@@ -389,7 +387,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       const res = await app.inject({
         method: "POST",
         url: `/api/sessions/${parentId}/spawn`,
-        payload: { prompt: "x", branch: "has spaces" },
+        payload: { prompt: "x".repeat(50_001) },
       });
       expect(res.statusCode).toBe(400);
 
@@ -413,15 +411,15 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const ok1 = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "ok-1", branch: "ok-1", spawnedByTurn: "turn-1" },
+      payload: { prompt: "ok-1", spawnedByTurn: "turn-1" },
     });
     expect(ok1.statusCode).toBe(200);
 
-    // 400 invalid branch under the same turn.
+    // 400 invalid request (over-long prompt) under the same turn.
     const bad = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "bad", branch: "has spaces", spawnedByTurn: "turn-1" },
+      payload: { prompt: "x".repeat(50_001), spawnedByTurn: "turn-1" },
     });
     expect(bad.statusCode).toBe(400);
 
@@ -449,13 +447,12 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   // -------------------------------------------------------------------------
 
   /** Spawn one child under the given parent, returning the child id. */
-  async function spawnChild(parentId: string, opts: { branch?: string; prompt?: string } = {}): Promise<string> {
+  async function spawnChild(parentId: string, opts: { prompt?: string } = {}): Promise<string> {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
       payload: {
         prompt: opts.prompt ?? "child task",
-        branch: opts.branch ?? `child-${Math.random().toString(36).slice(2, 8)}`,
       },
     });
     expect(res.statusCode).toBe(200);
@@ -471,9 +468,9 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
    * system turn against a freshly-created FakeClaudeProcess. Tests need to
    * finish that turn explicitly — the fake doesn't auto-emit `done`.
    */
-  async function spawnAndIdleChild(parentId: string, opts: { branch?: string } = {}): Promise<string> {
+  async function spawnAndIdleChild(parentId: string): Promise<string> {
     const before = createdClaudes.length;
-    const childId = await spawnChild(parentId, opts);
+    const childId = await spawnChild(parentId);
     // The spawn fires `runner.dispatch` synchronously, which calls
     // `agentFactory(...)` — so the new FakeClaudeProcess lands in
     // `createdClaudes` before the spawn route returns. Poll defensively to
@@ -537,7 +534,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   it("POST /children/:childId/message returns 404 for a cross-tenant child", { timeout: 15_000 }, async () => {
     const parentAId = await createParentSession("Parent A");
     const parentBId = await createParentSession("Parent B");
-    const childId = await spawnChild(parentAId, { branch: "child-a" });
+    const childId = await spawnChild(parentAId);
 
     const res = await app.inject({
       method: "POST",
@@ -609,7 +606,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   it("GET /children/:childId?wait=true returns 404 for a cross-tenant child", { timeout: 15_000 }, async () => {
     const parentAId = await createParentSession("Parent A");
     const parentBId = await createParentSession("Parent B");
-    const childId = await spawnChild(parentAId, { branch: "child-a" });
+    const childId = await spawnChild(parentAId);
 
     const res = await app.inject({
       method: "GET",
@@ -650,7 +647,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   it("POST /children/:childId/archive returns 404 for a cross-tenant child", { timeout: 15_000 }, async () => {
     const parentAId = await createParentSession("Parent A");
     const parentBId = await createParentSession("Parent B");
-    const childId = await spawnChild(parentAId, { branch: "child-a" });
+    const childId = await spawnChild(parentAId);
 
     const res = await app.inject({
       method: "POST",
@@ -671,7 +668,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   it("spawned session's first agent.run(...) carries the full WS-path params", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     const before = createdClaudes.length;
-    await spawnChild(parentId, { branch: "params-parity" });
+    await spawnChild(parentId);
 
     // Wait for the spawn's `runner.dispatch` → buildRunParams → agent.run.
     const deadline = Date.now() + 2000;
@@ -710,7 +707,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", branch: "child-model-test" },
+      payload: { prompt: "x" },
     });
     expect(res.statusCode).toBe(200);
 
@@ -914,7 +911,7 @@ describe("Integration: spawn from registered remote (claim path, docs/117 + this
     const spawnRes = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "do the thing", branch: "spawn-test-child" },
+      payload: { prompt: "do the thing" },
     });
     expect(spawnRes.statusCode).toBe(200);
     const { sessionId: childId } = spawnRes.json() as { sessionId: string };
@@ -931,12 +928,12 @@ describe("Integration: spawn from registered remote (claim path, docs/117 + this
     expect(childHead).toBe(mainSha);
     expect(childHead).not.toBe(parentHead);
 
-    // Child is on the requested branch.
+    // Child is on an auto-generated shipit/ branch (the agent cannot pick it).
     const childBranch = execSync("git branch --show-current", {
       cwd: child!.workspaceDir!,
       encoding: "utf8",
     }).trim();
-    expect(childBranch).toBe("spawn-test-child");
+    expect(childBranch).toMatch(/^shipit\//);
 
     // Child must be a fully-graduated session, not a warm-pool slot.
     expect(child?.warm).toBeFalsy();
@@ -968,7 +965,7 @@ describe("Integration: spawn from registered remote (claim path, docs/117 + this
     const spawnRes = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", branch: "base-test", base: baseSha },
+      payload: { prompt: "x", base: baseSha },
     });
     expect(spawnRes.statusCode).toBe(200);
     const { sessionId: childId } = spawnRes.json() as { sessionId: string };

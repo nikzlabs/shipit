@@ -65,7 +65,7 @@ override the parent.
 
 | Subcommand | Notes |
 |---|---|
-| `shipit session create -p "PROMPT" [--title T] [--branch NAME] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | Spawn a sibling session with `PROMPT` as its first user message. Returns the child's id, branch, and status on stdout. |
+| `shipit session create -p "PROMPT" [--title T] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | Spawn a sibling session with `PROMPT` as its first user message. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. Returns the child's id, branch, and status on stdout. |
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
 | `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available. |
 | `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt; exit is `0` either way and the response prints the queue position. |
@@ -79,21 +79,20 @@ override the parent.
 # User asked: "Spin up a separate session to port the API to TypeScript."
 shipit session create \
   -p "Port the API in /server to TypeScript. Land it as a separate PR." \
-  --branch port-api-ts \
   --title "Port API to TypeScript"
 # session-id: ses_abc123
-# branch:     port-api-ts
+# branch:     shipit/k7p2qz
 # status:     running
 ```
 
 ```sh
 # Coordinate later in the conversation:
 shipit session list
-# ses_abc123    running    port-api-ts    Port API to TypeScript
+# ses_abc123    running    shipit/k7p2qz    Port API to TypeScript
 shipit session view ses_abc123
 # Port API to TypeScript (ses_abc123)
 # status:     running
-# branch:     port-api-ts
+# branch:     shipit/k7p2qz
 # queue:      0
 # spawned-at: 2026-05-04T14:22:31Z
 ```
@@ -122,8 +121,8 @@ child via the parent → child linkage; you cannot operate on sessions you
 didn't spawn.
 
 ```sh
-# Spawn a long-running task on a separate branch.
-shipit session create -p "Migrate the API to Drizzle" --branch drizzle
+# Spawn a long-running task on its own branch (branch name is auto-generated).
+shipit session create -p "Migrate the API to Drizzle"
 # session-id: ses_abc
 
 # Block until the child is idle (or the timeout fires).
