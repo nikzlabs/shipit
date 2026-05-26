@@ -128,13 +128,20 @@ describe("Integration: warm session lifecycle", () => {
   });
 
   afterEach(async () => {
-    dbManager.close();
+    // Close the app BEFORE the DB. `buildApp` schedules a setTimeout(0) for
+    // startup re-warming (`scheduleStartupTasks`), which fires
+    // `void warmSessionForRepo(url)` against `repoStore` / `sessionManager`.
+    // `app.close()`'s onClose hook clears that timer; if the DB is dropped
+    // first, any already-queued warm task hits the closed `better-sqlite3`
+    // handle synchronously and surfaces as an unhandled rejection
+    // (`The database connection is not open`).
     if (origGitTerminalPrompt === undefined) {
       delete process.env.GIT_TERMINAL_PROMPT;
     } else {
       process.env.GIT_TERMINAL_PROMPT = origGitTerminalPrompt;
     }
     await app.close();
+    dbManager.close();
     await new Promise((r) => setTimeout(r, 50));
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

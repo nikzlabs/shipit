@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import { MessageList, parseMessageSegments, type ChatMessage, type ChatMessageImage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
 
 // jsdom doesn't implement scrollIntoView
@@ -1036,6 +1036,69 @@ describe("MessageList", () => {
       const codeEl = container.querySelector("pre code.hljs");
       expect(codeEl).toBeInTheDocument();
       expect(codeEl?.innerHTML).toContain("hljs-");
+    });
+  });
+
+  // Phase 1 of docs/153 deleted the MessageList freeze hack that snapshotted
+  // the message array while the user had an active text selection. The freeze
+  // existed because the old `marked` + `dangerouslySetInnerHTML` pipeline
+  // rewrote whole subtrees on every streaming token, which detached the text
+  // nodes the browser's Selection Range pointed into. With `react-markdown`
+  // the React tree reconciles in place: appending text into a paragraph
+  // updates `nodeValue` on the same text node, leaving the selection anchor
+  // intact. These tests pin that property so the freeze hack doesn't have to
+  // be reintroduced.
+  describe("streaming-selection stability (react-markdown)", () => {
+    it("preserves the existing paragraph text node when a streaming token is appended", () => {
+      const { container, rerender } = render(
+        <MessageList
+          messages={[msg("assistant", "Hello")]}
+          isLoading={true}
+        />
+      );
+      const paragraph = container.querySelector('[data-testid="markdown-content"] p');
+      expect(paragraph).toBeInTheDocument();
+      const initialTextNode = paragraph!.firstChild;
+      expect(initialTextNode?.nodeType).toBe(Node.TEXT_NODE);
+
+      act(() => {
+        rerender(
+          <MessageList
+            messages={[msg("assistant", "Hello world")]}
+            isLoading={true}
+          />
+        );
+      });
+
+      const paragraphAfter = container.querySelector('[data-testid="markdown-content"] p');
+      expect(paragraphAfter).toBe(paragraph);
+      expect(paragraphAfter!.firstChild).toBe(initialTextNode);
+      expect((initialTextNode as Text).nodeValue).toBe("Hello world");
+    });
+
+    it("keeps a stable heading text node across paragraph appends after it", () => {
+      const { container, rerender } = render(
+        <MessageList
+          messages={[msg("assistant", "## Title\n\nbody")]}
+          isLoading={true}
+        />
+      );
+      const heading = container.querySelector('[data-testid="markdown-content"] h2');
+      const headingText = heading?.firstChild as Text | null;
+      expect(headingText?.nodeValue).toBe("Title");
+
+      act(() => {
+        rerender(
+          <MessageList
+            messages={[msg("assistant", "## Title\n\nbody continues")]}
+            isLoading={true}
+          />
+        );
+      });
+
+      const headingAfter = container.querySelector('[data-testid="markdown-content"] h2');
+      expect(headingAfter).toBe(heading);
+      expect(headingAfter!.firstChild).toBe(headingText);
     });
   });
 

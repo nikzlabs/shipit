@@ -60,13 +60,26 @@ export function createWarmPool(
   const warmingPromises = new Map<string, Promise<void>>();
 
   const warmSessionForRepo = async (repoUrl: string): Promise<void> => {
-    const repo = repoStore.get(repoUrl);
-    if (repo?.status !== "ready") return;
-    // Don't warm if already has a warm session or is currently warming
-    if (warmingInProgress.has(repoUrl)) return;
-    if (repo.warmSessionId) {
-      const existing = sessionManager.get(repo.warmSessionId);
-      if (existing) return;
+    // Every call site below `void`-discards the returned promise, so a
+    // synchronous throw from these `better-sqlite3` reads (which fire from
+    // setTimeout(0)-driven sweeps, claim-session re-warming, send-message
+    // hooks, etc.) would surface as an unhandled rejection and fail
+    // vitest's UNHANDLED ERRORS gate. Production never closes the DB
+    // mid-request, but the shape of "background task vs. shutting-down DB"
+    // is real in tests — keep the function safe-by-construction.
+    let repo;
+    try {
+      repo = repoStore.get(repoUrl);
+      if (repo?.status !== "ready") return;
+      // Don't warm if already has a warm session or is currently warming
+      if (warmingInProgress.has(repoUrl)) return;
+      if (repo.warmSessionId) {
+        const existing = sessionManager.get(repo.warmSessionId);
+        if (existing) return;
+      }
+    } catch (err) {
+      console.error(`[warm] Preflight DB read failed for ${repoUrl}:`, getErrorMessage(err));
+      return;
     }
     warmingInProgress.add(repoUrl);
 

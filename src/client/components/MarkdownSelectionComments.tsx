@@ -1,12 +1,17 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: selection listener + DOM measurement, useRef: rendered body container, useLayoutEffect: position the floating button against the latest selection rect
 import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, memo } from "react";
-import { marked } from "marked";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
+import type { Root, RootContent } from "mdast";
 import { ChatTeardropTextIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { Badge, type BadgeProps } from "./ui/badge.js";
 import { parseFrontmatter, type ParsedFrontmatter } from "../utils/markdown-frontmatter.js";
 import type { DocPriority, DocStatus } from "../../server/shared/types.js";
+import { markdownComponents } from "./message-markdown.js";
 
 const CONTEXT_CHARS = 50;
 const HIGHLIGHT_NAME = "shipit-pending-comment";
@@ -20,47 +25,110 @@ export interface SelectionCommentData {
   source?: "human" | "ai";
 }
 
+/**
+ * Per-block top-margin size. We render each top-level mdast child in its own
+ * `.prose` container; Tailwind Typography's `> :first-child { margin-top: 0 }`
+ * rule zeros out the prose heading/paragraph margins inside it, so we restore
+ * vertical rhythm with a wrapper margin chosen by block type. Headings get the
+ * largest gap (section break), paragraphs get the smallest (tight inline
+ * paragraph-after-content), everything else sits in between.
+ */
+type BlockSpacing = "lg" | "md" | "sm";
+
 interface MarkdownBlock {
-  html: string;
+  /** Verbatim slice of the original markdown source that produced this block. */
+  source: string;
+  /** Flattened text — used to match selection-anchored comments to a block. */
   textContent: string;
+  /** Top margin to apply to this block's wrapper (suppressed on the first block). */
+  topSpacing: BlockSpacing;
+}
+
+const TOP_MARGIN_CLASS: Record<BlockSpacing, string> = {
+  lg: "mt-6",
+  md: "mt-4",
+  sm: "mt-2",
+};
+
+/**
+ * Pick the wrapper top-margin for a top-level mdast block. Headings get a
+ * section-break gap (depth 1–2 the largest, deeper headings smaller).
+ * Paragraphs get the tightest gap so a heading + paragraph reads as a pair.
+ * Lists, code, quotes, tables, and rules sit in the middle.
+ */
+function topSpacingFor(node: RootContent): BlockSpacing {
+  if (node.type === "heading") {
+    return node.depth <= 2 ? "lg" : "md";
+  }
+  if (node.type === "paragraph") return "sm";
+  return "md";
 }
 
 /**
- * Memoised wrapper around a single rendered markdown block. Without this,
- * any parent state change (e.g. the floating-button snapshot updating on
- * every `selectionchange` event) caused React to walk the block JSX during
- * reconciliation. Because the JSX `{ __html: block.html }` object is created
- * fresh each render, that walk re-ran the `dangerouslySetInnerHTML` write
- * path, replacing the H1/H2/P/UL children inside each `.prose` div. The
- * replacement detached the text nodes the user's selection was anchored to,
- * which collapsed the selection mid-drag. Memoising on the `html` string
- * skips the entire subtree update when the markdown hasn't changed.
+ * Shared remark plugin stack for the docs viewer. `remark-gfm` is the superset
+ * we render (tables, task lists, strikethrough). We deliberately don't add
+ * `rehype-slug` / `rehype-autolink-headings` — the docs viewer has no UI for
+ * deep-linking to sections, so the heading ids and wrapping anchors would
+ * just be dead DOM weight.
  */
-const MarkdownBlock = memo(({ html }: { html: string }) => (
-  <div
-    className="prose dark:prose-invert prose-sm max-w-none"
-    dangerouslySetInnerHTML={{ __html: html }}
-  />
+const remarkPluginsDocs = [remarkGfm];
+
+/**
+ * Memoised wrapper around a single rendered markdown block. The wrapper exists
+ * so selection-anchored comment positioning has a stable container per
+ * top-level block: `offsetWithin` walks text nodes from the document root and
+ * `commentsByBlock` slots each comment after the block whose flat text
+ * contains it. We memoise on the source slice so streaming-style re-renders of
+ * an unrelated block don't reconcile this one's text nodes — the same
+ * property that lets the chat survive without the freeze hack now keeps the
+ * docs viewer's mid-selection rendering stable too.
+ */
+const MarkdownBlock = memo(({ source }: { source: string }) => (
+  <div className="prose dark:prose-invert prose-sm max-w-none">
+    <Markdown
+      remarkPlugins={remarkPluginsDocs}
+      components={markdownComponents}
+      skipHtml
+    >
+      {source}
+    </Markdown>
+  </div>
 ));
 MarkdownBlock.displayName = "MarkdownBlock";
 
-/** Render the markdown body, then split the resulting HTML into top-level blocks. */
-function parseMarkdownToBlocks(content: string): MarkdownBlock[] {
-  const html = marked.parse(content, { async: false });
-  if (typeof document === "undefined") {
-    // SSR / test fallback: return the whole document as one block.
-    return [{ html, textContent: content }];
+/** Flatten an mdast subtree to a plain text string for comment matching. */
+function mdastToText(node: RootContent | Root): string {
+  if ("value" in node && typeof node.value === "string") return node.value;
+  if ("children" in node && Array.isArray(node.children)) {
+    return node.children.map(mdastToText).join("");
   }
-  const doc = new DOMParser().parseFromString(html, "text/html");
+  return "";
+}
+
+const docsParser = unified().use(remarkParse).use(remarkGfm);
+
+/**
+ * Split markdown into top-level blocks by parsing to mdast and slicing the
+ * original source by each child's recorded offsets. Each slice round-trips
+ * cleanly through react-markdown — re-parsing a top-level paragraph, heading,
+ * list, or fenced code block in isolation produces the same render as parsing
+ * the whole document, so block-by-block rendering preserves layout while
+ * giving us stable wrappers to anchor comments against.
+ */
+function splitIntoTopLevelBlocks(content: string): MarkdownBlock[] {
+  const tree = docsParser.parse(content);
   const blocks: MarkdownBlock[] = [];
-  for (const child of Array.from(doc.body.children)) {
+  for (const child of tree.children) {
+    const start = child.position?.start.offset ?? 0;
+    const end = child.position?.end.offset ?? content.length;
     blocks.push({
-      html: child.outerHTML,
-      textContent: child.textContent ?? "",
+      source: content.slice(start, end),
+      textContent: mdastToText(child),
+      topSpacing: topSpacingFor(child),
     });
   }
-  if (blocks.length === 0 && html.trim() !== "") {
-    blocks.push({ html, textContent: doc.body.textContent ?? "" });
+  if (blocks.length === 0 && content.trim() !== "") {
+    blocks.push({ source: content, textContent: content, topSpacing: "md" });
   }
   return blocks;
 }
@@ -373,7 +441,7 @@ export function MarkdownSelectionComments({
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null);
 
   const fm = useMemo(() => parseFrontmatter(content), [content]);
-  const blocks = useMemo(() => parseMarkdownToBlocks(fm.body), [fm.body]);
+  const blocks = useMemo(() => splitIntoTopLevelBlocks(fm.body), [fm.body]);
 
   // Assign each comment to the first block whose visible text contains its
   // quoted text. Anything left over goes into the orphan bucket at the bottom.
@@ -538,14 +606,19 @@ export function MarkdownSelectionComments({
   }, [snapshot]);
 
   return (
-    <div className="space-y-0 relative" ref={containerRef}>
+    <div className="relative" ref={containerRef}>
       {fm.hasFrontmatter && <FrontmatterHeader fm={fm} />}
 
       {blocks.map((block, idx) => {
         const blockComments = commentsByBlock.get(idx) ?? [];
+        // Suppress the top margin on the very first block so the doc doesn't
+        // start with a gap; from the second block onward, the kind-specific
+        // top margin restores the section/paragraph rhythm that prose-sm
+        // would have given inside a single container.
+        const topMargin = idx === 0 ? "" : TOP_MARGIN_CLASS[block.topSpacing];
         return (
-          <div key={idx}>
-            <MarkdownBlock html={block.html} />
+          <div key={idx} className={topMargin}>
+            <MarkdownBlock source={block.source} />
             {blockComments.map((comment) => (
               <CommentCard
                 key={comment.id}
