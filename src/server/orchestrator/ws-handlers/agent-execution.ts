@@ -384,6 +384,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     getSelectedModel: ctx.getSelectedModel,
     recordAgentRateLimits: ctx.recordAgentRateLimits,
     getSubscriptionLimitsSnapshot: ctx.getSubscriptionLimitsSnapshot,
+    nudgeClaudeOAuthRefresh: ctx.nudgeClaudeOAuthRefresh,
   };
   wireAgentListeners(currentAgent, runner, listenerDeps, {
     isNewSession,

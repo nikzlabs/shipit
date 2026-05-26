@@ -30,7 +30,7 @@ import path from "node:path";
 import os from "node:os";
 import { EventEmitter } from "node:events";
 import { spawn as nodeSpawn } from "node:child_process";
-import type { ChildProcess, SpawnOptionsWithoutStdio } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import type { AgentId, ProviderAccount } from "../shared/types.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { RuntimeMode } from "./app-di.js";
@@ -83,7 +83,7 @@ const TIER2_TIMEOUT_MS = 60_000;
 const CLAUDE_CREDENTIALS_RELATIVE = path.join(".claude", ".credentials.json");
 
 /** Sentinel for "no credentials on disk" (file missing or unparseable). */
-const NO_EXPIRY: null = null;
+const NO_EXPIRY = null;
 
 /**
  * Public outcome classifications for a single refresh tick. Returned from
@@ -545,7 +545,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
       if (debugFile) {
         fullArgs.push("--debug", "api", "--debug-file", debugFile);
       }
-      const opts: SpawnOptionsWithoutStdio = {
+      const opts: SpawnOptions = {
         env: { ...process.env, HOME: accountRoot },
         stdio: ["ignore", "pipe", "pipe"],
       };

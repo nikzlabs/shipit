@@ -37,6 +37,13 @@ export interface AgentListenerDeps {
   ) => void;
   /** Optional: latest subscription-limits snapshot, used to reclassify generic CLI errors. */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
+  /**
+   * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
+   * refresher. Triggered from the session-level `auth_required` handler so a
+   * stale per-session token is healed for the next turn. Optional — local
+   * runtime and tests omit it.
+   */
+  nudgeClaudeOAuthRefresh?: () => void;
 }
 
 /**
@@ -845,6 +852,19 @@ export function wireAgentListeners(
     console.log("[server] Agent CLI requires authentication, starting OAuth flow");
     emitToViewers({ type: "auth_required" });
     deps.authManager.startOAuthFlow();
+    // docs/153 — also kick the orchestrator-owned refresher. If the source
+    // token has rotated since this session synced in (e.g., this session sat
+    // idle through a tick), the refresher will propagate the fresh token to
+    // every pinned session including this one, so the user's next turn works
+    // without going through the sign-in flow. Fire-and-forget; the refresher
+    // is single-flight per account so concurrent auth_required from multiple
+    // sessions still coalesce into one CLI spawn.
+    const turnSession = opts.capturedSessionId
+      ? deps.sessionManager.get(opts.capturedSessionId)
+      : null;
+    if (turnSession?.agentId === "claude") {
+      deps.nudgeClaudeOAuthRefresh?.();
+    }
 
     // Tear the failed turn down. An auth failure ends the turn, but a
     // persistent streaming agent (live steering) does NOT exit on a failed
