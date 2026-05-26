@@ -25,11 +25,43 @@ export interface SelectionCommentData {
   source?: "human" | "ai";
 }
 
+/**
+ * Per-block top-margin size. We render each top-level mdast child in its own
+ * `.prose` container; Tailwind Typography's `> :first-child { margin-top: 0 }`
+ * rule zeros out the prose heading/paragraph margins inside it, so we restore
+ * vertical rhythm with a wrapper margin chosen by block type. Headings get the
+ * largest gap (section break), paragraphs get the smallest (tight inline
+ * paragraph-after-content), everything else sits in between.
+ */
+type BlockSpacing = "lg" | "md" | "sm";
+
 interface MarkdownBlock {
   /** Verbatim slice of the original markdown source that produced this block. */
   source: string;
   /** Flattened text — used to match selection-anchored comments to a block. */
   textContent: string;
+  /** Top margin to apply to this block's wrapper (suppressed on the first block). */
+  topSpacing: BlockSpacing;
+}
+
+const TOP_MARGIN_CLASS: Record<BlockSpacing, string> = {
+  lg: "mt-6",
+  md: "mt-4",
+  sm: "mt-2",
+};
+
+/**
+ * Pick the wrapper top-margin for a top-level mdast block. Headings get a
+ * section-break gap (depth 1–2 the largest, deeper headings smaller).
+ * Paragraphs get the tightest gap so a heading + paragraph reads as a pair.
+ * Lists, code, quotes, tables, and rules sit in the middle.
+ */
+function topSpacingFor(node: RootContent): BlockSpacing {
+  if (node.type === "heading") {
+    return node.depth <= 2 ? "lg" : "md";
+  }
+  if (node.type === "paragraph") return "sm";
+  return "md";
 }
 
 /**
@@ -92,10 +124,11 @@ function splitIntoTopLevelBlocks(content: string): MarkdownBlock[] {
     blocks.push({
       source: content.slice(start, end),
       textContent: mdastToText(child),
+      topSpacing: topSpacingFor(child),
     });
   }
   if (blocks.length === 0 && content.trim() !== "") {
-    blocks.push({ source: content, textContent: content });
+    blocks.push({ source: content, textContent: content, topSpacing: "md" });
   }
   return blocks;
 }
@@ -573,13 +606,18 @@ export function MarkdownSelectionComments({
   }, [snapshot]);
 
   return (
-    <div className="space-y-0 relative" ref={containerRef}>
+    <div className="relative" ref={containerRef}>
       {fm.hasFrontmatter && <FrontmatterHeader fm={fm} />}
 
       {blocks.map((block, idx) => {
         const blockComments = commentsByBlock.get(idx) ?? [];
+        // Suppress the top margin on the very first block so the doc doesn't
+        // start with a gap; from the second block onward, the kind-specific
+        // top margin restores the section/paragraph rhythm that prose-sm
+        // would have given inside a single container.
+        const topMargin = idx === 0 ? "" : TOP_MARGIN_CLASS[block.topSpacing];
         return (
-          <div key={idx}>
+          <div key={idx} className={topMargin}>
             <MarkdownBlock source={block.source} />
             {blockComments.map((comment) => (
               <CommentCard

@@ -181,7 +181,7 @@ export function CodeBlock({ code, language }: { code: string; language: string }
   }, [code]);
 
   return (
-    <div className="my-2 rounded-md overflow-hidden bg-(--color-bg-secondary) w-0 min-w-full">
+    <div className="not-prose my-2 rounded-md overflow-hidden bg-(--color-bg-secondary) w-0 min-w-full">
       <div className="flex items-center justify-between gap-2 px-3 py-1 border-b border-(--color-border-primary)">
         <span className="text-xs text-(--color-text-secondary) truncate">
           {language || "code"}
@@ -196,7 +196,7 @@ export function CodeBlock({ code, language }: { code: string; language: string }
           <span>{copied ? "Copied" : "Copy"}</span>
         </button>
       </div>
-      <pre className="p-4 overflow-x-auto text-xs leading-relaxed">
+      <pre className="px-3 py-1 overflow-x-auto text-xs leading-relaxed">
         <code
           className="hljs"
           dangerouslySetInnerHTML={{ __html: html }}
