@@ -294,21 +294,31 @@ export class ClaudeAdapter
 /**
  * Normalize the Claude CLI's `rate_limit_info` payload (one window) into the
  * shared `SubscriptionLimitsWindow` shape. The CLI reports `utilization` as
- * 0–100 and `resetsAt` as Unix epoch seconds. Returns null when either field
- * is missing or unusable — the caller leaves its last-known window in place
- * rather than clobbering it with a partial update.
+ * 0–100 and `resetsAt` as Unix epoch seconds.
+ *
+ * `resetsAt` is required — without a reset time there's nothing to render. But
+ * `utilization` is optional: Claude CLI 2.1.140 only includes it once a
+ * warning threshold trips (anthropics/claude-code#50518), so at normal low
+ * usage we get `{rateLimitType, resetsAt}` and nothing else. In that case we
+ * return `usedPct: null` so the badge can render as countdown-only and
+ * upgrade to a full meter the moment a later event carries a number.
+ *
+ * Returns null only when `resetsAt` is unusable.
  */
 function parseRateLimitWindow(
   info: { utilization?: number; resetsAt?: number } | undefined,
 ): SubscriptionLimitsWindow | null {
   if (!info) return null;
   const { utilization, resetsAt } = info;
-  if (typeof utilization !== "number" || !Number.isFinite(utilization)) return null;
   if (typeof resetsAt !== "number" || !Number.isFinite(resetsAt) || resetsAt <= 0) return null;
-  const usedPct = Math.min(100, Math.max(0, utilization));
   // resetsAt is epoch seconds; tolerate a ms value defensively.
   const ms = resetsAt < 10_000_000_000 ? resetsAt * 1000 : resetsAt;
-  return { usedPct, resetAt: new Date(ms).toISOString() };
+  const resetAt = new Date(ms).toISOString();
+  if (typeof utilization !== "number" || !Number.isFinite(utilization)) {
+    return { usedPct: null, resetAt };
+  }
+  const usedPct = Math.min(100, Math.max(0, utilization));
+  return { usedPct, resetAt };
 }
 
 export function mapCliMcpStatus(entry: ClaudeMcpServerInit): McpServerStatus {

@@ -125,8 +125,8 @@ export interface AppCtx {
    */
   recordAgentRateLimits?: (
     agentId: AgentId,
-    session: { usedPct: number; resetAt: string } | null,
-    weekly: { usedPct: number; resetAt: string } | null,
+    session: { usedPct: number | null; resetAt: string } | null,
+    weekly: { usedPct: number | null; resetAt: string } | null,
   ) => void;
   /**
    * Latest subscription-limits snapshot from the limits registry. Used to

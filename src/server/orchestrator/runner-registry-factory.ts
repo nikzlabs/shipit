@@ -148,8 +148,8 @@ export interface RunnerRegistryDeps {
    */
   recordAgentRateLimits?: (
     agentId: AgentId,
-    session: { usedPct: number; resetAt: string } | null,
-    weekly: { usedPct: number; resetAt: string } | null,
+    session: { usedPct: number | null; resetAt: string } | null,
+    weekly: { usedPct: number | null; resetAt: string } | null,
   ) => void;
   /**
    * Optional — latest subscription-limits snapshot used by the listener to

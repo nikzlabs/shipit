@@ -10,8 +10,15 @@
 import type { AgentId } from "./agent-types.js";
 
 export interface SubscriptionLimitsWindow {
-  /** Percentage of the window currently consumed (0–100, clamped). */
-  usedPct: number;
+  /**
+   * Percentage of the window currently consumed (0–100, clamped). `null`
+   * means utilization was not reported by the provider at this usage
+   * level (e.g. Claude CLI 2.1.140 only includes `utilization` in
+   * `rate_limit_event` once a warning threshold trips). The window still
+   * exists and has a `resetAt` — the UI should render the countdown
+   * without a percentage rather than fake a number.
+   */
+  usedPct: number | null;
   /** ISO timestamp of when the window resets. */
   resetAt: string;
 }

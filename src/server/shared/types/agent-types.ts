@@ -163,10 +163,15 @@ export interface AgentResultEvent {
  */
 export interface AgentRateLimitsEvent {
   type: "agent_rate_limits";
-  /** Rolling short-window quota (Claude: 5h, Codex: 5h). */
-  session: { usedPct: number; resetAt: string } | null;
+  /**
+   * Rolling short-window quota (Claude: 5h, Codex: 5h). `usedPct` is null
+   * when the provider only reported the window's existence and its reset
+   * time but not the utilization (Claude CLI 2.1.140 does this below its
+   * warning thresholds — see anthropics/claude-code#50518).
+   */
+  session: { usedPct: number | null; resetAt: string } | null;
   /** Weekly quota. */
-  weekly: { usedPct: number; resetAt: string } | null;
+  weekly: { usedPct: number | null; resetAt: string } | null;
 }
 
 export type AgentEvent =
