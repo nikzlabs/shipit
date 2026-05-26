@@ -100,11 +100,18 @@ export async function runDispatchedTurn(
         // `parentCommitHash` to anchor the diff). Matches `postTurnCommit`
         // on the WS path.
         if (result.parentHash) {
+          // Stash for the agent_result handler's fallback link, in case the
+          // rows aren't persisted yet (codex double-`turn/completed` race).
+          runner.pendingCommitLink = {
+            commitHash: result.commitHash,
+            parentCommitHash: result.parentHash,
+          };
           const updatedId = deps.listenerDeps.chatHistoryManager.updateLastMessage(runner.sessionId, {
             commitHash: result.commitHash,
             parentCommitHash: result.parentHash,
           });
           if (updatedId !== null) {
+            runner.pendingCommitLink = null;
             const messageIndex = deps.listenerDeps.chatHistoryManager.indexOfMessageId(runner.sessionId, updatedId);
             if (messageIndex >= 0) {
               runner.emitMessage({

@@ -375,14 +375,13 @@ async function resolveSessionPr(
  * noisy duplicate "Auto-pushed to origin/..." event after the PR is already
  * open.
  *
- * Chat-history linkage of the flush commit is intentionally deferred. The
- * in-progress message buffer (`replaceInProgress` at each tool boundary)
- * would wipe any commitHash we set on an in-progress assistant message, and
- * setting it on the user message would be misleading. The commit still
- * appears in `git log`; what's missing is the per-message rollback metadata
- * for this specific commit. Acceptable trade-off — the previous behavior was
- * worse (changes not in the PR at all). Track as follow-up if rollback for
- * flush-time commits becomes important.
+ * Chat-history linkage is deferred via `runner.pendingCommitLink`: writing
+ * `commitHash` onto any row that exists right now would either land on a
+ * transient in_progress=1 row (which the next `replaceInProgress` wipes) or
+ * the user message (which is misleading). Instead we stash the commit info
+ * on the runner; the agent_result handler in `wireAgentListeners` applies
+ * it after `replaceInProgress` finalizes the rows — that's the same fallback
+ * `postTurnCommit` uses for the codex double-`turn/completed` race.
  *
  * Returns the new commit hash, or null if there was nothing to commit.
  */
@@ -402,9 +401,13 @@ export async function flushPendingTurnCommit(
   runner?.clearPushTimer();
 
   const summary = runner?.turnSummary?.split("\n")[0]?.slice(0, 120) || "Agent turn";
+  const parentHash = await git.getHeadHash();
   const commitHash = await git.autoCommit(summary);
   if (!commitHash) return null;
 
+  if (runner && parentHash) {
+    runner.pendingCommitLink = { commitHash, parentCommitHash: parentHash };
+  }
   runner?.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
   return commitHash;
 }
