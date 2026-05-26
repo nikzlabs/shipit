@@ -109,7 +109,7 @@ Today the only path for (1)–(4) — and for *any* parallel work under Codex �
 ```
 agent bash tool
    │
-   │  shipit session create --prompt "Port API to TS" --branch port-api-ts
+   │  shipit session create --prompt "Port API to TS" --title "Port API"
    ▼
 [/usr/local/bin/shipit]  ← shim (Node script, ~250 lines)
    │
@@ -164,7 +164,7 @@ its request lands under.
 
 | Shim subcommand | Worker route (allowlist) | Orchestrator route | Notes |
 |---|---|---|---|
-| `shipit session create -p "PROMPT" [--title T] [--branch NAME] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | `POST /agent-ops/session/create` | `POST /api/sessions/:parentId/spawn` | Spawn a sibling. `-p`/`--prompt` is required and `-m` is an alias. Returns the child id, branch, and status. |
+| `shipit session create -p "PROMPT" [--title T] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | `POST /agent-ops/session/create` | `POST /api/sessions/:parentId/spawn` | Spawn a sibling. `-p`/`--prompt` is required and `-m` is an alias. Child branch is always auto-generated under `shipit/<slug>` — agents cannot pick it (the `--branch` flag was dropped after agent-supplied names drifted outside the `shipit/` namespace). Returns the child id, branch, and status. |
 | `shipit session list [--turn ID] [--json]` | `GET /agent-ops/session/list[?turn=ID]` | `GET /api/sessions/:parentId/children[?turn=ID]` | With `--turn`, children spawned in that turn sort to the top; otherwise most-recently-created first. |
 | `shipit session view <id> [--json]` | `GET /agent-ops/session/view/:childId` | `GET /api/sessions/:parentId/children/:childId` | Returns `{ id, title, status, branch?, queueLength, parentSessionId, spawnedAt, spawnedByTurn? }`. **404 if `<id>` is not a direct descendant of the calling parent** — the orchestrator deliberately doesn't disambiguate "wrong parent" from "not found" so the existence of unrelated sessions is never leaked. |
 | `shipit session help` / `-h` / `--help` | (local) | — | Prints the subcommand list. |
@@ -190,12 +190,13 @@ Exit codes:
 {
   prompt: string;            // required, the child's first user message (≤ 50,000 chars)
   title?: string;            // session title; defaults to a slug derived from `prompt`
-  branch?: string;           // child branch name; defaults to a generated prefix (`shipit/<slug>`)
   base?: string;             // git ref to branch off (commit hash, `origin/main`, tag, …); defaults to parent's HEAD
   agent?: AgentId;           // child's agent id; defaults to `defaultAgentId`
   model?: string;            // child's model; defaults to the parent's model
   spawnedByTurn?: string;    // free-form id of the parent turn — used by `list --turn` and the per-turn quota
 }
+// The branch name is always auto-generated server-side under the
+// `shipit/<slug>` namespace — agents cannot pick it.
 ```
 
 Successful response (HTTP 200):
@@ -211,7 +212,7 @@ Successful response (HTTP 200):
 
 Errors:
 
-- `400` — empty/oversize prompt, invalid branch name, parent missing workspace, parent archived, branch checkout failed.
+- `400` — empty/oversize prompt, parent missing workspace, parent archived, branch checkout failed.
 - `404` — parent not found.
 - `429` — per-turn cap (default 4 when `spawnedByTurn` is set) or per-parent active cap (default 16) exceeded. Both fail-closed.
 - `500` — disk/clone failure, unexpected exception.
@@ -315,9 +316,9 @@ The claim service lives in `services/claim-session.ts` and is constructed once p
 To match the agent's existing mental model of CLI tools:
 
 ```
-$ shipit session create --prompt "Port the API to TypeScript" --branch port-api-ts
+$ shipit session create --prompt "Port the API to TypeScript" --title "Port API"
 session-id: ses_abc123
-branch:     port-api-ts
+branch:     shipit/k7p2qz
 status:     running
 ```
 
@@ -326,7 +327,7 @@ $ shipit session view ses_abc123 --json
 {
   "id": "ses_abc123",
   "title": "Port the API to TypeScript",
-  "branch": "port-api-ts",
+  "branch": "shipit/k7p2qz",
   "status": "running",
   "queueLength": 0,
   "parentSessionId": "ses_parent",
@@ -409,7 +410,7 @@ The orchestrator already exposes session status via `getSessionStatus()`; this j
 Why include this? Because it lets the agent write coordination patterns like:
 
 ```
-shipit session create --prompt "Migrate to Drizzle" --branch drizzle
+shipit session create --prompt "Migrate to Drizzle"
 shipit session wait ses_abc123 --timeout 1800
 shipit session view ses_abc123 --json
 ```

@@ -3,10 +3,10 @@
  * attempt (docs/117 cross-cutting follow-up).
  *
  * Counterpart to `SpawnedSessionCard`: when the running agent's spawn is
- * rejected (per-turn / per-parent quota hit, invalid branch, archived parent,
- * orchestrator error), the orchestrator emits a `session_spawn_failed` event
- * on the parent runner. Without this card the rejection would only show on
- * the shim's stderr — invisible in the parent's chat lane and impossible to
+ * rejected (per-turn / per-parent quota hit, archived parent, orchestrator
+ * error), the orchestrator emits a `session_spawn_failed` event on the
+ * parent runner. Without this card the rejection would only show on the
+ * shim's stderr — invisible in the parent's chat lane and impossible to
  * correlate with the spawn attempt that triggered it.
  *
  * Renders a muted card with:
@@ -21,14 +21,12 @@
  * will either retry or move on. The card is informational.
  */
 
-import { WarningCircleIcon, GitBranchIcon } from "@phosphor-icons/react";
+import { WarningCircleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 
 export interface SpawnFailedCardProps {
   /** Title the agent requested (or the prompt slug). Falls back to "Spawned session". */
   title?: string;
-  /** Branch the agent requested. */
-  branch?: string;
   /** Short outcome bucket — drives the friendly headline. */
   reason:
     | "quota_per_turn"
@@ -64,7 +62,6 @@ function headlineForReason(reason: SpawnFailedCardProps["reason"]): string {
 
 export function SpawnFailedCard({
   title,
-  branch,
   reason,
   message,
   statusCode,
@@ -99,12 +96,6 @@ export function SpawnFailedCard({
           >
             {displayTitle}
           </div>
-          {branch && (
-            <div className="mt-1 flex items-center gap-1 text-(--color-text-tertiary) text-[11px]">
-              <GitBranchIcon size={ICON_SIZE.XS} className="shrink-0" />
-              <span className="truncate font-mono" title={branch}>{branch}</span>
-            </div>
-          )}
         </div>
       </div>
 

@@ -174,7 +174,6 @@ export function registerAgentOpsRoutes(
     Body: {
       prompt?: string;
       title?: string;
-      branch?: string;
       base?: string;
       agent?: string;
       model?: string;
