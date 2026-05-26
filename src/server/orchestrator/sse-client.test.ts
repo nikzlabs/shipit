@@ -128,6 +128,31 @@ describe("connectSSE", () => {
     conn.close();
   });
 
+  it("parses the id: line into event.seq when present", async () => {
+    const events: { type: string; data: string; seq?: number }[] = [];
+
+    const conn = connectSSE(
+      server.url,
+      (e) => events.push(e),
+      () => { /* no error */ },
+      () => { /* no close */ },
+    );
+
+    await server.waitForClient();
+    // Worker sends `id:` before each event so reconnects can pass `?since=N`
+    server.send("id: 1\nevent: agent_event\ndata: {\"k\":\"v\"}\n\n");
+    server.send("id: 42\nevent: agent_done\ndata: {\"exitCode\":0}\n\n");
+
+    await waitFor(() => events.length === 2);
+
+    expect(events).toEqual([
+      { type: "agent_event", data: "{\"k\":\"v\"}", seq: 1 },
+      { type: "agent_done", data: "{\"exitCode\":0}", seq: 42 },
+    ]);
+
+    conn.close();
+  });
+
   it("invokes onActivity on every chunk, including keepalive comments", async () => {
     const events: { type: string; data: string }[] = [];
     const onActivity = vi.fn();

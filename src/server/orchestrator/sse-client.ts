@@ -8,6 +8,14 @@ import http from "node:http";
 export interface SSEEvent {
   type: string;
   data: string;
+  /**
+   * Monotonic sequence number from the worker's `id:` line, if present.
+   * Used by the SSE connection manager to track which events have been
+   * delivered so a reconnect can pass `?since=<seq>` and replay only
+   * what's new. Undefined for streams that don't include `id:` (e.g.
+   * legacy workers).
+   */
+  seq?: number;
 }
 
 export interface ConnectSSEOpts {
@@ -74,7 +82,9 @@ export function connectSSE(
     {
       hostname: parsedUrl.hostname,
       port: parsedUrl.port,
-      path: parsedUrl.pathname,
+      // Include the query string (e.g. `?since=42`) so the worker can
+      // replay only events the consumer hasn't seen yet.
+      path: `${parsedUrl.pathname}${parsedUrl.search}`,
       method: "GET",
       headers: { Accept: "text/event-stream" },
     },
@@ -82,6 +92,7 @@ export function connectSSE(
       let buffer = "";
       let currentEvent = "";
       let currentData = "";
+      let currentSeq: number | undefined;
 
       if (onOpen) onOpen();
       // Arm the idle timer once the response starts so even a worker
@@ -106,13 +117,17 @@ export function connectSSE(
             currentEvent = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
             currentData = line.slice(6);
+          } else if (line.startsWith("id: ")) {
+            const parsed = Number.parseInt(line.slice(4).trim(), 10);
+            currentSeq = Number.isFinite(parsed) ? parsed : undefined;
           } else if (line === "") {
             // End of event
             if (currentEvent && currentData) {
-              onEvent({ type: currentEvent, data: currentData });
+              onEvent({ type: currentEvent, data: currentData, ...(currentSeq !== undefined ? { seq: currentSeq } : {}) });
             }
             currentEvent = "";
             currentData = "";
+            currentSeq = undefined;
           }
           // Skip comments (lines starting with ":")
         }
