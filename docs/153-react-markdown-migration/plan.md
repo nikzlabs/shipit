@@ -46,8 +46,6 @@ Replace `marked` with `react-markdown` across all five surfaces. Use:
 - `remark-gfm@4.0.1` — GFM tables, task lists, autolinks, strikethrough.
 - `remark-breaks@4.0.0` — preserves the current chat behavior where soft line breaks render as `<br>`.
 - `rehype-highlight@7.0.2` *or* keep our existing React `CodeBlock` through explicit fenced-code rendering (recommended — preserves the copy button without breaking inline code).
-- `rehype-slug@6.0.0` (optional) — heading anchors for docs viewer.
-- `rehype-autolink-headings@7.1.0` (optional) — clickable anchor links on docs headings.
 
 Raw HTML policy: do **not** enable raw HTML rendering as part of this migration. Current `marked` output is not sanitized, and replacing it with React-rendered markdown is a security improvement only if raw HTML remains inert. Choose one explicit behavior during implementation:
 
@@ -106,7 +104,7 @@ Per-element styling moves from "post-render CSS via `prose`" to "explicit `compo
    - Use a remark plugin during the normal `react-markdown` render to wrap or annotate each top-level root child/group, then attach refs to those rendered wrappers.
    - Use the unified pipeline directly (`remark-parse` → `remark-gfm`/`remark-breaks` → `remark-rehype` → `rehype-react`) so top-level mdast/hast groups can be rendered explicitly.
 
-   Avoid relying only on `components.p` / `components.ul` overrides, because those also fire for nested blocks and do not identify top-level ownership by themselves. Walk-text-nodes-for-offset can mostly stay, but heading anchor plugins must be configured so generated anchors do not add visible text into `textContent` or shift comment offsets. Add tests for duplicate quoted text across top-level blocks and for selections near block boundaries. Apply heading anchor plugins. Adopt the chat code-block component for consistency.
+   Avoid relying only on `components.p` / `components.ul` overrides, because those also fire for nested blocks and do not identify top-level ownership by themselves. Walk-text-nodes-for-offset can mostly stay. Add tests for duplicate quoted text across top-level blocks and for selections near block boundaries. Adopt the chat code-block component for consistency. We deliberately do not enable `rehype-slug` / `rehype-autolink-headings` — the docs viewer has no UI for deep-linking to sections, so heading ids and wrapping anchors would just be dead DOM weight (and the wrap-mode anchor forces an extra `a`-override to undo the prose underline).
 3. **Phase 3 — Cleanup and removal.** Once chat/shared markdown and docs viewer are migrated, remove the old `marked` renderers, delete dead parser helpers, and drop `marked` from `dependencies` if no imports remain.
 
 If Phase 1's bundle-size impact lands above ~40 KB gzipped, reconsider with `markdown-to-jsx` before committing to phases 2 and 3.
@@ -114,7 +112,6 @@ If Phase 1's bundle-size impact lands above ~40 KB gzipped, reconsider with `mar
 ## Open questions
 
 - **Should the docs viewer support interactive task list checkboxes?** With `react-markdown`, this is a small `components.input` override. Would mean editing the underlying `.md` file on toggle (or just visual state). Likely a follow-up doc, not part of this migration.
-- **Heading anchor URLs.** Should anchors update the URL hash (deep linking to a section of a plan)? Implementation is cheap with `rehype-slug` + `rehype-autolink-headings`; UX impact warrants a quick design check.
 - **Server-side rendering.** Today `MarkdownSelectionComments` has an SSR fallback (line 51). Is that still needed? If not, we can simplify. Doesn't block the migration either way.
 - **Do we want to keep `highlight.js` or switch to `shiki`?** Orthogonal to this migration but related — `shiki` produces better-looking highlights and is becoming the React/Vite standard. Defer to a separate doc.
 - **Can the freeze hack be fully removed?** The expected answer is yes for common append-only streaming, but the migration must prove selection stability across structural markdown transitions before removal.
@@ -127,4 +124,4 @@ If Phase 1's bundle-size impact lands above ~40 KB gzipped, reconsider with `mar
 - `src/client/components/MessageList.tsx` — contains the freeze hack ([[selection-persistence]]) that this migration would remove.
 - `src/client/components/FilePreviewModal.tsx` — entry point that mounts `MarkdownSelectionComments`.
 - `src/client/components/pr-detail/PrDescriptionSection.tsx`, `pr-detail/PrConversationSection.tsx`, `PrLifecycleCard.tsx`, `PlanApproval.tsx`, `SubagentCall.tsx` — existing `MarkdownContent` consumers affected by Phase 1 unless a chat-only renderer is introduced first.
-- `package.json` / `package-lock.json` — adds `react-markdown`, `remark-gfm`, `remark-breaks`, optionally `rehype-slug` / `rehype-autolink-headings`; possibly removes `marked` once all surfaces migrate. Run `npm install` after dependency edits and `npm run check-deps` before opening the implementation PR.
+- `package.json` / `package-lock.json` — adds `react-markdown`, `remark-gfm`, `remark-breaks`; possibly removes `marked` once all surfaces migrate. Run `npm install` after dependency edits and `npm run check-deps` before opening the implementation PR.

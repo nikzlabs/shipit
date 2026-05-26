@@ -324,17 +324,15 @@ Context body.
     });
   });
 
-  describe("heading anchors", () => {
-    it("adds stable id slugs to headings without leaking extra characters into textContent", () => {
+  describe("heading rendering", () => {
+    it("renders headings as plain elements without wrapping anchors", () => {
       const { container } = render(<MarkdownSelectionComments {...makeProps()} />);
-      const heading = container.querySelector("h2#architecture");
+      const heading = container.querySelector("h2");
       expect(heading).toBeInTheDocument();
-      // rehype-autolink-headings wrap-mode places the heading text inside an <a>,
-      // so the visible text content must remain exactly the original heading.
       expect(heading?.textContent).toBe("Architecture");
-      const anchor = heading?.querySelector("a");
-      expect(anchor).toBeInTheDocument();
-      expect(anchor?.getAttribute("href")).toBe("#architecture");
+      // The docs viewer has no deep-linking affordance, so headings should not
+      // be wrapped by `rehype-autolink-headings` anchors.
+      expect(heading?.querySelector("a")).toBeNull();
     });
   });
 });

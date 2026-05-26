@@ -27,8 +27,7 @@
 - [x] Replace `parseMarkdownToBlocks` in `MarkdownSelectionComments.tsx` with a top-level mdast/hast block grouping strategy.
 - [x] Render each top-level block group through the chosen pipeline and keep one wrapper ref per group.
 - [x] Verify selection-anchor comments still resolve correctly (port `locateInBlock` to the new block source).
-- [x] Add `rehype-slug` for heading anchors.
-- [x] Decide on `rehype-autolink-headings` (deep-link UX), and ensure generated anchors do not add visible text to heading `textContent`. (Configured `behavior: "wrap"` so headings stay character-identical.)
+- [x] Decide on heading anchors / deep-linking. (Dropped both `rehype-slug` and `rehype-autolink-headings` — the docs viewer has no UI for deep-linking to sections, so heading ids and wrapping anchors were dead DOM weight that also forced an extra `a`-override branch to undo the prose underline.)
 - [x] Add docs-comment tests for duplicate quoted text across blocks and selections near block boundaries.
 - [ ] Drop the `MarkdownBlock` memo workaround now that React reconciles individual nodes. (Kept — it now memoises on the source slice so unrelated blocks don't reconcile mid-selection. The original `dangerouslySetInnerHTML` reason is gone, but per-block memoisation is still useful given the frequent parent re-renders driven by `selectionchange`.)
 

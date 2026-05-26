@@ -2,8 +2,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, memo } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import rehypeSlug from "rehype-slug";
-import rehypeAutolinkHeadings from "rehype-autolink-headings";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import type { Root, RootContent } from "mdast";
@@ -35,19 +33,13 @@ interface MarkdownBlock {
 }
 
 /**
- * Shared remark/rehype plugin stack for the docs viewer. `remark-gfm` is the
- * superset we render (tables, task lists, strikethrough). `rehype-slug` +
- * `rehype-autolink-headings` give every heading a stable `id` and wrap its
- * text in an anchor so deep-linking and copy-link-to-section both work.
- * Wrap-mode is deliberate: it adds no visible characters to the heading,
- * which keeps `textContent` aligned with the offsets `offsetWithin` walks for
- * selection-anchored comments.
+ * Shared remark plugin stack for the docs viewer. `remark-gfm` is the superset
+ * we render (tables, task lists, strikethrough). We deliberately don't add
+ * `rehype-slug` / `rehype-autolink-headings` — the docs viewer has no UI for
+ * deep-linking to sections, so the heading ids and wrapping anchors would
+ * just be dead DOM weight.
  */
 const remarkPluginsDocs = [remarkGfm];
-const rehypePluginsDocs = [
-  rehypeSlug,
-  [rehypeAutolinkHeadings, { behavior: "wrap" }] as [typeof rehypeAutolinkHeadings, { behavior: "wrap" }],
-];
 
 /**
  * Memoised wrapper around a single rendered markdown block. The wrapper exists
@@ -63,7 +55,6 @@ const MarkdownBlock = memo(({ source }: { source: string }) => (
   <div className="prose dark:prose-invert prose-sm max-w-none">
     <Markdown
       remarkPlugins={remarkPluginsDocs}
-      rehypePlugins={rehypePluginsDocs}
       components={markdownComponents}
       skipHtml
     >
