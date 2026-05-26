@@ -987,10 +987,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // immediate — this just keeps the supervisor running for subsequent
         // ticks. See docs/064 "Polling budget."
         prStatusPoller.notifyViewerAttached();
-        // Don't replay the turn event buffer here — persisted chat history is
-        // loaded via HTTP (loadSessionHistory) and is the single source of truth.
-        // Replaying buffer events races with the HTTP load and causes duplicates
-        // or overwritten messages.  Live events stream via the "message" listener.
+        // Replay only the part of the turn buffer that has not already been
+        // folded into HTTP chat history. Codex can stream assistant text for a
+        // long stretch before a tool-result/final persistence boundary; when a
+        // backgrounded tab reconnects, HTTP history may therefore be stale. The
+        // client queues these early agent events until its history load
+        // completes, then applies them on top of that baseline.
+        for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
+          if (buffered.type === "log_entry") continue;
+          send(buffered);
+        }
         if (runner.getQueueSnapshot().length > 0) {
           send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
         }
