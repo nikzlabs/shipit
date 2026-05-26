@@ -9,10 +9,6 @@ Tracks the precondition and implementation work for `plan.md`.
       `assembleAgentPrompt` in `agent-execution.ts`, not
       `agent-instructions.ts`. The plan in this doc explains why
       (cache-stability contract + persistent-process reuse).
-- [ ] Plumb `SessionManager` (or a narrow
-      `setSessionGoal(sessionId, goal)` callback) into
-      `ContainerSessionRunner` via `SessionRunnerRegistry`, `app-di.ts`,
-      and the warm-session pool.
 - [ ] Design the `SessionGoal` SQLite schema (JSON column vs four
       columns) and add the DatabaseManager migration. Extend
       `SessionInfo` in `domain-types.ts` with optional `goal`.
@@ -36,6 +32,12 @@ Tracks the precondition and implementation work for `plan.md`.
       `docs/141-cli-version-strategy/checklist.md`.
 - [ ] Land the `CODEX_GOALS_RUNTIME_VERIFIED` constant once both pieces
       pass on the current pin.
+- [ ] Probe `thread/resume`'s response shape on a thread that
+      previously had a goal set: does it embed the goal, or must
+      `thread/goal/get` be called separately on rehydrate? Run as part
+      of the same harness as the runtime-acceptance probe; the
+      rehydrate-mechanism section in plan.md picks the design based
+      on the result.
 - [ ] Run the mid-turn-pause probe: send
       `thread/goal/set { status: "paused" }` concurrent with an
       in-flight `turn/start`'s response stream and record whether
@@ -72,6 +74,13 @@ Tracks the precondition and implementation work for `plan.md`.
       `clearGoal()` on `CodexAdapter`. Defensive response un-nesting.
 - [ ] `agent_goal_updated` / `agent_goal_cleared` `AgentEvent` variants;
       `agent-listeners.ts` short-circuit (mirroring `agent_rate_limits`).
+- [ ] Plumb `SessionManager` (or a narrow
+      `setSessionGoal(sessionId, goal)` callback) into
+      `ContainerSessionRunner` via `SessionRunnerRegistry`,
+      `app-di.ts`, and the warm-session pool. Required so the
+      augmentation's `applyGoalEvent` has a home for the metadata
+      write; the substrate's intercept in `send-message.ts` does not
+      need this.
 - [ ] `handleSSEEvent` goal-event branch in `ContainerSessionRunner` —
       `applyGoalEvent` runner method writes session metadata + emits
       WS message.
