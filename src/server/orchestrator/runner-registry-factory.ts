@@ -157,6 +157,13 @@ export interface RunnerRegistryDeps {
    * "5h usage limit" message when a session window is exhausted.
    */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
+  /**
+   * docs/153 — fire-and-forget nudge to the Claude OAuth refresher. Forwarded
+   * into the listener so dispatched/system turns also heal a stale token via
+   * the orchestrator-owned refresher when the CLI emits `auth_required`.
+   * Mirrors the WS-path `AppCtx.nudgeClaudeOAuthRefresh`.
+   */
+  nudgeClaudeOAuthRefresh?: () => void;
 }
 
 /**
@@ -173,6 +180,7 @@ export function createRunnerRegistry(
     credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
+    nudgeClaudeOAuthRefresh,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -202,6 +210,7 @@ export function createRunnerRegistry(
         getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
         ...(recordAgentRateLimits ? { recordAgentRateLimits } : {}),
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
+        ...(nudgeClaudeOAuthRefresh ? { nudgeClaudeOAuthRefresh } : {}),
       };
       runner.setSystemTurnDeps({
         agentFactory: (agentId) => {
