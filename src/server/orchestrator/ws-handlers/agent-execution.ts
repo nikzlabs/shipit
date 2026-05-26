@@ -104,6 +104,35 @@ function stopRunner(runner: { running: boolean } | null): void {
 }
 
 /**
+ * Flip the in-progress rows of an interrupted turn to `in_progress=0` so the
+ * accumulated partial work survives the next turn's `replaceInProgress` wipe
+ * (the "first turn erased from history" bug from docs/156).
+ *
+ * Best-effort: if the chatHistoryManager's DB has already been closed (which
+ * happens when the agent's `done` event fires from a setTimeout callback
+ * after app shutdown / test teardown — vitest's FakeClaudeProcess.interrupt()
+ * schedules a 10ms delayed "done" emission, plenty long for the test fixture
+ * to be torn down first), swallow the better-sqlite3 "database connection is
+ * not open" error rather than crashing on an unhandled rejection. The partial
+ * messages going unpersisted in this edge case is acceptable; corrupting the
+ * process with an unhandled error is not.
+ */
+function persistInterruptedTurn(
+  ctx: FullCtx,
+  sessionId: string,
+  partial: ReturnType<typeof buildTurnMessages>,
+): void {
+  try {
+    ctx.chatHistoryManager.replaceInProgress(sessionId, partial);
+    ctx.chatHistoryManager.finalizeInProgress(sessionId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("database connection is not open")) return;
+    throw err;
+  }
+}
+
+/**
  * Drain the next message from the runner's queue and start a new agent turn.
  * Shared between the agent's `done` handler (normal post-turn path) and the
  * `error` handler (so a transient /agent/start failure — typically a 409
@@ -525,8 +554,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           runner.steeredMessages ?? [],
           { inProgress: false },
         );
-        ctx.chatHistoryManager.replaceInProgress(capturedSessionId, partial);
-        ctx.chatHistoryManager.finalizeInProgress(capturedSessionId);
+        persistInterruptedTurn(ctx, capturedSessionId, partial);
       }
       stopRunner(runner);
       if (capturedSessionId && !(runner?.running ?? false)) {
@@ -556,8 +584,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         runner.steeredMessages ?? [],
         { inProgress: false },
       );
-      ctx.chatHistoryManager.replaceInProgress(capturedSessionId, partial);
-      ctx.chatHistoryManager.finalizeInProgress(capturedSessionId);
+      persistInterruptedTurn(ctx, capturedSessionId, partial);
     }
 
     // Process the message queue FIRST so the client clears queued visual state
