@@ -99,6 +99,43 @@ describe("LimitsRegistry", () => {
     expect(spy.calls).toHaveLength(1);
   });
 
+  it("rebroadcasts when usedPct transitions from null to a number", async () => {
+    // Claude CLI 2.1.140 first reports the window without `utilization`
+    // (anthropics/claude-code#50518) and only fills it in once a warning
+    // threshold trips. The registry must broadcast on each side of that
+    // transition so the badge upgrades from countdown-only to a full meter.
+    const claude = new StubLimitsProvider("claude")
+      .enqueue(
+        makeSnapshot({
+          agentId: "claude",
+          session: { usedPct: null, resetAt: "2026-05-19T18:00:00Z" },
+        }),
+      )
+      .enqueue(
+        makeSnapshot({
+          agentId: "claude",
+          session: { usedPct: 42, resetAt: "2026-05-19T18:00:00Z" },
+        }),
+      );
+    const spy = makeBroadcastSpy();
+
+    const registry = new LimitsRegistry({
+      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      sseBroadcast: spy.broadcast,
+    });
+
+    registry.markAuthRefreshed("claude");
+    await new Promise((resolve) => setImmediate(resolve));
+    registry.markAuthRefreshed("claude");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(spy.calls).toHaveLength(2);
+    const first = spy.calls[0].data as { limits: Record<string, SubscriptionLimits> };
+    const second = spy.calls[1].data as { limits: Record<string, SubscriptionLimits> };
+    expect(first.limits.claude.session?.usedPct).toBeNull();
+    expect(second.limits.claude.session?.usedPct).toBe(42);
+  });
+
   it("rebroadcasts when a window's usedPct changes", async () => {
     const claude = new StubLimitsProvider("claude")
       .enqueue(makeSnapshot({ agentId: "claude" }))

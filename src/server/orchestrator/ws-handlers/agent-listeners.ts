@@ -32,8 +32,8 @@ export interface AgentListenerDeps {
   /** Optional: push a fresh rate-limit snapshot (any agent) to the subscription badge. */
   recordAgentRateLimits?: (
     agentId: AgentId,
-    session: { usedPct: number; resetAt: string } | null,
-    weekly: { usedPct: number; resetAt: string } | null,
+    session: { usedPct: number | null; resetAt: string } | null,
+    weekly: { usedPct: number | null; resetAt: string } | null,
   ) => void;
   /** Optional: latest subscription-limits snapshot, used to reclassify generic CLI errors. */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
@@ -93,7 +93,12 @@ export function normalizeAgentUsageLimitError(
   if (!/monthly usage limit/i.test(message)) return message;
 
   const sessionLimit = limits?.[agentId]?.session;
-  if (!sessionLimit || sessionLimit.usedPct < 100) return message;
+  if (!sessionLimit) return message;
+  // usedPct is null when the provider hasn't reported utilization yet (Claude
+  // CLI 2.1.140 below its warning thresholds — anthropics/claude-code#50518).
+  // Without a number we can't claim the window is exhausted, so leave the
+  // upstream "monthly usage limit" message intact.
+  if (sessionLimit.usedPct === null || sessionLimit.usedPct < 100) return message;
 
   const reset = new Date(sessionLimit.resetAt);
   const resetText = Number.isNaN(reset.getTime())

@@ -69,6 +69,15 @@ describe("effectivePct", () => {
     const now = Date.parse("2026-05-19T12:00:00Z");
     expect(effectivePct(73, "not-a-date", now)).toBe(73);
   });
+
+  it("returns null when utilization is unknown (regardless of resetAt)", () => {
+    // The provider reported the window's existence and reset time but not
+    // its utilization — don't fake a number, including don't coerce to 0
+    // even if the reset has elapsed.
+    const now = Date.parse("2026-05-19T12:00:00Z");
+    expect(effectivePct(null, "2026-05-19T17:00:00Z", now)).toBeNull();
+    expect(effectivePct(null, "2026-05-19T11:59:00Z", now)).toBeNull();
+  });
 });
 
 describe("tierColor", () => {
@@ -299,5 +308,30 @@ describe("SubscriptionLimitPill", () => {
       <SubscriptionLimitPill label="Claude" snapshot={makeSnap({ plan: "Max 20x" })} />,
     );
     expect(container.querySelector("span")?.getAttribute("title")).toContain("Max 20x");
+  });
+
+  it("renders countdown-only meter (no fill bar, no percentage) when usedPct is null", () => {
+    // Claude CLI 2.1.140 reports the window without `utilization` below its
+    // warning thresholds (anthropics/claude-code#50518). The pill should
+    // surface the countdown honestly rather than fake a number.
+    const future = new Date(Date.now() + 60 * 60_000).toISOString();
+    const { container } = render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({
+          session: { usedPct: null, resetAt: future },
+          weekly: null,
+        })}
+      />,
+    );
+    // Countdown text is always present (not gated on >90%), no "NN%" digits.
+    expect(screen.getByText(/5h · resets in/)).toBeInTheDocument();
+    expect(screen.queryByText(/\d+%/)).toBeNull();
+    // No fill bar (`aria-hidden` is the fill div in the percentage path).
+    expect(container.querySelector("[aria-hidden]")).toBeNull();
+    // Tooltip explains the absence rather than asserting a percentage.
+    expect(container.querySelector("span")?.getAttribute("title")).toContain(
+      "utilization not reported",
+    );
   });
 });
