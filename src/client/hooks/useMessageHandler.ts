@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, type RefObject } from "react";
 import type { InteractiveTerminalHandle } from "../components/InteractiveTerminal.js";
 import type { WsServerMessage, WsClientMessage } from "../../server/shared/types.js";
+import { useSessionStore } from "../stores/session-store.js";
 import {
   createQueuedMessageStash,
   dispatchMessage,
@@ -15,16 +16,38 @@ export function useMessageHandler(params: {
   terminalRef: RefObject<InteractiveTerminalHandle | null>;
 }): void {
   const { lastMessage, drainMessages, send, terminalRef } = params;
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const historyLoaded = useSessionStore((s) => s.historyLoaded);
 
   // The queued-message stash must survive re-renders so a `queue_updated`
   // arriving after `message_queued` can find the stashed entry. A module-level
   // Map would also work but a ref scopes it to this hook instance.
   const queuedMessageStashRef = useRef(createQueuedMessageStash());
+  const pendingAgentEventsRef = useRef<WsServerMessage[]>([]);
+  const pendingSessionIdRef = useRef<string | undefined>(sessionId);
 
   const ctx: HandlerContext = useMemo(() => ({
     terminalRef,
     queuedMessageStash: queuedMessageStashRef.current,
   }), [terminalRef]);
+
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  useEffect(() => {
+    if (pendingSessionIdRef.current !== sessionId) {
+      pendingAgentEventsRef.current = [];
+      pendingSessionIdRef.current = sessionId;
+    }
+  }, [sessionId]);
+
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  useEffect(() => {
+    if (!historyLoaded || pendingAgentEventsRef.current.length === 0) return;
+    const pending = pendingAgentEventsRef.current;
+    pendingAgentEventsRef.current = [];
+    for (const data of pending) {
+      dispatchMessage(ctx, data);
+    }
+  }, [historyLoaded, ctx]);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -39,6 +62,10 @@ export function useMessageHandler(params: {
       try {
         data = JSON.parse(msg.data as string) as WsServerMessage;
       } catch {
+        continue;
+      }
+      if (data.type === "agent_event" && !useSessionStore.getState().historyLoaded) {
+        pendingAgentEventsRef.current.push(data);
         continue;
       }
       dispatchMessage(ctx, data);
