@@ -73,6 +73,12 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 - [x] Keep `QueueIndicator` for the non-steering path (gated) — only the steering path skips the queue; the indicator renders queued messages as before
 - [ ] Component tests: input enabled-while-running, inline steered message render, queue path unchanged when off
 
+## Phase 7 — post-stabilization cleanup (deferred until after Phase 6 soaks)
+
+- [ ] **Drop the `liveSteering` user toggle once streaming has soaked.** Streaming becomes the only behavior for adapters with `supportsSteering: true`. Remove the gate at `send-message.ts:109/172/400`, the `useStreaming` branch at `agent-execution.ts:258`, and the "stale agent kill" carve-out at `send-message.ts:168–176`. Keep `supportsSteering` capability gate so non-steering adapters (future backends, Codex review/compaction) still hit the queue path.
+- [ ] Survive-one-release: keep `liveSteering` as a hidden/dev-mode flag for one release as a self-rescue lever, then delete from `credentialStore`, `settings.ts` service, settings UI, `MessageInput` gating, and the bootstrap payload.
+- [ ] Note in the cleanup PR that removing the toggle also eliminates the "toggle ON mid-non-streaming-turn" dead-letter by construction — no separate `canSteer()` runtime check is needed.
+
 ## Cross-cutting
 
 - [x] `npm run lint` + `npm run typecheck` clean
