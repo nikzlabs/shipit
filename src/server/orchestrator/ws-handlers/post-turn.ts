@@ -31,6 +31,13 @@ export async function postTurnCommit(
     emit: (msg: WsServerMessage) => void;
     turnSummary: string;
     /**
+     * HEAD captured when the turn started. If the agent performs its own clean
+     * git operation during the turn (for example a rebase), autoCommit() sees
+     * no working-tree changes. We still need to auto-push when the branch tip
+     * moved.
+     */
+    turnStartHeadHash?: string | null;
+    /**
      * The runner that owns this turn. When provided, the commit info is also
      * stashed on `runner.pendingCommitLink` so the agent_result handler in
      * `wireAgentListeners` can apply it after `replaceInProgress` finalizes
@@ -47,7 +54,17 @@ export async function postTurnCommit(
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
     const commitHash = await git.autoCommit(firstLine);
-    if (!commitHash) return null;
+    if (!commitHash) {
+      const currentHeadHash = await git.getHeadHash();
+      if (
+        opts.turnStartHeadHash &&
+        currentHeadHash &&
+        currentHeadHash !== opts.turnStartHeadHash
+      ) {
+        ctx.scheduleAutoPush(git, opts.sessionId);
+      }
+      return null;
+    }
 
     opts.emit({ type: "git_committed", hash: commitHash, message: firstLine });
     ctx.scheduleAutoPush(git, opts.sessionId);
