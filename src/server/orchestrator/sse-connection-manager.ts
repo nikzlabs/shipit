@@ -77,6 +77,14 @@ export class SseConnectionManager {
   private _sseConnected: Promise<void> | null = null;
   private _resolveSseConnected: (() => void) | null = null;
   private _lastActivityAt = 0;
+  /**
+   * Highest seq number observed on any event from the worker. Passed
+   * back as `?since=N` on every (re)connect so the worker's ring buffer
+   * replays only events we haven't already processed. Survives reconnect
+   * cycles for the life of this manager — the only way to reset it is
+   * to dispose the runner.
+   */
+  private _lastSeenSeq = 0;
 
   constructor(opts: SseConnectionManagerOpts) {
     this.opts = opts;
@@ -117,9 +125,19 @@ export class SseConnectionManager {
   private connectNow(): void {
     const isReconnect = this.sseReconnectAttempts > 0;
     const workerUrl = this.opts.getWorkerUrl();
+    // Always pass `since` (0 on first connect, last-seen seq on reconnect).
+    // The worker treats 0 as "send me everything you have," which is
+    // exactly right: events the worker buffered before our first connect
+    // get replayed losslessly.
+    const eventsUrl = `${workerUrl}/events?since=${this._lastSeenSeq}`;
     this.sseConnection = connectSSE(
-      `${workerUrl}/events`,
-      (event) => this.opts.onEvent(event),
+      eventsUrl,
+      (event) => {
+        if (event.seq !== undefined && event.seq > this._lastSeenSeq) {
+          this._lastSeenSeq = event.seq;
+        }
+        this.opts.onEvent(event);
+      },
       (err) => {
         console.error(`[${this.opts.logLabel}] SSE error:`, err.message);
         this.sseConnection = null;

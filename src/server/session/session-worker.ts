@@ -1170,15 +1170,29 @@ export class SessionWorker extends EventEmitter {
 
       const client: SseClient = this.sse.attach({ raw: reply.raw });
 
-      // Replay current state so late-connecting clients don't miss events
+      // Replay buffered events that the consumer hasn't seen yet. `?since=N`
+      // means "I've already seen up to seq N" — replay everything newer.
+      // Omitted / 0 / non-numeric means "send me everything you have"
+      // (first-ever connect, no prior seq). This is the load-bearing piece
+      // for spawned-child sessions: the orchestrator POSTs /agent/start
+      // before its SSE consumer is connected, and the CLI may emit
+      // agent_init / agent_assistant / agent_result / agent_done before
+      // SSE catches up. Without this replay, those events vanish and the
+      // orchestrator's `running` flag never clears.
+      const sinceParam = (request.query as { since?: string } | undefined)?.since;
+      const sinceSeq = sinceParam !== undefined ? Number.parseInt(sinceParam, 10) : 0;
+      this.sse.replaySince(client, Number.isFinite(sinceSeq) && sinceSeq > 0 ? sinceSeq : 0);
+
+      // Replay current state for things the ring buffer can't reconstruct.
+      // `terminal_data` is unbuffered (high volume) — send an empty
+      // terminal_data marker so the orchestrator's terminal-reconnect path
+      // resets the xterm rendering. `install_*` events are buffered but
+      // we re-send the latest result as a belt-and-braces idempotent
+      // signal in case the buffer was evicted across a very long
+      // install (the orchestrator's resolver is idempotent).
       if (this.terminal) {
         this.sse.sendTo(client, { type: "terminal_data", data: { data: "" } });
       }
-      // Replay last install result so an orchestrator that reconnects after
-      // missing the original install_done/install_error still sees the
-      // outcome. The orchestrator's `_resolveInstallComplete` is idempotent
-      // (gates on a non-null resolver), so duplicate events are harmless if
-      // the original event already arrived.
       if (this._lastInstallResult && !this._installRunning) {
         if (this._lastInstallResult.ok) {
           this.sse.sendTo(client, { type: "install_done", data: {} });
