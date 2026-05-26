@@ -251,6 +251,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // which would change ctx.getActiveAppSessionId() / ctx.getActiveSessionDir().
   const capturedSessionId = ctx.getActiveAppSessionId();
   const capturedSessionDir = ctx.getActiveSessionDir();
+  const turnStartHeadHash = capturedSessionDir
+    ? await ctx.createGitManager(capturedSessionDir).getHeadHash()
+    : null;
 
   // Resolve the runner via the registry (by session ID) when possible. This
   // makes the runner reference survive WebSocket disconnects — critical for
@@ -481,6 +484,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
             sessionId: capturedSessionId,
             emit: emitDone,
             turnSummary: runner?.turnSummary ?? "",
+            turnStartHeadHash,
             runner,
           });
         }
@@ -609,6 +613,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           // per-connection attachedRunner. Use the captured (registry-backed)
           // runner so commit messages are correct even for queue-drained turns.
           turnSummary: runner?.turnSummary ?? "",
+          turnStartHeadHash,
           runner,
         });
       }
