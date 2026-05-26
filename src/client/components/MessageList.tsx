@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: DOM scroll sync (scrollIntoView), window keydown listener, xterm auto-scroll
-import { useMemo, useEffect, useRef, useState } from "react";
+import { Fragment, useMemo, useEffect, useRef, useState } from "react";
 import {
   TypingDots,
 } from "./StreamingIndicator.js";
@@ -421,7 +421,7 @@ export function MessageList({
   };
 
   return (
-    <div ref={containerRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-4">
+    <div ref={containerRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-2">
       {buildVisualElements(messages).map((el, elIdx, allElements) => {
         // ── Tool-group: grouped tool calls from consecutive assistant messages ──
         if (el.kind === "tool-group") {
@@ -588,7 +588,7 @@ export function MessageList({
         // reload, search, and existing text-handling still work).
         if (msg.role === "user" && msg.userReview) {
           return (
-            <div key={i} className="flex justify-end py-2">
+            <div key={i} className="flex justify-end">
               <div className="max-w-2xl w-full">
                 <UserReviewCard
                   filePaths={msg.userReview.filePaths}
@@ -632,7 +632,7 @@ export function MessageList({
         const hideBubble = !msg.text && !msg.images?.length && !msg.files?.length && !hasVisibleTools && !!msg.toolUse?.length;
 
         return (
-          <div key={i}>
+          <Fragment key={i}>
             {shouldShowGapBefore(i) && renderRewindPoint(i)}
             {msg.rolledBack && msg.codeRollbackHash && (
               <div className="flex justify-center">
@@ -642,7 +642,7 @@ export function MessageList({
               </div>
             )}
             {!hideBubble && (
-            <div className={`group flex ${msg.role === "user" ? "justify-end py-2" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
+            <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
 
             <div
               className={`relative text-sm ${
@@ -757,13 +757,13 @@ export function MessageList({
             </div>
             )}
             {latestTodoTool && Array.isArray(latestTodoTool.input.todos) && (
-              <div className="flex justify-start mt-1">
+              <div className="flex justify-start">
                 <div className="max-w-2xl">
                   <TodoPanel todos={latestTodoTool.input.todos as TodoItem[]} />
                 </div>
               </div>
             )}
-          </div>
+          </Fragment>
         );
       })}
 
