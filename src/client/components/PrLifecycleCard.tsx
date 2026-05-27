@@ -432,7 +432,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
           prTitle={pr.title}
           prBody={pr.body}
         />
-        <span className="ml-auto shrink-0 flex items-center gap-3">
+        <span className="ml-auto min-w-0 flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
           <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
           {pendingReviewCount > 0 && (
             <PendingReviewButton sessionId={sessionId} count={pendingReviewCount} />
