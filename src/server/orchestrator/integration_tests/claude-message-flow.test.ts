@@ -99,7 +99,63 @@ describe("Integration: Claude message flow — basics", () => {
     expect((sessionStarted as any).session.id).toBeTruthy();
     // Session title is set at creation time (auto-created by TestClient), not from prompt text
     expect((sessionStarted as any).session.title).toBeTruthy();
-    expect((sessionStarted as any).session.agentSessionId).toBe("test-session-123");
+    // docs/153 Fix 2 — agent_session_id is NOT persisted on agent_init.
+    // The listener stashes the init's session_id and flushes it on the
+    // first agent_assistant (or the agent_result fallback). Until then,
+    // session.agentSessionId in the session_started event remains the
+    // session's previous value (null for a fresh session here). This
+    // prevents a doomed init UUID — emitted right before the CLI exits
+    // with "No conversation found" — from overwriting a recovered id.
+    expect((sessionStarted as any).session.agentSessionId).toBeUndefined();
+
+    // After the first assistant content arrives, the stash flushes to DB.
+    const appSessionId = (sessionStarted as any).session.id as string;
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "hello back" }] },
+      session_id: "test-session-123",
+    });
+    // Drain the agent_event message that the assistant emit produces so the
+    // listener's synchronous setAgentSessionId has run by the time we read.
+    await client.receiveType("agent_event");
+    expect(sessionManager.get(appSessionId)?.agentSessionId).toBe("test-session-123");
+
+    client.close();
+  });
+
+  // docs/153 Fix 2 — when `--resume <id>` fails with "No conversation found",
+  // the CLI still emits an agent_init with a fresh UUID right before exiting.
+  // The listener must NOT persist that doomed UUID, otherwise it overwrites
+  // the previously-stored id (or a freshly-recovered one) and every
+  // subsequent retry compounds the loss into a self-perpetuating loop.
+
+  it("'No conversation found' stderr blocks the doomed init UUID from clobbering the DB", async () => {
+    // Pre-register a session with an existing agentSessionId — this is what
+    // the listener must protect.
+    sessionManager.track("loop-session", "Stuck session", tmpDir);
+    sessionManager.setAgentSessionId("loop-session", "recovered-real-id");
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "anything", sessionId: "loop-session" });
+    await waitForClaude(() => lastClaude);
+
+    // 1. CLI fails to resume → emits the missing-conversation stderr.
+    lastClaude.emit("log", "stderr", "No conversation found with session ID: recovered-real-id");
+    // 2. CLI emits a fresh init UUID just before exiting.
+    lastClaude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "doomed-fresh-uuid",
+      tools: [],
+    });
+    // Let both messages propagate to the listener.
+    await client.receiveType("error");
+    await client.receiveType("agent_event");
+
+    // DB row unchanged — the doomed UUID didn't land.
+    expect(sessionManager.get("loop-session")?.agentSessionId).toBe("recovered-real-id");
 
     client.close();
   });
