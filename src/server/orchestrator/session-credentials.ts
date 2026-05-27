@@ -507,29 +507,38 @@ interface LeakRepairResult {
 }
 
 /**
- * If any of an agent's subtree-root paths inside the session dir is a
- * symbolic link (the docs/153 leak: docs/150's legacy alias preserved as a
- * symlink during provisioning, OR a still-unidentified writer recreating it
- * post-provisioning), repair it non-destructively:
+ * Repair the docs/153 leak. Two entry conditions:
  *
- *   1. Save the orphan path the symlink resolves to in the agent container's
- *      namespace — `/credentials/...` resolves to `<sessionDir>/...` there
- *      because of the Docker Subpath mount (docs/138). This is where the
- *      agent CLI wrote its conversation history.
- *   2. Replace the symlink with a real materialized copy of the shared
- *      source (gets the fresh credentials).
- *   3. Merge the orphan's conversation-state subpaths (`projects/`,
- *      `sessions/`, `history.jsonl` for Claude) into the new dest with the
- *      shared dir winning on conflict.
- *   4. For `.claude.json`: if the orphan version differs from shared, keep
- *      the orphan (session-specific CLI config).
- *   5. Read the latest `<projects>/<encoded-cwd>/<sid>.jsonl` to recover the
- *      agent_session_id the CLI was using before the leak split state.
- *   6. Drop the orphan `<sessionDir>/provider-accounts/` tree entirely so a
- *      future leak doesn't reappear with merged state.
+ *   Case 1 — LIVE LEAK (`.claude/` is a symlink). The legacy alias was
+ *     preserved as a symlink during provisioning (or recreated post-
+ *     provisioning by a still-unidentified writer). The agent CLI, inside
+ *     the Subpath-mounted container, followed the symlink target string
+ *     into `<sessionDir>/provider-accounts/.../...` and wrote conversation
+ *     history there. Repair: unlink + cpSync shared baseline + merge
+ *     orphan content + drop orphan root + recover agent_session_id.
  *
- * Idempotent — a no-op on healthy sessions whose subtree-roots are already
- * real directories.
+ *   Case 3 — POST-DESTRUCTIVE-REPAIR ORPHAN (`.claude/` is a real dir, but
+ *     `<sessionDir>/provider-accounts/.../<rel>` still exists). The
+ *     pre-#758 destructive repair already rm'd the symlink and cpSync'd
+ *     the shared baseline, but left the orphan tree behind. The agent now
+ *     reads `.claude/` (real dir) which has no `projects/...` for this
+ *     session, so `--resume <agentSessionId>` keeps failing with "No
+ *     conversation found" until we layer the orphan back on top. Repair:
+ *     skip rmSync + skip cpSync from shared (dst already has the shared
+ *     baseline); merge orphan content + drop orphan root + recover
+ *     agent_session_id.
+ *
+ *   Case 2 (true no-op) — `.claude/` is a real dir AND no orphan exists.
+ *
+ * For both repair cases the order is critical: read latest jsonl mtime
+ * from the orphan BEFORE any cpSync/merge, since cpSync doesn't preserve
+ * mtimes. Then merge with shared-wins-on-conflict for `.claude/`'s state
+ * subpaths and orphan-wins for `.claude.json` (session-specific CLI
+ * config; the shared one is a generic baseline).
+ *
+ * Idempotent. The repaired session converges to a single physical
+ * `.claude/` tree containing both the fresh shared credentials and the
+ * session's recovered conversation history.
  */
 function materializeLeakedSubtreeSymlinks(
   credentialsRoot: string,
@@ -537,54 +546,88 @@ function materializeLeakedSubtreeSymlinks(
   agentId: AgentId,
   sourceRoot: string,
 ): LeakRepairResult {
-  let repairedAny = false;
+  let anyAction = false;
   let recoveredAgentSessionId: string | null = null;
   const orphanRootsToRemove = new Set<string>();
 
+  // For the post-destructive-repair case below (no symlink, but orphan still
+  // present): the orphan lives at the "<sessionDir>/<sourceRoot relative to
+  // credentialsRoot>" mirror, which is where the agent CLI wrote when it
+  // followed the now-removed symlink in its Subpath namespace. Only relevant
+  // when sourceRoot lives under credentialsRoot (the provider-account flow);
+  // the legacy `provisionAgentCredentials` path uses sourceRoot ===
+  // credentialsRoot, where the mirror collapses to dst itself.
+  const sourceRelToCredentials = path.relative(credentialsRoot, sourceRoot);
+  const expectedOrphanBase =
+    sourceRelToCredentials
+      && sourceRelToCredentials !== ""
+      && !sourceRelToCredentials.startsWith("..")
+      && !path.isAbsolute(sourceRelToCredentials)
+      ? sourceRelToCredentials
+      : null;
+
   for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
     const dst = path.join(sessionDir, rel);
-    let isSymlink = false;
-    let target: string | null = null;
+    let dstStat: fs.Stats | null = null;
     try {
-      const stat = fs.lstatSync(dst);
-      isSymlink = stat.isSymbolicLink();
-      if (isSymlink) target = fs.readlinkSync(dst);
+      dstStat = fs.lstatSync(dst);
     } catch {
       continue; // dst doesn't exist — nothing to repair
     }
-    if (!isSymlink) continue;
 
-    // Resolve the orphan path the symlink target points at *inside the agent
-    // container's namespace*. Two target shapes are observed in the wild:
-    //   - prod: absolute `/credentials/provider-accounts/...` (the literal
-    //     volume-mount path on the orchestrator side, baked in by
-    //     ensureLegacyAlias when credentialsDir = "/credentials").
-    //   - test: absolute `<credentialsRoot>/provider-accounts/...` (the
-    //     temp-dir path of the test fixture).
-    // Both reduce to a "path relative to the credentials root"; prepending
-    // `<sessionDir>` to that gives the in-agent-namespace orphan location.
     let orphanPath: string | null = null;
-    let relativeFromVolume: string | null = null;
-    if (target) {
+    let isSymlinkLeak = false;
+
+    if (dstStat.isSymbolicLink()) {
+      // ---- Case 1: live symlink leak ----
+      isSymlinkLeak = true;
+      const target = fs.readlinkSync(dst);
+      // Resolve the orphan the symlink points at *inside the agent
+      // container's namespace*. Two target shapes are observed in the wild:
+      //   - prod: absolute `/credentials/provider-accounts/...` (the literal
+      //     volume-mount path on the orchestrator side, baked in by
+      //     ensureLegacyAlias when credentialsDir = "/credentials").
+      //   - test: absolute `<credentialsRoot>/provider-accounts/...` (the
+      //     temp-dir path of the test fixture).
+      // Both reduce to a "path relative to the credentials root"; prepending
+      // `<sessionDir>` gives the in-agent-namespace orphan location.
+      let relativeFromVolume: string | null = null;
       if (target.startsWith(CREDENTIALS_MOUNT_PREFIX)) {
         relativeFromVolume = target.slice(CREDENTIALS_MOUNT_PREFIX.length);
       } else if (target.startsWith(`${credentialsRoot}${path.sep}`)) {
         relativeFromVolume = target.slice(credentialsRoot.length + 1);
       }
-    }
-    if (relativeFromVolume) {
-      orphanPath = path.join(sessionDir, relativeFromVolume);
-      // Record the orphan's top-level dir for cleanup at the end. The
-      // leaked symlink targets a path under `provider-accounts/`, so we
-      // drop the whole `<sessionDir>/provider-accounts/` tree once merging
-      // is done.
-      const orphanRoot = path.join(sessionDir, relativeFromVolume.split(path.sep)[0] ?? "");
-      if (orphanRoot && orphanRoot !== sessionDir) orphanRootsToRemove.add(orphanRoot);
+      if (relativeFromVolume) {
+        orphanPath = path.join(sessionDir, relativeFromVolume);
+        const orphanRoot = path.join(sessionDir, relativeFromVolume.split(path.sep)[0] ?? "");
+        if (orphanRoot && orphanRoot !== sessionDir) orphanRootsToRemove.add(orphanRoot);
+      }
+    } else if (expectedOrphanBase) {
+      // ---- Case 3: real dir + orphan still present ----
+      //
+      // Sessions repaired by the pre-#758 destructive flow had their leaked
+      // symlink rm'd and the shared baseline cpSync'd on top — but the
+      // orphan subtree at `<sessionDir>/<sourceRel>/<rel>` (where the agent
+      // CLI wrote its conversation history while the leak was live) was
+      // never touched. dst is already a real dir; we just need to layer the
+      // orphan content on top and drop the orphan root. NO cpSync from
+      // shared — dst already has shared content from the previous repair,
+      // and re-copying risks clobbering anything the user's CLI has written
+      // to `.claude/` since.
+      const candidateOrphan = path.join(sessionDir, expectedOrphanBase, rel);
+      if (fs.existsSync(candidateOrphan)) {
+        orphanPath = candidateOrphan;
+        const orphanRoot = path.join(sessionDir, expectedOrphanBase.split(path.sep)[0] ?? "");
+        if (orphanRoot && orphanRoot !== sessionDir) orphanRootsToRemove.add(orphanRoot);
+      }
     }
 
+    if (!isSymlinkLeak && !orphanPath) continue; // healthy dir with no orphan — true no-op
+
     // Recover the agent_session_id from the orphan's `projects/` tree BEFORE
-    // any cpSync — cpSync doesn't preserve mtimes, so once we copy the
-    // orphan's jsonls into dest the ordering signal is gone.
+    // any cpSync/merge — cpSync doesn't preserve mtimes, so once we copy the
+    // orphan's jsonls into dst the latest-mtime ordering signal is gone.
+    // Applies to both Case 1 and Case 3.
     if (
       orphanPath
         && rel === ".claude"
@@ -594,23 +637,30 @@ function materializeLeakedSubtreeSymlinks(
       recoveredAgentSessionId = findLatestAgentSessionId(path.join(orphanPath, "projects"));
     }
 
-    fs.rmSync(dst, { force: true });
-
-    const src = path.join(sourceRoot, rel);
-    if (fs.existsSync(src)) {
-      fs.cpSync(src, dst, { recursive: true, force: true, dereference: true });
+    if (isSymlinkLeak) {
+      fs.rmSync(dst, { force: true });
+      const src = path.join(sourceRoot, rel);
+      if (fs.existsSync(src)) {
+        fs.cpSync(src, dst, { recursive: true, force: true, dereference: true });
+      }
+      if (orphanPath && fs.existsSync(orphanPath)) {
+        mergeOrphanState(orphanPath, dst, rel);
+      }
+      const mergeNote = orphanPath ? ` (orphan merged from ${orphanPath})` : "";
+      console.log(`[session-credentials] repaired leaked symlink in ${sessionDir}: ${rel}${mergeNote}`);
+    } else {
+      // Case 3 — orphan-only recovery; dst already has the shared baseline
+      // from the previous destructive repair.
+      mergeOrphanState(orphanPath!, dst, rel);
+      console.log(
+        `[session-credentials] recovered orphaned history in ${sessionDir}: ${rel} (no leaked symlink, but ${orphanPath} present)`,
+      );
     }
 
-    if (orphanPath && fs.existsSync(orphanPath)) {
-      mergeOrphanState(orphanPath, dst, rel);
-    }
-
-    repairedAny = true;
-    const mergeNote = orphanPath ? ` (orphan merged from ${orphanPath})` : "";
-    console.log(`[session-credentials] repaired leaked symlink in ${sessionDir}: ${rel}${mergeNote}`);
+    anyAction = true;
   }
 
-  if (!repairedAny) return { recoveredAgentSessionId: null };
+  if (!anyAction) return { recoveredAgentSessionId: null };
 
   for (const orphanRoot of orphanRootsToRemove) {
     try {
