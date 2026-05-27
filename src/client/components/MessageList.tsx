@@ -344,15 +344,7 @@ export function MessageList({
     fork: getPreview(gapPosition, "fork"),
   });
 
-  const defaultSessionNameForGap = (gapPosition: number): string => {
-    for (let i = Math.min(gapPosition, messages.length) - 1; i >= 0; i--) {
-      const candidate = messages[i];
-      if (!candidate.notice && candidate.role === "user" && candidate.text.trim()) {
-        return defaultSessionNameFor(candidate.text);
-      }
-    }
-    return defaultSessionNameFor(sessionTitle ?? "Fork from here");
-  };
+  const forkDefaultName = defaultSessionNameFor(sessionTitle ?? "Fork from here");
 
   const shouldShowGapBefore = (messageIndex: number): boolean => {
     if (!hasRewindControls) return false;
@@ -373,7 +365,7 @@ export function MessageList({
         gapPosition={gapPosition}
         currentState={currentState}
         disabled={!currentState && isLoading}
-        defaultSessionName={defaultSessionNameForGap(gapPosition)}
+        defaultSessionName={forkDefaultName}
         previews={getPreviewsForGap(gapPosition)}
         onRequestPreview={onRequestRewindPreview}
         onRewind={onRewindAtGap}
