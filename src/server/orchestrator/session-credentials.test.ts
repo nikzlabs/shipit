@@ -278,6 +278,69 @@ describe("session-credentials", () => {
     expect(readTail(path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json"))).toBe("B");
   });
 
+  // docs/153 — repair the legacy-alias symlink leak that splits the agent's
+  // and the orchestrator's view of `<sessionDir>/.claude/.credentials.json`.
+
+  it("provisioning from a credentialsRoot whose .claude is a legacy-alias symlink materializes real files", () => {
+    // Recreate the prod state: source-of-truth credentials live under
+    // provider-accounts/..., and the legacy `<root>/.claude` is a SYMLINK to
+    // that subtree (docs/150 `ensureLegacyAlias`).
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.rmSync(path.join(root, ".claude"), { recursive: true, force: true });
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("acct", 9_000));
+    fs.symlinkSync(path.join(account, ".claude"), path.join(root, ".claude"));
+
+    provisionAgentCredentials(root, sid, "claude");
+
+    // The session dir must hold a *real* directory + file, not a symlink that
+    // would resolve to different physical files inside the agent container
+    // (subpath-mounted on sessions/<id>/) vs. on the orchestrator (volume
+    // root). See docs/153.
+    const sessionClaude = path.join(perSessionCredentialsDir(root, sid), ".claude");
+    expect(fs.lstatSync(sessionClaude).isSymbolicLink()).toBe(false);
+    expect(fs.lstatSync(sessionClaude).isDirectory()).toBe(true);
+    expect(readTail(path.join(sessionClaude, ".credentials.json"))).toBe("acct");
+  });
+
+  it("repushAgentToken repairs a leaked symlink in the session dir", () => {
+    // Simulate the broken on-disk state from prod: a session pinned BEFORE the
+    // copyCredentialPath dereference fix has `<sessionDir>/.claude` as a
+    // symlink pointing into the account subtree (absolute path).
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+    // Pretend the agent followed the symlink at container boot (subpath
+    // namespace) and wrote a stale local copy alongside.
+    const stale = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude");
+    fs.mkdirSync(stale, { recursive: true });
+    fs.writeFileSync(path.join(stale, ".credentials.json"), claudeCreds("STALE", 1_000));
+
+    const wrote = repushProviderAccountToken(root, sid, "claude", "claude-default");
+
+    expect(wrote).toBe(true);
+    // `<sessionDir>/.claude` is now a real directory with the fresh token.
+    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
+    expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("FRESH");
+  });
+
+  it("syncProviderAccountTokenIn repairs a leaked symlink on the per-turn sync-in path", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
+
+    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
+    expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("FRESH");
+  });
+
   it("removeSessionCredentials drops the subtree and is idempotent", () => {
     provisionAgentCredentials(root, sid, "claude");
     expect(fs.existsSync(perSessionCredentialsDir(root, sid))).toBe(true);

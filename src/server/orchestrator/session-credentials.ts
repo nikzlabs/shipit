@@ -89,10 +89,18 @@ function copyCredentialPath(srcRoot: string, destRoot: string, rel: string): voi
   const src = path.join(srcRoot, rel);
   if (!fs.existsSync(src)) return; // e.g. Codex never logged in — no .codex
   const dest = path.join(destRoot, rel);
-  // `force: true` overwrites; `recursive: true` handles dirs; the source paths
-  // are real files/dirs on the orchestrator (the symlinks live in the container
-  // image, not here), so no dereference juggling is needed.
-  fs.cpSync(src, dest, { recursive: true, force: true });
+  // `dereference: true` materializes any symlinks at or under `src` as real
+  // files in `dest`. docs/150 added legacy-alias symlinks at the credentials
+  // root (e.g. `<credentialsDir>/.claude` → `provider-accounts/.../.claude`),
+  // and the legacy `provisionAgentCredentials` path passes the credentials
+  // root as `srcRoot`. Without dereferencing, fs.cpSync would copy the
+  // symlink itself into the session dir with an *absolute* `/credentials/...`
+  // target. The agent container's `/credentials` mount is a Docker Subpath of
+  // `sessions/<id>/`, so that absolute target resolves to a session-local
+  // path different from what the orchestrator sees — splitting one
+  // credentials file into two physical copies and stranding the agent on a
+  // stale token that no `repushAgentToken` write can update. See docs/153.
+  fs.cpSync(src, dest, { recursive: true, force: true, dereference: true });
 }
 
 /**
@@ -337,6 +345,10 @@ function syncAgentTokenInFromRoot(
   if (!files) return;
   const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  // docs/153 — repair leaked subtree-root symlinks before the per-turn copy
+  // so the orchestrator and the agent container converge on the same
+  // physical file. See `materializeLeakedSubtreeSymlinks` for the full why.
+  materializeLeakedSubtreeSymlinks(sessionDir, agentId, sourceRoot);
   for (const rel of files) {
     const src = path.join(sourceRoot, rel);
     if (!fs.existsSync(src)) continue;
@@ -399,6 +411,19 @@ function repushAgentTokenFromRoot(
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return false;
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
+
+  // Repair leaked subtree-root symlinks before writing. Sessions provisioned
+  // through the pre-fix `copyCredentialPath` saw the legacy-alias symlinks at
+  // the credentials root preserved as symlinks in the session dir — with an
+  // *absolute* `/credentials/...` target that resolves to a different
+  // physical file inside the agent container (subpath-mounted on
+  // `sessions/<id>/`) than it does on the orchestrator (volume-root mounted).
+  // The repush below copies through the orchestrator-side resolution; the
+  // agent-side stale copy never gets touched, so the agent keeps 401'ing on a
+  // dead token. Replace any such symlink with a real materialized subtree so
+  // both namespaces converge on the same file again. See docs/153.
+  materializeLeakedSubtreeSymlinks(sessionDir, agentId, sourceRoot);
+
   let wrote = false;
   for (const rel of files) {
     const src = path.join(sourceRoot, rel);
@@ -409,6 +434,35 @@ function repushAgentTokenFromRoot(
     wrote = true;
   }
   return wrote;
+}
+
+/**
+ * If any of an agent's subtree-root paths inside the session dir is a
+ * symbolic link (the docs/153 leak: docs/150's legacy alias was preserved as a
+ * symlink during provisioning), unlink it and re-materialize the source
+ * subtree as real files. Idempotent — a no-op on healthy sessions whose
+ * subtree-roots are already real directories.
+ */
+function materializeLeakedSubtreeSymlinks(
+  sessionDir: string,
+  agentId: AgentId,
+  sourceRoot: string,
+): void {
+  for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
+    const dst = path.join(sessionDir, rel);
+    let isSymlink = false;
+    try {
+      isSymlink = fs.lstatSync(dst).isSymbolicLink();
+    } catch {
+      continue; // dst doesn't exist — nothing to repair
+    }
+    if (!isSymlink) continue;
+    fs.rmSync(dst, { force: true });
+    const src = path.join(sourceRoot, rel);
+    if (!fs.existsSync(src)) continue;
+    fs.cpSync(src, dst, { recursive: true, force: true, dereference: true });
+    console.log(`[session-credentials] repaired leaked symlink in ${sessionDir}: ${rel}`);
+  }
 }
 
 /**
