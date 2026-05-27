@@ -56,18 +56,44 @@ function makeFakeCredentialStore(
 
 function makeFakeSessionManager(opts: {
   agentPinned: boolean;
+  agentSessionId?: string;
+  providerRouteKind?: "account";
+  providerRouteId?: string;
 }): {
   sm: SessionManager;
-  state: { agentPinned: boolean; setAgentIdCalls: number; setAgentPinnedCalls: number };
+  state: {
+    agentPinned: boolean;
+    setAgentIdCalls: number;
+    setAgentPinnedCalls: number;
+    agentSessionId: string | undefined;
+    setAgentSessionIdCalls: { id: string; value: string }[];
+  };
 } {
-  const state = { agentPinned: opts.agentPinned, setAgentIdCalls: 0, setAgentPinnedCalls: 0 };
+  const state = {
+    agentPinned: opts.agentPinned,
+    setAgentIdCalls: 0,
+    setAgentPinnedCalls: 0,
+    agentSessionId: opts.agentSessionId,
+    setAgentSessionIdCalls: [] as { id: string; value: string }[],
+  };
   const sm = {
-    get: () => ({ agentPinned: state.agentPinned, id: "s1" }),
+    get: () => ({
+      agentPinned: state.agentPinned,
+      id: "s1",
+      agentSessionId: state.agentSessionId,
+      providerRouteKind: opts.providerRouteKind,
+      providerRouteId: opts.providerRouteId,
+    }),
     setAgentId: () => { state.setAgentIdCalls += 1; },
     setAgentPinned: () => {
       state.setAgentPinnedCalls += 1;
       state.agentPinned = true;
     },
+    setAgentSessionId: (id: string, value: string) => {
+      state.setAgentSessionIdCalls.push({ id, value });
+      state.agentSessionId = value;
+    },
+    setProviderRoute: () => { /* no-op */ },
   } as unknown as SessionManager;
   return { sm, state };
 }
@@ -148,6 +174,100 @@ describe("prepareSessionAgentEnvironment", () => {
       deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
     });
     expect(fs.readFileSync(sessionCreds, "utf8")).toBe(fresh);
+  });
+
+  // docs/153 Fix 1 — when the per-turn sync repairs a leaked symlink (Case 1
+  // or Case 3 in materializeLeakedSubtreeSymlinks), the recovered
+  // agent_session_id must be surfaced to the caller as `overrideAgentSessionId`
+  // so the spawn argument can be replaced. Without this the spawn uses the
+  // captured-at-turn-start (stale) id, --resume fails, and the listener
+  // poisons the DB with a fresh init UUID. The DB row is updated as a side
+  // effect of the recovery callback, but the spawn-arg fix is the load-bearing
+  // piece — turn-start captured `opts.agentSessionId` is already in the
+  // caller's closure by the time prepareSessionAgentEnvironment runs.
+
+  it("returns overrideAgentSessionId when the docs/153 repair recovers an id from an orphan jsonl", async () => {
+    // Recreate the prod state: docs/150 provider-account layout with the
+    // legacy alias symlink, AND the orphan jsonl tree the agent CLI wrote
+    // through the leaked symlink in its Subpath namespace.
+    const account = path.join(tmpDir, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(account, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 60_000, accessToken: "FRESH" } }),
+    );
+    // Session dir has the leaked symlink — Case 1.
+    const sessionDir = path.join(tmpDir, "sessions", "s1");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+    // Orphan jsonl from when the CLI followed the symlink in its Subpath view.
+    const recoveredId = "b5903553-cab6-49a9-a9c0-855a7708867d";
+    const orphanProjects = path.join(
+      sessionDir, "provider-accounts", "claude", "claude-default",
+      ".claude", "projects", "-workspace",
+    );
+    fs.mkdirSync(orphanProjects, { recursive: true });
+    fs.writeFileSync(
+      path.join(orphanProjects, `${recoveredId}.jsonl`),
+      `${JSON.stringify({ sessionId: recoveredId, type: "summary" })}\n`,
+    );
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({
+      agentPinned: true,
+      agentSessionId: "2595726f-stale-uuid-from-pre-recovery",
+      providerRouteKind: "account",
+      providerRouteId: "claude-default",
+    });
+
+    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    expect(result.overrideAgentSessionId).toBe(recoveredId);
+    // DB row was also updated (so the listener's agent_result write resolves
+    // to the right value too — but the spawn-arg override is the primary fix).
+    expect(state.setAgentSessionIdCalls).toContainEqual({ id: "s1", value: recoveredId });
+    expect(state.agentSessionId).toBe(recoveredId);
+  });
+
+  it("returns no override on healthy turns (no leak repair fired)", async () => {
+    // Healthy provider-account session with a real .claude/ dir — no symlink,
+    // no orphan tree.
+    const account = path.join(tmpDir, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(account, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 60_000, accessToken: "FRESH" } }),
+    );
+    const sessionDir = path.join(tmpDir, "sessions", "s1");
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 60_000, accessToken: "FRESH" } }),
+    );
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({
+      agentPinned: true,
+      agentSessionId: "healthy-existing-id",
+      providerRouteKind: "account",
+      providerRouteId: "claude-default",
+    });
+
+    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    expect(result.overrideAgentSessionId).toBeUndefined();
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
+    expect(state.agentSessionId).toBe("healthy-existing-id");
   });
 
   it("pushes the merged agent env to the worker via the runner's tryPushAgentSecrets", async () => {
