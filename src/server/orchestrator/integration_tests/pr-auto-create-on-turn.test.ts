@@ -115,15 +115,9 @@ async function setupPrimedSession(): Promise<{ sessionId: string; sessionDir: st
   });
   claude.finish("agent-session-1");
 
-  // Drain the first turn's messages
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    try {
-      await client.receive(500);
-    } catch {
-      break;
-    }
-  }
+  // Drain the first turn's messages — quiet-period bounded so we don't
+  // sit on a 3 s tail when the burst finishes in <100 ms.
+  await client.drain({ quietMs: 150 });
 
   const sessionsDir = path.join(tmpDir, "sessions");
   const sessionId = fs.readdirSync(sessionsDir)[0];
@@ -150,20 +144,6 @@ async function setupPrimedSession(): Promise<{ sessionId: string; sessionDir: st
   return { sessionId, sessionDir };
 }
 
-async function drainMessages(timeoutMs = 2500): Promise<WsServerMessage[]> {
-  const messages: WsServerMessage[] = [];
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const msg = await client.receive(Math.max(100, deadline - Date.now()));
-      messages.push(msg);
-    } catch {
-      break;
-    }
-  }
-  return messages;
-}
-
 describe("auto-create PR after meaningful turn", () => {
   it(
     "auto-creates a PR on a non-new (resumed) session when files change",
@@ -185,17 +165,26 @@ describe("auto-create PR after meaningful turn", () => {
       });
       claude2.finish("agent-session-1");
 
-      const messages = await drainMessages(5000);
-      const lifecycleEvents = messages.filter(
-        (m) => m.type === "pr_lifecycle_update",
-      ) as (WsServerMessage & { phase: string; pr?: { number: number } })[];
-
-      const phases = lifecycleEvents.map((e) => e.phase);
+      // The "open" event arrives after "creating" — wait directly for it
+      // instead of draining the full timeout, then collect the burst tail
+      // for the phase assertions.
+      const openEvent = (await client.receiveType(
+        "pr_lifecycle_update",
+        5000,
+      )) as WsServerMessage & { phase: string; pr?: { number: number } };
+      // First lifecycle event might be "creating" — keep pulling until "open".
+      let resolvedOpen = openEvent;
+      const phases = [resolvedOpen.phase];
+      while (resolvedOpen.phase !== "open") {
+        resolvedOpen = (await client.receiveType(
+          "pr_lifecycle_update",
+          5000,
+        )) as WsServerMessage & { phase: string; pr?: { number: number } };
+        phases.push(resolvedOpen.phase);
+      }
       expect(phases).toContain("creating");
       expect(phases).toContain("open");
-
-      const openEvent = lifecycleEvents.find((e) => e.phase === "open");
-      expect(openEvent?.pr?.number).toBe(1);
+      expect(resolvedOpen.pr?.number).toBe(1);
     },
   );
 
@@ -217,7 +206,9 @@ describe("auto-create PR after meaningful turn", () => {
       });
       claude2.finish("agent-session-1");
 
-      const messages = await drainMessages();
+      // Quiet-period drain so the "no 'creating' event" assertion doesn't
+      // sit on a full timeout.
+      const messages = await client.drain({ quietMs: 250 });
       const phases = messages
         .filter((m) => m.type === "pr_lifecycle_update")
         .map((m) => (m as { phase: string }).phase);
@@ -244,7 +235,7 @@ describe("auto-create PR after meaningful turn", () => {
       });
       claude2.finish("agent-session-1");
 
-      const messages = await drainMessages();
+      const messages = await client.drain({ quietMs: 250 });
       const phases = messages
         .filter((m) => m.type === "pr_lifecycle_update")
         .map((m) => (m as { phase: string }).phase);
@@ -269,7 +260,7 @@ describe("auto-create PR after meaningful turn", () => {
       const claude2 = await waitForClaude(() => latestClaude, prev);
       claude2.finish("agent-session-1");
 
-      const messages = await drainMessages();
+      const messages = await client.drain({ quietMs: 250 });
       const phases = messages
         .filter((m) => m.type === "pr_lifecycle_update")
         .map((m) => (m as { phase: string }).phase);

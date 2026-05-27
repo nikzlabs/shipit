@@ -159,6 +159,37 @@ export class TestClient {
     }
   }
 
+  /**
+   * Drain messages until the stream is quiet for `quietMs` (default 250 ms),
+   * capped at `maxMs` (default 3000 ms) total wait.
+   *
+   * The naive `for (;;) { receive(T_remaining) }` pattern that lots of tests
+   * use ends up waiting the FULL remaining timeout after the last message —
+   * a tail message at t=200ms with maxMs=3000 forces every drain to sit on
+   * a 2.8s timeout. This variant bounds the per-iteration wait by `quietMs`
+   * so the drain finishes ~250 ms after the last message regardless of how
+   * much headroom is left.
+   *
+   * Use this for "did NOT happen" assertions and for collecting a known
+   * burst of messages whose count isn't fixed. For "wait for one specific
+   * message" use {@link receiveType} instead — it returns the moment the
+   * match arrives without paying for the quiet period.
+   */
+  async drain(opts: { quietMs?: number; maxMs?: number } = {}): Promise<WsServerMessage[]> {
+    const { quietMs = 250, maxMs = 3000 } = opts;
+    const messages: WsServerMessage[] = [];
+    const hardDeadline = Date.now() + maxMs;
+    while (Date.now() < hardDeadline) {
+      const wait = Math.min(quietMs, hardDeadline - Date.now());
+      try {
+        messages.push(await this.receive(wait));
+      } catch {
+        break;
+      }
+    }
+    return messages;
+  }
+
   /** Send a typed client message. */
   send(msg: WsClientMessage): void {
     this.ws.send(JSON.stringify(msg));
