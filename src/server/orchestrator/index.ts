@@ -347,6 +347,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // Skip the volume-prune fallback in test mode so the poller's
     // auto-archive-on-merge path doesn't shell out to docker from tests.
     pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,
+    // Destroy each archived session's container so its workspace bind mount
+    // is released before fs.rm runs — see archiveSession docblock.
+    containerManager,
     // On-change pre-fetch: a detected merge moved `main`, so refresh the
     // bare cache now (off the request path) — see docs/145.
     ...(repoPrefetcher ? { onRepoMainAdvanced: (url: string) => repoPrefetcher.prefetchRepo(url) } : {}),

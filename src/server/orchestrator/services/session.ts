@@ -395,7 +395,6 @@ export async function markMergedAndPruneExcess(
   // restart's disk-janitor pass.
   const toArchive = merged.slice(MAX_MERGED_SESSIONS_PER_REPO);
   for (const excess of toArchive) {
-<<<<<<< HEAD
     // Skip sessions with live (non-archived) child sessions. Archiving a
     // parent disposes its runner, removes its workspace, and drops its
     // volumes — but the children are independent sessions whose users may
@@ -407,10 +406,14 @@ export async function markMergedAndPruneExcess(
     if (sessionManager.findChildren(excess.id).length > 0) {
       continue;
     }
-    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, excess.id, pruneVolumes);
-=======
-    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, excess.id, pruneVolumes, containerManager);
->>>>>>> fdef72212 (PR #745 now covers both the cleanup and the fix.)
+    await archiveSession(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      excess.id,
+      pruneVolumes,
+      containerManager,
+    );
   }
 
   return { sessions: sessionManager.list() };
