@@ -236,6 +236,14 @@ export function renameSession(
  * fallback prune is skipped — used by tests so we don't shell out to a
  * real Docker daemon. Production wires this to `pruneSessionVolumes`
  * from `disk-janitor.ts`.
+ *
+ * `containerManager` actually destroys the agent container before we `fs.rm`
+ * the workspace dir. `runnerRegistry.dispose()` deliberately leaves the
+ * container alive (so transient lifecycle events can reconnect to it), so
+ * without this step the container survives archive with its workspace bind
+ * mount pinned to the about-to-be-unlinked inode. After unarchive re-clones
+ * a fresh inode at the same path, reconnects to the orphan container see
+ * an empty `/workspace`. Optional only so tests without Docker can omit it.
  */
 export async function archiveSession(
   sessionManager: SessionManager,
@@ -243,6 +251,7 @@ export async function archiveSession(
   getBareCacheDir: (url: string) => string,
   sessionId: string,
   pruneVolumes?: (sessionId: string) => Promise<void>,
+  containerManager?: { destroy(sessionId: string): Promise<void> } | null,
 ): Promise<{ sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
 
@@ -260,6 +269,17 @@ export async function archiveSession(
   // tear it down even if an agent is still running)
   runnerRegistry.dispose(sessionId, { force: true });
 
+  // Destroy the agent container so its workspace bind mount is released
+  // before we unlink the host directory. See the docblock above for why
+  // dispose() alone isn't enough.
+  if (containerManager) {
+    try {
+      await containerManager.destroy(sessionId);
+    } catch (err) {
+      console.warn(`[server] Failed to destroy container for ${sessionId}:`, String(err));
+    }
+  }
+
   // Fallback path: if no runner existed (e.g. idle eviction already
   // disposed it), the `removeVolumesOnDispose` flag never had a chance
   // to fire — the prior compose-down ran without `--volumes` and the
@@ -273,8 +293,9 @@ export async function archiveSession(
     await pruneVolumes(sessionId);
   }
 
-  // Clean up session workspace directory for repo-backed clones only.
-  // Standalone sessions preserve their directory so they can be unarchived.
+  // Clean up the session's git clone — the bare cache + unarchive flow
+  // re-creates it from scratch on restore. Template sessions (no remoteUrl)
+  // have no recovery path, so we preserve their workspace dir.
   if (session?.remoteUrl && session?.workspaceDir) {
     try {
       await fs.rm(session.workspaceDir, { recursive: true, force: true });
@@ -330,13 +351,11 @@ export async function markMergedAndPruneExcess(
   pruneVolumes?: (sessionId: string) => Promise<void>,
   createRepoGit?: (dir: string) => RepoGit,
   githubAuthManager?: GitHubAuthManager,
+  containerManager?: { destroy(sessionId: string): Promise<void> } | null,
 ): Promise<{ sessions: SessionInfo[] }> {
   sessionManager.markMerged(sessionId);
 
   // Scope pruning to the same repository as the merged session.
-  // Sessions without a remoteUrl (e.g. standalone sessions) cannot be merged
-  // via PRs anyway, so this branch is effectively unreachable — but we guard
-  // against it to keep the function total.
   const session = sessionManager.get(sessionId);
   if (!session?.remoteUrl) {
     return { sessions: sessionManager.list() };
@@ -388,7 +407,14 @@ export async function markMergedAndPruneExcess(
     if (sessionManager.findChildren(excess.id).length > 0) {
       continue;
     }
-    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, excess.id, pruneVolumes);
+    await archiveSession(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      excess.id,
+      pruneVolumes,
+      containerManager,
+    );
   }
 
   return { sessions: sessionManager.list() };

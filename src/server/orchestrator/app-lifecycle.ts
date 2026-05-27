@@ -579,6 +579,13 @@ export interface PrPollerDeps {
    * fetch. Optional — omitted in test mode / when pre-fetch is disabled.
    */
   onRepoMainAdvanced?: (repoUrl: string) => void;
+  /**
+   * Forwarded to `markMergedAndPruneExcess` so the auto-archive path can
+   * actually destroy each excess session's agent container before its
+   * workspace dir is unlinked — see `archiveSession`'s docblock for the
+   * orphan-inode failure mode this avoids. Optional in test mode.
+   */
+  containerManager?: SessionContainerManager | null;
 }
 
 /**
@@ -590,7 +597,7 @@ export function createPrStatusPoller(
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
     runnerRegistry, createRepoGit, getBareCacheDir, pruneSessionVolumes,
-    onRepoMainAdvanced,
+    onRepoMainAdvanced, containerManager,
   } = pollerDeps;
 
   const prStatusPoller = deps.prStatusPoller ?? new PrStatusPoller({
@@ -614,7 +621,7 @@ export function createPrStatusPoller(
       try {
         const result = await markMergedAndPruneExcess(
           sessionManager, runnerRegistry, getBareCacheDir, sessionId,
-          pruneSessionVolumes, createRepoGit, githubAuthManager,
+          pruneSessionVolumes, createRepoGit, githubAuthManager, containerManager,
         );
         sseBroadcast("session_list", { sessions: result.sessions });
         console.log(`[pr-poller] Post-merge: marked ${sessionId} as merged`);
