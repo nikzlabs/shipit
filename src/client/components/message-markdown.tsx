@@ -105,6 +105,17 @@ export const markdownComponents: Components = {
       </a>
     );
   },
+  // Wide tables (often produced by code-analysis prompts) would otherwise push
+  // their containing message bubble past the viewport on mobile. The
+  // `w-0 min-w-full` pair pins the wrapper to its parent's width without
+  // letting the table expand it, and `overflow-x-auto` keeps the scroll local.
+  table({ children }) {
+    return (
+      <div className="w-0 min-w-full overflow-x-auto my-2">
+        <table>{children}</table>
+      </div>
+    );
+  },
 };
 
 const remarkPlugins = [remarkGfm, remarkBreaks];
