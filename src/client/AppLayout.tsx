@@ -1,5 +1,6 @@
 import type { ReactNode, RefObject } from "react";
-import { GaugeIcon, GearSixIcon, ListIcon, QuestionIcon } from "@phosphor-icons/react";
+import { GaugeIcon, GearSixIcon, LightningIcon, ListIcon, QuestionIcon } from "@phosphor-icons/react";
+import { useUiStore } from "./stores/ui-store.js";
 import { ICON_SIZE } from "./design-tokens.js";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover.js";
 import { WithTooltip } from "./components/ui/tooltip.js";
@@ -132,11 +133,18 @@ export function AppLayout({
       <header className="relative flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
           {isMobile && (
-            <WithTooltip label="Sessions">
-            <button onClick={onOpenSessions} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Sessions">
-              <ListIcon size={ICON_SIZE.MD} />
-            </button>
-            </WithTooltip>
+            <>
+              <WithTooltip label="Sessions">
+              <button onClick={onOpenSessions} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Sessions">
+                <ListIcon size={ICON_SIZE.MD} />
+              </button>
+              </WithTooltip>
+              <WithTooltip label="Quick session">
+              <button onClick={() => useUiStore.getState().setQuickCaptureOpen(true)} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Quick session">
+                <LightningIcon size={ICON_SIZE.MD} />
+              </button>
+              </WithTooltip>
+            </>
           )}
           <h1 className="text-base sm:text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity" onClick={onNavigateHome} role="link">
             <img src={LIGHT_THEMES.has(theme) ? "/favicon-light.svg" : "/favicon.svg"} alt="" className="w-5 h-5" />
