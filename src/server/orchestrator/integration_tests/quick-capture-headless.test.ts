@@ -89,6 +89,15 @@ describe("Integration: quick-capture headless sessions", () => {
   });
 
   it("POST /api/sessions/headless creates and starts a session without WebSocket attachment", { timeout: 15_000 }, async () => {
+    // Wait for the warm pool to register a warm session before claiming.
+    // buildApp() schedules warming via setTimeout(0); if claim runs before
+    // that fires (CI load) it falls to the slow-clone path, which calls
+    // `ensureBareCache` — the helper sees no `HEAD` file at the top of the
+    // *non-bare* seeded cache and `rm -rf`s it, racing the warm pool's
+    // concurrent `git fetch` for an ENOTEMPTY on `.git/`. Matches
+    // `agent-spawned-session.test.ts`'s `claimGraduatedParent` waitFor.
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
+
     const res = await app.inject({
       method: "POST",
       url: "/api/sessions/headless",
