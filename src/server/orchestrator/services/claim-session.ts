@@ -254,8 +254,18 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const inFlightWarming = deps.waitForWarmSession?.(url);
         if (inFlightWarming) await inFlightWarming;
 
+        // Re-read repo state AFTER awaiting warming — the pool may have just
+        // set `warmSessionId` during the await, and the original `repo`
+        // captured before the await is now stale. Using the stale value
+        // would make `findUngraduatedWarm`'s exclusion mis-fire and the
+        // reuse path could pick up the just-warmed session, leaving
+        // `warmSessionId` pointing at a now-graduated session — the next
+        // claim's warm path then re-claims it. See "claims race with
+        // warming" in the integration tests for the failure mode.
+        const repoAfterWarm = deps.repoStore.get(url) ?? repo;
+
         // Reuse path: check for previously-claimed warm session.
-        const reusable = deps.sessionManager.findUngraduatedWarm(url, repo.warmSessionId ?? undefined);
+        const reusable = deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
         if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
           claimPath = "reuse";
           const fetchDurationMs = await refreshClaimedSession(url, reusable.id, reusable.workspaceDir);
