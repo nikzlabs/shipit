@@ -74,7 +74,12 @@ export async function runDispatchedTurn(
   // flow-specific post-turn work (commit/push/PR/drain).
   agent.on("done", async (code: number | null) => {
     console.log("[system-turn] agent exited with code", code);
-    runner.setAgent(null);
+    // Identity-guard: only clear the runner's agent ref if it still points at
+    // *this* turn's agent. A later WS turn or dispatched turn that started
+    // after we did has already called `setAgent(NEW)`; clobbering to null
+    // here would strand the new agent and the SSE relay would log
+    // `[sse-drop] ... dropped (no _agent)` for every event from it.
+    if (runner.getAgent() === agent) runner.setAgent(null);
 
     // docs/149 — write back any CLI-rotated OAuth token before doing further
     // post-turn work. Matches the WS-path `syncTokenBackAfterTurn` behavior.

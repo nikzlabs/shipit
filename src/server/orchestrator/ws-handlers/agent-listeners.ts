@@ -989,7 +989,9 @@ export function wireAgentListeners(
     const turnSessionId = opts.capturedSessionId;
     agent.kill();
     if (runner) {
-      runner.setAgent(null);
+      // Identity-guard: a concurrent turn may have replaced the runner's
+      // agent ref already; only clear if it's still our process.
+      if (runner.getAgent() === agent) runner.setAgent(null);
       runner.running = false;
       if (turnSessionId) {
         emitToViewers({
@@ -1039,7 +1041,10 @@ export function wireAgentListeners(
     // Setting running=false also lets the periodic idle enforcer reclaim the
     // session normally. Emit `idle` if appropriate so post-cleanup proceeds.
     if (runner) {
-      runner.setAgent(null);
+      // Identity-guard: only clear the runner's agent ref if it still points
+      // at us. A later turn may already have replaced it; clobbering to null
+      // would silently drop every subsequent SSE event from that turn.
+      if (runner.getAgent() === agent) runner.setAgent(null);
       runner.running = false;
       if (turnSessionId) {
         emitToViewers({

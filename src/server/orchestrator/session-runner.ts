@@ -586,6 +586,14 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       this.emitMessage({ type: "message_queued", text: opts.text, position });
       return;
     }
+    // Flip running=true synchronously BEFORE scheduling the async dispatched
+    // turn. Without this, the microtask gap between `void _runDispatchedTurn`
+    // and `runDispatchedTurn`'s own `runner.running = true` is a window where
+    // a concurrent WS `send_message` (e.g. user typing while clicking Fix CI)
+    // sees `running=false`, falls through to `runAgentWithMessage`, and
+    // races with this dispatched turn for the `_agent` slot — silently
+    // dropping one turn's SSE events.
+    this._isRunning = true;
     void this._runDispatchedTurn(opts);
   }
 

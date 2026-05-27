@@ -295,7 +295,9 @@ function runRebaseResolutionTurn(
     // — see the function docstring for why.
     agent.on("done", (code: number | null) => {
       console.log("[rebase] agent exited with code", code);
-      runner.setAgent(null);
+      // Identity-guard: don't clobber a later turn that already replaced
+      // the runner's agent ref — that would silently drop its SSE events.
+      if (runner.getAgent() === agent) runner.setAgent(null);
       // Defensive: a process that exited without firing `agent_result` (rare
       // crash before any events) wouldn't have had its `running` flag reset
       // by the listener. Force it false so the rebase loop's next iteration
