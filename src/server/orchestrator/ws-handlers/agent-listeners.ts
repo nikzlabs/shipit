@@ -376,6 +376,27 @@ export function wireAgentListeners(
     agentSessionIdPersisted = true;
   };
 
+  // ---- Suppress auto-resolved AskUserQuestion tool_results ----
+  //
+  // The Claude CLI auto-resolves AskUserQuestion in both `-p` headless mode AND
+  // `--input-format stream-json` (live steering) — see docs/140 and the
+  // AskUserQuestion comment in the agent_assistant branch below. The orchestrator
+  // interrupts on seeing the tool_use, but the interrupt is asynchronous (PTY
+  // Ctrl+C or a streaming `control_request`), so the auto-resolved tool_result
+  // can still reach the orchestrator before the turn ends.
+  //
+  // If that synthetic tool_result is forwarded to the client and attached to the
+  // chat-history message group, the AskUserQuestion card renders as "answered":
+  // `MessageList` sets `questionDisabled = !!el.result`, and `AskUserQuestion`
+  // derives `submittedAnswers` from the auto-resolved content — graying out the
+  // options and rendering the synthetic string as an Other answer. The user can
+  // no longer click anything to actually answer.
+  //
+  // Track the well-formed AskUserQuestion tool_use_ids we interrupt and drop any
+  // subsequent tool_result blocks that match them, both from the broadcast event
+  // and from the persisted message group.
+  const suppressedToolResultIds = new Set<string>();
+
   // ---- MCP mid-turn crash detection (docs/088) ----
   //
   // The CLI's init event covers cold-start liveness (ClaudeAdapter →
@@ -466,6 +487,24 @@ export function wireAgentListeners(
           deps.getSubscriptionLimitsSnapshot?.(),
         ),
       };
+    }
+
+    // Drop auto-resolved tool_result blocks for AskUserQuestion calls we
+    // interrupted. See `suppressedToolResultIds` declaration for why. If
+    // filtering removes every block, skip the whole event — the client has
+    // nothing to render and per-type handling below would no-op on empty
+    // content anyway.
+    if (event.type === "agent_tool_result" && suppressedToolResultIds.size > 0) {
+      const content = (event as { content?: unknown[] }).content ?? [];
+      const filtered = content.filter((b) => {
+        if (typeof b !== "object" || b === null) return true;
+        const id = (b as Record<string, unknown>).tool_use_id;
+        return typeof id !== "string" || !suppressedToolResultIds.has(id);
+      });
+      if (filtered.length === 0) return;
+      if (filtered.length !== content.length) {
+        event = { ...event, content: filtered } as AgentEvent;
+      }
     }
 
     emitToViewers({ type: "agent_event", event });
@@ -662,6 +701,12 @@ export function wireAgentListeners(
       // flow back via `sendUserMessage`/NDJSON in `handleAnswerQuestion`.
       if (runner && toolBlocks.some(isWellFormedAskUserQuestion)) {
         runner.wasInterrupted = true;
+        // Remember the AskUserQuestion ids so we can drop the CLI's
+        // auto-resolved tool_result for them — otherwise the client renders the
+        // card as already-answered and the user can't click any option.
+        for (const t of toolBlocks) {
+          if (isWellFormedAskUserQuestion(t)) suppressedToolResultIds.add(t.id);
+        }
         agent.interrupt();
         deps.broadcastLog("server", "Agent interrupted: waiting for AskUserQuestion answer");
       }
