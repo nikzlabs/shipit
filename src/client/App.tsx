@@ -510,9 +510,9 @@ export default function App() {
   );
 
   const handleRewindAtGap = useCallback(
-    (gapPosition: number, action: RewindGapAction, branchName?: string) => {
+    (gapPosition: number, action: RewindGapAction, sessionName?: string) => {
       if (action === "fork") {
-        send({ type: "rewind_at_gap", gapPosition, action, branchName: branchName?.trim() || undefined });
+        send({ type: "rewind_at_gap", gapPosition, action, sessionName: sessionName?.trim() || undefined });
         return;
       }
       send({ type: "rewind_at_gap", gapPosition, action });

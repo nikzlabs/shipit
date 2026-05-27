@@ -113,7 +113,13 @@ export interface WsRewindAtGap {
   type: "rewind_at_gap";
   gapPosition: number;
   action: RewindAtGapAction;
-  branchName?: string;
+  /**
+   * Human-readable title for the forked session. Required when action is
+   * `fork`; ignored otherwise. The new branch name is derived server-side
+   * from the active session's branch (with a fresh slug) — the user does
+   * not pick branch names.
+   */
+  sessionName?: string;
 }
 
 export interface WsRewindPreviewRequest {
