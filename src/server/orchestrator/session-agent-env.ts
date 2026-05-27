@@ -129,10 +129,24 @@ export async function prepareSessionAgentEnvironment(
   // rotates the source.
   if (runner instanceof ContainerSessionRunner) {
     try {
+      // docs/153 — if the per-turn sync repairs a leaked symlink, recover
+      // the Claude CLI's `sessionId` from the orphan jsonl tree so the next
+      // turn's `--resume <id>` finds the existing conversation file instead
+      // of treating it as a missing session. Without this, the agent emits
+      // a fresh init UUID, we persist that, and the next retry fails again
+      // because the conversation history lives under the old id — the
+      // "no conversation found" loop. See docs/153.
+      const onRecover = (recovered: string): void => {
+        const current = deps.sessionManager.get(sessionId)?.agentSessionId;
+        if (current === recovered) return;
+        const wasNote = current ? ` (was ${current})` : "";
+        console.log(`[credentials] recovered agent_session_id for ${sessionId}: ${recovered}${wasNote}`);
+        deps.sessionManager.setAgentSessionId(sessionId, recovered);
+      };
       if (selectedRoute?.kind === "account") {
-        syncProviderAccountTokenIn(deps.credentialsDir, sessionId, agentId, selectedRoute.id);
+        syncProviderAccountTokenIn(deps.credentialsDir, sessionId, agentId, selectedRoute.id, onRecover);
       } else if (selectedRoute?.id !== "claude-env-oauth") {
-        syncAgentTokenIn(deps.credentialsDir, sessionId, agentId);
+        syncAgentTokenIn(deps.credentialsDir, sessionId, agentId, onRecover);
       }
     } catch (err) {
       console.warn("[credentials] token sync-in failed:", getErrorMessage(err));

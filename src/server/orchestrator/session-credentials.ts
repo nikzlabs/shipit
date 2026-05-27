@@ -317,8 +317,25 @@ const TOKEN_FRESHNESS: Partial<Record<AgentId, (file: string) => number | null>>
  * token rather than a stale write-once copy. Only the token file is touched.
  * No-op for agents without a registered token file (e.g. Codex). (docs/142 A)
  */
-export function syncAgentTokenIn(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
-  syncAgentTokenInFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot);
+/**
+ * Optional callback fired by the per-turn sync paths when the docs/153 leak
+ * repair recovers a Claude CLI session id from the orphan conversation
+ * tree. The orchestrator wires this to `SessionManager.setAgentSessionId`
+ * so a `claude --resume <id>` next turn picks up the existing conversation
+ * jsonl instead of starting a fresh one. Optional because not every caller
+ * has a SessionManager (tests, local mode).
+ */
+export type AgentSessionIdRecoveryCallback = (
+  recoveredAgentSessionId: string,
+) => void;
+
+export function syncAgentTokenIn(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+): void {
+  syncAgentTokenInFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot, onRecoverAgentSessionId);
 }
 
 export function syncProviderAccountTokenIn(
@@ -326,12 +343,14 @@ export function syncProviderAccountTokenIn(
   sessionId: string,
   agentId: AgentId,
   accountId: string,
+  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
 ): void {
   syncAgentTokenInFromRoot(
     credentialsRoot,
     sessionId,
     agentId,
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+    onRecoverAgentSessionId,
   );
 }
 
@@ -340,6 +359,7 @@ function syncAgentTokenInFromRoot(
   sessionId: string,
   agentId: AgentId,
   sourceRoot: string,
+  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
 ): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
@@ -348,7 +368,14 @@ function syncAgentTokenInFromRoot(
   // docs/153 — repair leaked subtree-root symlinks before the per-turn copy
   // so the orchestrator and the agent container converge on the same
   // physical file. See `materializeLeakedSubtreeSymlinks` for the full why.
-  materializeLeakedSubtreeSymlinks(sessionDir, agentId, sourceRoot);
+  const repair = materializeLeakedSubtreeSymlinks(credentialsRoot, sessionDir, agentId, sourceRoot);
+  if (repair.recoveredAgentSessionId && onRecoverAgentSessionId) {
+    try {
+      onRecoverAgentSessionId(repair.recoveredAgentSessionId);
+    } catch (err) {
+      console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
+    }
+  }
   for (const rel of files) {
     const src = path.join(sourceRoot, rel);
     if (!fs.existsSync(src)) continue;
@@ -384,8 +411,13 @@ function syncAgentTokenInFromRoot(
  * `.claude` inside a Codex session (docs/138 isolation). Returns true iff a
  * file was written (the session was an active holder of this agent's token).
  */
-export function repushAgentToken(credentialsRoot: string, sessionId: string, agentId: AgentId): boolean {
-  return repushAgentTokenFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot);
+export function repushAgentToken(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+): boolean {
+  return repushAgentTokenFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot, onRecoverAgentSessionId);
 }
 
 export function repushProviderAccountToken(
@@ -393,12 +425,14 @@ export function repushProviderAccountToken(
   sessionId: string,
   agentId: AgentId,
   accountId: string,
+  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
 ): boolean {
   return repushAgentTokenFromRoot(
     credentialsRoot,
     sessionId,
     agentId,
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+    onRecoverAgentSessionId,
   );
 }
 
@@ -407,6 +441,7 @@ function repushAgentTokenFromRoot(
   sessionId: string,
   agentId: AgentId,
   sourceRoot: string,
+  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
 ): boolean {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return false;
@@ -422,7 +457,14 @@ function repushAgentTokenFromRoot(
   // agent-side stale copy never gets touched, so the agent keeps 401'ing on a
   // dead token. Replace any such symlink with a real materialized subtree so
   // both namespaces converge on the same file again. See docs/153.
-  materializeLeakedSubtreeSymlinks(sessionDir, agentId, sourceRoot);
+  const repair = materializeLeakedSubtreeSymlinks(credentialsRoot, sessionDir, agentId, sourceRoot);
+  if (repair.recoveredAgentSessionId && onRecoverAgentSessionId) {
+    try {
+      onRecoverAgentSessionId(repair.recoveredAgentSessionId);
+    } catch (err) {
+      console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
+    }
+  }
 
   let wrote = false;
   for (const rel of files) {
@@ -437,31 +479,239 @@ function repushAgentTokenFromRoot(
 }
 
 /**
+ * Subpaths under `.claude/` that carry the session's CLI-side conversation
+ * state — written by the agent CLI when it followed the leaked symlink in
+ * its own namespace. These are the orphan files the non-destructive repair
+ * has to rescue before nuking the orphan tree. Shared-dir entries win on
+ * conflict (defensive — same filename collision is implausible since
+ * `projects/<encoded-cwd>/<agentSessionId>.jsonl` carries the session's
+ * unique agent_session_id).
+ */
+const CLAUDE_SESSION_STATE_SUBPATHS: readonly string[] = [
+  "projects",
+  "sessions",
+  "history.jsonl",
+];
+
+/** Anchor for symlink targets authored to point at the volume root. */
+const CREDENTIALS_MOUNT_PREFIX = "/credentials/";
+
+/**
+ * Result of a single leak-repair pass over a session's credentials dir.
+ * `recoveredAgentSessionId` is the most-recently-modified `.jsonl` session
+ * id recovered from the orphan subtree, or null when no orphan was found /
+ * no jsonl was parseable.
+ */
+interface LeakRepairResult {
+  recoveredAgentSessionId: string | null;
+}
+
+/**
  * If any of an agent's subtree-root paths inside the session dir is a
- * symbolic link (the docs/153 leak: docs/150's legacy alias was preserved as a
- * symlink during provisioning), unlink it and re-materialize the source
- * subtree as real files. Idempotent — a no-op on healthy sessions whose
- * subtree-roots are already real directories.
+ * symbolic link (the docs/153 leak: docs/150's legacy alias preserved as a
+ * symlink during provisioning, OR a still-unidentified writer recreating it
+ * post-provisioning), repair it non-destructively:
+ *
+ *   1. Save the orphan path the symlink resolves to in the agent container's
+ *      namespace — `/credentials/...` resolves to `<sessionDir>/...` there
+ *      because of the Docker Subpath mount (docs/138). This is where the
+ *      agent CLI wrote its conversation history.
+ *   2. Replace the symlink with a real materialized copy of the shared
+ *      source (gets the fresh credentials).
+ *   3. Merge the orphan's conversation-state subpaths (`projects/`,
+ *      `sessions/`, `history.jsonl` for Claude) into the new dest with the
+ *      shared dir winning on conflict.
+ *   4. For `.claude.json`: if the orphan version differs from shared, keep
+ *      the orphan (session-specific CLI config).
+ *   5. Read the latest `<projects>/<encoded-cwd>/<sid>.jsonl` to recover the
+ *      agent_session_id the CLI was using before the leak split state.
+ *   6. Drop the orphan `<sessionDir>/provider-accounts/` tree entirely so a
+ *      future leak doesn't reappear with merged state.
+ *
+ * Idempotent — a no-op on healthy sessions whose subtree-roots are already
+ * real directories.
  */
 function materializeLeakedSubtreeSymlinks(
+  credentialsRoot: string,
   sessionDir: string,
   agentId: AgentId,
   sourceRoot: string,
-): void {
+): LeakRepairResult {
+  let repairedAny = false;
+  let recoveredAgentSessionId: string | null = null;
+  const orphanRootsToRemove = new Set<string>();
+
   for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
     const dst = path.join(sessionDir, rel);
     let isSymlink = false;
+    let target: string | null = null;
     try {
-      isSymlink = fs.lstatSync(dst).isSymbolicLink();
+      const stat = fs.lstatSync(dst);
+      isSymlink = stat.isSymbolicLink();
+      if (isSymlink) target = fs.readlinkSync(dst);
     } catch {
       continue; // dst doesn't exist — nothing to repair
     }
     if (!isSymlink) continue;
+
+    // Resolve the orphan path the symlink target points at *inside the agent
+    // container's namespace*. Two target shapes are observed in the wild:
+    //   - prod: absolute `/credentials/provider-accounts/...` (the literal
+    //     volume-mount path on the orchestrator side, baked in by
+    //     ensureLegacyAlias when credentialsDir = "/credentials").
+    //   - test: absolute `<credentialsRoot>/provider-accounts/...` (the
+    //     temp-dir path of the test fixture).
+    // Both reduce to a "path relative to the credentials root"; prepending
+    // `<sessionDir>` to that gives the in-agent-namespace orphan location.
+    let orphanPath: string | null = null;
+    let relativeFromVolume: string | null = null;
+    if (target) {
+      if (target.startsWith(CREDENTIALS_MOUNT_PREFIX)) {
+        relativeFromVolume = target.slice(CREDENTIALS_MOUNT_PREFIX.length);
+      } else if (target.startsWith(`${credentialsRoot}${path.sep}`)) {
+        relativeFromVolume = target.slice(credentialsRoot.length + 1);
+      }
+    }
+    if (relativeFromVolume) {
+      orphanPath = path.join(sessionDir, relativeFromVolume);
+      // Record the orphan's top-level dir for cleanup at the end. The
+      // leaked symlink targets a path under `provider-accounts/`, so we
+      // drop the whole `<sessionDir>/provider-accounts/` tree once merging
+      // is done.
+      const orphanRoot = path.join(sessionDir, relativeFromVolume.split(path.sep)[0] ?? "");
+      if (orphanRoot && orphanRoot !== sessionDir) orphanRootsToRemove.add(orphanRoot);
+    }
+
+    // Recover the agent_session_id from the orphan's `projects/` tree BEFORE
+    // any cpSync — cpSync doesn't preserve mtimes, so once we copy the
+    // orphan's jsonls into dest the ordering signal is gone.
+    if (
+      orphanPath
+        && rel === ".claude"
+        && recoveredAgentSessionId === null
+        && fs.existsSync(orphanPath)
+    ) {
+      recoveredAgentSessionId = findLatestAgentSessionId(path.join(orphanPath, "projects"));
+    }
+
     fs.rmSync(dst, { force: true });
+
     const src = path.join(sourceRoot, rel);
-    if (!fs.existsSync(src)) continue;
-    fs.cpSync(src, dst, { recursive: true, force: true, dereference: true });
-    console.log(`[session-credentials] repaired leaked symlink in ${sessionDir}: ${rel}`);
+    if (fs.existsSync(src)) {
+      fs.cpSync(src, dst, { recursive: true, force: true, dereference: true });
+    }
+
+    if (orphanPath && fs.existsSync(orphanPath)) {
+      mergeOrphanState(orphanPath, dst, rel);
+    }
+
+    repairedAny = true;
+    const mergeNote = orphanPath ? ` (orphan merged from ${orphanPath})` : "";
+    console.log(`[session-credentials] repaired leaked symlink in ${sessionDir}: ${rel}${mergeNote}`);
+  }
+
+  if (!repairedAny) return { recoveredAgentSessionId: null };
+
+  for (const orphanRoot of orphanRootsToRemove) {
+    try {
+      fs.rmSync(orphanRoot, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(`[session-credentials] failed to drop orphan ${orphanRoot}:`, err);
+    }
+  }
+
+  return { recoveredAgentSessionId };
+}
+
+/**
+ * Move conversation state from an orphan subtree into the freshly
+ * materialized destination. Behavior is per-rel:
+ *
+ *   - For `.claude/`: copy specific session-state subpaths
+ *     (`projects/`, `sessions/`, `history.jsonl`) recursively without
+ *     overwriting anything the shared source already provided.
+ *   - For `.claude.json`: if the orphan version exists and differs from
+ *     what the shared source wrote, overwrite dest with the orphan.
+ */
+function mergeOrphanState(orphanPath: string, dstPath: string, rel: string): void {
+  if (rel === ".claude") {
+    for (const sub of CLAUDE_SESSION_STATE_SUBPATHS) {
+      const orphanSub = path.join(orphanPath, sub);
+      if (!fs.existsSync(orphanSub)) continue;
+      try {
+        fs.cpSync(orphanSub, path.join(dstPath, sub), {
+          recursive: true,
+          force: false,
+          errorOnExist: false,
+          dereference: true,
+        });
+      } catch (err) {
+        console.warn(`[session-credentials] failed to merge orphan ${orphanSub}:`, err);
+      }
+    }
+    return;
+  }
+  if (rel === ".claude.json") {
+    try {
+      const orphanContent = fs.readFileSync(orphanPath);
+      let dstContent: Buffer | null = null;
+      try {
+        dstContent = fs.readFileSync(dstPath);
+      } catch { /* dst missing — orphan wins by default */ }
+      if (!dstContent || !orphanContent.equals(dstContent)) {
+        fs.writeFileSync(dstPath, orphanContent);
+      }
+    } catch (err) {
+      console.warn(`[session-credentials] failed to merge orphan .claude.json from ${orphanPath}:`, err);
+    }
+  }
+}
+
+/**
+ * Walk `<projectsRoot>/*\/*.jsonl`, find the most-recently-modified file,
+ * and parse the `sessionId` field from its first JSON line. Returns null
+ * when no jsonl is found or no usable sessionId is present — the caller
+ * keeps the existing agent_session_id in that case.
+ */
+function findLatestAgentSessionId(projectsRoot: string): string | null {
+  let latest: { path: string; mtimeMs: number } | null = null;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const projectDir = path.join(projectsRoot, entry.name);
+    let files: fs.Dirent[];
+    try {
+      files = fs.readdirSync(projectDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+      const full = path.join(projectDir, file.name);
+      try {
+        const mtimeMs = fs.statSync(full).mtimeMs;
+        if (!latest || mtimeMs > latest.mtimeMs) {
+          latest = { path: full, mtimeMs };
+        }
+      } catch { /* ignore — race with another writer */ }
+    }
+  }
+  if (!latest) return null;
+  try {
+    const content = fs.readFileSync(latest.path, "utf8");
+    const firstNewline = content.indexOf("\n");
+    const firstLine = firstNewline === -1 ? content : content.slice(0, firstNewline);
+    if (!firstLine.trim()) return null;
+    const parsed = JSON.parse(firstLine) as Record<string, unknown>;
+    const sid = parsed.sessionId;
+    return typeof sid === "string" && sid.length > 0 ? sid : null;
+  } catch {
+    return null;
   }
 }
 
