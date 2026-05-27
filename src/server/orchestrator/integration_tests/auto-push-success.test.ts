@@ -16,7 +16,6 @@ import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
-import type { WsServerMessage } from "../../shared/types.js";
 
 let tmpDir: string;
 let app: Awaited<ReturnType<typeof buildApp>>;
@@ -73,15 +72,9 @@ async function createSession(): Promise<{ sessionId: string; sessionDir: string 
   claude.emit("event", { type: "system", subtype: "init", session_id: "test-session-1" });
   claude.finish("test-session-1");
 
-  // Drain messages from the first turn
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    try {
-      await client.receive(500);
-    } catch {
-      break;
-    }
-  }
+  // Drain messages from the first turn — quiet-period bounded so we don't
+  // wait the full 3 s when the burst finishes in <100 ms.
+  await client.drain({ quietMs: 150 });
 
   // Get session ID from the filesystem (directory name = session UUID)
   const sessionsDir = path.join(tmpDir, "sessions");
@@ -120,21 +113,6 @@ function createBareRemote(sessionDir: string): string {
   return bareDir;
 }
 
-/** Drain all messages from the client until timeout. */
-async function drainMessages(timeoutMs = 3000): Promise<WsServerMessage[]> {
-  const messages: WsServerMessage[] = [];
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const msg = await client.receive(Math.max(100, deadline - Date.now()));
-      messages.push(msg);
-    } catch {
-      break;
-    }
-  }
-  return messages;
-}
-
 describe("auto-push: success and failure", () => {
   it("pushes after auto-commit when authenticated with a remote", { timeout: 15_000 }, async () => {
     await githubAuth.setToken("test-token");
@@ -150,10 +128,9 @@ describe("auto-push: success and failure", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait for the auto-push result (100ms debounce + processing)
-    const messages = await drainMessages();
-    const pushResult = messages.find((m) => m.type === "github_push_result");
-    expect(pushResult).toBeDefined();
+    // Wait directly for the github_push_result — bails the moment it arrives
+    // instead of paying a quiet-period tail.
+    const pushResult = await client.receiveType("github_push_result", 5000);
     expect(pushResult).toMatchObject({
       type: "github_push_result",
       success: true,
@@ -176,9 +153,7 @@ describe("auto-push: success and failure", () => {
 
     claude2.finish("test-session-1");
 
-    const messages = await drainMessages();
-    const pushResult = messages.find((m) => m.type === "github_push_result");
-    expect(pushResult).toBeDefined();
+    const pushResult = await client.receiveType("github_push_result", 5000);
     expect(pushResult).toMatchObject({
       type: "github_push_result",
       success: true,
@@ -202,10 +177,11 @@ describe("auto-push: success and failure", () => {
     const claude2 = await waitForClaude(() => latestClaude, prevClaude);
     claude2.finish("test-session-1");
 
-    // Wait for the debounce period — push will fail but should emit a log entry
-    const messages = await drainMessages();
+    // Wait for the debounce period — push will fail but should emit a log entry.
+    // Drain with a short quiet period so the "no success message" assertion
+    // doesn't sit on a 3 s timeout.
+    const messages = await client.drain({ quietMs: 250 });
 
-    // Should have a log_entry about auto-push failure
     const failLog = messages.find(
       (m) =>
         m.type === "log_entry" &&
