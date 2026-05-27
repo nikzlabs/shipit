@@ -976,6 +976,26 @@ describe("MessageList", () => {
       expect(code?.textContent).toBe("console.log()");
     });
 
+    it("wraps tables in a horizontally-scrollable container so wide tables don't overflow the message bubble on narrow viewports", () => {
+      const tableMarkdown = [
+        "| Problem | Recommendation |",
+        "| --- | --- |",
+        "| One class hosts every AI behavior | Extract a BehaviorStrategy interface |",
+      ].join("\n");
+      const { container } = render(
+        <MessageList
+          messages={[msg("assistant", tableMarkdown)]}
+          isLoading={false}
+        />
+      );
+      const table = container.querySelector('[data-testid="markdown-content"] table');
+      expect(table).toBeInTheDocument();
+      const wrapper = table?.parentElement;
+      expect(wrapper?.tagName).toBe("DIV");
+      expect(wrapper?.className).toMatch(/overflow-x-auto/);
+      expect(wrapper?.className).toMatch(/min-w-full/);
+    });
+
     it("preserves line breaks via breaks option", () => {
       const { container } = render(
         <MessageList
