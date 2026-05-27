@@ -23,7 +23,6 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
-import { repoUrlToHash } from "../git-utils.js";
 import { AuthManager } from "../auth.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { DatabaseManager } from "../../shared/database.js";
@@ -34,6 +33,8 @@ import {
   TestClient,
   createTestCredentialStore,
   createTestDatabaseManager,
+  getRepoCacheDir,
+  seedRepoCacheWithLocalBare,
 } from "./test-helpers.js";
 import {
   getSpawnTelemetrySnapshot,
@@ -45,28 +46,11 @@ import {
 // wired) and the "claim path" suite (parents created via the real claim
 // endpoint) use this URL — `spawnChildSession` always routes through
 // `ClaimSessionService`, so every parent needs a ready registered repo.
+//
+// All actual `git fetch` traffic is redirected to a per-test local bare repo
+// via `seedRepoCacheWithLocalBare` (see test-helpers.ts) so warming + claim
+// stay on local I/O.
 const SPAWN_REPO_URL = "https://github.com/owner/spawn-remote-test.git";
-
-function getSpawnRepoCacheDir(workspaceDir: string, repoUrl: string): string {
-  return path.join(workspaceDir, "repo-cache", repoUrlToHash(repoUrl));
-}
-
-/**
- * Create a fake bare cache with a single commit on `main` and an
- * `origin/main` ref pointing at HEAD. The fake `origin` URL won't resolve,
- * but `fetchAndResolveDefaultBranch` falls back to local refs on fetch
- * failure — so the claim path still cuts the branch off this commit.
- */
-function createCachedRepo(repoDir: string): void {
-  fs.mkdirSync(repoDir, { recursive: true });
-  execSync("git init", { cwd: repoDir, stdio: "ignore" });
-  execSync("git checkout -b main", { cwd: repoDir, stdio: "ignore" });
-  fs.writeFileSync(path.join(repoDir, "README.md"), "# spawn-remote-test\n");
-  execSync("git add .", { cwd: repoDir, stdio: "ignore" });
-  execSync('git -c user.email=t@t.com -c user.name=Test commit -m init --no-gpg-sign', { cwd: repoDir, stdio: "ignore" });
-  execSync(`git remote add origin ${SPAWN_REPO_URL}`, { cwd: repoDir, stdio: "ignore" });
-  execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: repoDir, stdio: "ignore" });
-}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 10000, label = "condition"): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -102,16 +86,26 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     sessionManager = new SessionManager(dbManager);
     repoStore = new RepoStore(dbManager);
 
-    // Spawn always routes through the home-screen claim service — the
-    // parent must be backed by a "ready" registered repo. Pre-seed the
-    // bare cache + repoStore here so every parent's `remoteUrl` resolves
-    // to a usable repo at spawn time.
-    createCachedRepo(getSpawnRepoCacheDir(tmpDir, SPAWN_REPO_URL));
+    // Materialize per-test GIT_CONFIG_GLOBAL first — `seedRepoCacheWithLocalBare`
+    // writes the `insteadOf` redirect into it, and we need that done before
+    // any `git fetch SPAWN_REPO_URL` fires (i.e. before buildApp's startup
+    // warming runs).
+    const credentialStore = createTestCredentialStore(tmpDir);
+
+    // Spawn always routes through the home-screen claim service — the parent
+    // must be backed by a "ready" registered repo. The helper seeds the bare
+    // cache + mirrors it as a local bare + wires `insteadOf` so every
+    // subsequent warm-pool / claim fetch resolves locally.
+    seedRepoCacheWithLocalBare({
+      tmpDir,
+      repoUrl: SPAWN_REPO_URL,
+      seedFiles: { "README.md": "# spawn-remote-test\n" },
+    });
     repoStore.add(SPAWN_REPO_URL);
     repoStore.setReady(SPAWN_REPO_URL);
 
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       repoStore,
@@ -920,7 +914,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     // clone (a copy of the cache), so the commit has to live there — pushing
     // from the parent's workspace into a non-bare cache fails on
     // receive.denyCurrentBranch, hence we commit directly in the cache.
-    const cacheDir = getSpawnRepoCacheDir(tmpDir, SPAWN_REPO_URL);
+    const cacheDir = getRepoCacheDir(tmpDir, SPAWN_REPO_URL);
     const baseSha = execSync("git rev-parse HEAD", { cwd: cacheDir, encoding: "utf8" }).trim();
     fs.writeFileSync(path.join(cacheDir, "tip.txt"), "tip\n");
     execSync(

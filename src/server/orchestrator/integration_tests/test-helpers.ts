@@ -8,6 +8,7 @@
 
 import { EventEmitter } from "node:events";
 import crypto from "node:crypto";
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
@@ -17,6 +18,7 @@ import { GitManager } from "../../shared/git.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
+import { repoUrlToHash } from "../git-utils.js";
 
 // ---------------------------------------------------------------------------
 // TestClient
@@ -777,4 +779,77 @@ export function createTestCredentialStore(tmpDir: string): CredentialStore {
 /** Create an in-memory DatabaseManager for tests. */
 export function createTestDatabaseManager(): DatabaseManager {
   return new DatabaseManager(":memory:");
+}
+
+/**
+ * Default cache directory layout used by `buildApp({ workspaceDir: tmpDir })`:
+ * `${tmpDir}/repo-cache/<hash(url)>`. Tests that need to compute this path
+ * before the cache is populated (e.g. to assert on it) can call this directly;
+ * `seedRepoCacheWithLocalBare` uses it internally.
+ */
+export function getRepoCacheDir(tmpDir: string, repoUrl: string): string {
+  return path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl));
+}
+
+/**
+ * Stand up the bare cache the warm pool + claim service expect, plus register
+ * `url.file://<cache>.insteadOf <repoUrl>` in the test's `GIT_CONFIG_GLOBAL`
+ * so every `git fetch <repoUrl>` resolves to the same on-disk cache.
+ *
+ * The trick: every warming/claim call site fires `git fetch <repoUrl>` against
+ * the workspace clone (and the cache itself). Without redirect those go to
+ * github.com — locally `GIT_TERMINAL_PROMPT=0` makes them fail in <500ms, but
+ * in CI the TLS + DNS round trips push each fetch past a couple of seconds
+ * and tests routinely blow past `waitFor("warm session", 10s)` and the spawn
+ * tests' 15s per-test timeouts.
+ *
+ * Pointing `insteadOf` at the cache itself (rather than a separate bare
+ * mirror) keeps each fetch on local disk AND a no-op (the workspace clone's
+ * `origin/*` refs already match the source). Skipping the mirror also saves
+ * the `git clone --bare` round trip — ~50 ms per test, which adds up across
+ * dozens of warming tests. The cache is non-bare but `git fetch` against a
+ * working tree is fine since we never push back.
+ *
+ * Must be called AFTER {@link createTestCredentialStore} (which sets
+ * `GIT_CONFIG_GLOBAL` to a per-test path) — this helper writes the
+ * `insteadOf` config into that file.
+ *
+ * @param opts.tmpDir    The test's scratch dir (also `buildApp`'s workspaceDir).
+ * @param opts.repoUrl   Logical URL stored in `repoStore` / session metadata.
+ * @param opts.seedFiles Extra files to commit into the cache (e.g.
+ *                       `{"shipit.yaml": "agent:\n  memory: 3072\n"}`).
+ *                       `README.md` is always seeded with a default body
+ *                       unless the caller overrides it here.
+ */
+export function seedRepoCacheWithLocalBare(opts: {
+  tmpDir: string;
+  repoUrl: string;
+  seedFiles?: Record<string, string>;
+}): void {
+  const { tmpDir, repoUrl, seedFiles } = opts;
+  const repoDir = getRepoCacheDir(tmpDir, repoUrl);
+  fs.mkdirSync(repoDir, { recursive: true });
+  execSync("git init -b main", { cwd: repoDir, stdio: "ignore" });
+
+  const files: Record<string, string> = { "README.md": "# test\n", ...(seedFiles ?? {}) };
+  for (const [name, body] of Object.entries(files)) {
+    fs.writeFileSync(path.join(repoDir, name), body);
+  }
+  execSync(
+    'git add . && git -c user.email=t@t.com -c user.name=Test commit -m init --no-gpg-sign',
+    { cwd: repoDir, stdio: "ignore" },
+  );
+  execSync(`git remote add origin ${repoUrl}`, { cwd: repoDir, stdio: "ignore" });
+  execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: repoDir, stdio: "ignore" });
+
+  // Wire `url.<cache-dir>.insteadOf <repoUrl>` so every git operation that
+  // would target `repoUrl` resolves to this on-disk repo.
+  const gitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+  if (!gitConfigGlobal) {
+    throw new Error("GIT_CONFIG_GLOBAL not set — call createTestCredentialStore() first");
+  }
+  execSync(
+    `git config --file "${gitConfigGlobal}" "url.file://${repoDir}/.insteadOf" "${repoUrl}"`,
+    { stdio: "ignore" },
+  );
 }
