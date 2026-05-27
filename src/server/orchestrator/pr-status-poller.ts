@@ -23,8 +23,8 @@ import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { PrStatusSummary, AutoFixState, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import {
-  PR_STATUS_QUERY,
-  PR_STATUS_QUERY_WITH_CONVERSATION,
+  buildPrStatusQuery,
+  extractFocusedPrNodes,
   type GraphQLPrNode,
   type GraphQLResponse,
   parsePrNode,
@@ -72,6 +72,23 @@ const POST_PUSH_FAST_WINDOW_MS = 5 * 60_000;
  * same schedule from the user's perspective.
  */
 const VIEWER_DETACH_GRACE_MS = 60_000;
+/**
+ * Cap for the bulk `pullRequests(first: N)` connection. Sessions whose PR is
+ * past this cap fall through to the `verifyMissingPr` REST path. Kept at the
+ * previous hard-coded value so behavior on big-PR-set repos is unchanged.
+ */
+const BULK_QUERY_MAX = 30;
+/**
+ * Floor for the bulk `pullRequests(first: N)` connection. Sized to absorb PRs
+ * opened out-of-band on a tracked session's branch (e.g. user ran `gh pr
+ * create` in the terminal) before that session has been observed at least
+ * once, and to keep the post-restart first poll cheap when `lastKnown` is
+ * empty. Tuned conservatively — bump if production sees too many REST
+ * verify probes for sessions whose PRs are past the floor but inside the cap.
+ *
+ * See docs/155-pr-poll-query-scoping/plan.md Phase 1a.
+ */
+const BULK_QUERY_DISCOVERY_FLOOR = 5;
 
 export class PrStatusPoller {
   private githubAuth: GitHubAuthManager;
@@ -462,12 +479,47 @@ export class PrStatusPoller {
     }
   }
 
-  /** True when any tracked session on this repo has its PR tab active. */
-  private repoHasActiveTab(repoKey: string): boolean {
-    for (const sessionId of this.prTabActiveSessions) {
-      if (this.sessionRepos.get(sessionId) === repoKey) return true;
+  /**
+   * Pick the bulk `pullRequests(first: N)` connection size for this poll.
+   *
+   * `N` is the count of non-merged sessions tracked on this repo, raised to
+   * the discovery floor (so a brand-new repo with one session still picks up
+   * out-of-band PRs) and capped at `BULK_QUERY_MAX` (sessions past the cap
+   * fall through to `verifyMissingPr`).
+   *
+   * See docs/155-pr-poll-query-scoping/plan.md Phase 1a.
+   */
+  private computeBulkFirst(repoKey: string): number {
+    let trackedCount = 0;
+    for (const [sessionId, key] of this.sessionRepos) {
+      if (key !== repoKey) continue;
+      if (this.mergedSessions.has(sessionId)) continue;
+      trackedCount++;
     }
-    return false;
+    return Math.min(BULK_QUERY_MAX, Math.max(trackedCount, BULK_QUERY_DISCOVERY_FLOOR));
+  }
+
+  /**
+   * Collect PR numbers for the `focused${i}` aliases on this poll.
+   *
+   * A session contributes one focused alias iff its PR tab is active AND we
+   * already know its PR number (from `lastKnown`). Sessions in
+   * `prTabActiveSessions` whose first poll hasn't landed yet are skipped —
+   * the next poll picks them up via the bulk view, then subsequent polls
+   * upgrade to a focused alias with conversation fields.
+   *
+   * See docs/155-pr-poll-query-scoping/plan.md Phase 1b.
+   */
+  private collectFocusedPrNumbers(repoKey: string): number[] {
+    const numbers: number[] = [];
+    for (const sessionId of this.prTabActiveSessions) {
+      if (this.sessionRepos.get(sessionId) !== repoKey) continue;
+      if (this.mergedSessions.has(sessionId)) continue;
+      const prNumber = this.lastKnown.get(sessionId)?.prNumber;
+      if (typeof prNumber !== "number") continue;
+      numbers.push(prNumber);
+    }
+    return numbers;
   }
 
   /**
@@ -707,11 +759,19 @@ export class PrStatusPoller {
     // poll for the same repo while this one is in flight.
     this.lastPolledAt.set(repoKey, Date.now());
 
-    // docs/133 Phase 4: fetch the heavier conversation fields only when a
-    // session on this repo has its PR tab open. Idle polls stay cheap.
-    const includeConversation = this.repoHasActiveTab(repoKey);
+    // docs/155 Phase 1: shrink the query to what this poll actually needs.
+    //   - `first: N` caps the bulk view at tracked-session count plus the
+    //     discovery floor, so a 30-PR repo doesn't pay for 30 PRs of light
+    //     data every tick.
+    //   - `focusedPrNumbers` emits one heavy `focused${i}` alias per session
+    //     whose PR tab is currently active, so conversation fields are pulled
+    //     only for the PR the user is actually looking at — not the whole
+    //     bulk view as it was pre-Phase-1.
+    const first = this.computeBulkFirst(repoKey);
+    const focusedPrNumbers = this.collectFocusedPrNumbers(repoKey);
+    const query = buildPrStatusQuery({ first, focusedPrNumbers });
     const result = await this.githubAuth.graphqlQuery<GraphQLResponse>(
-      includeConversation ? PR_STATUS_QUERY_WITH_CONVERSATION : PR_STATUS_QUERY,
+      query,
       { owner, name: repo },
     );
 
@@ -721,6 +781,10 @@ export class PrStatusPoller {
     // closed."
     const prNodes = (result as unknown as GraphQLResponse)?.data?.repository?.pullRequests?.nodes;
     if (!prNodes) return;
+
+    // Walk any `focused${i}` aliases the query asked for. Conversation data
+    // lives here, not on the bulk nodes.
+    const focusedByPrNumber = extractFocusedPrNodes(result);
 
     // Build a map of headRefName → PR node for matching, and observe whether
     // ANY PR in this repo has CI checks reported. Once true, stays true: this
@@ -762,12 +826,16 @@ export class PrStatusPoller {
       if (this.mergedSessions.has(session.id)) continue;
       if (!session.branch) continue;
 
-      const prNode = prByBranch.get(session.branch);
+      const bulkNode = prByBranch.get(session.branch);
 
-      if (prNode) {
+      if (bulkNode) {
         // PR is back in the bulk view — clear the "verified absent" marker so
         // a future disappearance triggers a fresh verify.
         this.verifiedAbsent.delete(session.id);
+        // If this session had a focused alias on this poll, the focused node
+        // carries the same fields as the bulk node plus conversation. Prefer
+        // it so the summary picks up issue comments + review threads.
+        const prNode = focusedByPrNumber.get(bulkNode.number) ?? bulkNode;
         // Cache the PR node for extracting check details later
         this.lastPrNodes.set(session.id, prNode);
 
@@ -803,16 +871,15 @@ export class PrStatusPoller {
 
         const prev = this.lastKnown.get(session.id);
 
-        // On a light poll the conversation fields aren't fetched (undefined).
-        // Carry forward whatever we last knew so the change-detection gate
-        // doesn't wipe the client's conversation when the PR tab loses focus.
-        if (!includeConversation) {
-          if (summary.issueComments === undefined && prev?.issueComments !== undefined) {
-            summary.issueComments = prev.issueComments;
-          }
-          if (summary.reviewThreads === undefined && prev?.reviewThreads !== undefined) {
-            summary.reviewThreads = prev.reviewThreads;
-          }
+        // Carry forward the last known conversation when this poll didn't
+        // fetch it (no focused alias for this session). Without this, the
+        // change-detection gate would wipe the client's conversation as soon
+        // as the PR tab loses focus.
+        if (summary.issueComments === undefined && prev?.issueComments !== undefined) {
+          summary.issueComments = prev.issueComments;
+        }
+        if (summary.reviewThreads === undefined && prev?.reviewThreads !== undefined) {
+          summary.reviewThreads = prev.reviewThreads;
         }
 
         // Handle auto-fix state transitions
