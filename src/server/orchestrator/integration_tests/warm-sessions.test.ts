@@ -13,7 +13,6 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
-import { repoUrlToHash } from "../git-utils.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
@@ -27,37 +26,12 @@ import {
   waitForClaude,
   createTestCredentialStore,
   createTestDatabaseManager,
+  getRepoCacheDir,
+  seedRepoCacheWithLocalBare,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
 const REPO_URL = "https://github.com/owner/test-repo.git";
-
-/**
- * Create a git repo that simulates a bare cache repo with at least
- * one commit on a default branch. Needed because warmSessionForRepo
- * and claim-session clone from this cached repo.
- */
-function createSharedRepo(repoDir: string): void {
-  fs.mkdirSync(repoDir, { recursive: true });
-  execSync("git init", { cwd: repoDir, stdio: "ignore" });
-  execSync("git checkout -b main", { cwd: repoDir, stdio: "ignore" });
-  fs.writeFileSync(path.join(repoDir, "README.md"), "# test\n");
-  execSync("git add .", { cwd: repoDir, stdio: "ignore" });
-  execSync('git commit -m "init" --no-gpg-sign', { cwd: repoDir, stdio: "ignore" });
-  execSync("git remote add origin https://github.com/owner/test-repo.git", {
-    cwd: repoDir,
-    stdio: "ignore",
-  });
-  // Create origin/main ref that clone can branch from
-  execSync("git update-ref refs/remotes/origin/main HEAD", {
-    cwd: repoDir,
-    stdio: "ignore",
-  });
-}
-
-function getSharedRepoDirForUrl(workspaceDir: string, repoUrl: string): string {
-  return path.join(workspaceDir, "repo-cache", repoUrlToHash(repoUrl));
-}
 
 /** Poll until a condition becomes true. */
 async function waitFor(
@@ -97,10 +71,10 @@ describe("Integration: warm session lifecycle", () => {
 
     const credentialStore = createTestCredentialStore(tmpDir);
 
-    // Create the cached repo directory BEFORE buildApp — warmSessionForRepo
-    // needs this directory to exist when cloning sessions.
-    const repoDir = getSharedRepoDirForUrl(tmpDir, REPO_URL);
-    createSharedRepo(repoDir);
+    // Seed the bare cache + matching local bare repo BEFORE buildApp.
+    // warmSessionForRepo needs the cache dir to exist, and the helper's
+    // `insteadOf` redirect keeps subsequent fetches off the network.
+    seedRepoCacheWithLocalBare({ tmpDir, repoUrl: REPO_URL });
 
     // Add the repo to the store BEFORE buildApp so the startup re-warming
     // (setTimeout(0)) picks it up and calls warmSessionForRepo.
@@ -417,7 +391,7 @@ describe("Integration: warm session lifecycle", () => {
       expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".install-done"))).toBe(true);
 
       // Point the clone's origin to the local shared repo so fetch works
-      const repoDir = getSharedRepoDirForUrl(tmpDir, REPO_URL);
+      const repoDir = getRepoCacheDir(tmpDir, REPO_URL);
       execSync(`git remote set-url origin ${repoDir}`, {
         cwd: workspaceDir,
         stdio: "ignore",
