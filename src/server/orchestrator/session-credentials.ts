@@ -319,14 +319,24 @@ const TOKEN_FRESHNESS: Partial<Record<AgentId, (file: string) => number | null>>
  */
 /**
  * Optional callback fired by the per-turn sync paths when the docs/153 leak
- * repair recovers a Claude CLI session id from the orphan conversation
- * tree. The orchestrator wires this to `SessionManager.setAgentSessionId`
- * so a `claude --resume <id>` next turn picks up the existing conversation
- * jsonl instead of starting a fresh one. Optional because not every caller
- * has a SessionManager (tests, local mode).
+ * repair reaches a terminal state about the session's CLI conversation id.
+ *
+ *   - string: a resumable conversation jsonl exists on disk; the caller
+ *     should update `sessions.agent_session_id` to this value so the next
+ *     `claude --resume <id>` finds it.
+ *   - null: the leak repair fired but no resumable conversation was found
+ *     (the on-disk state is only post-turn metadata stubs). The caller
+ *     should *clear* `sessions.agent_session_id` and drop the `--resume`
+ *     arg from the next spawn, so the CLI starts a fresh conversation
+ *     instead of `--resume`-looping on a known-bad id. The orchestrator
+ *     side chat history is unaffected; only the CLI-side resume
+ *     continuity is gone.
+ *
+ * Optional because not every caller has a SessionManager (tests, local
+ * mode).
  */
 export type AgentSessionIdRecoveryCallback = (
-  recoveredAgentSessionId: string,
+  recoveredOrClear: string | null,
 ) => void;
 
 export function syncAgentTokenIn(
@@ -334,8 +344,12 @@ export function syncAgentTokenIn(
   sessionId: string,
   agentId: AgentId,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): void {
-  syncAgentTokenInFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot, onRecoverAgentSessionId);
+  syncAgentTokenInFromRoot(
+    credentialsRoot, sessionId, agentId, credentialsRoot,
+    onRecoverAgentSessionId, currentAgentSessionId,
+  );
 }
 
 export function syncProviderAccountTokenIn(
@@ -344,6 +358,7 @@ export function syncProviderAccountTokenIn(
   agentId: AgentId,
   accountId: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): void {
   syncAgentTokenInFromRoot(
     credentialsRoot,
@@ -351,6 +366,7 @@ export function syncProviderAccountTokenIn(
     agentId,
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
     onRecoverAgentSessionId,
+    currentAgentSessionId,
   );
 }
 
@@ -360,6 +376,7 @@ function syncAgentTokenInFromRoot(
   agentId: AgentId,
   sourceRoot: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
@@ -368,10 +385,14 @@ function syncAgentTokenInFromRoot(
   // docs/153 — repair leaked subtree-root symlinks before the per-turn copy
   // so the orchestrator and the agent container converge on the same
   // physical file. See `materializeLeakedSubtreeSymlinks` for the full why.
-  const repair = materializeLeakedSubtreeSymlinks(credentialsRoot, sessionDir, agentId, sourceRoot);
-  if (repair.recoveredAgentSessionId && onRecoverAgentSessionId) {
+  const repair = materializeLeakedSubtreeSymlinks(
+    credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
+  );
+  if (repair.outcome !== "no-action" && onRecoverAgentSessionId) {
     try {
-      onRecoverAgentSessionId(repair.recoveredAgentSessionId);
+      onRecoverAgentSessionId(
+        repair.outcome === "recovered" ? repair.recoveredAgentSessionId : null,
+      );
     } catch (err) {
       console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
     }
@@ -416,8 +437,12 @@ export function repushAgentToken(
   sessionId: string,
   agentId: AgentId,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): boolean {
-  return repushAgentTokenFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot, onRecoverAgentSessionId);
+  return repushAgentTokenFromRoot(
+    credentialsRoot, sessionId, agentId, credentialsRoot,
+    onRecoverAgentSessionId, currentAgentSessionId,
+  );
 }
 
 export function repushProviderAccountToken(
@@ -426,6 +451,7 @@ export function repushProviderAccountToken(
   agentId: AgentId,
   accountId: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): boolean {
   return repushAgentTokenFromRoot(
     credentialsRoot,
@@ -433,6 +459,7 @@ export function repushProviderAccountToken(
     agentId,
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
     onRecoverAgentSessionId,
+    currentAgentSessionId,
   );
 }
 
@@ -442,6 +469,7 @@ function repushAgentTokenFromRoot(
   agentId: AgentId,
   sourceRoot: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): boolean {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return false;
@@ -457,10 +485,14 @@ function repushAgentTokenFromRoot(
   // agent-side stale copy never gets touched, so the agent keeps 401'ing on a
   // dead token. Replace any such symlink with a real materialized subtree so
   // both namespaces converge on the same file again. See docs/153.
-  const repair = materializeLeakedSubtreeSymlinks(credentialsRoot, sessionDir, agentId, sourceRoot);
-  if (repair.recoveredAgentSessionId && onRecoverAgentSessionId) {
+  const repair = materializeLeakedSubtreeSymlinks(
+    credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
+  );
+  if (repair.outcome !== "no-action" && onRecoverAgentSessionId) {
     try {
-      onRecoverAgentSessionId(repair.recoveredAgentSessionId);
+      onRecoverAgentSessionId(
+        repair.outcome === "recovered" ? repair.recoveredAgentSessionId : null,
+      );
     } catch (err) {
       console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
     }
@@ -498,13 +530,23 @@ const CREDENTIALS_MOUNT_PREFIX = "/credentials/";
 
 /**
  * Result of a single leak-repair pass over a session's credentials dir.
- * `recoveredAgentSessionId` is the most-recently-modified `.jsonl` session
- * id recovered from the orphan subtree, or null when no orphan was found /
- * no jsonl was parseable.
+ * Three terminal states:
+ *
+ *   - `outcome: "no-action"` — no Case fired; caller leaves DB alone.
+ *   - `outcome: "recovered"` — a Case fired and a resumable conversation
+ *     jsonl was found; `recoveredAgentSessionId` is the id to set.
+ *   - `outcome: "clear"` — a Case fired but no resumable conversation
+ *     jsonl exists (the on-disk state is just stub metadata from the
+ *     post-turn flow). Caller must clear the DB pointer and drop the
+ *     `--resume` arg on the next spawn so the CLI starts a fresh
+ *     conversation instead of `--resume <known-bad-id>`-looping. The
+ *     orchestrator-side chat history is unaffected; only the CLI-side
+ *     resume continuity is lost.
  */
-interface LeakRepairResult {
-  recoveredAgentSessionId: string | null;
-}
+type LeakRepairResult =
+  | { outcome: "no-action" }
+  | { outcome: "recovered"; recoveredAgentSessionId: string }
+  | { outcome: "clear" };
 
 /**
  * Repair the docs/153 leak. Two entry conditions:
@@ -545,8 +587,13 @@ function materializeLeakedSubtreeSymlinks(
   sessionDir: string,
   agentId: AgentId,
   sourceRoot: string,
+  currentAgentSessionId?: string | null,
 ): LeakRepairResult {
-  let anyAction = false;
+  // `aCaseFired` distinguishes between "no Case applied → DB stays untouched"
+  // and "Case applied but couldn't recover a resumable id → DB must be
+  // cleared so the next turn drops --resume". Cases 1/3 set it via the
+  // filesystem-mutation path; Case 4 sets it inline below.
+  let aCaseFired = false;
   let recoveredAgentSessionId: string | null = null;
   const orphanRootsToRemove = new Set<string>();
 
@@ -657,20 +704,103 @@ function materializeLeakedSubtreeSymlinks(
       );
     }
 
-    anyAction = true;
+    aCaseFired = true;
   }
 
-  if (!anyAction) return { recoveredAgentSessionId: null };
-
-  for (const orphanRoot of orphanRootsToRemove) {
+  // ---- Case 4: stale DB pointer, jsonls already on disk ----
+  //
+  // The session sailed through the docs/153 cycle: Cases 1/3 already ran on
+  // a previous turn (or an out-of-band cleanup dropped the orphan without
+  // firing the recovery callback). `.claude/` is a healthy real dir, no
+  // orphan tree to merge, but `sessions.agent_session_id` in the DB points
+  // at a UUID that has no matching `<dst>/projects/*/<id>.jsonl` on disk —
+  // typically a doomed-init UUID stranded by the pre-#764 listener.
+  // Result: `--resume <stale-id>` fails on every turn, the user is stuck
+  // until manual intervention.
+  //
+  // Recovery: scan `<dst>/projects/*/*.jsonl` for the latest-mtime file and
+  // surface its sessionId as the recovered id. The caller (post-#764)
+  // propagates it through to the spawn arg, so the next turn `--resume`s
+  // the conversation the user actually had. Read-only — no filesystem
+  // mutations needed. Skipped on fresh sessions (no current id to compare)
+  // and on non-claude agents (no `projects/<encoded-cwd>/<id>.jsonl`
+  // layout).
+  if (
+    agentId === "claude"
+    && recoveredAgentSessionId === null
+    && currentAgentSessionId
+  ) {
+    const dst = path.join(sessionDir, ".claude");
+    let isRealDir = false;
     try {
-      fs.rmSync(orphanRoot, { recursive: true, force: true });
-    } catch (err) {
-      console.warn(`[session-credentials] failed to drop orphan ${orphanRoot}:`, err);
+      const stat = fs.lstatSync(dst);
+      isRealDir = !stat.isSymbolicLink() && stat.isDirectory();
+    } catch { /* dst doesn't exist — nothing to recover */ }
+    if (isRealDir) {
+      const projectsRoot = path.join(dst, "projects");
+      if (!jsonlExistsForAgentSessionId(projectsRoot, currentAgentSessionId)) {
+        // Stale-pointer condition confirmed (DB id has no jsonl on disk).
+        // This IS a Case — the caller must either set the recovered id or
+        // clear the DB; in either case the spawn must NOT pass
+        // `--resume <currentAgentSessionId>`.
+        aCaseFired = true;
+        const latest = findLatestAgentSessionId(projectsRoot);
+        if (latest && latest !== currentAgentSessionId) {
+          recoveredAgentSessionId = latest;
+          console.log(
+            `[session-credentials] recovered stale agent_session_id in ${sessionDir}: .claude (DB pointed at ${currentAgentSessionId}, latest on disk is ${latest})`,
+          );
+        } else {
+          console.log(
+            `[session-credentials] clearing stale agent_session_id in ${sessionDir}: .claude (DB pointed at ${currentAgentSessionId}, no resumable jsonl on disk)`,
+          );
+        }
+      }
     }
   }
 
-  return { recoveredAgentSessionId };
+  if (aCaseFired) {
+    for (const orphanRoot of orphanRootsToRemove) {
+      try {
+        fs.rmSync(orphanRoot, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`[session-credentials] failed to drop orphan ${orphanRoot}:`, err);
+      }
+    }
+  }
+
+  if (!aCaseFired) return { outcome: "no-action" };
+  if (recoveredAgentSessionId !== null) {
+    return { outcome: "recovered", recoveredAgentSessionId };
+  }
+  return { outcome: "clear" };
+}
+
+/**
+ * True iff `<projectsRoot>/*\/<agentSessionId>.jsonl` exists for any
+ * encoded-cwd subdir AND that file passes
+ * {@link jsonlIsResumableConversation}. Filename-existence alone is not
+ * enough: the CLI's post-turn flow writes freshly-named stub jsonls
+ * (last-prompt/ai-title/pr-link events only) that have valid names but
+ * fail `--resume` with "No conversation found". Used by Case 4 in the
+ * leak repair to distinguish "DB id points at a resumable conversation"
+ * from "DB id points at junk."
+ */
+function jsonlExistsForAgentSessionId(projectsRoot: string, agentSessionId: string): boolean {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(projectsRoot, entry.name, `${agentSessionId}.jsonl`);
+    if (fs.existsSync(candidate) && jsonlIsResumableConversation(candidate)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -718,13 +848,64 @@ function mergeOrphanState(orphanPath: string, dstPath: string, rel: string): voi
 }
 
 /**
- * Walk `<projectsRoot>/*\/*.jsonl`, find the most-recently-modified file,
- * and parse the `sessionId` field from its first JSON line. Returns null
- * when no jsonl is found or no usable sessionId is present — the caller
- * keeps the existing agent_session_id in that case.
+ * Number of lines scanned from each jsonl when evaluating whether it
+ * contains a *real* conversation. The Claude CLI's post-turn flow writes
+ * metadata stubs (last-prompt / ai-title / pr-link events) into freshly
+ * named jsonls AFTER touching the conversation jsonl, so a naive
+ * latest-mtime pick lands on the stub. Cheap to scan more lines on the
+ * candidate set, but in practice the first user/assistant events appear
+ * very early — 50 lines is generous.
+ */
+const RESUMABLE_JSONL_SCAN_LINES = 50;
+
+/**
+ * Lightweight check that a jsonl looks like a resumable conversation —
+ * the CLI requires at least one `type: "user"` AND one `type: "assistant"`
+ * message-event row to load `--resume <id>` successfully. Stub jsonls
+ * written by the post-turn flow (last-prompt / ai-title / pr-link) carry
+ * neither and would fail `--resume` with "No conversation found" if
+ * picked. Returns false on parse errors / missing rows.
+ */
+function jsonlIsResumableConversation(file: string): boolean {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return false;
+  }
+  if (!raw.trim()) return false;
+  let hasUser = false;
+  let hasAssistant = false;
+  const lines = raw.split("\n", RESUMABLE_JSONL_SCAN_LINES);
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let parsed: { type?: unknown };
+    try {
+      parsed = JSON.parse(line) as { type?: unknown };
+    } catch {
+      continue;
+    }
+    if (parsed.type === "user") hasUser = true;
+    else if (parsed.type === "assistant") hasAssistant = true;
+    if (hasUser && hasAssistant) return true;
+  }
+  return false;
+}
+
+/**
+ * Walk `<projectsRoot>/*\/*.jsonl`, keep only files that pass
+ * {@link jsonlIsResumableConversation} (real user+assistant events
+ * present), and return the `sessionId` from the most-recently-modified
+ * qualifying file's first JSON line. Returns null when no jsonl exists,
+ * no candidate is resumable, or no usable `sessionId` is present.
+ *
+ * Used by all four leak-repair cases. Returning null is meaningful: the
+ * caller surfaces it as an explicit "clear the DB pointer" signal so the
+ * CLI's next turn drops `--resume` and starts fresh, rather than passing
+ * a known-bad id that would re-trigger the missing-conversation loop.
  */
 function findLatestAgentSessionId(projectsRoot: string): string | null {
-  let latest: { path: string; mtimeMs: number } | null = null;
+  const candidates: { path: string; mtimeMs: number }[] = [];
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
@@ -745,24 +926,25 @@ function findLatestAgentSessionId(projectsRoot: string): string | null {
       const full = path.join(projectDir, file.name);
       try {
         const mtimeMs = fs.statSync(full).mtimeMs;
-        if (!latest || mtimeMs > latest.mtimeMs) {
-          latest = { path: full, mtimeMs };
-        }
+        candidates.push({ path: full, mtimeMs });
       } catch { /* ignore — race with another writer */ }
     }
   }
-  if (!latest) return null;
-  try {
-    const content = fs.readFileSync(latest.path, "utf8");
-    const firstNewline = content.indexOf("\n");
-    const firstLine = firstNewline === -1 ? content : content.slice(0, firstNewline);
-    if (!firstLine.trim()) return null;
-    const parsed = JSON.parse(firstLine) as Record<string, unknown>;
-    const sid = parsed.sessionId;
-    return typeof sid === "string" && sid.length > 0 ? sid : null;
-  } catch {
-    return null;
+  // Descending mtime — pick the first that looks like a real conversation.
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const c of candidates) {
+    if (!jsonlIsResumableConversation(c.path)) continue;
+    try {
+      const raw = fs.readFileSync(c.path, "utf8");
+      const firstNewline = raw.indexOf("\n");
+      const firstLine = firstNewline === -1 ? raw : raw.slice(0, firstNewline);
+      if (!firstLine.trim()) continue;
+      const parsed = JSON.parse(firstLine) as Record<string, unknown>;
+      const sid = parsed.sessionId;
+      if (typeof sid === "string" && sid.length > 0) return sid;
+    } catch { /* try the next candidate */ }
   }
+  return null;
 }
 
 /**

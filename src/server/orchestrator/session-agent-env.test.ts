@@ -67,6 +67,7 @@ function makeFakeSessionManager(opts: {
     setAgentPinnedCalls: number;
     agentSessionId: string | undefined;
     setAgentSessionIdCalls: { id: string; value: string }[];
+    clearAgentSessionIdCalls: string[];
   };
 } {
   const state = {
@@ -75,6 +76,7 @@ function makeFakeSessionManager(opts: {
     setAgentPinnedCalls: 0,
     agentSessionId: opts.agentSessionId,
     setAgentSessionIdCalls: [] as { id: string; value: string }[],
+    clearAgentSessionIdCalls: [] as string[],
   };
   const sm = {
     get: () => ({
@@ -92,6 +94,10 @@ function makeFakeSessionManager(opts: {
     setAgentSessionId: (id: string, value: string) => {
       state.setAgentSessionIdCalls.push({ id, value });
       state.agentSessionId = value;
+    },
+    clearAgentSessionId: (id: string) => {
+      state.clearAgentSessionIdCalls.push(id);
+      state.agentSessionId = undefined;
     },
     setProviderRoute: () => { /* no-op */ },
   } as unknown as SessionManager;
@@ -207,9 +213,14 @@ describe("prepareSessionAgentEnvironment", () => {
       ".claude", "projects", "-workspace",
     );
     fs.mkdirSync(orphanProjects, { recursive: true });
+    // Validator-aware: jsonl must contain real user+assistant events to
+    // pass `--resume` (docs/153 — stub jsonls fail the validator and the
+    // repair would surface a `null` clear signal instead of recovering).
     fs.writeFileSync(
       path.join(orphanProjects, `${recoveredId}.jsonl`),
-      `${JSON.stringify({ sessionId: recoveredId, type: "summary" })}\n`,
+      `${JSON.stringify({ sessionId: recoveredId, type: "summary" })}\n`
+      + `${JSON.stringify({ sessionId: recoveredId, type: "user", message: { content: "hi" } })}\n`
+      + `${JSON.stringify({ sessionId: recoveredId, type: "assistant", message: { content: "hello" } })}\n`,
     );
 
     const runner = new FakeContainerRunner();
@@ -249,12 +260,25 @@ describe("prepareSessionAgentEnvironment", () => {
       path.join(sessionDir, ".claude", ".credentials.json"),
       JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 60_000, accessToken: "FRESH" } }),
     );
+    // Seed the on-disk jsonl matching the DB id — without it, Case 4
+    // would fire (stale DB pointer) and the override would be `null`
+    // (clear). A "healthy turn" is precisely the case where the DB id
+    // resolves to a resumable jsonl on disk.
+    const healthyId = "healthy-existing-id";
+    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
+    fs.mkdirSync(projectsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectsDir, `${healthyId}.jsonl`),
+      `${JSON.stringify({ sessionId: healthyId, type: "summary" })}\n`
+      + `${JSON.stringify({ sessionId: healthyId, type: "user", message: { content: "hi" } })}\n`
+      + `${JSON.stringify({ sessionId: healthyId, type: "assistant", message: { content: "hello" } })}\n`,
+    );
 
     const runner = new FakeContainerRunner();
     const credentialStore = makeFakeCredentialStore();
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
-      agentSessionId: "healthy-existing-id",
+      agentSessionId: healthyId,
       providerRouteKind: "account",
       providerRouteId: "claude-default",
     });
@@ -267,7 +291,55 @@ describe("prepareSessionAgentEnvironment", () => {
 
     expect(result.overrideAgentSessionId).toBeUndefined();
     expect(state.setAgentSessionIdCalls).toHaveLength(0);
-    expect(state.agentSessionId).toBe("healthy-existing-id");
+    expect(state.agentSessionId).toBe(healthyId);
+  });
+
+  // docs/153 — when the leak repair fires but no resumable jsonl is found,
+  // the override is explicit `null` and the DB row must be cleared so the
+  // caller drops `--resume` from the next spawn.
+
+  it("returns overrideAgentSessionId=null and clears the DB when the leak repair finds no resumable jsonl", async () => {
+    // Real .claude/ dir, no orphan, but DB id has no matching jsonl AND
+    // the only jsonl on disk is a stub (last-prompt/ai-title only) — the
+    // exact prod state for 59d8c0bd/23edf3da.
+    const account = path.join(tmpDir, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(account, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 60_000, accessToken: "FRESH" } }),
+    );
+    const sessionDir = path.join(tmpDir, "sessions", "s1");
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 60_000, accessToken: "FRESH" } }),
+    );
+    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
+    fs.mkdirSync(projectsDir, { recursive: true });
+    const stubSid = "856d63e4-stub-jsonl-no-user-no-assistant";
+    fs.writeFileSync(
+      path.join(projectsDir, `${stubSid}.jsonl`),
+      `${JSON.stringify({ sessionId: stubSid, type: "last-prompt", prompt: "x" })}\n`,
+    );
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({
+      agentPinned: true,
+      agentSessionId: "doomed-init-uuid-from-failed-resume",
+      providerRouteKind: "account",
+      providerRouteId: "claude-default",
+    });
+
+    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    expect(result.overrideAgentSessionId).toBeNull();
+    expect(state.clearAgentSessionIdCalls).toEqual(["s1"]);
+    expect(state.agentSessionId).toBeUndefined();
   });
 
   it("pushes the merged agent env to the worker via the runner's tryPushAgentSecrets", async () => {
