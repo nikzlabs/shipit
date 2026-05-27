@@ -208,10 +208,26 @@ export async function spawnChildSession(
     throw new ServiceError(500, `Failed to read claimed branch: ${String(err)}`);
   }
 
+<<<<<<< HEAD
   // Honor an explicit `--base`. The claim placed HEAD at `origin/HEAD`; a
   // caller-supplied base needs a hard reset to take effect. Safe because
   // the claim's workspace has no user changes yet.
   if (opts.base) {
+=======
+  if (useClaim && parent.remoteUrl) {
+    // `forceFetch: true` bypasses the docs/145 prefetch-skip optimization so
+    // the child always branches off a freshly-fetched `origin/main`. The
+    // home-screen claim accepts up to ~6 minutes of bare-cache staleness for
+    // latency, but a child spawned moments after a merge must see the merged
+    // commit on `main`, not the pre-merge snapshot the cache happens to hold.
+    const claimed = await claimService.claim(parent.remoteUrl, { forceFetch: true });
+    newSessionId = claimed.sessionId;
+    newWorkspaceDir = claimed.workspaceDir;
+
+    // The claim cut a `shipit/<random>` branch off freshly-fetched origin/HEAD.
+    // That's already the shape we want for the child's branch, so we adopt it
+    // verbatim instead of renaming.
+>>>>>>> 08849fb7dc (The changes are complete and pass lint + typecheck. Let me open a PR.)
     try {
       await simpleGit(newWorkspaceDir).raw(["reset", "--hard", opts.base]);
     } catch (err) {
