@@ -24,13 +24,15 @@ import {
 import { createOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "../loop-detector.js";
 import type { SessionContainerManager, SessionContainer } from "../session-container.js";
-import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
+import type { SessionRunnerRegistry, SessionRunnerInterface, ChatMessageGroup } from "../session-runner.js";
+import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { WsServerMessage, WsLogEntry } from "../../shared/types.js";
 
 interface FakeRunner {
   runner: SessionRunnerInterface;
   emitted: WsServerMessage[];
   disposeCalls: { force?: boolean }[];
+  setChatMessageGroups: (groups: ChatMessageGroup[]) => void;
 }
 
 function makeFakeRunner(sessionId: string): FakeRunner {
@@ -46,6 +48,7 @@ function makeFakeRunner(sessionId: string): FakeRunner {
     lastSseEventAt: 0,
     disposed: false,
     wasInterrupted: false,
+    chatMessageGroups: [] as ChatMessageGroup[],
     emitMessage: (msg: WsServerMessage) => { emitted.push(msg); },
     getAgent: () => null,
     setAgent: () => undefined,
@@ -56,8 +59,36 @@ function makeFakeRunner(sessionId: string): FakeRunner {
     previewStatusKnown: true,
     buildPreviewStatus: () => ({ type: "preview_status", running: false } as WsServerMessage),
     dispose: (opts?: { force?: boolean }) => { disposeCalls.push(opts ?? {}); },
-  }) as unknown as SessionRunnerInterface;
-  return { runner, emitted, disposeCalls };
+  }) as unknown as SessionRunnerInterface & { chatMessageGroups: ChatMessageGroup[] };
+  const setChatMessageGroups = (g: ChatMessageGroup[]): void => { runner.chatMessageGroups = g; };
+  return { runner, emitted, disposeCalls, setChatMessageGroups };
+}
+
+interface FakeChatHistoryCalls {
+  replaceInProgress: { sessionId: string; messages: PersistedMessage[] }[];
+  finalizeInProgress: string[];
+  append: { sessionId: string; message: PersistedMessage }[];
+}
+
+function makeFakeChatHistoryManager(): { manager: ChatHistoryManager; calls: FakeChatHistoryCalls } {
+  const calls: FakeChatHistoryCalls = {
+    replaceInProgress: [],
+    finalizeInProgress: [],
+    append: [],
+  };
+  const manager = {
+    replaceInProgress: (sessionId: string, messages: PersistedMessage[]) => {
+      calls.replaceInProgress.push({ sessionId, messages });
+    },
+    finalizeInProgress: (sessionId: string) => {
+      calls.finalizeInProgress.push(sessionId);
+    },
+    append: (sessionId: string, message: PersistedMessage) => {
+      calls.append.push({ sessionId, message });
+      return 0;
+    },
+  } as unknown as ChatHistoryManager;
+  return { manager, calls };
 }
 
 function makeFakeRegistry(entries: Map<string, SessionRunnerInterface>): SessionRunnerRegistry {
@@ -166,6 +197,110 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.sid).toBe("sess-missing");
+  });
+
+  // Regression: container OOM kills the worker without emitting an
+  // `agent_error` SSE event, so `wireAgentListeners`' partial-turn rescue
+  // never fires. The previous turn's in-flight assistant messages stay in
+  // the DB marked in_progress=1; the next turn's first `agent_tool_result`
+  // calls `replaceInProgress`, which DELETEs them. The user loses the
+  // entire pre-crash turn. handleContainerExited must finalize first.
+  describe("partial-turn preservation (OOM mid-turn)", () => {
+    it("finalizes in-flight chatMessageGroups before disposing the runner", () => {
+      const { runner, setChatMessageGroups } = makeFakeRunner("sess-oom");
+      const registry = makeFakeRegistry(new Map([["sess-oom", runner]]));
+      const { manager, calls } = makeFakeChatHistoryManager();
+
+      setChatMessageGroups([
+        {
+          text: "I'll start by reading the file.",
+          toolUse: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/foo" } }],
+          toolResults: [{ toolUseId: "t1", content: "file contents" }],
+        },
+        { text: "Now let me edit it.", toolUse: [] },
+      ]);
+
+      handleContainerExited("sess-oom", 137, "OOMKilled", registry, undefined, manager);
+
+      // Wrote the partial-turn snapshot, then finalized, then appended a
+      // user-visible error message — same order as the agent.error rescue.
+      expect(calls.replaceInProgress).toHaveLength(1);
+      expect(calls.replaceInProgress[0]?.sessionId).toBe("sess-oom");
+      expect(calls.replaceInProgress[0]?.messages).toHaveLength(2);
+      expect(calls.replaceInProgress[0]?.messages[0]).toMatchObject({
+        role: "assistant",
+        text: "I'll start by reading the file.",
+      });
+      expect(calls.finalizeInProgress).toEqual(["sess-oom"]);
+      expect(calls.append).toHaveLength(1);
+      expect(calls.append[0]?.message).toMatchObject({
+        role: "assistant",
+        isError: true,
+      });
+      expect(calls.append[0]?.message.text).toContain("OOMKilled");
+    });
+
+    it("still finalizes when there are no in-memory groups (preserves orphaned in_progress rows)", () => {
+      // The runner may have reconnected to a container whose prior turn
+      // left in_progress=1 rows in the DB; chatMessageGroups is empty in
+      // memory but the rows are still there. finalizeInProgress flips
+      // them to permanent so the next turn's replaceInProgress doesn't
+      // delete them.
+      const { runner } = makeFakeRunner("sess-oom2");
+      const registry = makeFakeRegistry(new Map([["sess-oom2", runner]]));
+      const { manager, calls } = makeFakeChatHistoryManager();
+
+      handleContainerExited("sess-oom2", 137, undefined, registry, undefined, manager);
+
+      expect(calls.replaceInProgress).toHaveLength(1);
+      expect(calls.replaceInProgress[0]?.messages).toEqual([]);
+      expect(calls.finalizeInProgress).toEqual(["sess-oom2"]);
+      expect(calls.append).toHaveLength(1);
+    });
+
+    it("skips groups with no text and no tool use (empty placeholders)", () => {
+      const { runner, setChatMessageGroups } = makeFakeRunner("sess-oom3");
+      const registry = makeFakeRegistry(new Map([["sess-oom3", runner]]));
+      const { manager, calls } = makeFakeChatHistoryManager();
+
+      setChatMessageGroups([
+        { text: "", toolUse: [] },
+        { text: "Real content", toolUse: [] },
+        { text: "", toolUse: [] },
+      ]);
+
+      handleContainerExited("sess-oom3", 137, "OOMKilled", registry, undefined, manager);
+
+      expect(calls.replaceInProgress[0]?.messages).toHaveLength(1);
+      expect(calls.replaceInProgress[0]?.messages[0]?.text).toBe("Real content");
+    });
+
+    it("still force-disposes the runner if chat-history persistence throws", () => {
+      // A persistence failure must not leak the runner — dispose still runs.
+      const { runner, disposeCalls, setChatMessageGroups } = makeFakeRunner("sess-oom4");
+      const registry = makeFakeRegistry(new Map([["sess-oom4", runner]]));
+      setChatMessageGroups([{ text: "partial", toolUse: [] }]);
+      const manager = {
+        replaceInProgress: () => { throw new Error("db write failed"); },
+        finalizeInProgress: () => undefined,
+        append: () => 0,
+      } as unknown as ChatHistoryManager;
+
+      handleContainerExited("sess-oom4", 137, "OOMKilled", registry, undefined, manager);
+
+      expect(disposeCalls).toEqual([{ force: true }]);
+    });
+
+    it("does nothing to chat history when no chatHistoryManager is passed (back-compat)", () => {
+      const { runner, disposeCalls, setChatMessageGroups } = makeFakeRunner("sess-oom5");
+      const registry = makeFakeRegistry(new Map([["sess-oom5", runner]]));
+      setChatMessageGroups([{ text: "partial", toolUse: [] }]);
+
+      expect(() =>
+        handleContainerExited("sess-oom5", 137, "OOMKilled", registry),
+      ).not.toThrow();
+      expect(disposeCalls).toEqual([{ force: true }]);
+    });
   });
 });
 

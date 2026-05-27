@@ -5,7 +5,7 @@ import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { UsageManager } from "./usage.js";
 import type { SessionContainerManager } from "./session-container.js";
-import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionRunnerRegistry, SessionRunnerInterface } from "./session-runner.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { WsLogEntry } from "../shared/types.js";
 import type { SessionLoopDetector } from "./loop-detector.js";
@@ -219,6 +219,17 @@ export function scheduleStartupTasks(
  * diagnostics endpoint — so without `broadcastLog`, the diagnostic
  * snapshot 70 minutes later shows only "Agent process started" and no
  * trace of the failure.
+ *
+ * Also finalizes any in-flight turn's chat history before dispose. The
+ * agent.on("error") path in `wireAgentListeners` preserves a partial turn
+ * by flipping in-progress rows to permanent, but an OOM that kills the
+ * whole container yields no `agent_error` SSE event — only Docker's
+ * `die`/`oom` event reaches the orchestrator, and without this rescue the
+ * next turn's first `agent_tool_result` calls `replaceInProgress`, which
+ * deletes the orphaned in-progress rows of the OOM'd turn. The user loses
+ * everything the agent produced before the crash. Mirror the error-handler
+ * shape: persist `runner.chatMessageGroups` as in-progress, finalize, then
+ * append a synthetic assistant error so the failure is visible inline.
  */
 export function handleContainerExited(
   sessionId: string,
@@ -226,6 +237,7 @@ export function handleContainerExited(
   error: string | undefined,
   runnerRegistry: SessionRunnerRegistry,
   broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
+  chatHistoryManager?: ChatHistoryManager,
 ): void {
   console.error(`[container] Session ${sessionId} container exited: ${error ?? "unknown"}`);
   const exitDetail = error
@@ -238,6 +250,9 @@ export function handleContainerExited(
   }
   const runner = runnerRegistry.get(sessionId);
   if (runner) {
+    if (chatHistoryManager) {
+      preservePartialTurnOnContainerExit(sessionId, runner, chatHistoryManager, exitDetail);
+    }
     runner.emitMessage({
       type: "session_status",
       sessionId,
@@ -251,6 +266,46 @@ export function handleContainerExited(
 }
 
 /**
+ * Flush a runner's in-flight turn state to chat history before its container
+ * is torn down. Mirrors the `agent.on("error")` rescue in
+ * `wireAgentListeners` — see `handleContainerExited` for why we can't rely
+ * on that path when the container dies without emitting `agent_error`.
+ */
+function preservePartialTurnOnContainerExit(
+  sessionId: string,
+  runner: SessionRunnerInterface,
+  chatHistoryManager: ChatHistoryManager,
+  exitDetail: string,
+): void {
+  try {
+    const groups = runner.chatMessageGroups;
+    const persistableGroups = groups.filter((g) => g.text || g.toolUse.length > 0);
+    const partialMessages = persistableGroups.map((g) => ({
+      role: "assistant" as const,
+      text: g.text,
+      toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
+      toolResults: g.toolResults?.length ? g.toolResults : undefined,
+      subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
+    }));
+    // Even when there are no in-memory groups (e.g. this runner reconnected
+    // to a container whose prior turn left in_progress=1 rows in the DB),
+    // finalize so those rows are preserved instead of being deleted by the
+    // next turn's replaceInProgress.
+    chatHistoryManager.replaceInProgress(sessionId, partialMessages);
+    chatHistoryManager.finalizeInProgress(sessionId);
+    chatHistoryManager.append(sessionId, {
+      role: "assistant",
+      text: `Session container exited unexpectedly${exitDetail}. The agent's progress up to this point has been preserved.`,
+      isError: true,
+    });
+  } catch (err) {
+    // Never let a chat-history write failure block the dispose path — that
+    // would leak the runner. Log and move on.
+    console.error(`[container] Failed to preserve partial turn for ${sessionId}:`, err);
+  }
+}
+
+/**
  * Wire container health monitoring — notify viewers and clean up when
  * a container dies unexpectedly (OOM, crash).
  */
@@ -260,6 +315,7 @@ export function setupContainerHealthMonitoring(
   broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
   loopDetector: SessionLoopDetector = createSessionLoopDetector(),
   oomBreaker?: SessionOomCircuitBreaker,
+  chatHistoryManager?: ChatHistoryManager,
 ): void {
   // Shared "breaker just tripped" emission — sends the WS message to
   // attached viewers and the per-session log ring + journalctl line.
@@ -314,7 +370,7 @@ export function setupContainerHealthMonitoring(
         `agent container OOM-killed ${trip.countInWindow} times in last ${windowLabel}`,
       );
     }
-    handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog);
+    handleContainerExited(sessionId, exitCode, error, runnerRegistry, broadcastLog, chatHistoryManager);
   });
 
   // SIGTERM/recreate loop detector. Field reports show occasional
