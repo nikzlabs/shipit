@@ -1519,7 +1519,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
 
   // ---- Container health monitoring ----
   if (containerManager) {
-    setupContainerHealthMonitoring(containerManager, runnerRegistry, broadcastLog, loopDetector, oomBreaker);
+    setupContainerHealthMonitoring(containerManager, runnerRegistry, broadcastLog, loopDetector, oomBreaker, chatHistoryManager);
   }
 
   // Graceful shutdown
