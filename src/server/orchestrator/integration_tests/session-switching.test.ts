@@ -189,6 +189,11 @@ describe("Integration: Session isolation — switching & resume", () => {
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "my-agent-session" });
     const sessionMsg = await client.receiveType("session_started");
     const appSessionId = (sessionMsg as any).session.id;
+    // docs/153 Fix 2 — emit a result so the deferred agent_session_id
+    // persist fires; otherwise the next turn's --resume has nothing to
+    // pass and this test's whole premise breaks. Mirrors the real CLI
+    // flow (a `result` event always precedes process exit on success).
+    lastClaude.emit("event", { type: "result", subtype: "success", session_id: "my-agent-session" });
     lastClaude.emit("done", 0);
     await new Promise((r) => setTimeout(r, 100));
 

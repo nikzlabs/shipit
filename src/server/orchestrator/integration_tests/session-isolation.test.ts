@@ -91,7 +91,19 @@ describe("Integration: Session isolation — creation", () => {
     expect(session.id).toBeTruthy();
     expect(session.title).toBeTruthy();
     expect(session.workspaceDir).toBeTruthy();
-    expect(session.agentSessionId).toBe("agent-session-1");
+    // docs/153 Fix 2 — agent_session_id is not persisted until the CLI
+    // produces content (agent_assistant) or completes (agent_result), to
+    // protect a previously-stored / freshly-recovered id from a doomed
+    // init UUID emitted just before a `--resume` failure.
+    lastClaude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "agent-session-1",
+    });
+    // Drain the agent_event so the listener's synchronous setAgentSessionId
+    // has run.
+    await client.receiveType("agent_event");
+    expect(sessionManager.get(session.id)?.agentSessionId).toBe("agent-session-1");
 
     // Verify session directory was created on disk
     expect(fs.existsSync(session.workspaceDir)).toBe(true);
