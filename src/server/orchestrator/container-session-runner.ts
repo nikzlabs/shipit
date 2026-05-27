@@ -614,15 +614,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
     await this._workerReady;
-    await this._waitForInstallBeforeAgent();
 
-    // Kick off SSE setup in the background. We deliberately do NOT await
-    // it: the worker buffers agent events (see sse-broadcaster.ts) so a
-    // slow SSE handshake no longer drops events, and agent execution
-    // must not be coupled to the orchestrator's event-consumer state.
-    // The attachViewer() guard on `_workerResourcesStarted` makes a
-    // later viewer attach idempotent against this path.
+    // Kick off SSE setup BEFORE waiting on the install gate. The install
+    // gate (`_waitForInstallBeforeAgent`) resolves on the SSE-delivered
+    // `install_done` event — without an SSE consumer the worker's event
+    // sits in the ring buffer forever and we deadlock. For spawned-child
+    // sessions no viewer ever calls `attachViewer()`, so this is the only
+    // place that wires SSE up. The worker buffers agent events too, so a
+    // slow handshake here doesn't drop the first agent events either; the
+    // `?since=<seq>` replay on connect makes the order purely a kickoff
+    // concern. Fire-and-forget — idempotent against later `attachViewer()`.
     void this.ensureWorkerResourcesStarted();
+
+    await this._waitForInstallBeforeAgent();
 
     try {
       await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
@@ -685,15 +689,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   async startAgentOnWorker(agentId: AgentId, params: AgentRunParams): Promise<ProxyAgentProcess> {
     await this._workerReady;
+
+    // Kick SSE BEFORE the install-gate wait — same chicken-and-egg as
+    // `_startAgentViaProxy`. See the comment there.
+    void this.ensureWorkerResourcesStarted();
+
     await this._waitForInstallBeforeAgent();
     const proxy = new ProxyAgentProcess(agentId, this);
     this._agent = proxy;
-
-    // SSE setup is fire-and-forget — see the matching comment in
-    // `_startAgentViaProxy`. The worker buffers events for replay so
-    // agent execution does not depend on the orchestrator's SSE
-    // consumer being connected.
-    void this.ensureWorkerResourcesStarted();
 
     await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
 
@@ -877,6 +880,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this.signalInstallComplete();
       return { ok: true };
     }
+
+    // Open our end of the event pipe BEFORE posting /install. The completion
+    // promise above resolves on the SSE-delivered `install_done` / `install_error`
+    // event — without an SSE consumer the worker's event sits in its ring
+    // buffer and we never resolve. For spawned-child sessions, no viewer ever
+    // calls `attachViewer()`, so this is the only place that wires SSE up
+    // before the wait. Fire-and-forget — idempotent against later attaches.
+    void this.ensureWorkerResourcesStarted();
 
     this.emitMessage({
       type: "install_status",

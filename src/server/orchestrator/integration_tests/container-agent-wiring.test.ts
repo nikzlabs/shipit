@@ -10,6 +10,9 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
@@ -660,5 +663,136 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 
       runner.dispose({ force: true });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: spawn-child install-gate deadlock
+// ---------------------------------------------------------------------------
+//
+// Sessions spawned by an agent (`shipit session create -p "..."`) never get a
+// viewer attached at dispatch time, so nothing on the orchestrator side calls
+// `attachViewer()` — the only other caller of `ensureWorkerResourcesStarted()`.
+// `_startAgentViaProxy` used to await `_waitForInstallBeforeAgent()` BEFORE
+// kicking SSE setup, so the install-gate promise (resolved by the SSE-delivered
+// `install_done` event) never resolved: the orchestrator never opened its end
+// of the pipe, the worker's `install_done` sat in the ring buffer forever, and
+// `/agent/start` was never POSTed. The session showed `running=false` in the
+// worker and no chat output, until a viewer happened to open it.
+//
+// These tests use a real SessionWorker against a tmp workspaceDir (so the
+// `.shipit/.install-done` marker doesn't pollute the repo) and a trivial
+// install command (`true`) so the worker's `runInstallCommands` finishes
+// near-instantly. The key contract: with NO viewer attached, both
+// `runner.runInstall(...)` and `runner._startAgentViaProxy(...)` must complete
+// without anyone calling `attachViewer()`.
+// ---------------------------------------------------------------------------
+
+describe("Integration: spawn-child install gate (no viewer attached)", () => {
+  let worker: SessionWorker;
+  let lastAgent: FakeWorkerAgent;
+  let workerUrl: string;
+  let tmpWorkspace: string;
+
+  beforeEach(async () => {
+    lastAgent = null as unknown as FakeWorkerAgent;
+    tmpWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-install-gate-"));
+
+    worker = new SessionWorker({
+      agentFactory: () => {
+        lastAgent = new FakeWorkerAgent();
+        return lastAgent;
+      },
+      port: 0,
+      host: "127.0.0.1",
+      workspaceDir: tmpWorkspace,
+    });
+
+    const address = await worker.start();
+    const match = /:(\d+)$/.exec(address);
+    const port = match ? Number(match[1]) : 0;
+    workerUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterEach(async () => {
+    await worker.stop();
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(tmpWorkspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+
+  it("runInstall + _startAgentViaProxy resolve without a viewer attached (spawn-child path)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-install-gate-no-viewer",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+
+    try {
+      // Deliberately do NOT call attachViewer(). This is the production
+      // spawn-child shape: orchestrator creates the runner via
+      // `onRunnerCreated` → `setupServiceManager` → `runInstall(...)`, then
+      // `runner.dispatch(...)` → `_startAgentViaProxy(...)`. No WS viewer
+      // ever attaches.
+      //
+      // Create the proxy BEFORE issuing the install/start so its SSE event
+      // listener is wired by the time the worker emits agent events.
+      const proxy = runner.createAgent("claude");
+      const proxyDone = new Promise<number>((resolve) => {
+        proxy.on("done", (code: number) => resolve(code));
+      });
+
+      const installPromise = runner.runInstall(["true"]);
+      const startPromise = runner._startAgentViaProxy("claude", {
+        prompt: "spawn-child no-viewer",
+        cwd: "/workspace",
+      });
+
+      // Both must resolve. With the deadlock present, `runInstall` never
+      // resolved because its `_installComplete` resolver is only ever
+      // called from the SSE handler — and SSE was never connected.
+      // `_startAgentViaProxy` chained on `_waitForInstallBeforeAgent` so it
+      // never reached the `/agent/start` POST.
+      const installResult = await Promise.race([
+        installPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("runInstall deadlocked (no SSE consumer)")), 5000),
+        ),
+      ]);
+      expect(installResult.ok).toBe(true);
+
+      await Promise.race([
+        startPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("_startAgentViaProxy deadlocked behind install gate")), 5000),
+        ),
+      ]);
+
+      // The worker must have actually received /agent/start and instantiated
+      // the agent.
+      await waitFor(() => lastAgent?.runCalled, 3000, "agent.run() on worker");
+      expect(lastAgent.lastParams?.prompt).toBe("spawn-child no-viewer");
+
+      // Drive the agent through to completion via the worker → SSE pipe.
+      // The proxy's `done` event must fire — proving that agent events flow
+      // end-to-end on the spawn-child path with no viewer attached. This is
+      // the user-visible guarantee: a spawned child runs to completion even
+      // if nobody opens it in the UI.
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s1" });
+      lastAgent.emit("done", 0);
+      const exitCode = await Promise.race([
+        proxyDone,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("proxy never emitted done after worker agent_done")), 3000),
+        ),
+      ]);
+      expect(exitCode).toBe(0);
+    } finally {
+      runner.dispose({ force: true });
+    }
   });
 });
