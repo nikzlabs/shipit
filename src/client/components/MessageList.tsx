@@ -243,10 +243,15 @@ export function MessageList({
   currentMatch?: SearchMatch;
   onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
   onSendFollowUp?: (text: string) => void;
+<<<<<<< HEAD
   rewindPreviews?: Record<string, WsRewindPreview>;
   sessionTitle?: string;
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
   onRewindAtGap?: (gapPosition: number, action: RewindGapAction, branchName?: string) => void;
+=======
+  onRollback?: (messageIndex: number, mode: RollbackMode, parentCommitHash: string, sessionName?: string) => void;
+  onRewind?: (messageIndex: number, mode: RewindMode) => void;
+>>>>>>> daddd296a9 (Lint passes, typecheck passes (silent success). Updating todos and creating the PR.)
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);

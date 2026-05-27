@@ -1,13 +1,21 @@
+<<<<<<< HEAD
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs/promises";
+=======
+>>>>>>> daddd296a9 (Lint passes, typecheck passes (silent success). Updating todos and creating the PR.)
 import type { WsClientMessage } from "../../shared/types.js";
 import type { ConnectionCtx, AppCtx, RunnerCtx } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import { buildConversationReplay } from "../services/replay.js";
+<<<<<<< HEAD
 import { archiveSession, forkSession } from "../services/session.js";
 import type { PersistedMessage, RewindSnapshotInfo } from "../chat-history.js";
 import { resolveRunner } from "./resolve-runner.js";
+=======
+import { forkSession } from "../services/session.js";
+import { generateBranchSlug, generateBranchPrefix } from "../git-utils.js";
+>>>>>>> daddd296a9 (Lint passes, typecheck passes (silent success). Updating todos and creating the PR.)
 
 type WsRewindAtGap = Extract<WsClientMessage, { type: "rewind_at_gap" }>;
 type WsRewindPreviewRequest = Extract<WsClientMessage, { type: "rewind_preview_request" }>;
@@ -159,13 +167,38 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
     ctx.send({ type: "error", message: "Invalid rewind position" });
     return;
   }
+<<<<<<< HEAD
   if (action !== "fork" && gapPosition === allMessages.length) {
     ctx.send({ type: "error", message: "Nothing to rewind from the current state." });
+=======
+
+  const { parentCommitHash, messageIndex, sessionName } = msg;
+  if (!parentCommitHash || typeof messageIndex !== "number") {
+    ctx.send({ type: "error", message: "Invalid fork parameters" });
+>>>>>>> daddd296a9 (Lint passes, typecheck passes (silent success). Updating todos and creating the PR.)
+    return;
+  }
+
+  const trimmedName = sessionName?.trim();
+  if (!trimmedName) {
+    ctx.send({ type: "error", message: "Session name is required" });
     return;
   }
 
   try {
+<<<<<<< HEAD
     clearQueuedMessages(ctx, sessionId);
+=======
+    // Derive the fork branch from the active session's branch by swapping the
+    // random slug (or generating a fresh `shipit/<slug>` if the current branch
+    // doesn't follow that convention).
+    const parentBranch = ctx.sessionManager.get(sessionId)?.branch;
+    const branchName = parentBranch?.startsWith("shipit/")
+      ? `shipit/${generateBranchSlug()}`
+      : parentBranch
+        ? `${parentBranch}-${generateBranchSlug()}`
+        : generateBranchPrefix();
+>>>>>>> daddd296a9 (Lint passes, typecheck passes (silent success). Updating todos and creating the PR.)
 
     if (action === "chat") {
       const truncated = allMessages.slice(0, gapPosition);
@@ -300,7 +333,12 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       sessionId,
       sessionDir,
       branchName,
+<<<<<<< HEAD
       rollbackHash,
+=======
+      parentCommitHash,
+      trimmedName,
+>>>>>>> daddd296a9 (Lint passes, typecheck passes (silent success). Updating todos and creating the PR.)
     );
     const truncatedMessages = allMessages.slice(0, gapPosition);
     ctx.chatHistoryManager.saveMessages(result.session.id, truncatedMessages);

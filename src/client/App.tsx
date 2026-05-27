@@ -621,6 +621,7 @@ export default function App() {
   const handleSendFollowUp = useCallback(
     (text: string) => {
       const session = useSessionStore.getState();
+<<<<<<< HEAD
       const pm = useSettingsStore.getState().getPermissionMode(session.sessionId);
       sendUserMessage({
         bubble: { role: "user", text },
@@ -632,6 +633,26 @@ export default function App() {
           permissionMode: pm !== "auto" ? pm : undefined,
         }),
       });
+=======
+      session.setMessages((prev) => [...prev, { role: "user", text }]);
+      session.setIsLoading(true);
+      session.setActivity({ label: "Thinking..." });
+      const pm = useSettingsStore.getState().permissionMode;
+      send({ type: "send_message", text, sessionId: session.sessionId, permissionMode: pm !== "auto" ? pm : undefined });
+    },
+    [send],
+  );
+
+  const handleRollback = useCallback(
+    (messageIndex: number, mode: "code" | "code_and_chat" | "fork", parentCommitHash: string, sessionName?: string) => {
+      if (mode === "code") {
+        send({ type: "rollback_code", messageIndex, parentCommitHash });
+      } else if (mode === "code_and_chat") {
+        send({ type: "rollback_code_and_chat", messageIndex, parentCommitHash });
+      } else {
+        send({ type: "fork_session_from_message", messageIndex, parentCommitHash, sessionName: sessionName ?? "" });
+      }
+>>>>>>> daddd296a9 (Lint passes, typecheck passes (silent success). Updating todos and creating the PR.)
     },
     [send],
   );
