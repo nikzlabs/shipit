@@ -540,7 +540,10 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   currentAgent.on("done", async (code: number | null) => {
     console.log("[agent] process exited with code", code);
     ctx.broadcastLog("server", `Agent process exited with code ${code}`);
-    if (answerRunner) answerRunner.setAgent(null);
+    // Identity-guard: a concurrent turn (typically a system-dispatched turn
+    // racing with this answer_question) may have replaced the runner's
+    // agent ref already; only clear if it's still our process.
+    if (answerRunner?.getAgent() === currentAgent) answerRunner.setAgent(null);
 
     try {
       if (capturedSessionDir) {
