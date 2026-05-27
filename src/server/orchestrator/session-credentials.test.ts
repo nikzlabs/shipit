@@ -496,6 +496,97 @@ describe("session-credentials", () => {
     expect(fs.readFileSync(path.join(sessionDir, ".claude.json"), "utf-8")).toBe('{"projects":{"foo":"bar"}}');
   });
 
+  // docs/153 — Case 3 in materializeLeakedSubtreeSymlinks: the previous
+  // (destructive) repair already replaced the leaked symlink with a real
+  // dir, but the orphan `<sessionDir>/provider-accounts/.../.claude/projects/`
+  // subtree is still on disk. These are the sessions that ran the repair
+  // BEFORE PR #758 landed — credentials are visible, conversation history
+  // is not. The repair has to fire on this entry condition too.
+
+  it("non-destructive repair (case 3): merges orphan history when .claude/ is already a real dir", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    // Pre-stage `.claude/` as a real dir with the shared baseline content
+    // (what the pre-#758 destructive repair would have left).
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    // Orphan jsonl from when the CLI wrote through the (now-removed) symlink.
+    const agentSessionId = "b5903553-cab6-49a9-a9c0-855a7708867d";
+    const orphanProjects = path.join(
+      sessionDir, "provider-accounts", "claude", "claude-default",
+      ".claude", "projects", "-workspace",
+    );
+    fs.mkdirSync(orphanProjects, { recursive: true });
+    fs.writeFileSync(
+      path.join(orphanProjects, `${agentSessionId}.jsonl`),
+      `${JSON.stringify({ sessionId: agentSessionId, type: "summary" })}\n${JSON.stringify({ sessionId: agentSessionId, type: "user" })}\n`,
+    );
+
+    const recovered: string[] = [];
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+
+    // `.claude/` still a real dir; orphan jsonl now visible there.
+    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
+    const mergedJsonl = path.join(sessionDir, ".claude", "projects", "-workspace", `${agentSessionId}.jsonl`);
+    expect(fs.existsSync(mergedJsonl)).toBe(true);
+    // Orphan provider-accounts/ subtree dropped.
+    expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
+    // Recovery callback got the agent_session_id from the jsonl's first line.
+    expect(recovered).toEqual([agentSessionId]);
+    // Shared baseline credentials preserved (orphan didn't carry these).
+    expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("FRESH");
+  });
+
+  it("non-destructive repair (case 3): true no-op when .claude/ is a real dir AND no orphan exists", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("EXISTING", 5_000));
+
+    const recovered: string[] = [];
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+
+    expect(recovered).toEqual([]);
+    // No provider-accounts/ subtree was created.
+    expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
+  });
+
+  it("non-destructive repair (case 3): does not re-copy shared content over user CLI writes in .claude/", () => {
+    // If the user's CLI has written something into `.claude/` since the
+    // destructive repair ran (e.g. CLI config tweaks), the case-3 path must
+    // not clobber it. The orphan only carries this session's conversation
+    // history — projects/, sessions/, history.jsonl — and `.claude.json`.
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    fs.writeFileSync(path.join(account, ".claude", "settings.json"), "SHARED-SETTINGS");
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    // The user's CLI has rewritten settings.json post-destructive-repair.
+    fs.writeFileSync(path.join(sessionDir, ".claude", "settings.json"), "USER-CUSTOMIZED");
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    // Orphan with conversation history.
+    const orphanProjects = path.join(
+      sessionDir, "provider-accounts", "claude", "claude-default",
+      ".claude", "projects", "-workspace",
+    );
+    fs.mkdirSync(orphanProjects, { recursive: true });
+    fs.writeFileSync(path.join(orphanProjects, "conv.jsonl"), '{"sessionId":"x","type":"summary"}\n');
+
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
+
+    // User's customised settings.json preserved — case 3 does NOT cpSync from shared.
+    expect(fs.readFileSync(path.join(sessionDir, ".claude", "settings.json"), "utf-8")).toBe("USER-CUSTOMIZED");
+    // Conversation history merged in.
+    expect(fs.existsSync(path.join(sessionDir, ".claude", "projects", "-workspace", "conv.jsonl"))).toBe(true);
+    // Orphan dropped.
+    expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
+  });
+
   it("non-destructive repair: malformed jsonl first line → no callback fired", () => {
     const account = path.join(root, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
