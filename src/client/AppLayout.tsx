@@ -164,7 +164,7 @@ export function AppLayout({
                     className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                     aria-label="Status"
                   >
-                    <GaugeIcon size={ICON_SIZE.MD} />
+                    <GaugeIcon size={ICON_SIZE.SM} />
                   </button>
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-auto max-w-[calc(100vw-1.5rem)] p-3">
