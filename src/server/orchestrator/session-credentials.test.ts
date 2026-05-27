@@ -376,16 +376,29 @@ describe("session-credentials", () => {
     return { sessionDir, account, orphan, jsonlPath };
   }
 
+  // docs/153 Fix — jsonl must contain BOTH a `type: "user"` AND a
+  // `type: "assistant"` event in the first ~50 lines to count as
+  // resumable. Stub jsonls (last-prompt/ai-title/pr-link only) get
+  // filtered out by the validator, so positive recovery tests must
+  // include both event types in their fixture.
+  const resumableJsonl = (agentSessionId: string) =>
+    `${JSON.stringify({ sessionId: agentSessionId, type: "summary" })}\n`
+    + `${JSON.stringify({ sessionId: agentSessionId, type: "user", message: { role: "user", content: "hi" } })}\n`
+    + `${JSON.stringify({ sessionId: agentSessionId, type: "assistant", message: { role: "assistant", content: "hello" } })}\n`;
+  const stubJsonl = (agentSessionId: string) =>
+    `${JSON.stringify({ sessionId: agentSessionId, type: "last-prompt", prompt: "x" })}\n`
+    + `${JSON.stringify({ sessionId: agentSessionId, type: "ai-title", title: "y" })}\n`;
+
   it("non-destructive repair: merges orphan conversation history into the rebuilt .claude/", () => {
-    const recovered: string[] = [];
-    const onRecover = (id: string) => { recovered.push(id); };
+    const recovered: (string | null)[] = [];
+    const onRecover = (id: string | null) => { recovered.push(id); };
     const agentSessionId = "b5903553-cab6-49a9-a9c0-855a7708867d";
     const { sessionDir } = seedLeakedSessionWithOrphanHistory({
       accessTail: "FRESH",
       expiresAt: 9_000,
       projectDir: "-workspace",
       agentSessionId,
-      jsonlContents: `${JSON.stringify({ sessionId: agentSessionId, type: "summary" })}\n${JSON.stringify({ sessionId: agentSessionId, type: "user", message: "hi" })}\n`,
+      jsonlContents: resumableJsonl(agentSessionId),
     });
 
     syncProviderAccountTokenIn(root, sid, "claude", "claude-default", onRecover);
@@ -398,7 +411,7 @@ describe("session-credentials", () => {
     const mergedJsonl = path.join(sessionDir, ".claude", "projects", "-workspace", `${agentSessionId}.jsonl`);
     expect(fs.existsSync(mergedJsonl)).toBe(true);
     const lines = fs.readFileSync(mergedJsonl, "utf-8").trim().split("\n");
-    expect(lines.length).toBe(2);
+    expect(lines.length).toBe(3);
     // Orphan provider-accounts/ subtree dropped.
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
     // Recovery callback got the agent_session_id from the jsonl's first line.
@@ -418,22 +431,24 @@ describe("session-credentials", () => {
     fs.mkdirSync(orphanProjects, { recursive: true });
     const oldJsonl = path.join(orphanProjects, `${oldSid}.jsonl`);
     const newJsonl = path.join(orphanProjects, `${newSid}.jsonl`);
-    fs.writeFileSync(oldJsonl, `${JSON.stringify({ sessionId: oldSid, type: "summary" })}\n`);
-    fs.writeFileSync(newJsonl, `${JSON.stringify({ sessionId: newSid, type: "summary" })}\n`);
+    fs.writeFileSync(oldJsonl, resumableJsonl(oldSid));
+    fs.writeFileSync(newJsonl, resumableJsonl(newSid));
     const past = Date.now() / 1000 - 3600; // 1h ago
     const now = Date.now() / 1000;
     fs.utimesSync(oldJsonl, past, past);
     fs.utimesSync(newJsonl, now, now);
 
-    const recovered: string[] = [];
+    const recovered: (string | null)[] = [];
     syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
 
     expect(recovered).toEqual([newSid]);
   });
 
-  it("non-destructive repair: no orphan present → no callback fired", () => {
+  it("non-destructive repair: no orphan present → callback fires with null (clear signal)", () => {
     // A leak with no agent-side activity yet: symlink exists, but the agent
-    // never followed it (no orphan tree). Repair must succeed silently.
+    // never followed it (no orphan tree). Repair fires but finds no resumable
+    // jsonl → callback receives null so the caller drops the DB pointer and
+    // skips --resume on the next spawn.
     const account = path.join(root, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
@@ -441,11 +456,11 @@ describe("session-credentials", () => {
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
 
-    const recovered: string[] = [];
+    const recovered: (string | null)[] = [];
     syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
 
     expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
-    expect(recovered).toEqual([]);
+    expect(recovered).toEqual([null]);
   });
 
   it("non-destructive repair: shared-source files win on filename collision with orphan", () => {
@@ -521,10 +536,10 @@ describe("session-credentials", () => {
     fs.mkdirSync(orphanProjects, { recursive: true });
     fs.writeFileSync(
       path.join(orphanProjects, `${agentSessionId}.jsonl`),
-      `${JSON.stringify({ sessionId: agentSessionId, type: "summary" })}\n${JSON.stringify({ sessionId: agentSessionId, type: "user" })}\n`,
+      resumableJsonl(agentSessionId),
     );
 
-    const recovered: string[] = [];
+    const recovered: (string | null)[] = [];
     syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
 
     // `.claude/` still a real dir; orphan jsonl now visible there.
@@ -547,7 +562,7 @@ describe("session-credentials", () => {
     fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("EXISTING", 5_000));
 
-    const recovered: string[] = [];
+    const recovered: (string | null)[] = [];
     syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
 
     expect(recovered).toEqual([]);
@@ -608,18 +623,9 @@ describe("session-credentials", () => {
     const olderSid2 = "22222222-2222-4222-8222-222222222222";
     const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
     fs.mkdirSync(projectsDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(projectsDir, `${olderSid1}.jsonl`),
-      `${JSON.stringify({ sessionId: olderSid1, type: "summary" })}\n`,
-    );
-    fs.writeFileSync(
-      path.join(projectsDir, `${olderSid2}.jsonl`),
-      `${JSON.stringify({ sessionId: olderSid2, type: "summary" })}\n`,
-    );
-    fs.writeFileSync(
-      path.join(projectsDir, `${goodSid}.jsonl`),
-      `${JSON.stringify({ sessionId: goodSid, type: "summary" })}\n`,
-    );
+    fs.writeFileSync(path.join(projectsDir, `${olderSid1}.jsonl`), resumableJsonl(olderSid1));
+    fs.writeFileSync(path.join(projectsDir, `${olderSid2}.jsonl`), resumableJsonl(olderSid2));
+    fs.writeFileSync(path.join(projectsDir, `${goodSid}.jsonl`), resumableJsonl(goodSid));
     const now = Date.now() / 1000;
     fs.utimesSync(path.join(projectsDir, `${olderSid1}.jsonl`), now - 7200, now - 7200);
     fs.utimesSync(path.join(projectsDir, `${olderSid2}.jsonl`), now - 3600, now - 3600);
@@ -627,7 +633,7 @@ describe("session-credentials", () => {
 
     // DB points at a UUID that has no jsonl on disk.
     const staleSid = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-    const recovered: string[] = [];
+    const recovered: (string | null)[] = [];
     syncProviderAccountTokenIn(
       root, sid, "claude", "claude-default",
       (id) => { recovered.push(id); },
@@ -652,17 +658,11 @@ describe("session-credentials", () => {
     const olderSid = "11111111-1111-4111-8111-111111111111";
     const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
     fs.mkdirSync(projectsDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(projectsDir, `${goodSid}.jsonl`),
-      `${JSON.stringify({ sessionId: goodSid, type: "summary" })}\n`,
-    );
-    fs.writeFileSync(
-      path.join(projectsDir, `${olderSid}.jsonl`),
-      `${JSON.stringify({ sessionId: olderSid, type: "summary" })}\n`,
-    );
+    fs.writeFileSync(path.join(projectsDir, `${goodSid}.jsonl`), resumableJsonl(goodSid));
+    fs.writeFileSync(path.join(projectsDir, `${olderSid}.jsonl`), resumableJsonl(olderSid));
 
     // DB id already matches the goodSid jsonl on disk → no recovery needed.
-    const recovered: string[] = [];
+    const recovered: (string | null)[] = [];
     syncProviderAccountTokenIn(
       root, sid, "claude", "claude-default",
       (id) => { recovered.push(id); },
@@ -680,7 +680,7 @@ describe("session-credentials", () => {
     fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
 
-    const recovered: string[] = [];
+    const recovered: (string | null)[] = [];
     syncProviderAccountTokenIn(
       root, sid, "claude", "claude-default",
       (id) => { recovered.push(id); },
@@ -690,9 +690,13 @@ describe("session-credentials", () => {
     expect(recovered).toEqual([]);
   });
 
-  it("non-destructive repair (case 4): no-op when projects/ has no jsonls at all", () => {
-    // The session has never had a CLI turn complete — no projects/ to scan.
-    // Case 4 must not fire (latest jsonl returns null).
+  it("non-destructive repair (case 4): callback fires with null when DB id has no resumable jsonl on disk", () => {
+    // The session's DB id points at a UUID with no jsonl AT ALL — this is
+    // the prod state after the loop scrambled the DB with a doomed init
+    // UUID that never produced a conversation. Case 4 fires (stale-pointer
+    // confirmed), no recovery is possible (no jsonls to scan), so the
+    // callback fires with null so the caller clears the DB and the next
+    // turn drops --resume → fresh conversation.
     const account = path.join(root, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
@@ -700,14 +704,14 @@ describe("session-credentials", () => {
     fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
 
-    const recovered: string[] = [];
+    const recovered: (string | null)[] = [];
     syncProviderAccountTokenIn(
       root, sid, "claude", "claude-default",
       (id) => { recovered.push(id); },
       "doesnt-matter-no-projects-exist",
     );
 
-    expect(recovered).toEqual([]);
+    expect(recovered).toEqual([null]);
   });
 
   it("non-destructive repair: malformed jsonl first line → no callback fired", () => {
@@ -721,12 +725,104 @@ describe("session-credentials", () => {
     fs.mkdirSync(orphanProjects, { recursive: true });
     fs.writeFileSync(path.join(orphanProjects, "garbage.jsonl"), "not json at all\n");
 
-    const recovered: string[] = [];
+    const recovered: (string | null)[] = [];
     syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
 
-    expect(recovered).toEqual([]);
-    // Repair still happened.
+    // Repair still happened (symlink replaced with real dir).
     expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
+    // Validator finds no resumable jsonl → clear signal so the caller
+    // drops the DB pointer and the next spawn skips --resume.
+    expect(recovered).toEqual([null]);
+  });
+
+  // docs/153 — resumability validator: findLatestAgentSessionId must
+  // skip jsonls that are missing real user/assistant events. Otherwise
+  // the post-turn stub jsonls (last-prompt/ai-title/pr-link) get picked
+  // by latest-mtime and the recovered id `--resume`-fails immediately.
+
+  it("validator: picks an older real-conversation jsonl over a newer stub-only jsonl", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
+    fs.mkdirSync(projectsDir, { recursive: true });
+
+    const realSid = "11111111-1111-4111-8111-111111111111";
+    const stubSid = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(path.join(projectsDir, `${realSid}.jsonl`), resumableJsonl(realSid));
+    fs.writeFileSync(path.join(projectsDir, `${stubSid}.jsonl`), stubJsonl(stubSid));
+    const now = Date.now() / 1000;
+    // Stub is NEWER on mtime; validator must still pick the real one.
+    fs.utimesSync(path.join(projectsDir, `${realSid}.jsonl`), now - 3600, now - 3600);
+    fs.utimesSync(path.join(projectsDir, `${stubSid}.jsonl`), now, now);
+
+    const recovered: (string | null)[] = [];
+    syncProviderAccountTokenIn(
+      root, sid, "claude", "claude-default",
+      (id) => { recovered.push(id); },
+      "stale-db-id-with-no-jsonl",
+    );
+
+    expect(recovered).toEqual([realSid]);
+  });
+
+  it("validator: only-stub jsonls present → callback fires with null (clear signal)", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
+    fs.mkdirSync(projectsDir, { recursive: true });
+    // Two stub jsonls — neither carries user+assistant events. The CLI
+    // would emit "No conversation found" if we picked either. Validator
+    // returns null → callback fires with null so the caller clears.
+    const stubSid1 = "11111111-1111-4111-8111-111111111111";
+    const stubSid2 = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(path.join(projectsDir, `${stubSid1}.jsonl`), stubJsonl(stubSid1));
+    fs.writeFileSync(path.join(projectsDir, `${stubSid2}.jsonl`), stubJsonl(stubSid2));
+
+    const recovered: (string | null)[] = [];
+    syncProviderAccountTokenIn(
+      root, sid, "claude", "claude-default",
+      (id) => { recovered.push(id); },
+      "stale-db-id-with-no-jsonl",
+    );
+
+    expect(recovered).toEqual([null]);
+  });
+
+  it("validator: DB id points at a stub-only jsonl → fires Case 4 anyway, recovers from a sibling real jsonl", () => {
+    // The exact prod failure mode: DB pointer matches a file by name
+    // (stub jsonl from the post-turn flow), but `--resume` fails because
+    // the content isn't resumable. Case 4 must detect this and find the
+    // sibling real-conversation jsonl.
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
+    fs.mkdirSync(projectsDir, { recursive: true });
+
+    const stubSidInDb = "856d63e4-stub-pointer-from-prod-aaaa";
+    const realSid = "11111111-1111-4111-8111-111111111111";
+    fs.writeFileSync(path.join(projectsDir, `${stubSidInDb}.jsonl`), stubJsonl(stubSidInDb));
+    fs.writeFileSync(path.join(projectsDir, `${realSid}.jsonl`), resumableJsonl(realSid));
+
+    const recovered: (string | null)[] = [];
+    syncProviderAccountTokenIn(
+      root, sid, "claude", "claude-default",
+      (id) => { recovered.push(id); },
+      stubSidInDb,
+    );
+
+    expect(recovered).toEqual([realSid]);
   });
 
   it("removeSessionCredentials drops the subtree and is idempotent", () => {

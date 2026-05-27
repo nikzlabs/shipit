@@ -93,16 +93,27 @@ export function selectAgentEnvForPush(input: {
  */
 export interface PrepareSessionAgentEnvironmentResult {
   /**
-   * docs/153 — if the per-turn leak repair recovered a Claude CLI session id
-   * from the orphan conversation tree, the caller must override the
-   * captured-at-turn-start `agentSessionId` with this value before spawning
-   * the CLI. Otherwise `--resume <stale-id>` fails with "No conversation
-   * found", the CLI emits a fresh init UUID, the listener persists *that*,
-   * and the recovered id is lost — the self-perpetuating loop seen in prod.
-   * Unset on healthy turns (no recovery needed). When set, the DB row has
-   * already been updated to this value as a side effect of the repair.
+   * docs/153 — the per-turn leak repair's terminal state regarding the
+   * Claude CLI session id. Tri-state:
+   *
+   *   - `undefined` (omitted): no leak repair fired; caller uses the
+   *     captured-at-turn-start `agentSessionId` unchanged.
+   *   - `string`: leak repair recovered a resumable conversation jsonl;
+   *     caller MUST override the captured `agentSessionId` with this
+   *     value before spawning so `--resume <recovered>` finds it. DB
+   *     row has already been updated as a side effect.
+   *   - `null`: leak repair fired but found no resumable conversation;
+   *     caller MUST drop the `--resume` arg entirely so the CLI starts
+   *     a fresh conversation instead of `--resume <known-bad-id>`-looping.
+   *     DB row has already been cleared as a side effect.
+   *
+   * On a healthy turn this field is `undefined`; on a recovery turn it's
+   * either the recovered id or null. The caller's spawn-arg branching
+   * must distinguish the null-clear case from the undefined-no-action
+   * case — they look the same at the destructured site but mean opposite
+   * things for `--resume`.
    */
-  overrideAgentSessionId?: string;
+  overrideAgentSessionId?: string | null;
 }
 
 export async function prepareSessionAgentEnvironment(
@@ -141,7 +152,7 @@ export async function prepareSessionAgentEnvironment(
   // every turn (docs/142 A) — the rotating refresh token is single-use, so
   // a write-once provisioning copy goes stale the moment any other session
   // rotates the source.
-  let overrideAgentSessionId: string | undefined;
+  let overrideAgentSessionId: string | null | undefined;
   if (runner instanceof ContainerSessionRunner) {
     try {
       // docs/153 — if the per-turn sync repairs a leaked symlink, recover
@@ -158,13 +169,26 @@ export async function prepareSessionAgentEnvironment(
       // path reads from the DB), but the spawn-arg has already been captured
       // by the time prepareSessionAgentEnvironment runs — caller MUST honor
       // the returned override.
-      const onRecover = (recovered: string): void => {
-        overrideAgentSessionId = recovered;
+      const onRecover = (recoveredOrClear: string | null): void => {
         const current = deps.sessionManager.get(sessionId)?.agentSessionId;
-        if (current === recovered) return;
+        if (recoveredOrClear === null) {
+          // docs/153 — the leak repair fired but couldn't find a resumable
+          // conversation jsonl on disk. Clear the DB pointer and signal
+          // the caller to drop the `--resume` arg so the CLI starts a
+          // fresh conversation instead of `--resume`-looping on a
+          // known-bad id.
+          overrideAgentSessionId = null;
+          if (current) {
+            console.log(`[credentials] clearing agent_session_id for ${sessionId} (was ${current}; no resumable jsonl found)`);
+            deps.sessionManager.clearAgentSessionId(sessionId);
+          }
+          return;
+        }
+        overrideAgentSessionId = recoveredOrClear;
+        if (current === recoveredOrClear) return;
         const wasNote = current ? ` (was ${current})` : "";
-        console.log(`[credentials] recovered agent_session_id for ${sessionId}: ${recovered}${wasNote}`);
-        deps.sessionManager.setAgentSessionId(sessionId, recovered);
+        console.log(`[credentials] recovered agent_session_id for ${sessionId}: ${recoveredOrClear}${wasNote}`);
+        deps.sessionManager.setAgentSessionId(sessionId, recoveredOrClear);
       };
       // docs/153 Case 4 — pass the DB's current agent_session_id so the
       // repair can detect a stale pointer (DB id has no matching jsonl on
