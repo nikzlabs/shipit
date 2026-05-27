@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { WsClientMessage } from "../../shared/types.js";
@@ -8,6 +7,7 @@ import { buildConversationReplay } from "../services/replay.js";
 import { archiveSession, forkSession } from "../services/session.js";
 import type { PersistedMessage, RewindSnapshotInfo } from "../chat-history.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { generateBranchSlug, generateBranchPrefix } from "../git-utils.js";
 
 type WsRewindAtGap = Extract<WsClientMessage, { type: "rewind_at_gap" }>;
 type WsRewindPreviewRequest = Extract<WsClientMessage, { type: "rewind_preview_request" }>;
@@ -164,6 +164,13 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
     return;
   }
 
+  // Fork needs a session title — the user types it; the branch is derived.
+  const trimmedSessionName = action === "fork" ? msg.sessionName?.trim() : undefined;
+  if (action === "fork" && !trimmedSessionName) {
+    ctx.send({ type: "error", message: "Session name is required to fork." });
+    return;
+  }
+
   try {
     clearQueuedMessages(ctx, sessionId);
 
@@ -289,7 +296,15 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       ctx.send({ type: "error", message: "No active session directory" });
       return;
     }
-    const branchName = (msg.branchName?.trim() || `fork-${crypto.randomUUID().slice(0, 8)}`).slice(0, 80);
+    // Derive the fork branch from the active session's branch by swapping the
+    // random slug (or generating a fresh `shipit/<slug>` if the current branch
+    // doesn't follow that convention). The user names the session, not the branch.
+    const parentBranch = ctx.sessionManager.get(sessionId)?.branch;
+    const branchName = parentBranch?.startsWith("shipit/")
+      ? `shipit/${generateBranchSlug()}`
+      : parentBranch
+        ? `${parentBranch}-${generateBranchSlug()}`
+        : generateBranchPrefix();
     const result = await forkSession(
       ctx.sessionManager,
       ctx.createRepoGit,
@@ -301,6 +316,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       sessionDir,
       branchName,
       rollbackHash,
+      trimmedSessionName,
     );
     const truncatedMessages = allMessages.slice(0, gapPosition);
     ctx.chatHistoryManager.saveMessages(result.session.id, truncatedMessages);
