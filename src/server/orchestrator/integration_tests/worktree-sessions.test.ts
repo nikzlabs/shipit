@@ -220,8 +220,8 @@ describe("Integration: Session clones", () => {
     const child = sessionManager.get(childId);
     expect(child?.archived).toBe(true);
 
-    // Standalone clones (no remoteUrl) preserve their directory on archive.
-    // Only repo-backed clones have their directories removed.
+    // Parent had no remoteUrl, so the fork has none either — archive preserves
+    // the workspace dir because there's no cache to re-clone from on unarchive.
     expect(fs.existsSync(childDir)).toBe(true);
   }, 15_000);
 
