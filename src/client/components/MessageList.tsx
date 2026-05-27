@@ -214,15 +214,9 @@ export { MessageFileAttachments, MessageImages } from "./message-media.js";
 
 export { buildVisualElements, STANDALONE_TOOLS, SUBAGENT_TOOLS, type VisualElement } from "./visual-elements.js";
 
-function slugifyBranchName(value: string): string {
-  const slug = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40)
-    .replace(/-+$/g, "");
-  return slug || "fork-from-here";
+function defaultSessionNameFor(value: string): string {
+  const cleaned = value.trim().replace(/\s+/g, " ").slice(0, 80);
+  return cleaned || "Fork from here";
 }
 
 export function MessageList({
@@ -243,15 +237,10 @@ export function MessageList({
   currentMatch?: SearchMatch;
   onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
   onSendFollowUp?: (text: string) => void;
-<<<<<<< HEAD
   rewindPreviews?: Record<string, WsRewindPreview>;
   sessionTitle?: string;
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
-  onRewindAtGap?: (gapPosition: number, action: RewindGapAction, branchName?: string) => void;
-=======
-  onRollback?: (messageIndex: number, mode: RollbackMode, parentCommitHash: string, sessionName?: string) => void;
-  onRewind?: (messageIndex: number, mode: RewindMode) => void;
->>>>>>> daddd296a9 (Lint passes, typecheck passes (silent success). Updating todos and creating the PR.)
+  onRewindAtGap?: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -355,14 +344,14 @@ export function MessageList({
     fork: getPreview(gapPosition, "fork"),
   });
 
-  const defaultBranchNameForGap = (gapPosition: number): string => {
+  const defaultSessionNameForGap = (gapPosition: number): string => {
     for (let i = Math.min(gapPosition, messages.length) - 1; i >= 0; i--) {
       const candidate = messages[i];
       if (!candidate.notice && candidate.role === "user" && candidate.text.trim()) {
-        return slugifyBranchName(candidate.text);
+        return defaultSessionNameFor(candidate.text);
       }
     }
-    return slugifyBranchName(sessionTitle ?? "fork-from-here");
+    return defaultSessionNameFor(sessionTitle ?? "Fork from here");
   };
 
   const shouldShowGapBefore = (messageIndex: number): boolean => {
@@ -384,7 +373,7 @@ export function MessageList({
         gapPosition={gapPosition}
         currentState={currentState}
         disabled={!currentState && isLoading}
-        defaultBranchName={defaultBranchNameForGap(gapPosition)}
+        defaultSessionName={defaultSessionNameForGap(gapPosition)}
         previews={getPreviewsForGap(gapPosition)}
         onRequestPreview={onRequestRewindPreview}
         onRewind={onRewindAtGap}

@@ -329,17 +329,18 @@ describe("Integration: rewind and fork", () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receiveType("preview_status");
 
-    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "fork", branchName: "kept-upload" });
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "fork", sessionName: "Kept upload" });
     const forked = await client.receiveType("session_forked");
     expect(forked).toMatchObject({
       type: "session_forked",
       parentSessionId: sessionId,
-      branch: "kept-upload",
+      title: "Kept upload",
     });
     if (forked.type !== "session_forked") throw new Error("Expected session_forked");
 
     const child = sessionManager.get(forked.childSessionId);
-    expect(child).toMatchObject({ branch: "kept-upload" });
+    expect(child?.title).toBe("Kept upload");
+    expect(child?.branch).toBeTruthy();
     expect(chatHistoryManager.load(forked.childSessionId).map((m) => m.text)).toEqual(["keep upload", "kept response"]);
     expect(child?.workspaceDir).toBeTruthy();
     expect(fs.existsSync(path.join(path.dirname(child!.workspaceDir!), "uploads", "kept.txt"))).toBe(true);
@@ -349,7 +350,7 @@ describe("Integration: rewind and fork", () => {
       forkChild: {
         childSessionId: forked.childSessionId,
         title: child?.title,
-        branch: "kept-upload",
+        branch: child?.branch,
       },
     });
 
@@ -364,7 +365,7 @@ describe("Integration: rewind and fork", () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receiveType("preview_status");
 
-    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "fork", branchName: "undo-fork" });
+    client.send({ type: "rewind_at_gap", gapPosition: 2, action: "fork", sessionName: "Undo fork" });
     const forked = await client.receiveType("session_forked");
     expect(forked).toMatchObject({
       type: "session_forked",

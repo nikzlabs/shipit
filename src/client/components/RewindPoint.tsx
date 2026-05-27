@@ -25,10 +25,15 @@ interface RewindPointProps {
   gapPosition: number;
   currentState?: boolean;
   disabled?: boolean;
-  defaultBranchName: string;
+  /**
+   * Suggested title for the forked session. The user can edit it before
+   * confirming. The fork's branch name is derived server-side from the
+   * active session's branch (with a fresh slug) — not from this value.
+   */
+  defaultSessionName: string;
   previews?: Partial<Record<RewindGapAction, WsRewindPreview>>;
   onRequestPreview?: (gapPosition: number, action: RewindGapAction) => void;
-  onRewind: (gapPosition: number, action: RewindGapAction, branchName?: string) => void;
+  onRewind: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
 }
 
 const ACTIONS: RewindGapAction[] = ["chat", "code", "both", "fork"];
@@ -81,13 +86,13 @@ export function RewindPoint({
   gapPosition,
   currentState = false,
   disabled = false,
-  defaultBranchName,
+  defaultSessionName,
   previews,
   onRequestPreview,
   onRewind,
 }: RewindPointProps) {
   const [pendingAction, setPendingAction] = useState<Exclude<RewindGapAction, "chat"> | null>(null);
-  const [branchName, setBranchName] = useState(defaultBranchName);
+  const [sessionName, setSessionName] = useState(defaultSessionName);
   const [menuOpen, setMenuOpen] = useState(false);
   const availableActions = currentState ? (["fork"] as RewindGapAction[]) : ACTIONS;
   const modalPreview = pendingAction ? previews?.[pendingAction] : undefined;
@@ -109,18 +114,18 @@ export function RewindPoint({
       onRewind(gapPosition, "chat");
       return;
     }
-    if (action === "fork") setBranchName(defaultBranchName);
+    if (action === "fork") setSessionName(defaultSessionName);
     setPendingAction(action);
     onRequestPreview?.(gapPosition, action);
   };
 
   const confirm = () => {
     if (!pendingAction) return;
-    onRewind(gapPosition, pendingAction, pendingAction === "fork" ? branchName.trim() : undefined);
+    onRewind(gapPosition, pendingAction, pendingAction === "fork" ? sessionName.trim() : undefined);
     setPendingAction(null);
   };
 
-  const confirmDisabled = pendingAction === "fork" && branchName.trim().length === 0;
+  const confirmDisabled = pendingAction === "fork" && sessionName.trim().length === 0;
 
   const interactive = !disabled;
   return (
@@ -182,16 +187,17 @@ export function RewindPoint({
           <div className="space-y-3 px-5 py-4">
             {pendingAction === "fork" ? (
               <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-(--color-text-secondary)">Branch slug</span>
+                <span className="text-xs font-medium text-(--color-text-secondary)">Session name</span>
                 <input
-                  value={branchName}
-                  onChange={(event) => setBranchName(event.target.value)}
+                  value={sessionName}
+                  onChange={(event) => setSessionName(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !confirmDisabled) confirm();
                     if (event.key === "Escape") setPendingAction(null);
                   }}
                   className="w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-tertiary) px-3 py-2 text-sm text-(--color-text-primary) outline-none focus:border-(--color-border-focus)"
                   autoFocus
+                  maxLength={120}
                 />
               </label>
             ) : (

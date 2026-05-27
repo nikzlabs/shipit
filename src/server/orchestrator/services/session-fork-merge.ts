@@ -26,6 +26,7 @@ export async function forkSession(
   activeSessionDir: string,
   branchName: string,
   startPoint?: string,
+  title?: string,
 ): Promise<{ session: SessionInfo; parentSessionId: string; sessions: SessionInfo[] }> {
   const trimmed = branchName.trim();
   if (!trimmed) throw new ServiceError(400, "Branch name is required");
@@ -75,8 +76,8 @@ export async function forkSession(
   await newGit.raw(branchArgs);
 
   // Track in session manager
-  const title = `${activeSession?.title ?? "Session"} (${trimmed})`;
-  sessionManager.track(newSessionId, title, newWorkspaceDir);
+  const resolvedTitle = title?.trim() || `${activeSession?.title ?? "Session"} (${trimmed})`;
+  sessionManager.track(newSessionId, resolvedTitle, newWorkspaceDir);
   sessionManager.setBranch(newSessionId, trimmed);
   sessionManager.setBranchRenamed(newSessionId, true);
   if (activeSession?.remoteUrl) {

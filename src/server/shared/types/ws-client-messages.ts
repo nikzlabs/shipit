@@ -96,44 +96,10 @@ export interface WsCancelQueuedMessage {
 
 // ---- PR detail panel messages (client → server) ----
 
-<<<<<<< HEAD
 /**
  * Client → Server: report whether the PR detail tab is the active right-panel
  * tab for a session (docs/133 Phase 4). Gates the poller's heavier conversation
  * fields (issue comments + review threads) so idle sessions stay cheap.
-=======
-/** Client → Server: rollback code only (git reset, chat stays). */
-export interface WsRollbackCode {
-  type: "rollback_code";
-  messageIndex: number;
-  parentCommitHash: string;
-}
-
-/** Client → Server: rollback code + chat (git reset, fresh CLI session). */
-export interface WsRollbackCodeAndChat {
-  type: "rollback_code_and_chat";
-  messageIndex: number;
-  parentCommitHash: string;
-}
-
-/** Client → Server: fork as a new session from a rollback point.
- *  The branch name is derived server-side from the active session's branch
- *  (with a fresh slug); the user only supplies a human-readable session name.
- */
-export interface WsForkSessionFromMessage {
-  type: "fork_session_from_message";
-  messageIndex: number;
-  parentCommitHash: string;
-  sessionName: string;
-}
-
-// ---- Rewind messages (client → server) ----
-
-/** Client → Server: rewind conversation/code to a user message.
- *  - fork_chat: new conversation branch from this point, code unchanged
- *  - rewind_code: git reset to before this message, keep conversation
- *  - rewind_all: git reset + new conversation branch
->>>>>>> daddd296a9 (Lint passes, typecheck passes (silent success). Updating todos and creating the PR.)
  */
 export interface WsPrTabActive {
   type: "pr_tab_active";
@@ -147,7 +113,13 @@ export interface WsRewindAtGap {
   type: "rewind_at_gap";
   gapPosition: number;
   action: RewindAtGapAction;
-  branchName?: string;
+  /**
+   * Human-readable title for the forked session. Required when action is
+   * `fork`; ignored otherwise. The new branch name is derived server-side
+   * from the active session's branch (with a fresh slug) — the user does
+   * not pick branch names.
+   */
+  sessionName?: string;
 }
 
 export interface WsRewindPreviewRequest {
