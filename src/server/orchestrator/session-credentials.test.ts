@@ -341,6 +341,180 @@ describe("session-credentials", () => {
     expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("FRESH");
   });
 
+  // docs/153 — non-destructive repair: orphan conversation history under
+  // <sessionDir>/provider-accounts/.../.claude/projects/ must be merged
+  // into the rebuilt <sessionDir>/.claude/ before the orphan is dropped,
+  // and the agent_session_id from the latest jsonl must be reported back
+  // so the orchestrator can update sessions.agent_session_id and avoid the
+  // "no conversation found" → fresh-init-UUID loop.
+
+  function seedLeakedSessionWithOrphanHistory(opts: {
+    accessTail: string;
+    expiresAt: number;
+    projectDir: string;          // encoded-cwd, e.g. "-workspace"
+    agentSessionId: string;       // UUID the CLI was using
+    jsonlContents: string;        // contents to write; first line must JSON-parse with sessionId
+    mtimeMs?: number;             // explicit mtime for ranking against other jsonls
+  }): { sessionDir: string; account: string; orphan: string; jsonlPath: string } {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(account, ".claude", ".credentials.json"),
+      claudeCreds(opts.accessTail, opts.expiresAt),
+    );
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+    const orphan = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude");
+    const projectsDir = path.join(orphan, "projects", opts.projectDir);
+    fs.mkdirSync(projectsDir, { recursive: true });
+    const jsonlPath = path.join(projectsDir, `${opts.agentSessionId}.jsonl`);
+    fs.writeFileSync(jsonlPath, opts.jsonlContents);
+    if (opts.mtimeMs !== undefined) {
+      fs.utimesSync(jsonlPath, opts.mtimeMs / 1000, opts.mtimeMs / 1000);
+    }
+    return { sessionDir, account, orphan, jsonlPath };
+  }
+
+  it("non-destructive repair: merges orphan conversation history into the rebuilt .claude/", () => {
+    const recovered: string[] = [];
+    const onRecover = (id: string) => { recovered.push(id); };
+    const agentSessionId = "b5903553-cab6-49a9-a9c0-855a7708867d";
+    const { sessionDir } = seedLeakedSessionWithOrphanHistory({
+      accessTail: "FRESH",
+      expiresAt: 9_000,
+      projectDir: "-workspace",
+      agentSessionId,
+      jsonlContents: `${JSON.stringify({ sessionId: agentSessionId, type: "summary" })}\n${JSON.stringify({ sessionId: agentSessionId, type: "user", message: "hi" })}\n`,
+    });
+
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", onRecover);
+
+    // .claude/ is real with fresh creds.
+    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
+    expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("FRESH");
+    // The orphan jsonl is now under <sessionDir>/.claude/projects/ where
+    // claude --resume <id> will find it.
+    const mergedJsonl = path.join(sessionDir, ".claude", "projects", "-workspace", `${agentSessionId}.jsonl`);
+    expect(fs.existsSync(mergedJsonl)).toBe(true);
+    const lines = fs.readFileSync(mergedJsonl, "utf-8").trim().split("\n");
+    expect(lines.length).toBe(2);
+    // Orphan provider-accounts/ subtree dropped.
+    expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
+    // Recovery callback got the agent_session_id from the jsonl's first line.
+    expect(recovered).toEqual([agentSessionId]);
+  });
+
+  it("non-destructive repair: picks the most-recently-modified jsonl when multiple exist", () => {
+    const oldSid = "11111111-1111-4111-8111-111111111111";
+    const newSid = "22222222-2222-4222-8222-222222222222";
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+    const orphanProjects = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude", "projects", "-workspace");
+    fs.mkdirSync(orphanProjects, { recursive: true });
+    const oldJsonl = path.join(orphanProjects, `${oldSid}.jsonl`);
+    const newJsonl = path.join(orphanProjects, `${newSid}.jsonl`);
+    fs.writeFileSync(oldJsonl, `${JSON.stringify({ sessionId: oldSid, type: "summary" })}\n`);
+    fs.writeFileSync(newJsonl, `${JSON.stringify({ sessionId: newSid, type: "summary" })}\n`);
+    const past = Date.now() / 1000 - 3600; // 1h ago
+    const now = Date.now() / 1000;
+    fs.utimesSync(oldJsonl, past, past);
+    fs.utimesSync(newJsonl, now, now);
+
+    const recovered: string[] = [];
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+
+    expect(recovered).toEqual([newSid]);
+  });
+
+  it("non-destructive repair: no orphan present → no callback fired", () => {
+    // A leak with no agent-side activity yet: symlink exists, but the agent
+    // never followed it (no orphan tree). Repair must succeed silently.
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+
+    const recovered: string[] = [];
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+
+    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
+    expect(recovered).toEqual([]);
+  });
+
+  it("non-destructive repair: shared-source files win on filename collision with orphan", () => {
+    // Sanity check the merge semantics: if both shared and orphan happen
+    // to carry the same file under projects/, the shared (fresh) version
+    // is preserved — the agent_session_id rederivation will still see the
+    // orphan-only files as well.
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude", "projects", "-workspace"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sharedJsonl = path.join(account, ".claude", "projects", "-workspace", "shared.jsonl");
+    fs.writeFileSync(sharedJsonl, "SHARED-CONTENT\n");
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+    const orphanProjects = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude", "projects", "-workspace");
+    fs.mkdirSync(orphanProjects, { recursive: true });
+    fs.writeFileSync(path.join(orphanProjects, "shared.jsonl"), "ORPHAN-OVERRIDE\n");
+
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
+
+    const merged = fs.readFileSync(path.join(sessionDir, ".claude", "projects", "-workspace", "shared.jsonl"), "utf-8");
+    expect(merged).toBe("SHARED-CONTENT\n"); // shared wins; orphan was skipped
+  });
+
+  it("non-destructive repair: preserves orphan .claude.json over the shared baseline", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    fs.writeFileSync(path.join(account, ".claude.json"), '{"projects":{}}');
+    // seedCredentialsRoot pre-wrote a real .claude.json at <root>; replace
+    // it with the docs/150-style legacy-alias symlink for this test.
+    fs.rmSync(path.join(root, ".claude.json"), { force: true });
+    fs.symlinkSync(path.join(account, ".claude.json"), path.join(root, ".claude.json"));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+    fs.symlinkSync(path.join(account, ".claude.json"), path.join(sessionDir, ".claude.json"));
+    // The agent wrote a richer .claude.json into its session-local view via
+    // the second symlink (which resolved to the orphan subtree).
+    const orphanRoot = path.join(sessionDir, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(orphanRoot, { recursive: true });
+    fs.writeFileSync(path.join(orphanRoot, ".claude.json"), '{"projects":{"foo":"bar"}}');
+
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
+
+    expect(fs.lstatSync(path.join(sessionDir, ".claude.json")).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(path.join(sessionDir, ".claude.json"), "utf-8")).toBe('{"projects":{"foo":"bar"}}');
+  });
+
+  it("non-destructive repair: malformed jsonl first line → no callback fired", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
+    const orphanProjects = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude", "projects", "-workspace");
+    fs.mkdirSync(orphanProjects, { recursive: true });
+    fs.writeFileSync(path.join(orphanProjects, "garbage.jsonl"), "not json at all\n");
+
+    const recovered: string[] = [];
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+
+    expect(recovered).toEqual([]);
+    // Repair still happened.
+    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
+  });
+
   it("removeSessionCredentials drops the subtree and is idempotent", () => {
     provisionAgentCredentials(root, sid, "claude");
     expect(fs.existsSync(perSessionCredentialsDir(root, sid))).toBe(true);
