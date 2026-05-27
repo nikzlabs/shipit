@@ -26,9 +26,10 @@ interface RewindPointProps {
   currentState?: boolean;
   disabled?: boolean;
   /**
-   * Suggested title for the forked session. The user can edit it before
-   * confirming. The fork's branch name is derived server-side from the
-   * active session's branch (with a fresh slug) — not from this value.
+   * Suggested title for the forked session — defaults to the parent
+   * session's title so the fork inherits its name. The user can edit it
+   * before confirming. The fork's branch name is derived server-side from
+   * the active session's branch (with a fresh slug) — not from this value.
    */
   defaultSessionName: string;
   previews?: Partial<Record<RewindGapAction, WsRewindPreview>>;
