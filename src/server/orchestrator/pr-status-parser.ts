@@ -16,71 +16,15 @@ import type {
 import type { GitHubDeploymentStatus } from "../shared/types/deployment-types.js";
 
 /**
- * Conversation GraphQL selections (docs/133 Phase 4): PR-level issue comments
- * + review threads. Spliced into the PR node only when the poller knows a
- * session's PR tab is the active right-panel tab — these fields roughly double
- * the per-PR payload, so we don't pay for them on every idle poll.
- *
- * `comments(last: 30)` mirrors how GitHub renders the conversation timeline
- * (most recent first matters more than the very first comment). Review-thread
- * comments are bounded at 50 — threads longer than that are vanishingly rare
- * and the panel renders read-only, so truncation is harmless.
- */
-const CONVERSATION_SELECTIONS = `
-        comments(last: 30) {
-          nodes {
-            id
-            body
-            createdAt
-            url
-            author { login avatarUrl }
-          }
-        }
-        reviewThreads(first: 30) {
-          nodes {
-            id
-            isResolved
-            isOutdated
-            path
-            line
-            comments(first: 50) {
-              nodes {
-                id
-                body
-                createdAt
-                author { login avatarUrl }
-              }
-            }
-          }
-        }`;
-
-/**
- * Build the PR status GraphQL query.
- *
- * The connection sizes (`first: 30` PRs, `first: 10` contexts, `last: 3`
- * deployments) are intentionally bounded to keep the query cost down. At
- * 15s polling, a single actively-watched repo stays comfortably below the
- * 5,000 points/hr primary rate-limit budget. If a session's PR is past the
- * `first: 30` cap it gets a per-session REST verify instead (see
- * `verifyMissingPr` in the poller). Status rollups beyond the first 10
- * contexts are an extreme edge case; if it bites, increase here rather than
- * dropping back to a paginated GraphQL.
+ * Light per-PR selections — every field except conversation. Used for every
+ * PR in the bulk `pullRequests(first: N)` connection. See `buildPrStatusQuery`.
  *
  * NOTE: `files(first: 100)` is the hard ceiling — the GitHub GraphQL `files`
  * connection rejects any `first` above 100 with an EXCESSIVE_PAGINATION error
  * (the request 200s but the data is dropped). PRs touching more than 100 files
  * get a truncated file list here; do not raise this above 100.
- *
- * When `includeConversation` is true the per-PR node also selects issue
- * comments + review threads (docs/133 Phase 4). Gated by the poller on whether
- * any tracked session on the repo has its PR tab active.
  */
-export function buildPrStatusQuery(includeConversation = false): string {
-  return `
-query($owner: String!, $name: String!) {
-  repository(owner: $owner, name: $name) {
-    pullRequests(first: 30, states: [OPEN]) {
-      nodes {
+const PR_LIGHT_FIELDS = `
         number
         title
         body
@@ -96,7 +40,7 @@ query($owner: String!, $name: String!) {
         deletions
         files(first: 100) {
           nodes { path additions deletions changeType }
-        }${includeConversation ? CONVERSATION_SELECTIONS : ""}
+        }
         commits(last: 1) {
           nodes {
             commit {
@@ -133,19 +77,92 @@ query($owner: String!, $name: String!) {
               }
             }
           }
+        }`;
+
+/**
+ * Conversation GraphQL selections (docs/133 Phase 4): PR-level issue comments
+ * + review threads. Appended only to the focused-PR aliases — one alias per
+ * session whose PR tab is currently the active right-panel tab. These fields
+ * roughly double the per-PR payload, and the bulk-heavy variant's cost scaled
+ * with the requested `first: N` (see docs/155-pr-poll-query-scoping/cost-
+ * measurements.md), so we pay for conversation per-focused-PR rather than
+ * per-bulk-view.
+ *
+ * `comments(last: 30)` mirrors how GitHub renders the conversation timeline
+ * (most recent first matters more than the very first comment). Review-thread
+ * comments are bounded at 50 — threads longer than that are vanishingly rare
+ * and the panel renders read-only, so truncation is harmless.
+ */
+const CONVERSATION_FIELDS = `
+        comments(last: 30) {
+          nodes {
+            id
+            body
+            createdAt
+            url
+            author { login avatarUrl }
+          }
         }
+        reviewThreads(first: 30) {
+          nodes {
+            id
+            isResolved
+            isOutdated
+            path
+            line
+            comments(first: 50) {
+              nodes {
+                id
+                body
+                createdAt
+                author { login avatarUrl }
+              }
+            }
+          }
+        }`;
+
+/**
+ * Build the PR status GraphQL query.
+ *
+ * Emits one bulk `pullRequests(first: N)` connection with light fields only,
+ * followed by one `focused${i}: pullRequest(number: ...)` alias per number in
+ * `focusedPrNumbers` carrying light + conversation fields. See
+ * docs/155-pr-poll-query-scoping/plan.md Phase 1 for the rationale.
+ *
+ * The connection sizes (`first: N` PRs, `first: 10` contexts, `last: 3`
+ * deployments) are intentionally bounded to keep the query cost down. The
+ * caller computes `first` as `min(30, max(trackedSessionCount, DISCOVERY_FLOOR))`
+ * so the cost scales with the actual number of sessions being watched on this
+ * repo, plus a small floor for out-of-band-PR discovery. If a session's PR is
+ * past the `first: N` cap it gets a per-session REST verify instead (see
+ * `verifyMissingPr` in the poller). Status rollups beyond the first 10
+ * contexts are an extreme edge case; if it bites, increase here rather than
+ * dropping back to a paginated GraphQL.
+ */
+export function buildPrStatusQuery(opts: {
+  first: number;
+  focusedPrNumbers?: readonly number[];
+}): string {
+  const { first, focusedPrNumbers = [] } = opts;
+  const focusedAliases = focusedPrNumbers
+    .map((n, i) => `
+    focused${i}: pullRequest(number: ${n}) {
+      ${PR_LIGHT_FIELDS}
+      ${CONVERSATION_FIELDS}
+    }`)
+    .join("");
+  return `
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: ${first}, states: [OPEN]) {
+      nodes {
+        ${PR_LIGHT_FIELDS}
       }
-    }
+    }${focusedAliases}
   }
 }
 `;
 }
-
-/** Light query (no conversation fields) — the default for idle polling. */
-export const PR_STATUS_QUERY = buildPrStatusQuery(false);
-
-/** Heavy query including conversation fields — used when a PR tab is active. */
-export const PR_STATUS_QUERY_WITH_CONVERSATION = buildPrStatusQuery(true);
 
 /** Raw GraphQL response shape. */
 export interface GraphQLPrNode {
@@ -222,6 +239,28 @@ export interface GraphQLResponse {
     };
   };
   errors?: { message: string }[];
+}
+
+/**
+ * Walk the `focused${i}` aliases off a GraphQL response and return a map of
+ * PR number → node. The poller uses this to patch heavy conversation data
+ * onto summaries built from the bulk view (which is always light).
+ *
+ * Takes `unknown` because the alias keys are dynamic and don't fit cleanly into
+ * the `GraphQLResponse` interface — the parser owns the response-shape knowledge.
+ */
+export function extractFocusedPrNodes(result: unknown): Map<number, GraphQLPrNode> {
+  const out = new Map<number, GraphQLPrNode>();
+  const repository = (result as { data?: { repository?: Record<string, unknown> } })?.data?.repository;
+  if (!repository) return out;
+  for (const [key, value] of Object.entries(repository)) {
+    if (!key.startsWith("focused")) continue;
+    if (!value || typeof value !== "object") continue;
+    const candidate = value as { number?: unknown };
+    if (typeof candidate.number !== "number") continue;
+    out.set(candidate.number, value as GraphQLPrNode);
+  }
+  return out;
 }
 
 /** Map GitHub GraphQL deployment state string to our typed state. */
@@ -374,11 +413,11 @@ export function extractHeadSha(node: GraphQLPrNode): string | undefined {
 /**
  * Extract the list of changed file paths from a GraphQL PR node.
  *
- * Capped at 300 by the query — see `PR_STATUS_QUERY`. PRs that touch more
- * than 300 files return a truncated list; callers should treat the result
- * as "best-effort" rather than authoritative for full-PR diff analysis.
- * For workflow-applies decisions, truncation is safe: a 300+ file PR is
- * exceedingly unlikely to be entirely `paths:`-filtered-out.
+ * Capped at 100 by the `files(first: 100)` selection in `PR_LIGHT_FIELDS`.
+ * PRs that touch more than 100 files return a truncated list; callers should
+ * treat the result as "best-effort" rather than authoritative for full-PR
+ * diff analysis. For workflow-applies decisions, truncation is safe: a
+ * 100+ file PR is exceedingly unlikely to be entirely `paths:`-filtered-out.
  */
 export function extractChangedFiles(node: GraphQLPrNode): string[] {
   const nodes = node.files?.nodes;

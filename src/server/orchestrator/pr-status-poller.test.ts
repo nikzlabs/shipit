@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PrStatusPoller, PR_STATUS_POLL_INTERVAL_MS, PR_STATUS_SLOW_INTERVAL_MS, parsePrNode, extractHeadSha, extractFailedCheckRuns } from "./pr-status-poller.js";
 import {
-  PR_STATUS_QUERY,
-  PR_STATUS_QUERY_WITH_CONVERSATION,
+  buildPrStatusQuery,
+  extractFocusedPrNodes,
   parseConversation,
   prStatusEqual,
 } from "./pr-status-parser.js";
@@ -488,6 +488,66 @@ describe("prStatusEqual conversation comparison (docs/133 Phase 4)", () => {
   });
 });
 
+describe("buildPrStatusQuery (docs/155 Phase 1)", () => {
+  it("emits a bulk pullRequests connection with light fields only", () => {
+    const query = buildPrStatusQuery({ first: 7 });
+    expect(query).toContain("pullRequests(first: 7, states: [OPEN])");
+    // Conversation fields live on focused aliases, never in the bulk view.
+    expect(query).not.toContain("reviewThreads");
+    expect(query).not.toContain("focused");
+  });
+
+  it("appends one focused alias per focusedPrNumber, each carrying conversation", () => {
+    const query = buildPrStatusQuery({ first: 5, focusedPrNumbers: [42, 99] });
+    expect(query).toContain("focused0: pullRequest(number: 42)");
+    expect(query).toContain("focused1: pullRequest(number: 99)");
+    // Conversation fields are on the focused aliases (we asked for two, so the
+    // selection appears twice — once per alias).
+    const reviewThreadOccurrences = query.match(/reviewThreads/g)?.length ?? 0;
+    expect(reviewThreadOccurrences).toBe(2);
+  });
+});
+
+describe("extractFocusedPrNodes (docs/155 Phase 1)", () => {
+  it("returns an empty map when the response has no focused aliases", () => {
+    const result = { data: { repository: { pullRequests: { nodes: [] } } } };
+    expect(extractFocusedPrNodes(result).size).toBe(0);
+  });
+
+  it("indexes focused aliases by PR number", () => {
+    const result = {
+      data: {
+        repository: {
+          pullRequests: { nodes: [] },
+          focused0: { number: 42, title: "PR 42" },
+          focused1: { number: 99, title: "PR 99" },
+        },
+      },
+    };
+    const map = extractFocusedPrNodes(result);
+    expect(map.size).toBe(2);
+    expect((map.get(42) as { title: string }).title).toBe("PR 42");
+    expect((map.get(99) as { title: string }).title).toBe("PR 99");
+  });
+
+  it("ignores non-focused keys and malformed values", () => {
+    const result = {
+      data: {
+        repository: {
+          pullRequests: { nodes: [] },
+          focused0: { number: 7 },
+          focused_bad: null,
+          notFocused: { number: 99 },
+        },
+      },
+    };
+    const map = extractFocusedPrNodes(result);
+    expect(map.size).toBe(1);
+    expect(map.has(7)).toBe(true);
+    expect(map.has(99)).toBe(false);
+  });
+});
+
 describe("PrStatusPoller", () => {
   let poller: PrStatusPoller;
   let sseBroadcast: ReturnType<typeof vi.fn<(event: string, data: unknown) => void>>;
@@ -606,7 +666,10 @@ describe("PrStatusPoller", () => {
     }));
   });
 
-  it("fetches conversation fields only when a session's PR tab is active (docs/133 Phase 4)", async () => {
+  it("emits a focused alias only for the active-PR-tab session (docs/155 Phase 1b)", async () => {
+    // The bulk view is always light. Conversation fields appear in a
+    // `focused${i}: pullRequest(number: N)` alias when (and only when) that
+    // session's PR tab is active.
     const graphqlResult = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode(CONVERSATION_OVERRIDES)] } } },
     };
@@ -618,23 +681,131 @@ describe("PrStatusPoller", () => {
     poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
     poller.trackSession("s1", "https://github.com/owner/repo");
 
-    // Initial poll uses the light query (no conversation fields).
-    await vi.advanceTimersByTimeAsync(0);
-    expect(githubAuth.graphqlQuery).toHaveBeenLastCalledWith(PR_STATUS_QUERY, expect.anything());
+    const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
 
-    // Opening the PR tab kicks an immediate poll with the conversation query.
+    // Initial poll: PR tab is closed, query is light-only.
+    await vi.advanceTimersByTimeAsync(0);
+    const initialQuery = calls.mock.calls.at(-1)?.[0] as string;
+    expect(initialQuery).toMatch(/pullRequests\(first: \d+, states: \[OPEN\]\)/);
+    expect(initialQuery).not.toContain("focused");
+    expect(initialQuery).not.toContain("reviewThreads");
+
+    // Opening the PR tab kicks an immediate poll. `lastKnown` already has
+    // the PR number from the initial bulk poll, so the focused alias lands
+    // on this call.
     poller.setPrTabActive("s1", true);
     await vi.advanceTimersByTimeAsync(0);
-    expect(githubAuth.graphqlQuery).toHaveBeenLastCalledWith(
-      PR_STATUS_QUERY_WITH_CONVERSATION,
-      expect.anything(),
-    );
+    const focusedQuery = calls.mock.calls.at(-1)?.[0] as string;
+    expect(focusedQuery).toContain("focused0: pullRequest(number: 42)");
+    expect(focusedQuery).toContain("reviewThreads");
 
-    // Closing it returns to the light query on the next tick. The PR is
+    // Closing the PR tab drops the focused alias on the next tick. The PR is
     // settled, so the next poll lands at slow cadence (120 s).
     poller.setPrTabActive("s1", false);
     await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
-    expect(githubAuth.graphqlQuery).toHaveBeenLastCalledWith(PR_STATUS_QUERY, expect.anything());
+    const settledQuery = calls.mock.calls.at(-1)?.[0] as string;
+    expect(settledQuery).not.toContain("focused");
+    expect(settledQuery).not.toContain("reviewThreads");
+  });
+
+  it("caps bulk first:N to tracked-session count with a discovery floor (docs/155 Phase 1a)", async () => {
+    // Single tracked session → first:N hits the discovery floor (5), not the
+    // hard cap (30). Confirms we don't pay for 30 PRs of light data when
+    // there's only one session being watched.
+    githubAuth = makeGitHubAuth({ data: { repository: { pullRequests: { nodes: [] } } } });
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
+    const query = calls.mock.calls.at(-1)?.[0] as string;
+    expect(query).toMatch(/pullRequests\(first: 5, states: \[OPEN\]\)/);
+  });
+
+  it("scales bulk first:N up with tracked-session count (docs/155 Phase 1a)", async () => {
+    // Ten tracked sessions on one repo → first:N follows the count, bounded
+    // below by the floor and above by the cap (30).
+    githubAuth = makeGitHubAuth({ data: { repository: { pullRequests: { nodes: [] } } } });
+    const sessions = Array.from({ length: 10 }, (_, i) => ({
+      id: `s${i}`,
+      branch: `shipit/abc-${i}`,
+      remoteUrl: "https://github.com/owner/repo",
+    }));
+    sessionManager = makeSessionManager(sessions);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    for (const s of sessions) poller.trackSession(s.id, "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
+    const query = calls.mock.calls.at(-1)?.[0] as string;
+    expect(query).toMatch(/pullRequests\(first: 10, states: \[OPEN\]\)/);
+  });
+
+  it("caps bulk first:N at 30 even when tracked sessions exceed it (docs/155 Phase 1a)", async () => {
+    // 50 tracked sessions → first:N pinned at 30; the rest fall through to
+    // verifyMissingPr if their PRs aren't in the response.
+    githubAuth = makeGitHubAuth({ data: { repository: { pullRequests: { nodes: [] } } } });
+    const sessions = Array.from({ length: 50 }, (_, i) => ({
+      id: `s${i}`,
+      branch: `shipit/abc-${i}`,
+      remoteUrl: "https://github.com/owner/repo",
+    }));
+    sessionManager = makeSessionManager(sessions);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    for (const s of sessions) poller.trackSession(s.id, "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
+    const query = calls.mock.calls.at(-1)?.[0] as string;
+    expect(query).toMatch(/pullRequests\(first: 30, states: \[OPEN\]\)/);
+  });
+
+  it("preserves cached conversation when the PR tab loses focus mid-cycle (docs/155 Phase 1b)", async () => {
+    // While the PR tab is open we get conversation via the focused alias.
+    // After the tab closes, subsequent polls drop the alias — the cached
+    // issueComments/reviewThreads must carry forward, otherwise the UI sees
+    // the conversation disappear on the next light poll.
+    const heavyNode = makeGraphQLPrNode(CONVERSATION_OVERRIDES);
+    const lightNode = makeGraphQLPrNode();
+
+    githubAuth = makeGitHubAuth({
+      data: {
+        repository: {
+          pullRequests: { nodes: [lightNode] },
+          focused0: heavyNode,
+        },
+      },
+    });
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Tab opens → focused alias delivers conversation.
+    poller.setPrTabActive("s1", true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(poller.getStatus("s1")?.issueComments).toHaveLength(1);
+    expect(poller.getStatus("s1")?.reviewThreads).toHaveLength(1);
+
+    // Tab closes → next poll has no focused alias. Switch the fake to a
+    // light-only response.
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [lightNode] } } },
+    });
+    poller.setPrTabActive("s1", false);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+
+    expect(poller.getStatus("s1")?.issueComments).toHaveLength(1);
+    expect(poller.getStatus("s1")?.reviewThreads).toHaveLength(1);
   });
 
   it("broadcasts when the PR title changes (edited on github.com or by the agent)", async () => {
