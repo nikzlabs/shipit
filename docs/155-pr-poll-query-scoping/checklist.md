@@ -1,37 +1,51 @@
 # Checklist — PR poll query scoping
 
-## Phase 0 — measure GraphQL cost (gates Phase 2 and Phase 3)
+## Phase 0 — measure GraphQL cost ✅ DONE
 
 - [x] Write `scripts/measure-pr-poll-cost.ts` and wire it as `npm run measure-pr-poll-cost`.
-- [ ] Run against a real repo with ≥20 open PRs (ShipIt itself, or pick a candidate). Needs a `GITHUB_TOKEN` with `repo` scope: `GITHUB_TOKEN=… npm run measure-pr-poll-cost -- --owner X --repo Y --out docs/155-pr-poll-query-scoping/cost-measurements.md`
-- [ ] Review the per-call cost AND project an hourly cost given a representative active/settled session mix.
-- [ ] Commit `docs/155-pr-poll-query-scoping/cost-measurements.md` so the baseline lives in-repo.
-- [ ] Decide: proceed with Phase 2/3 as designed, restructure plan, or abandon in favor of expanded Phase 1.
+- [x] Run against `nicolasalt/shipit` and capture results in `cost-measurements.md`.
+- [x] Analyze and decide. **Outcome: bulk wins.** Phase 2/3 rejected; Phase 1 ships as the production fix.
 
-## Phase 1 — quick wins (independent of Phase 0 outcome)
+## Phase 1 — Bulk query shrink (THE SHIPPING FIX)
 
-- [ ] Cap `pullRequests(first: N)` to `Math.max(trackedSessionCount, discoveryFloor)` in `pollRepo()`.
-- [ ] Restrict conversation fields (review threads, issue comments) in `PR_STATUS_QUERY_WITH_CONVERSATION` to sessions in `prTabActiveSessions` only — other PRs in the same call use the light fragment.
+### Phase 1a — Cap `first: N` to active session count
 
-## Phase 2 — scoped query (GATED ON PHASE 0)
+- [ ] Change `buildPrStatusQuery()` in `pr-status-parser.ts:78` to take `first` as a parameter (drop the hardcoded 30).
+- [ ] In `pollRepo()` (`pr-status-poller.ts:680`), compute `first = Math.min(30, Math.max(trackedSessionCount, DISCOVERY_FLOOR))` where `DISCOVERY_FLOOR = 5`.
+- [ ] Helper to count non-merged tracked sessions per repo (or read off `sessionRepos`).
+- [ ] Update `pr-status-poller.test.ts` to assert the passed `first:` matches the tracked-session count + floor.
 
-- [ ] Refactor `pr-status-parser.ts` to expose `PR_STATUS_FRAGMENT` / `PR_STATUS_FRAGMENT_WITH_CONVERSATION` instead of full queries.
-- [ ] Add `sessionId → prNumber` cache (derive from `lastKnown` or persist on the session — pick one).
-- [ ] Replace per-repo `lastPolledAt` with per-session `lastPolledAt`.
-- [ ] Rewrite `supervisorTick()` to gather due sessions per repo and skip repos with an empty due-set.
-- [ ] Rewrite `pollRepo()` to build a dynamic aliased query body for the supplied session set, including a branch-lookup alias for sessions without a cached PR number.
-- [ ] Update `parsePrNode()` callsite to walk aliased response keys instead of `nodes[]`.
-- [ ] Update PR-poller integration tests to assert query scoping (only due sessions appear in the call, settled sessions are skipped, brand-new sessions get a discovery alias on first tick).
+### Phase 1b — Scope conversation fields to focused session only
 
-## Phase 3 — Discover PR action (GATED ON PHASE 0; only needed if Phase 2 ships)
+- [ ] Update `buildPrStatusQuery()` to accept `focusedPrNumbers: number[]` and emit top-level `focused0: pullRequest(number: $n) { ...PrLightFields ...PrConversationFields }` aliases for each.
+- [ ] Drop conversation fields from the bulk `pullRequests(first: N)` node selection — it's always light.
+- [ ] Build `focusedPrNumbers` in `pollRepo()` from `prTabActiveSessions ∩ sessions-tracked-on-repo`, skipping sessions without a cached `prNumber`.
+- [ ] Extend the response handler to walk `focused*` aliases after the bulk loop and patch `issueComments` / `reviewThreads` onto the matching session's `summary`.
+- [ ] Preserve the existing carry-forward logic (`pr-status-poller.ts:809`) for sessions whose PR tab lost focus mid-poll.
+- [ ] Remove `repoHasActiveTab()` and the dual `PR_STATUS_QUERY` / `PR_STATUS_QUERY_WITH_CONVERSATION` constants — they collapse into one parameterized builder.
 
-- [ ] Add server endpoint (HTTP) `POST /api/sessions/:id/pr/discover` that runs a branch → PR lookup, seeds the poller, and broadcasts `pr_status` if found.
-- [ ] Add client hook + button binding.
-- [ ] Add **Discover PR** menu entry to `OverflowMenu` in `PrLifecycleCard.tsx` (both `ReadyPhase` and `OpenPhase` instances). Show only when no PR is tracked for the session yet.
-- [ ] Tests: integration test for the discover endpoint; component test for the menu visibility rule.
+### Phase 1c — Tests
+
+- [ ] `pr-status-parser.test.ts`: assert `buildPrStatusQuery({ first: 5, focusedPrNumbers: [42] })` produces a query with `pullRequests(first: 5)` light + one `focused0: pullRequest(number: 42)` heavy alias.
+- [ ] `pr-status-parser.test.ts`: snapshot the light-only query (no focused PRs) to lock the shape.
+- [ ] `pr-status-poller.test.ts`: a session with PR tab active gets conversation data on the next poll; a session without it doesn't.
+- [ ] `pr-status-poller.test.ts`: a focused session whose PR tab closes mid-poll still has its previous conversation data preserved (no flicker).
+- [ ] `pr-status-poller.test.ts`: bulk-view discovery still works (a PR opened out-of-band on a tracked branch is picked up within the `DISCOVERY_FLOOR`).
+
+### Phase 1d — Verification
+
+- [ ] Re-run `npm run measure-pr-poll-cost` after landing, confirm cost dropped to expected 1–2 pts on the heavy path.
+- [ ] Run `npm run lint` + `npm run typecheck` + `npm run test:dev` (poller-related files) before opening for review.
+
+## Phase 2 — Aliased per-PR query ❌ REJECTED (Phase 0 outcome)
+
+Not implemented. No measured cost advantage over Phase 1. Plan section retained for historical context only.
+
+## Phase 3 — Discover PR action ❌ REJECTED (no longer needed)
+
+Not implemented. Phase 1 keeps the bulk view (with `first: N` capped + `DISCOVERY_FLOOR`), so implicit cross-branch discovery remains intact. No user-facing escape hatch is needed.
 
 ## Phase 4 — docs & cleanup
 
 - [ ] Cross-link this plan from `docs/064-pr-lifecycle-flow/plan.md` under "Polling budget".
-- [ ] Remove the `pullRequests(first: 30)` bulk-view code path from `pr-status-poller.ts` once the scoped query is in production.
-- [ ] Update `src/server/shipit-docs/` if any agent-facing behavior changed (likely none — this is an internal optimization).
+- [ ] Set `status: done` in `plan.md` frontmatter once Phase 1 lands and verification confirms the cost reduction.
