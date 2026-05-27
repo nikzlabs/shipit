@@ -68,6 +68,17 @@ export interface ClaimSessionOptions {
    * service throws a `ClaimAbortedError` instead of proceeding.
    */
   isCancelled?: () => boolean;
+  /**
+   * When `true`, bypass the docs/145 `shouldSkipClaimFetch` optimization and
+   * always fetch `origin` synchronously before resolving the default-branch
+   * ref. The home-screen claim accepts ~6min of bare-cache staleness (the
+   * prefetcher's `CLAIM_SKIP_WINDOW_MS`) to shave ~650ms off claim latency,
+   * but agent-spawned child sessions must branch off a freshly-fetched
+   * `origin/main` — otherwise a child created moments after a merge can land
+   * on the pre-merge snapshot. Callers that prioritize correctness over
+   * latency (currently: `spawnChildSession`) opt in with `forceFetch: true`.
+   */
+  forceFetch?: boolean;
 }
 
 export class ClaimAbortedError extends Error {
@@ -207,11 +218,15 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     url: string,
     sessionId: string,
     workspaceDir: string,
+    forceFetch: boolean,
   ): Promise<number> {
     // docs/145: skip the synchronous fetch when the bare cache was
     // pre-fetched in the background recently AND this clone's `origin/HEAD`
-    // already matches the cache's current HEAD.
+    // already matches the cache's current HEAD. `forceFetch` (set by the
+    // agent-spawn path) bypasses the skip so child sessions always branch
+    // off the real remote's current HEAD.
     if (
+      !forceFetch &&
       deps.shouldSkipClaimFetch?.(url) &&
       (await isWorkspaceCloneInSyncWithCache(workspaceDir, deps.getSharedRepoDir(url)))
     ) {
@@ -249,6 +264,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
 
       const claimStart = Date.now();
       let claimPath: ClaimSessionResult["claimPath"] = "slow-clone";
+      const forceFetch = opts?.forceFetch === true;
 
       const result = await serializeClaim(url, async () => {
         const inFlightWarming = deps.waitForWarmSession?.(url);
@@ -268,7 +284,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const reusable = deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
         if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
           claimPath = "reuse";
-          const fetchDurationMs = await refreshClaimedSession(url, reusable.id, reusable.workspaceDir);
+          const fetchDurationMs = await refreshClaimedSession(url, reusable.id, reusable.workspaceDir, forceFetch);
           return { sessionId: reusable.id, workspaceDir: reusable.workspaceDir, fetchDurationMs };
         }
 
@@ -280,7 +296,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
             claimPath = "warm";
             const sessionId = currentRepo.warmSessionId;
             deps.repoStore.setWarmSessionId(url, undefined);
-            const fetchDurationMs = await refreshClaimedSession(url, sessionId, warmSession.workspaceDir);
+            const fetchDurationMs = await refreshClaimedSession(url, sessionId, warmSession.workspaceDir, forceFetch);
             rewarmPool(url);
             return { sessionId, workspaceDir: warmSession.workspaceDir, fetchDurationMs };
           }
@@ -297,7 +313,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
               claimPath = "waiting";
               const sessionId = freshRepo.warmSessionId;
               deps.repoStore.setWarmSessionId(url, undefined);
-              const fetchDurationMs = await refreshClaimedSession(url, sessionId, warmSession.workspaceDir);
+              const fetchDurationMs = await refreshClaimedSession(url, sessionId, warmSession.workspaceDir, forceFetch);
               rewarmPool(url);
               return { sessionId, workspaceDir: warmSession.workspaceDir, fetchDurationMs };
             }
@@ -341,7 +357,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
           deps.githubAuthManager.configureGitCredentials(workspaceDir);
         }
 
-        const skipFetch = deps.shouldSkipClaimFetch?.(url) ?? false;
+        const skipFetch = !forceFetch && (deps.shouldSkipClaimFetch?.(url) ?? false);
         const { resetTarget, fetched, fetchDurationMs, authError } = await fetchAndResolveDefaultBranch(
           workspaceDir,
           (err) => deps.githubAuthManager.markTokenInvalid(`claim-session fetch failed for ${url}: ${err.message}`),
