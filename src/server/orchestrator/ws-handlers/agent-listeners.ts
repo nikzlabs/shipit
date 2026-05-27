@@ -354,7 +354,6 @@ export function wireAgentListeners(
   // started" entries even though only one process started.
   let hasLoggedAgentStart = false;
 
-<<<<<<< HEAD
   // docs/153 Fix 2 — agent_session_id persistence is deferred until we have
   // evidence the CLI produced usable output. agent_init fires *before* the
   // CLI tries to read the conversation jsonl, so persisting `event.sessionId`
@@ -376,7 +375,7 @@ export function wireAgentListeners(
     deps.sessionManager.setAgentSessionId(turnSessionId, pendingAgentSessionId);
     agentSessionIdPersisted = true;
   };
-=======
+
   // ---- Suppress auto-resolved AskUserQuestion tool_results ----
   //
   // The Claude CLI auto-resolves AskUserQuestion in both `-p` headless mode AND
@@ -397,7 +396,6 @@ export function wireAgentListeners(
   // subsequent tool_result blocks that match them, both from the broadcast event
   // and from the persisted message group.
   const suppressedToolResultIds = new Set<string>();
->>>>>>> 3114103d5b (Changes look correct. Let me also open a PR for this since I edited a file:)
 
   // ---- MCP mid-turn crash detection (docs/088) ----
   //

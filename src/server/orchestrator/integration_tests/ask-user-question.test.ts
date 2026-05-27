@@ -303,4 +303,84 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.close();
   });
+
+  it("suppresses the CLI's auto-resolved tool_result for an interrupted AskUserQuestion", async () => {
+    // In live-steering (streaming) mode the CLI auto-resolves AskUserQuestion
+    // before the orchestrator's `control_request` interrupt takes effect, so
+    // the synthetic `user` event arrives at the orchestrator and would be
+    // forwarded as `agent_tool_result`. If the client received it, MessageList
+    // would set `questionDisabled = !!el.result` and AskUserQuestion would
+    // render its options as already-answered — leaving the user unable to
+    // click anything. The orchestrator tracks the interrupted AskUserQuestion
+    // ids and drops matching tool_result blocks before broadcasting.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Pick one" });
+    await waitForClaude(() => lastClaude);
+
+    // Emit a well-formed AskUserQuestion so the orchestrator interrupts and
+    // remembers `ask-suppress-1` as a suppressed id.
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "ask-suppress-1",
+          name: "AskUserQuestion",
+          input: {
+            questions: [{
+              question: "Pick a backend",
+              header: "Backend",
+              options: [{ label: "Redis", description: "" }],
+              multiSelect: false,
+            }],
+          },
+        }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(lastClaude.interrupted).toBe(true);
+
+    // Now simulate the CLI's auto-resolved tool_result — a `user` event
+    // carrying a tool_result block referencing the same id. Without the
+    // suppression this would be broadcast to the client as agent_tool_result.
+    lastClaude.emit("event", {
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: "ask-suppress-1",
+          content: "No user response — auto-resolved by CLI",
+        }],
+      },
+    });
+
+    // Collect everything the client sees in the next short window. We assert
+    // no agent_tool_result for `ask-suppress-1` slips through. Drain until the
+    // receive call times out (no more buffered messages).
+    let sawSuppressedResult = false;
+    const deadline = Date.now() + 200;
+    while (Date.now() < deadline) {
+      let msg;
+      try {
+        msg = await client.receive(80);
+      } catch {
+        break;
+      }
+      if (msg.type === "agent_event") {
+        const event = (msg as { event: { type: string; content?: unknown[] } }).event;
+        if (event.type === "agent_tool_result") {
+          const hasId = (event.content ?? []).some((b) => {
+            const id = (b as { tool_use_id?: string }).tool_use_id;
+            return id === "ask-suppress-1";
+          });
+          if (hasId) sawSuppressedResult = true;
+        }
+      }
+    }
+    expect(sawSuppressedResult).toBe(false);
+
+    client.close();
+  });
 });
