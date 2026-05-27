@@ -91,13 +91,27 @@ export function selectAgentEnvForPush(input: {
  * of `runAgentWithMessage`, factored out so the system-turn / agent-spawned-
  * session paths get them too.
  */
+export interface PrepareSessionAgentEnvironmentResult {
+  /**
+   * docs/153 — if the per-turn leak repair recovered a Claude CLI session id
+   * from the orphan conversation tree, the caller must override the
+   * captured-at-turn-start `agentSessionId` with this value before spawning
+   * the CLI. Otherwise `--resume <stale-id>` fails with "No conversation
+   * found", the CLI emits a fresh init UUID, the listener persists *that*,
+   * and the recovered id is lost — the self-perpetuating loop seen in prod.
+   * Unset on healthy turns (no recovery needed). When set, the DB row has
+   * already been updated to this value as a side effect of the repair.
+   */
+  overrideAgentSessionId?: string;
+}
+
 export async function prepareSessionAgentEnvironment(
   runner: SessionRunnerInterface | null,
   args: { sessionId: string; agentId: AgentId; deps: SessionAgentEnvDeps },
-): Promise<void> {
+): Promise<PrepareSessionAgentEnvironmentResult> {
   const { sessionId, agentId, deps } = args;
   const session = deps.sessionManager.get(sessionId);
-  if (!session) return;
+  if (!session) return {};
   const selectedRoute =
     session.providerRouteKind && session.providerRouteId
       ? { kind: session.providerRouteKind, id: session.providerRouteId }
@@ -127,6 +141,7 @@ export async function prepareSessionAgentEnvironment(
   // every turn (docs/142 A) — the rotating refresh token is single-use, so
   // a write-once provisioning copy goes stale the moment any other session
   // rotates the source.
+  let overrideAgentSessionId: string | undefined;
   if (runner instanceof ContainerSessionRunner) {
     try {
       // docs/153 — if the per-turn sync repairs a leaked symlink, recover
@@ -136,7 +151,15 @@ export async function prepareSessionAgentEnvironment(
       // a fresh init UUID, we persist that, and the next retry fails again
       // because the conversation history lives under the old id — the
       // "no conversation found" loop. See docs/153.
+      //
+      // Stash the recovered id so the caller can override the
+      // captured-at-turn-start `agentSessionId` before spawning the CLI.
+      // The DB-row update below is also needed (the listener's agent_result
+      // path reads from the DB), but the spawn-arg has already been captured
+      // by the time prepareSessionAgentEnvironment runs — caller MUST honor
+      // the returned override.
       const onRecover = (recovered: string): void => {
+        overrideAgentSessionId = recovered;
         const current = deps.sessionManager.get(sessionId)?.agentSessionId;
         if (current === recovered) return;
         const wasNote = current ? ` (was ${current})` : "";
@@ -172,6 +195,8 @@ export async function prepareSessionAgentEnvironment(
       }),
     );
   }
+
+  return overrideAgentSessionId !== undefined ? { overrideAgentSessionId } : {};
 }
 
 /**

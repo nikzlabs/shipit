@@ -667,8 +667,19 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // agent-env push) is now factored into a single idempotent helper. The
   // helper subsumes the previous inline blocks at lines 798–833 and the
   // first-turn `agentPinned` flip.
+  //
+  // docs/153 — if the env prep's docs/153 leak repair recovered an
+  // agent_session_id from the orphan jsonl tree, the captured-at-turn-start
+  // `agentSessionId` is now stale (it's whatever the DB held before the
+  // recovery rewrote it). The CLI must be spawned with the recovered id so
+  // `--resume <recovered>` finds the merged conversation jsonl — otherwise
+  // `--resume <stale>` produces "No conversation found", the CLI emits a
+  // fresh init UUID, and the listener (line below in agent-listeners.ts)
+  // poisons the DB with it on the way to the failure exit. See PR #758/#763
+  // background.
+  let effectiveAgentSessionId = agentSessionId;
   if (capturedSessionId) {
-    await prepareSessionAgentEnvironment(runner, {
+    const envResult = await prepareSessionAgentEnvironment(runner, {
       sessionId: capturedSessionId,
       agentId: currentAgent.agentId,
       deps: {
@@ -678,6 +689,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         providerAccountManager: ctx.providerAccountManager,
       },
     });
+    if (envResult.overrideAgentSessionId) {
+      effectiveAgentSessionId = envResult.overrideAgentSessionId;
+    }
   }
 
   if (existingAgent) {
@@ -706,7 +720,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       agentId: currentAgent.agentId,
       prompt,
       sessionDir: activeDir,
-      ...(agentSessionId !== undefined ? { agentSessionId } : {}),
+      ...(effectiveAgentSessionId !== undefined ? { agentSessionId: effectiveAgentSessionId } : {}),
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
     });
     currentAgent.run({ ...runParams, useStreaming });

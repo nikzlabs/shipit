@@ -354,6 +354,28 @@ export function wireAgentListeners(
   // started" entries even though only one process started.
   let hasLoggedAgentStart = false;
 
+  // docs/153 Fix 2 — agent_session_id persistence is deferred until we have
+  // evidence the CLI produced usable output. agent_init fires *before* the
+  // CLI tries to read the conversation jsonl, so persisting `event.sessionId`
+  // at init time would overwrite a freshly-recovered id with a doomed
+  // fresh-init UUID when `--resume` is about to fail with "No conversation
+  // found". Stash the first init's session id here, flush it on the first
+  // signal the turn is actually running (agent_assistant, or the canonical
+  // agent_result write below), and short-circuit if we see the missing-
+  // conversation stderr line.
+  let pendingAgentSessionId: string | null = null;
+  let agentSessionIdPersisted = false;
+  let missingConversationDetected = false;
+  const persistAgentSessionIdIfReady = (): void => {
+    if (agentSessionIdPersisted) return;
+    if (missingConversationDetected) return;
+    if (!pendingAgentSessionId) return;
+    const turnSessionId = opts.capturedSessionId;
+    if (!turnSessionId) return;
+    deps.sessionManager.setAgentSessionId(turnSessionId, pendingAgentSessionId);
+    agentSessionIdPersisted = true;
+  };
+
   // ---- MCP mid-turn crash detection (docs/088) ----
   //
   // The CLI's init event covers cold-start liveness (ClaudeAdapter →
@@ -402,6 +424,23 @@ export function wireAgentListeners(
 
   agent.on("log", (source: string, text: string) => {
     deps.broadcastLog(source as "stderr" | "stdout" | "server", text);
+    // docs/153 Fix 2 — when the Claude CLI's stderr reports a missing
+    // conversation for the `--resume <id>` we passed, the fresh init UUID
+    // the CLI emits immediately afterwards is doomed: the process exits 1
+    // with no usable output. Flip into "do not persist" state so the
+    // listener stops the pending agent_session_id from clobbering the DB,
+    // and surface a chat-level error so the user sees why the turn aborted
+    // (vs. the previous silent loop).
+    if (source === "stderr" && /No conversation found with session ID/i.test(text)) {
+      if (!missingConversationDetected) {
+        missingConversationDetected = true;
+        pendingAgentSessionId = null;
+        emitToViewers({
+          type: "error",
+          message: "Couldn't resume the previous conversation — it appears to have been moved or removed. Send your next message to start a fresh thread.",
+        });
+      }
+    }
   });
 
   agent.on("event", (rawEvent: AgentEvent) => {
@@ -449,7 +488,13 @@ export function wireAgentListeners(
         hasLoggedAgentStart = true;
         deps.broadcastLog("server", "Agent process started");
       }
-      deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
+      // docs/153 Fix 2 — stash the init's sessionId; persist it lazily on
+      // the first agent_assistant or agent_result so a `--resume` failure
+      // (which always emits a *fresh* init UUID right before exiting) can't
+      // overwrite the recovered id or a healthy session's prior id. Only the
+      // top-level turn's first init is recorded — subagent inits emit their
+      // own sessionIds which are not the resume key for the next turn.
+      pendingAgentSessionId ??= event.sessionId;
       const session = deps.sessionManager.get(turnSessionId);
       if (session) {
         emitToViewers({ type: "session_started", session });
@@ -497,6 +542,15 @@ export function wireAgentListeners(
     }
 
     if (event.type === "agent_assistant") {
+      // docs/153 Fix 2 — the CLI has produced an assistant content block,
+      // so the resumed (or freshly-init'd) session is real. Persist the
+      // top-level init's sessionId to the DB now. agent_result's persist
+      // below is the authoritative final write; this earlier persist
+      // guards the case where the process exits abnormally between first
+      // assistant and result (network drop, OOM, etc.) — without it the
+      // next turn's --resume would lose the rotation.
+      persistAgentSessionIdIfReady();
+
       // Multiple text blocks within a single assistant event are distinct
       // preambles separated by tool_use blocks (common when a subagent runs
       // serial tool calls in one turn). Joining with "" runs them together
@@ -669,7 +723,17 @@ export function wireAgentListeners(
     if (event.type === "agent_result") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId) {
-        deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
+        // docs/153 Fix 2 — only write the result's sessionId when the turn
+        // actually produced something. A `--resume <missing-id>` turn emits
+        // both agent_init AND agent_result with fresh, useless UUIDs before
+        // exiting; the stderr scan above sets `missingConversationDetected`
+        // which we honor here. agentSessionIdPersisted is also `true` after
+        // the first assistant for healthy turns, so this stays the canonical
+        // rotation write for those.
+        if (!missingConversationDetected) {
+          deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
+          agentSessionIdPersisted = true;
+        }
         deps.sessionManager.track(turnSessionId);
         deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
       }
