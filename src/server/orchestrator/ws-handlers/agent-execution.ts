@@ -677,7 +677,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // fresh init UUID, and the listener (line below in agent-listeners.ts)
   // poisons the DB with it on the way to the failure exit. See PR #758/#763
   // background.
-  let effectiveAgentSessionId = agentSessionId;
+  let effectiveAgentSessionId: string | undefined = agentSessionId;
   if (capturedSessionId) {
     const envResult = await prepareSessionAgentEnvironment(runner, {
       sessionId: capturedSessionId,
@@ -689,8 +689,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         providerAccountManager: ctx.providerAccountManager,
       },
     });
-    if (envResult.overrideAgentSessionId) {
-      effectiveAgentSessionId = envResult.overrideAgentSessionId;
+    // docs/153 — tri-state override. Distinguishing `undefined` (no leak
+    // repair, keep captured id) from explicit `null` (repair fired and
+    // no resumable jsonl was found, MUST drop --resume) requires the
+    // `in` check; a `?? undefined` here would conflate them and pass a
+    // known-bad id back into the CLI, re-triggering the loop.
+    if ("overrideAgentSessionId" in envResult) {
+      effectiveAgentSessionId = envResult.overrideAgentSessionId ?? undefined;
     }
   }
 
