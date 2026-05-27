@@ -992,8 +992,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // backgrounded tab reconnects, HTTP history may therefore be stale. The
         // client queues these early agent events until its history load
         // completes, then applies them on top of that baseline.
+        //
+        // `terminal_output` / `terminal_exit` / `terminal_reconnecting` are
+        // deliberately skipped: xterm.js keeps its own scrollback across WS
+        // reconnects (the component stays mounted), so replaying these here
+        // appends the same bytes onto a buffer the client already has — the
+        // user sees the prior session output repeated. Fresh terminal mounts
+        // and orchestrator↔container SSE reconnects have their own dedicated
+        // replay paths (`terminal_start` handler + `onSseOpen`) that prefix
+        // with `\x1bc` to keep xterm.js renderer state coherent.
         for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
           if (buffered.type === "log_entry") continue;
+          if (buffered.type === "terminal_output") continue;
+          if (buffered.type === "terminal_exit") continue;
+          if (buffered.type === "terminal_reconnecting") continue;
           send(buffered);
         }
         if (runner.getQueueSnapshot().length > 0) {
