@@ -587,6 +587,129 @@ describe("session-credentials", () => {
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
   });
 
+  // docs/153 — Case 4 in materializeLeakedSubtreeSymlinks: `.claude/` is a
+  // real dir (Cases 1/3 don't apply), no orphan tree, but the DB's
+  // agent_session_id has no matching jsonl on disk while a DIFFERENT jsonl
+  // does exist. Production observed this on sessions where some out-of-band
+  // cleanup removed the orphan without firing the original recovery
+  // callback, leaving the DB pointer permanently stuck on a doomed UUID.
+
+  it("non-destructive repair (case 4): recovers when DB agent_session_id has no matching jsonl on disk", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    // Healthy on-disk shape: real .claude/ dir, no symlink, no orphan.
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    // Seed several jsonls; the newest one (by mtime) holds the recovered id.
+    const goodSid = "b5903553-cab6-49a9-a9c0-855a7708867d";
+    const olderSid1 = "11111111-1111-4111-8111-111111111111";
+    const olderSid2 = "22222222-2222-4222-8222-222222222222";
+    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
+    fs.mkdirSync(projectsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectsDir, `${olderSid1}.jsonl`),
+      `${JSON.stringify({ sessionId: olderSid1, type: "summary" })}\n`,
+    );
+    fs.writeFileSync(
+      path.join(projectsDir, `${olderSid2}.jsonl`),
+      `${JSON.stringify({ sessionId: olderSid2, type: "summary" })}\n`,
+    );
+    fs.writeFileSync(
+      path.join(projectsDir, `${goodSid}.jsonl`),
+      `${JSON.stringify({ sessionId: goodSid, type: "summary" })}\n`,
+    );
+    const now = Date.now() / 1000;
+    fs.utimesSync(path.join(projectsDir, `${olderSid1}.jsonl`), now - 7200, now - 7200);
+    fs.utimesSync(path.join(projectsDir, `${olderSid2}.jsonl`), now - 3600, now - 3600);
+    fs.utimesSync(path.join(projectsDir, `${goodSid}.jsonl`), now, now);
+
+    // DB points at a UUID that has no jsonl on disk.
+    const staleSid = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const recovered: string[] = [];
+    syncProviderAccountTokenIn(
+      root, sid, "claude", "claude-default",
+      (id) => { recovered.push(id); },
+      staleSid,
+    );
+
+    expect(recovered).toEqual([goodSid]);
+    // Read-only — no filesystem mutations expected.
+    expect(fs.existsSync(path.join(projectsDir, `${olderSid1}.jsonl`))).toBe(true);
+    expect(fs.existsSync(path.join(projectsDir, `${olderSid2}.jsonl`))).toBe(true);
+    expect(fs.existsSync(path.join(projectsDir, `${goodSid}.jsonl`))).toBe(true);
+  });
+
+  it("non-destructive repair (case 4): no callback when the DB id already matches an on-disk jsonl", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const goodSid = "b5903553-cab6-49a9-a9c0-855a7708867d";
+    const olderSid = "11111111-1111-4111-8111-111111111111";
+    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
+    fs.mkdirSync(projectsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectsDir, `${goodSid}.jsonl`),
+      `${JSON.stringify({ sessionId: goodSid, type: "summary" })}\n`,
+    );
+    fs.writeFileSync(
+      path.join(projectsDir, `${olderSid}.jsonl`),
+      `${JSON.stringify({ sessionId: olderSid, type: "summary" })}\n`,
+    );
+
+    // DB id already matches the goodSid jsonl on disk → no recovery needed.
+    const recovered: string[] = [];
+    syncProviderAccountTokenIn(
+      root, sid, "claude", "claude-default",
+      (id) => { recovered.push(id); },
+      goodSid,
+    );
+
+    expect(recovered).toEqual([]);
+  });
+
+  it("non-destructive repair (case 4): no-op when currentAgentSessionId is null (fresh session)", () => {
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+
+    const recovered: string[] = [];
+    syncProviderAccountTokenIn(
+      root, sid, "claude", "claude-default",
+      (id) => { recovered.push(id); },
+      null,
+    );
+
+    expect(recovered).toEqual([]);
+  });
+
+  it("non-destructive repair (case 4): no-op when projects/ has no jsonls at all", () => {
+    // The session has never had a CLI turn complete — no projects/ to scan.
+    // Case 4 must not fire (latest jsonl returns null).
+    const account = path.join(root, "provider-accounts", "claude", "claude-default");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    const sessionDir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+
+    const recovered: string[] = [];
+    syncProviderAccountTokenIn(
+      root, sid, "claude", "claude-default",
+      (id) => { recovered.push(id); },
+      "doesnt-matter-no-projects-exist",
+    );
+
+    expect(recovered).toEqual([]);
+  });
+
   it("non-destructive repair: malformed jsonl first line → no callback fired", () => {
     const account = path.join(root, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });

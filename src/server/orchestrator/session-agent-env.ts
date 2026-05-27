@@ -166,10 +166,18 @@ export async function prepareSessionAgentEnvironment(
         console.log(`[credentials] recovered agent_session_id for ${sessionId}: ${recovered}${wasNote}`);
         deps.sessionManager.setAgentSessionId(sessionId, recovered);
       };
+      // docs/153 Case 4 — pass the DB's current agent_session_id so the
+      // repair can detect a stale pointer (DB id has no matching jsonl on
+      // disk, but a different one is the latest) and recover by reading
+      // the existing `<sessionDir>/.claude/projects/` tree.
+      const currentAgentSessionId = session.agentSessionId ?? null;
       if (selectedRoute?.kind === "account") {
-        syncProviderAccountTokenIn(deps.credentialsDir, sessionId, agentId, selectedRoute.id, onRecover);
+        syncProviderAccountTokenIn(
+          deps.credentialsDir, sessionId, agentId, selectedRoute.id,
+          onRecover, currentAgentSessionId,
+        );
       } else if (selectedRoute?.id !== "claude-env-oauth") {
-        syncAgentTokenIn(deps.credentialsDir, sessionId, agentId, onRecover);
+        syncAgentTokenIn(deps.credentialsDir, sessionId, agentId, onRecover, currentAgentSessionId);
       }
     } catch (err) {
       console.warn("[credentials] token sync-in failed:", getErrorMessage(err));

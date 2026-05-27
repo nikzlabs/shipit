@@ -334,8 +334,12 @@ export function syncAgentTokenIn(
   sessionId: string,
   agentId: AgentId,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): void {
-  syncAgentTokenInFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot, onRecoverAgentSessionId);
+  syncAgentTokenInFromRoot(
+    credentialsRoot, sessionId, agentId, credentialsRoot,
+    onRecoverAgentSessionId, currentAgentSessionId,
+  );
 }
 
 export function syncProviderAccountTokenIn(
@@ -344,6 +348,7 @@ export function syncProviderAccountTokenIn(
   agentId: AgentId,
   accountId: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): void {
   syncAgentTokenInFromRoot(
     credentialsRoot,
@@ -351,6 +356,7 @@ export function syncProviderAccountTokenIn(
     agentId,
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
     onRecoverAgentSessionId,
+    currentAgentSessionId,
   );
 }
 
@@ -360,6 +366,7 @@ function syncAgentTokenInFromRoot(
   agentId: AgentId,
   sourceRoot: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
@@ -368,7 +375,9 @@ function syncAgentTokenInFromRoot(
   // docs/153 — repair leaked subtree-root symlinks before the per-turn copy
   // so the orchestrator and the agent container converge on the same
   // physical file. See `materializeLeakedSubtreeSymlinks` for the full why.
-  const repair = materializeLeakedSubtreeSymlinks(credentialsRoot, sessionDir, agentId, sourceRoot);
+  const repair = materializeLeakedSubtreeSymlinks(
+    credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
+  );
   if (repair.recoveredAgentSessionId && onRecoverAgentSessionId) {
     try {
       onRecoverAgentSessionId(repair.recoveredAgentSessionId);
@@ -416,8 +425,12 @@ export function repushAgentToken(
   sessionId: string,
   agentId: AgentId,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): boolean {
-  return repushAgentTokenFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot, onRecoverAgentSessionId);
+  return repushAgentTokenFromRoot(
+    credentialsRoot, sessionId, agentId, credentialsRoot,
+    onRecoverAgentSessionId, currentAgentSessionId,
+  );
 }
 
 export function repushProviderAccountToken(
@@ -426,6 +439,7 @@ export function repushProviderAccountToken(
   agentId: AgentId,
   accountId: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): boolean {
   return repushAgentTokenFromRoot(
     credentialsRoot,
@@ -433,6 +447,7 @@ export function repushProviderAccountToken(
     agentId,
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
     onRecoverAgentSessionId,
+    currentAgentSessionId,
   );
 }
 
@@ -442,6 +457,7 @@ function repushAgentTokenFromRoot(
   agentId: AgentId,
   sourceRoot: string,
   onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
+  currentAgentSessionId?: string | null,
 ): boolean {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return false;
@@ -457,7 +473,9 @@ function repushAgentTokenFromRoot(
   // agent-side stale copy never gets touched, so the agent keeps 401'ing on a
   // dead token. Replace any such symlink with a real materialized subtree so
   // both namespaces converge on the same file again. See docs/153.
-  const repair = materializeLeakedSubtreeSymlinks(credentialsRoot, sessionDir, agentId, sourceRoot);
+  const repair = materializeLeakedSubtreeSymlinks(
+    credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
+  );
   if (repair.recoveredAgentSessionId && onRecoverAgentSessionId) {
     try {
       onRecoverAgentSessionId(repair.recoveredAgentSessionId);
@@ -545,6 +563,7 @@ function materializeLeakedSubtreeSymlinks(
   sessionDir: string,
   agentId: AgentId,
   sourceRoot: string,
+  currentAgentSessionId?: string | null,
 ): LeakRepairResult {
   let anyAction = false;
   let recoveredAgentSessionId: string | null = null;
@@ -660,17 +679,84 @@ function materializeLeakedSubtreeSymlinks(
     anyAction = true;
   }
 
-  if (!anyAction) return { recoveredAgentSessionId: null };
-
-  for (const orphanRoot of orphanRootsToRemove) {
+  // ---- Case 4: stale DB pointer, jsonls already on disk ----
+  //
+  // The session sailed through the docs/153 cycle: Cases 1/3 already ran on
+  // a previous turn (or an out-of-band cleanup dropped the orphan without
+  // firing the recovery callback). `.claude/` is a healthy real dir, no
+  // orphan tree to merge, but `sessions.agent_session_id` in the DB points
+  // at a UUID that has no matching `<dst>/projects/*/<id>.jsonl` on disk —
+  // typically a doomed-init UUID stranded by the pre-#764 listener.
+  // Result: `--resume <stale-id>` fails on every turn, the user is stuck
+  // until manual intervention.
+  //
+  // Recovery: scan `<dst>/projects/*/*.jsonl` for the latest-mtime file and
+  // surface its sessionId as the recovered id. The caller (post-#764)
+  // propagates it through to the spawn arg, so the next turn `--resume`s
+  // the conversation the user actually had. Read-only — no filesystem
+  // mutations needed. Skipped on fresh sessions (no current id to compare)
+  // and on non-claude agents (no `projects/<encoded-cwd>/<id>.jsonl`
+  // layout).
+  if (
+    agentId === "claude"
+    && recoveredAgentSessionId === null
+    && currentAgentSessionId
+  ) {
+    const dst = path.join(sessionDir, ".claude");
+    let isRealDir = false;
     try {
-      fs.rmSync(orphanRoot, { recursive: true, force: true });
-    } catch (err) {
-      console.warn(`[session-credentials] failed to drop orphan ${orphanRoot}:`, err);
+      const stat = fs.lstatSync(dst);
+      isRealDir = !stat.isSymbolicLink() && stat.isDirectory();
+    } catch { /* dst doesn't exist — nothing to recover */ }
+    if (isRealDir) {
+      const projectsRoot = path.join(dst, "projects");
+      if (!jsonlExistsForAgentSessionId(projectsRoot, currentAgentSessionId)) {
+        const latest = findLatestAgentSessionId(projectsRoot);
+        if (latest && latest !== currentAgentSessionId) {
+          recoveredAgentSessionId = latest;
+          console.log(
+            `[session-credentials] recovered stale agent_session_id in ${sessionDir}: .claude (DB pointed at ${currentAgentSessionId}, latest on disk is ${latest})`,
+          );
+        }
+      }
+    }
+  }
+
+  if (anyAction) {
+    for (const orphanRoot of orphanRootsToRemove) {
+      try {
+        fs.rmSync(orphanRoot, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`[session-credentials] failed to drop orphan ${orphanRoot}:`, err);
+      }
     }
   }
 
   return { recoveredAgentSessionId };
+}
+
+/**
+ * True iff `<projectsRoot>/*\/<agentSessionId>.jsonl` exists for any
+ * encoded-cwd subdir. The CLI writes the jsonl on first turn (or first
+ * write through `--resume`); its absence means the session id never
+ * produced a file the CLI could resume from. Used by Case 4 in the leak
+ * repair to distinguish "stale DB pointer" from "fresh session, just
+ * hasn't written a jsonl yet."
+ */
+function jsonlExistsForAgentSessionId(projectsRoot: string, agentSessionId: string): boolean {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (fs.existsSync(path.join(projectsRoot, entry.name, `${agentSessionId}.jsonl`))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
