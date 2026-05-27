@@ -83,8 +83,10 @@ npm install
 - `npm run test:smoke` — run only the smoke tests (core connectivity, HTTP bootstrap, git, one client component).
 - `npm test` — run **all** tests (full suite). Use sparingly during development — the CI runs this automatically on every PR. Only run locally if you suspect wide-reaching breakage.
 - `npx vitest run src/server/git-core.test.ts` — run a single test file.
-- `npm run lint` — ESLint on `src/`
-- `npm run typecheck` — TypeScript type checking (`tsc --noEmit`)
+- **`npm run lint:dev`** — **preferred for development.** ESLint over only files changed vs `origin/main` + uncommitted/staged. Same `test:dev` rationale: the full type-aware lint loads all 697 TS files (~50 s, ~2.85 GiB RSS), and most edits only touch a handful. CI still runs the full lint, so this is for the inner loop.
+- `npm run lint:dev -- --list` — dry run: shows which files would be linted.
+- `npm run lint` — full ESLint on `src/`. Cached (`node_modules/.cache/eslint/`), so a re-run after no edits is near-instant. Run sparingly during development — use when you suspect a cross-file rule (e.g. `no-deprecated`) has been tripped in files you didn't touch.
+- `npm run typecheck` — TypeScript type checking (`tsc --noEmit`). Incremental via `node_modules/.cache/tsc/.tsbuildinfo`, so warm runs are ~5 s instead of ~17 s. No per-file variant: TS programs are whole-project by design.
 - `npm run dev` — start dev server (tsx)
 - `npm run build` — build client with Vite
 
@@ -339,7 +341,7 @@ The browser uses two parallel channels:
 - **Read before coding** — before changing a feature, read its `docs/NNN-feature/plan.md` and the source files listed under "Key files". Trace the data flow for similar features to understand existing patterns.
 - **Identify all touchpoints** — plan which files need changes (server, client, types, tests) before writing code.
 - **Co-locate tests** — place tests next to source files (`foo.ts` → `foo.test.ts`). Follow patterns from neighboring test files.
-- **Lint and typecheck before finishing** — always run `npm run lint` and `npm run typecheck` after code changes and fix any errors before considering work complete.
+- **Lint and typecheck before finishing** — run `npm run lint:dev` and `npm run typecheck` after code changes and fix any errors before considering work complete. `lint:dev` is the dev-loop default; CI runs the full `npm run lint` so the source of truth is unchanged.
 - **Update docs when done** — update the relevant `plan.md` with new subsystems, patterns, or key files you added. Mark completed checklist items with `[x]`.
 - **Update shipit-docs when changing agent-facing behavior** — when changing platform behavior visible to the agent inside session containers (preview config, shipit.yaml schema, container environment, GitHub integration), update the corresponding file in `src/server/shipit-docs/`. These docs are baked into the session worker image at `/shipit-docs/` and are the agent's primary reference for the platform.
 

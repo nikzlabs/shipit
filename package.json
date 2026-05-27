@@ -12,8 +12,9 @@
     "test:dev": "tsx scripts/test-dev.ts",
     "test:smoke": "tsx scripts/test-dev.ts --smoke",
     "test:watch": "vitest",
-    "lint": "eslint src/",
-    "typecheck": "tsc --noEmit",
+    "lint": "NODE_OPTIONS=--max-old-space-size=3072 eslint --cache --cache-location node_modules/.cache/eslint/ src/",
+    "lint:dev": "tsx scripts/lint-dev.ts",
+    "typecheck": "NODE_OPTIONS=--max-old-space-size=3072 tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsc/.tsbuildinfo",
     "check-deps": "tsx scripts/check-dependency-age.ts"
   },
   "dependencies": {
