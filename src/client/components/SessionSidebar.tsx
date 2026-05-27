@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsSixVerticalIcon, GithubLogoIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsSixVerticalIcon, GithubLogoIcon, LightningIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -763,6 +763,17 @@ export function SessionSidebar({
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
         </Button>
         </WithTooltip>
+        <WithTooltip label="Quick session" side="right">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => useUiStore.getState().setQuickCaptureOpen(true)}
+          className="p-0! w-6 h-6 text-(--color-text-secondary) hover:text-(--color-text-primary)"
+          aria-label="Quick session"
+        >
+          <LightningIcon size={ICON_SIZE.SM} />
+        </Button>
+        </WithTooltip>
         <RepoSwitcher repos={repos} activeRepoUrl={useRepoStore.getState().activeRepoUrl} onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)} onAddRepo={onAddRepo} onCreateNew={onCreateNewRepo}>
         <Button
           variant="ghost"
@@ -833,6 +844,17 @@ export function SessionSidebar({
           </WithTooltip>
         )}
         <span className="flex-1" />
+        <WithTooltip label="Quick session">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => useUiStore.getState().setQuickCaptureOpen(true)}
+            className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+            aria-label="Quick session"
+          >
+            <LightningIcon size={ICON_SIZE.SM} />
+          </Button>
+        </WithTooltip>
         <RepoSwitcher
           repos={repos}
           activeRepoUrl={useRepoStore.getState().activeRepoUrl}
