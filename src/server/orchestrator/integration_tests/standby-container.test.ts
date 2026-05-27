@@ -16,7 +16,6 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
@@ -35,11 +34,11 @@ import {
   FakeClaudeProcess,
   createTestCredentialStore,
   createTestDatabaseManager,
+  seedRepoCacheWithLocalBare,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import type { AuthManager } from "../auth.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import { repoUrlToHash } from "../git-utils.js";
 
 const REPO_URL = "https://github.com/owner/standby-test-repo.git";
 
@@ -119,24 +118,6 @@ function createFakeDocker() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getSharedRepoDirForUrl(workspaceDir: string, repoUrl: string): string {
-  return path.join(workspaceDir, "repo-cache", repoUrlToHash(repoUrl));
-}
-
-function createSharedRepo(repoDir: string, opts?: { shipitYaml?: string }): void {
-  fs.mkdirSync(repoDir, { recursive: true });
-  execSync("git init", { cwd: repoDir, stdio: "ignore" });
-  execSync("git checkout -b main", { cwd: repoDir, stdio: "ignore" });
-  fs.writeFileSync(path.join(repoDir, "README.md"), "# test\n");
-  if (opts?.shipitYaml) {
-    fs.writeFileSync(path.join(repoDir, "shipit.yaml"), opts.shipitYaml);
-  }
-  execSync("git add .", { cwd: repoDir, stdio: "ignore" });
-  execSync('git commit -m "init" --no-gpg-sign', { cwd: repoDir, stdio: "ignore" });
-  execSync(`git remote add origin ${REPO_URL}`, { cwd: repoDir, stdio: "ignore" });
-  execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: repoDir, stdio: "ignore" });
-}
-
 async function waitFor(
   predicate: () => boolean,
   timeoutMs = 10000,
@@ -186,13 +167,14 @@ describe("standby container pre-warming", () => {
       stackName: "shipit-test",
     });
 
-    // Set up credential store (and GIT_CONFIG_GLOBAL) BEFORE creating the
-    // shared repo — git commit needs a valid identity config.
+    // Set up credential store (and GIT_CONFIG_GLOBAL) BEFORE seeding the repo
+    // — git commit needs a valid identity config and `seedRepoCacheWithLocalBare`
+    // writes an `insteadOf` redirect into GIT_CONFIG_GLOBAL.
     const credentialStore = createTestCredentialStore(tmpDir);
 
-    // Create shared repo
-    const repoDir = getSharedRepoDirForUrl(tmpDir, REPO_URL);
-    createSharedRepo(repoDir);
+    // Seed the bare cache + matching local bare repo so warm-pool + claim
+    // fetches never block on real network traffic. See helper docstring.
+    seedRepoCacheWithLocalBare({ tmpDir, repoUrl: REPO_URL });
 
     // Add repo before buildApp so startup warming fires
     repoStore.add(REPO_URL);
@@ -593,9 +575,12 @@ describe("standby container resources propagated from shipit.yaml", () => {
     const credentialStore = createTestCredentialStore(tmpDir);
 
     // Bare cache contains a shipit.yaml requesting 3 GiB / 2 CPU / 2048 pids.
-    const repoDir = getSharedRepoDirForUrl(tmpDir, REPO_URL);
-    createSharedRepo(repoDir, {
-      shipitYaml: "agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n",
+    // The helper also mirrors the cache as a local bare + sets `insteadOf`
+    // redirect so fetches stay on local I/O.
+    seedRepoCacheWithLocalBare({
+      tmpDir,
+      repoUrl: REPO_URL,
+      seedFiles: { "shipit.yaml": "agent:\n  memory: 3072\n  cpu: 2.0\n  pids: 2048\n" },
     });
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);

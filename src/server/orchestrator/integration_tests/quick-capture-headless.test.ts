@@ -8,7 +8,6 @@ import { buildApp } from "../index.js";
 import { SessionManager } from "../sessions.js";
 import { RepoStore } from "../repo-store.js";
 import { GitManager } from "../../shared/git.js";
-import { repoUrlToHash } from "../git-utils.js";
 import { AuthManager } from "../auth.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { DatabaseManager } from "../../shared/database.js";
@@ -18,26 +17,10 @@ import {
   StubGitHubAuthManager,
   createTestCredentialStore,
   createTestDatabaseManager,
+  seedRepoCacheWithLocalBare,
 } from "./test-helpers.js";
 
 const REPO_URL = "https://github.com/owner/quick-capture-test.git";
-
-function createCachedRepo(workspaceDir: string): void {
-  const repoDir = path.join(workspaceDir, "repo-cache", repoUrlToHash(REPO_URL));
-  const seedDir = path.join(workspaceDir, "seed-repo");
-  fs.mkdirSync(seedDir, { recursive: true });
-  execSync("git init -b main", { cwd: seedDir, stdio: "ignore" });
-  fs.writeFileSync(path.join(seedDir, "README.md"), "# quick-capture-test\n");
-  execSync("git add .", { cwd: seedDir, stdio: "ignore" });
-  execSync("git -c user.email=t@t.com -c user.name=Test commit -m init --no-gpg-sign", {
-    cwd: seedDir,
-    stdio: "ignore",
-  });
-  fs.mkdirSync(path.dirname(repoDir), { recursive: true });
-  execSync(`git clone --bare ${seedDir} ${repoDir}`, { stdio: "ignore" });
-  execSync(`git remote set-url origin ${REPO_URL}`, { cwd: repoDir, stdio: "ignore" });
-  execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: repoDir, stdio: "ignore" });
-}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5000, label = "condition"): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -64,12 +47,21 @@ describe("Integration: quick-capture headless sessions", () => {
     createdAgents = [];
     sessionManager = new SessionManager(dbManager);
     repoStore = new RepoStore(dbManager);
-    createCachedRepo(tmpDir);
+
+    // Set up credentials (which sets GIT_CONFIG_GLOBAL) before seeding the
+    // cache — `seedRepoCacheWithLocalBare` writes its `insteadOf` redirect
+    // there. Without this, warming would fire a real github.com fetch.
+    const credentialStore = createTestCredentialStore(tmpDir);
+    seedRepoCacheWithLocalBare({
+      tmpDir,
+      repoUrl: REPO_URL,
+      seedFiles: { "README.md": "# quick-capture-test\n" },
+    });
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
 
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       repoStore,
