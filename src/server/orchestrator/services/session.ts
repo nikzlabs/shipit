@@ -294,8 +294,9 @@ export async function archiveSession(
   }
 
   // Clean up the session's git clone — the bare cache + unarchive flow
-  // re-creates it from scratch on restore.
-  if (session?.workspaceDir) {
+  // re-creates it from scratch on restore. Template sessions (no remoteUrl)
+  // have no recovery path, so we preserve their workspace dir.
+  if (session?.remoteUrl && session?.workspaceDir) {
     try {
       await fs.rm(session.workspaceDir, { recursive: true, force: true });
       console.log("[server] Removed session workspace:", session.workspaceDir);

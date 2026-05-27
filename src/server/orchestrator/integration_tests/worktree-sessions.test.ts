@@ -220,8 +220,9 @@ describe("Integration: Session clones", () => {
     const child = sessionManager.get(childId);
     expect(child?.archived).toBe(true);
 
-    // Archive removes the session clone — unarchive re-creates it from the bare cache.
-    expect(fs.existsSync(childDir)).toBe(false);
+    // Parent had no remoteUrl, so the fork has none either — archive preserves
+    // the workspace dir because there's no cache to re-clone from on unarchive.
+    expect(fs.existsSync(childDir)).toBe(true);
   }, 15_000);
 
   // ---- merge_session (HTTP) ----
