@@ -40,8 +40,16 @@ import type { RuntimeMode } from "./app-di.js";
  * operation. Picked generously — well above any plausible session-side
  * "near expiry" heuristic the CLI might use — so the orchestrator always wins
  * the race and sessions never trigger their own refresh.
+ *
+ * Bumped from 30→45 min after the first prod deploy: tier 1 (`claude auth
+ * status --json`) is read-only by design, so every healthy rotation goes
+ * through the generic backoff schedule (~30s+60s+5m+15m of waits between
+ * tier-1 noop ticks before tier 2 runs), and the cumulative latency from
+ * the first failed tier-1 to a successful tier-2 rotation can exceed the
+ * 30-min lead time, leaving a window where the source token has already
+ * expired. 45 min gives a comfortable cushion. (docs/153)
  */
-const SAFETY_MARGIN_MS = 30 * 60 * 1000; // 30 minutes
+const SAFETY_MARGIN_MS = 45 * 60 * 1000; // 45 minutes
 
 /**
  * If `start()` runs against a source whose `expiresAt` is already in the past,
