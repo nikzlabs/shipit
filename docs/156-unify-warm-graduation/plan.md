@@ -53,8 +53,15 @@ That table is the bug class. Four real consequences live in the ❌ cells:
   used repo" sidebar ordering is wrong for any repo the user only interacts
   with via quick-capture, spawn, or fork.
 - **`sessionManager.track()`** runs in warm-graduation but not in quick/child.
-  In the common case it's a no-op (the claim path already calls `markStarted`),
-  but the symmetry depends on a coincidence between two unrelated files.
+  This is **defensive symmetry, not a user-visible bug**: `claim-session.ts`
+  already calls `markStarted` (which writes `last_used_at = now`) on every
+  claim path before quick/child reach graduation, so today's behavior is
+  correct. The reason to add `track()` to graduate anyway is that the
+  cross-file coincidence isn't load-bearing in the code — a future change to
+  the claim path could quietly remove `markStarted` and quick/child sessions
+  would silently lose their `last_used_at` write. Calling `track()` from one
+  shared graduation function makes the invariant local to the graduation
+  contract instead of distributed across two files.
 - **AI naming** runs for warm + quick but not for child. So child sessions
   show up in the sidebar with truncated prompt titles (`"Implement the user…"`)
   instead of human-readable ones (`"Wire OAuth callback URL"`) — the same UX
@@ -145,15 +152,91 @@ Body, in order:
 4. If `model` set → `setModel(id, model)`.
 5. If `parentSessionId` set → `setParentSession(id, parentSessionId, spawnedByTurn)`.
 6. **Naming policy.** If `!explicitTitle && !explicitBranch && session.workspaceDir`:
-   `scheduleSessionNaming(...)` (private helper inside this module). Otherwise:
+   `scheduleSessionNaming({ skipBranchRename }, ...)` (private helper inside
+   this module — see "Branch rename gating" below). Otherwise:
    `setBranchRenamed(id, true)`.
 7. If session has `remoteUrl` → `repoStore.touch(remoteUrl)`.
 8. `sseBroadcast("session_list", { sessions: sessionManager.list() })`.
-9. If session has `remoteUrl` and `warmSessionForRepo` is wired:
-   `void warmSessionForRepo(remoteUrl)` (fire-and-forget).
 
-Synchronous return. AI naming + warming are already async inside their own
-steps.
+Synchronous return. AI naming is already async inside its own step.
+
+**`warmSessionForRepo` is deliberately NOT a step of `graduateSession`.** Why:
+
+- For quick + child, `claim-session.ts` already calls `rewarmPool` → `warmSessionForRepo`
+  at the end of every claim path. Calling it from graduate would double-fire,
+  which the warm pool serializes but at the cost of one wasted clone setup.
+- For fork, today no warming happens (fork clones from the source session's
+  worktree, not from the cache). Adding it via graduate would silently
+  introduce per-fork warming — material for the rollback fork path
+  (`rollback-handlers.ts:308-320`) where the user may fork repeatedly while
+  exploring rewind options, each one provisioning a fresh container + clone
+  in the background. That inverts the "fork is local and cheap" UX
+  assumption.
+- The only path that needs `warmSessionForRepo` *because graduation
+  happened* is warm-graduation — that surface never goes through claim, so
+  there is no other site that refills the pool when its single warm clone
+  gets consumed.
+
+Conclusion: warm-graduation calls `warmSessionForRepo` inline (one extra
+line in `send-message.ts`), the other three surfaces inherit nothing for
+this concern.
+
+### Branch rename gating
+
+`scheduleSessionNaming` currently renames both the title AND the on-disk
+branch (`shipit/<random>` → `shipit/<slug>-<random>`). For warm + quick that
+is the intended behavior. For child this is a regression:
+
+- `POST /api/sessions/:parentId/spawn` returns a JSON body containing
+  `branch` (`child-sessions.ts:294`). The `shipit session create` CLI shim
+  prints that value to the agent. If the branch is silently rewritten
+  ~seconds later by the AI-naming flow, the value the shim printed is now
+  stale and the agent's chat history points at a name that does not exist.
+- The existing comment at `child-sessions.ts:175-177` explicitly chose the
+  `shipit/<random>` shape because agent-supplied names drifted outside the
+  namespace. A delayed AI rename re-introduces the same "branch name is a
+  moving target" problem from a different angle.
+
+The fix is to give `graduateSession` (and the private `scheduleSessionNaming`
+helper) a `skipBranchRename: boolean` option that:
+
+- defaults to `false` (rename branch — preserves warm + quick behavior),
+- is set to `true` by the child call site,
+- is set to `true` by the fork call site (fork branches are user-chosen and
+  immutable by design — but fork passes `explicitBranch`, which already
+  short-circuits naming, so the flag is belt-and-braces).
+
+When `skipBranchRename: true` and AI naming returns a name, only the title
+is updated; the branch row stays at its current value. `setBranchRenamed(true)`
+still runs at the end of the finalizer so the PR card progresses.
+
+### Removing the duplicate `session_list` broadcasts
+
+Today `session_list` is broadcast from several places. The ones that fire
+**as part of session creation** are duplicates after this refactor:
+
+- `api-routes-session.ts:276` — `POST /api/sessions/:id/fork` (HTTP fork route)
+- `api-routes-session.ts:334` — `POST /api/sessions/headless`
+- `api-routes-session.ts:394` — `POST /api/sessions/:parentId/spawn`
+- `ws-handlers/rollback-handlers.ts:339` — `handleRewindAtGap` (rewind-driven fork creation)
+- `ws-handlers/send-message.ts:271` — warm graduation (inline)
+
+**Plan: delete each of those five broadcasts.** `graduateSession` will
+broadcast once. The inline broadcast in `send-message.ts` also goes away.
+
+The following `session_list` broadcasts are NOT part of session
+*creation* — they fire after archive/unarchive/delete/rewind-restore — and
+**stay where they are**:
+
+- `api-routes-session.ts:190` — `POST /api/sessions/:id/unarchive`
+- `api-routes-session.ts:611` — session delete
+- `ws-handlers/rollback-handlers.ts:421` — `handleRewindRestoreRequest`
+  (fires after `archiveSession` of the snapshot's child — it's the
+  archive-half of a rewind restore, not a creation)
+
+(There is no separate HTTP "fork-from-message" route — fork-from-message
+lives in `rollback-handlers.ts:handleRewindAtGap`, which is the `:339`
+entry above.)
 
 ### The contract comment (drift prevention)
 
@@ -179,7 +262,6 @@ Top of `graduate-session.ts`:
  *   scheduleSessionNaming(...)
  *   repoStore.touch(remoteUrl)
  *   sseBroadcast("session_list", ...)  // as part of session creation
- *   warmSessionForRepo(remoteUrl)       // as part of session creation
  *
  * STOP and call graduateSession() instead. Hand-rolling subsets of these
  * is the bug class docs/156 was opened to make impossible.
@@ -217,10 +299,14 @@ if (session?.warm) {
       createGitManager: ctx.createGitManager,
       prStatusPoller: ctx.prStatusPoller,
       sseBroadcast: ctx.sseBroadcast,
-      warmSessionForRepo: ctx.warmSessionForRepo,
     },
     { sessionId: effectiveSessionId, userText, agentId: session.agentId ?? ctx.getActiveAgentId() },
   );
+  // Warm-graduation is the only surface that doesn't reach graduation via
+  // claim, so the warm pool's single warm clone was consumed but never
+  // re-warmed. Refill it inline. The other three surfaces inherit re-warming
+  // from claim-session.ts:rewarmPool — see graduate-session.ts step-list.
+  if (session.remoteUrl) void ctx.warmSessionForRepo(session.remoteUrl);
 }
 ```
 
@@ -247,31 +333,31 @@ Currently uses `rename` + `setBranchRenamed(true)` + `setWarm(false)` +
 always `opts.title?.trim() || prompt.slice(0,60) || "Spawned session"` — no
 AI naming, ever. After this refactor, when the agent does *not* supply
 `opts.title`, AI naming runs (same as quick). The agent retains the ability
-to pin a title (`shipit session create --title …`). This is a UX win that
-falls out of the unification — child sessions get the same human-readable
-sidebar entries quick sessions get.
+to pin a title (`shipit session create --title …`).
 
-The branch override decision in child stays as-is (the agent can't pick a
-branch, comment in `child-sessions.ts:175-177` explains why), so
-`explicitBranch` is never set for child. AI naming is gated on
-`!explicitTitle && !explicitBranch`, so when the agent omits a title the
-naming runs; when the agent provides one, it's authoritative — matches the
-parallel quick-session behavior.
+**Child must pass `skipBranchRename: true`** (see "Branch rename gating" above)
+because `POST /spawn` returns the branch name in its response body and the
+CLI shim prints it to the agent — a delayed rename would make the printed
+value stale. So child sessions get AI-named *titles* but their branch stays
+at the `shipit/<random>` shape the claim cut. The agent's ability to pin a
+branch is unchanged (it still can't — comment in `child-sessions.ts:175-177`
+stands).
 
 **4. Fork session (`services/session-fork-merge.ts`).**
 Currently calls `track(id, title, dir)` to insert + then `setBranch` +
 `setBranchRenamed(true)` + optional `setRemoteUrl`. Collapses to: keep the
 `track(id, title, dir)` insert and the `setBranch`/`setRemoteUrl` (those are
 fork-specific workspace identity), then call `graduateSession()` with
-`explicitTitle` and `explicitBranch` both set. AI naming is suppressed
-because the user chose both; `setBranchRenamed(true)` is set synchronously
-inside `graduateSession`.
+`explicitTitle` and `explicitBranch` both set, and `skipBranchRename: true`
+(belt-and-braces — the explicit-fields gate already short-circuits naming,
+but a future change to the naming policy must not be able to silently
+rename a fork branch the user chose). AI naming is suppressed because the
+user chose both; `setBranchRenamed(true)` is set synchronously inside
+`graduateSession`.
 
-Fork has no `warmSessionForRepo` analog (the fork clones from the source
-session's worktree, not from the bare cache, so re-warming the pool is
-unrelated to fork). `graduateSession` calls `warmSessionForRepo` when wired,
-which is correct: re-warming the pool after a fork is harmless — same as
-after any other claim. The fork route doesn't have to special-case it.
+Fork has no `warmSessionForRepo` analog — and since `graduateSession` does
+not call `warmSessionForRepo` (see step-list note above), no special-casing
+is needed at the fork call site.
 
 ### Surfaces that NEED a `remoteUrl` set before calling
 
@@ -316,15 +402,33 @@ just-shipped fix, so this is a clean removal.
   `explicitBranch`. Add `graduateSession` deps to the signature.
 - **Modify**: `src/server/orchestrator/api-routes-session.ts` — wire the
   full `GraduateSessionDeps` into headless + spawn + fork routes. Drop the
-  previous fix's `graduationDeps` conditional.
+  previous fix's `graduationDeps` conditional. **Delete** three
+  `deps.sseBroadcast("session_list", { sessions: result.sessions })` lines:
+  `:276` (fork route), `:334` (headless), and `:394` (spawn) — graduation
+  broadcasts once now. **Keep** the broadcasts at `:190` (unarchive) and
+  `:611` (delete); they are not session-creation events.
 - **Modify**: `src/server/orchestrator/ws-handlers/rollback-handlers.ts` —
-  the `handleForkSessionFromMessage` path forwards `forkSession`'s new
-  deps. (Fork is also reachable from rollback; check it's covered.)
+  `handleRewindAtGap` calls `forkSession` with 11 positional args today.
+  After this refactor, `forkSession`'s signature grows by **five new
+  positional args** (all new — none of these are on `forkSession` today):
+  `runnerRegistry`, `prStatusPoller`, `repoStore`, `createGitManager`, and
+  `sseBroadcast`. Forward all five from `ctx`. Also **delete the duplicate
+  `ctx.sseBroadcast("session_list", ...)` at `:339`** (the
+  `handleRewindAtGap` post-fork broadcast — superseded by
+  `graduateSession`'s broadcast). **Do NOT touch `:421`** in
+  `handleRewindRestoreRequest`; that broadcast fires after
+  `archiveSession(snapshot.childSessionId)` — it's the archive half of
+  the rewind-restore flow, not a creation event. Verify
+  `rewind-fork.test.ts` still passes after the signature change and the
+  `:339` deletion.
 - **Modify**: `src/server/orchestrator/services/index.ts` — re-export the
   new module; drop the deleted re-exports.
 - **Modify**: `src/server/orchestrator/services/headless-sessions.test.ts` —
-  port the two structural assertions added by the previous fix against the
-  new injection shape.
+  port the "defers `branchRenamed` when no explicit branch/title" structural
+  assertion from the previous fix against the new injection shape. **Delete**
+  the sibling "marks `branchRenamed` immediately when graduation deps are
+  not wired" test — it covers a code path that no longer exists once the
+  deps are mandatory.
 - **Modify**: `src/server/orchestrator/services/child-sessions.test.ts`
   (if any assertions cover the title/branchRenamed path) — confirm AI
   naming behavior is asserted or explicitly waived.
@@ -350,25 +454,66 @@ Unit (`graduate-session.test.ts`):
 
 Unit (existing surface test files):
 
-- `headless-sessions.test.ts` — keep the "defer vs immediate branchRenamed"
-  assertion from the previous fix, retargeted at the new injection shape.
+- `headless-sessions.test.ts` — keep the "defers `branchRenamed` when no
+  explicit branch/title" assertion from the previous fix, retargeted at the
+  new injection shape. **Delete** the sibling "marks `branchRenamed`
+  immediately when graduation deps are not wired (test/local mode)" test
+  (lines 303-317 of the current file): once the deps become mandatory, that
+  code path no longer exists, so the test would be asserting against
+  unreachable behavior.
 - `child-sessions.test.ts` — add an assertion that AI naming runs when no
-  `opts.title` is supplied (the new behavior). Verify the agent-supplied-title
-  path still skips AI naming.
+  `opts.title` is supplied (the new behavior) AND that the branch row stays
+  at its claim-time `shipit/<random>` shape (regression test for the
+  `skipBranchRename: true` flag). Verify the agent-supplied-title path
+  still skips AI naming.
 - `session-fork-merge.test.ts` (if it exists; otherwise add coverage in
   rollback tests) — verify fork still synchronously gets `branchRenamed: true`.
 
 Integration:
 
+**Critical pre-merge step: integration tests do not currently mock
+`session-namer.ts`** — a grep for `generateSessionName` and `session-namer`
+under `integration_tests/` returns zero hits. The function shells out to the
+real provider CLI with a 15s timeout via `execFile`. Today this is fine
+because no integration test exercises the warm-graduation path with a real
+prompt-without-title (warm flow runs through a fake agent). After this
+refactor:
+
+- Every `POST /api/sessions/headless` call without a `title` (e.g. the new
+  `repoStore.touch` assertion below) will fork a real `claude`/`codex`
+  child process.
+- Every `POST /api/sessions/:parent/spawn` call without `--title` (e.g.
+  `agent-spawned-session.test.ts` lines 286-293, 317, and the 4-children
+  per-turn-quota test at 260-274) will fork a real CLI process each — 4
+  forks per run in the quota test alone.
+- The branch-shape assertion at `agent-spawned-session.test.ts:307` would
+  race against the AI rename.
+
+So this refactor MUST add a vitest module mock to each affected integration
+test file:
+
+```ts
+vi.mock("../session-namer.js", () => ({
+  generateSessionName: vi.fn().mockResolvedValue(null),
+}));
+```
+
+(Returning `null` makes the naming a no-op — the placeholder title sticks,
+the branch is unchanged, `setBranchRenamed(true)` still runs via the
+finalizer.) The mock goes in: `agent-spawned-session.test.ts`,
+`quick-capture-headless.test.ts`, `warm-sessions.test.ts`, and any other
+file that drives a session-creation path without supplying both an
+explicit title and an explicit branch.
+
+End-to-end assertions:
+
 - **`quick-capture-headless.test.ts`** — add `repoStore.touch` assertion
   (proves the bug is fixed end-to-end).
-- **`warm-sessions.test.ts`** — existing assertions should pass unchanged.
-- **`agent-spawned-session.test.ts`** — existing assertions should pass;
-  the title assertion may need an update for the new AI-naming behavior
-  (the test currently asserts the prompt-slice title — that becomes the
-  *placeholder*, and the post-naming title may differ in production but the
-  test's mocked CLI returns nothing, so the placeholder sticks). Verify
-  the test mocks `generateSessionName` or accepts the slice as-is.
+- **`warm-sessions.test.ts`** — existing assertions should pass unchanged
+  with the mock in place.
+- **`agent-spawned-session.test.ts`** — existing title/branch assertions
+  should pass unchanged with the mock in place. Without the mock, the
+  quota test would race against four real CLI invocations.
 
 Quality:
 
