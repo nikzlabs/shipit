@@ -22,7 +22,23 @@ vi.mock("./MessageInput.js", () => ({
     lastMessageInputProps = props;
     return (
       <div data-testid="message-input" data-surface={props.surface} data-disabled={String(props.disabled)}>
-        <button onClick={() => props.onSend("captured prompt")}>Send mock</button>
+        <button
+          onClick={() => props.onSend({ text: "captured prompt", uploadRefs: [], uploads: [], deferredFiles: [] })}
+        >
+          Send mock
+        </button>
+        <button
+          onClick={() =>
+            props.onSend({
+              text: "with file",
+              uploadRefs: [],
+              uploads: [],
+              deferredFiles: [new File(["hi"], "note.txt", { type: "text/plain" })],
+            })
+          }
+        >
+          Send mock with file
+        </button>
       </div>
     );
   },
@@ -178,6 +194,31 @@ describe("QuickCaptureOverlay", () => {
     }));
     await waitFor(() => expect(useUiStore.getState().quickCaptureOpen).toBe(false));
     expect(useSessionStore.getState().sessionId).toBe("current");
+  });
+
+  it("forwards attached files to createHeadlessSession", async () => {
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    createHeadlessSessionMock.mockResolvedValue(session("quick", "https://github.com/acme/app.git"));
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send mock with file" }));
+
+    await waitFor(() => expect(createHeadlessSessionMock).toHaveBeenCalledTimes(1));
+    const callArgs = createHeadlessSessionMock.mock.calls[0][0] as {
+      repoUrl: string;
+      initialPrompt: string;
+      agent: string;
+      files: File[];
+    };
+    expect(callArgs.repoUrl).toBe("https://github.com/acme/app.git");
+    expect(callArgs.initialPrompt).toBe("with file");
+    expect(callArgs.agent).toBe("claude");
+    expect(callArgs.files).toHaveLength(1);
+    expect(callArgs.files[0].name).toBe("note.txt");
   });
 
   it("renders cap and generic submission errors inline", async () => {

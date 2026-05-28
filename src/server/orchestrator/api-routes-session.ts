@@ -310,6 +310,12 @@ export async function registerSessionRoutes(
   // ===========================================================================
 
   // POST /api/sessions/headless — quick-capture session creation.
+  //
+  // Accepts either JSON (no attachments) or multipart/form-data when the
+  // overlay attached files. Multipart shape: `repoUrl`, `initialPrompt`,
+  // `branch?`, `agent?`, `model?` as form fields plus one or more `file`
+  // parts. Files are saved into the new session's uploads dir before the
+  // first turn fires so the agent sees them. See docs/145.
   app.post<{
     Body: {
       repoUrl?: string;
@@ -321,18 +327,67 @@ export async function registerSessionRoutes(
   }>(
     "/api/sessions/headless",
     async (request, reply) => {
-      const body = request.body ?? {};
+      let repoUrl = "";
+      let initialPrompt = "";
+      let branch: string | undefined;
+      let agent: AgentId | undefined;
+      let model: string | undefined;
+      const uploadInputs: { filename: string; data: Buffer }[] = [];
+
+      if (request.isMultipart()) {
+        try {
+          for await (const part of request.parts()) {
+            if (part.type === "file") {
+              const buf = await part.toBuffer();
+              uploadInputs.push({ filename: part.filename, data: buf });
+              continue;
+            }
+            const value = typeof part.value === "string" ? part.value : "";
+            switch (part.fieldname) {
+              case "repoUrl":
+                repoUrl = value;
+                break;
+              case "initialPrompt":
+                initialPrompt = value;
+                break;
+              case "branch":
+                branch = value;
+                break;
+              case "agent":
+                agent = value as AgentId;
+                break;
+              case "model":
+                model = value;
+                break;
+              default:
+                break;
+            }
+          }
+        } catch (err) {
+          reply.code(400).send({ error: `Invalid multipart body: ${getErrorMessage(err)}` });
+          return;
+        }
+      } else {
+        const body = request.body ?? {};
+        repoUrl = body.repoUrl ?? "";
+        initialPrompt = body.initialPrompt ?? "";
+        branch = body.branch;
+        agent = body.agent;
+        model = body.model;
+      }
+
       try {
         const result = await createHeadlessSession(
           sessionManager,
           deps.runnerRegistry,
           claimSessionService,
           {
-            repoUrl: body.repoUrl ?? "",
-            prompt: body.initialPrompt ?? "",
-            ...(body.branch !== undefined ? { branch: body.branch } : {}),
-            ...(body.agent !== undefined ? { agent: body.agent } : {}),
-            ...(body.model !== undefined ? { model: body.model } : {}),
+            repoUrl,
+            prompt: initialPrompt,
+            ...(branch !== undefined ? { branch } : {}),
+            ...(agent !== undefined ? { agent } : {}),
+            ...(model !== undefined ? { model } : {}),
+            ...(uploadInputs.length > 0 ? { uploads: uploadInputs } : {}),
           },
           deps.defaultAgentId,
           deps.credentialsDir,

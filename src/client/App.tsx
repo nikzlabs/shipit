@@ -15,13 +15,12 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { useQuickCaptureHotkey } from "./hooks/useQuickCaptureHotkey.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
-import { useFileUpload } from "./hooks/useFileUpload.js";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage } from "./components/PreviewFrame.js";
-import { MessageInput } from "./components/MessageInput.js";
+import { MessageInput, type SendPayload } from "./components/MessageInput.js";
 import { MessageList } from "./components/MessageList.js";
 import type { RewindGapAction } from "./components/RewindPoint.js";
 import { RocketLaunch } from "./components/RocketLaunch.js";
@@ -119,10 +118,9 @@ export default function App() {
     sessionId ? s.turnUsage[sessionId] ?? EMPTY_TURN_USAGE : EMPTY_TURN_USAGE,
   );
 
-  const {
-    uploads, uploadFiles, removeUpload, retryUpload,
-    getUploadRefs, clearUploads,
-  } = useFileUpload(wsSessionId);
+  // Upload chips, the "+" attach button, and drop-zone behavior live inside
+  // MessageInput now (docs/145) — the chat parent only needs the session-wide
+  // upload list for the side panel (file tree → attached uploads section).
   const sessionUploads = useFileStore((s) => s.sessionUploads);
 
   const gitCommits = useGitStore((s) => s.commits);
@@ -384,7 +382,8 @@ export default function App() {
 
   // ── Callback helpers ──
   const handleSend = useCallback(
-    async (text: string) => {
+    async (payload: SendPayload) => {
+      const { text, uploadRefs, uploads: payloadUploads } = payload;
       // docs/125 — `/review [@path]` is the chat-native entry point to AI
       // review: same composed prompt as the modal button, routed through
       // `send_review_message` so the orchestrator authorizes the review tool.
@@ -432,9 +431,8 @@ export default function App() {
       const session = useSessionStore.getState();
       const settings = useSettingsStore.getState();
       useUiStore.getState().setShowTemplates(false);
-      const uploadRefs = getUploadRefs();
       // Separate image uploads (have previewUrl) from non-image uploads for display
-      const readyUploads = uploads.filter((u) => u.status === "ready" && u.path);
+      const readyUploads = payloadUploads.filter((u) => u.status === "ready" && u.path);
       const imageUploads = readyUploads.filter((u) => u.previewUrl);
       const nonImageUploadRefs = uploadRefs.filter(
         (ref) => !imageUploads.some((u) => u.path === ref.path),
@@ -494,9 +492,9 @@ export default function App() {
         session.setMessages((prev) => [...prev, { role: "user", text, files: filesForMessage, images: imagesForMessage, uploadPaths: uploadPathsForMessage }]);
       }
       settings.clearPendingFiles();
-      clearUploads();
+      // MessageInput has already cleared its own upload chips at this point.
     },
-    [send, status, requestPermission, disableAutoFix, navigate, isNewSessionRoute, getUploadRefs, clearUploads, uploads],
+    [send, status, requestPermission, disableAutoFix, navigate, isNewSessionRoute],
   );
 
   const handleRequestRewindPreview = useCallback(
@@ -1067,7 +1065,7 @@ export default function App() {
           </div>
         </div>
       )}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} skills={skills} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} onOpenUsageDetails={handleUsageBadgeClick} focusKey={messageInputFocusKey} liveSteeringActive={liveSteeringActive} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} skills={skills} sessionId={wsSessionId} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} onOpenUsageDetails={handleUsageBadgeClick} focusKey={messageInputFocusKey} liveSteeringActive={liveSteeringActive} />}
     </>
   );
 

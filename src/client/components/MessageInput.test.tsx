@@ -46,7 +46,7 @@ describe("MessageInput", () => {
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "Hello Claude" } });
       fireEvent.click(screen.getByLabelText("Send message"));
-      expect(onSend).toHaveBeenCalledWith("Hello Claude");
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ text: "Hello Claude" }));
     });
 
     it("sends text on Enter (without Shift)", () => {
@@ -55,7 +55,7 @@ describe("MessageInput", () => {
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "test" } });
       fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
-      expect(onSend).toHaveBeenCalledWith("test");
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ text: "test" }));
     });
 
     it("does NOT send on Enter when on a mobile viewport", () => {
@@ -78,7 +78,7 @@ describe("MessageInput", () => {
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "hello mobile" } });
       fireEvent.click(screen.getByLabelText("Send message"));
-      expect(onSend).toHaveBeenCalledWith("hello mobile");
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ text: "hello mobile" }));
     });
 
     it("does not send empty messages", () => {
@@ -432,16 +432,28 @@ describe("MessageInput", () => {
       expect(fileInput.multiple).toBe(true);
     });
 
-    it("routes all files (including images) to onUploadFiles callback", () => {
-      const onUploadFiles = vi.fn();
-      render(<MessageInput onSend={vi.fn()} disabled={false} onUploadFiles={onUploadFiles} />);
+    it("buffers attached files in overlay surface and surfaces them as deferredFiles on send", () => {
+      const onSend = vi.fn();
+      // surface="overlay" → MessageInput buffers raw files locally (quick-capture path).
+      render(<MessageInput onSend={onSend} disabled={false} surface="overlay" />);
       const fileInput = screen.getByTestId("file-input");
 
       const textFile = new File(["hello"], "doc.txt", { type: "text/plain" });
       const pngFile = new File(["img"], "photo.png", { type: "image/png" });
       fireEvent.change(fileInput, { target: { files: [textFile, pngFile] } });
 
-      expect(onUploadFiles).toHaveBeenCalledWith([textFile, pngFile]);
+      // Send carries the raw Files as deferredFiles (uploadRefs empty since no session).
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "go" } });
+      fireEvent.click(screen.getByLabelText("Send message"));
+
+      expect(onSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: "go",
+          deferredFiles: [textFile, pngFile],
+          uploadRefs: [],
+        }),
+      );
     });
   });
 
