@@ -424,7 +424,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
 
   return (
     <div>
-      <div className="flex items-center gap-3 flex-nowrap">
+      <div className="flex items-start gap-3 flex-nowrap">
         <PrStateBadge sessionId={sessionId} url={pr.url} prNumber={pr.number} />
         <BranchLabel
           baseBranch={pr.baseBranch}
