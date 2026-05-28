@@ -119,9 +119,10 @@ export function AllSessionsDialog({
             variant="ghost"
             size="sm"
             onClick={onClose}
+            className="h-9 w-9 max-md:h-10 max-md:w-10"
             aria-label="Close"
           >
-            <XIcon size={ICON_SIZE.SM} />
+            <XIcon size={ICON_SIZE.MD} weight="bold" />
           </Button>
         </div>
 
