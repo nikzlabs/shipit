@@ -17,17 +17,24 @@
  */
 
 import path from "node:path";
-import type { AgentId, SkillInfo } from "../../shared/types.js";
+import type { SkillInfo } from "../../shared/types.js";
 import { scanSkillsDir } from "../../shared/skill-scan.js";
 
 /**
  * List user-invocable project skills for the active agent, sorted by name.
  * Returns `[]` when the workspace has no skills directory for that backend.
+ *
+ * The dotfolder name (`.claude` vs `.codex`) is the agent's
+ * `AgentCapabilities.skillsDirName` — keeping it as a string parameter (not a
+ * registry lookup) so tests can call this directly without standing up a fake
+ * registry. Adding a backend with its own convention (e.g. `.cursor`) means
+ * one new entry in `AGENT_DEFS`, no change here. (docs/155)
  */
-export async function listSkills(dir: string, agentId: AgentId): Promise<SkillInfo[]> {
-  const skillsDir = agentId === "codex"
-    ? path.join(dir, ".codex", "skills")
-    : path.join(dir, ".claude", "skills");
+export async function listSkills(
+  dir: string,
+  skillsDirName: string,
+): Promise<SkillInfo[]> {
+  const skillsDir = path.join(dir, skillsDirName, "skills");
   const skills = await scanSkillsDir(skillsDir, "project");
   return skills.sort((a, b) => a.name.localeCompare(b.name));
 }

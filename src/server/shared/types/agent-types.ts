@@ -48,6 +48,22 @@ export interface AgentCapabilities {
    * stream-json; Codex uses turn/steer. (docs/140)
    */
   supportsSteering: boolean;
+  /**
+   * Per-CLI dotfolder for project skills, e.g. `.claude` or `.codex`. Project
+   * skills live at `<workspace>/<skillsDirName>/skills/<name>/SKILL.md` and the
+   * marketplace installer writes here. Single source of truth so adding a new
+   * backend (`.cursor`, `.gemini`) doesn't sprout new branches at every call
+   * site. (docs/155)
+   */
+  skillsDirName: string;
+  /**
+   * Character the user types in chat to invoke a skill — Claude uses `/`,
+   * Codex uses `$`. Read by the marketplace install service (to render the
+   * invocation token in the install confirmation) and by the client's message
+   * composer (to insert the right prefix when picking a skill from the menu).
+   * (docs/138, docs/155)
+   */
+  skillInvocationPrefix: string;
 }
 
 // ---- Normalized event schema ----

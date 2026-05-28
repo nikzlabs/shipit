@@ -440,10 +440,13 @@ export function MessageInput({
     }
   };
 
-  // Codex invokes skills with `$name`, Claude with `/name`. The `/` trigger
-  // that opens the menu stays the same for both backends (doc 138 §5) — only
-  // the inserted token differs.
-  const skillTokenPrefix = activeAgentId === "codex" ? "$" : "/";
+  // The `/` trigger that opens the skill menu stays the same for both
+  // backends (doc 138 §5) — only the inserted token differs. The prefix
+  // travels over the wire from the agent registry's `skillInvocationPrefix`
+  // capability, so a new backend's character is one entry in `AGENT_DEFS`
+  // rather than another inline branch here. (docs/155)
+  const skillTokenPrefix =
+    agents.find((a) => a.id === activeAgentId)?.skillInvocationPrefix ?? "/";
 
   const handleSkillSelect = useCallback(
     (skillName: string) => {

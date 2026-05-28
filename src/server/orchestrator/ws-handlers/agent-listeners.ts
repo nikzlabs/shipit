@@ -41,9 +41,19 @@ export interface AgentListenerDeps {
    * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
    * refresher. Triggered from the session-level `auth_required` handler so a
    * stale per-session token is healed for the next turn. Optional — local
-   * runtime and tests omit it.
+   * runtime and tests omit it. Kept as a direct ref for non-WS callers
+   * (credentials sync); the WS-side `auth_required` handler routes through
+   * the agent-keyed {@link onAgentAuthRequired} table instead. (docs/155)
    */
   nudgeClaudeOAuthRefresh?: () => void;
+  /**
+   * docs/155 — per-agent dispatch for the WS-level `auth_required` event.
+   * Each backend that needs a side effect on auth failure (Claude: nudge the
+   * OAuth refresher; Codex: a future device-flow restart) registers itself
+   * at app-DI time and the listener becomes agent-agnostic. Optional — no-op
+   * if the agent has no registered hook.
+   */
+  onAgentAuthRequired?: (agentId: AgentId) => void;
 }
 
 /**
@@ -983,18 +993,16 @@ export function wireAgentListeners(
     console.log("[server] Agent CLI requires authentication, starting OAuth flow");
     emitToViewers({ type: "auth_required" });
     deps.authManager.startOAuthFlow();
-    // docs/153 — also kick the orchestrator-owned refresher. If the source
-    // token has rotated since this session synced in (e.g., this session sat
-    // idle through a tick), the refresher will propagate the fresh token to
-    // every pinned session including this one, so the user's next turn works
-    // without going through the sign-in flow. Fire-and-forget; the refresher
-    // is single-flight per account so concurrent auth_required from multiple
-    // sessions still coalesce into one CLI spawn.
+    // docs/153, docs/155 — let the per-agent module decide what to do on auth
+    // failure. Claude registers a refresher nudge (so a token rotated while
+    // this session sat idle gets propagated without a sign-in roundtrip);
+    // other backends register their own hook or none at all. The listener
+    // doesn't know the agent — that's the whole point of the table.
     const turnSession = opts.capturedSessionId
       ? deps.sessionManager.get(opts.capturedSessionId)
       : null;
-    if (turnSession?.agentId === "claude") {
-      deps.nudgeClaudeOAuthRefresh?.();
+    if (turnSession?.agentId) {
+      deps.onAgentAuthRequired?.(turnSession.agentId);
     }
 
     // Tear the failed turn down. An auth failure ends the turn, but a

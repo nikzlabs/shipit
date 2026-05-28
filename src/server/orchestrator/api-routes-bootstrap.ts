@@ -355,6 +355,7 @@ export async function registerBootstrapRoutes(
           supportsReview: a.capabilities.supportsReview,
           supportsSteering: a.capabilities.supportsSteering,
           supportedPermissionModes: a.capabilities.supportedPermissionModes,
+          skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
         }));
         deps.sseBroadcast("agent_list", { agents });
         deps.sseBroadcast("provider_accounts", { accounts: deps.providerAccountManager.list() });

@@ -161,9 +161,16 @@ export interface RunnerRegistryDeps {
    * docs/153 — fire-and-forget nudge to the Claude OAuth refresher. Forwarded
    * into the listener so dispatched/system turns also heal a stale token via
    * the orchestrator-owned refresher when the CLI emits `auth_required`.
-   * Mirrors the WS-path `AppCtx.nudgeClaudeOAuthRefresh`.
+   * Mirrors the WS-path `AppCtx.nudgeClaudeOAuthRefresh`. (Most consumers
+   * should prefer `onAgentAuthRequired` so the dispatch is keyed by agent.)
    */
   nudgeClaudeOAuthRefresh?: () => void;
+  /**
+   * docs/155 — per-agent dispatch for the listener's `auth_required` handler.
+   * Mirrors the WS-path `AppCtx.onAgentAuthRequired`. Plumbed through here so
+   * system-turn listeners get the same routing.
+   */
+  onAgentAuthRequired?: (agentId: AgentId) => void;
 }
 
 /**
@@ -180,7 +187,7 @@ export function createRunnerRegistry(
     credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
-    nudgeClaudeOAuthRefresh,
+    nudgeClaudeOAuthRefresh, onAgentAuthRequired,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -211,6 +218,7 @@ export function createRunnerRegistry(
         ...(recordAgentRateLimits ? { recordAgentRateLimits } : {}),
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
         ...(nudgeClaudeOAuthRefresh ? { nudgeClaudeOAuthRefresh } : {}),
+        ...(onAgentAuthRequired ? { onAgentAuthRequired } : {}),
       };
       runner.setSystemTurnDeps({
         agentFactory: (agentId) => {

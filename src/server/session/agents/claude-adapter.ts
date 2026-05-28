@@ -56,6 +56,8 @@ export class ClaudeAdapter
     // MCP tool registration via mcpConfigPath, which 125 needs.
     supportsReview: true,
     supportsSteering: true,
+    skillsDirName: ".claude",
+    skillInvocationPrefix: "/",
   };
 
   private inner: ClaudeProcess | StreamingClaudeProcess;

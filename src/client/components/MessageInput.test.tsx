@@ -503,7 +503,12 @@ describe("MessageInput", () => {
     });
 
     it("opens on a leading slash for Codex but displays the $ token", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex" />);
+      render(
+        <MessageInput
+          onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex"
+          agents={[{ id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
+        />,
+      );
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
       fireEvent.change(textarea, { target: { value: "/dep", selectionStart: 4 } });
       const items = screen.getAllByTestId("skill-autocomplete-item");
@@ -512,7 +517,12 @@ describe("MessageInput", () => {
     });
 
     it("inserts $name for Codex instead of /name", () => {
-      render(<MessageInput onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex" />);
+      render(
+        <MessageInput
+          onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex"
+          agents={[{ id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
+        />,
+      );
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       fireEvent.change(textarea, { target: { value: "/rev", selectionStart: 4 } });
       fireEvent.click(screen.getByText("$review"));

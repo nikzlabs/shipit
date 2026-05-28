@@ -15,6 +15,7 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import { DatabaseManager } from "../../shared/database.js";
 import { GitManager } from "../../shared/git.js";
+import { AgentRegistry } from "../../shared/agent-registry.js";
 import { MarketplaceStore } from "../marketplace-store.js";
 import {
   installPlugin,
@@ -101,8 +102,9 @@ describe("services/marketplace (docs/149)", () => {
   let dbm: DatabaseManager;
   let store: MarketplaceStore;
   let cacheRoot: string;
+  let agentRegistry: AgentRegistry;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mkt-svc-"));
     dbm = new DatabaseManager(path.join(tmp, "test.db"));
     store = new MarketplaceStore(dbm);
@@ -114,6 +116,10 @@ describe("services/marketplace (docs/149)", () => {
     });
     cacheRoot = path.join(tmp, "marketplace-cache");
     makeFakeCatalog(cacheRoot, "test-catalog");
+    // Populate the real registry from AGENT_DEFS — feeds skillsDirName /
+    // skillInvocationPrefix into install/uninstall via capability reads.
+    agentRegistry = new AgentRegistry({ checkBinary: () => Promise.resolve(true) });
+    await agentRegistry.detect();
   });
 
   afterEach(() => {
@@ -153,6 +159,7 @@ describe("services/marketplace (docs/149)", () => {
           cacheRoot,
           store,
           git,
+          agentRegistry,
         }),
       );
 
@@ -199,6 +206,7 @@ describe("services/marketplace (docs/149)", () => {
             cacheRoot,
             store,
             git,
+            agentRegistry,
           }),
         ),
       ).rejects.toMatchObject({ statusCode: 409 });
@@ -218,6 +226,7 @@ describe("services/marketplace (docs/149)", () => {
           cacheRoot,
           store,
           git,
+          agentRegistry,
         }),
       );
       await expect(
@@ -230,6 +239,7 @@ describe("services/marketplace (docs/149)", () => {
             cacheRoot,
             store,
             git,
+            agentRegistry,
           }),
         ),
       ).rejects.toMatchObject({ statusCode: 409 });
@@ -292,6 +302,7 @@ describe("services/marketplace (docs/149)", () => {
           cacheRoot,
           store,
           git,
+          agentRegistry,
         }),
       );
       expect(result.invocationTokens).toEqual(["/hookify:writing-hookify-rules"]);
@@ -314,6 +325,7 @@ describe("services/marketplace (docs/149)", () => {
           cacheRoot,
           store,
           git,
+          agentRegistry,
         }),
       ).rejects.toMatchObject({ statusCode: 400 });
     });
@@ -332,6 +344,7 @@ describe("services/marketplace (docs/149)", () => {
           cacheRoot,
           store,
           git,
+          agentRegistry,
         }),
       );
       // Add a hand-written sibling dir; scan must ignore it.
@@ -339,7 +352,7 @@ describe("services/marketplace (docs/149)", () => {
       fs.mkdirSync(handDir, { recursive: true });
       fs.writeFileSync(path.join(handDir, "SKILL.md"), "---\nname: hand\n---\nmine\n");
 
-      const installed = await scanInstalledPlugins(workspace, "claude");
+      const installed = await scanInstalledPlugins(workspace, "claude", agentRegistry);
       expect(installed).toHaveLength(2);
       expect(installed.every((e) => e.marketplaceId === "test-catalog")).toBe(true);
       expect(installed.every((e) => e.pluginName === PLUGIN_NAME)).toBe(true);
@@ -351,6 +364,7 @@ describe("services/marketplace (docs/149)", () => {
           marketplaceId: "test-catalog",
           pluginName: PLUGIN_NAME,
           git,
+          agentRegistry,
         }),
       );
       expect(removed.removed).toHaveLength(2);
@@ -372,6 +386,7 @@ describe("services/marketplace (docs/149)", () => {
           marketplaceId: "test-catalog",
           pluginName: PLUGIN_NAME,
           git,
+          agentRegistry,
         }),
       ).rejects.toMatchObject({ statusCode: 404 });
     });

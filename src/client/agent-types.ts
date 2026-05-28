@@ -29,4 +29,11 @@ export interface AgentOption {
    * (docs/140)
    */
   supportsSteering?: boolean;
+  /**
+   * Character the user types in chat to invoke a skill (e.g. `/` for Claude,
+   * `$` for Codex). Read by the composer's skill picker so the inserted token
+   * matches the active backend. Optional for backward-compat with older
+   * payloads / test fixtures — defaults to `/` when absent. (docs/155)
+   */
+  skillInvocationPrefix?: string;
 }
