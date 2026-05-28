@@ -1,0 +1,11 @@
+- [ ] Add `services/graduate-session.ts` with `graduateSession()` (folds in the existing `scheduleSessionNaming`).
+- [ ] Add `services/graduate-session.test.ts` (port four naming tests + add setWarm/track/touch/list-broadcast/warm coverage).
+- [ ] Delete `session-graduation.ts` and `session-graduation.test.ts`.
+- [ ] Refactor `ws-handlers/send-message.ts` warm-graduation block to call `graduateSession(...)`.
+- [ ] Refactor `services/headless-sessions.ts` to call `graduateSession(...)`; drop `HeadlessSessionGraduationDeps` and the `graduationDeps?` parameter.
+- [ ] Update `api-routes-session.ts` to stop passing the now-removed `graduationDeps`.
+- [ ] Update `services/index.ts` re-exports.
+- [ ] Update `services/headless-sessions.test.ts` structural assertions against the new injection shape.
+- [ ] Extend `integration_tests/quick-capture-headless.test.ts` with the `repoStore.touch` assertion.
+- [ ] `npm run lint:dev` + `npm run typecheck` clean.
+- [ ] Affected vitest scope passes (`graduate-session.test.ts`, `headless-sessions.test.ts`, `quick-capture-headless.test.ts`, `warm-sessions.test.ts`, `agent-spawned-session.test.ts`, `home-screen.test.ts`).
