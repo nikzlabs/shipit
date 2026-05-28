@@ -135,6 +135,8 @@ Claude fixes → auto-commit → auto-push (PR exists)
 
 ### Key UX Decisions
 
+> **Placement update (2026-05):** the "pinned above the input" placement described below is superseded by [156-session-card-consolidation](../156-session-card-consolidation/plan.md). The card now lives at the top of the chat panel, merged with `SessionTopBar` into a single sticky session header. The phase-rendering logic in `PrLifecycleCard` is unchanged; only its mount point and the compact-row title (now dropped, since the session name carries it) move.
+
 **1. Cards are chat messages, not UI chrome.**
 
 Each card is a server message in the chat stream (like `assistant` messages). They scroll with the conversation. This means:
