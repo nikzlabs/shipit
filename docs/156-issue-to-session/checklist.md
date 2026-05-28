@@ -1,34 +1,54 @@
-# Issue → Session — checklist
+# Tracker-triggered sessions — checklist
 
-## Phase 1 — GitHub Issues
+## Shared infrastructure (do first)
 
-- [ ] `IssueRef` type in `domain-types.ts`, threaded through `SessionInfo`
-- [ ] `GitHubAuthManager.listIssues()` + `getIssue()` in new `github-auth-issues.ts`
-- [ ] `GET /api/github/issues?repoUrl=&filter=assigned` route + service
-- [ ] `createHeadlessSession` accepts `issueRef`, derives branch + initial prompt
-- [ ] Branch slug helper (`gh-<n>-<slug>`), title fallback, collision handling
-- [ ] PR body templating: append `Closes #N` in `services/pr-lifecycle.ts`, skip if already present
-- [ ] `POST /api/sessions/headless` extended with optional `issueRef`
-- [ ] `IssuesPanel.tsx` + `useIssues()` hook
-- [ ] Home screen tab for Issues
-- [ ] Session header chip rendering `issueRef` (with escape-hatch link to tracker)
-- [ ] Resume-existing-session match by `issueRef.identifier`
-- [ ] Integration test: pick a GitHub issue → session created on derived branch → PR body has `Closes #N`
-- [ ] Update `src/server/shipit-docs/` if any agent-facing behavior changes
+- [ ] `IssueRef` type with provider-specific `providerData`, threaded through `SessionInfo`
+- [ ] `IssueTrackerProvider` interface in `services/issue-trackers/types.ts`
+- [ ] `api-routes-webhooks.ts` — `POST /api/webhooks/:provider`, signature dispatch, fast-ACK + async pattern
+- [ ] Per-provider webhook secret + OAuth token storage in `CredentialStore`
+- [ ] Trigger-authorized identity allowlist (one slot per provider) on deployment settings
+- [ ] Idempotency cache (in-memory ring buffer keyed by provider event ID)
+- [ ] `headless-sessions.ts` accepts `issueRef`, derives branch + initial prompt
+- [ ] PR body templating hook in `services/pr-lifecycle.ts` / `services/github.ts`, calls `provider.reportPrOpened()` / `reportPrMerged()` when `session.issueRef` is set
+- [ ] Settings UI scaffold for tracker connections (`SettingsIssueTrackers.tsx`)
+- [ ] Document the Cloudflare-Tunnel / Tailscale-Funnel / pure-tailnet behavior in the platform docs
 
-## Phase 2 — Linear
+## P0 — Linear
 
-- [ ] `LinearAuthManager` (orchestrator-side OAuth, not the MCP container-side flow)
-- [ ] `CredentialStore.setLinearToken` / `getLinearToken`
-- [ ] `GET /api/linear/issues?filter=assigned` route + service
-- [ ] "Connect Linear" UI in settings, modeled on GitHub connect
-- [ ] Repo-resolution UI: pick-the-repo step before session creation (Phase 2a)
-- [ ] Optional team→repo mapping in settings (Phase 2b)
-- [ ] Linear-flavored PR body line (`Fixes ENG-123`)
-- [ ] Integration test: pick a Linear issue → repo prompt → session on `lin-eng-NNN-slug` → PR has `Fixes`
+See `linear.md` for design detail.
 
-## Decisions to revisit after Phase 1 lands
+- [ ] Linear app published to Linear developer console, listing repo `shipit-linear-app` created
+- [ ] `LinearTrackerProvider` implementing `IssueTrackerProvider`
+- [ ] `actor=app` OAuth flow with the four scopes (`read`, `write`, `app:assignable`, `app:mentionable`)
+- [ ] Webhook handler — `AgentSessionEvent.created` and `.prompted`, HMAC verification
+- [ ] Activity emission helpers — `thought`, `action`, `response`, `error`, `elicitation`
+- [ ] `thought` emission within 10s of `created` (and 5s webhook ACK)
+- [ ] Per-team default repo config UI in settings
+- [ ] Elicitation fallback for unconfigured teams; remember user's repo choice
+- [ ] `prompted` routes to existing session as a follow-up user message
+- [ ] PR body still gets `Fixes ENG-123` appended
+- [ ] Header-comment snapshot of the Linear docs version we built against (Developer Preview risk mitigation)
+- [ ] Integration test: delegate-via-fake-webhook → session on `lin-eng-NNN-slug` → activity log emitted → PR body has `Fixes ENG-123`
 
-- [ ] Whether to expose label/status/sprint filters in the picker
-- [ ] Webhook-driven invalidation vs current polling
-- [ ] Multiple GitHub accounts: confirm `accountId` API shape is forward-compatible
+## P1 — GitHub Issues
+
+See `github.md` for design detail.
+
+- [ ] GitHub App published to GitHub developer settings, listing repo `shipit-github-app` created
+- [ ] `GitHubTrackerProvider` implementing `IssueTrackerProvider`
+- [ ] App install flow, capture installer username for trigger allowlist
+- [ ] Webhook handler — `issue_comment.created`, HMAC verification, slash command parsing
+- [ ] Edit-in-place comment helper (post on session start, edit on PR open, edit on merge)
+- [ ] PR body `Closes #N` templating, skip-if-present check
+- [ ] Re-trigger on same issue → new session with `-2` / `-3` branch suffix
+- [ ] Decide visual marker convention for the ShipIt comment (text-only `**ShipIt**` placeholder for now)
+- [ ] Integration test: `/shipit`-via-fake-webhook → session on `gh-NNN-slug` → comment posted → PR body has `Closes #N` → comment edited on PR merge
+
+## Decisions to revisit after P0/P1 ship
+
+- [ ] GitHub Projects support — no native trigger surface, design separately
+- [ ] Jira support — marketplace app + issue panel
+- [ ] Polling-based fallback for air-gapped deployments (label-add poll) — only if there's demand
+- [ ] Status flips (move issue to In Progress / Done) behind an explicit per-provider opt-in
+- [ ] Resume-vs-new-session on re-trigger — currently always new
+- [ ] Whether multi-deployment / multi-GitHub-account changes the API shape of `/api/webhooks/github`
