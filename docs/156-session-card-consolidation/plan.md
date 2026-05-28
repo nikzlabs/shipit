@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 description: Replace the session top bar with the PR lifecycle card and move session-management actions (rename, archive) into a hover-reveal overflow on each sidebar row.
 ---

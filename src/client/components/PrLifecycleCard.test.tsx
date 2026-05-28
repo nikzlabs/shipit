@@ -111,9 +111,12 @@ const openPrCard: PrCardState = {
 // ---- PrLifecycleCard ----
 
 describe("PrLifecycleCard", () => {
-  it("renders nothing when no card exists for session", () => {
-    const { container } = render(<PrLifecycleCard sessionId="no-card" />);
-    expect(container.firstChild).toBeNull();
+  it("renders the right cluster (search + overflow) even when no PR card exists", () => {
+    // docs/156: the card always renders for an active session so the search
+    // icon and overflow menu have a stable home pre-PR.
+    render(<PrLifecycleCard sessionId="no-card" onSearch={vi.fn()} />);
+    expect(screen.getByLabelText("Search conversation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Session actions")).toBeInTheDocument();
   });
 
   it("renders ready phase with diff stats and create button", () => {
@@ -131,7 +134,7 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Create PR")).toBeInTheDocument();
   });
 
-  it("renders auto-merge toggle in the ready phase options", async () => {
+  it("ready phase no longer hosts the Auto-merge toggle (moved to top-bar overflow)", async () => {
     const user = userEvent.setup();
     setCard("s1", {
       cardId: "c1",
@@ -140,14 +143,14 @@ describe("PrLifecycleCard", () => {
       totalDeletions: 2,
     });
 
+    // canAutoMerge undefined → top-bar overflow should NOT show Auto-merge either.
     render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
-
-    await user.click(screen.getByLabelText("More options"));
-    expect(await screen.findByText("Auto-merge")).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Session actions"));
+    expect(screen.queryByText("Auto-merge")).toBeNull();
+    expect(screen.queryByText("Auto-fix")).toBeNull();
   });
 
-  it("renders ready phase auto-merge options without diff stats", async () => {
-    const user = userEvent.setup();
+  it("renders the create button in the ready phase even without diff stats only when stats exist", async () => {
     setCard("s1", {
       cardId: "c1",
       phase: "ready",
@@ -156,8 +159,6 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
 
-    await user.click(screen.getByLabelText("More options"));
-    expect(await screen.findByText("Auto-merge")).toBeInTheDocument();
     expect(screen.queryByText("Create PR")).toBeNull();
   });
 
@@ -316,16 +317,16 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Fix CI")).toBeInTheDocument();
   });
 
-  it("shows auto-fix toggle when CI fails (inside overflow menu)", async () => {
+  it("shows auto-fix toggle in the top-bar overflow whenever the session has a remote, regardless of CI state", async () => {
     const user = userEvent.setup();
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
     });
 
-    render(<PrLifecycleCard sessionId="s1" />);
+    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
-    await user.click(screen.getByLabelText("More options"));
+    await user.click(screen.getByLabelText("Session actions"));
     expect(await screen.findByText("Auto-fix")).toBeInTheDocument();
   });
 
@@ -373,12 +374,40 @@ describe("PrLifecycleCard", () => {
       checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
     });
 
+    // canAutoMerge undefined so neither toggle is in the overflow either.
     render(<PrLifecycleCard sessionId="s1" />);
 
     expect(screen.queryByText("Fix CI")).toBeNull();
-    // Auto-fix toggle should not appear even in overflow menu
-    fireEvent.click(screen.getByLabelText("More options"));
+    fireEvent.click(screen.getByLabelText("Session actions"));
     expect(screen.queryByText("Auto-fix")).toBeNull();
+    expect(screen.queryByText("Auto-merge")).toBeNull();
+  });
+
+  it("renders Auto-fix + Auto-merge in the top-bar overflow when the session has a remote (regardless of PR/CI state)", async () => {
+    // docs/156 — both toggles live in the top-bar overflow, gated only on
+    // `canAutoMerge` (i.e. the session has a GitHub remote). No PR card and
+    // no CI state are required. This unblocks the previously-unreachable
+    // "pre-enable auto-fix before the PR exists" workflow.
+    const user = userEvent.setup();
+    // Deliberately no card and no PR — `canAutoMerge` is the only gate.
+    render(<PrLifecycleCard sessionId="no-card" canAutoMerge />);
+    await user.click(screen.getByLabelText("Session actions"));
+    expect(await screen.findByText("Auto-fix")).toBeInTheDocument();
+    expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+  });
+
+  it("renders neither Auto-fix nor Auto-merge in the top-bar overflow when the session has no remote", async () => {
+    const user = userEvent.setup();
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    await user.click(screen.getByLabelText("Session actions"));
+    expect(screen.queryByText("Auto-fix")).toBeNull();
+    expect(screen.queryByText("Auto-merge")).toBeNull();
   });
 
   // ---- Phase 3: merge button, auto-merge toggle, error messages ----
@@ -472,16 +501,16 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Rebase and merge")).toBeInTheDocument();
   });
 
-  it("renders auto-merge toggle when CI passed (inside overflow menu)", async () => {
+  it("renders auto-merge toggle in the top-bar overflow when the session has a remote", async () => {
     const user = userEvent.setup();
     setCard("s1", {
       ...openPrCard,
       checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
     });
 
-    render(<PrLifecycleCard sessionId="s1" />);
+    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
-    await user.click(screen.getByLabelText("More options"));
+    await user.click(screen.getByLabelText("Session actions"));
     expect(await screen.findByText("Auto-merge")).toBeInTheDocument();
   });
 
@@ -850,10 +879,10 @@ describe("PrLifecycleCard — open PR details", () => {
       autoFix: { enabled: false, status: "idle", attemptCount: 0, maxAttempts: 3 },
     });
     const onOpenDetails = vi.fn();
-    render(<PrLifecycleCard sessionId="s1" onOpenDetails={onOpenDetails} />);
+    render(<PrLifecycleCard sessionId="s1" canAutoMerge onOpenDetails={onOpenDetails} />);
 
     // Opening the overflow menu (a button) must not switch the tab.
-    await user.click(screen.getByLabelText("More options"));
+    await user.click(screen.getByLabelText("Session actions"));
     expect(onOpenDetails).not.toHaveBeenCalled();
 
     // Toggling auto-fix (a button inside the menu) must not switch the tab.
