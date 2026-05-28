@@ -317,6 +317,14 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       branchName,
       rollbackHash,
       trimmedSessionName,
+      {
+        sessionManager: ctx.sessionManager,
+        runnerRegistry: ctx.getRunnerRegistry(),
+        repoStore: ctx.repoStore,
+        createGitManager: ctx.createGitManager,
+        prStatusPoller: ctx.prStatusPoller,
+        sseBroadcast: ctx.sseBroadcast,
+      },
     );
     const truncatedMessages = allMessages.slice(0, gapPosition);
     ctx.chatHistoryManager.saveMessages(result.session.id, truncatedMessages);
@@ -336,7 +344,9 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       breadcrumbMessageId,
     });
     ctx.getRunnerRegistry().get(sessionId)?.emitMessage({ type: "fork_breadcrumb", parentSessionId: sessionId, message: breadcrumb });
-    ctx.sseBroadcast("session_list", { sessions: result.sessions });
+    // The session_list SSE broadcast that used to live here is now owned by
+    // graduateSession (docs/156 "Removing the duplicate session_list broadcasts").
+    // Do NOT re-add — it would double-fire on every rewind-driven fork.
     ctx.send({
       type: "session_forked",
       parentSessionId: sessionId,

@@ -1,0 +1,16 @@
+- [x] Add `services/graduate-session.ts` with the "single source of truth" contract comment, `graduateSession()` body, and a private `scheduleSessionNaming()` helper that accepts `skipBranchRename: boolean` (default false).
+- [x] Add `services/graduate-session.test.ts` (13 tests covering setWarm/track/touch/list-broadcast/model/parent/explicit-title/explicit-branch/skipBranchRename + the four CLI paths).
+- [x] Delete `session-graduation.ts` and `session-graduation.test.ts`.
+- [x] Refactor `ws-handlers/send-message.ts` warm-graduation block to call `graduateSession(...)`; keep the inline `void ctx.warmSessionForRepo(remoteUrl)` call (only surface that needs it).
+- [x] Refactor `services/headless-sessions.ts` to call `graduateSession(...)`; delete `HeadlessSessionGraduationDeps` and the `graduationDeps?` parameter.
+- [x] Refactor `services/child-sessions.ts` to call `graduateSession(...)` with `skipBranchRename: true`.
+- [x] Refactor `services/session-fork-merge.ts` to call `graduateSession(...)` with both explicit fields set AND `skipBranchRename: true`; `setRemoteUrl` already runs before graduation.
+- [x] Update `api-routes-session.ts`: wire `GraduateSessionDeps` once at top of `registerSessionRoutes`; delete three duplicate `session_list` broadcasts at fork/headless/spawn routes.
+- [x] Update `ws-handlers/rollback-handlers.ts`: forward `GraduateSessionDeps` to `forkSession`; delete the duplicate `session_list` broadcast at `handleRewindAtGap` (the `handleRewindRestoreRequest` broadcast stays — it's a post-archive event).
+- [x] Update `services/index.ts` re-exports.
+- [x] Update `services/headless-sessions.test.ts`: graduationDeps now mandatory; "deps not wired" test deleted (unreachable code path).
+- [x] Add `vi.mock("../session-namer.js", () => ({ generateSessionName: vi.fn().mockResolvedValue(null) }))` to `agent-spawned-session.test.ts`, `quick-capture-headless.test.ts`, and `warm-sessions.test.ts`.
+- [x] Add the contract comment at each call site.
+- [x] `npm run typecheck` clean. ESLint clean (lint:dev got confused by the deleted test file; ran ESLint directly on all 13 changed files — passed).
+- [x] Affected vitest scope passes (`graduate-session.test.ts`, `headless-sessions.test.ts`, `quick-capture-headless.test.ts`, `warm-sessions.test.ts`, `agent-spawned-session.test.ts`, `rewind-fork.test.ts`, `home-screen.test.ts`).
+- [x] Full orchestrator test sweep: 110 files, 974 tests passed.

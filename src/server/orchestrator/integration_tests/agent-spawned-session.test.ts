@@ -13,7 +13,20 @@
  * enforcement, and the cross-tenancy denial on `view`.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// docs/156 — every session-creation surface now ends with `graduateSession`,
+// which fires `generateSessionName` (a real CLI child) for any path that
+// doesn't pin both an explicit title and branch. Mock it to null so naming
+// is a no-op for these tests; the placeholder title from the prompt slice
+// stays, and the on-disk branch is untouched. Without this, every
+// prompt-without-title spawn here would fork a real `claude`/`codex`
+// process (15s timeout each) and race against the AI rename — the per-turn
+// quota test alone would spawn four real processes.
+vi.mock("../session-namer.js", () => ({
+  generateSessionName: vi.fn().mockResolvedValue(null),
+}));
+
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

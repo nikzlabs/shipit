@@ -6,6 +6,7 @@ import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
+import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 
@@ -57,7 +58,8 @@ export async function createHeadlessSession(
   defaultAgentId: AgentId,
   credentialsDir: string | undefined,
   credentialStore: CredentialStore | undefined,
-  providerAccountManager?: ProviderAccountManager,
+  providerAccountManager: ProviderAccountManager | undefined,
+  graduationDeps: GraduateSessionDeps,
 ): Promise<CreateHeadlessSessionResult> {
   const repoUrl = opts.repoUrl?.trim();
   if (!repoUrl) throw new ServiceError(400, "Add a repo first.");
@@ -85,9 +87,10 @@ export async function createHeadlessSession(
     );
   }
 
-  const branchName = opts.branch?.trim() || generateBranchPrefix();
+  const explicitBranch = opts.branch?.trim();
+  const explicitTitle = opts.title?.trim();
+  const branchName = explicitBranch || generateBranchPrefix();
   assertValidBranchName(branchName);
-  const title = opts.title?.trim() || trimmedPrompt.slice(0, 60) || "Quick session";
 
   const claimed = await claimService.claim(repoUrl);
   const newSessionId = claimed.sessionId;
@@ -110,16 +113,9 @@ export async function createHeadlessSession(
     }
   }
 
-  sessionManager.rename(newSessionId, title);
+  // Workspace-side branch identity must be set before graduateSession so the
+  // session row matches what's on disk.
   sessionManager.setBranch(newSessionId, branchName);
-  sessionManager.setBranchRenamed(newSessionId, true);
-  sessionManager.setWarm(newSessionId, false);
-  if (opts.model) {
-    sessionManager.setModel(newSessionId, opts.model);
-  }
-
-  const session = sessionManager.get(newSessionId);
-  if (!session) throw new ServiceError(500, "Failed to read back headless session");
 
   const agentId = opts.agent ?? defaultAgentId;
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, agentId);
@@ -142,7 +138,22 @@ export async function createHeadlessSession(
   quickSessionIds.add(newSessionId);
   runner.dispatch({ text: trimmedPrompt });
 
-  console.log(`[headless-session] Started ${newSessionId}: branch=${branchName} title="${title}"`);
+  // graduate-session.ts owns the warm → active transition (docs/156).
+  // Do not inline setWarm / track / setBranchRenamed / scheduleSessionNaming /
+  // repoStore.touch / sseBroadcast("session_list") here — call graduateSession.
+  graduateSession(graduationDeps, {
+    sessionId: newSessionId,
+    userText: trimmedPrompt,
+    agentId,
+    ...(explicitTitle ? { explicitTitle } : {}),
+    ...(explicitBranch ? { explicitBranch } : {}),
+    ...(opts.model ? { model: opts.model } : {}),
+  });
+
+  const session = sessionManager.get(newSessionId);
+  if (!session) throw new ServiceError(500, "Failed to read back headless session");
+
+  console.log(`[headless-session] Started ${newSessionId}: branch=${branchName} title="${session.title}"`);
 
   return {
     session,

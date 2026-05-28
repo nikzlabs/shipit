@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import type { WsClientMessage, WsServerMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
-import { generateSessionName } from "../session-namer.js";
+import { graduateSession } from "../services/graduate-session.js";
 import { wireAgentListeners, recordSteeredMessage, persistTurnInProgress, type AgentListenerDeps } from "./agent-listeners.js";
 import { runAgentWithMessage, drainNextQueuedMessage } from "./agent-execution.js";
 import { postTurnCommit } from "./post-turn.js";
@@ -234,102 +234,31 @@ export async function handleSendMessage(
     // Only resume if we have a real Claude CLI session ID
     agentSessionId = session?.agentSessionId;
 
-    // Graduate warm session on first message
+    // Graduate warm session on first message.
+    // graduate-session.ts owns the warm → active transition (docs/156). Do
+    // not inline setWarm / track / setBranchRenamed / scheduleSessionNaming /
+    // repoStore.touch / sseBroadcast("session_list") here.
     if (session?.warm) {
-      ctx.sessionManager.setWarm(effectiveSessionId, false);
-      ctx.sessionManager.track(effectiveSessionId);
+      graduateSession(
+        {
+          sessionManager: ctx.sessionManager,
+          runnerRegistry: ctx.getRunnerRegistry(),
+          repoStore: ctx.repoStore,
+          createGitManager: ctx.createGitManager,
+          prStatusPoller: ctx.prStatusPoller,
+          sseBroadcast: ctx.sseBroadcast,
+        },
+        {
+          sessionId: effectiveSessionId,
+          userText,
+          agentId: session.agentId ?? ctx.getActiveAgentId(),
+        },
+      );
 
-      // Set a placeholder title immediately (replaced async by AI-generated name below)
-      ctx.sessionManager.rename(effectiveSessionId, userText.slice(0, 60) || "New session");
-
-      // Generate session name from the message text using the active session
-      // provider. If the CLI call fails we silently fall through (see
-      // finalizeBranchRenamed below).
-      if (session.workspaceDir) {
-        const namingAgentId = session.agentId ?? ctx.getActiveAgentId();
-        // Helper: mark branch as renamed and emit PR "ready" card. The whole
-        // body is wrapped in try/catch because the only callers — the
-        // `generateSessionName` `.then` / `.catch` chain below — are
-        // fire-and-forget. A throw from the synchronous DB writes here (the
-        // canonical case is a test that closes its in-memory DB before the
-        // naming chain resolves) would otherwise escape the chain's outer
-        // `.catch` and surface as an unhandled rejection.
-        const finalizeBranchRenamed = async () => {
-          try {
-            ctx.sessionManager.setBranchRenamed(effectiveSessionId, true);
-            const s = ctx.sessionManager.get(effectiveSessionId);
-            if (!s?.remoteUrl || !s.workspaceDir) return;
-            if (ctx.prStatusPoller.getStatus(effectiveSessionId)) return; // PR already exists
-            if (s.mergedAt) return; // PR was already merged
-            try {
-              const git = ctx.createGitManager(s.workspaceDir);
-              const headBranch = s.branch || await git.getCurrentBranch();
-              const { insertions, deletions } = await git.diffStatVsBranch("main");
-              ctx.send({
-                type: "pr_lifecycle_update",
-                sessionId: effectiveSessionId,
-                cardId: `pr-card-${effectiveSessionId}`,
-                phase: "ready",
-                headBranch,
-                totalInsertions: insertions,
-                totalDeletions: deletions,
-              });
-            } catch {
-              // Diff stats may fail if no commits yet — that's fine, post-commit will retry
-            }
-          } catch (err) {
-            console.warn("[send-message] finalizeBranchRenamed failed:", getErrorMessage(err));
-          }
-        };
-
-        // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget session naming
-        generateSessionName(userText, namingAgentId).then(async (nameResult) => {
-          if (!nameResult) {
-            await finalizeBranchRenamed();
-            return;
-          }
-          try {
-            const currentBranch = session.branch;
-            if (currentBranch) {
-              // Extract the random slug from the prefix (e.g. "shipit/abc123" → "abc123")
-              // and rebuild as shipit/<descriptive-name>-<random-slug>
-              const randomSlug = currentBranch.replace(/^shipit\//, "");
-              const newBranchName = `shipit/${nameResult.slug}-${randomSlug}`;
-              const sessionGit = ctx.createGitManager(session.workspaceDir!);
-              await sessionGit.renameBranch(currentBranch, newBranchName);
-              ctx.sessionManager.setBranch(effectiveSessionId, newBranchName);
-            }
-            ctx.sessionManager.rename(effectiveSessionId, nameResult.title);
-            const updatedSession = ctx.sessionManager.get(effectiveSessionId);
-            if (updatedSession) {
-              ctx.send({ type: "session_renamed", session: updatedSession });
-              ctx.sseBroadcast("session_renamed", { session: updatedSession });
-            }
-            await finalizeBranchRenamed();
-          } catch (err) {
-            console.warn("[warm] Branch rename failed:", getErrorMessage(err));
-            await finalizeBranchRenamed();
-          }
-        }).catch(async (err: unknown) => {
-          console.warn("[warm] Session naming failed:", err);
-          await finalizeBranchRenamed();
-        });
-      } else {
-        // No workspace directory yet (shouldn't normally happen for a graduating
-        // warm session) — unblock PR card immediately so the UI doesn't hang.
-        ctx.sessionManager.setBranchRenamed(effectiveSessionId, true);
-      }
-
-      // Broadcast session list via SSE so sidebar updates with the graduated session
-      ctx.sseBroadcast("session_list", { sessions: ctx.sessionManager.list() });
-
-      // Mark repo as used now that actual coding is starting
-      if (session.remoteUrl) {
-        ctx.repoStore.touch(session.remoteUrl);
-      }
-
-      // Start warming the next session for this repo in the background.
-      // Intentionally not awaited — warming is independent of the user's message.
+      // Warm-graduation is the only surface that doesn't reach graduation via
+      // `claimSessionService.claim`, so the warm pool's single warm clone was
+      // just consumed but no one re-warmed it. Refill inline. The other three
+      // surfaces inherit re-warming from `claim-session.ts:rewarmPool`.
       if (session.remoteUrl) {
         void ctx.warmSessionForRepo(session.remoteUrl);
       }
