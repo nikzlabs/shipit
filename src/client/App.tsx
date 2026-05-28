@@ -860,6 +860,7 @@ export default function App() {
     (prompt: string, reviewFilePath: string) => {
       const sid = useSessionStore.getState().sessionId;
       useFileStore.getState().closePreview();
+      useUiStore.getState().setMobilePanel("chat");
       sendUserMessage({
         bubble: { role: "user", text: prompt },
         activity: "Reviewing...",
