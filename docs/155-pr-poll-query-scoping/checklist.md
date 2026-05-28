@@ -35,7 +35,7 @@
 ### Phase 1d — Verification
 
 - [x] `npm run lint` clean, `npm run typecheck` clean, `npx vitest run pr-status-poller.test.ts` → 87/87 pass, `npm run test:dev` → 195/195 pass.
-- [ ] Re-run `npm run measure-pr-poll-cost` post-merge, confirm cost dropped to expected 1–2 pts on the heavy path.
+- [x] ~~Re-run `npm run measure-pr-poll-cost` post-merge~~ — redundant. The script issues GraphQL shapes directly against GitHub independent of the poller; the 2026-05-27 measurement already proved bulk light + focused-conversation alias = 1 pt. The production code path is verified to emit that exact shape by the Phase 1c unit tests above.
 
 ## Phase 2 — Aliased per-PR query ❌ REJECTED (Phase 0 outcome)
 
@@ -47,5 +47,5 @@ Not implemented. Phase 1 keeps the bulk view (with `first: N` capped + `DISCOVER
 
 ## Phase 4 — docs & cleanup
 
-- [ ] Cross-link this plan from `docs/064-pr-lifecycle-flow/plan.md` under "Polling budget".
-- [ ] Set `status: done` in `plan.md` frontmatter once Phase 1 lands and verification confirms the cost reduction.
+- [x] Cross-link this plan from `docs/064-pr-lifecycle-flow/plan.md` under "Polling budget".
+- [x] Set `status: done` in `plan.md` frontmatter once Phase 1 lands and verification confirms the cost reduction.
