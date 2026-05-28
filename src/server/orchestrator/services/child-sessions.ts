@@ -14,6 +14,7 @@ import type { SessionInfo, AgentId } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
+import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 
@@ -131,7 +132,8 @@ export async function spawnChildSession(
   defaultAgentId: AgentId,
   credentialsDir: string | undefined,
   credentialStore: CredentialStore | undefined,
-  providerAccountManager?: ProviderAccountManager,
+  providerAccountManager: ProviderAccountManager | undefined,
+  graduationDeps: GraduateSessionDeps,
 ): Promise<SpawnChildSessionResult> {
   const trimmedPrompt = opts.prompt?.trim();
   if (!trimmedPrompt) {
@@ -171,11 +173,13 @@ export async function spawnChildSession(
     }
   }
 
-  // Title up front so we fail fast before disk work. The child's branch is
-  // always a generated `shipit/<slug>` — the agent cannot pick it (dropping
-  // `--branch` is intentional: agent-supplied names drifted outside the
-  // `shipit/` namespace and broke our branch conventions).
-  const title = opts.title?.trim() || trimmedPrompt.slice(0, 60) || "Spawned session";
+  // The child's branch is always a generated `shipit/<slug>` — the agent
+  // cannot pick it (dropping `--branch` is intentional: agent-supplied names
+  // drifted outside the `shipit/` namespace and broke our branch conventions).
+  // Title precedence: explicit `opts.title` wins; otherwise the AI naming
+  // flow inside `graduateSession` picks one. We don't pre-set a slice here —
+  // graduateSession's placeholder logic does that.
+  const explicitTitle = opts.title?.trim();
 
   // Spawn requires the parent to be backed by a registered, ready remote.
   // We route the workspace creation through the same warm-pool-aware claim
@@ -224,21 +228,25 @@ export async function spawnChildSession(
     }
   }
 
-  // Graduate the warm session into a user-visible spawn and override the
-  // claim-assigned title. The claim already set the branch row to the
-  // current `shipit/<random>` name; we just flip `branchRenamed = true` so
-  // PR lifecycle / auto-PR gates treat it as a real session branch instead
-  // of a warm-pool placeholder. Credentials, gc.auto config, and the
-  // remoteUrl row were all set during the claim itself.
-  sessionManager.rename(newSessionId, title);
-  sessionManager.setBranchRenamed(newSessionId, true);
-  sessionManager.setWarm(newSessionId, false);
-
-  sessionManager.setParentSession(newSessionId, parentSessionId, opts.spawnedByTurn);
-  const modelToSet = opts.model ?? parent.model;
-  if (modelToSet) {
-    sessionManager.setModel(newSessionId, modelToSet);
-  }
+  // graduate-session.ts owns the warm → active transition (docs/156).
+  // Do not inline setWarm / track / setBranchRenamed / scheduleSessionNaming
+  // / repoStore.touch / sseBroadcast("session_list") here.
+  //
+  // skipBranchRename: true because `POST /spawn`'s response body returns
+  // `branch` synchronously to the CLI shim — a delayed AI branch rename
+  // would make the printed value stale. AI naming still runs (when the
+  // agent didn't pass `--title`) and updates the title; the branch row
+  // keeps the claim-time `shipit/<random>` value.
+  graduateSession(graduationDeps, {
+    sessionId: newSessionId,
+    userText: trimmedPrompt,
+    agentId: opts.agent ?? parent.agentId ?? defaultAgentId,
+    skipBranchRename: true,
+    ...(explicitTitle ? { explicitTitle } : {}),
+    ...((opts.model ?? parent.model) ? { model: (opts.model ?? parent.model)! } : {}),
+    parentSessionId,
+    ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
+  });
 
   const child = sessionManager.get(newSessionId);
   if (!child) throw new ServiceError(500, "Failed to read back spawned child session");
@@ -285,7 +293,7 @@ export async function spawnChildSession(
   runner.dispatch({ text: trimmedPrompt });
 
   console.log(
-    `[spawn-child] Spawned session ${newSessionId} under parent ${parentSessionId}: branch=${branchName} title="${title}"`,
+    `[spawn-child] Spawned session ${newSessionId} under parent ${parentSessionId}: branch=${branchName} title="${child.title}"`,
   );
 
   return {

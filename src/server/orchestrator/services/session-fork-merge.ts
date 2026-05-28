@@ -12,6 +12,7 @@ import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
 import type { SessionInfo } from "../../shared/types.js";
+import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 
 /** Fork a session into a new clone with its own branch. */
@@ -25,8 +26,9 @@ export async function forkSession(
   activeSessionId: string,
   activeSessionDir: string,
   branchName: string,
-  startPoint?: string,
-  title?: string,
+  startPoint: string | undefined,
+  title: string | undefined,
+  graduationDeps: GraduateSessionDeps,
 ): Promise<{ session: SessionInfo; parentSessionId: string; sessions: SessionInfo[] }> {
   const trimmed = branchName.trim();
   if (!trimmed) throw new ServiceError(400, "Branch name is required");
@@ -75,14 +77,33 @@ export async function forkSession(
   if (startPoint) branchArgs.push(startPoint);
   await newGit.raw(branchArgs);
 
-  // Track in session manager
+  // Fork-specific workspace identity: insert the row, pin branch + remote.
+  // graduateSession is called after — it needs `remoteUrl` already set so
+  // `repoStore.touch` can fire.
   const resolvedTitle = title?.trim() || `${activeSession?.title ?? "Session"} (${trimmed})`;
   sessionManager.track(newSessionId, resolvedTitle, newWorkspaceDir);
   sessionManager.setBranch(newSessionId, trimmed);
-  sessionManager.setBranchRenamed(newSessionId, true);
   if (activeSession?.remoteUrl) {
     sessionManager.setRemoteUrl(newSessionId, activeSession.remoteUrl);
   }
+
+  // graduate-session.ts owns the warm → active transition (docs/156).
+  // Do not inline setWarm / setBranchRenamed / scheduleSessionNaming /
+  // repoStore.touch / sseBroadcast("session_list") here.
+  //
+  // Both explicit fields set: AI naming is suppressed (user chose the title
+  // and branch). `skipBranchRename: true` is belt-and-braces — the explicit
+  // gate already short-circuits naming, but a future change to the naming
+  // policy must not be able to silently rewrite a fork branch the user
+  // chose.
+  graduateSession(graduationDeps, {
+    sessionId: newSessionId,
+    userText: "",
+    agentId: activeSession?.agentId ?? "claude",
+    explicitTitle: resolvedTitle,
+    explicitBranch: trimmed,
+    skipBranchRename: true,
+  });
 
   const newSession = sessionManager.get(newSessionId)!;
   console.log("[server] Forked session:", newSessionId, "branch:", trimmed);

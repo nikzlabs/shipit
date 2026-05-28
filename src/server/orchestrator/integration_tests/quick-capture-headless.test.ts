@@ -1,4 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// docs/156 — every session-creation surface now ends with `graduateSession`,
+// which fires `generateSessionName` (real CLI child, 15s timeout) for any
+// path without an explicit title+branch. Mock to null so the placeholder
+// title sticks and the branch is unchanged. Without this, the
+// no-explicit-title path would shell out to a real provider CLI.
+vi.mock("../session-namer.js", () => ({
+  generateSessionName: vi.fn().mockResolvedValue(null),
+}));
+
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
