@@ -52,6 +52,18 @@ export async function registerSessionRoutes(
 ): Promise<void> {
   const { sessionManager, createGitManager, createRepoGit } = deps;
 
+  // One shared GraduateSessionDeps for every session-creation route — docs/156.
+  // graduate-session.ts is the single source of truth; passing the same deps
+  // bundle to every surface means a future caller can't silently miss one.
+  const graduationDeps = {
+    sessionManager,
+    runnerRegistry: deps.runnerRegistry,
+    repoStore: deps.repoStore,
+    createGitManager,
+    ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+    sseBroadcast: deps.sseBroadcast,
+  };
+
   // Single shared claim service for both the HTTP claim-session route and
   // the agent-driven spawn route. The per-repo promise chain lives in the
   // factory's closure, so callers MUST share this instance for the
@@ -271,9 +283,10 @@ export async function registerSessionRoutes(
           sessionManager, createRepoGit, deps.getSharedRepoDir, deps.sessionsRoot,
           deps.githubAuthManager, { init: () => {} },
           request.params.id, dir,
-          request.body.branchName, request.body.startPoint,
+          request.body.branchName, request.body.startPoint, undefined,
+          graduationDeps,
         );
-        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        // session_list SSE broadcast is owned by graduateSession (docs/156).
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -325,13 +338,9 @@ export async function registerSessionRoutes(
           deps.credentialsDir,
           deps.credentialStore,
           deps.providerAccountManager,
-          deps.prStatusPoller ? {
-            createGitManager,
-            prStatusPoller: deps.prStatusPoller,
-            sseBroadcast: deps.sseBroadcast,
-          } : undefined,
+          graduationDeps,
         );
-        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        // session_list SSE broadcast is owned by graduateSession (docs/156).
         return {
           sessionId: result.sessionId,
           branch: result.branch,
@@ -388,10 +397,9 @@ export async function registerSessionRoutes(
           deps.credentialsDir,
           deps.credentialStore,
           deps.providerAccountManager,
+          graduationDeps,
         );
-        // Broadcast the updated session list so the parent's sidebar shows
-        // the new child immediately — same pattern as `fork` / `unarchive`.
-        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        // session_list SSE broadcast is owned by graduateSession (docs/156).
 
         // docs/117 Phase 2 — surface the spawn inline in the parent's chat
         // via a `session_spawned` event. Routed through the parent runner's

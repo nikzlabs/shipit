@@ -7,8 +7,10 @@ import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
+import { RepoStore } from "../repo-store.js";
 import { GitManager } from "../../shared/git.js";
-import { createHeadlessSession, type HeadlessSessionGraduationDeps } from "./headless-sessions.js";
+import { createHeadlessSession } from "./headless-sessions.js";
+import type { GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -52,15 +54,26 @@ describe("createHeadlessSession", () => {
   let tmpDir: string;
   let dbManager: DatabaseManager;
   let sessionManager: SessionManager;
+  let repoStore: RepoStore;
   let registry: FakeRunnerRegistry;
   let nextSession = 0;
+  let graduationDeps: GraduateSessionDeps;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-headless-svc-"));
     dbManager = new DatabaseManager(":memory:");
     sessionManager = new SessionManager(dbManager);
+    repoStore = new RepoStore(dbManager);
     registry = new FakeRunnerRegistry();
     nextSession = 0;
+    graduationDeps = {
+      sessionManager,
+      runnerRegistry: registry as unknown as SessionRunnerRegistry,
+      repoStore,
+      createGitManager: (dir: string) => new GitManager(dir),
+      prStatusPoller: { getStatus: vi.fn(() => undefined) } as unknown as PrStatusPoller,
+      sseBroadcast: vi.fn(),
+    };
   });
 
   afterEach(() => {
@@ -100,6 +113,8 @@ describe("createHeadlessSession", () => {
       "claude",
       undefined,
       undefined,
+      undefined,
+      graduationDeps,
     );
 
     expect(result.sessionId).toBe("quick-1");
@@ -143,6 +158,8 @@ describe("createHeadlessSession", () => {
       "claude",
       undefined,
       undefined,
+      undefined,
+      graduationDeps,
     );
 
     expect(result.sessionId).toBe("quick-1");
@@ -160,6 +177,8 @@ describe("createHeadlessSession", () => {
       "claude",
       undefined,
       undefined,
+      undefined,
+      graduationDeps,
     )).rejects.toMatchObject({ statusCode: 400, message: "Add a repo first." });
 
     await expect(createHeadlessSession(
@@ -170,6 +189,8 @@ describe("createHeadlessSession", () => {
       "claude",
       undefined,
       undefined,
+      undefined,
+      graduationDeps,
     )).rejects.toMatchObject({ statusCode: 400, message: "prompt is required" });
 
     expect(claim.claim).not.toHaveBeenCalled();
@@ -188,6 +209,8 @@ describe("createHeadlessSession", () => {
       "claude",
       undefined,
       undefined,
+      undefined,
+      graduationDeps,
     );
 
     await expect(createHeadlessSession(
@@ -202,6 +225,8 @@ describe("createHeadlessSession", () => {
       "claude",
       undefined,
       undefined,
+      undefined,
+      graduationDeps,
     )).rejects.toMatchObject({
       statusCode: 429,
       message: "You already have 1 quick sessions running. Open one from the sidebar before starting another.",
@@ -244,6 +269,7 @@ describe("createHeadlessSession", () => {
       tmpDir,
       credentialStore,
       providerAccountManager,
+      graduationDeps,
     );
     const claudeSession = sessionManager.get("quick-1");
     expect(claudeSession?.providerRouteKind).toBe("account");
@@ -258,27 +284,22 @@ describe("createHeadlessSession", () => {
       tmpDir,
       credentialStore,
       providerAccountManager,
+      graduationDeps,
     );
     const codexSession = sessionManager.get("quick-2");
     expect(codexSession?.providerRouteKind).toBe("account");
     expect(codexSession?.providerRouteId).toBe("codex-default");
   });
 
-  it("defers branchRenamed when graduation deps are wired and no branch/title is pinned", async () => {
-    // Structural assertion for the warm-graduation parity fix: when the caller
-    // doesn't pin a branch/title and the route wired graduation deps,
-    // `createHeadlessSession` hands ownership of `branchRenamed` to the shared
-    // `scheduleSessionNaming` flow (the same one warm graduation uses). The
-    // synchronous return therefore leaves `branchRenamed` unset; the async
-    // chain — driven by the real CLI — flips it once the rename completes.
-    // We deliberately do not await that chain here: the cross-flow naming
-    // logic is unit-tested in `session-graduation.test.ts` with a mocked CLI.
-    const graduationDeps: HeadlessSessionGraduationDeps = {
-      createGitManager: (dir: string) => new GitManager(dir),
-      prStatusPoller: { getStatus: vi.fn(() => undefined) } as unknown as PrStatusPoller,
-      sseBroadcast: vi.fn(),
-    };
-
+  it("defers branchRenamed when no explicit branch/title is pinned", async () => {
+    // Structural assertion for the unified-graduation contract (docs/156):
+    // when the caller doesn't pin a branch/title, `createHeadlessSession`
+    // hands ownership of `branchRenamed` to the shared `graduateSession`
+    // flow. The synchronous return therefore leaves `branchRenamed` unset;
+    // the async naming chain — driven by the real CLI — flips it once the
+    // rename completes. We deliberately do not await that chain here: the
+    // cross-flow naming logic is unit-tested in `graduate-session.test.ts`
+    // with a mocked CLI.
     const result = await createHeadlessSession(
       sessionManager,
       registry as unknown as SessionRunnerRegistry,
@@ -296,24 +317,9 @@ describe("createHeadlessSession", () => {
     );
 
     expect(result.session.title).toBe("Fix the flaky test");
-    expect(result.session.branch).toMatch(/^shipit\/[a-z0-9]{1,6}$/);
+    // generateBranchPrefix → "shipit/<6 base64url chars>" (lowercased).
+    expect(result.session.branch).toMatch(/^shipit\/[a-z0-9_-]{1,6}$/);
     expect(result.session.branchRenamed).toBeUndefined();
-  });
-
-  it("marks branchRenamed immediately when graduation deps are not wired (test/local mode)", async () => {
-    // Mirror image of the previous test: when the route doesn't pass
-    // `graduationDeps` (e.g. a runtime without a PR poller), the synchronous
-    // `setBranchRenamed(true)` keeps the PR card flow unblocked.
-    const result = await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      { repoUrl: "https://github.com/acme/app.git", prompt: "do it" },
-      "claude",
-      undefined,
-      undefined,
-    );
-    expect(result.session.branchRenamed).toBe(true);
   });
 
   it("propagates claim failures as service errors", async () => {
@@ -328,6 +334,8 @@ describe("createHeadlessSession", () => {
       "claude",
       undefined,
       undefined,
+      undefined,
+      graduationDeps,
     )).rejects.toMatchObject({ statusCode: 500, message: "clone failed" });
   });
 });

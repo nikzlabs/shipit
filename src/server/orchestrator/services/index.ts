@@ -12,6 +12,7 @@ export * from "./marketplace.js";
 export * from "./session.js";
 export * from "./spawn-telemetry.js";
 export * from "./claim-session.js";
+export * from "./graduate-session.js";
 export * from "./headless-sessions.js";
 export * from "./git.js";
 export * from "./github.js";

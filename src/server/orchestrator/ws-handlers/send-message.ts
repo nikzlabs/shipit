@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import type { WsClientMessage, WsServerMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
-import { scheduleSessionNaming } from "../session-graduation.js";
+import { graduateSession } from "../services/graduate-session.js";
 import { wireAgentListeners, recordSteeredMessage, persistTurnInProgress, type AgentListenerDeps } from "./agent-listeners.js";
 import { runAgentWithMessage, drainNextQueuedMessage } from "./agent-execution.js";
 import { postTurnCommit } from "./post-turn.js";
@@ -234,49 +234,31 @@ export async function handleSendMessage(
     // Only resume if we have a real Claude CLI session ID
     agentSessionId = session?.agentSessionId;
 
-    // Graduate warm session on first message
+    // Graduate warm session on first message.
+    // graduate-session.ts owns the warm → active transition (docs/156). Do
+    // not inline setWarm / track / setBranchRenamed / scheduleSessionNaming /
+    // repoStore.touch / sseBroadcast("session_list") here.
     if (session?.warm) {
-      ctx.sessionManager.setWarm(effectiveSessionId, false);
-      ctx.sessionManager.track(effectiveSessionId);
+      graduateSession(
+        {
+          sessionManager: ctx.sessionManager,
+          runnerRegistry: ctx.getRunnerRegistry(),
+          repoStore: ctx.repoStore,
+          createGitManager: ctx.createGitManager,
+          prStatusPoller: ctx.prStatusPoller,
+          sseBroadcast: ctx.sseBroadcast,
+        },
+        {
+          sessionId: effectiveSessionId,
+          userText,
+          agentId: session.agentId ?? ctx.getActiveAgentId(),
+        },
+      );
 
-      // Set a placeholder title immediately (replaced async by AI-generated name below)
-      ctx.sessionManager.rename(effectiveSessionId, userText.slice(0, 60) || "New session");
-
-      // Kick off AI naming + branch rename via the shared graduation flow.
-      // The exact same call lives in `createHeadlessSession` so quick sessions
-      // and warm-graduated sessions are named the same way — see
-      // `session-graduation.ts`.
-      if (session.workspaceDir) {
-        scheduleSessionNaming(
-          {
-            sessionManager: ctx.sessionManager,
-            runnerRegistry: ctx.getRunnerRegistry(),
-            createGitManager: ctx.createGitManager,
-            prStatusPoller: ctx.prStatusPoller,
-            sseBroadcast: ctx.sseBroadcast,
-          },
-          {
-            sessionId: effectiveSessionId,
-            userText,
-            agentId: session.agentId ?? ctx.getActiveAgentId(),
-          },
-        );
-      } else {
-        // No workspace directory yet (shouldn't normally happen for a graduating
-        // warm session) — unblock PR card immediately so the UI doesn't hang.
-        ctx.sessionManager.setBranchRenamed(effectiveSessionId, true);
-      }
-
-      // Broadcast session list via SSE so sidebar updates with the graduated session
-      ctx.sseBroadcast("session_list", { sessions: ctx.sessionManager.list() });
-
-      // Mark repo as used now that actual coding is starting
-      if (session.remoteUrl) {
-        ctx.repoStore.touch(session.remoteUrl);
-      }
-
-      // Start warming the next session for this repo in the background.
-      // Intentionally not awaited — warming is independent of the user's message.
+      // Warm-graduation is the only surface that doesn't reach graduation via
+      // `claimSessionService.claim`, so the warm pool's single warm clone was
+      // just consumed but no one re-warmed it. Refill inline. The other three
+      // surfaces inherit re-warming from `claim-session.ts:rewarmPool`.
       if (session.remoteUrl) {
         void ctx.warmSessionForRepo(session.remoteUrl);
       }

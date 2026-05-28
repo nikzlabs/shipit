@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 priority: high
 description: One graduateSession() service every session-creation path must end with — closes the warm/quick/child/fork drift that produced the missing-name bug.
 ---

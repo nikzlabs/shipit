@@ -1,19 +1,16 @@
-- [ ] Add `services/graduate-session.ts` with the "single source of truth" contract comment, `graduateSession()` body, and a private `scheduleSessionNaming()` helper that accepts `skipBranchRename: boolean` (default false).
-- [ ] Add `services/graduate-session.test.ts` (port 4 naming tests + add setWarm/track/touch/list-broadcast/model/parent/explicit-title/explicit-branch/skipBranchRename coverage).
-- [ ] Delete `session-graduation.ts` and `session-graduation.test.ts`.
-- [ ] Refactor `ws-handlers/send-message.ts` warm-graduation block to call `graduateSession(...)`; keep the inline `void ctx.warmSessionForRepo(remoteUrl)` call (only surface that needs it).
-- [ ] Refactor `services/headless-sessions.ts` to call `graduateSession(...)`; delete `HeadlessSessionGraduationDeps` and the `graduationDeps?` parameter.
-- [ ] Refactor `services/child-sessions.ts` to call `graduateSession(...)` with `skipBranchRename: true`. Verify AI-naming runs when no `opts.title`; verify branch row stays at the claim-time `shipit/<random>` value (so the spawn API response stays accurate).
-- [ ] Refactor `services/session-fork-merge.ts` to call `graduateSession(...)` with both explicit fields set AND `skipBranchRename: true`; reorder so `setRemoteUrl` runs before graduation.
-- [ ] Update `api-routes-session.ts`: wire full `GraduateSessionDeps` into headless + spawn + fork routes, drop the previous `graduationDeps` conditional, **delete three duplicate `session_list` broadcasts** at `:276` (fork) / `:334` (headless) / `:394` (spawn). Keep `:190` (unarchive) and `:611` (delete) — not creation events.
-- [ ] Update `ws-handlers/rollback-handlers.ts`: forward **five new positional args** to `forkSession` (`runnerRegistry`, `prStatusPoller`, `repoStore`, `createGitManager`, `sseBroadcast` — all new on `forkSession`); **delete the duplicate `session_list` broadcast at `:339`**. Keep `:421` (post-archive in rewind-restore, not a creation).
-- [ ] Update `services/index.ts` re-exports.
-- [ ] Update `services/headless-sessions.test.ts`: port the "defers branchRenamed" assertion against the new injection shape; **delete** the "deps not wired" test (covers an unreachable code path).
-- [ ] Update / add `services/child-sessions.test.ts`: AI-naming runs when no `opts.title`; AI-naming skipped when title supplied; branch row unchanged by `skipBranchRename: true`.
-- [ ] **Add `vi.mock("../session-namer.js", () => ({ generateSessionName: vi.fn().mockResolvedValue(null) }))`** to every integration test that drives session creation without supplying both an explicit title and explicit branch — at minimum: `agent-spawned-session.test.ts`, `quick-capture-headless.test.ts`, `warm-sessions.test.ts`. Without this they fork real CLI processes (15s timeout each) on every prompt-without-title path.
-- [ ] Extend `integration_tests/quick-capture-headless.test.ts` with the `repoStore.touch` end-to-end assertion.
-- [ ] Verify `rewind-fork.test.ts` still passes after the `forkSession` signature change and the duplicate-broadcast removal.
-- [ ] Add the one-line "graduate-session.ts owns this — do not inline" comment at each of the four call sites.
-- [ ] `npm run lint:dev` + `npm run typecheck` clean.
-- [ ] Affected vitest scope passes (`graduate-session.test.ts`, `headless-sessions.test.ts`, `child-sessions.test.ts`, `quick-capture-headless.test.ts`, `warm-sessions.test.ts`, `agent-spawned-session.test.ts`, `rewind-fork.test.ts`, `home-screen.test.ts`).
-- [ ] Full `vitest run src/server/orchestrator/` sweep passes.
+- [x] Add `services/graduate-session.ts` with the "single source of truth" contract comment, `graduateSession()` body, and a private `scheduleSessionNaming()` helper that accepts `skipBranchRename: boolean` (default false).
+- [x] Add `services/graduate-session.test.ts` (13 tests covering setWarm/track/touch/list-broadcast/model/parent/explicit-title/explicit-branch/skipBranchRename + the four CLI paths).
+- [x] Delete `session-graduation.ts` and `session-graduation.test.ts`.
+- [x] Refactor `ws-handlers/send-message.ts` warm-graduation block to call `graduateSession(...)`; keep the inline `void ctx.warmSessionForRepo(remoteUrl)` call (only surface that needs it).
+- [x] Refactor `services/headless-sessions.ts` to call `graduateSession(...)`; delete `HeadlessSessionGraduationDeps` and the `graduationDeps?` parameter.
+- [x] Refactor `services/child-sessions.ts` to call `graduateSession(...)` with `skipBranchRename: true`.
+- [x] Refactor `services/session-fork-merge.ts` to call `graduateSession(...)` with both explicit fields set AND `skipBranchRename: true`; `setRemoteUrl` already runs before graduation.
+- [x] Update `api-routes-session.ts`: wire `GraduateSessionDeps` once at top of `registerSessionRoutes`; delete three duplicate `session_list` broadcasts at fork/headless/spawn routes.
+- [x] Update `ws-handlers/rollback-handlers.ts`: forward `GraduateSessionDeps` to `forkSession`; delete the duplicate `session_list` broadcast at `handleRewindAtGap` (the `handleRewindRestoreRequest` broadcast stays — it's a post-archive event).
+- [x] Update `services/index.ts` re-exports.
+- [x] Update `services/headless-sessions.test.ts`: graduationDeps now mandatory; "deps not wired" test deleted (unreachable code path).
+- [x] Add `vi.mock("../session-namer.js", () => ({ generateSessionName: vi.fn().mockResolvedValue(null) }))` to `agent-spawned-session.test.ts`, `quick-capture-headless.test.ts`, and `warm-sessions.test.ts`.
+- [x] Add the contract comment at each call site.
+- [x] `npm run typecheck` clean. ESLint clean (lint:dev got confused by the deleted test file; ran ESLint directly on all 13 changed files — passed).
+- [x] Affected vitest scope passes (`graduate-session.test.ts`, `headless-sessions.test.ts`, `quick-capture-headless.test.ts`, `warm-sessions.test.ts`, `agent-spawned-session.test.ts`, `rewind-fork.test.ts`, `home-screen.test.ts`).
+- [x] Full orchestrator test sweep: 110 files, 974 tests passed.

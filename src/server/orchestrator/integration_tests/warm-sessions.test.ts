@@ -5,7 +5,17 @@
  * Tests warmSessionForRepo() background warming, claim-session endpoint
  * with a real warm session, and graduation logic in handleSendMessage.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// docs/156 — `graduateSession` fires `generateSessionName` (real CLI, 15s
+// timeout) on warm-graduation when the user's first message has no explicit
+// title/branch. Mock to null so the placeholder slice sticks; the cross-
+// flow AI naming logic is covered by `graduate-session.test.ts` with the
+// CLI fully mocked.
+vi.mock("../session-namer.js", () => ({
+  generateSessionName: vi.fn().mockResolvedValue(null),
+}));
+
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
