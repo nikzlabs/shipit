@@ -54,7 +54,6 @@ export function MessageInput({
   hasActiveSession = false,
   onOpenUsageDetails,
   focusKey,
-  hasPrCard = false,
   liveSteeringActive = false,
   surface = "chat",
 }: {
@@ -91,8 +90,6 @@ export function MessageInput({
   onOpenUsageDetails?: () => void;
   /** Changed value triggers textarea focus (e.g. session ID or route change). */
   focusKey?: string;
-  /** When true, only round bottom corners (PR card provides the top). */
-  hasPrCard?: boolean;
   /** When true, show both Stop and Send buttons simultaneously (live steering active). */
   liveSteeringActive?: boolean;
   surface?: "chat" | "overlay";
@@ -488,7 +485,7 @@ export function MessageInput({
         />
 
         {/* Unified input box */}
-        <div className={`flex flex-col ${hasPrCard ? "rounded-b-xl" : "rounded-xl"} bg-(--color-bg-secondary) border border-(--color-border-secondary) focus-within:border-(--color-accent)/80 focus-within:ring-1 focus-within:ring-(--color-accent)/80`}>
+        <div className="flex flex-col rounded-xl bg-(--color-bg-secondary) border border-(--color-border-secondary) focus-within:border-(--color-accent)/80 focus-within:ring-1 focus-within:ring-(--color-accent)/80">
           {/* Attachment chips — rendered inside the input box, above the
               textarea, so they're visually contained within the input dialog
               rather than floating above it and overlapping the chat history. */}

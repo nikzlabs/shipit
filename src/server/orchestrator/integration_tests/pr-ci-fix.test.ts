@@ -144,6 +144,37 @@ describe("POST /api/sessions/:id/pr/auto-fix", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ enabled: false });
   });
+
+  it("persists auto-fix enablement set BEFORE a PR exists (docs/156)", async () => {
+    // The client side now exposes Auto-fix in the top-bar overflow whenever
+    // a session has a GitHub remote — including the pre-PR phase. This test
+    // pins the corresponding server contract: enabling auto-fix without a
+    // PR present must persist, so the poller's CI-failure path can react to
+    // the very first failing run once a PR is created.
+    expect(prStatusPoller.getAutoFixState(sessionId)).toBeUndefined();
+
+    const enableRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/auto-fix`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ enabled: true }),
+    });
+    expect(enableRes.statusCode).toBe(200);
+
+    // The setting is in place even though we never created a PR — the poller
+    // exposes it directly, and `markAutoFixRunning` (the function the poller
+    // calls when a failing CI run is observed) finds the existing state and
+    // increments its attempt counter rather than refusing to act.
+    const stored = prStatusPoller.getAutoFixState(sessionId);
+    expect(stored).toMatchObject({ enabled: true, attemptCount: 0, status: "idle" });
+
+    prStatusPoller.markAutoFixRunning(sessionId);
+    expect(prStatusPoller.getAutoFixState(sessionId)).toMatchObject({
+      enabled: true,
+      attemptCount: 1,
+      status: "running",
+    });
+  });
 });
 
 describe("POST /api/sessions/:id/pr/fix-ci", () => {

@@ -1,7 +1,34 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { AllSessionsDialog } from "./AllSessionsDialog.js";
 import type { SessionInfo } from "../../server/shared/types.js";
+
+/**
+ * `SessionItem` (rendered inside the dialog) calls `useMediaQuery("(pointer: coarse)")`
+ * via its parent, but here the items are rendered directly without the sidebar
+ * wrapper — they read the `isTouch` prop as undefined, which is fine.
+ * Stub matchMedia anyway so any future media-query call from a nested component
+ * doesn't blow up jsdom.
+ */
+function mockMatchMedia() {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    configurable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+    })),
+  });
+}
+
+beforeEach(() => {
+  mockMatchMedia();
+});
 
 afterEach(cleanup);
 
@@ -27,43 +54,59 @@ const defaultProps = () => ({
 });
 
 describe("AllSessionsDialog", () => {
-  it("shows restore button for archived sessions", () => {
+  // docs/156: session row actions moved from inline buttons into the row's
+  // `[⋯] Session actions` overflow menu. The tests below exercise the menu.
+
+  it("offers Restore in the row overflow for archived sessions", async () => {
+    const user = userEvent.setup();
     const props = defaultProps();
     props.sessions = [
       baseSession({ id: "s1", title: "Archived one", archived: true }),
     ];
     render(<AllSessionsDialog {...props} />);
-    expect(screen.getByLabelText("Restore session")).toBeTruthy();
+    await user.click(screen.getByLabelText("Session actions"));
+    expect(await screen.findByText("Restore")).toBeInTheDocument();
+    // Archived rows hide Rename + Archive — only Restore is offered.
+    expect(screen.queryByText("Rename")).toBeNull();
+    expect(screen.queryByText("Archive")).toBeNull();
   });
 
-  it("shows archive button for non-archived sessions", () => {
+  it("offers Rename + Archive in the row overflow for non-archived sessions", async () => {
+    const user = userEvent.setup();
     const props = defaultProps();
     props.sessions = [
       baseSession({ id: "s1", title: "Active one" }),
     ];
     render(<AllSessionsDialog {...props} />);
-    expect(screen.getByLabelText("Archive session")).toBeTruthy();
+    await user.click(screen.getByLabelText("Session actions"));
+    expect(await screen.findByText("Rename")).toBeInTheDocument();
+    expect(screen.getByText("Archive")).toBeInTheDocument();
+    expect(screen.queryByText("Restore")).toBeNull();
   });
 
-  it("calls onUnarchive when restore button is clicked", async () => {
+  it("calls onUnarchive when Restore is selected from the menu", async () => {
+    const user = userEvent.setup();
     const props = defaultProps();
     props.sessions = [
       baseSession({ id: "s1", title: "Archived one", archived: true }),
     ];
     render(<AllSessionsDialog {...props} />);
-    fireEvent.click(screen.getByLabelText("Restore session"));
+    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(await screen.findByText("Restore"));
     await waitFor(() => {
       expect(props.onUnarchive).toHaveBeenCalledWith("s1");
     });
   });
 
-  it("calls onArchive when archive button is clicked", async () => {
+  it("calls onArchive when Archive is selected from the menu", async () => {
+    const user = userEvent.setup();
     const props = defaultProps();
     props.sessions = [
       baseSession({ id: "s1", title: "Active one" }),
     ];
     render(<AllSessionsDialog {...props} />);
-    fireEvent.click(screen.getByLabelText("Archive session"));
+    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(await screen.findByText("Archive"));
     await waitFor(() => {
       expect(props.onArchive).toHaveBeenCalledWith("s1");
     });

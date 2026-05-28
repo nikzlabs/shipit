@@ -1,11 +1,11 @@
 /**
- * PrLifecycleCard — compact inline chat bar showing the PR lifecycle.
+ * PrLifecycleCard — sticky top chrome for the chat panel.
  *
- * Single-line design for each phase: ready, creating, open, merged, error.
- * Updates in place when the store state changes.
- *
- * Phase 2 additions: per-check failure list, auto-fix toggle, Fix CI button.
- * Phase 3 additions: merge split button, auto-merge toggle, error messages.
+ * Single-line design for each PR phase: ready, creating, open, merged, error.
+ * Updates in place when the store state changes. Always renders (even pre-PR
+ * or for sessions without a PR card) so the right cluster — search icon and
+ * the overflow menu housing conversation- and PR-level preferences — has a
+ * stable home. See docs/156.
  */
 
 import { useState, useCallback } from "react";
@@ -17,6 +17,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
 import { Button } from "./ui/button.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
+import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import { MarkdownContent } from "./message-markdown.js";
 import {
@@ -27,6 +28,8 @@ import {
   ResolveConflictsButton,
 } from "./PrStatusControls.js";
 import {
+  ArrowCounterClockwiseIcon,
+  DownloadSimpleIcon,
   GitBranchIcon,
   GitPullRequestIcon,
   GitMergeIcon,
@@ -35,6 +38,7 @@ import {
   CircleNotchIcon,
   WarningIcon,
   GlobeIcon,
+  MagnifyingGlassIcon,
   PaperPlaneTiltIcon,
 } from "@phosphor-icons/react";
 import type { GitHubDeploymentStatus } from "../../server/shared/types.js";
@@ -151,7 +155,7 @@ function BranchLabel({
           </button>
         </TooltipTrigger>
         <TooltipContent
-          side="top"
+          side="bottom"
           className="max-w-lg max-h-96 flex flex-col overflow-hidden text-left p-0"
         >
           <div className="flex-1 min-h-0 overflow-auto p-3">
@@ -352,19 +356,13 @@ function ReadyPhase({
   const del = card.totalDeletions ?? 0;
   const hasDiffStats = ins > 0 || del > 0;
   const openDiff = useOpenPrDiff();
-  const autoMerge = card.autoMerge;
 
   return (
-    <div className="flex items-center gap-3 flex-nowrap">
+    <div className="flex items-center gap-3 flex-nowrap min-w-0 flex-1">
       <PrStateBadge sessionId={sessionId} />
       <BranchLabel headBranch={card.headBranch} />
       <span className="ml-auto shrink-0 flex items-center gap-3">
         {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
-        <OverflowMenu side="top" contentClassName="min-w-48">
-          <div className="px-2 py-1">
-            <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
-          </div>
-        </OverflowMenu>
         {hasDiffStats && (
           <Button
             size="sm"
@@ -415,7 +413,6 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   const canMerge = (isCiPassed || isCiNone) && !isConflicting;
   const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFix?.enabled || isAutoFixExhausted);
   const showMergeButton = canMerge && !autoMerge?.enabled;
-  const showAutoMergeToggle = !isCiFailed || isCiPassed;
   // The inline conflict UI yields to the RebaseBanner once a rebase is
   // active — RebaseBanner is the surface for the in-flight flow. The
   // indicator and Resolve button reappear if the rebase aborts back to
@@ -423,7 +420,7 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   const showConflictUi = isConflicting && rebaseStatus === "idle";
 
   return (
-    <div>
+    <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <PrStateBadge sessionId={sessionId} url={pr.url} prNumber={pr.number} />
         <div className="flex-1 min-w-0 flex items-center">
@@ -450,18 +447,6 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
           {showFixButton && (
             <FixCIButton sessionId={sessionId} />
           )}
-          <OverflowMenu side="top" contentClassName="min-w-48">
-          {showAutoMergeToggle && (
-            <div className="px-2 py-1">
-              <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
-            </div>
-          )}
-          {isCiFailed && (
-            <div className="px-2 py-1">
-              <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />
-            </div>
-          )}
-        </OverflowMenu>
         </span>
       </div>
       {autoMerge?.enabled && !isCiPassed && !isCiNone && (
@@ -511,7 +496,7 @@ function TerminalPhase({ card, sessionId, text }: { card: PrCardState; sessionId
   const openDiff = useOpenPrDiff(pr?.baseBranch);
   const hasDiffStats = pr && (pr.insertions > 0 || pr.deletions > 0);
   return (
-    <div className="flex items-center gap-3 flex-nowrap">
+    <div className="flex items-center gap-3 flex-nowrap min-w-0 flex-1">
       <PrStateBadge sessionId={sessionId} url={pr?.url} prNumber={pr?.number} />
       <span className="h-6 flex items-center text-xs text-(--color-text-secondary) truncate min-w-0">{text}</span>
       {pr && (
@@ -560,7 +545,7 @@ function ErrorPhase({
   };
 
   return (
-    <div className="flex items-start gap-3">
+    <div className="flex items-start gap-3 min-w-0 flex-1">
       <XCircleIcon size={ICON_SIZE.SM} className="text-(--color-error) shrink-0 mt-0.5" />
       <span className="text-xs text-(--color-text-secondary) wrap-break-word min-w-0">
         Failed to create PR{lines.length > 0 && ": "}
@@ -602,18 +587,36 @@ function ErrorPhase({
 
 // ---- Main component ----
 
-export function PrLifecycleCard({
-  sessionId,
-  onOpenDetails,
-  onCreatePr,
-}: {
+export interface PrLifecycleCardProps {
   sessionId: string;
   onOpenDetails?: () => void;
   /** Ask the agent to create a PR. The agent has context the orchestrator doesn't, so it can pick a good title and write a proper Summary/Changes/Test plan body. */
   onCreatePr?: () => void;
-}) {
+  /** Whether the session has a GitHub remote — gates the Auto-fix / Auto-merge overflow toggles. */
+  canAutoMerge?: boolean;
+  /** Opens the conversation search bar. */
+  onSearch?: () => void;
+  /** Downloads the conversation as JSON. */
+  onDownloadChat?: () => void;
+  /** True when the session has a recently-rewound state that can still be restored. */
+  recoverRewindAvailable?: boolean;
+  /** Restore the most recent rewind. */
+  onRecoverRewind?: () => void;
+}
+
+export function PrLifecycleCard({
+  sessionId,
+  onOpenDetails,
+  onCreatePr,
+  canAutoMerge,
+  onSearch,
+  onDownloadChat,
+  recoverRewindAvailable,
+  onRecoverRewind,
+}: PrLifecycleCardProps) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
-  if (!card) return null;
+  const autoMerge = usePrStore((s) => s.autoMergeBySession[sessionId] ?? s.cardBySession[sessionId]?.autoMerge);
+  const autoFix = usePrStore((s) => s.cardBySession[sessionId]?.autoFix);
 
   // The whole card body opens the PR detail tab, but only once a PR exists
   // (open/merged/closed) — the ready/creating/error phases have no PR to
@@ -621,7 +624,7 @@ export function PrLifecycleCard({
   // input) are ignored via the closest() guard, so toggling auto-fix, merging,
   // or copying the branch never also switches the tab — no per-control
   // stopPropagation needed. See docs/133.
-  const hasPr = !!card.pr && (card.phase === "open" || card.phase === "merged" || card.phase === "closed");
+  const hasPr = !!card?.pr && (card.phase === "open" || card.phase === "merged" || card.phase === "closed");
   const clickable = hasPr && !!onOpenDetails;
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -635,13 +638,8 @@ export function PrLifecycleCard({
   // OpenPhase's "Fixing..." flag) resets when the user switches sessions.
   // Without this, switching sessions while a merge is in flight leaves the
   // button stuck on "Merging..." against the new session.
-  return (
-    <div
-      key={sessionId}
-      onClick={handleClick}
-      title={clickable ? "Open PR details" : undefined}
-      className={`mx-4 rounded-t-xl border border-b-0 border-(--color-border-primary) bg-(--color-bg-secondary)/20 px-4 py-2 ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
-    >
+  const phaseContent = card ? (
+    <>
       {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} onCreatePr={onCreatePr} />}
       {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
       {card.phase === "merged" && (
@@ -653,6 +651,61 @@ export function PrLifecycleCard({
         <TerminalPhase card={card} sessionId={sessionId} text={`PR #${card.pr?.number} closed`} />
       )}
       {card.phase === "error" && <ErrorPhase card={card} sessionId={sessionId} onCreatePr={onCreatePr} />}
+    </>
+  ) : (
+    // No PR card yet — leave the left side empty so the right cluster (search
+    // + overflow) anchors the bar. Keeps session-management actions reachable
+    // pre-PR without re-introducing a separate top bar.
+    <div className="min-w-0 flex-1" />
+  );
+
+  return (
+    <div
+      key={sessionId}
+      onClick={handleClick}
+      title={clickable ? "Open PR details" : undefined}
+      className={`shrink-0 flex items-start gap-2 px-4 h-10 border-b border-(--color-border-primary) ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
+    >
+      <div className="min-w-0 flex-1 flex items-center">
+        {phaseContent}
+      </div>
+      <div className="shrink-0 flex items-center gap-1 self-center">
+        {onSearch && (
+          <button
+            onClick={onSearch}
+            className="p-1 rounded text-(--color-text-tertiary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors"
+            title="Search conversation"
+            aria-label="Search conversation"
+          >
+            <MagnifyingGlassIcon size={ICON_SIZE.SM} weight="bold" />
+          </button>
+        )}
+        <OverflowMenu label="Session actions" triggerClassName="h-auto w-auto p-1">
+          {canAutoMerge && (
+            <>
+              <div className="px-2 py-1">
+                <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />
+              </div>
+              <div className="px-2 py-1">
+                <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
+              </div>
+              <DropdownMenuSeparator />
+            </>
+          )}
+          {recoverRewindAvailable && onRecoverRewind && (
+            <DropdownMenuItem onSelect={onRecoverRewind}>
+              <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />
+              Recover recent rewind
+            </DropdownMenuItem>
+          )}
+          {onDownloadChat && (
+            <DropdownMenuItem onSelect={onDownloadChat}>
+              <DownloadSimpleIcon size={ICON_SIZE.SM} />
+              Download chat
+            </DropdownMenuItem>
+          )}
+        </OverflowMenu>
+      </div>
     </div>
   );
 }
