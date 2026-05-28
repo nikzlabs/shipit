@@ -1435,7 +1435,7 @@ describe("MessageList", () => {
         <MessageList messages={messages} isLoading={true} onAnswerQuestion={onAnswerQuestion} />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
-      expect(onAnswerQuestion).toHaveBeenCalledWith("ask-1", { "0": "Redis" });
+      expect(onAnswerQuestion).toHaveBeenCalledWith("ask-1", { "0": "Redis" }, "Redis");
     });
 
     it("remains clickable when its message is no longer the last in chat", () => {
@@ -1458,7 +1458,7 @@ describe("MessageList", () => {
         <MessageList messages={messages} isLoading={false} onAnswerQuestion={onAnswerQuestion} />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
-      expect(onAnswerQuestion).toHaveBeenCalledWith("ask-1", { "0": "Redis" });
+      expect(onAnswerQuestion).toHaveBeenCalledWith("ask-1", { "0": "Redis" }, "Redis");
     });
 
     it("renders the answered state (and ignores clicks) when the tool has a result", () => {

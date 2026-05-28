@@ -608,11 +608,11 @@ export default function App() {
   }, [requestPermission, apiPost]);
 
   const handleAnswerQuestion = useCallback(
-    (toolUseId: string, answers: Record<string, string>) => {
+    (toolUseId: string, answers: Record<string, string>, text: string) => {
       sendUserMessage({
-        bubble: { role: "user", text: Object.values(answers).join(", ") },
+        bubble: { role: "user", text },
         activity: "Thinking...",
-        dispatch: () => send({ type: "answer_question", toolUseId, answers }),
+        dispatch: () => send({ type: "answer_question", toolUseId, answers, text }),
       });
     },
     [send],

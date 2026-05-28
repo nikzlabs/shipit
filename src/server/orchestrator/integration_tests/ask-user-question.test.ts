@@ -191,7 +191,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     client.close();
   });
 
-  it("answer_question with multiple answers joins them", async () => {
+  it("answer_question with multiple answers uses the client-formatted text verbatim", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
@@ -199,15 +199,40 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     client.send({ type: "send_message", text: "test" });
     await waitForClaude(() => lastClaude);
 
-    // Send an answer with multiple values
+    // The client now formats multi-question answers as a bullet list with
+    // the question text inline, so commas inside an answer aren't
+    // ambiguous with the separator between answers.
     client.send({
       type: "answer_question",
       toolUseId: "tool-4",
+      answers: { "0": "Auth", "1": "Cache, with TTL" },
+      text: "- Pick a feature?: Auth\n- Cache config?: Cache, with TTL",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(lastClaude.stdinData).toEqual([
+      "- Pick a feature?: Auth\n- Cache config?: Cache, with TTL\n",
+    ]);
+
+    client.close();
+  });
+
+  it("answer_question falls back to joining answers when text is omitted", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "test" });
+    await waitForClaude(() => lastClaude);
+
+    // Old client (no `text` field) — server still joins so existing
+    // sessions keep working through the rollout.
+    client.send({
+      type: "answer_question",
+      toolUseId: "tool-4b",
       answers: { "0": "Auth", "1": "Cache" },
     });
     await new Promise((r) => setTimeout(r, 50));
 
-    // Should write both answers joined by comma
     expect(lastClaude.stdinData).toEqual(["Auth, Cache\n"]);
 
     client.close();

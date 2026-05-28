@@ -101,7 +101,7 @@ describe("AskUserQuestion", () => {
         />
       );
       fireEvent.click(screen.getByTestId("option-Redis"));
-      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" });
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
     });
 
     it("disables options after answering", () => {
@@ -177,7 +177,7 @@ describe("AskUserQuestion", () => {
       fireEvent.click(screen.getByTestId("option-Auth"));
       fireEvent.click(screen.getByTestId("option-Cache"));
       fireEvent.click(screen.getByTestId("submit-answer"));
-      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Auth, Cache" });
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Auth, Cache" }, "Auth, Cache");
     });
 
     it("toggles selection on repeated clicks", () => {
@@ -194,7 +194,7 @@ describe("AskUserQuestion", () => {
       fireEvent.click(screen.getByTestId("option-Auth")); // deselect
       fireEvent.click(screen.getByTestId("option-Cache"));
       fireEvent.click(screen.getByTestId("submit-answer"));
-      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Cache" });
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Cache" }, "Cache");
     });
 
     it("submit button is disabled when nothing is selected", () => {
@@ -241,7 +241,7 @@ describe("AskUserQuestion", () => {
       const input = screen.getByTestId("other-input");
       fireEvent.change(input, { target: { value: "My custom answer" } });
       fireEvent.keyDown(input, { key: "Enter" });
-      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "My custom answer" });
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "My custom answer" }, "My custom answer");
     });
 
     it("does not submit empty other text on Enter", () => {
@@ -374,7 +374,11 @@ describe("AskUserQuestion", () => {
       fireEvent.click(screen.getByTestId("option-Redis"));
       fireEvent.click(screen.getByTestId("option-Postgres"));
       fireEvent.click(screen.getByTestId("submit-answer"));
-      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis", "1": "Postgres" });
+      expect(onAnswer).toHaveBeenCalledWith(
+        "t1",
+        { "0": "Redis", "1": "Postgres" },
+        "- Pick a cache?: Redis\n- Pick a DB?: Postgres",
+      );
     });
   });
 
@@ -467,6 +471,38 @@ describe("AskUserQuestion", () => {
       expect(postgresBtn.className).toContain("bg-(--color-accent-subtle)");
     });
 
+    it("parses the bullet format so answers with embedded commas round-trip", () => {
+      // The "- {question}: {answer}" format is what the client now sends so
+      // that an answer like "Postgres, with citus" can't be mistaken for two
+      // separate answers when the chat history is reloaded.
+      const twoQuestions: AskQuestionItem[] = [
+        {
+          question: "Pick a cache?",
+          header: "Cache",
+          options: [{ label: "Redis", description: "Fast" }],
+          multiSelect: false,
+        },
+        {
+          question: "Pick a DB?",
+          header: "Database",
+          options: [{ label: "Postgres", description: "Relational" }],
+          multiSelect: false,
+        },
+      ];
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={twoQuestions}
+          onAnswer={vi.fn()}
+          disabled={false}
+          resolvedAnswer={"- Pick a cache?: Redis\n- Pick a DB?: Postgres, with citus"}
+        />,
+      );
+      expect(screen.getByTestId("option-Redis").className).toContain("bg-(--color-accent-subtle)");
+      // The DB answer kept its comma intact and renders as a free-form value.
+      expect(screen.getByText("Postgres, with citus")).toBeInTheDocument();
+    });
+
     it("ignores resolvedAnswer once the user submits via the UI (local state wins)", () => {
       const onAnswer = vi.fn();
       const { rerender } = render(
@@ -478,7 +514,7 @@ describe("AskUserQuestion", () => {
         />
       );
       fireEvent.click(screen.getByTestId("option-In-memory"));
-      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "In-memory" });
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "In-memory" }, "In-memory");
       // Now imagine the agent emits a tool_result for some reason; the
       // local "In-memory" answer should still take precedence.
       rerender(
