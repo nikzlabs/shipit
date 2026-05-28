@@ -1074,7 +1074,7 @@ export default function App() {
   // ── Bootstrap loading gate ──
   if (!bootstrapLoaded) {
     return (
-      <div className="flex h-screen items-center justify-center bg-(--color-bg-primary)">
+      <div className="flex h-[100dvh] items-center justify-center bg-(--color-bg-primary)">
         {showBootstrapSpinner && (
           <CircleNotchIcon size={ICON_SIZE.MD} className="animate-spin text-(--color-text-tertiary)" />
         )}
@@ -1084,7 +1084,7 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
-    <div className="flex flex-col h-screen bg-(--color-bg-primary) text-(--color-text-primary)">
+    <div className="flex flex-col h-[100dvh] bg-(--color-bg-primary) text-(--color-text-primary)">
       <AuthOverlayContainer
         authUrl={authUrl}
         showOnboarding={showOnboarding}
