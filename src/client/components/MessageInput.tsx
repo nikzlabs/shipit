@@ -1,8 +1,10 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: consume prefill text from external store on mount
-import { useState, useRef, useCallback, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useFileStore } from "../stores/file-store.js";
 import { useIsMobile } from "../hooks/useMediaQuery.js";
+import { useFileUpload } from "../hooks/useFileUpload.js";
 import { PlusIcon, StopIcon, ArrowUpIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { PermissionModeSelector } from "./PermissionModeSelector.js";
@@ -15,7 +17,7 @@ import { FileUploadChips } from "./FileUploadChips.js";
 import { Popover, PopoverAnchor } from "./ui/popover.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { getSavedDraftMessage, saveDraftMessage } from "../utils/local-storage.js";
-import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo } from "../../server/shared/types.js";
+import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
 import type { AgentOption } from "../agent-types.js";
 import type { ModelInfo } from "../utils/model-info.js";
@@ -27,6 +29,28 @@ const SUPPORTS_FIELD_SIZING =
   typeof CSS !== "undefined" && typeof CSS.supports === "function"
     ? CSS.supports("field-sizing", "content")
     : false;
+
+/**
+ * Payload handed to `onSend`. Carries everything the parent needs to dispatch
+ * the prompt — the typed text, plus the upload state at submission time. The
+ * payload shape is the same regardless of `sessionId` presence: in session
+ * mode (`sessionId` set), `uploadRefs` carries already-POSTed `/uploads/...`
+ * paths and `deferredFiles` is empty; in session-less mode (no `sessionId`,
+ * e.g. the quick-capture overlay), uploads weren't sent anywhere yet and the
+ * raw `File[]` lives in `deferredFiles` for the parent to multipart-POST.
+ *
+ * Both parents see the same contract — the upload backend swap is internal to
+ * MessageInput. See `docs/145-quick-capture-overlay/plan.md` for why the
+ * sessionless case exists.
+ */
+export interface SendPayload {
+  text: string;
+  uploadRefs: UploadRef[];
+  /** Full upload items at send time — used by chat for optimistic image/file display. */
+  uploads: UploadItem[];
+  /** Raw File objects for session-less callers that POST multipart themselves. */
+  deferredFiles: File[];
+}
 
 export function MessageInput({
   onSend,
@@ -40,11 +64,7 @@ export function MessageInput({
   onAddFile,
   fileTree = [],
   skills = [],
-  uploads = [],
-  allUploads,
-  onUploadFiles,
-  onRemoveUpload,
-  onRetryUpload,
+  sessionId,
   agents = [],
   activeAgentId = "claude",
   onAgentChange,
@@ -57,7 +77,7 @@ export function MessageInput({
   liveSteeringActive = false,
   surface = "chat",
 }: {
-  onSend: (text: string) => void;
+  onSend: (payload: SendPayload) => void;
   disabled: boolean;
   isLoading?: boolean;
   onInterrupt?: () => void;
@@ -69,12 +89,15 @@ export function MessageInput({
   fileTree?: FileTreeNode[];
   /** User-invocable skills for `/` autocomplete (doc 138). */
   skills?: SkillInfo[];
-  uploads?: UploadItem[];
-  /** All session uploads — for @-autocomplete (persists across sends). */
-  allUploads?: UploadItem[];
-  onUploadFiles?: (files: File[]) => void;
-  onRemoveUpload?: (index: number) => void;
-  onRetryUpload?: (index: number) => void;
+  /**
+   * The session this composer's uploads belong to. When set, the "+" button
+   * and drop-zone POST through `useFileUpload(sessionId)` and chip state lives
+   * in the global file-store (so the FileTree side panel sees them too). When
+   * undefined (e.g. the quick-capture overlay), files are buffered as raw
+   * `File[]` in component-local state and surfaced via `SendPayload.deferredFiles`
+   * for the parent to multipart-POST alongside the prompt.
+   */
+  sessionId?: string;
   agents?: AgentOption[];
   activeAgentId?: AgentId;
   onAgentChange?: (agentId: AgentId) => void;
@@ -104,6 +127,89 @@ export function MessageInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dragCountRef = useRef(0);
+
+  // ── Upload backend ───────────────────────────────────────────────────────
+  // Two modes share the same surface (chip rendering, +/drop-zone, submit
+  // clear). The split is by `surface`, not by `sessionId` presence:
+  //   - "chat":   route through `useFileUpload(sessionId)`. POSTs land in
+  //               the global file-store; when sessionId is temporarily
+  //               undefined (the /{slug}/new view, before claimSession
+  //               resolves), useFileUpload buffers and drains on its own.
+  //   - "overlay": buffer raw Files in component-local state. The overlay
+  //                creates a brand-new session on send and ships the files
+  //                multipart in the same call, so the global store must
+  //                stay untouched — a chat input is still mounted behind
+  //                the modal and would otherwise sprout phantom chips.
+  // `useFileUpload` is always called (hooks rule); in overlay mode we just
+  // never invoke its `uploadFiles`, so no store writes happen.
+  const isOverlay = surface === "overlay";
+  const sessionUpload = useFileUpload(isOverlay ? undefined : sessionId);
+  const allSessionUploads = useFileStore((s) => s.sessionUploads);
+  const [localFiles, setLocalFiles] = useState<File[]>([]);
+
+  // Map raw Files into UploadItem placeholders so the chip renderer treats
+  // both modes identically. Status is "ready" — no progress bar, no retry,
+  // since these are kept entirely local until the parent ships them.
+  const localUploadItems = useMemo<UploadItem[]>(
+    () =>
+      localFiles.map((f, i) => ({
+        id: `local-${i}-${f.name}`,
+        name: f.name,
+        status: "ready" as const,
+        size: f.size,
+        progress: 100,
+        previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
+        mimeType: f.type.startsWith("image/") ? f.type : undefined,
+        pending: true,
+      })),
+    [localFiles],
+  );
+  // Revoke object URLs when the chip set churns to keep memory bounded.
+  // We can't derive this — URL.revokeObjectURL is a browser-side side effect
+  // that must happen when the item leaves the set, not during render.
+  // eslint-disable-next-line no-restricted-syntax -- browser API cleanup tied to item lifetime
+  useEffect(() => {
+    const items = localUploadItems;
+    return () => {
+      for (const item of items) {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      }
+    };
+  }, [localUploadItems]);
+
+  const displayUploads = isOverlay ? localUploadItems : sessionUpload.uploads;
+  const allUploads = isOverlay ? localUploadItems : allSessionUploads;
+
+  const handleAddFiles = useCallback(
+    (files: File[]) => {
+      if (files.length === 0) return;
+      if (isOverlay) {
+        setLocalFiles((prev) => [...prev, ...files]);
+      } else {
+        void sessionUpload.uploadFiles(files);
+      }
+    },
+    [isOverlay, sessionUpload],
+  );
+
+  const handleRemoveUploadChip = useCallback(
+    (index: number) => {
+      if (isOverlay) {
+        setLocalFiles((prev) => prev.filter((_, i) => i !== index));
+      } else {
+        sessionUpload.removeUpload(index);
+      }
+    },
+    [isOverlay, sessionUpload],
+  );
+
+  const handleRetryUploadChip = useCallback(
+    (index: number) => {
+      if (!isOverlay) sessionUpload.retryUpload(index);
+      // Overlay-mode retry is a no-op — local items never enter an error state.
+    },
+    [isOverlay, sessionUpload],
+  );
 
   // Per-session draft persistence: remember what the user has typed when they
   // switch to a different session, and recover it when they switch back. Keyed
@@ -256,18 +362,28 @@ export function MessageInput({
   const addFiles = useCallback(
     (files: FileList | File[]) => {
       const fileArray = Array.from(files);
-      if (fileArray.length > 0 && onUploadFiles) {
-        onUploadFiles(fileArray);
-      }
+      handleAddFiles(fileArray);
     },
-    [onUploadFiles],
+    [handleAddFiles],
   );
 
   const handleSubmit = () => {
     const trimmed = text.trim();
     if (!trimmed || disabled) return;
-    onSend(trimmed);
+    const uploadRefs = isOverlay ? [] : sessionUpload.getUploadRefs();
+    const payload: SendPayload = {
+      text: trimmed,
+      uploadRefs,
+      uploads: displayUploads,
+      deferredFiles: isOverlay ? localFiles : [],
+    };
+    onSend(payload);
     setText("");
+    if (isOverlay) {
+      setLocalFiles([]);
+    } else {
+      sessionUpload.clearUploads();
+    }
     setShowAutoComplete(false);
     setShowSkillMenu(false);
   };
@@ -489,13 +605,13 @@ export function MessageInput({
           {/* Attachment chips — rendered inside the input box, above the
               textarea, so they're visually contained within the input dialog
               rather than floating above it and overlapping the chat history. */}
-          {(pendingFiles.length > 0 || uploads.length > 0) && (
+          {(pendingFiles.length > 0 || displayUploads.length > 0) && (
             <div className="px-3 pt-3 space-y-2">
               {pendingFiles.length > 0 && onRemoveFile && (
                 <FileAttachmentChips files={pendingFiles} onRemove={onRemoveFile} />
               )}
-              {uploads.length > 0 && onRemoveUpload && onRetryUpload && (
-                <FileUploadChips uploads={uploads} onRemove={onRemoveUpload} onRetry={onRetryUpload} />
+              {displayUploads.length > 0 && (
+                <FileUploadChips uploads={displayUploads} onRemove={handleRemoveUploadChip} onRetry={handleRetryUploadChip} />
               )}
             </div>
           )}
@@ -616,7 +732,7 @@ export function MessageInput({
           fileTree={fileTree}
           onSelect={handleAutoCompleteSelect}
           onDismiss={handleAutoCompleteDismiss}
-          uploadPaths={(allUploads ?? uploads).filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
+          uploadPaths={allUploads.filter((u) => u.status === "ready" && u.path).map((u) => u.path!)}
         />
       )}
       {showSkillMenu && (

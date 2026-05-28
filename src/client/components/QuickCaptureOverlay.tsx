@@ -9,7 +9,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { createHeadlessSession } from "../stores/actions/session-actions.js";
 import { getSavedAgentId, getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
-import { MessageInput } from "./MessageInput.js";
+import { MessageInput, type SendPayload } from "./MessageInput.js";
 import { Button } from "./ui/button.js";
 import type { FileContextRef } from "../../server/shared/types.js";
 
@@ -90,7 +90,7 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
 
   const disabled = submitting || !bootstrapLoaded || selectedRepo?.status !== "ready";
 
-  const handleSend = async (text: string) => {
+  const handleSend = async (payload: SendPayload) => {
     if (!selectedRepo) {
       setError("Add a repo first.");
       return;
@@ -100,9 +100,10 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
     try {
       await createHeadlessSession({
         repoUrl: selectedRepo.url,
-        initialPrompt: text,
+        initialPrompt: payload.text,
         agent: selectedAgentId,
         ...(selectedModel ? { model: selectedModel } : {}),
+        ...(payload.deferredFiles.length > 0 ? { files: payload.deferredFiles } : {}),
       });
       setPendingFiles([]);
       close();
@@ -174,7 +175,7 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
         <div className="py-3">
           <MessageInput
             surface="overlay"
-            onSend={(text) => void handleSend(text)}
+            onSend={(payload) => void handleSend(payload)}
             disabled={disabled}
             isLoading={submitting}
             permissionMode={permissionMode}

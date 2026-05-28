@@ -85,15 +85,43 @@ export async function createHeadlessSession(opts: {
   branch?: string;
   agent?: AgentId;
   model?: string;
+  /**
+   * Raw files to attach to the new session. When present we POST as
+   * multipart/form-data so the orchestrator can save them into the new
+   * session's uploads dir before dispatching the prompt; otherwise we keep
+   * the simpler JSON path. See `docs/145-quick-capture-overlay/plan.md`.
+   */
+  files?: File[];
 }): Promise<SessionInfo> {
-  const res = await fetch("/api/sessions/headless", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(opts),
-  });
+  const { files, ...jsonBody } = opts;
+  let res: Response;
+  if (files && files.length > 0) {
+    const form = new FormData();
+    // All current jsonBody fields are strings (or undefined). The multipart
+    // route reads each part's `value` as a string and parses agent/branch/etc.
+    // itself, so we just pass values through without coercion.
+    for (const [k, v] of Object.entries(jsonBody)) {
+      if (v === undefined) continue;
+      form.append(k, v);
+    }
+    for (const f of files) {
+      form.append("file", f, f.name);
+    }
+    res = await fetch("/api/sessions/headless", {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      body: form,
+    });
+  } else {
+    res = await fetch("/api/sessions/headless", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(jsonBody),
+    });
+  }
   const body = await res.json().catch(() => ({})) as { error?: string; session?: SessionInfo };
   if (!res.ok || !body.session) {
     throw new Error(body.error ?? `Failed to start quick session (${res.status})`);
