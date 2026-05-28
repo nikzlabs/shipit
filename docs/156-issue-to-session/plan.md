@@ -39,6 +39,19 @@ tracker → webhook → IssueTrackerProvider.handleTrigger() → headless-sessio
                                                           → ack back to tracker
 ```
 
+### Per-deployment app registration
+
+Both Linear apps and GitHub Apps store a **single webhook URL** on the app registration, and GitHub Apps additionally have **a single private key** used to sign installation-access-token requests. Neither value is overridable per installation. That means a single ShipIt-published Linear/GitHub app cannot serve N self-hosted deployments at different tunnel URLs — every deployment beyond the first would silently receive no events, and sharing one App's private key across deployments effectively makes it public.
+
+Combined with the self-hosted-only stance (no centrally-hosted relay), the only workable model is **each ShipIt deployment registers its own private app**:
+
+- The user creates a Linear OAuth app in their own Linear developer settings, with the webhook URL set to *their* tunnel URL and the scopes from `linear.md`. They paste the app's client ID, client secret, and webhook secret into ShipIt settings.
+- The user creates a GitHub App in their own GitHub developer settings, with the webhook URL set to *their* tunnel URL and the permissions from `github.md`. They upload the App's private key and paste the webhook secret into ShipIt settings.
+
+The `shipit-linear-app` and `shipit-github-app` public repos under the ShipIt namespace are **setup guides, manifest templates, and required-scope/permission lists** — not published apps. For GitHub specifically we can ship a [GitHub App manifest](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest) so the "register your app" step is a single click that pre-fills permissions and the webhook URL.
+
+This makes the install-time UX heavier than a marketplace install but it's the price of being self-hosted-only. It's a one-time setup per deployment.
+
 ### Provider abstraction
 
 Even with only two providers in scope, the abstraction is load-bearing — agent reporting and trigger handling both have per-provider quirks, and "post a status update on the originating issue" call sites are scattered (PR open, PR merge, error). Designing the interface up front prevents retrofitting later.
@@ -79,23 +92,25 @@ The user's argument stands: actual progress lives in the checklist and the code;
 
 The Linear per-team mapping is the recommended setup; the elicitation fallback means we degrade gracefully instead of hard-failing.
 
-### Trigger-authorized identity
+### Trust boundary = app install scope
 
-ShipIt has no notion of users — each deployment is one human. But a webhook endpoint is reachable by *anyone the tracker has invited to the workspace*; without a check, any teammate could spawn sessions on the deployment.
+ShipIt has no notion of users — each deployment is one human. With per-deployment app registration, the natural trust boundary is **the scope where the deployment owner installed their app**:
 
-At install time we capture **the identity that connected the integration** as a per-provider allowlist of one:
+- **Linear:** the workspace(s) the deployment owner installed their app on. Any workspace member who can interact with an issue can delegate it to ShipIt.
+- **GitHub:** the org / repos the deployment owner installed their app on. Any user with comment access on those repos can `/shipit`.
 
-- **Linear:** the user ID of the workspace admin who installed the app.
-- **GitHub:** the username of the user who installed the App.
+The deployment owner has already exercised consent at install time by choosing which workspace / repos to install on. Restricting further (e.g. "only the installer themselves can trigger") would break the most natural use case — a teammate triages an issue and delegates it to the team's ShipIt — for no real security gain over "uninstall the app from this workspace."
 
-Webhook handlers reject triggers from any other identity *silently* — no ack, no comment — to avoid leaking "ShipIt is here" to unauthorized triggers. When ShipIt eventually grows multi-user, the allowlist becomes a mapping; nothing else changes.
+Webhook handlers verify the payload's HMAC signature and the trigger originates from an installation scope we recognize; beyond that we don't gate per-user in v1. A future per-user allowlist UI is a tightening, not a default.
+
+When a payload arrives whose installation scope we don't recognize (stale install, deleted from settings, etc.), we silently 200 it — we don't ack back to avoid leaking "ShipIt is here" to unfamiliar installs.
 
 ### Webhook architecture (shared)
 
 1. **Public URL required.** Both Cloudflare Tunnel and Tailscale Funnel expose the orchestrator on a public hostname without opening inbound ports — both work natively for webhooks. Pure-tailnet deployments (no Funnel) can't receive webhooks; for those users this feature is unsupported, documented as a known limitation. **No hosted webhook relay** — that would conflict with the self-hosted-only stance.
 2. **Fast ACK + async processing.** Webhook handlers return 200 within the provider's deadline (Linear: 5s, GitHub: 10s). Session-creation work runs in a background task. Linear has an additional 10s deadline to emit a first `thought` activity — fast-ACK + background-create + emit-thought must interleave correctly.
 3. **HMAC signature verification.** Both providers sign payloads with a shared secret. Unverified payloads are rejected with 401 before any work. Secrets live in `CredentialStore`.
-4. **Idempotency.** Both providers can retry on timeout. Each event has a unique ID (`X-GitHub-Delivery`, Linear's `webhookId`); a small in-memory ring buffer (last few hundred IDs per provider) prevents double-spawn on retry.
+4. **Idempotency, persisted.** Both providers can retry on timeout. Each event has a unique ID (`X-GitHub-Delivery`, Linear's `webhookId`); we record the IDs in a small SQLite-backed dedupe store (sibling of `secret-store.ts`) keyed by `provider:eventId` with a short TTL (24h). An in-memory cache would double-spawn around orchestrator restarts (which happen on every deploy), and a duplicate trigger here surfaces as a duplicate branch + duplicate PR + duplicate comment — far more visible than the typical "best-effort retry" contract.
 5. **Failure visibility.** If session creation fails after we've ACKed the webhook, we report back through the provider's normal channel (Linear `error` activity / GitHub error comment). Silent drops are the worst failure mode here.
 
 ### Multi-PR per issue and re-trigger
@@ -130,7 +145,7 @@ Adds the GitHub App, the `/shipit` slash command, HMAC verification, and the edi
 - **Hosted webhook relay** for air-gapped deployments. Conflicts with the self-hosted-only stance. Users who want webhooks expose a public URL via Cloudflare Tunnel or Tailscale Funnel.
 - **Issue status mutation** (move to "In Progress" / "Done"). High surprise risk; the user has not asked for it. Easy to add later behind an explicit per-provider opt-in.
 - **Auto-comment on every meaningful event.** Noisy; the user explicitly chose minimal cadence.
-- **Anthropic-published apps.** ShipIt is your project; the Linear and GitHub apps are published from ShipIt-owned repos under your GitHub namespace.
+- **A single centrally-published ShipIt app.** Even publishing it from the ShipIt project namespace (rather than Anthropic's) doesn't work for self-hosted deployments: both Linear and GitHub Apps store a single webhook URL per registration, and GitHub Apps additionally require the App's private key for installation auth — which can't be safely shared across deployments. Each ShipIt deployment registers its own private app; the `shipit-linear-app` and `shipit-github-app` repos publish setup guides and manifest templates, not the apps themselves. See "Per-deployment app registration" above.
 - **Label-based trigger as the primary Linear UX.** Made obsolete by Linear's first-class agent assignment / delegation surface (see `linear.md`); a label hack would now be a strict downgrade.
 
 ## Open questions
@@ -152,8 +167,8 @@ Per-provider files are listed in `linear.md` / `github.md`. Shared touch points:
 - `src/server/orchestrator/services/issue-trackers/` (new) — `IssueTrackerProvider` interface, dispatch
 - `src/server/orchestrator/services/issue-trackers/types.ts` (new) — `IssueRef`, `TriggerResult`, activity/comment types
 - `src/server/orchestrator/services/headless-sessions.ts` — accept `issueRef`, derive branch + initial prompt
-- `src/server/orchestrator/services/pr-lifecycle.ts` — call `provider.reportPrOpened()` / `reportPrMerged()` when `session.issueRef` is set; append `formatClosingKeyword()` to PR body
-- `src/server/orchestrator/services/github.ts` — `quickCreatePr` body templating hook
+- `src/server/orchestrator/pr-status-poller.ts` — add a new `onPrFirstSeenCb` hook symmetric to the existing `onMergeDetectedCb`. Both `reportPrOpened()` and `reportPrMerged()` are driven from the poller, not from `pr-lifecycle.ts`. The poller is the only path that uniformly observes all four PR-create routes (the lifecycle-card auto-create, the two manual API routes `/pr/quick` and `/pr`, the agent-create route `/pr/agent-create`) plus PRs the agent creates directly via the `gh pr create` shim mid-turn. Driving both hooks from the poller avoids silently missing "PR opened" in any of those cases.
+- `src/server/orchestrator/services/github.ts` — `quickCreatePr` body templating hook, appends `provider.formatClosingKeyword()` to the PR body
 - `src/server/orchestrator/credential-store.ts` — per-provider webhook secrets + OAuth tokens
 - `src/server/orchestrator/api-routes-webhooks.ts` (new) — `POST /api/webhooks/:provider`, signature verification, fast-ACK, dispatch
 - `src/server/shared/types/domain-types.ts` — `IssueRef`, extend `SessionInfo`
