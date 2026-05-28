@@ -13,9 +13,11 @@
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: dynamic Monaco editor lifecycle + per-skill SKILL.md fetch
 import { useEffect, useRef, useState } from "react";
+import { XIcon } from "@phosphor-icons/react";
 import type * as MonacoEditor from "monaco-editor";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Button } from "./ui/button.js";
+import { ICON_SIZE } from "../design-tokens.js";
 import type { PluginInfo, SkillRef } from "../../server/shared/types.js";
 
 interface SkillInstallSheetProps {
@@ -97,10 +99,10 @@ export function SkillInstallSheet({
             variant="ghost"
             size="sm"
             onClick={onCancel}
-            className="text-xl leading-none"
+            className="h-9 w-9 max-md:h-10 max-md:w-10"
             aria-label="Close"
           >
-            &times;
+            <XIcon size={ICON_SIZE.MD} weight="bold" />
           </Button>
         </div>
 

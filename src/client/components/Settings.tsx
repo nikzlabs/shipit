@@ -1,6 +1,8 @@
 import { useState, useRef } from "react";
+import { XIcon } from "@phosphor-icons/react";
 import type { AgentOption } from "../agent-types.js";
 import type { AgentId, ProviderAccount } from "../../server/shared/types.js";
+import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
@@ -537,10 +539,10 @@ export function Settings({
             variant="ghost"
             size="sm"
             onClick={onClose}
-            className="text-xl leading-none"
+            className="h-9 w-9 max-md:h-10 max-md:w-10"
             aria-label="Close"
           >
-            &times;
+            <XIcon size={ICON_SIZE.MD} weight="bold" />
           </Button>
         </div>
 

@@ -1,5 +1,7 @@
+import { XIcon } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
+import { ICON_SIZE } from "../design-tokens.js";
 import type { SessionInfo, TurnUsage } from "../../server/shared/types.js";
 import { formatTokenCount, getContextLevel, type ModelInfo } from "../utils/model-info.js";
 
@@ -84,10 +86,10 @@ export function UsageModal({ currentSessionUsage, allUsage, sessions, onClose, m
             variant="ghost"
             size="sm"
             onClick={onClose}
-            className="text-xl leading-none"
+            className="h-9 w-9 max-md:h-10 max-md:w-10"
             aria-label="Close"
           >
-            &times;
+            <XIcon size={ICON_SIZE.MD} weight="bold" />
           </Button>
         </div>
 
