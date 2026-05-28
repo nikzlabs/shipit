@@ -21,7 +21,6 @@ import { ICON_SIZE } from "./design-tokens.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage } from "./components/PreviewFrame.js";
-import { SessionTopBar } from "./components/SessionTopBar.js";
 import { MessageInput } from "./components/MessageInput.js";
 import { MessageList } from "./components/MessageList.js";
 import type { RewindGapAction } from "./components/RewindPoint.js";
@@ -154,8 +153,6 @@ export default function App() {
   const shellStarted = useTerminalStore((s) => s.shellStarted);
 
   const importSearchResults = usePrStore((s) => s.importSearchResults);
-  const hasPrCard = usePrStore((s) => wsSessionId ? !!s.cardBySession[wsSessionId] : false);
-  const sessionAutoMerge = usePrStore((s) => wsSessionId ? (s.autoMergeBySession[wsSessionId] ?? s.cardBySession[wsSessionId]?.autoMerge) : undefined);
   // The PR tab is shown only when the active session actually has a PR (open,
   // merged, or closed) — mirroring how the Services tab is conditional on
   // composeServices. The ready/creating/error phases have no PR to detail.
@@ -1007,25 +1004,22 @@ export default function App() {
   const chatPanel = (
     <>
       {searchOpen && <SearchBar query={search.query} onQueryChange={search.setQuery} matches={search.matches} currentMatchIndex={search.currentMatchIndex} onNext={search.goToNext} onPrev={search.goToPrev} onClose={() => { setSearchOpen(false); search.clear(); }} />}
-      {!showHomeScreen && !showNewSessionView && currentSession && (
-        <SessionTopBar
-          sessionId={currentSession.id}
-          title={currentSession.title}
-          canAutoMerge={!!currentSession.remoteUrl}
-          autoMerge={sessionAutoMerge}
-          onRename={(title) => useSessionStore.getState().renameSession(currentSession.id, title)}
-          onDownloadChat={handleDownloadChat}
+      {/*
+        docs/156 — the PR lifecycle card IS the chat panel's top chrome.
+        It always renders for an active session (even pre-PR) so search and
+        the overflow menu have a stable home. The previous `SessionTopBar`
+        is gone; rename/archive moved to the sidebar row overflow.
+      */}
+      {!showHomeScreen && !showNewSessionView && wsSessionId && (
+        <PrLifecycleCard
+          sessionId={wsSessionId}
+          onOpenDetails={() => handleTabChange("pr")}
+          onCreatePr={handleCreatePr}
+          canAutoMerge={!!currentSession?.remoteUrl}
           onSearch={() => setSearchOpen(true)}
-          onArchive={() => {
-            // Prefer the archived session's own repo. `activeRepoUrl` can be
-            // stale (it isn't re-synced on URL navigation), so falling through
-            // to it could land the replacement session in a different repo.
-            const repoUrl = currentSession.remoteUrl ?? activeRepoUrl;
-            void useSessionStore.getState().archiveSession(currentSession.id);
-            if (repoUrl) void handleNewSessionForRepo(repoUrl);
-          }}
+          onDownloadChat={handleDownloadChat}
           recoverRewindAvailable={recoverRewindAvailable}
-          onRecoverRewind={() => window.dispatchEvent(new CustomEvent("shipit:restore-rewind", { detail: { sessionId: currentSession.id } }))}
+          onRecoverRewind={() => { if (currentSession) window.dispatchEvent(new CustomEvent("shipit:restore-rewind", { detail: { sessionId: currentSession.id } })); }}
         />
       )}
       {showHomeScreen ? (
@@ -1054,24 +1048,24 @@ export default function App() {
             onRewindAtGap={handleRewindAtGap}
           />
           {/*
-            Bottom stack: thinking indicator, rebase banner, PR card.
-            `gap-2` gives a consistent 8px gap between every rendered sibling, so spacing
-            no longer has to be encoded as `mt-2`/`mb-2` on each individual card. Each
-            non-PR child uses `last:pb-2` (or `last:mb-2`) to add the 8px to MessageInput
-            when nothing renders below it. The PR card has no last-child margin because
-            it visually merges into the input via `rounded-t-xl border-b-0`.
-            Attachment chips are rendered INSIDE MessageInput's rounded box (not here)
-            so they don't visually overlap the chat history.
+            Bottom stack: thinking indicator, rebase banner, queue indicator.
+            `gap-2` gives a consistent 8px gap between every rendered sibling, so
+            spacing no longer has to be encoded as `mt-2`/`mb-2` on each individual
+            card. Each child uses `last:pb-2` (or `last:mb-2`) to add the 8px to
+            MessageInput when nothing renders below it.
+            docs/156 — the PR lifecycle card is no longer rendered above the
+            input; it lives at the top of the chat panel as the session's top
+            chrome, so the destructive Merge button is no longer adjacent to the
+            send button.
           */}
           <div className="flex flex-col gap-2">
             {isLoading && <AgentStatusBar activity={activity} />}
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
             {queuedMessages.length > 0 && <QueueIndicator queue={queuedMessages} onCancel={(pos) => send({ type: "cancel_queued_message", position: pos })} />}
-            {wsSessionId && <PrLifecycleCard sessionId={wsSessionId} onOpenDetails={() => handleTabChange("pr")} onCreatePr={handleCreatePr} />}
           </div>
         </div>
       )}
-      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} skills={skills} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} onOpenUsageDetails={handleUsageBadgeClick} focusKey={messageInputFocusKey} hasPrCard={hasPrCard} liveSteeringActive={liveSteeringActive} />}
+      {(!showHomeScreen || showNewSessionView) && <MessageInput onSend={handleSend} disabled={showNewSessionView ? status !== "open" && !sessionId : status !== "open"} isLoading={isLoading} onInterrupt={() => send({ type: "interrupt_agent" })} permissionMode={permissionMode} onPermissionModeChange={(m) => useSettingsStore.getState().setPermissionMode(useSessionStore.getState().sessionId, m)} pendingFiles={pendingFiles} onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)} onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)} fileTree={fileTree} skills={skills} uploads={uploads} allUploads={sessionUploads} onUploadFiles={(files) => void uploadFiles(files)} onRemoveUpload={removeUpload} onRetryUpload={retryUpload} agents={agentList} activeAgentId={activeAgentId} onAgentChange={handleAgentChange} onModelChange={handleModelChange} modelInfo={modelInfo} contextTokens={contextTokens} hasActiveSession={!showNewSessionView && !!sessionId} onOpenUsageDetails={handleUsageBadgeClick} focusKey={messageInputFocusKey} liveSteeringActive={liveSteeringActive} />}
     </>
   );
 

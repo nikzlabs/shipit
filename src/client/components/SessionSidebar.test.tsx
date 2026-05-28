@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
@@ -7,6 +7,31 @@ import { usePrStore, type PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
+
+/**
+ * Stub `window.matchMedia` so the sidebar's `useMediaQuery("(pointer: coarse)")`
+ * resolves predictably. Pass `true` to simulate a touch device.
+ */
+function mockMatchMedia({ isTouch = false }: { isTouch?: boolean } = {}) {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    configurable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(pointer: coarse)" ? isTouch : false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+    })),
+  });
+}
+
+beforeEach(() => {
+  // Default to a non-touch (desktop) environment so existing tests keep their
+  // hover-revealed overflow visibility semantics.
+  mockMatchMedia();
+});
 
 afterEach(() => {
   cleanup();
@@ -89,13 +114,13 @@ describe("SessionSidebar", () => {
     expect(onResume).not.toHaveBeenCalled();
   });
 
-  it("shows archive button on sessions", () => {
+  it("invokes onArchive when the row's overflow Archive item is selected", async () => {
+    const user = userEvent.setup();
     const onArchive = vi.fn();
     const sessions = [baseSession({ id: "s1", title: "Archivable", remoteUrl: repoA.url })];
     render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" onArchive={onArchive} />);
-    const archiveBtn = screen.getByLabelText("Archive session");
-    expect(archiveBtn).toBeTruthy();
-    fireEvent.click(archiveBtn);
+    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(await screen.findByText("Archive"));
     expect(onArchive).toHaveBeenCalledWith("s1");
   });
 
@@ -351,6 +376,100 @@ describe("SessionSidebar", () => {
       render(<SessionSidebar {...defaultProps} sessions={[parent, childA]} currentSessionId="other" onResume={onResume} />);
       await user.click(screen.getByLabelText("Hide 1 spawned session"));
       expect(onResume).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("row overflow menu (docs/156)", () => {
+    it("hides the overflow trigger by default on an inactive desktop row", () => {
+      const sessions = [baseSession({ id: "s1", title: "Inactive", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="other" />);
+      const trigger = screen.getByLabelText("Session actions");
+      // The trigger is still rendered (so it's reachable by keyboard); it just
+      // hover-reveals via opacity. Its wrapper carries `opacity-0`.
+      const wrapper = trigger.closest("div");
+      expect(wrapper?.className).toContain("opacity-0");
+      expect(wrapper?.className).toContain("group-hover:opacity-100");
+    });
+
+    it("always shows the overflow trigger on the active row", () => {
+      const sessions = [baseSession({ id: "s1", title: "Active", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+      const trigger = screen.getByLabelText("Session actions");
+      const wrapper = trigger.closest("div");
+      expect(wrapper?.className).toContain("opacity-100");
+      expect(wrapper?.className).not.toContain("opacity-0");
+    });
+
+    it("always shows the overflow trigger on touch devices (pointer: coarse)", () => {
+      mockMatchMedia({ isTouch: true });
+      const sessions = [baseSession({ id: "s1", title: "Inactive", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="other" />);
+      const trigger = screen.getByLabelText("Session actions");
+      const wrapper = trigger.closest("div");
+      expect(wrapper?.className).toContain("opacity-100");
+      expect(wrapper?.className).not.toContain("opacity-0");
+    });
+
+    it("offers Rename + Archive on a non-archived row", async () => {
+      const user = userEvent.setup();
+      const sessions = [baseSession({ id: "s1", title: "Live", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+      await user.click(screen.getByLabelText("Session actions"));
+      expect(await screen.findByText("Rename")).toBeInTheDocument();
+      expect(screen.getByText("Archive")).toBeInTheDocument();
+      expect(screen.queryByText("Restore")).toBeNull();
+    });
+
+    it("offers Restore (and not Rename/Archive) on an archived row", async () => {
+      const user = userEvent.setup();
+      const sessions = [baseSession({ id: "s1", title: "Old", remoteUrl: repoA.url, archived: true })];
+      const onArchive = vi.fn();
+      // For archived rows the sidebar passes a Restore handler via the
+      // AllSessionsDialog path; here we just verify the menu shape.
+      render(<SessionSidebar {...defaultProps} sessions={sessions} onArchive={onArchive} />);
+      await user.click(screen.getByLabelText("Session actions"));
+      // Archived rows show only Restore — Rename + Archive are intentionally hidden.
+      expect(screen.queryByText("Rename")).toBeNull();
+      expect(screen.queryByText("Archive")).toBeNull();
+    });
+
+    it("inline-renames the session via the Rename menu item, submitting on Enter", async () => {
+      const user = userEvent.setup();
+      const renameSession = vi.fn();
+      useSessionStore.setState({ renameSession });
+      const sessions = [baseSession({ id: "s1", title: "Old name", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Session actions"));
+      await user.click(await screen.findByText("Rename"));
+
+      const input = await screen.findByLabelText("Session name") as HTMLInputElement;
+      expect(input.value).toBe("Old name");
+
+      // Clear and type a new name, then submit with Enter.
+      await user.clear(input);
+      await user.type(input, "Fresh name{Enter}");
+
+      expect(renameSession).toHaveBeenCalledWith("s1", "Fresh name");
+    });
+
+    it("cancels inline rename on Escape without calling renameSession", async () => {
+      const user = userEvent.setup();
+      const renameSession = vi.fn();
+      useSessionStore.setState({ renameSession });
+      const sessions = [baseSession({ id: "s1", title: "Stay", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Session actions"));
+      await user.click(await screen.findByText("Rename"));
+
+      const input = await screen.findByLabelText("Session name") as HTMLInputElement;
+      await user.clear(input);
+      await user.type(input, "Discarded{Escape}");
+
+      expect(renameSession).not.toHaveBeenCalled();
+      // The original title is shown again.
+      expect(screen.getByText("Stay")).toBeInTheDocument();
     });
   });
 

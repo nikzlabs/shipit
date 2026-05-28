@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsSixVerticalIcon, GithubLogoIcon, LightningIcon, ListBulletsIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsSixVerticalIcon, GithubLogoIcon, LightningIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -16,6 +16,7 @@ import { useRepoStore } from "../stores/repo-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useAttentionInfo } from "../hooks/useAttentionInfo.js";
+import { useMediaQuery } from "../hooks/useMediaQuery.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 
 const SIDEBAR_MIN = 180;
@@ -119,6 +120,12 @@ interface SessionItemProps {
   childCount?: number;
   isChildrenCollapsed?: boolean;
   onToggleChildren?: () => void;
+  /**
+   * docs/156 — true when the device is a touch screen. The session row's
+   * overflow menu trigger is always visible on touch (no hover affordance);
+   * on desktop it hover-reveals on inactive rows.
+   */
+  isTouch?: boolean;
 }
 
 /** Consolidated status dot replacing separate AgentDot + CiDot. */
@@ -160,12 +167,50 @@ function SessionStatusDot({ sessionId }: { sessionId: string }) {
   return null;
 }
 
-export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren }: SessionItemProps) {
+export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch }: SessionItemProps) {
   const isArchived = session.archived === true;
 
   const attentionReason = useAttentionInfo(session.id);
   const needsAttention = attentionReason !== null && !isArchived;
   const hasChildren = (childCount ?? 0) > 0 && !!onToggleChildren;
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingTitle, setEditingTitle] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const editResolvedRef = useRef(false);
+
+  const startEditing = useCallback(() => {
+    setEditingTitle(session.title);
+    editResolvedRef.current = false;
+    setIsEditing(true);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  }, [session.title]);
+
+  const submitRename = useCallback(() => {
+    if (editResolvedRef.current) return;
+    editResolvedRef.current = true;
+    const trimmed = editingTitle.trim();
+    if (trimmed && trimmed !== session.title) {
+      void useSessionStore.getState().renameSession(session.id, trimmed);
+    }
+    setIsEditing(false);
+    setEditingTitle("");
+  }, [editingTitle, session.title, session.id]);
+
+  const cancelEditing = useCallback(() => {
+    editResolvedRef.current = true;
+    setIsEditing(false);
+    setEditingTitle("");
+  }, []);
+
+  // The overflow trigger is always visible on the active row, on touch
+  // devices, and while the menu itself is open. On inactive desktop rows it
+  // hover-reveals so it doesn't add visual noise to the long sidebar list.
+  const overflowAlwaysVisible = isCurrent || menuOpen || Boolean(isTouch);
 
   return (
     <div
@@ -201,50 +246,77 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
       )}
       <PrStateBadge sessionId={session.id} />
 
-      <button
-        onClick={() => { if (!isCurrent) onResume(session.id); }}
-        disabled={disabled}
-        className="flex-1 min-w-0 text-left"
-      >
-        <p className="truncate leading-snug">{session.title}</p>
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <SessionStatusDot sessionId={session.id} />
-          {repoLabel && (
-            <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
-          )}
-          {isArchived && <PhArchiveIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary) shrink-0" />}
-          <span className="text-(--color-text-tertiary) text-[10px]">{formatRelativeDate(session.lastUsedAt)}</span>
-        </div>
-      </button>
+      {isEditing ? (
+        <form
+          onSubmit={(e) => { e.preventDefault(); submitRename(); }}
+          className="flex-1 min-w-0"
+        >
+          <input
+            ref={inputRef}
+            type="text"
+            value={editingTitle}
+            onChange={(e) => setEditingTitle(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") cancelEditing(); }}
+            onBlur={submitRename}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full bg-(--color-bg-tertiary) text-(--color-text-primary) text-xs px-1.5 py-0.5 rounded border border-(--color-border-secondary) focus:border-(--color-border-focus) focus:outline-none"
+            maxLength={120}
+            aria-label="Session name"
+          />
+        </form>
+      ) : (
+        <button
+          onClick={() => { if (!isCurrent) onResume(session.id); }}
+          disabled={disabled}
+          className="flex-1 min-w-0 text-left"
+        >
+          <p className="truncate leading-snug">{session.title}</p>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <SessionStatusDot sessionId={session.id} />
+            {repoLabel && (
+              <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
+            )}
+            {isArchived && <PhArchiveIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary) shrink-0" />}
+            <span className="text-(--color-text-tertiary) text-[10px]">{formatRelativeDate(session.lastUsedAt)}</span>
+          </div>
+        </button>
+      )}
 
-      <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-        {isArchived && onRestore && (
-            <WithTooltip label="Restore session">
-            <Button
-              variant="ghost"
-              onClick={(e) => { e.stopPropagation(); onRestore(session.id); }}
-              disabled={disabled}
-              className="p-1! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-success)"
-              aria-label="Restore session"
-            >
-              <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />
-            </Button>
-            </WithTooltip>
-          )}
-          {!isArchived && onArchive && (
-            <WithTooltip label="Archive session">
-            <Button
-              variant="ghost"
-              onClick={(e) => { e.stopPropagation(); onArchive(session.id); }}
-              disabled={disabled}
-              className="p-1! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-warning)"
-              aria-label="Archive session"
-            >
-              <PhArchiveIcon size={ICON_SIZE.SM} />
-            </Button>
-            </WithTooltip>
-          )}
+      {!isEditing && (
+        <div
+          className={`shrink-0 flex items-center gap-0.5 transition-opacity ${
+            overflowAlwaysVisible ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+          }`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <OverflowMenu
+            label="Session actions"
+            triggerClassName="h-6 w-6"
+            onOpenChange={setMenuOpen}
+          >
+            {!isArchived && (
+              <>
+                <DropdownMenuItem onSelect={startEditing} disabled={disabled}>
+                  <PencilSimpleIcon size={ICON_SIZE.SM} />
+                  Rename
+                </DropdownMenuItem>
+                {onArchive && (
+                  <DropdownMenuItem onSelect={() => onArchive(session.id)} disabled={disabled}>
+                    <PhArchiveIcon size={ICON_SIZE.SM} />
+                    Archive
+                  </DropdownMenuItem>
+                )}
+              </>
+            )}
+            {isArchived && onRestore && (
+              <DropdownMenuItem onSelect={() => onRestore(session.id)} disabled={disabled}>
+                <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />
+                Restore
+              </DropdownMenuItem>
+            )}
+          </OverflowMenu>
         </div>
+      )}
     </div>
   );
 }
@@ -258,12 +330,14 @@ function OrphanSessionGroup({
   currentSessionId,
   onResume,
   onArchive,
+  isTouch,
 }: {
   label: string;
   sessions: SessionInfo[];
   currentSessionId?: string;
   onResume: (sessionId: string) => void;
   onArchive: (sessionId: string) => void;
+  isTouch: boolean;
 }) {
   if (sessions.length === 0) return null;
   return (
@@ -281,6 +355,7 @@ function OrphanSessionGroup({
           isCurrent={session.id === currentSessionId}
           onResume={onResume}
           onArchive={onArchive}
+          isTouch={isTouch}
         />
       ))}
     </div>
@@ -303,6 +378,7 @@ function RepoGroup({
   onViewAll,
   onProjectSettings,
   onRemoveRepo,
+  isTouch,
   // Drag-and-drop reordering
   draggable,
   isBeingDragged,
@@ -327,6 +403,7 @@ function RepoGroup({
   onViewAll: () => void;
   onProjectSettings: () => void;
   onRemoveRepo: () => void;
+  isTouch: boolean;
   // Drag-and-drop reordering — only enabled when there's more than one repo.
   draggable: boolean;
   /** True when this group is the source of the active drag. */
@@ -505,6 +582,7 @@ function RepoGroup({
                     isCurrent={s.id === currentSessionId}
                     onResume={onResume}
                     onArchive={onArchive}
+                    isTouch={isTouch}
                     childCount={childCount}
                     isChildrenCollapsed={childrenCollapsed}
                     onToggleChildren={childCount > 0 ? () => onToggleParentCollapsed(s.id) : undefined}
@@ -519,6 +597,7 @@ function RepoGroup({
                       isCurrent={child.id === currentSessionId}
                       onResume={onResume}
                       onArchive={onArchive}
+                      isTouch={isTouch}
                       indented
                     />,
                   );
@@ -549,6 +628,9 @@ export function SessionSidebar({
   onClose,
 }: SessionSidebarProps) {
   const { width, isDragging, onMouseDown } = useSidebarResize();
+  // docs/156 — the row-level overflow menu hover-reveals on inactive desktop
+  // rows but stays always-visible on touch devices, where there's no hover.
+  const isTouch = useMediaQuery("(pointer: coarse)");
 
   const collapsedRepos = useRepoStore((s) => s.collapsedRepos);
   const toggleRepoCollapsed = useRepoStore((s) => s.toggleRepoCollapsed);
@@ -901,6 +983,7 @@ export function SessionSidebar({
               onViewAll={() => handleViewAll(group.repo.url)}
               onProjectSettings={() => handleProjectSettings(group.repo.url)}
               onRemoveRepo={() => handleRemoveRepo(group.repo.url)}
+              isTouch={isTouch}
               draggable={reorderEnabled}
               isBeingDragged={draggedRepoUrl === group.repo.url}
               dropIndicator={dropTarget?.url === group.repo.url ? dropTarget.position : null}
@@ -918,6 +1001,7 @@ export function SessionSidebar({
               currentSessionId={currentSessionId}
               onResume={onResume}
               onArchive={onArchive}
+              isTouch={isTouch}
             />
           ))
         )}
