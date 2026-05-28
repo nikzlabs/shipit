@@ -1,6 +1,5 @@
 ---
-status: in-progress
-priority: high
+status: done
 description: Fix the broken fork-as-new-session path and overhaul rewind/rollback UX into a single coherent "go back" model anchored to the gaps between turns.
 ---
 
@@ -540,7 +539,7 @@ Landing 3 has no Landing-1 or Landing-2 hard dependencies — its items (U8 rich
 - [x] Confirmation modal (selective, per D4) + undo toast + "Recover recent rewind" topbar overflow item.
 - [x] `rewind_snapshots` SQLite table + restore endpoint (D8).
 - [x] `fork_breadcrumb` WS event + handler so other parent viewers see the just-persisted breadcrumb without a reload (B5 / D7).
-- [ ] Delete `RewindDropdown.tsx`, `RollbackDropdown.tsx`, the four old WS message types and their handlers. Cover with regression tests so the old chip can't sneak back.
+- [x] Delete `RewindDropdown.tsx`, `RollbackDropdown.tsx`, the four old WS message types and their handlers. Cover with regression tests so the old chip can't sneak back.
 - [x] U6: empty-chat marker after full rewind.
 
 ### Landing 3 — Polish
