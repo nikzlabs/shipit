@@ -664,12 +664,12 @@ export function PrLifecycleCard({
       key={sessionId}
       onClick={handleClick}
       title={clickable ? "Open PR details" : undefined}
-      className={`shrink-0 flex items-center gap-2 px-4 min-h-10 border-b border-(--color-border-primary) ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
+      className={`shrink-0 flex items-start gap-2 px-4 border-b border-(--color-border-primary) ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
     >
-      <div className="min-w-0 flex-1 flex items-center">
+      <div className="min-w-0 flex-1 min-h-10 flex items-center py-1">
         {phaseContent}
       </div>
-      <div className="shrink-0 flex items-center gap-1">
+      <div className="shrink-0 min-h-10 flex items-center gap-1">
         {onSearch && (
           <button
             onClick={onSearch}
