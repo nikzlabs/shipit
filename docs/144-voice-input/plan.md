@@ -95,16 +95,17 @@ not in the language Whisper heard.
 
 **Provider selection (in order of preference):**
 
-1. **The user's Claude Code subscription** (via the existing OAuth
-   that `AuthManager` already manages). Cleanup is a short
-   prompt to a small fast model (Haiku) and easily fits inside the
-   subscription's headroom — no extra key, no extra bill. This is
-   the default when the user has connected Claude Code to ShipIt,
-   which is the overwhelmingly common case for ShipIt users.
-2. **Anthropic API key**, if the user has configured one separately
-   (uncommon today but the codepath is the same — the credential
-   already lives next to the GitHub token in `CredentialStore`).
-3. **OpenAI**, via the same voice API key the user already provided
+1. **The user's Claude Code subscription** (via the OAuth bearer
+   that `AuthManager.getAccessToken()` returns). Cleanup is a
+   short prompt to a small fast model (Haiku) and easily fits
+   inside the subscription's headroom — no extra key, no extra
+   bill. This is the default when the user has connected Claude
+   Code to ShipIt, which is the overwhelmingly common case for
+   ShipIt users. Selection gates on `getAccessToken()` returning
+   a token (not on `checkCredentials()`, which is also true for
+   API-key-only setups that have no usable OAuth bearer for
+   direct Anthropic calls).
+2. **OpenAI**, via the same voice API key the user already provided
    for Whisper/TTS. The cleanup call hits `gpt-4o-mini` (or
    equivalent small model) so it doesn't materially add to their
    STT/TTS spend.
@@ -296,7 +297,7 @@ POST /api/voice/transcribe (orchestrator)
 STT provider (OpenAI Whisper for v1) → raw transcript
         ↓
    orchestrator picks cleanup provider:
-     Claude Code OAuth → Anthropic API key → OpenAI voice key
+     Claude Code OAuth → OpenAI voice key
         ↓
 Cleanup LLM (Haiku / gpt-4o-mini)
         ↓
@@ -386,8 +387,7 @@ Three provider directions in v1:
 | Direction | Provider | Endpoint | Auth | Audio path | Notes |
 |---|---|---|---|---|---|
 | **STT** | `whisper` | OpenAI `/v1/audio/transcriptions` | BYO OpenAI voice key, server-stored | browser → orchestrator → OpenAI | whole-utterance request/response, no streaming partials |
-| **Cleanup** | `claude-oauth` (default) | Anthropic API via Claude Code OAuth | user's Claude Code subscription, already managed by `AuthManager` | server-only | `claude-haiku-4-5`, ~400 ms, prompt is the fixed cleanup template |
-| **Cleanup** | `anthropic-key` (fallback) | Anthropic API direct | optional Anthropic API key in `CredentialStore` | server-only | same prompt, same model |
+| **Cleanup** | `claude-oauth` (default) | Anthropic API via Claude Code OAuth | user's Claude Code subscription, OAuth bearer surfaced by `AuthManager.getAccessToken()` | server-only | `claude-haiku-4-5`, ~400 ms, prompt is the fixed cleanup template |
 | **Cleanup** | `openai-cleanup` (fallback) | OpenAI `/v1/chat/completions` | same OpenAI voice key | server-only | `gpt-4o-mini`, same prompt; lets users without Claude auth still get cleanup |
 | **TTS** | `openai-tts` | OpenAI `/v1/audio/speech` (`tts-1` model) | OpenAI voice key | OpenAI → orchestrator → browser | streaming `audio/mpeg` response body, cached server-side by content hash |
 
@@ -401,9 +401,12 @@ interface TtsProvider { speak(text: string, opts): Promise<ReadableStream<Uint8A
 ```
 
 Cleanup-provider selection lives in a single small `pickCleanupProvider()`
-function inside `services/voice.ts` — it reads `AuthManager.hasClaudeAuth()`
-and the credential store and returns the first available adapter. No new
-DI manager.
+function inside `services/voice.ts` — it calls
+`AuthManager.getAccessToken()` and falls back to the OpenAI voice key
+in `CredentialStore`, returning the first available adapter. (It must
+gate on a non-null token from `getAccessToken()` rather than on the
+generic `checkCredentials()` boolean, which is true for API-key-only
+setups that don't expose a usable OAuth bearer.) No new DI manager.
 
 Adding a new provider in any direction means a new adapter file plus a
 settings option.
@@ -437,9 +440,10 @@ keydown. The original draft picked it as default; it is unusable. v1 uses
 - **Mode B (Quick-capture overlay with mic auto-on) — desktop default:
   `Ctrl+Shift+M`.** Press to open the doc-145 overlay *and* immediately
   start mic capture; release to stop the mic; press Enter on the overlay
-  to submit, Esc to cancel. Rebindable. Distinct from doc 145's text-only
-  hotkey (`Ctrl+Shift+N`) so users can opt into voice without surrendering
-  the text path. Verify during build that `Ctrl+Shift+M` doesn't conflict
+  to submit, Esc to cancel. Rebindable. Distinct from doc 145's shipped
+  text-only hotkey (`Ctrl+Alt+N` / `Cmd+Opt+N` on macOS — see doc 145's
+  Trigger section) so users can opt into voice without surrendering the
+  text path. Verify during build that `Ctrl+Shift+M` doesn't conflict
   with a browser or desktop-environment shortcut on the supported
   platforms (Firefox on some Linux DEs binds it to bookmarks-bar toggle;
   pick a backup if so).
@@ -589,10 +593,9 @@ subsections sharing one credential:
   insertion; when off, the raw Whisper output is inserted directly.
   Below the toggle, a status string reports which cleanup provider
   will be used ("Cleanup via your Claude subscription" / "Cleanup
-  via your Anthropic API key" / "Cleanup via your OpenAI key" /
-  "No cleanup provider available — raw transcript will be
-  inserted"). This is read-only — the orchestrator picks the
-  provider; the user doesn't.
+  via your OpenAI key" / "No cleanup provider available — raw
+  transcript will be inserted"). This is read-only — the
+  orchestrator picks the provider; the user doesn't.
 - **Mode A hotkey (mic into current input)** — key-capture input,
   default `Ctrl+Shift+Space`. Rebindable. Conflict-detection against
   existing app hotkeys.
@@ -709,9 +712,9 @@ The orchestrator already has the right primitives for everything we need:
   - `voice/providers/whisper.ts` — takes a `Buffer` + key, returns text.
   - `voice/providers/openai-tts.ts` — takes text + key + opts (voice,
     speed, format), returns a `ReadableStream<Uint8Array>`.
-  - `voice/providers/claude-cleanup.ts` — uses `AuthManager`'s Claude
-    Code OAuth (or a configured Anthropic key) to call Anthropic with
-    the locked cleanup prompt; returns the cleaned string.
+  - `voice/providers/claude-cleanup.ts` — uses the Claude Code OAuth
+    bearer returned by `AuthManager.getAccessToken()` to call Anthropic
+    with the locked cleanup prompt; returns the cleaned string.
   - `voice/providers/openai-cleanup.ts` — uses the OpenAI voice key to
     call `gpt-4o-mini` with the same locked prompt; returns the cleaned
     string. Acts as the fallback when neither Claude path is available.
@@ -737,8 +740,8 @@ New HTTP routes (registered via the existing dispatcher in `api-routes.ts`):
 - `POST /api/voice/credentials` — body: `{ provider: "openai", apiKey: string }`. Stores the key on `CredentialStore`. Returns `{ ok: true }`.
 - `DELETE /api/voice/credentials` — clears the stored key.
 - `GET /api/voice/credentials/status` — returns `{ configured: boolean, provider?: string }`. Never returns the key.
-- `POST /api/voice/transcribe` — multipart body with `audio` file part, `language` field, and `cleanup` boolean (mirrors the Settings toggle so the server doesn't have to reach into client state). Service-layer function loads the key from `CredentialStore`, calls the STT provider adapter, then — if `cleanup` is true and a cleanup provider is available — runs `cleanTranscript()`. Returns `{ text: string, rawText: string, cleanupProvider?: "claude-oauth" | "anthropic-key" | "openai-cleanup", cleanupErrorCode?: string }`. `text` is always set (cleanup falls through to raw on error). On STT error returns the upstream status code + a sanitized error message via `ServiceError`.
-- `GET /api/voice/cleanup/status` — returns `{ provider: "claude-oauth" | "anthropic-key" | "openai-cleanup" | null }` so the Settings UI can render the read-only status string without leaking credentials.
+- `POST /api/voice/transcribe` — multipart body with `audio` file part, `language` field, and `cleanup` boolean (mirrors the Settings toggle so the server doesn't have to reach into client state). Service-layer function loads the key from `CredentialStore`, calls the STT provider adapter, then — if `cleanup` is true and a cleanup provider is available — runs `cleanTranscript()`. Returns `{ text: string, rawText: string, cleanupProvider?: "claude-oauth" | "openai-cleanup", cleanupErrorCode?: string }`. `text` is always set (cleanup falls through to raw on error). On STT error returns the upstream status code + a sanitized error message via `ServiceError`.
+- `GET /api/voice/cleanup/status` — returns `{ provider: "claude-oauth" | "openai-cleanup" | null }` so the Settings UI can render the read-only status string without leaking credentials.
 - `POST /api/voice/speak` — JSON body `{ text: string, voice: string, speed: number }`. Service-layer function strips markdown via `strip-for-tts.ts`, hashes the result, checks the cache, on miss calls the TTS provider adapter, writes to cache, and streams `audio/mpeg` back to the client. On provider error returns the upstream status code + a sanitized error message via `ServiceError`. If the cleaned text is empty, returns 204 No Content (the client suppresses the Play button in this case anyway).
 
 CORS: not an issue because the audio call now goes orchestrator→OpenAI
@@ -842,7 +845,7 @@ Captured here so future readers know they were considered, not forgotten:
 
 - `src/server/orchestrator/voice/providers/types.ts` — `SttProvider`, `CleanupProvider`, and `TtsProvider` interfaces
 - `src/server/orchestrator/voice/providers/whisper.ts` — OpenAI Whisper STT adapter
-- `src/server/orchestrator/voice/providers/claude-cleanup.ts` — Anthropic cleanup adapter (Claude Code OAuth or Anthropic API key)
+- `src/server/orchestrator/voice/providers/claude-cleanup.ts` — Anthropic cleanup adapter that takes the OAuth bearer returned by `AuthManager.getAccessToken()` and posts the locked prompt to the Anthropic API (or shells out to a one-shot `claude` CLI invocation if the OAuth scope rejects direct API use — see open questions)
 - `src/server/orchestrator/voice/providers/openai-cleanup.ts` — OpenAI `gpt-4o-mini` cleanup adapter
 - `src/server/orchestrator/voice/providers/openai-tts.ts` — OpenAI `/v1/audio/speech` TTS adapter
 - `src/server/orchestrator/voice/cleanup.ts` — `pickCleanupProvider()` + `cleanTranscript()` with timeout, sanity checks, fall-through-to-raw on failure
@@ -875,7 +878,7 @@ Dictation:
 - **`use-voice-input.test.ts`** — state machine transitions with `MediaRecorder` mocked, hotkey hold/release behaviour, autorepeat suppression, blur/visibilitychange handling, 250 ms minimum and 60 s cap, session-switch abort.
 - **`whisper.test.ts`** — STT provider adapter against a fake fetch, error mapping.
 - **`claude-cleanup.test.ts`** / **`openai-cleanup.test.ts`** — cleanup adapters against a fake fetch / fake Anthropic client; assert the locked prompt is used, the output is returned verbatim, and the timeout fires at 3 s.
-- **`cleanup.test.ts`** — `pickCleanupProvider()` selection order under each combination of (Claude OAuth present? Anthropic key present? OpenAI key present?); `cleanTranscript()` sanity checks: empty cleanup output → fall through to raw; cleanup output >2× input length → fall through; cleanup output starts with "Here is" → fall through; question-shaped input ("how do I add a button") is returned as the same question, not as an answer.
+- **`cleanup.test.ts`** — `pickCleanupProvider()` selection order under each combination of (Claude OAuth present? OpenAI key present?); `cleanTranscript()` sanity checks: empty cleanup output → fall through to raw; cleanup output >2× input length → fall through; cleanup output starts with "Here is" → fall through; question-shaped input ("how do I add a button") is returned as the same question, not as an answer.
 - **`MicButton.test.tsx`** — render in each state, click behaviour. Includes the `transcribing → cleaning` substate.
 
 Playback:

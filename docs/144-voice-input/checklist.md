@@ -20,10 +20,10 @@
 ## Phase 2b — Transcript cleanup (LLM pass)
 
 - [ ] Add `voice/cleanup-prompt.ts` with the locked cleanup prompt; reference it from both adapters.
-- [ ] Implement `voice/providers/claude-cleanup.ts` (Claude Code OAuth path first; configured Anthropic API key as the secondary input to the same adapter); unit tests against a fake Anthropic client.
-- [ ] Verify during build that Claude Code OAuth tokens managed by `AuthManager` can be used for direct Anthropic API calls; if not, shell out to a one-shot `claude` CLI invocation behind the same `CleanupProvider` interface.
+- [ ] Implement `voice/providers/claude-cleanup.ts` using the OAuth bearer surfaced by `AuthManager.getAccessToken()`; unit tests against a fake Anthropic client.
+- [ ] Verify during build that the Claude Code OAuth bearer can be used for direct Anthropic API calls; if not, shell out to a one-shot `claude` CLI invocation behind the same `CleanupProvider` interface.
 - [ ] Implement `voice/providers/openai-cleanup.ts` using `gpt-4o-mini` and the OpenAI voice key; unit tests.
-- [ ] Implement `voice/cleanup.ts` with `pickCleanupProvider()` (selection order: Claude OAuth → Anthropic key → OpenAI) and `cleanTranscript()` (3 s timeout, empty-output / >2× length / preamble sanity checks, fall-through-to-raw with `cleanupErrorCode`); unit tests covering each fall-through case and the "question stays a question" assertion.
+- [ ] Implement `voice/cleanup.ts` with `pickCleanupProvider()` (selection order: Claude OAuth bearer present → OpenAI voice key present) and `cleanTranscript()` (3 s timeout, empty-output / >2× length / preamble sanity checks, fall-through-to-raw with `cleanupErrorCode`); unit tests covering each fall-through case, the selection gating on `getAccessToken()` rather than `checkCredentials()`, and the "question stays a question" assertion.
 - [ ] Extend `POST /api/voice/transcribe` to run cleanup when the `cleanup` flag is true and a provider is available; return `{ text, rawText, cleanupProvider?, cleanupErrorCode? }`.
 - [ ] Add `GET /api/voice/cleanup/status` returning the selected provider (or `null`) without leaking credentials.
 - [ ] Add `cleanupEnabled` to the settings store; surface it as the "Clean up transcripts with an LLM" toggle in Settings.
