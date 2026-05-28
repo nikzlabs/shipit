@@ -74,6 +74,15 @@ export interface ChatMessageGroup {
 export interface SteeredMessage {
   afterGroupIndex: number;
   text: string;
+  /**
+   * Attachments the user sent with this steer. Shapes match `PersistedMessage`
+   * so `buildTurnMessages` can write them straight through to chat history;
+   * without these the steered bubble reloads as text-only and the model never
+   * sees the image/file context the user attached.
+   */
+  images?: { data: string; mediaType: string }[];
+  files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
+  uploadPaths?: string[];
 }
 
 export interface QueuedMessage {

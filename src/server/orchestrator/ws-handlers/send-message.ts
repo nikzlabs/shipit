@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import type { WsClientMessage, WsServerMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
-import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
+import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { graduateSession } from "../services/graduate-session.js";
 import { wireAgentListeners, recordSteeredMessage, persistTurnInProgress, type AgentListenerDeps } from "./agent-listeners.js";
-import { runAgentWithMessage, drainNextQueuedMessage } from "./agent-execution.js";
+import { runAgentWithMessage, drainNextQueuedMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
 
@@ -113,13 +113,78 @@ export async function handleSendMessage(
         const steeringAgent = runnerForQueue.getAgent();
         if (steeringAgent) {
           const capturedSessionId = ctx.getActiveAppSessionId();
-          steeringAgent.sendUserMessage(msg.text);
+
+          // Resolve uploads + files now so the steered message can carry the
+          // same attachment context a fresh turn would. Without this, attached
+          // images never reach the agent (only `msg.text` would be injected)
+          // and never reach chat history (the steered bubble would reload as
+          // text-only after a session switch).
+          const steerDir = ctx.getActiveSessionDir() ?? ctx.workspaceDir;
+          let steerFiles: FileAttachment[] = [];
+          if (msg.files && msg.files.length > 0) {
+            const result = await resolveFileAttachments(msg.files, steerDir);
+            if (result.error) {
+              ctx.send({ type: "error", message: result.error });
+              return;
+            }
+            steerFiles = result.files;
+          }
+          let steerImages: ImageAttachment[] | undefined = images;
+          if (msg.uploads && msg.uploads.length > 0) {
+            const uploadResult = await resolveUploadRefs(msg.uploads, steerDir);
+            if (uploadResult.error) {
+              ctx.send({ type: "error", message: uploadResult.error });
+              return;
+            }
+            steerFiles = [...steerFiles, ...uploadResult.files];
+            if (uploadResult.images.length > 0) {
+              steerImages = [...(steerImages ?? []), ...uploadResult.images];
+            }
+          }
+          const steerUploadPaths = msg.uploads && msg.uploads.length > 0
+            ? msg.uploads.map((u) => u.path)
+            : undefined;
+
+          // Same prompt assembly as runAgentWithMessage: save images to
+          // /uploads/, reference them as a text block, then prepend file +
+          // image context to the user text (or append for slash invocations).
+          // The model reads each `/uploads/...` path with its Read tool.
+          const fileContext = steerFiles.length > 0 ? formatFileContext(steerFiles) : "";
+          const imageContext = steerImages && steerImages.length > 0
+            ? saveImagesToUploadsDir(steerImages, steerDir)
+            : "";
+          const steerPrompt = assembleAgentPrompt({
+            userText: msg.text,
+            fileContext,
+            imageContext,
+          });
+          steeringAgent.sendUserMessage(steerPrompt);
+
+          // Shapes match PersistedMessage so the same payload feeds chat
+          // history persistence and the message_steered broadcast.
+          const historyImages = steerImages?.map((img) => ({
+            data: img.data,
+            mediaType: img.mediaType,
+          }));
+          const historyFiles = steerFiles.length > 0
+            ? steerFiles.map((f) => ({
+                path: f.path,
+                contentPreview: f.content.slice(0, 200),
+                startLine: f.startLine,
+                endLine: f.endLine,
+              }))
+            : undefined;
+
           // Persist the steered message to chat history. Anchor it after the
           // assistant groups that exist *now* and fold it into the in-progress
           // set, so on reload it stays at the spot the user sent it instead of
           // collapsing up next to the turn's first user message (docs/140).
           if (capturedSessionId) {
-            recordSteeredMessage(runnerForQueue, msg.text);
+            recordSteeredMessage(runnerForQueue, msg.text, {
+              images: historyImages,
+              files: historyFiles,
+              uploadPaths: steerUploadPaths,
+            });
             persistTurnInProgress(ctx.chatHistoryManager, runnerForQueue, capturedSessionId);
           }
           // Broadcast message_steered so all viewers (including other tabs) see it
@@ -128,6 +193,9 @@ export async function handleSendMessage(
               type: "message_steered",
               text: msg.text,
               sessionId: capturedSessionId,
+              images: historyImages,
+              files: historyFiles,
+              uploadPaths: steerUploadPaths,
             });
           }
           return;

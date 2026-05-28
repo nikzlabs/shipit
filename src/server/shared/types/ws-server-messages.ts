@@ -241,6 +241,14 @@ export interface WsMessageSteered {
   type: "message_steered";
   text: string;
   sessionId: string;
+  /**
+   * Attachments the user sent with the steer. Same shapes that chat history
+   * persists for user messages — so reconnecting viewers / other tabs render
+   * the steered bubble identically to a reloaded one.
+   */
+  images?: { data: string; mediaType: string }[];
+  files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
+  uploadPaths?: string[];
 }
 
 // ---- Diff review messages (server → client) ----
