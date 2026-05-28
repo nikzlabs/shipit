@@ -10,12 +10,26 @@
 
 - [ ] Implement `voice/capture.ts` MediaRecorder wrapper.
 - [ ] Implement `voice/insert-transcript.ts` with cursor splice, selection replacement, leading-space heuristic; unit tests.
-- [ ] Implement `voice/use-voice-input.ts` state machine: keydown/keyup, autorepeat suppression, blur/visibilitychange handling, 250 ms minimum, 60 s cap, session-switch abort; unit tests.
+- [ ] Implement `voice/use-voice-input.ts` state machine: keydown/keyup, autorepeat suppression, blur/visibilitychange handling, 250 ms minimum, 60 s cap, session-switch abort, `transcribing → cleaning` substates; unit tests.
 - [ ] Implement `voice/providers/whisper.ts` STT adapter against a fake fetch; unit tests.
-- [ ] Wire `POST /api/voice/transcribe` (multipart audio + language) through `services/voice.ts` to the Whisper adapter; integration tests for success and error paths.
-- [ ] Build `MicButton` component with idle / recording / transcribing / error states; render tests.
+- [ ] Wire `POST /api/voice/transcribe` (multipart audio + language + `cleanup` flag) through `services/voice.ts` to the Whisper adapter; integration tests for success and error paths.
+- [ ] Build `MicButton` component with idle / recording / transcribing / cleaning / error states + cleanup-fall-through warning; render tests.
 - [ ] Wire MicButton into `MessageInput.tsx`; route transcript to `setText` only (never to send).
 - [ ] Wire the Mode A hotkey (`Ctrl+Shift+Space` default) with conflict detection against the existing app hotkey map.
+
+## Phase 2b — Transcript cleanup (LLM pass)
+
+- [ ] Add `voice/cleanup-prompt.ts` with the locked cleanup prompt; reference it from both adapters.
+- [ ] Implement `voice/providers/claude-cleanup.ts` (Claude Code OAuth path first; configured Anthropic API key as the secondary input to the same adapter); unit tests against a fake Anthropic client.
+- [ ] Verify during build that Claude Code OAuth tokens managed by `AuthManager` can be used for direct Anthropic API calls; if not, shell out to a one-shot `claude` CLI invocation behind the same `CleanupProvider` interface.
+- [ ] Implement `voice/providers/openai-cleanup.ts` using `gpt-4o-mini` and the OpenAI voice key; unit tests.
+- [ ] Implement `voice/cleanup.ts` with `pickCleanupProvider()` (selection order: Claude OAuth → Anthropic key → OpenAI) and `cleanTranscript()` (3 s timeout, empty-output / >2× length / preamble sanity checks, fall-through-to-raw with `cleanupErrorCode`); unit tests covering each fall-through case and the "question stays a question" assertion.
+- [ ] Extend `POST /api/voice/transcribe` to run cleanup when the `cleanup` flag is true and a provider is available; return `{ text, rawText, cleanupProvider?, cleanupErrorCode? }`.
+- [ ] Add `GET /api/voice/cleanup/status` returning the selected provider (or `null`) without leaking credentials.
+- [ ] Add `cleanupEnabled` to the settings store; surface it as the "Clean up transcripts with an LLM" toggle in Settings.
+- [ ] Render the read-only cleanup-provider status string under the toggle; refetch on Claude/OpenAI credential changes.
+- [ ] Wire the mic-button warning toast for the cleanup-fall-through case; auto-dismiss on the next successful cleanup.
+- [ ] Manual QA: noisy transcript → cleaned correctly; question stays a question; toggle off → raw inserted; Claude path → fallback path (clear Claude auth, confirm OpenAI cleanup takes over).
 
 ## Phase 3 — Dictation: Mode B (QuickCaptureOverlay)
 
