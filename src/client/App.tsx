@@ -838,6 +838,7 @@ export default function App() {
     (payload: SendCommentsPayload) => {
       const { prompt, filePaths, commentCount } = payload;
       useFileStore.getState().closePreview();
+      useUiStore.getState().setMobilePanel("chat");
       const sid = useSessionStore.getState().sessionId;
       sendUserMessage({
         bubble: {
