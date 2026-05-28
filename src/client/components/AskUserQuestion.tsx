@@ -18,7 +18,7 @@ export interface AskQuestionItem {
 interface AskUserQuestionProps {
   toolUseId: string;
   questions: AskQuestionItem[];
-  onAnswer: (toolUseId: string, answers: Record<string, string>) => void;
+  onAnswer: (toolUseId: string, answers: Record<string, string>, text: string) => void;
   disabled: boolean;
   /**
    * The agent's tool_result content for this question, when it has been
@@ -27,21 +27,47 @@ interface AskUserQuestionProps {
    * state after a page reload, where the local state is gone but the
    * tool_result is persisted in chat history.
    *
-   * The content is the answer text the user submitted (joined with ", "
-   * for multi-select / multi-question prompts). We approximate the
-   * per-question answers by matching against option labels — for prompts
-   * that don't decompose cleanly we still show the raw answer text.
+   * For multi-question prompts the content is a bullet list of
+   * "- {question}: {answer}" pairs; for single-question prompts it's the
+   * bare answer. Legacy ", "-joined content is still accepted for older
+   * persisted history.
    */
   resolvedAnswer?: string;
 }
 
 /**
- * Reconstruct a `submittedAnswers` map from the joined tool_result content.
- * The content carries the user's answer text (e.g. "Redis" or
- * "Auth, Cache" for multi-select / multi-question). We attempt to assign
- * each comma-separated chunk to a question whose options contain that
- * label; chunks that don't match a label are folded into the first
- * unanswered question as a free-form ("Other") answer.
+ * Format the user's per-question answers into a single text string sent to
+ * the agent (and stored verbatim as the user's chat bubble). For a single
+ * question we emit just the bare answer text. For multiple questions we
+ * emit a bullet list with the question text inline so commas inside an
+ * answer don't get confused with the separator between answers.
+ */
+export function formatAnswerText(
+  questions: AskQuestionItem[],
+  answers: Record<string, string>,
+): string {
+  if (questions.length <= 1) {
+    return answers["0"] ?? Object.values(answers)[0] ?? "";
+  }
+  const lines: string[] = [];
+  for (let i = 0; i < questions.length; i++) {
+    const ans = answers[String(i)];
+    if (ans === undefined || ans === "") continue;
+    lines.push(`- ${questions[i].question}: ${ans}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Reconstruct a `submittedAnswers` map from the persisted tool_result
+ * content. Two formats are accepted:
+ *
+ *  - Bullet list (current): "- {question}: {answer}" per line. Each line
+ *    is matched against its question by `question` text prefix, so commas
+ *    inside an answer no longer get split.
+ *  - Comma-joined (legacy): "Redis, Postgres". Each comma-separated chunk
+ *    is greedily matched against option labels; unmatched chunks fold
+ *    into the first unanswered question as free-form text.
  *
  * Returning `null` means we couldn't derive anything — caller can still
  * show the raw answer text as a fallback.
@@ -52,6 +78,25 @@ function deriveAnswersFromResult(
 ): Record<string, string> | null {
   const trimmed = content.trim();
   if (!trimmed) return null;
+
+  // Bullet format — only meaningful when there are multiple questions.
+  if (questions.length > 1 && trimmed.startsWith("- ")) {
+    const lineAnswers: Record<string, string> = {};
+    for (const rawLine of trimmed.split("\n")) {
+      const line = rawLine.trim();
+      if (!line.startsWith("- ")) continue;
+      const body = line.slice(2);
+      for (let q = 0; q < questions.length; q++) {
+        const prefix = `${questions[q].question}: `;
+        if (body.startsWith(prefix)) {
+          lineAnswers[String(q)] = body.slice(prefix.length);
+          break;
+        }
+      }
+    }
+    if (Object.keys(lineAnswers).length > 0) return lineAnswers;
+  }
+
   const parts = trimmed.split(",").map((p) => p.trim()).filter(Boolean);
   const answers: Record<string, string> = {};
   // Greedy assignment: each part picks the first question whose options
@@ -165,10 +210,10 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         });
       } else {
         setSubmittedAnswers(answers);
-        onAnswer(toolUseId, answers);
+        onAnswer(toolUseId, answers, formatAnswerText(questions, answers));
       }
     }
-  }, [disabled, submittedAnswers, selections, usingOther, otherTexts, questions.length, onAnswer, toolUseId]);
+  }, [disabled, submittedAnswers, selections, usingOther, otherTexts, questions, onAnswer, toolUseId]);
 
   const handleOtherClick = useCallback((qIndex: number) => {
     if (disabled || submittedAnswers) return;
@@ -215,7 +260,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     if (Object.keys(answers).length === 0) return;
 
     setSubmittedAnswers(answers);
-    onAnswer(toolUseId, answers);
+    onAnswer(toolUseId, answers, formatAnswerText(questions, answers));
   }, [disabled, submittedAnswers, questions, selections, usingOther, otherTexts, onAnswer, toolUseId]);
 
   // Determine if submit button should be shown (multi-select or multi-question)
@@ -325,7 +370,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                           if (text) {
                             const answers: Record<string, string> = { [String(qIndex)]: text };
                             setSubmittedAnswers(answers);
-                            onAnswer(toolUseId, answers);
+                            onAnswer(toolUseId, answers, formatAnswerText(questions, answers));
                           }
                         }
                       }}

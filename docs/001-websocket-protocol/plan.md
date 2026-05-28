@@ -109,7 +109,7 @@ The WebSocket at `/ws` handles operations that require streaming, per-connection
 | Type | Fields | Purpose |
 |------|--------|---------|
 | `send_message` | `text`, `sessionId?`, `images?`, `files?`, `permissionMode?` | Send user message to Claude |
-| `answer_question` | `toolUseId`, `answers` | Reply to Claude permission/tool question |
+| `answer_question` | `toolUseId`, `answers`, `text?` | Reply to AskUserQuestion. `text` is the pre-formatted prompt (bullet list for multi-question, bare answer for single); server falls back to joining `answers` for older clients. |
 | `home_send_with_repo` | `repoUrl`, `text`, `images?`, `files?`, `permissionMode?` | Send message from home screen with repo URL |
 | `new_session` | — | Detach from current session, prepare for new one |
 | `activate_session` | `sessionId` | Attach runner, file watcher, preview to this connection |

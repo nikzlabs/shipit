@@ -16,6 +16,15 @@ export interface WsAnswerQuestion {
   type: "answer_question";
   toolUseId: string;
   answers: Record<string, string>;
+  /**
+   * Pre-formatted answer text used as the prompt to the agent and the
+   * user's chat bubble. The client builds this from `answers` plus the
+   * question text so commas inside an answer aren't ambiguous with the
+   * separator between answers (single question: bare text; multiple
+   * questions: "- {question}: {answer}" per line). Optional for back-compat
+   * with older clients — the server falls back to joining the answers map.
+   */
+  text?: string;
 }
 
 /**

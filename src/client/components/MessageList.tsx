@@ -235,7 +235,7 @@ export function MessageList({
   isLoading: boolean;
   searchMatches?: SearchMatch[];
   currentMatch?: SearchMatch;
-  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>) => void;
+  onAnswerQuestion?: (toolUseId: string, answers: Record<string, string>, text: string) => void;
   onSendFollowUp?: (text: string) => void;
   rewindPreviews?: Record<string, WsRewindPreview>;
   sessionTitle?: string;
