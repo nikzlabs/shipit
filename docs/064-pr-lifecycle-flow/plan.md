@@ -299,13 +299,16 @@ See [phase-3.md](./phase-3.md) for the full design: split button, `PrAutomationS
 
 The PR status poller (`src/server/orchestrator/pr-status-poller.ts`) is the
 sole consumer of GitHub GraphQL for ShipIt's PR lifecycle. Its cost budget
-is GitHub's primary 5,000-points/hour rate limit per user; each
-`pullRequests(first:30) { files / commits / statusCheckRollup / deployments }`
-call costs roughly 4–7 points. With one timer per repo at a fixed 15 s
-cadence, a user with 5 active repos can comfortably exhaust the budget in
-under an hour (5 repos × 4 polls/min × ~5 points ≈ 6,000/hr) — and we saw
-exactly that in production. The poller is now smarter about when to call
-and at what cadence.
+is GitHub's primary 5,000-points/hour rate limit per user. The poller is
+smart about when to call (global gate), at what cadence (per-repo), and —
+since [docs/155-pr-poll-query-scoping](../155-pr-poll-query-scoping/plan.md)
+— how heavy each call is: `pullRequests(first: N)` is capped to the tracked
+session count (plus a small discovery floor), and conversation fields are
+fetched only for the PR whose tab is currently focused (via a top-level
+`focused${i}: pullRequest(number: N)` alias). Combined, those two shape
+changes brought the worst-case heavy poll from 11 → 1 point. The history of
+that decision — including why the aliased-per-PR rewrite was rejected — is
+in [`cost-measurements.md`](../155-pr-poll-query-scoping/cost-measurements.md).
 
 **Two-strategy design.** The global *gate* decides whether *any* polling
 runs. When it's open, a per-repo *cadence* decides how often each repo
