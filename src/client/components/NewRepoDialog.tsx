@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { XIcon } from "@phosphor-icons/react";
 import type { TemplateInfo } from "../utils/template-info.js";
+import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 
@@ -86,10 +88,10 @@ export function NewRepoDialog({
               variant="ghost"
               size="sm"
               onClick={onClose}
-              className="text-xl leading-none"
+              className="h-9 w-9 max-md:h-10 max-md:w-10"
               aria-label="Close"
             >
-              &times;
+              <XIcon size={ICON_SIZE.MD} weight="bold" />
             </Button>
           </div>
           <p className="text-sm text-(--color-text-secondary)">

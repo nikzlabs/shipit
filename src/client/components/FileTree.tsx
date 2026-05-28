@@ -102,11 +102,11 @@ function TreeNode({
             e.stopPropagation();
             onDownload(node.path);
           }}
-          className="hidden group-hover:inline-flex w-5 h-5 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
+          className="hidden group-hover:inline-flex h-6 w-6 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
           title="Download file"
           aria-label={`Download ${node.name}`}
         >
-          <DownloadSimpleIcon size={12} />
+          <DownloadSimpleIcon size={ICON_SIZE.SM} />
         </Button>
       )}
       {onAddToChat && (
@@ -117,11 +117,11 @@ function TreeNode({
             e.stopPropagation();
             onAddToChat(node.path);
           }}
-          className="hidden group-hover:inline-flex w-5 h-5 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
+          className="hidden group-hover:inline-flex h-6 w-6 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
           title="Add to chat context"
           aria-label={`Add ${node.name} to chat`}
         >
-          <PlusIcon size={12} />
+          <PlusIcon size={ICON_SIZE.SM} />
         </Button>
       )}
     </div>
@@ -199,11 +199,11 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
                     variant="ghost"
                     size="sm"
                     onClick={() => onAddToChat(u.path!)}
-                    className="hidden group-hover:inline-flex w-5 h-5 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
+                    className="hidden group-hover:inline-flex h-6 w-6 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
                     title="Add to chat context"
                     aria-label={`Add ${u.name} to chat`}
                   >
-                    <PlusIcon size={12} />
+                    <PlusIcon size={ICON_SIZE.SM} />
                   </Button>
                 )}
                 {onDeleteUpload && (
@@ -211,11 +211,11 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
                     variant="ghost"
                     size="sm"
                     onClick={() => onDeleteUpload(u)}
-                    className="hidden group-hover:inline-flex w-5 h-5 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-error)"
+                    className="hidden group-hover:inline-flex h-6 w-6 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-error)"
                     title="Delete upload"
                     aria-label={`Delete ${u.name}`}
                   >
-                    <TrashIcon size={12} />
+                    <TrashIcon size={ICON_SIZE.SM} />
                   </Button>
                 )}
               </div>
