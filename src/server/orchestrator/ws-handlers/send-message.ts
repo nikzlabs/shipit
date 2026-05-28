@@ -386,8 +386,12 @@ export async function handleSendMessage(
 }
 
 export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion): Promise<void> {
-  const answerParts = Object.values(msg.answers);
-  const answerText = answerParts.join(", ");
+  // Prefer the client-formatted text (unambiguous when answers contain
+  // commas) and fall back to joining the answers map for older clients
+  // that predate the `text` field.
+  const answerText = msg.text?.trim()
+    ? msg.text
+    : Object.values(msg.answers).join(", ");
 
   if (!answerText.trim()) {
     ctx.send({ type: "error", message: "Answer cannot be empty" });
