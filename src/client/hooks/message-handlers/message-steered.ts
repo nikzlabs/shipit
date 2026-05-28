@@ -15,5 +15,14 @@ export const handleMessageSteered: Handler<WsMessageSteered> = (_ctx, data) => {
   const messages = session.messages;
   const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
   if (lastUserMsg?.text === data.text) return;
-  session.setMessages((prev) => [...prev, { role: "user" as const, text: data.text }]);
+  session.setMessages((prev) => [
+    ...prev,
+    {
+      role: "user" as const,
+      text: data.text,
+      images: data.images,
+      files: data.files,
+      uploadPaths: data.uploadPaths,
+    },
+  ]);
 };

@@ -149,9 +149,18 @@ export function buildTurnMessages(
   const out: PersistedMessage[] = [];
   const flag = opts.inProgress ? { inProgress: true as const } : {};
 
+  const persistedSteer = (s: SteeredMessage): PersistedMessage => ({
+    role: "user",
+    text: s.text,
+    images: s.images,
+    files: s.files,
+    uploadPaths: s.uploadPaths,
+    ...flag,
+  });
+
   const emitSteersAt = (index: number) => {
     for (const s of steered) {
-      if (s.afterGroupIndex === index) out.push({ role: "user", text: s.text, ...flag });
+      if (s.afterGroupIndex === index) out.push(persistedSteer(s));
     }
   };
 
@@ -171,7 +180,7 @@ export function buildTurnMessages(
   // The `>=` clamp guards against an anchor that outran the persistable groups
   // (e.g. the anchoring group never produced persistable content).
   for (const s of steered) {
-    if (s.afterGroupIndex >= persistable.length) out.push({ role: "user", text: s.text, ...flag });
+    if (s.afterGroupIndex >= persistable.length) out.push(persistedSteer(s));
   }
   return out;
 }
@@ -185,9 +194,19 @@ export function buildTurnMessages(
 export function recordSteeredMessage(
   runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
   text: string,
+  attachments?: Pick<SteeredMessage, "images" | "files" | "uploadPaths">,
 ): void {
   const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
-  runner.steeredMessages = [...runner.steeredMessages, { afterGroupIndex, text }];
+  runner.steeredMessages = [
+    ...runner.steeredMessages,
+    {
+      afterGroupIndex,
+      text,
+      images: attachments?.images,
+      files: attachments?.files,
+      uploadPaths: attachments?.uploadPaths,
+    },
+  ];
   // docs/140 diag — capture the steered-message inject point. Pairs with the
   // `[persist-user]` logs to confirm whether the same user text was both
   // appended (via persistUserMessage) and injected into the in-progress batch

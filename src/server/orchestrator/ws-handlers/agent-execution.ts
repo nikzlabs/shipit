@@ -36,7 +36,7 @@ export { selectAgentEnvForPush };
  * mismatch was the root cause of uploaded images reappearing as attached
  * after a reload (see fix history in commits b7375baa5, 654b2c931).
  */
-function saveImagesToUploadsDir(images: ImageAttachment[], workspaceDir: string): string {
+export function saveImagesToUploadsDir(images: ImageAttachment[], workspaceDir: string): string {
   const uploadsDir = path.join(path.dirname(workspaceDir), "uploads");
   fs.mkdirSync(uploadsDir, { recursive: true });
 
