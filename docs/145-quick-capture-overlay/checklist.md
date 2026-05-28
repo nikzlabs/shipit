@@ -7,3 +7,10 @@
 - [x] Add notification coalescing for bursty session completions.
 - [x] Add broader test coverage for all planned edge cases.
 - [x] Run cross-browser/manual hotkey verification.
+- [x] Wire file attachments in the overlay: lift upload state into
+      `MessageInput`, change `onSend` to a `{text, uploadRefs, uploads,
+      deferredFiles}` payload, and POST multipart to `/api/sessions/headless`
+      when `deferredFiles` is non-empty. Server saves files into the new
+      session's `uploads/` before `runner.dispatch({ text, uploads })`. Both
+      parents now share the same upload UX — the previous split-parent
+      wiring is what caused the "+" button to silently no-op in the overlay.

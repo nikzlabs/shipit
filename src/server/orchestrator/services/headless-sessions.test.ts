@@ -338,4 +338,41 @@ describe("createHeadlessSession", () => {
       graduationDeps,
     )).rejects.toMatchObject({ statusCode: 500, message: "clone failed" });
   });
+
+  it("saves uploaded files into the new session's uploads dir and dispatches with UploadRefs", async () => {
+    const result = await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        prompt: "take a look",
+        uploads: [
+          { filename: "note.txt", data: Buffer.from("hello") },
+          { filename: "data.csv", data: Buffer.from("a,b\n1,2") },
+        ],
+      },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+    );
+
+    const sessionDir = path.dirname(path.join(tmpDir, "quick-1", "workspace"));
+    const uploadsDir = path.join(sessionDir, "uploads");
+    expect(fs.existsSync(path.join(uploadsDir, "note.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(uploadsDir, "data.csv"))).toBe(true);
+    expect(fs.readFileSync(path.join(uploadsDir, "note.txt"), "utf8")).toBe("hello");
+
+    const dispatchCall = registry.get(result.sessionId)?.dispatch.mock.calls[0][0] as {
+      text: string;
+      uploads?: { path: string; type: "upload" }[];
+    };
+    expect(dispatchCall.text).toBe("take a look");
+    expect(dispatchCall.uploads).toEqual([
+      { path: "/uploads/note.txt", type: "upload" },
+      { path: "/uploads/data.csv", type: "upload" },
+    ]);
+  });
 });

@@ -1,13 +1,15 @@
+import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { SessionInfo, AgentId } from "../../shared/types.js";
+import type { SessionInfo, AgentId, UploadRef } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
+import { saveUploadedFile, MAX_UPLOAD_FILES_PER_REQUEST } from "./files.js";
 import type { ClaimSessionService } from "./claim-session.js";
 
 const quickSessionIds = new Set<string>();
@@ -32,6 +34,11 @@ function readPositiveIntEnv(name: string): number | undefined {
 export const DEFAULT_MAX_ACTIVE_HEADLESS_SESSIONS =
   readPositiveIntEnv("MAX_ACTIVE_HEADLESS_SESSIONS") ?? 8;
 
+export interface HeadlessUploadInput {
+  filename: string;
+  data: Buffer;
+}
+
 export interface CreateHeadlessSessionOptions {
   repoUrl: string;
   prompt: string;
@@ -41,6 +48,13 @@ export interface CreateHeadlessSessionOptions {
   agent?: AgentId;
   model?: string;
   maxActiveHeadlessSessions?: number;
+  /**
+   * Raw files uploaded alongside the prompt (multipart). Saved into the new
+   * session's uploads dir before the agent turn is dispatched, so the
+   * resulting `UploadRef[]` rides along with `runner.dispatch({ text, uploads })`
+   * and the first turn sees the attachments. See docs/145.
+   */
+  uploads?: HeadlessUploadInput[];
 }
 
 export interface CreateHeadlessSessionResult {
@@ -135,8 +149,28 @@ export async function createHeadlessSession(
     sessionManager.setAgentPinned(newSessionId);
   }
 
+  // Persist any uploaded files into the new session's uploads dir before the
+  // first turn fires, so the resulting UploadRefs are visible to the agent.
+  // Uploads live as a sibling of the workspace checkout (same convention as
+  // /api/sessions/:id/files/uploads — see `api-routes-files.ts`).
+  const uploadInputs = opts.uploads ?? [];
+  if (uploadInputs.length > MAX_UPLOAD_FILES_PER_REQUEST) {
+    throw new ServiceError(400, `Maximum ${MAX_UPLOAD_FILES_PER_REQUEST} files per upload`);
+  }
+  const uploadRefs: UploadRef[] = [];
+  if (uploadInputs.length > 0) {
+    const uploadsDir = path.join(path.dirname(newWorkspaceDir), "uploads");
+    for (const input of uploadInputs) {
+      const saved = await saveUploadedFile(uploadsDir, input.filename, input.data);
+      uploadRefs.push({ path: saved.path, type: "upload" });
+    }
+  }
+
   quickSessionIds.add(newSessionId);
-  runner.dispatch({ text: trimmedPrompt });
+  runner.dispatch({
+    text: trimmedPrompt,
+    ...(uploadRefs.length > 0 ? { uploads: uploadRefs } : {}),
+  });
 
   // graduate-session.ts owns the warm → active transition (docs/156).
   // Do not inline setWarm / track / setBranchRenamed / scheduleSessionNaming /
