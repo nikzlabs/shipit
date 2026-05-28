@@ -424,15 +424,17 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
 
   return (
     <div>
-      <div className="flex items-start gap-3 flex-nowrap">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <PrStateBadge sessionId={sessionId} url={pr.url} prNumber={pr.number} />
-        <BranchLabel
-          baseBranch={pr.baseBranch}
-          headBranch={pr.headBranch}
-          prTitle={pr.title}
-          prBody={pr.body}
-        />
-        <span className="ml-auto min-w-0 flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+        <div className="flex-1 min-w-0 flex items-center">
+          <BranchLabel
+            baseBranch={pr.baseBranch}
+            headBranch={pr.headBranch}
+            prTitle={pr.title}
+            prBody={pr.body}
+          />
+        </div>
+        <span className="basis-full sm:basis-auto min-w-0 flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
           <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
           {pendingReviewCount > 0 && (
             <PendingReviewButton sessionId={sessionId} count={pendingReviewCount} />
