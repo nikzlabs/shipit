@@ -29,6 +29,15 @@
   --ease-in: ease-in;
 }
 
+/* Lock the page to the visible viewport. The app shell uses h-[100dvh] and
+   manages its own scroll regions; without this, mobile browsers let the
+   whole document scroll when the URL bar shows/hides, pushing the header
+   and PR card out of view. */
+html, body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 /* Custom highlight for the markdown-comments "pending comment" range. The
    native browser selection is dimmed or cleared once focus moves to the
    comment textarea, so we paint a persistent highlight via the CSS Custom
