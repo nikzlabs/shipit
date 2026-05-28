@@ -135,7 +135,7 @@ Claude fixes → auto-commit → auto-push (PR exists)
 
 ### Key UX Decisions
 
-> **Placement update (2026-05):** the "pinned above the input" placement described below is superseded by [156-session-card-consolidation](../156-session-card-consolidation/plan.md). The card now lives at the top of the chat panel and replaces `SessionTopBar` entirely — session actions (rename, archive, download, search) move into its overflow menu, and session name lives only in the sidebar. The phase-rendering logic in `PrLifecycleCard` is unchanged; only its mount point and surrounding chrome move.
+> **Placement update (2026-05):** the "pinned above the input" placement described below is superseded by [156-session-card-consolidation](../156-session-card-consolidation/plan.md). The card now lives at the top of the chat panel and replaces `SessionTopBar` entirely. Conversation-scoped actions (Search, Download chat, Recover-rewind, auto-fix / auto-merge) stay with the card; session-management actions (Rename, Archive) move to a hover-revealed `[⋯]` menu on each sidebar row. The phase-rendering logic in `PrLifecycleCard` is unchanged; only its mount point and surrounding chrome move.
 
 **1. Cards are chat messages, not UI chrome.**
 
