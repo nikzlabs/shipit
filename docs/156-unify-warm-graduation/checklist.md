@@ -1,11 +1,18 @@
-- [ ] Add `services/graduate-session.ts` with `graduateSession()` (folds in the existing `scheduleSessionNaming`).
-- [ ] Add `services/graduate-session.test.ts` (port four naming tests + add setWarm/track/touch/list-broadcast/warm coverage).
+- [ ] Add `services/graduate-session.ts` with the "single source of truth" contract comment and `graduateSession()` body (folds in the previous PR's `scheduleSessionNaming` as a private helper).
+- [ ] Add `services/graduate-session.test.ts` (port 4 naming tests + add setWarm/track/touch/list-broadcast/warm/model/parent/explicit-title/explicit-branch coverage).
 - [ ] Delete `session-graduation.ts` and `session-graduation.test.ts`.
 - [ ] Refactor `ws-handlers/send-message.ts` warm-graduation block to call `graduateSession(...)`.
-- [ ] Refactor `services/headless-sessions.ts` to call `graduateSession(...)`; drop `HeadlessSessionGraduationDeps` and the `graduationDeps?` parameter.
-- [ ] Update `api-routes-session.ts` to stop passing the now-removed `graduationDeps`.
+- [ ] Refactor `services/headless-sessions.ts` to call `graduateSession(...)`; delete `HeadlessSessionGraduationDeps` and the `graduationDeps?` parameter.
+- [ ] Refactor `services/child-sessions.ts` to call `graduateSession(...)`; verify AI-naming runs when no `opts.title` and is skipped when one is supplied.
+- [ ] Refactor `services/session-fork-merge.ts` to call `graduateSession(...)` with both explicit fields set; reorder so `setRemoteUrl` runs before graduation.
+- [ ] Update `api-routes-session.ts` to wire `GraduateSessionDeps` into headless + spawn + fork routes (drop the previous `graduationDeps` conditional).
+- [ ] Update `ws-handlers/rollback-handlers.ts` if `handleForkSessionFromMessage` needs to forward new deps to `forkSession`.
 - [ ] Update `services/index.ts` re-exports.
 - [ ] Update `services/headless-sessions.test.ts` structural assertions against the new injection shape.
-- [ ] Extend `integration_tests/quick-capture-headless.test.ts` with the `repoStore.touch` assertion.
+- [ ] Update / add `services/child-sessions.test.ts` assertions for the new AI-naming behavior.
+- [ ] Verify `agent-spawned-session.test.ts` title expectations against the new AI-naming-on-by-default behavior (mock the CLI for determinism).
+- [ ] Extend `integration_tests/quick-capture-headless.test.ts` with the `repoStore.touch` end-to-end assertion.
+- [ ] Add the one-line "graduate-session.ts owns this — do not inline" comment at each call site.
 - [ ] `npm run lint:dev` + `npm run typecheck` clean.
-- [ ] Affected vitest scope passes (`graduate-session.test.ts`, `headless-sessions.test.ts`, `quick-capture-headless.test.ts`, `warm-sessions.test.ts`, `agent-spawned-session.test.ts`, `home-screen.test.ts`).
+- [ ] Affected vitest scope passes (`graduate-session.test.ts`, `headless-sessions.test.ts`, `child-sessions.test.ts`, `quick-capture-headless.test.ts`, `warm-sessions.test.ts`, `agent-spawned-session.test.ts`, `home-screen.test.ts`).
+- [ ] Full `vitest run src/server/orchestrator/` sweep passes.
