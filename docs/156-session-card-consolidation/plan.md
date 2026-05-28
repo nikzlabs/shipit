@@ -107,7 +107,9 @@ The session name lives in the sidebar; the PR/conversation lives in the top bar.
 
 **Sidebar row overflow (new):** Rename, Archive, Restore (archived rows).
 **Top bar right cluster:** dedicated `[🔍 Search]` icon + `[⋯ Overflow]`.
-**Top bar overflow:** Download chat, Recover recent rewind, Auto-fix CI failures (when PR exists), Auto-merge when CI passes (when PR exists).
+**Top bar overflow:** Download chat, Recover recent rewind, **Auto-fix CI failures**, **Auto-merge when CI passes**.
+
+Both `Auto-fix` and `Auto-merge` are always reachable whenever there's an active session — they're stored preferences, not actions, and pre-enabling them before a PR exists is a real workflow ("I'm going to ship this; merge it when CI's green"). They don't require a PR or a CI state to toggle. See "Auto-fix / Auto-merge availability" below for the consolidation and the latent-bug fix that comes with it.
 
 Why split this way:
 
@@ -143,6 +145,33 @@ The today's `<PhArchiveIcon>` and restore buttons on the row are removed — bot
 
 Rename opens an inline rename in the row (existing `SessionTopBar` inline-edit pattern moves here). Archive triggers the existing `archiveSession` flow.
 
+### Auto-fix / Auto-merge availability — consolidate and unbreak pre-PR
+
+Today, auto-merge is rendered in **four** places and auto-fix in **two**, with inconsistent gating:
+
+| Toggle | Location | Visibility today |
+|---|---|---|
+| Auto-merge | `SessionTopBar.tsx:109` | Any session with `remoteUrl` (pre-PR OK) |
+| Auto-merge | `PrLifecycleCard.ReadyPhase` (`:365`) | When `ready` snapshot is present |
+| Auto-merge | `PrLifecycleCard.OpenPhase` (`:456`) | When PR is open and CI isn't failed |
+| Auto-merge | `pr-detail/PrStatusSection.tsx:102` | PR detail panel |
+| Auto-fix | `PrLifecycleCard.OpenPhase` (`:461`) | PR open AND CI is failed |
+| Auto-fix | `pr-detail/PrStatusSection.tsx:103` | PR detail panel, CI failed |
+
+Two problems:
+
+1. **Auto-fix is unreachable pre-PR today.** The client only renders it when `isCiFailed` is true. The user cannot pre-enable "fix CI for me" before the PR exists. The server supports it (`PrStatusPoller.setAutoFixEnabled` stores per-session state regardless of PR existence); the client just never asks.
+2. **Auto-merge is duplicated across three top-of-screen surfaces** (top bar + ready overflow + open overflow), with subtly different gating.
+
+The consolidation:
+
+- **Single top-bar overflow** is the canonical place for both toggles. The three top-of-screen instances (locations 1, 2, 3 in the table) collapse into one. They render whenever there's an active session — no gating on PR existence, no gating on CI state.
+  - State persists in `PrStatusPoller` (server-side) as it does today. When a PR is later created, the stored preferences take effect: `autoMerge` calls into GitHub's auto-merge GraphQL mutation on PR creation; `autoFix` triggers the next time CI fails.
+- **`PrLifecycleCard` no longer renders these toggles in its phase overflows.** The `ReadyPhase` overflow and the `OpenPhase` overflow lose their `AutoMergeToggle` / `AutoFixToggle` blocks. The phase-specific overflows can be deleted entirely if nothing else lives in them post-consolidation.
+- **PR detail panel keeps its copy** (`PrStatusSection.tsx`). It's a separate contextual surface — when the user has drilled into PR detail, sending them back up to the top-bar overflow to flip a toggle is wrong friction. Both surfaces read/write the same `pr-store` state, so they stay in sync. Considered: also remove the detail-panel toggles to enforce "one place." Rejected — the detail panel is a distinct, opt-in surface; the duplication concern doesn't apply because both surfaces aren't visible simultaneously.
+
+**Latent bug fix piggybacked.** Wiring auto-fix into the always-visible top-bar overflow incidentally fixes the "can't pre-enable auto-fix" gap. The server-side wiring (`setAutoFixEnabled` + the poller's failure-detection loop) already handles the pre-PR case; only the missing client affordance prevented users from reaching it.
+
 ### Session name lives only in the sidebar
 
 - **Primary surface:** the session row in the sidebar (today's location). Edited via the sidebar row's `[⋯] → Rename`.
@@ -166,7 +195,9 @@ We *considered* keeping the session name as small secondary text in the top bar'
 - **`SessionTopBar` is deleted** along with its tests. Search and overflow move to the PR row's right cluster; rename and archive move to the sidebar row overflow (see below).
 - **`PrLifecycleCard` is repositioned** to sit at the top of the chat panel, sticky. The phase-rendering logic (`ReadyPhase`, `OpenPhase`, `TerminalPhase`, `ErrorPhase`) is reused; the surrounding container changes (no more `rounded-t-xl border-b-0` / `mx-4` "tab into input" styling).
 - **`PrLifecycleCard` always renders** when there's an active session, even pre-PR — collapsed to just the right cluster. This gives Search, Download chat, and Recover-rewind a stable home regardless of PR state.
-- **PR row's overflow menu contents:** Download chat, Recover recent rewind, Auto-fix CI failures (when PR exists), Auto-merge when CI passes (when PR exists). Search is the dedicated `[🔍]` icon next to the overflow, not a menu item.
+- **PR row's overflow menu contents:** Download chat, Recover recent rewind, **Auto-fix CI failures** (always when active session exists), **Auto-merge when CI passes** (always when active session exists). Search is the dedicated `[🔍]` icon next to the overflow, not a menu item.
+- **`PrLifecycleCard` phase overflows lose their toggle blocks.** Remove the `AutoMergeToggle` from `ReadyPhase` overflow at `:365` and the `AutoMergeToggle` + `AutoFixToggle` from `OpenPhase` overflow at `:454-463`. Those phase-specific overflows can be removed entirely if nothing else lives in them.
+- **PR detail panel keeps its toggles** (`pr-detail/PrStatusSection.tsx`). Considered and rejected: removing them in favor of "one canonical place" — the detail panel is a distinct contextual surface that's not visible at the same time as the top bar overflow, so the duplication concern doesn't apply; both surfaces share `pr-store` state.
 - **`MessageInput`** drops the `hasPrCard` prop and the `rounded-b-xl` branch; it's always `rounded-xl`. The `hasPrCard` selector in `App.tsx` (line 157) is removed.
 - **`App.tsx`** moves the `{wsSessionId && <PrLifecycleCard …/>}` block out of the bottom stack (line 1070) and to the top of the chat panel (replacing the `<SessionTopBar>` mount at line 1011). The bottom stack continues to host `AgentStatusBar`, `RebaseBanner`, `QueueIndicator`.
 
@@ -187,11 +218,12 @@ We *considered* keeping the session name as small secondary text in the top bar'
 
 ### Tests
 
-- `PrLifecycleCard.test.tsx` — add tests for the "no PR, idle" state (renders right cluster only) and for the overflow menu's reduced contents; remove tests that depended on the title appearing in row 2.
+- `PrLifecycleCard.test.tsx` — add tests for the "no PR, idle" state (renders right cluster only) and for the overflow menu's reduced contents; assert `AutoFixToggle` and `AutoMergeToggle` render in the overflow regardless of PR existence or CI state; remove tests that depended on the title appearing in row 2 or on the phase overflows owning the toggles.
 - `SessionSidebar.test.tsx` — new tests covering: overflow hidden by default on inactive rows, visible on hover, always visible on active row, always visible on touch (simulate `(pointer: coarse)`); menu items for active vs archived rows; inline-rename submit / cancel.
 - `SessionTopBar.test.tsx` — deleted.
 - `MessageInput.test.tsx` — confirm standalone `rounded-xl` (no more `hasPrCard` branch).
-- No new server tests; no server behavior changes.
+- `pr-ci-fix.test.ts` (integration) — extend existing coverage: enabling auto-fix pre-PR persists across PR creation and triggers on first CI failure (today this path exists on the server but is unreachable from the client; new test confirms it via the API).
+- No new server tests for the placement change itself — no server behavior changes there.
 
 ## Migration
 
