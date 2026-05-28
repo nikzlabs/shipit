@@ -325,6 +325,11 @@ export async function registerSessionRoutes(
           deps.credentialsDir,
           deps.credentialStore,
           deps.providerAccountManager,
+          deps.prStatusPoller ? {
+            createGitManager,
+            prStatusPoller: deps.prStatusPoller,
+            sseBroadcast: deps.sseBroadcast,
+          } : undefined,
         );
         deps.sseBroadcast("session_list", { sessions: result.sessions });
         return {

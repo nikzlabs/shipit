@@ -2,10 +2,13 @@ import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo, AgentId } from "../../shared/types.js";
+import type { GitManager } from "../../shared/git.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
+import type { PrStatusPoller } from "../pr-status-poller.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
+import { scheduleSessionNaming } from "../session-graduation.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 
@@ -49,6 +52,20 @@ export interface CreateHeadlessSessionResult {
   sessions: SessionInfo[];
 }
 
+/**
+ * Dependencies for the AI-naming step shared with warm graduation. Wired by
+ * the route layer when present so quick sessions get the same descriptive
+ * `shipit/<slug>-<random>` branches and human-readable titles as
+ * graduated-from-warm sessions. Optional only because the unit test layer
+ * doesn't stand up a `PrStatusPoller` or `createGitManager` — in production
+ * the route always provides it.
+ */
+export interface HeadlessSessionGraduationDeps {
+  createGitManager: (dir: string) => GitManager;
+  prStatusPoller: PrStatusPoller;
+  sseBroadcast: (event: string, data: unknown) => void;
+}
+
 export async function createHeadlessSession(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
@@ -58,6 +75,7 @@ export async function createHeadlessSession(
   credentialsDir: string | undefined,
   credentialStore: CredentialStore | undefined,
   providerAccountManager?: ProviderAccountManager,
+  graduationDeps?: HeadlessSessionGraduationDeps,
 ): Promise<CreateHeadlessSessionResult> {
   const repoUrl = opts.repoUrl?.trim();
   if (!repoUrl) throw new ServiceError(400, "Add a repo first.");
@@ -85,9 +103,14 @@ export async function createHeadlessSession(
     );
   }
 
-  const branchName = opts.branch?.trim() || generateBranchPrefix();
+  const explicitBranch = opts.branch?.trim();
+  const explicitTitle = opts.title?.trim();
+  const branchName = explicitBranch || generateBranchPrefix();
   assertValidBranchName(branchName);
-  const title = opts.title?.trim() || trimmedPrompt.slice(0, 60) || "Quick session";
+  // Placeholder title — replaced asynchronously by `scheduleSessionNaming`
+  // below when neither branch nor title was supplied by the caller. Mirrors
+  // the warm-graduation placeholder in `ws-handlers/send-message.ts`.
+  const title = explicitTitle || trimmedPrompt.slice(0, 60) || "Quick session";
 
   const claimed = await claimService.claim(repoUrl);
   const newSessionId = claimed.sessionId;
@@ -112,10 +135,20 @@ export async function createHeadlessSession(
 
   sessionManager.rename(newSessionId, title);
   sessionManager.setBranch(newSessionId, branchName);
-  sessionManager.setBranchRenamed(newSessionId, true);
   sessionManager.setWarm(newSessionId, false);
   if (opts.model) {
     sessionManager.setModel(newSessionId, opts.model);
+  }
+
+  // When the caller didn't pin a branch/title, fall through to the same
+  // AI-naming + branch-rename flow warm graduation uses. The "branch
+  // renamed" flag is owned by `scheduleSessionNaming` so the PR-ready
+  // card waits for the rename to finish (or fail) before progressing.
+  // When the caller pinned either field, treat the explicit value as
+  // authoritative and mark the branch renamed immediately.
+  const shouldAutoName = !explicitBranch && !explicitTitle && graduationDeps !== undefined;
+  if (!shouldAutoName) {
+    sessionManager.setBranchRenamed(newSessionId, true);
   }
 
   const session = sessionManager.get(newSessionId);
@@ -141,6 +174,23 @@ export async function createHeadlessSession(
 
   quickSessionIds.add(newSessionId);
   runner.dispatch({ text: trimmedPrompt });
+
+  if (shouldAutoName && graduationDeps) {
+    scheduleSessionNaming(
+      {
+        sessionManager,
+        runnerRegistry,
+        createGitManager: graduationDeps.createGitManager,
+        prStatusPoller: graduationDeps.prStatusPoller,
+        sseBroadcast: graduationDeps.sseBroadcast,
+      },
+      {
+        sessionId: newSessionId,
+        userText: trimmedPrompt,
+        agentId,
+      },
+    );
+  }
 
   console.log(`[headless-session] Started ${newSessionId}: branch=${branchName} title="${title}"`);
 

@@ -7,10 +7,12 @@ import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
-import { createHeadlessSession } from "./headless-sessions.js";
+import { GitManager } from "../../shared/git.js";
+import { createHeadlessSession, type HeadlessSessionGraduationDeps } from "./headless-sessions.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AgentId } from "../../shared/types.js";
 
 interface FakeRunner {
@@ -260,6 +262,58 @@ describe("createHeadlessSession", () => {
     const codexSession = sessionManager.get("quick-2");
     expect(codexSession?.providerRouteKind).toBe("account");
     expect(codexSession?.providerRouteId).toBe("codex-default");
+  });
+
+  it("defers branchRenamed when graduation deps are wired and no branch/title is pinned", async () => {
+    // Structural assertion for the warm-graduation parity fix: when the caller
+    // doesn't pin a branch/title and the route wired graduation deps,
+    // `createHeadlessSession` hands ownership of `branchRenamed` to the shared
+    // `scheduleSessionNaming` flow (the same one warm graduation uses). The
+    // synchronous return therefore leaves `branchRenamed` unset; the async
+    // chain — driven by the real CLI — flips it once the rename completes.
+    // We deliberately do not await that chain here: the cross-flow naming
+    // logic is unit-tested in `session-graduation.test.ts` with a mocked CLI.
+    const graduationDeps: HeadlessSessionGraduationDeps = {
+      createGitManager: (dir: string) => new GitManager(dir),
+      prStatusPoller: { getStatus: vi.fn(() => undefined) } as unknown as PrStatusPoller,
+      sseBroadcast: vi.fn(),
+    };
+
+    const result = await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        prompt: "Fix the flaky test",
+        agent: "claude",
+      },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+    );
+
+    expect(result.session.title).toBe("Fix the flaky test");
+    expect(result.session.branch).toMatch(/^shipit\/[a-z0-9]{1,6}$/);
+    expect(result.session.branchRenamed).toBeUndefined();
+  });
+
+  it("marks branchRenamed immediately when graduation deps are not wired (test/local mode)", async () => {
+    // Mirror image of the previous test: when the route doesn't pass
+    // `graduationDeps` (e.g. a runtime without a PR poller), the synchronous
+    // `setBranchRenamed(true)` keeps the PR card flow unblocked.
+    const result = await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      { repoUrl: "https://github.com/acme/app.git", prompt: "do it" },
+      "claude",
+      undefined,
+      undefined,
+    );
+    expect(result.session.branchRenamed).toBe(true);
   });
 
   it("propagates claim failures as service errors", async () => {
