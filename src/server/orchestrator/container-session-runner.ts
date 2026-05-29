@@ -74,6 +74,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _agent: ProxyAgentProcess | null = null;
   private _agentId: AgentId;
   private _isRunning = false;
+  private _systemTurnInProgress = false;
   private _wasInterrupted = false;
   private _guardedUnavailable = false;
   private _isStreamingActive = false;
@@ -209,6 +210,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get running(): boolean { return this._isRunning; }
   set running(v: boolean) { this._isRunning = v; }
+  get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
+  set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
 
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }

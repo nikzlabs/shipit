@@ -12,6 +12,12 @@ import { PrStatusPoller } from "./pr-status-poller.js";
 import { getErrorMessage } from "./validation.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
+import { runAutoResolveAttempt } from "./services/rebase-driver.js";
+import type { AutoResolveResult, RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
+import type { ChatHistoryManager } from "./chat-history.js";
+import type { UsageManager } from "./usage.js";
+import type { AuthManager } from "./agents/claude/auth-manager.js";
+import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import type { RepoGit } from "./repo-git.js";
@@ -21,7 +27,7 @@ import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
-import type { AgentId, WsLogEntry } from "../shared/types.js";
+import type { AgentId, AgentProcess, WsLogEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
 
@@ -594,6 +600,34 @@ export interface PrPollerDeps {
    * orphan-inode failure mode this avoids. Optional in test mode.
    */
   containerManager?: SessionContainerManager | null;
+  /**
+   * docs/146 — required to construct the `RebaseAndResolveCb` closure that
+   * the auto-resolve manager invokes per attempt. The closure builds a
+   * `RebaseDriverDeps` per-call from these shared managers + the per-session
+   * runner/git, then calls `runAutoResolveAttempt`. (`createGitManager` is
+   * already a required field above, used by both the diff-stats override
+   * and the auto-resolve closure.)
+   */
+  chatHistoryManager?: ChatHistoryManager;
+  usageManager?: UsageManager;
+  authManager?: AuthManager;
+  credentialStore?: CredentialStore;
+  /**
+   * docs/146 — exposed for the wrapper's drain hook. When the rebase-driver's
+   * resolution turn finishes, this fires to drain any user message queued
+   * during the auto-resolve so it doesn't sit stranded. Optional —
+   * test setups can leave it unwired.
+   */
+  drainQueueForSession?: (sessionId: string) => Promise<void> | void;
+  /**
+   * docs/146 — fallback agent factory for the resolution turn. Container
+   * runners supply `createAgent` themselves; in-process runners (tests,
+   * local mode) need this so `runRebaseResolutionTurn` can spawn the
+   * agent. Optional — if neither is available the wrapper rejects post-
+   * spawn-check, but in practice every test setup that exercises the
+   * auto-path passes one.
+   */
+  agentFactory?: (agentId: AgentId) => AgentProcess;
 }
 
 /**
@@ -604,9 +638,47 @@ export function createPrStatusPoller(
 ): PrStatusPoller {
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
-    runnerRegistry, createRepoGit, createGitManager, getBareCacheDir,
-    pruneSessionVolumes, onRepoMainAdvanced, containerManager,
+    runnerRegistry, createRepoGit, getBareCacheDir, pruneSessionVolumes,
+    onRepoMainAdvanced, containerManager,
+    createGitManager, chatHistoryManager, usageManager, authManager, credentialStore,
+    drainQueueForSession, agentFactory,
   } = pollerDeps;
+
+  // docs/146 — build the `RebaseAndResolveCb` once if all the shared
+  // collaborators are present; pass it into the poller constructor (it
+  // forwards into the manager). The closure resolves the per-session runner
+  // and git manager per-call. Skipped in degraded test setups that omit any
+  // of the deps — the auto-resolve feature stays inactive.
+  let rebaseAndResolveCb: RebaseAndResolveCb | undefined;
+  if (createGitManager && chatHistoryManager && usageManager && authManager) {
+    rebaseAndResolveCb = async (sessionId, baseBranch): Promise<AutoResolveResult> => {
+      const runner = runnerRegistry.get(sessionId);
+      if (!runner) {
+        // Defensive — the manager's gate already checks this, but if the
+        // runner was evicted between gate and fire, treat as deferred.
+        return { outcome: "deferred", lastError: "no_runner", didWork: false };
+      }
+      const git = createGitManager(runner.sessionDir);
+      return await runAutoResolveAttempt(
+        {
+          git,
+          githubAuthManager,
+          runner,
+          sessionManager,
+          chatHistoryManager,
+          usageManager,
+          authManager,
+          sseBroadcast,
+          // Container runners supply `createAgent` themselves so this is
+          // unused in production; in-process runners (tests, local mode)
+          // need the fallback factory.
+          ...(agentFactory ? { agentFactory } : {}),
+          ...(drainQueueForSession ? { drainQueue: () => drainQueueForSession(sessionId) } : {}),
+        },
+        baseBranch,
+      );
+    };
+  }
 
   const prStatusPoller = deps.prStatusPoller ?? new PrStatusPoller({
     githubAuth: githubAuthManager,
@@ -619,6 +691,11 @@ export function createPrStatusPoller(
     // locally-computed diff stats the click-through diff dialog uses, so the
     // card's +N/-N button can't show stale numbers.
     createGitManager,
+    // docs/146 — read the global setting at decision time. When the
+    // credentialStore isn't wired (minimal test setups), the manager is
+    // effectively disabled.
+    isAutoResolveEnabled: credentialStore ? (() => credentialStore.getAutoResolveConflicts()) : (() => false),
+    ...(rebaseAndResolveCb ? { rebaseAndResolveCb } : {}),
     fetchAndFixCb: async (sessionId, owner, repo, failedChecks) => {
       const runner = runnerRegistry.get(sessionId);
       if (!runner) return;

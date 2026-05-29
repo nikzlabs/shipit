@@ -236,6 +236,41 @@ function LiveSteeringSettings() {
   );
 }
 
+function AutoResolveConflictsSettings() {
+  const autoResolveConflicts = useSettingsStore((s) => s.autoResolveConflicts);
+
+  const handleToggle = async (v: boolean) => {
+    useSettingsStore.getState().setAutoResolveConflicts(v);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoResolveConflicts: v }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      useSettingsStore.getState().setAutoResolveConflicts(!v);
+      useUiStore.getState().setToast({ message: "Failed to update auto-resolve setting" });
+      console.error("[settings] toggle autoResolveConflicts failed:", err);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">Auto-resolve conflicts</h3>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between py-1 gap-4">
+          <div>
+            <span className="text-sm text-(--color-text-primary)">Auto-resolve conflicts when the base branch moves</span>
+            <p className="text-xs text-(--color-text-tertiary)">Detects when the PR can no longer merge cleanly. When the agent isn&rsquo;t busy, runs a rebase and asks the agent to fix any conflicts. Force-pushes the result.</p>
+          </div>
+          <ToggleSwitch enabled={autoResolveConflicts} onToggle={(v) => void handleToggle(v)} testId="settings-auto-resolve-conflicts" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProviderAccountSection({ provider }: { provider: AgentId }) {
   const allAccounts = useSettingsStore((s) => s.providerAccounts);
   const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
@@ -928,6 +963,10 @@ export function Settings({
               <div className="border-t border-(--color-border-secondary)" />
 
               <LiveSteeringSettings />
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              <AutoResolveConflictsSettings />
 
               <div className="border-t border-(--color-border-secondary)" />
 

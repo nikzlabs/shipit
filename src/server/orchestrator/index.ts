@@ -16,6 +16,9 @@ import { isNonFastForwardError } from "./services/git.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionManager } from "./sessions.js";
+import type { ChatHistoryManager } from "./chat-history.js";
+import type { UsageManager } from "./usage.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
@@ -350,6 +353,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     readSystemPrompt: readSystemPromptApp,
     generateText,
     getPrStatusPoller: () => prStatusPollerRef.ref ?? undefined,
+    // docs/146 — same lazy-resolution pattern as the poller itself: the
+    // manager is constructed inside the poller's constructor, which runs
+    // after the registry, so the runner-idle hook reads through a getter.
+    getAutoConflictResolveManager: () => prStatusPollerRef.ref?.autoConflictResolveManager,
   });
   registryHolder.ref = runnerRegistry;
 
@@ -376,6 +383,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // On-change pre-fetch: a detected merge moved `main`, so refresh the
     // bare cache now (off the request path) — see docs/145.
     ...(repoPrefetcher ? { onRepoMainAdvanced: (url: string) => repoPrefetcher.prefetchRepo(url) } : {}),
+    // docs/146 — collaborators needed to construct the auto-resolve callback.
+    // The closure inside `createPrStatusPoller` builds `RebaseDriverDeps`
+    // per-session from these shared managers. (`createGitManager` is already
+    // passed above for the diff-stats override.)
+    chatHistoryManager,
+    usageManager,
+    authManager,
+    credentialStore,
+    ...(agentFactory ? { agentFactory } : {}),
   });
   // docs/149 — fill in the lazy reference that the system-turn PR-lifecycle
   // hook closes over.
@@ -1526,9 +1542,31 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
           case "start_service": return serviceHandlers.handleStartService(ctx, msg);
           case "stop_service": return serviceHandlers.handleStopService(ctx, msg);
           case "subscribe_service_logs": { serviceHandlers.handleSubscribeServiceLogs(ctx, msg); return; }
-          case "send_message": return sendMessageHandlers.handleSendMessage(ctx, msg);
-          case "send_review_message": return sendMessageHandlers.handleSendReviewMessage(ctx, msg);
-          case "answer_question": return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
+          case "send_message": {
+            // docs/146 — WS-typed user input resets the auto-resolve attempt
+            // budget. Only fired from the dispatch switch (not inside the
+            // handler) so synthetic `init_preview_config` invocations of
+            // handleSendMessage do NOT reset.
+            const sessionIdForReset = ctx.getActiveAppSessionId();
+            if (sessionIdForReset) {
+              prStatusPoller.autoConflictResolveManager?.resetForUserActivity(sessionIdForReset);
+            }
+            return sendMessageHandlers.handleSendMessage(ctx, msg);
+          }
+          case "send_review_message": {
+            const sessionIdForReset = ctx.getActiveAppSessionId();
+            if (sessionIdForReset) {
+              prStatusPoller.autoConflictResolveManager?.resetForUserActivity(sessionIdForReset);
+            }
+            return sendMessageHandlers.handleSendReviewMessage(ctx, msg);
+          }
+          case "answer_question": {
+            const sessionIdForReset = ctx.getActiveAppSessionId();
+            if (sessionIdForReset) {
+              prStatusPoller.autoConflictResolveManager?.resetForUserActivity(sessionIdForReset);
+            }
+            return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
+          }
         }
       };
 
@@ -1578,7 +1616,31 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
     dockerProxyServer, containerManager, databaseManager,
   });
 
+  // docs/146 — minimal test-surface decorations. Integration tests need
+  // direct access to the wired collaborators (poller's auto-resolve
+  // manager, runner registry, shared managers) to drive flows that bypass
+  // the GraphQL polling layer. Production code does NOT read from these —
+  // routes / WS handlers consume the references through their own closures
+  // / DI. Adding them here just lets tests stop reaching through
+  // module-private state.
+  app.decorate("prStatusPoller", prStatusPoller);
+  app.decorate("runnerRegistry", runnerRegistry);
+  app.decorate("sessionManager", sessionManager);
+  app.decorate("chatHistoryManager", chatHistoryManager);
+  app.decorate("usageManager", usageManager);
+
   return app;
+}
+
+declare module "fastify" {
+  interface FastifyInstance {
+    /** docs/146 — test-surface decoration. See `index.ts`. */
+    prStatusPoller?: PrStatusPoller;
+    runnerRegistry: SessionRunnerRegistry;
+    sessionManager: SessionManager;
+    chatHistoryManager: ChatHistoryManager;
+    usageManager: UsageManager;
+  }
 }
 
 // Only start the server when this file is the entry point (not when imported by tests).

@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 priority: medium
 description: When the PR poller sees the branch has conflicts with its base and the session's agent is idle, auto-start a rebase + agent-driven conflict resolution turn.
 ---

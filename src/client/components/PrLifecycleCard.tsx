@@ -12,6 +12,7 @@ import { useState, useCallback } from "react";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
@@ -509,9 +510,64 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
             Auto-fix exhausted ({autoFix.maxAttempts}/{autoFix.maxAttempts} attempts)
           </div>
         )}
+        <AutoResolveFailureBanner sessionId={sessionId} card={card} />
         {isCiFailed && !isAutoFixRunning && <FailedChecksList checks={card.checks} />}
         {deployments && deployments.length > 0 && <DeploymentStatusRow deployments={deployments} />}
       </div>
+    </div>
+  );
+}
+
+/**
+ * docs/146 — failure banner for auto-resolve. Renders ONLY for
+ * `outcome: "exhausted"` (the manager-terminal state). Per-attempt
+ * `error` / `deferred` outcomes are transient and shouldn't flash the
+ * banner up and down between retries — only the actionable terminal state
+ * gets a UI surface.
+ *
+ * Gated on `settings.autoResolveConflicts === true` as well, so a user who
+ * disabled the feature mid-loop doesn't see a stale banner. The server-side
+ * `attachAutomationState` omits the block when disabled, but belt-and-
+ * suspenders this on the client.
+ */
+function AutoResolveFailureBanner({ sessionId, card }: { sessionId: string; card: PrCardState }) {
+  const enabled = useSettingsStore((s) => s.autoResolveConflicts);
+  const setToast = useUiStore((s) => s.setToast);
+  if (!enabled) return null;
+  if (card.autoResolve?.status !== "exhausted") return null;
+  const lastError = card.autoResolve.lastError ?? "unknown error";
+
+  const handleRetry = async () => {
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/auto-resolve/retry`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        if (res.status === 409) {
+          setToast({ message: "Auto-resolve is already in flight" });
+        } else {
+          throw new Error(`HTTP ${res.status}`);
+        }
+      }
+    } catch (err) {
+      setToast({ message: "Retry failed — check the connection and try again" });
+      console.error("[auto-resolve] retry failed:", err);
+    }
+  };
+
+  return (
+    <div className="mt-1 flex items-center gap-2 pl-5 text-xs">
+      <span className="text-(--color-text-tertiary)">
+        Auto-resolve couldn&rsquo;t finish. Last error: {lastError}.
+      </span>
+      <button
+        type="button"
+        onClick={() => void handleRetry()}
+        className="text-(--color-text-primary) hover:underline cursor-pointer"
+        data-testid="auto-resolve-retry"
+      >
+        Retry
+      </button>
     </div>
   );
 }

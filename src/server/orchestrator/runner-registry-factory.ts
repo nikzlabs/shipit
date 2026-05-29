@@ -10,6 +10,7 @@ import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { PlatformCredentialProvider } from "./platform-credentials.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
+import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
 import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap } from "../shared/types.js";
 import type { RuntimeMode } from "./app-di.js";
 import type { UsageManager } from "./usage.js";
@@ -129,6 +130,15 @@ export interface RunnerRegistryDeps {
    */
   getPrStatusPoller?: () => PrStatusPoller | undefined;
   /**
+   * docs/146 — lazy resolver for the auto-conflict-resolve manager. The
+   * manager is constructed inside the poller (one tick after the registry
+   * exists), so we accept a lazy getter rather than a direct ref. Wired so
+   * the runner's `"idle"` event re-evaluates any session whose manager state
+   * is `deferred`. Optional — when absent, the runner-idle hook just keeps
+   * doing what `enforceIdleContainerLimit` did before.
+   */
+  getAutoConflictResolveManager?: () => AutoConflictResolveManager | undefined;
+  /**
    * Usage manager — used by `wireAgentListeners` to record per-turn token /
    * cost telemetry on `agent_result`. Shared with the WS path so a system-
    * dispatched turn lands in the same `usage_turns` series as a user-typed
@@ -201,7 +211,7 @@ export function createRunnerRegistry(
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
-    credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
+    credentialsDir, readSystemPrompt, generateText, getPrStatusPoller, getAutoConflictResolveManager,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, runParamsPreps,
   } = registryDeps;
@@ -215,7 +225,20 @@ export function createRunnerRegistry(
       }
       return undefined;
     },
-    onRunnerIdle: () => enforceIdleContainerLimit(),
+    onRunnerIdle: (sessionId: string) => {
+      enforceIdleContainerLimit();
+      // docs/146 — re-evaluate any session whose manager state is `deferred`
+      // (agent was busy when the conflict was detected) the moment the agent
+      // goes idle. Cooldown-driven retry runs through `handleTransition` on
+      // the next poll, NOT here. Fire-and-forget — manager owns its own
+      // error logging.
+      const mgr = getAutoConflictResolveManager?.();
+      if (mgr) {
+        mgr.onRunnerIdle(sessionId).catch((err: unknown) => {
+          console.error(`[runner-registry] auto-resolve onRunnerIdle error for ${sessionId}:`, err);
+        });
+      }
+    },
     onRunnerCreated: (runner) => {
       // Shared listener deps — same shape `wireAgentListeners` consumes on
       // the WS path. The system-turn flow now goes through the same listener,

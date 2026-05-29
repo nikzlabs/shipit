@@ -235,6 +235,11 @@ export async function registerGitRoutes(
         return;
       }
 
+      // docs/146 — user-driven rebase is explicit re-engagement; reset the
+      // auto-resolve attempt budget so a previous exhaustion doesn't bleed
+      // into the user's new attempt.
+      deps.prStatusPoller?.autoConflictResolveManager?.resetForUserActivity(sessionId);
+
       try {
         const git = createGitManager(dir);
 
@@ -311,6 +316,69 @@ export async function registerGitRoutes(
         }
         reply.code(500).send({ error: `Rebase abort failed: ${getErrorMessage(err)}` });
       }
+    },
+  );
+
+  // POST /api/sessions/:id/auto-resolve/retry — docs/146
+  // Reset the auto-resolve attempt budget AND immediately fire a fresh
+  // handleTransition with the cached mergeable state. Without the
+  // synchronous fire, the user would click "Retry" and stare at a stale
+  // banner for up to 15s while the next poll caught up.
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/auto-resolve/retry",
+    async (request, reply) => {
+      const sessionId = request.params.id;
+      const manager = deps.prStatusPoller?.autoConflictResolveManager;
+      if (!manager) {
+        reply.code(404).send({ error: "Auto-resolve is not configured for this orchestrator" });
+        return;
+      }
+      const state = manager.get(sessionId);
+      if (state?.status === "running") {
+        reply.code(409).send({ error: "auto-resolve already in flight" });
+        return;
+      }
+
+      manager.resetForUserActivity(sessionId);
+
+      const mergeable = manager.getLastKnownMergeable(sessionId);
+      const baseBranch = manager.getBaseBranch(sessionId);
+      const session = sessionManager.get(sessionId);
+      const summary = deps.prStatusPoller?.getStatus(sessionId);
+      // Need a non-empty headSha for the manager's head-SHA-change reset to
+      // work correctly on the next retry. Fall back to the last known PR
+      // headBranch's HEAD by reading the session-local checkout — if neither
+      // is available, an empty string is safe (the manager's step-7 SHA
+      // change check ignores empties).
+      const headSha = summary?.headBranch
+        ? "" // Manager treats "" as "no change since last seen"; preserves existing state.
+        : "";
+
+      if (mergeable && baseBranch && session) {
+        // Synchronously kick the manager so the user doesn't wait for the
+        // next poll. Fire-and-forget — handleTransition's `await runner
+        // .verifyRunningState()` is HTTP roundtrip and we don't want to
+        // block the response.
+        const pollSummary = summary ?? {
+          sessionId,
+          prNumber: 0,
+          prUrl: "",
+          prTitle: "",
+          prBody: "",
+          prState: "open" as const,
+          baseBranch,
+          headBranch: session.branch ?? "",
+          insertions: 0,
+          deletions: 0,
+          checks: { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 },
+          mergeable,
+          autoMergeEnabled: false,
+        };
+        manager.handleTransition(sessionId, pollSummary, baseBranch, headSha).catch((err: unknown) => {
+          console.error(`[auto-resolve] retry handleTransition error for ${sessionId}:`, err);
+        });
+      }
+      return { status: "retry_scheduled" };
     },
   );
 }

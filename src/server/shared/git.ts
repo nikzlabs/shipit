@@ -418,6 +418,19 @@ export class GitManager {
     console.log("[git] Rebase aborted");
   }
 
+  /**
+   * Return true when the working tree has no staged or unstaged changes —
+   * a public wrapper around `simple-git`'s `status().isClean()`. Needed by
+   * the auto-resolve pre-flight (docs/146): the auto-path must never stash
+   * silently, so a dirty tree defers the attempt instead of running the
+   * rebase blindly. The underlying `this.git` field is private, so callers
+   * outside this class can't reach `status()` directly.
+   */
+  async isClean(): Promise<boolean> {
+    const status = await this.git.status();
+    return status.isClean();
+  }
+
   /** Check if a rebase is in progress. */
   async isRebaseInProgress(): Promise<boolean> {
     try {
