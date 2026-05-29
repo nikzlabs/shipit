@@ -13,7 +13,7 @@
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { AuthManager } from "../auth.js";
+import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type {
   PermissionMode,
   ImageAttachment,

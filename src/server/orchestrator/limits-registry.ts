@@ -29,7 +29,7 @@
  */
 
 import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap } from "../shared/types.js";
-import type { LimitsProvider } from "./limits/types.js";
+import type { LimitsProvider } from "./agents/types.js";
 
 export interface LimitsRegistryOptions {
   /** Map of registered providers, keyed by agent id. */

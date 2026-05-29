@@ -71,50 +71,53 @@ The wire format was the last per-agent surface in our own code (not a CLI restri
 
 ### Session layer
 
-- [ ] Create `src/server/session/agents/claude/` and move:
-  - [ ] `claude-adapter.ts` → `claude/adapter.ts` (+ test)
-  - [ ] `../claude.ts` → `claude/process.ts` (+ test)
-  - [ ] `../claude-auth-detection.test.ts` → `claude/auth-detection.test.ts`
-- [ ] Create `src/server/session/agents/codex/` and move:
-  - [ ] `codex-adapter.ts` → `codex/adapter.ts` (+ test)
-  - [ ] `../codex-review-mcp.test.ts` → `codex/review-mcp.test.ts`
-- [ ] Split `tool-map.ts` into per-agent slices + a merger.
-- [ ] Update all importers.
+- [x] Create `src/server/session/agents/claude/` and move:
+  - [x] `claude-adapter.ts` → `claude/adapter.ts` (+ test)
+  - [x] `../claude.ts` → `claude/process.ts` (+ test)
+  - [x] `../claude-auth-detection.test.ts` → `claude/auth-detection.test.ts`
+  - [x] `claude-mcp-writer.test.ts` → `claude/mcp-writer.test.ts`
+- [x] Create `src/server/session/agents/codex/` and move:
+  - [x] `codex-adapter.ts` → `codex/adapter.ts` (+ test)
+  - [x] `codex-mcp-writer.test.ts` → `codex/mcp-writer.test.ts` (the older `codex-review-mcp.test.ts` was already migrated to `codex-mcp-writer.test.ts` in Phase 4)
+- [x] Split `tool-map.ts` into per-agent slices + a merger — `claude/tool-map.ts` + `codex/tool-map.ts` exported as `CLAUDE_TOOL_MAP` / `CODEX_TOOL_MAP`; `agents/tool-map.ts` merges them into `AGENT_TOOL_MAPS`. `canonicalizeTool()` / `agentToolName()` keep their public signatures.
+- [x] Update all importers (`session-worker.ts`, `agents/index.ts`, every per-agent test).
 
 ### Orchestrator layer
 
-- [ ] Create `src/server/orchestrator/agents/claude/` and move:
-  - [ ] `auth.ts` (Claude-specific parts) → `claude/auth-manager.ts`
-  - [ ] `claude-oauth-refresher.ts` → `claude/oauth-refresher.ts` (+ test)
-  - [ ] `limits/claude-limits.ts` → `claude/limits-provider.ts` (+ test)
-  - [ ] Extract Claude system-prompt fragment from `agent-instructions.ts` → `claude/system-prompt.ts`
-- [ ] Create `src/server/orchestrator/agents/codex/` and move:
-  - [ ] `codex-auth.ts` → `codex/auth-manager.ts` (+ test)
-  - [ ] `limits/codex-limits.ts` → `codex/limits-provider.ts` (+ test)
-  - [ ] Extract Codex system-prompt fragment → `codex/system-prompt.ts`
-- [ ] Create `orchestrator/agents/index.ts` exporting `buildAgentRuntime()`.
-- [ ] Update app-DI to use `buildAgentRuntime()`.
-- [ ] Delete the now-empty `orchestrator/limits/` directory.
+- [x] Create `src/server/orchestrator/agents/claude/` and move:
+  - [x] `auth.ts` (Claude-specific parts) → `claude/auth-manager.ts` (+ test)
+  - [x] `claude-oauth-refresher.ts` → `claude/oauth-refresher.ts` (+ test)
+  - [x] `limits/claude-limits.ts` → `claude/limits-provider.ts` (+ test)
+  - [x] Extract Claude system-prompt fragment from `agent-instructions.ts` → `claude/system-prompt.ts`
+  - [x] Extract Claude prep hook → `claude/run-params-prep.ts` (re-exported through `agent-run-params-prep.ts` for back-compat).
+- [x] Create `src/server/orchestrator/agents/codex/` and move:
+  - [x] `codex-auth.ts` → `codex/auth-manager.ts` (+ test)
+  - [x] `limits/codex-limits.ts` → `codex/limits-provider.ts` (+ test)
+  - [x] Extract Codex system-prompt fragment → `codex/system-prompt.ts`
+  - [x] Extract Codex prep hook → `codex/run-params-prep.ts`.
+- [x] Create `orchestrator/agents/index.ts` exporting `buildAgentRuntime()` — assembles `authManagers`, `limitsProviders`, `runParamsPreps`, `parallelSessionsSections` maps in one place.
+- [x] Update `index.ts` to call `buildAgentRuntime({ authManager, codexAuthManager })` and destructure the maps. Inline `new ClaudeLimitsProvider(…)` / `new CodexLimitsProvider(…)` / `runParamsPreps.set(...)` cascades removed.
+- [x] Move `limits/types.ts` → `agents/types.ts` (LimitsProvider interface). Delete the now-empty `orchestrator/limits/` directory (gone — Git auto-removed it when the last file moved out).
 
 ### Shared layer
 
-- [ ] Move `types/agent-types.ts` → `agents/types.ts` (or keep — low value to move).
-- [ ] Move `agent-registry.ts` → `agents/registry.ts` (or keep).
-- [ ] Add `agents/capabilities.ts` if not folded into types.
+- [ ] Move `types/agent-types.ts` → `agents/types.ts` — DEFERRED. Plan flagged it as "or keep — low value to move." Skipping; current location is consistent with sibling type files under `shared/types/`.
+- [ ] Move `agent-registry.ts` → `agents/registry.ts` — DEFERRED for the same reason. The registry already exports `AgentInfo` and the per-capability flags consumers need; no consumers branch on its location.
+- [ ] Add `agents/capabilities.ts` if not folded into types — N/A, capabilities live on `AgentInfo` already.
 
 ### Client layer (optional / cosmetic)
 
-- [ ] Decide: move `client/themes/{claude,codex}*.css` into `client/agents/<id>/theme*.css`, or defer.
+- [ ] Decide: move `client/themes/{claude,codex}*.css` into `client/agents/<id>/theme*.css`, or defer — DEFERRED. Cosmetic move with non-trivial CSS import-path churn; the plan called this out as likely-defer.
 
 ## Phase 6 — Documentation and pattern enforcement
 
-- [ ] Update CLAUDE.md "Project structure" section to reflect new layout.
-- [ ] Write `docs/N-add-an-agent.md` walkthrough.
-- [ ] Optional: ESLint rule flagging `agentId === "claude"` / `agentId === "codex"` outside `agents/<id>/` folders.
-- [ ] Optional: integration test that verifies the per-agent runtime tables have an entry for every `AgentId` value (compile-time exhaustiveness via `satisfies Record<AgentId, ...>` should be enough).
+- [x] Update CLAUDE.md "Project structure" section to reflect new layout — session `agents/{claude,codex}/` subtree + orchestrator `agents/{claude,codex}/` subtree both listed; `auth.ts` / `claude.ts` removed from the flat listings.
+- [x] Write `docs/158-add-an-agent/plan.md` walkthrough — covers all six steps (registry widening, session-side adapter folder, orchestrator-side folder, `buildAgentRuntime()` wiring, app-DI changes, client theme), with the "≤5 files outside the new folder" target codified.
+- [ ] Optional: ESLint rule flagging `agentId === "claude"` / `agentId === "codex"` outside `agents/<id>/` folders — DEFERRED. Worth doing if the abstraction starts leaking again; not required for the immediate goal.
+- [ ] Optional: integration test that verifies the per-agent runtime tables have an entry for every `AgentId` value — DEFERRED. Compile-time exhaustiveness via the `Map<AgentId, …>` construction already trips TS when `AgentId` is widened.
 
 ## Wider audit (one-off, before starting)
 
-- [ ] Re-run `grep -rn 'agentId === "claude"\|agentId === "codex"\|agentId !== "claude"\|agentId !== "codex"' src/` and confirm the inventory in `plan.md` is current.
-- [ ] Grep `src/client/` for `activeAgentId === "claude"` / `activeAgentId === "codex"` and add any missing sites.
-- [ ] Confirm whether `docs/154-cursor-agent-adapter` will land before or after this refactor; align the doc accordingly.
+- [x] Re-run grep for `agentId === "claude" | "codex"` — confirmed in Phase 4 commit; inventory still matches. The remaining branches are the legitimate construction switch in `createWorkerAgent`, the per-agent system-prompt fragment selector (now a one-line map lookup via the runtime table), and the v1-only marketplace install gate (hair 7 — deliberately not generalized yet).
+- [x] Grep `src/client/` for `activeAgentId === "claude"` / `activeAgentId === "codex"` — completed during Phases 0-4; remaining sites are exhaustive `switch` statements that TypeScript will flag on union widening.
+- [x] Confirm whether `docs/154-cursor-agent-adapter` will land before or after this refactor — this refactor lands first; Cursor adopts the new per-agent layout from the start per docs/158.

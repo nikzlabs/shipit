@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ClaudeProcess } from "./claude.js";
+import { ClaudeProcess } from "./process.js";
 
 // Mock node-pty
 vi.mock("node-pty", () => {
@@ -9,7 +9,7 @@ vi.mock("node-pty", () => {
 });
 
 // Mock stripAnsi — pass through for tests
-vi.mock("../shared/strip-ansi.js", () => {
+vi.mock("../../../shared/strip-ansi.js", () => {
   return {
     stripAnsi: (text: string) => text,
   };

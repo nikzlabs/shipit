@@ -50,29 +50,11 @@ export type PrepareRunParamsFn = (
   input: PrepareRunParamsInput,
 ) => AgentRunParams;
 
-/**
- * Claude's hook. Injects the managed-settings file (drives the PreToolUse
- * branch-block hook + Stop-hook PR enforcement — see docs/129, docs/130) and
- * forwards the resolved `autoCreatePr` boolean so the Stop hook self-gates on
- * the matching env var. Both fields are documented on `AgentRunParams` as
- * "Claude-only; other adapters ignore it" — keeping them off non-Claude
- * spawns is functionally equivalent (the Codex adapter ignored them anyway)
- * but removes the type-shape lie at the call site.
- */
-export const prepareClaudeRunParams: PrepareRunParamsFn = (params, input) => ({
-  ...params,
-  settingsPath: "/etc/shipit/managed-settings.json",
-  autoCreatePr: input.autoCreatePrActive,
-});
-
-/**
- * Codex's hook. Identity today — no Codex-only fields exist on
- * `AgentRunParams`. Kept as an explicit entry in the registry so the map
- * exhaustively covers every `AgentId` (a missing entry would silently fall
- * through to the no-op default, which is the same outcome but harder to
- * audit).
- */
-export const prepareCodexRunParams: PrepareRunParamsFn = (params) => params;
+// The per-agent hooks live under `agents/<id>/run-params-prep.ts`. Re-exported
+// here so existing import paths keep working; the wiring site (`agents/index.ts`
+// / `buildAgentRuntime()`) reaches into the per-agent folders directly.
+export { prepareClaudeRunParams } from "./agents/claude/run-params-prep.js";
+export { prepareCodexRunParams } from "./agents/codex/run-params-prep.js";
 
 /**
  * Identity-prep hook used when a backend hasn't registered its own. Exposed

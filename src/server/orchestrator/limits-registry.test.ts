@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { LimitsRegistry } from "./limits-registry.js";
-import type { LimitsProvider } from "./limits/types.js";
+import type { LimitsProvider } from "./agents/types.js";
 import type { AgentId, SubscriptionLimits } from "../shared/types.js";
 
 class StubLimitsProvider implements LimitsProvider {

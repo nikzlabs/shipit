@@ -12,7 +12,7 @@ vi.mock("../templates.js", async (importOriginal) => {
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
-import { AuthManager } from "../auth.js";
+import { AuthManager } from "../agents/claude/auth-manager.js";
 
 
 import type { FastifyInstance } from "fastify";

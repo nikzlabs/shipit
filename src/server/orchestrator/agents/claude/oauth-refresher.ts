@@ -31,9 +31,9 @@ import os from "node:os";
 import { EventEmitter } from "node:events";
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import type { AgentId, ProviderAccount } from "../shared/types.js";
-import type { ProviderAccountManager } from "./provider-account-manager.js";
-import type { RuntimeMode } from "./app-di.js";
+import type { AgentId, ProviderAccount } from "../../../shared/types.js";
+import type { ProviderAccountManager } from "../../provider-account-manager.js";
+import type { RuntimeMode } from "../../app-di.js";
 
 /**
  * How far before the encoded `expiresAt` to fire a refresh tick during normal

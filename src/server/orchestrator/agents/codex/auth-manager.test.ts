@@ -19,7 +19,7 @@ import {
   type CodexAuthFailedEvent,
   type CodexAuthPendingEvent,
   type SpawnFn,
-} from "./codex-auth.js";
+} from "./auth-manager.js";
 
 /** Build a fake JWT (header.payload.signature) carrying the OpenAI auth claim. */
 function fakeJwt(authClaim: Record<string, unknown>): string {

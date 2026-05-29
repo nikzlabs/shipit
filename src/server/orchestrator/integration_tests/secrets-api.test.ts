@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildApp } from "../index.js";
 import { SessionManager } from "../sessions.js";
-import { AuthManager } from "../auth.js";
+import { AuthManager } from "../agents/claude/auth-manager.js";
 import { GitManager } from "../../shared/git.js";
 import type { FastifyInstance } from "fastify";
 import type { DatabaseManager } from "../../shared/database.js";

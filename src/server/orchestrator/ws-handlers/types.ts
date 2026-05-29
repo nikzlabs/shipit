@@ -5,7 +5,7 @@ import type { SessionManager } from "../sessions.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { UsageManager } from "../usage.js";
-import type { AuthManager } from "../auth.js";
+import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import type { PrepareRunParamsFn } from "../agent-run-params-prep.js";
 import type { CredentialStore } from "../credential-store.js";

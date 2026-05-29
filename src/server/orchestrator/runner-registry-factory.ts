@@ -13,7 +13,7 @@ import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap } from "../shared/types.js";
 import type { RuntimeMode } from "./app-di.js";
 import type { UsageManager } from "./usage.js";
-import type { AuthManager } from "./auth.js";
+import type { AuthManager } from "./agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import { pushToOrigin } from "./git-utils.js";

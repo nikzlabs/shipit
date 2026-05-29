@@ -32,15 +32,8 @@ import type { GitManager } from "../shared/git.js";
 import type { AppDeps } from "./app-di.js";
 import { initializeManagers } from "./app-di.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
-import { ClaudeLimitsProvider, CodexLimitsProvider } from "./limits/index.js";
-import type { LimitsProvider } from "./limits/types.js";
+import { buildAgentRuntime } from "./agents/index.js";
 import { LimitsRegistry } from "./limits-registry.js";
-import type { AgentAuthManager } from "./agent-auth-manager.js";
-import {
-  prepareClaudeRunParams,
-  prepareCodexRunParams,
-  type PrepareRunParamsFn,
-} from "./agent-run-params-prep.js";
 import {
   setupContainerManager,
   buildRunnerFactory,
@@ -66,7 +59,7 @@ import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes } from "./disk-janitor.js";
-import { ClaudeOAuthRefresher } from "./claude-oauth-refresher.js";
+import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import { resolveBuildId } from "./build-id.js";
 import { MarketplaceStore } from "./marketplace-store.js";
@@ -333,27 +326,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     } catch { return undefined; }
   };
 
-  // docs/155 Phase 2 — every per-agent auth manager implements the shared
-  // `AgentAuthManager` interface so the orchestrator can drive lifecycle
-  // operations through this map instead of branching on agent id at every
-  // call site (shutdown kill(), limits-registry rearm, SSE event family in
-  // wireEventHandlers, agent-listeners auth_required dispatch). Adding a
-  // backend with its own auth flow is one `set()` here plus a new class
-  // that implements the interface. Hoisted above runner-registry
-  // construction so system-turn listeners can pick it up too.
-  const authManagers = new Map<AgentId, AgentAuthManager>();
-  authManagers.set("claude", authManager);
-  authManagers.set("codex", codexAuthManager);
-
-  // docs/155 Phase 3 — per-agent run-params prep table. Each entry is a pure
-  // function that takes the shared `AgentRunParams` from buildAgentRunParams
-  // and returns the backend-specific final shape (Claude injects
-  // `settingsPath` + `autoCreatePr`; Codex is identity). Wired here so a new
-  // backend is one `runParamsPreps.set("cursor", …)` instead of a new branch
-  // in `session-agent-run-params.ts`.
-  const runParamsPreps = new Map<AgentId, PrepareRunParamsFn>();
-  runParamsPreps.set("claude", prepareClaudeRunParams);
-  runParamsPreps.set("codex", prepareCodexRunParams);
+  // docs/155 Phase 5 — per-agent runtime tables. `buildAgentRuntime()` lives in
+  // `agents/index.ts` and assembles every `Map<AgentId, …>` lookup the
+  // orchestrator consumes (auth managers for shutdown / limits rearm / SSE,
+  // limits providers for `recordAgentRateLimits`, run-params preps for the
+  // shared run-params assembler, system-prompt fragments for
+  // `agent-instructions.ts`). Adding a backend = one new folder under
+  // `agents/<id>/` + one entry per table inside `buildAgentRuntime()`.
+  const agentRuntime = buildAgentRuntime({ authManager, codexAuthManager });
+  const { authManagers, limitsProviders, runParamsPreps } = agentRuntime;
 
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, createGitManager,
@@ -472,14 +453,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // event-fed: their numbers arrive on the agent's stream
   // (`rate_limit_event` for Claude, `account/rateLimits/updated` for Codex)
   // and the orchestrator routes them through `recordAgentRateLimits` into
-  // the matching provider. Skipped in test mode to keep integration tests
-  // deterministic.
-  const claudeLimitsProvider = new ClaudeLimitsProvider({ authManager });
-  const codexLimitsProvider = new CodexLimitsProvider({ codexAuthManager });
-  const limitsProviders = new Map<AgentId, LimitsProvider>();
-  limitsProviders.set("claude", claudeLimitsProvider);
-  limitsProviders.set("codex", codexLimitsProvider);
-
+  // the matching provider (built above in `buildAgentRuntime()`). Skipped in
+  // test mode to keep integration tests deterministic.
   const limitsRegistry = !isTestMode
     ? new LimitsRegistry({ providers: limitsProviders, sseBroadcast })
     : null;

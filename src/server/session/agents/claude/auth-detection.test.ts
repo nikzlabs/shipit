@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { textIndicatesAuthFailure, resultEventIndicatesAuthFailure } from "./claude.js";
-import type { ClaudeEvent } from "../shared/types.js";
+import { textIndicatesAuthFailure, resultEventIndicatesAuthFailure } from "./process.js";
+import type { ClaudeEvent } from "../../../shared/types.js";
 
 describe("claude auth-failure detection (docs/142 A1)", () => {
   it("matches the runtime 401 phrasing", () => {
