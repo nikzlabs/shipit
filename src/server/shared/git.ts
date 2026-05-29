@@ -96,16 +96,18 @@ export class GitManager {
   }
 
   /**
-   * Stage all working-tree changes and commit. Files containing git conflict
-   * markers (`<<<<<<<`, `=======`, `>>>>>>>`, `|||||||`) are excluded from
-   * the commit so a botched merge/rebase resolution never gets auto-committed
-   * or auto-pushed. Their paths are returned in `skippedConflictedFiles` so
-   * callers can surface a chat notice.
+   * Stage all working-tree changes and commit. If ANY file contains git
+   * conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`, `|||||||`), refuse
+   * the entire commit and return the marker'd paths in
+   * `skippedConflictedFiles`. Presence of conflict markers means a rebase or
+   * merge is mid-resolution — committing anything at this point (even the
+   * "clean" files in the same turn) would freeze a half-resolved state and
+   * almost certainly get force-pushed onto the branch. The agent needs to
+   * finish resolving first; the next turn will commit the whole set.
    *
    * `commitHash` is null when there was nothing to commit — either the
-   * working tree was already clean, or every changed file contained conflict
-   * markers. The two cases are distinguishable by inspecting
-   * `skippedConflictedFiles`.
+   * working tree was already clean, or conflict markers were present. The
+   * two cases are distinguishable by inspecting `skippedConflictedFiles`.
    */
   async autoCommit(summary: string): Promise<AutoCommitResult> {
     const status = await this.git.status();
@@ -124,47 +126,20 @@ export class GitManager {
       }
     }
 
-    await this.git.add("-A");
     if (skippedConflictedFiles.length > 0) {
-      // `git reset HEAD -- <paths>` unstages the conflicted files while
-      // leaving their working-tree contents alone — they stay visible to the
-      // user as uncommitted changes.
-      await this.git.reset(["HEAD", "--", ...skippedConflictedFiles]);
-    }
-
-    // Anything still staged after the unstage? `--quiet` exits 0 when there
-    // is nothing staged, 1 otherwise. simple-git surfaces non-zero exit as a
-    // thrown error, so catching it is how we detect "staged work exists".
-    let hasStaged = false;
-    try {
-      await this.git.raw(["diff", "--cached", "--quiet"]);
-    } catch {
-      hasStaged = true;
-    }
-    if (!hasStaged) {
       console.warn(
-        "[git] autoCommit skipped — every changed file contains conflict markers:",
+        "[git] autoCommit refused — conflict markers in:",
         skippedConflictedFiles.join(", "),
       );
       return { commitHash: null, skippedConflictedFiles };
     }
 
+    await this.git.add("-A");
     const message = summary || "Claude turn";
     const result = await this.git.commit(message);
     const hash = result.commit || "";
-    const suffix =
-      skippedConflictedFiles.length > 0
-        ? ` (skipped ${skippedConflictedFiles.length} file(s) with conflict markers)`
-        : "";
-    console.log(
-      "[git] Committed:",
-      hash,
-      message,
-      "on branch:",
-      status.current ?? "(detached)",
-      suffix,
-    );
-    return { commitHash: hash, skippedConflictedFiles };
+    console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
+    return { commitHash: hash, skippedConflictedFiles: [] };
   }
 
   /** Return recent commit log entries. */

@@ -9,9 +9,10 @@ export function formatConflictMarkerNotice(skippedConflictedFiles: string[]): st
     throw new Error("formatConflictMarkerNotice: skippedConflictedFiles must be non-empty");
   }
   const list = skippedConflictedFiles.map((p) => `\`${p}\``).join(", ");
-  const noun = skippedConflictedFiles.length === 1 ? "file" : "files";
+  const noun = skippedConflictedFiles.length === 1 ? "file has" : "files have";
   return (
-    `Skipped auto-commit for ${noun} containing git conflict markers: ${list}. ` +
-    `Resolve the markers (\`<<<<<<<\`, \`=======\`, \`>>>>>>>\`) and the next turn will commit them.`
+    `Skipped auto-commit — ${list} ${noun} unresolved git conflict markers ` +
+    `(\`<<<<<<<\`, \`=======\`, \`>>>>>>>\`), which usually means a rebase or merge is mid-resolution. ` +
+    `Resolve the markers and the next turn will commit the working tree.`
   );
 }

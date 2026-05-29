@@ -128,26 +128,28 @@ describe("GitManager: init & autoCommit", () => {
     "",
   ].join("\n");
 
-  it("excludes files with conflict markers from the commit", async () => {
+  it("refuses the whole commit when any file has conflict markers", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
+    const initialHead = await git.getHeadHash();
 
+    // A clean file in the same turn as a conflicted one — conflict markers
+    // mean a rebase/merge is mid-resolution, so committing even the clean
+    // file would freeze a half-resolved state.
     fs.writeFileSync(path.join(tmpDir, "clean.txt"), "all good");
     fs.writeFileSync(path.join(tmpDir, "conflicted.txt"), CONFLICTED_CONTENT);
     const { commitHash, skippedConflictedFiles } = await git.autoCommit("Mixed turn");
 
-    expect(commitHash).toBeTruthy();
+    expect(commitHash).toBeNull();
     expect(skippedConflictedFiles).toEqual(["conflicted.txt"]);
 
-    // The conflicted file must remain in the working tree as an uncommitted change.
-    const log = await git.log();
-    expect(log[0].message).toBe("Mixed turn");
-    const showed = await git.getFileAtCommit(commitHash!, "conflicted.txt");
-    expect(showed).toBe("");
+    // HEAD has not moved and both files are still uncommitted in the working tree.
+    expect(await git.getHeadHash()).toBe(initialHead);
+    expect(fs.readFileSync(path.join(tmpDir, "clean.txt"), "utf-8")).toBe("all good");
     expect(fs.readFileSync(path.join(tmpDir, "conflicted.txt"), "utf-8")).toBe(CONFLICTED_CONTENT);
   });
 
-  it("returns null commitHash when every changed file has conflict markers", async () => {
+  it("returns null commitHash and lists every marker'd file", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
 
