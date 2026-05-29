@@ -29,6 +29,7 @@ import {
 } from "./PrStatusControls.js";
 import {
   ArrowCounterClockwiseIcon,
+  CopyIcon,
   DownloadSimpleIcon,
   GitBranchIcon,
   GitPullRequestIcon,
@@ -93,16 +94,17 @@ function useOpenPrDiff(baseBranch?: string) {
 }
 
 /**
- * Displays branch info, or — when a PR exists — the PR title with the PR body
- * surfaced in a rich tooltip. Clicking always copies the head branch name.
+ * PR title (with rich-tooltip PR body) for the open phase. The branch name
+ * itself is no longer surfaced here — pre-PR it's replaced by the session
+ * title in ReadyPhase, and the copy affordance has moved to the overflow
+ * menu's "Copy branch name" item.
  *
  * Rendering rules:
- *   - `prTitle` set       → render `prTitle`; tooltip shows full `prBody`
- *                            rendered as markdown (or a fallback hint when
- *                            the PR has no description). The tooltip caps its
- *                            height and scrolls — content is never truncated.
  *   - `prTitle` unset, non-default base → "base ← head".
- *   - otherwise            → just `headBranch`.
+ *   - `prTitle` unset, default base     → just `headBranch`.
+ *   - `prTitle` set                     → render `prTitle`; tooltip shows
+ *                                          full `prBody` as markdown (or a
+ *                                          fallback when there's no body).
  */
 function BranchLabel({
   baseBranch,
@@ -115,44 +117,31 @@ function BranchLabel({
   prTitle?: string;
   prBody?: string;
 }) {
-  const setToast = useUiStore((s) => s.setToast);
-  if (!headBranch) return null;
+  if (!headBranch && !prTitle) return null;
 
-  const handleCopy = () => {
-    void navigator.clipboard.writeText(headBranch);
-    setToast({ message: "Branch name copied" });
-  };
+  const labelClass =
+    "h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden text-(--color-text-secondary)";
 
-  const buttonClass =
-    "h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors cursor-pointer";
-
-  // Branch-only rendering (ready phase, or open phase without a title yet).
   if (!prTitle) {
     const content = baseBranch && !isDefaultBranch(baseBranch) ? (
       <>{baseBranch} <span className="text-(--color-text-tertiary)">←</span> {headBranch}</>
     ) : headBranch;
     return (
-      <button onClick={handleCopy} title="Copy branch name" className={buttonClass}>
+      <span className={labelClass}>
         <span className="truncate">{content}</span>
-      </button>
+      </span>
     );
   }
 
-  // PR-title rendering — tooltip shows the full description as markdown.
-  // No truncation; the tooltip caps its own height and scrolls instead.
   const trimmedBody = (prBody ?? "").trim();
 
   return (
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
-          <button
-            onClick={handleCopy}
-            aria-label={`Copy branch name ${headBranch}`}
-            className={buttonClass}
-          >
+          <span className={labelClass}>
             <span className="truncate">{prTitle}</span>
-          </button>
+          </span>
         </TooltipTrigger>
         <TooltipContent
           side="bottom"
@@ -165,12 +154,38 @@ function BranchLabel({
               <div className="text-(--color-text-primary)">No description</div>
             )}
           </div>
-          <div className="shrink-0 border-t border-(--color-border-secondary) text-(--color-text-tertiary) text-xs px-3 py-2">
-            Click to copy <span className="font-mono">{headBranch}</span>
-          </div>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
+  );
+}
+
+/**
+ * Pre-PR label: shows what the user asked for, not the synthetic branch slug.
+ *
+ * Resolution order:
+ *  1. The session title. `graduateSession` sets it to a snippet of the first
+ *     user message immediately, and an AI rename replaces it with a tidy
+ *     phrase a few seconds later — both are user-meaningful.
+ *  2. If the title is still the pre-graduation placeholder ("New session") or
+ *     somehow empty, fall back to the first user message from chat history so
+ *     we show *something the user typed* rather than nothing.
+ *
+ * We deliberately never fall back to the branch slug — `shipit/pf_7ol` reads
+ * as noise to the user and would be inconsistent with the post-PR view, which
+ * shows the PR title.
+ */
+function SessionTitleLabel({ sessionId }: { sessionId: string }) {
+  const title = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId)?.title);
+  const firstUserText = useSessionStore((s) => s.messages.find((m) => m.role === "user")?.text);
+  const trimmedTitle = title?.trim() ?? "";
+  const isPlaceholder = !trimmedTitle || trimmedTitle === "New session";
+  const text = isPlaceholder ? firstUserText?.trim() : trimmedTitle;
+  if (!text) return null;
+  return (
+    <span className="h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden text-(--color-text-secondary)">
+      <span className="truncate">{text}</span>
+    </span>
   );
 }
 
@@ -360,7 +375,7 @@ function ReadyPhase({
   return (
     <div className="flex items-center gap-3 flex-nowrap min-w-0 flex-1">
       <PrStateBadge sessionId={sessionId} />
-      <BranchLabel headBranch={card.headBranch} />
+      <SessionTitleLabel sessionId={sessionId} />
       <span className="ml-auto shrink-0 flex items-center gap-3">
         {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
         {hasDiffStats && (
@@ -617,6 +632,16 @@ export function PrLifecycleCard({
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   const autoMerge = usePrStore((s) => s.autoMergeBySession[sessionId] ?? s.cardBySession[sessionId]?.autoMerge);
   const autoFix = usePrStore((s) => s.cardBySession[sessionId]?.autoFix);
+  const sessionBranch = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId)?.branch);
+  const setToast = useUiStore((s) => s.setToast);
+  // Prefer card-derived branches because they update mid-turn (e.g. branch
+  // rename on graduation), then fall back to the session record.
+  const headBranch = card?.pr?.headBranch ?? card?.headBranch ?? sessionBranch;
+  const handleCopyBranch = useCallback(() => {
+    if (!headBranch) return;
+    void navigator.clipboard.writeText(headBranch);
+    setToast({ message: "Branch name copied" });
+  }, [headBranch, setToast]);
 
   // The whole card body opens the PR detail tab, but only once a PR exists
   // (open/merged/closed) — the ready/creating/error phases have no PR to
@@ -691,6 +716,12 @@ export function PrLifecycleCard({
               </div>
               <DropdownMenuSeparator />
             </>
+          )}
+          {headBranch && (
+            <DropdownMenuItem onSelect={handleCopyBranch} title={`Copy ${headBranch}`}>
+              <CopyIcon size={ICON_SIZE.SM} />
+              Copy branch name
+            </DropdownMenuItem>
           )}
           {recoverRewindAvailable && onRecoverRewind && (
             <DropdownMenuItem onSelect={onRecoverRewind}>
