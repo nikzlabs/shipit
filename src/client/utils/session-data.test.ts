@@ -92,7 +92,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
                   outputTokens: 50,
                   costUsd: 0.001,
                   timestamp: "2026-05-18T00:00:00Z",
-                  model: "claude-opus-4-7",
+                  model: "claude-opus-4-8",
                 },
                 {
                   inputTokens: 200,
@@ -111,8 +111,8 @@ describe("loadSessionHistory — modelInfo seeding", () => {
 
     await loadSessionHistory("sess-2");
     const info = useUiStore.getState().modelInfo;
-    expect(info?.model).toBe("claude-opus-4-7");
-    // Opus 4.7 → 1M window
+    expect(info?.model).toBe("claude-opus-4-8");
+    // Opus 4.8 → 1M window
     expect(info?.contextWindowTokens).toBe(1_000_000);
   });
 

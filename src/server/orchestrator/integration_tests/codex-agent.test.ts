@@ -240,7 +240,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     // Claude-only) alongside a stale agent=codex param. The model is the single
     // source of truth, so the unpinned session must derive Claude and run it —
     // this is the server-side guard against the Opus→gpt-5.5 silent switch.
-    const client = await TestClient.connect(port, undefined, { model: "opus", agent: "codex" });
+    const client = await TestClient.connect(port, undefined, { model: "claude-opus-4-8", agent: "codex" });
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "Hello" });
@@ -256,14 +256,14 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
   it("set_model with another agent's model self-heals by switching agent (Codex → Opus)", async () => {
     // Repro: new session defaults to Codex; user picks Opus from the grouped
     // model picker. The picker fires set_agent THEN set_model, but if set_agent
-    // is dropped/raced, set_model used to reject ("Model \"opus\" is not
-    // available for Codex") and the model stayed locked to gpt-5.5. The
-    // handler now switches to the agent that owns the model.
+    // is dropped/raced, set_model used to reject ("Model is not available for
+    // Codex") and the model stayed locked to gpt-5.5. The handler now switches
+    // to the agent that owns the model.
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     // Send ONLY set_model — deliberately omit set_agent to prove self-healing.
-    client.send({ type: "set_model", model: "opus" });
+    client.send({ type: "set_model", model: "claude-opus-4-8" });
     await new Promise((r) => setTimeout(r, 50));
 
     // A subsequent message must run on Claude (the owner of "opus"), not Codex.
@@ -598,7 +598,7 @@ describe("Integration: Codex agent — validation and default agent", () => {
 
   it("set_model within the pinned agent's lineup succeeds mid-session", async () => {
     // After a session pins claude (first turn), the user can still pick a
-    // different *claude* model (sonnet → opus). The change persists to the
+    // different *claude* model (sonnet → opus 4.8). The change persists to the
     // session record and doesn't error — only cross-agent picks are blocked.
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
@@ -610,10 +610,10 @@ describe("Integration: Codex agent — validation and default agent", () => {
     expect(sessionManager.get(sid)?.agentPinned).toBe(true);
 
     // Now switch to a different claude model mid-session. No error expected.
-    client.send({ type: "set_model", model: "opus" });
+    client.send({ type: "set_model", model: "claude-opus-4-8" });
     // Give the handler a tick to persist.
     await new Promise((r) => setTimeout(r, 50));
-    expect(sessionManager.get(sid)?.model).toBe("opus");
+    expect(sessionManager.get(sid)?.model).toBe("claude-opus-4-8");
     // Agent must stay claude — set_model within the same agent never moves it.
     expect(sessionManager.get(sid)?.agentId).toBe("claude");
 
