@@ -91,17 +91,6 @@ export async function buildAgentRunParams(
   let systemPrompt: string | undefined =
     [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;
 
-  // Append the human-readable session title so the agent can reference it
-  // (e.g. as `context.sessionName` for end-of-turn notification MCP tools per
-  // docs/159). Appended at the end so the cacheable agentInstructions +
-  // userSystemPrompt prefix is unaffected — only the tail differs per session,
-  // and only changes on rename (rare, single-turn cache miss).
-  const sessionTitle = deps.sessionManager.get(sessionId)?.title;
-  if (sessionTitle) {
-    const suffix = `Current ShipIt session: "${sessionTitle}"`;
-    systemPrompt = systemPrompt ? `${systemPrompt}\n\n${suffix}` : suffix;
-  }
-
   // If the session was graduating from a warm slot and carried a one-shot
   // conversation replay, append it to the system prompt and clear the
   // resume id so the CLI doesn't try to attach to a non-existent session.
