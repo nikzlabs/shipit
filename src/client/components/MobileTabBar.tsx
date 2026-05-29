@@ -1,16 +1,17 @@
-import { ChatCircleIcon, EyeIcon } from "@phosphor-icons/react";
+import { ChatCircleIcon, SquaresFourIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 
 /**
  * MobileTabBar — bottom navigation bar shown only on mobile viewports.
  *
- * Provides a fixed-bottom tab bar with "Chat" and "Preview" tabs so users
- * can switch between the chat panel and the preview/docs panel when the
- * side-by-side layout isn't available.
+ * Provides a fixed-bottom tab bar with "Chat" and "Workspace" tabs so users
+ * can switch between the chat panel and the multi-tab workspace panel
+ * (preview, docs, files, terminal, etc.) when the side-by-side layout
+ * isn't available.
  *
  * Design:
  *   - Fixed to the bottom of the screen
- *   - Two tabs: Chat (message icon) and Preview (eye icon)
+ *   - Two tabs: Chat (speech bubble) and Workspace (four-squares icon)
  *   - Active tab gets a blue highlight; inactive tabs are muted gray
  *   - The tab bar includes a top border to separate from content
  */
@@ -52,9 +53,9 @@ export function MobileTabBar({
         }`}
         aria-current={activePanel === "preview" ? "page" : undefined}
       >
-        {/* Preview icon (eye) */}
-        <EyeIcon size={ICON_SIZE.MD} />
-        Preview
+        {/* Workspace icon (four squares — represents the multi-tab panel) */}
+        <SquaresFourIcon size={ICON_SIZE.MD} />
+        Workspace
       </button>
     </nav>
   );

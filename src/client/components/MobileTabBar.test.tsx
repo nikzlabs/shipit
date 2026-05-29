@@ -5,10 +5,10 @@ import { MobileTabBar } from "./MobileTabBar.js";
 afterEach(cleanup);
 
 describe("MobileTabBar", () => {
-  it("renders Chat and Preview tabs", () => {
+  it("renders Chat and Workspace tabs", () => {
     render(<MobileTabBar activePanel="chat" onChangePanel={() => {}} />);
     expect(screen.getByText("Chat")).toBeInTheDocument();
-    expect(screen.getByText("Preview")).toBeInTheDocument();
+    expect(screen.getByText("Workspace")).toBeInTheDocument();
   });
 
   it("highlights the active Chat tab", () => {
@@ -17,16 +17,16 @@ describe("MobileTabBar", () => {
     expect(chatButton.className).toContain("text-(--color-text-link)");
     expect(chatButton).toHaveAttribute("aria-current", "page");
 
-    const previewButton = screen.getByText("Preview").closest("button")!;
-    expect(previewButton.className).not.toContain("text-(--color-text-link)");
-    expect(previewButton).not.toHaveAttribute("aria-current");
+    const workspaceButton = screen.getByText("Workspace").closest("button")!;
+    expect(workspaceButton.className).not.toContain("text-(--color-text-link)");
+    expect(workspaceButton).not.toHaveAttribute("aria-current");
   });
 
-  it("highlights the active Preview tab", () => {
+  it("highlights the active Workspace tab", () => {
     render(<MobileTabBar activePanel="preview" onChangePanel={() => {}} />);
-    const previewButton = screen.getByText("Preview").closest("button")!;
-    expect(previewButton.className).toContain("text-(--color-text-link)");
-    expect(previewButton).toHaveAttribute("aria-current", "page");
+    const workspaceButton = screen.getByText("Workspace").closest("button")!;
+    expect(workspaceButton.className).toContain("text-(--color-text-link)");
+    expect(workspaceButton).toHaveAttribute("aria-current", "page");
 
     const chatButton = screen.getByText("Chat").closest("button")!;
     expect(chatButton.className).not.toContain("text-(--color-text-link)");
@@ -39,10 +39,10 @@ describe("MobileTabBar", () => {
     expect(onChange).toHaveBeenCalledWith("chat");
   });
 
-  it("calls onChangePanel with 'preview' when Preview is clicked", () => {
+  it("calls onChangePanel with 'preview' when Workspace is clicked", () => {
     const onChange = vi.fn();
     render(<MobileTabBar activePanel="chat" onChangePanel={onChange} />);
-    fireEvent.click(screen.getByText("Preview"));
+    fireEvent.click(screen.getByText("Workspace"));
     expect(onChange).toHaveBeenCalledWith("preview");
   });
 
