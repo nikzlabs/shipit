@@ -704,7 +704,7 @@ export function PrLifecycleCard({
       <div className="min-w-0 flex-1 min-h-10 flex items-center py-1">
         {phaseContent}
       </div>
-      <div className="shrink-0 min-h-10 flex items-center gap-1">
+      <div className="shrink-0 h-10 flex items-center gap-1">
         {onSearch && (
           <button
             onClick={onSearch}
