@@ -65,19 +65,40 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     }
   });
 
-  it("answer_question writes to stdin when Claude process is running", async () => {
+  it("answer_question kills the stale steering-capable agent and falls through to a fresh --resume spawn when the steering gate fails", async () => {
+    // Regression: the user reported that an AskUserQuestion answer "appeared
+    // in the chat, but the agent didn't react" — the same silent-drop shape
+    // commit ee313d3661 fixed for `handleSendMessage`. The recent commit added
+    // the `isStreamingActive` gate to `handleAnswerQuestion` but kept a legacy
+    // `writeStdin` fallback below it. For steering-capable adapters (the only
+    // kind in the registry today: claude, codex) `writeStdin` lands as raw
+    // bytes on a process whose adapter expects NDJSON, and the line is
+    // silently dropped. The fix mirrors `handleSendMessage`'s stale-kill at
+    // line 263: drop the stale ref, fall through to the fresh-spawn `--resume`
+    // path so the answer actually reaches the model.
+    //
+    // Default test setup (`liveSteering=false`, registry says
+    // `supportsSteering=true` for claude) hits the exact gate-failed shape
+    // that triggered the production bug: `existingAgent` is non-null,
+    // `streamingActive` is false (the agent spawned with `useStreaming=false`).
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Start a Claude message flow
+    // First turn — agent is mid-turn, not yet finished.
     client.send({ type: "send_message", text: "Ask me something" });
-    await waitForClaude(() => lastClaude);
+    const firstClaude = await waitForClaude(() => lastClaude);
 
-    // Claude is now running — send an answer
     client.send({ type: "answer_question", toolUseId: "tool-1", answers: { "0": "Redis" } });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude, firstClaude);
 
-    expect(lastClaude.stdinData).toEqual(["Redis\n"]);
+    // Stale ref was killed, a fresh agent was spawned via the `--resume` path
+    // with the answer as the next prompt. NOT routed through `writeStdin` on
+    // the stale process (which would have been silently dropped).
+    expect(firstClaude.killed).toBe(true);
+    expect(firstClaude.stdinData).toEqual([]);
+    expect(lastClaude).not.toBe(firstClaude);
+    expect(lastClaude.runCalled).toBe(true);
+    expect(lastClaude.lastPrompt).toBe("Redis");
 
     client.close();
   });
@@ -191,28 +212,31 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     client.close();
   });
 
-  it("answer_question with multiple answers uses the client-formatted text verbatim", async () => {
+  it("answer_question with multiple answers uses the client-formatted text verbatim as the fresh-spawn prompt", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
-    // Start a Claude message flow
     client.send({ type: "send_message", text: "test" });
-    await waitForClaude(() => lastClaude);
+    const firstClaude = await waitForClaude(() => lastClaude);
 
-    // The client now formats multi-question answers as a bullet list with
-    // the question text inline, so commas inside an answer aren't
-    // ambiguous with the separator between answers.
+    // Multi-question answers are a bullet list with the question text inline,
+    // so commas inside an answer aren't ambiguous with the separator between
+    // answers. After the steering-gate-fail kill+respawn, the formatted text
+    // becomes the fresh agent's `--resume` prompt verbatim — same text the
+    // chat bubble shows.
     client.send({
       type: "answer_question",
       toolUseId: "tool-4",
       answers: { "0": "Auth", "1": "Cache, with TTL" },
       text: "- Pick a feature?: Auth\n- Cache config?: Cache, with TTL",
     });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude, firstClaude);
 
-    expect(lastClaude.stdinData).toEqual([
-      "- Pick a feature?: Auth\n- Cache config?: Cache, with TTL\n",
-    ]);
+    expect(firstClaude.killed).toBe(true);
+    expect(lastClaude).not.toBe(firstClaude);
+    expect(lastClaude.lastPrompt).toBe(
+      "- Pick a feature?: Auth\n- Cache config?: Cache, with TTL",
+    );
 
     client.close();
   });
@@ -222,18 +246,91 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     await client.receive(); // preview_status
 
     client.send({ type: "send_message", text: "test" });
-    await waitForClaude(() => lastClaude);
+    const firstClaude = await waitForClaude(() => lastClaude);
 
-    // Old client (no `text` field) — server still joins so existing
-    // sessions keep working through the rollout.
+    // Old client (no `text` field) — server still joins so existing sessions
+    // keep working through the rollout. The joined text becomes the fresh
+    // spawn's prompt.
     client.send({
       type: "answer_question",
       toolUseId: "tool-4b",
       answers: { "0": "Auth", "1": "Cache" },
     });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForClaude(() => lastClaude, firstClaude);
 
-    expect(lastClaude.stdinData).toEqual(["Auth, Cache\n"]);
+    expect(firstClaude.killed).toBe(true);
+    expect(lastClaude).not.toBe(firstClaude);
+    expect(lastClaude.lastPrompt).toBe("Auth, Cache");
+
+    client.close();
+  });
+
+  it("answer_question steers via sendUserMessage when liveSteering is on and the resident process is streaming (no kill, no respawn)", async () => {
+    // Live-steering happy path: the persistent streaming process is blocked
+    // on AskUserQuestion, and the answer must reach the resident CLI via
+    // `sendUserMessage` (NDJSON) — NOT trigger a kill+respawn. This pins the
+    // gate so the steering-capable / streaming-active branch keeps working
+    // after the stale-kill fall-through was added to handleAnswerQuestion.
+    const credentialStore = createTestCredentialStore(tmpDir);
+    credentialStore.setLiveSteering(true);
+
+    // Rebuild the app with live steering enabled (the suite default is off).
+    await app.close();
+    app = await buildApp({
+      credentialStore,
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      agentFactory: () => {
+        lastClaude = new FakeClaudeProcess();
+        return lastClaude as any;
+      },
+      workspaceDir: tmpDir,
+      serveStatic: false,
+    });
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = /:(\d+)$/.exec(address);
+    port = match ? Number(match[1]) : 0;
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Pick something" });
+    const claude = await waitForClaude(() => lastClaude);
+    // With liveSteering=true and the registry's `supportsSteering=true` for
+    // claude, the runner spins up with `isStreamingActive=true`.
+    expect(claude.lastUseStreaming).toBe(true);
+
+    // Drive the agent up to the AskUserQuestion interrupt: the listener flips
+    // running=false on agent_result, but keeps the streaming process alive
+    // (no `done` event). isStreamingActive stays true.
+    claude.initSession("steer-answer-session");
+    claude.emit("event", {
+      type: "result",
+      subtype: "error",
+      session_id: "steer-answer-session",
+      duration_ms: 50,
+      result: "error_during_execution",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(claude.killed).toBe(false);
+
+    client.send({
+      type: "answer_question",
+      toolUseId: "ask-1",
+      answers: { "0": "Redis" },
+      text: "Redis",
+    });
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Same process — NOT killed, NOT respawned.
+    expect(claude.killed).toBe(false);
+    expect(lastClaude).toBe(claude);
+    // FakeClaudeProcess.sendUserMessage proxies to writeStdin, so stdinData
+    // captures the steered answer. NDJSON framing happens inside the real
+    // adapter (out of scope for this fake) — the contract under test is
+    // "sendUserMessage was called with the answer text".
+    expect(claude.stdinData).toContain("Redis");
 
     client.close();
   });
