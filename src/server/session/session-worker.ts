@@ -301,13 +301,22 @@ export class SessionWorker extends EventEmitter {
     app.post<{ Body: { text: string } }>(
       "/agent/message",
       async (request, reply) => {
+        const text = request.body?.text;
+        const snippet = typeof text === "string" ? JSON.stringify(text.slice(0, 80)) : "<non-string>";
         if (!this.agent) {
+          console.warn(`[steer-worker] /agent/message rejected: no agent running (text=${snippet})`);
           return reply.code(400).send({ error: "No agent running" });
         }
-        const { text } = request.body;
         if (typeof text !== "string" || !text) {
+          console.warn(`[steer-worker] /agent/message rejected: text is required (got ${typeof text})`);
           return reply.code(400).send({ error: "text is required" });
         }
+        // docs/140 diag — confirm the worker accepted and forwarded to the
+        // adapter. The adapter (`[claude-adapter]`) and CLI-stdin
+        // (`[streaming-claude]`) logs follow.
+        console.log(
+          `[steer-worker] /agent/message → agent.sendUserMessage (bytes=${text.length}, text=${snippet})`,
+        );
         this.agent.sendUserMessage(text);
         return { success: true };
       },

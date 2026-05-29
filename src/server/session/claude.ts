@@ -435,7 +435,15 @@ export class StreamingClaudeProcess extends EventEmitter {
       type: "user",
       message: { role: "user", content: [{ type: "text", text }] },
     };
-    this.writeToStdin(`${JSON.stringify(msg)}\n`);
+    const line = `${JSON.stringify(msg)}\n`;
+    // docs/140 diag — log bytes written + a text snippet so a live-steering
+    // bug repro shows whether the NDJSON line actually reached the CLI's
+    // stdin. Paired with the `[claude-adapter]` log one frame up and the
+    // worker-side `[steer-worker]` log one frame below.
+    console.log(
+      `[streaming-claude] sendUserMessage NDJSON bytes=${line.length} text=${JSON.stringify(text.slice(0, 80))}`,
+    );
+    this.writeToStdin(line);
     this.armWatchdog();
   }
 
@@ -471,8 +479,39 @@ export class StreamingClaudeProcess extends EventEmitter {
   }
 
   private writeToStdin(data: string): void {
-    if (this.proc?.stdin?.writable) {
-      this.proc.stdin.write(data);
+    // docs/140 diag — surface the two ways a write to a "live" streaming
+    // process can silently drop. Without these warnings the user sees the
+    // optimistic message bubble in chat but the CLI never gets the line, and
+    // the orchestrator has no record of why.
+    if (!this.proc) {
+      console.warn(
+        `[streaming-claude] writeToStdin: no process — message DROPPED (bytes=${data.length})`,
+      );
+      this.emit(
+        "log",
+        "server",
+        "Live steering write failed: the streaming process is not running. Message dropped.",
+      );
+      return;
+    }
+    if (!this.proc.stdin?.writable) {
+      console.warn(
+        `[streaming-claude] writeToStdin: stdin not writable (destroyed=${this.proc.stdin?.destroyed ?? "?"}, ended=${this.proc.stdin?.writableEnded ?? "?"}) — message DROPPED (bytes=${data.length})`,
+      );
+      this.emit(
+        "log",
+        "server",
+        "Live steering write failed: stdin is not writable. Message dropped.",
+      );
+      return;
+    }
+    const ok = this.proc.stdin.write(data);
+    if (!ok) {
+      // Backpressure: write was buffered. Not an error, just noteworthy if a
+      // steer never seems to land.
+      console.warn(
+        `[streaming-claude] writeToStdin: write returned false (backpressure, bytes=${data.length})`,
+      );
     }
   }
 
