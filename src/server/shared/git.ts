@@ -200,15 +200,19 @@ export class GitManager {
 
   /**
    * Get per-file diff summary (files changed with insertions/deletions).
+   * `binary` is true when git reports `-\t-` in --numstat (the canonical
+   * binary signal). It's NOT inferred from `insertions === 0 && deletions === 0`
+   * because pure renames, mode-only changes, and empty files also produce 0/0.
    * Returns an empty array if there are no commits or no changes.
    */
-  async diffSummary(range?: string): Promise<{ file: string; insertions: number; deletions: number }[]> {
+  async diffSummary(range?: string): Promise<{ file: string; insertions: number; deletions: number; binary: boolean }[]> {
     try {
       const result = await this.git.diffSummary([range ?? "HEAD~1...HEAD"]);
       return result.files.map((f) => ({
         file: f.file,
-        insertions: (f as { insertions: number }).insertions ?? 0,
-        deletions: (f as { deletions: number }).deletions ?? 0,
+        insertions: (f as { insertions?: number }).insertions ?? 0,
+        deletions: (f as { deletions?: number }).deletions ?? 0,
+        binary: (f as { binary?: boolean }).binary === true,
       }));
     } catch {
       return [];
