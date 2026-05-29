@@ -413,6 +413,7 @@ export async function installPlugin(opts: {
   agentRegistry: AgentRegistry;
 }): Promise<InstallResult> {
   const { workspaceDir, agentId, marketplaceId, pluginName, cacheRoot, store, git, agentRegistry } = opts;
+  // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 7: v1 marketplace install gates Claude only. Becomes a capability flag (`supportsMarketplaceInstall`) once Codex install (v1b) lands; deliberately not pre-generalized.
   if (agentId !== "claude") {
     throw new ServiceError(400, "v1 only supports Claude installs (Codex is v1b)");
   }

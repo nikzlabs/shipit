@@ -725,7 +725,14 @@ function materializeLeakedSubtreeSymlinks(
   // mutations needed. Skipped on fresh sessions (no current id to compare)
   // and on non-claude agents (no `projects/<encoded-cwd>/<id>.jsonl`
   // layout).
+  //
+  // docs/155: Claude-specific CLI-shape recovery. The
+  // `<sessionDir>/.claude/projects/<encoded-cwd>/<id>.jsonl` layout is
+  // unique to the Claude CLI's `--resume` flag; Codex uses a different
+  // on-disk resume mechanism. Per plan.md non-goal ("CLI-shape
+  // differences stay distinct").
   if (
+    // eslint-disable-next-line no-restricted-syntax -- docs/155: Claude-specific CLI-shape recovery, see comment above
     agentId === "claude"
     && recoveredAgentSessionId === null
     && currentAgentSessionId
