@@ -78,7 +78,34 @@ export class RepoGit {
     // Clone bare into the current directory. simple-git operates on repoDir,
     // but `git clone --bare` needs the parent to exist with the target as ".".
     await this.git.raw(["clone", "--bare", url, "."]);
+    await this.ensureFetchRefspec();
     console.log("[git] Cloned bare repo:", this.repoDir);
+  }
+
+  /**
+   * Configure `remote.origin.fetch` so `git fetch` actually advances the
+   * bare cache's local `refs/heads/*`.
+   *
+   * `git clone --bare` configures NO fetch refspec at all. Without one,
+   * `git fetch --all` only writes `FETCH_HEAD` and never updates
+   * `refs/heads/main` — so the cache's `HEAD` (a symbolic ref to its default
+   * branch) stays frozen at the commit it was first cloned at, forever. Every
+   * `--local` clone cut from the cache then branches from that frozen snapshot,
+   * which is the root cause behind sessions provisioned from months-old config
+   * (docs/157) and the false premise the docs/145 `isWorkspaceCloneInSyncWithCache`
+   * gate rests on (it assumes cache HEAD tracks "latest main"). The `+` forces
+   * non-fast-forward updates so a force-pushed `main` still syncs.
+   *
+   * Idempotent: re-running `git config` to the same value is a no-op, so this
+   * is safe to call before every fetch — which also self-heals the already-
+   * frozen bare caches created before this fix, with no re-clone needed.
+   */
+  private async ensureFetchRefspec(): Promise<void> {
+    await this.git.raw([
+      "config",
+      "remote.origin.fetch",
+      "+refs/heads/*:refs/heads/*",
+    ]);
   }
 
   /**
@@ -141,6 +168,10 @@ export class RepoGit {
     } catch {
       // Marker doesn't exist — proceed with fetch
     }
+    // Self-heal caches cloned before the refspec fix: without it `fetch`
+    // never advances local heads and the cache HEAD stays frozen (see
+    // ensureFetchRefspec). Idempotent, so cheap to run every fetch.
+    await this.ensureFetchRefspec();
     const headBefore = await this.readHead();
     await this.git.raw(["fetch", "--all", "--force", "--prune"]);
     // Touch the marker file

@@ -1,7 +1,7 @@
 ---
-status: planned
+status: done
 priority: medium
-description: ShipIt session branches are sometimes created from a stale main, so the agent starts without access to recently-merged docs and code (observed when picking up docs/153 work — the doc was on origin/main but missing from the session worktree until a manual fetch+rebase).
+description: ShipIt session branches were created from a stale main because the bare repo cache's `git clone --bare` configured no fetch refspec, so `git fetch --all` only wrote FETCH_HEAD and never advanced refs/heads/main. Fixed by configuring `+refs/heads/*:refs/heads/*` on the cache.
 ---
 
 # 157 — Session branches created stale from main
@@ -41,23 +41,58 @@ stale `main`, then:
 This is a silent failure: there is no warning in the session bootstrap. The
 agent only finds out by accident, when a referenced path 404s in its tools.
 
-## Suspected mechanism
+## Confirmed mechanism (2026-05-29)
 
-Open question — needs confirmation from someone with `RepoGit` context. Plausible
-causes:
+The bare repo cache (`/workspace/repo-cache/{hash}`, one per remote URL) is the
+snapshot every new session clone is cut from. It is created with
+`git clone --bare` (`RepoGit.cloneBare`), and **`git clone --bare` configures no
+`remote.origin.fetch` refspec at all.** Verified locally:
 
-- The shared repo clone backing this session's worktree (`git-architecture` skill:
-  `RepoGit`) hadn't been fetched recently. Worktree creation branches from the
-  shared clone's local `main`, not from `origin/main`, so a stale clone yields a
-  stale session branch.
-- The warm session pool (`session-lifecycle`) may pre-create worktrees against
-  whatever `main` was current at warm-up time, then hand the warmed session out
-  much later without re-fetching.
-- A scheduled `git fetch` on the shared clone may have been failing silently, or
-  may not exist at all.
+```
+$ git clone --bare upstream.git cache.git
+$ git -C cache.git config --get remote.origin.fetch
+(none configured)
+```
 
-The 619-commit gap argues against a "just stale by a few minutes" race — this
-clone hadn't been updated in a non-trivial amount of time.
+Without a refspec, `RepoGit.fetchCache`'s `git fetch --all --force --prune`
+only writes `FETCH_HEAD` — it never updates `refs/heads/main`:
+
+```
+$ git -C cache.git fetch --all --force --prune
+ * branch HEAD -> FETCH_HEAD
+$ git -C cache.git rev-parse HEAD          # ShipIt reads this as "latest main"
+4a0cbbe…   # frozen at the commit the cache was first cloned at
+$ git -C cache.git rev-parse refs/heads/main
+4a0cbbe…   # never moved
+```
+
+So the bare cache's `HEAD` (a symbolic ref to its default branch) is **frozen at
+first-clone time, forever** — no matter how often the periodic prefetcher
+(docs/145) runs. A repo added months ago has a months-old cache HEAD. Every
+`git clone --local` cut from it (`cloneFromCache`) inherits that frozen
+`origin/HEAD`, which is the 619-commit gap.
+
+This also invalidated the docs/145 `isWorkspaceCloneInSyncWithCache` guard,
+which assumed "cache HEAD == the commit the prefetcher last advanced main to"
+(`git-utils.ts`). Because cache HEAD and a fresh `--local` clone's `origin/HEAD`
+are *both* the same frozen commit, the agreement check returned `true` and the
+claim path skipped its synchronous remote fetch — branching the new session from
+the stale snapshot.
+
+The `readHead()` logging added earlier (repo-git.ts) had already observed HEAD
+"never moves" but mis-attributed it to a stale embedded token; the real cause is
+the missing refspec.
+
+## Fix (2026-05-29)
+
+`RepoGit.ensureFetchRefspec()` sets `remote.origin.fetch =
++refs/heads/*:refs/heads/*` on the bare cache. Called from `cloneBare` (correct
+from creation) and defensively at the top of `fetchCache` (idempotent, so it
+self-heals the already-frozen caches on prod without a re-clone). With the
+refspec, `git fetch --all --force --prune` advances `refs/heads/main` and the
+cache HEAD tracks the real remote — restoring the premise the docs/145 guard
+relies on. Regression tests in `repo-git.test.ts` assert the cache HEAD advances
+after a remote commit and that a fresh `--local` clone sees it.
 
 ## Proposed fix (sketch)
 
