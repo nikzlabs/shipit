@@ -1,12 +1,21 @@
 ---
-status: planned
-priority: medium
-description: User-configurable HTTP webhook fired after each agent turn, so external agents (e.g. a personal assistant on another server) can react to ShipIt activity.
+status: rejected
+description: Rejected in favour of the MCP-based design in docs/159. Kept for the reasoning.
 ---
 
 # Post-turn webhook
 
-## Summary
+## Why this was rejected
+
+The webhook's only structural advantage over MCP is *deterministic firing on turn boundaries, including failure modes*. Everything else (auth, payload shape, decoupling, configurability) MCP can do.
+
+But the value of "I got notified" is zero without a useful, voice-ready summary from the model. If the model crashed or was interrupted, there is no summary to send — only the bare fact that the turn ended, which a passive UI notification already conveys. The webhook would deliver low-quality notifications in exactly the cases where it has a structural advantage over MCP, and identical-quality notifications in every other case. So it doesn't earn its keep.
+
+MCP also composes better: the same configured server can expose query tools (`ask_hermes`, `look_up_X`) in addition to the notify tool, with one config surface instead of two.
+
+See `docs/159-hermes-mcp-integration/plan.md` for the chosen path.
+
+## Original summary
 
 Let a user configure a single outbound HTTP endpoint that ShipIt POSTs to after every agent turn ends, with a structured JSON payload summarising what just happened. The motivating use case is a personal "general-purpose" agent (Hermes) running elsewhere on the user's network that wants to know when a ShipIt agent has stopped, so it can push the summary to the user (voice, Slack, push notification, etc.). The feature is generic: ShipIt knows nothing about the receiver, just the URL and an optional bearer token.
 
