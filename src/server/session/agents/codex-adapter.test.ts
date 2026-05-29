@@ -342,24 +342,41 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("does not re-emit agentMessage text already streamed via delta", async () => {
+  it("re-emits streamed agentMessage text as a stream-completion event", async () => {
     await createAndInit("Hello");
     events.length = 0;
 
     // Stream the text incrementally...
     fakeProc.sendNotification("item/agentMessage/delta", { itemId: "msg-1", delta: "Hi " });
     fakeProc.sendNotification("item/agentMessage/delta", { itemId: "msg-1", delta: "there" });
-    // ...then the completed item arrives with the full text. The orchestrator
-    // appends each text block, so re-emitting here would double the message.
+    // ...then the completed item arrives with the full text. The orchestrator's
+    // `runner.turnSummary = text` overwrites on every event, so without a
+    // final consolidated event turnSummary ends up as just the last tiny
+    // delta (often a single character like "."), which became the commit
+    // message. Re-emit the full text with isStreamCompletion=true so the
+    // orchestrator can replace turnSummary without double-counting
+    // accumulatedText / chatMessageGroups.
     fakeProc.sendNotification("item/completed", {
       item: { type: "agentMessage", id: "msg-1", text: "Hi there" },
     });
 
     await vi.waitFor(() => {
-      expect(events.length).toBe(2);
+      expect(events.length).toBe(3);
     });
 
-    expect(events.map((e) => (e as any).content[0].text)).toEqual(["Hi ", "there"]);
+    expect(events[0]).toEqual({
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Hi " }],
+    });
+    expect(events[1]).toEqual({
+      type: "agent_assistant",
+      content: [{ type: "text", text: "there" }],
+    });
+    expect(events[2]).toEqual({
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Hi there" }],
+      isStreamCompletion: true,
+    });
   });
 
   describe("unwrapShellCommand", () => {

@@ -703,10 +703,25 @@ export class CodexAdapter
     switch (item.type) {
       case "agentMessage": {
         // Final assistant text. Streamed incrementally via
-        // `item/agentMessage/delta`; if we already streamed this item, the
-        // completed text would be a duplicate (the orchestrator appends).
+        // `item/agentMessage/delta`.
         if (phase !== "completed") return;
-        if (item.id && this.streamedAgentItems.has(item.id)) return;
+        if (item.id && this.streamedAgentItems.has(item.id)) {
+          // The deltas already populated accumulatedText / chatMessageGroups,
+          // but the orchestrator's `runner.turnSummary = text` overwrites on
+          // every event — so the LAST tiny delta (often a single punctuation
+          // character like ".") became the turn summary, and therefore the
+          // commit message. Re-emit the FULL text marked as the stream
+          // completion so the orchestrator can replace turnSummary without
+          // double-counting accumulatedText / message groups.
+          if (item.text) {
+            this.emit("event", {
+              type: "agent_assistant",
+              content: [{ type: "text", text: item.text }],
+              isStreamCompletion: true,
+            } as AgentEvent);
+          }
+          return;
+        }
         if (item.text) this.emitAssistant([{ type: "text", text: item.text }]);
         return;
       }
