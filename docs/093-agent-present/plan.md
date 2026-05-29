@@ -372,26 +372,35 @@ interface PresentContentMessage {
 interface PresentClearedMessage {
   type: "present_cleared";
   sessionId: string;
+  presentId?: string;       // if set, clear just this entry (eviction); otherwise clear all
 }
 ```
 
 ### Agent tool
 
-A `present` tool in the agent's tool list (registered in `tool-map.ts`, documented in shipit-docs):
+A `present` tool is exposed to the agent via an **MCP bridge process**, following the same pattern as `submit_review_comments` (docs/125, `src/server/session/mcp-review-bridge.ts`). `tool-map.ts` is a one-way normalizer that maps CLI-emitted tool names to a canonical vocabulary for client rendering — it does **not** expose tools to the agent and is irrelevant here.
 
-```
-present({
-  content: "<html><body><h1>Hello</h1><div id='chart'></div><script>...</script></body></html>",
-  mimeType: "text/html",    // optional, default "text/html"
-  title: "Sales Chart",      // optional
-  replaceId: "abc123"        // optional — replace a previous presentation
-})
-```
+The wiring:
 
-The tool handler in the session worker:
+1. A new `mcp-present-bridge.ts` stdio MCP server is built into the agent image and declared in the `mcp.json` that `claude-adapter.ts`'s `writeMcpConfig` and `codex-adapter.ts`'s analogous writer generate at session start. Both adapters need the entry — there is no shared layer above them today (the per-agent MCP writers were split out deliberately; see commit 598ade2d "Agent abstraction hairs: Phase 4 — per-agent MCP writers").
+2. The bridge is pure transport — no state, no validation. On each `present` tool call it POSTs to the session worker's `/agent-ops/present/submit` broker on `127.0.0.1:${WORKER_PORT}`, the same localhost surface the `gh` / `shipit` shims use.
+3. The worker injects the trusted `SESSION_ID`, persists the content (see "Server-side buffer" below), emits the `present_content` SSE event, and returns `{ presentId }` to the bridge, which relays it back over stdio as the MCP tool result.
+
+The tool description the agent sees must be explicit enough that Claude/Codex pick it over `Write` for ephemeral artifacts — roughly: *"Display a single self-contained artifact (HTML, SVG, markdown, image) to the user in the Present tab without writing to the workspace. Use this for charts, diagrams, mockups, and previews you do not want committed. For files the user wants to keep, use Write instead."*
+
+**Why MCP bridge, not a CLI shim?** The `present` payload is structured (content string + mimeType + optional replaceId) and the HTML/SVG content routinely contains characters that are awkward to pass through argv (`<`, `>`, `"`, newlines, NULs). MCP's JSON tool-call schema handles this natively; a shim would need stdin piping plus a parallel flag protocol.
+
+**The tool handler in the session worker** (`/agent-ops/present/submit`):
 1. Generates a `presentId` (nanoid)
-2. Emits `present_content` via SSE (with `replaceId` if provided)
-3. Returns `{ presentId, status: "presented" }` to the agent
+2. **Stores `{ content, mimeType, title }` in an in-memory map keyed by `presentId`** (see "Server-side buffer")
+3. Emits `present_content` via SSE (with `replaceId` if provided)
+4. Returns `{ presentId, status: "presented" }` through the bridge to the agent
+
+### Server-side buffer (load-bearing for "Save to project")
+
+The session worker keeps a `Map<presentId, { content, mimeType, title, createdAt }>` for the lifetime of the container. This is what lets the "Save to project" path copy the exact bytes the user saw — see the action description below for why agent-mediated save is not viable.
+
+Bounds: capped at the same ~20-entry LRU as the client-side list, plus a hard byte ceiling (e.g. 16 MB total) so a pathological agent can't OOM the worker. Eviction removes the entry from the map and broadcasts `present_cleared` with a `presentId` so the client drops only that one entry. When `presentId` is omitted (session switch, full clear) the client wipes the entire list. The container's `/tmp` lifetime already bounds this in the worst case.
 
 For images/SVG, the agent can pass inline content directly:
 ```
@@ -415,9 +424,9 @@ present({
   presentations: Array<{ presentId: string; content: string; mimeType: string; title?: string }>;
   activePresentIndex: number;
   ```
-  On `present_content`: if `replaceId` matches an existing entry, replace it; otherwise append and set as active. On `present_cleared` or session switch, clear the array.
+  On `present_content`: if `replaceId` matches an existing entry, replace it; otherwise append and set as active. On `present_cleared`: if `presentId` is set, drop just that entry (server-side LRU eviction); otherwise wipe the array (session switch, full clear).
 - **Right panel tabs** (`AppLayout.tsx`): add "Present" tab. Conditionally visible — only rendered when `presentations.length > 0`. Shows badge with count when not focused. Auto-switches to Present tab on first `present_content`.
-- **"Save to project" action**: Agent-mediated — sends a message like "save this presentation as `public/chart.html`". Agent writes the file to the workspace.
+- **"Save to project" action**: **Client-driven, not agent-mediated.** The button POSTs `{ presentId, destPath }` to a new `/api/sessions/:id/present/save` orchestrator route, which forwards to a worker endpoint that copies the buffered bytes (see "Server-side buffer") to the workspace path and lets the normal file watcher + auto-commit pipeline take it from there. Agent-mediated save was rejected because after context compaction, several turns, or a fresh agent run the model may no longer have the exact content in its context window — it would have to regenerate, potentially producing a different chart/diagram than the one the user saw and approved. Save must be byte-exact with what was displayed.
 
 ### Sandboxing
 
@@ -490,10 +499,14 @@ GET /present/:sessionId/:presentId/*  →  container GET /present-files/{present
 ## Key files (to be updated when implemented)
 
 ### Tier 1
-- `src/server/session/session-worker.ts` — `POST /present` endpoint (tool handler)
+- `src/server/session/mcp-present-bridge.ts` — **new stdio MCP server**, mirrors `mcp-review-bridge.ts` (docs/125)
+- `src/server/session/agents/claude-adapter.ts` — declare `present` MCP server in `writeMcpConfig`
+- `src/server/session/agents/codex-adapter.ts` — declare `present` MCP server in the codex MCP writer
+- `src/server/session/agent-ops-routes.ts` — `POST /agent-ops/present/submit` broker (matches the existing `gh` / `shipit` / `review` routes)
+- `src/server/session/session-worker.ts` — in-memory `presentBuffer` map, `POST /api/sessions/:id/present/save` worker route that copies bytes from the buffer to the workspace
+- `src/server/orchestrator/api-routes-session.ts` — `POST /api/sessions/:id/present/save` orchestrator route, forwards to the worker
 - `src/server/shared/types/ws-server-messages.ts` — `PresentContentMessage`, `PresentClearedMessage`
-- `src/server/session/agents/tool-map.ts` — register `present` tool
-- `src/server/shipit-docs/` — document `present` tool for the agent
+- `src/server/shipit-docs/` — document `present` tool semantics (when to use vs. `Write`)
 - `src/client/components/PresentPane.tsx` — **new component**, the Present tab
 - `src/client/stores/present-store.ts` — **new store**, presentation list + active index
 - `src/client/AppLayout.tsx` — add Present tab to right panel, conditional visibility
