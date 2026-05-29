@@ -35,7 +35,13 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsPermissionModes: true,
       supportedPermissionModes: CLAUDE_PERMISSION_MODES,
       toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-      models: ["sonnet", "opus", "haiku"],
+      // The bare names are CLI aliases that always resolve to the latest of
+      // the family ("opus" → newest Opus the installed CLI knows about).
+      // Explicit dated/versioned IDs are listed when a new model ships before
+      // the CLI's alias is bumped to point at it — the CLI forwards `--model`
+      // to the API as-is, so any API-recognized ID works even if the CLI's
+      // local alias table doesn't know about it yet.
+      models: ["sonnet", "opus", "haiku", "claude-opus-4-8"],
       supportsReview: true,
       supportsSteering: true,
       skillsDirName: ".claude",

@@ -55,7 +55,7 @@ export class ClaudeAdapter
       "Write", "Read", "Edit", "Bash", "Glob", "Grep",
       "WebFetch", "WebSearch", "AskUserQuestion",
     ],
-    models: ["sonnet", "opus", "haiku"],
+    models: ["sonnet", "opus", "haiku", "claude-opus-4-8"],
     // Claude Code has both a subagent primitive (the Task tool) and custom
     // MCP tool registration via mcpConfigPath, which 125 needs.
     supportsReview: true,

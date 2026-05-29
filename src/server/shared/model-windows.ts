@@ -39,6 +39,9 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "opus": 200_000,
   "claude-opus": 200_000,
   "claude-opus-4-7": 1_000_000,
+  // Opus 4.8 — assumed 1M context like 4.7 until the CLI's first `result`
+  // event reports the authoritative value via `modelUsage.contextWindow`.
+  "claude-opus-4-8": 1_000_000,
   "haiku": 200_000,
   "claude-haiku": 200_000,
   "opus-1m": 1_000_000,
