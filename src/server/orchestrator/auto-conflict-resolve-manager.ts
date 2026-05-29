@@ -284,7 +284,7 @@ export class AutoConflictResolveManager {
   async onRunnerIdle(sessionId: string): Promise<void> {
     const state = this.states.get(sessionId);
     // Cooldown-driven retry runs through handleTransition, not here.
-    if (!state || state.status !== "deferred") return;
+    if (state?.status !== "deferred") return;
     if (!this.isGlobalEnabled()) return;
 
     const mergeable = this.lastKnownMergeable.get(sessionId);
@@ -362,18 +362,32 @@ export class AutoConflictResolveManager {
       attempt,
     } as WsServerMessage);
 
-    cb(sessionId, baseBranch)
-      .then((result) => this.writeBack(sessionId, result, attempt))
-      .catch((err: unknown) => {
-        // Defensive: an unexpected crash from the wrapper most likely happened
-        // mid-attempt, so we count it. Better to over-count occasionally than
-        // to spin forever on a wrapper bug.
-        this.writeBack(
-          sessionId,
-          { outcome: "error", lastError: getErrorMessage(err), didWork: true },
-          attempt,
-        );
-      });
+    // Fire-and-forget: the callback drives an attempt that resolves
+    // asynchronously, and `writeBack` lands all terminal-state writes. The
+    // surrounding caller (`handleTransition` / `onRunnerIdle`) returns before
+    // the attempt finishes so the poll loop / idle event doesn't block.
+    void this.runAttempt(sessionId, baseBranch, attempt, cb);
+  }
+
+  private async runAttempt(
+    sessionId: string,
+    baseBranch: string,
+    attempt: number,
+    cb: RebaseAndResolveCb,
+  ): Promise<void> {
+    try {
+      const result = await cb(sessionId, baseBranch);
+      this.writeBack(sessionId, result, attempt);
+    } catch (err: unknown) {
+      // Defensive: an unexpected crash from the wrapper most likely happened
+      // mid-attempt, so we count it. Better to over-count occasionally than
+      // to spin forever on a wrapper bug.
+      this.writeBack(
+        sessionId,
+        { outcome: "error", lastError: getErrorMessage(err), didWork: true },
+        attempt,
+      );
+    }
   }
 
   /**
