@@ -910,6 +910,46 @@ export interface WsReviewUpdated {
 }
 
 /**
+ * Server → Client: the agent emitted a piece of self-contained content via the
+ * `present` MCP tool (docs/093). The content lives only in the message stream —
+ * no files were created in the workspace, so the user can save it explicitly
+ * or dismiss it without leaving stray bytes on disk.
+ *
+ * If `replaceId` is set and matches a previous presentation's `presentId`, the
+ * client replaces that entry in-place (revision flow); otherwise the entry is
+ * appended and auto-selected. Size of `content` is capped at ~1 MB worker-side.
+ */
+export interface WsPresentContentMessage {
+  type: "present_content";
+  sessionId: string;
+  /** Unique id for this presentation, returned to the agent as the tool result. */
+  presentId: string;
+  /** When set, replaces the entry with this id in-place. */
+  replaceId?: string;
+  /** The actual artifact — HTML string, SVG markup, markdown, or data URI for binaries. */
+  content: string;
+  /** "text/html", "image/svg+xml", "text/markdown", "image/png", etc. */
+  mimeType: string;
+  /** Optional display title for the carousel header. */
+  title?: string;
+  /** ISO8601 timestamp the worker accepted the presentation. */
+  createdAt: string;
+}
+
+/**
+ * Server → Client: drop one or all presentations (docs/093).
+ *
+ * `presentId` set → drop just that entry (used by the worker-side LRU when it
+ * evicts an old presentation). `presentId` omitted → wipe the whole list
+ * (session switch, full clear).
+ */
+export interface WsPresentClearedMessage {
+  type: "present_cleared";
+  sessionId: string;
+  presentId?: string;
+}
+
+/**
  * Server → Client: an agent review card was added to chat history (docs/151).
  *
  * Emitted when the chat-native review subagent finishes a review and writes
@@ -1017,4 +1057,6 @@ export type WsServerMessage =
   | WsRebaseAborted
   | WsReviewUpdated
   | WsAgentReviewAdded
+  | WsPresentContentMessage
+  | WsPresentClearedMessage
   | WsSubscriptionLimits;

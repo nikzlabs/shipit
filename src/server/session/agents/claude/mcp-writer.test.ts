@@ -42,6 +42,7 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
     const result = adapter.writeMcpConfig({
       servers,
       reviewBridge: bridge,
+      presentBridge: null,
       onServerFailed,
     });
     if (!result.mcpConfigPath) throw new Error("expected mcpConfigPath");
@@ -109,6 +110,7 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
     const result = adapter.writeMcpConfig({
       servers: [],
       reviewBridge,
+      presentBridge: null,
       onServerFailed,
     });
     expect(result.mcpConfigPath).toBeDefined();

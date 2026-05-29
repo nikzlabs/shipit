@@ -55,6 +55,7 @@ const EMPTY_TURN_USAGE: TurnUsage[] = [];
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { PrDetailPanel } from "./components/PrDetailPanel.js";
+import { PresentPane } from "./components/PresentPane.js";
 import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
@@ -65,6 +66,7 @@ import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
 import { useFileStore, markUploadDeleted } from "./stores/file-store.js";
 import { usePreviewStore } from "./stores/preview-store.js";
+import { usePresentStore } from "./stores/present-store.js";
 import { useTerminalStore } from "./stores/terminal-store.js";
 import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
@@ -144,6 +146,8 @@ export default function App() {
   const previewStatus = usePreviewStore((s) => s.status);
   const selectedPort = usePreviewStore((s) => s.selectedPort);
   const composeServices = usePreviewStore((s) => s.services);
+  const presentations = usePresentStore((s) => s.presentations);
+  const presentUnseenCount = usePresentStore((s) => s.unseenCount);
 
   const logEntries = useTerminalStore((s) => s.entries);
 
@@ -698,15 +702,29 @@ export default function App() {
   });
 
   const handleTabChange = useCallback(
-    (tab: "preview" | "docs" | "files" | "terminal" | "history" | "services" | "pr") => {
+    (tab: "preview" | "docs" | "files" | "terminal" | "history" | "services" | "pr" | "present") => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
       if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); }
       if (tab === "history" && sid) useGitStore.getState().fetchLog(sid).catch(() => {});
+      if (tab === "present") usePresentStore.getState().markSeen();
     },
     [],
   );
+
+  // docs/093 — auto-switch to the Present tab the first time an agent
+  // presentation arrives in this session. After the user has manually moved
+  // away, we don't yank them back; only the count-of-1 transition triggers.
+  // Reads `rightTab` via `getState()` so the dep array stays a single edge
+  // detector (`presentations.length`) rather than re-running on every tab flip.
+  // eslint-disable-next-line no-restricted-syntax -- one-shot UI focus
+  useEffect(() => {
+    if (presentations.length !== 1) return;
+    if (useUiStore.getState().rightTab === "present") return;
+    useUiStore.getState().setRightTab("present");
+    usePresentStore.getState().markSeen();
+  }, [presentations.length]);
 
   // docs/133 Phase 4: tell the server whether the PR tab is the active
   // right-panel tab for this session, so the poller fetches the heavier
@@ -967,6 +985,14 @@ export default function App() {
         {!isLocalMode && (
           <button onClick={() => handleTabChange("terminal")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "terminal" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Terminal</button>
         )}
+        {presentations.length > 0 && (
+          <button onClick={() => handleTabChange("present")} className={`px-3 sm:px-4 h-full inline-flex items-center gap-1.5 text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "present" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>
+            Present
+            {rightTab !== "present" && presentUnseenCount > 0 && (
+              <span className="inline-flex items-center justify-center min-w-[1.25rem] h-4 px-1 rounded-full bg-(--color-accent) text-(--color-accent-text) text-[10px] font-semibold leading-none">{presentUnseenCount}</span>
+            )}
+          </button>
+        )}
         <button onClick={() => handleTabChange("history")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "history" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>History</button>
         {hasPr && (
           <button onClick={() => handleTabChange("pr")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "pr" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>PR</button>
@@ -993,6 +1019,8 @@ export default function App() {
           <PrDetailPanel sessionId={wsSessionId} />
         ) : rightTab === "files" ? (
           <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
+        ) : rightTab === "present" ? (
+          <PresentPane isActiveTab={rightTab === "present"} />
         ) : null}
       </div>
     </>

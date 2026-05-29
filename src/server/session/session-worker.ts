@@ -19,12 +19,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import crypto from "node:crypto";
 import type {
   AgentProcess,
   AgentRunParams,
   AgentEvent,
   AgentId,
   AgentMcpReviewBridge,
+  AgentMcpPresentBridge,
   AgentMcpWriteResult,
   McpServerConfig,
 } from "./agents/agent-process.js";
@@ -44,6 +46,7 @@ import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
+import { PresentBuffer, PresentBufferError } from "./present-buffer.js";
 import {
   computeStoreKey,
   fastInstallDisabled,
@@ -141,6 +144,12 @@ export class SessionWorker extends EventEmitter {
   private _mcpInstallMutex = new Map<string, Promise<void>>();
   private static readonly MCP_INSTALLED_MARKER = "/tmp/mcp-installed.json";
 
+  // docs/093 — present tool buffer. Holds the bytes the agent emitted via
+  // `present` so the client can render them and "Save to project" can copy
+  // them into the workspace exactly as they were displayed. Bounded by entry
+  // count + total bytes (see PresentBuffer).
+  private readonly presentBuffer = new PresentBuffer();
+
   constructor(deps: SessionWorkerDeps) {
     super();
     this.agentFactory = deps.agentFactory;
@@ -182,6 +191,7 @@ export class SessionWorker extends EventEmitter {
     return agent.writeMcpConfig({
       servers: params?.mcpServers ?? [],
       reviewBridge: this.reviewBridgePaths(),
+      presentBridge: this.presentBridgePaths(),
       onServerFailed: (name, reason) => {
         this.broadcastSSE({
           type: "mcp_server_status",
@@ -202,6 +212,21 @@ export class SessionWorker extends EventEmitter {
     const sessionDir = path.dirname(fileURLToPath(import.meta.url));
     const bridgePath = path.join(sessionDir, "mcp-review-bridge.ts");
     // <root>/src/server/session → <root>/node_modules/.bin/tsx
+    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
+    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
+    return { tsxBin, bridgePath };
+  }
+
+  /**
+   * Resolve the absolute paths needed to launch the present MCP bridge
+   * (docs/093). Same lifecycle and graceful-degradation rules as the review
+   * bridge above — if the bridge or `tsx` is missing (e.g. a stripped-down
+   * test image), return null and the adapter omits the entry rather than
+   * failing agent start.
+   */
+  private presentBridgePaths(): AgentMcpPresentBridge | null {
+    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
+    const bridgePath = path.join(sessionDir, "mcp-present-bridge.ts");
     const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
     if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
     return { tsxBin, bridgePath };
@@ -604,6 +629,146 @@ export class SessionWorker extends EventEmitter {
         return { ok: false, error: resolved.error };
       }
       return testMcpServer(resolved.config);
+    });
+
+    this.registerPresentEndpoints(app);
+  }
+
+  // --- Present tool endpoints (docs/093) ---
+
+  /**
+   * Wire the two HTTP surfaces the `present` tool needs:
+   *
+   *  - `POST /agent-ops/present/submit` — receives the artifact from the
+   *    `mcp-present-bridge` subprocess (which runs as a child of the agent
+   *    CLI). Stores it in the buffer, broadcasts `present_content` over SSE,
+   *    and returns the new `presentId` to the bridge.
+   *  - `POST /present/save` — the orchestrator forwards the user's "Save to
+   *    project" click here. Copies the buffered bytes to the requested
+   *    workspace path. Path is checked to live under the workspace so a
+   *    crafted body can't escape with `..`.
+   *
+   * The submit route lives under `/agent-ops/*` to stay alongside the other
+   * shim brokers (review, gh, shipit). Save lives under `/present/*` because
+   * the orchestrator initiates it on the user's behalf, not the agent.
+   */
+  private registerPresentEndpoints(app: FastifyInstance): void {
+    app.post<{
+      Body: {
+        content?: string;
+        mimeType?: string;
+        title?: string;
+        replaceId?: string;
+      };
+    }>("/agent-ops/present/submit", async (request, reply) => {
+      const { content, mimeType, title, replaceId } = request.body ?? {};
+      if (typeof content !== "string" || content.length === 0) {
+        return reply.code(400).send({ error: "content is required and must be a string" });
+      }
+      const resolvedMime =
+        typeof mimeType === "string" && mimeType.length > 0 ? mimeType : "text/html";
+      const resolvedTitle =
+        typeof title === "string" && title.length > 0 ? title : undefined;
+      const resolvedReplaceId =
+        typeof replaceId === "string" && replaceId.length > 0 ? replaceId : undefined;
+      const sessionId = process.env.SESSION_ID ?? "";
+
+      const presentId = `pres_${crypto.randomUUID()}`;
+      let result: ReturnType<PresentBuffer["put"]>;
+      try {
+        result = this.presentBuffer.put(presentId, {
+          content,
+          mimeType: resolvedMime,
+          ...(resolvedTitle !== undefined ? { title: resolvedTitle } : {}),
+          ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
+        });
+      } catch (err) {
+        if (err instanceof PresentBufferError) {
+          return reply.code(413).send({ error: err.message });
+        }
+        return reply.code(500).send({ error: getErrorMessage(err) });
+      }
+
+      this.broadcastSSE({
+        type: "present_content",
+        data: {
+          sessionId,
+          presentId,
+          ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
+          content: result.entry.content,
+          mimeType: result.entry.mimeType,
+          ...(result.entry.title !== undefined ? { title: result.entry.title } : {}),
+          createdAt: result.entry.createdAt,
+        },
+      });
+
+      for (const evictedId of result.evicted) {
+        this.broadcastSSE({
+          type: "present_cleared",
+          data: { sessionId, presentId: evictedId },
+        });
+      }
+
+      return { presentId, status: "presented" };
+    });
+
+    app.post<{
+      Body: { presentId?: string; destPath?: string };
+    }>("/present/save", async (request, reply) => {
+      const { presentId, destPath } = request.body ?? {};
+      if (typeof presentId !== "string" || presentId.length === 0) {
+        return reply.code(400).send({ error: "presentId is required" });
+      }
+      if (typeof destPath !== "string" || destPath.length === 0) {
+        return reply.code(400).send({ error: "destPath is required" });
+      }
+      const entry = this.presentBuffer.get(presentId);
+      if (!entry) {
+        return reply.code(404).send({ error: "Presentation not found or already evicted" });
+      }
+
+      // Resolve the destination strictly inside the workspace. Reject any
+      // attempt to escape via leading `/`, `..`, or symlink-like games. The
+      // path is mounted by the user via the Save dialog, so a redirect to
+      // /etc/passwd would be a real footgun.
+      const workspaceRoot = path.resolve(this.workspaceDir);
+      const normalized = destPath.startsWith("/")
+        ? destPath.slice(1)
+        : destPath;
+      const absolutePath = path.resolve(workspaceRoot, normalized);
+      const inside = absolutePath === workspaceRoot
+        || absolutePath.startsWith(`${workspaceRoot}${path.sep}`);
+      if (!inside) {
+        return reply.code(400).send({
+          error: "destPath must resolve inside the workspace",
+        });
+      }
+
+      try {
+        await fsp.mkdir(path.dirname(absolutePath), { recursive: true });
+        // Binary content arrives as a data URI; decode it before writing so
+        // the saved file isn't a base64-encoded text blob.
+        if (entry.content.startsWith("data:")) {
+          const match = /^data:[^;]+;base64,(.+)$/.exec(entry.content);
+          if (match) {
+            await fsp.writeFile(absolutePath, Buffer.from(match[1], "base64"));
+          } else {
+            // Non-base64 data URI (rare): write the raw string after the comma.
+            const comma = entry.content.indexOf(",");
+            await fsp.writeFile(
+              absolutePath,
+              comma >= 0 ? entry.content.slice(comma + 1) : entry.content,
+            );
+          }
+        } else {
+          await fsp.writeFile(absolutePath, entry.content, "utf8");
+        }
+      } catch (err) {
+        return reply.code(500).send({ error: getErrorMessage(err) });
+      }
+
+      const relPath = path.relative(workspaceRoot, absolutePath);
+      return { ok: true, savedPath: relPath };
     });
   }
 

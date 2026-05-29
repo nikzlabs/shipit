@@ -23,7 +23,8 @@ type RightTab =
   | "terminal"
   | "history"
   | "services"
-  | "pr";
+  | "pr"
+  | "present";
 
 type MobilePanel = "chat" | "preview";
 

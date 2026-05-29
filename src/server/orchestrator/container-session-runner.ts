@@ -804,6 +804,23 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return workerPost(this.workerUrl, "/mcp/install", { packages });
   }
 
+  /**
+   * Save a buffered presentation to the workspace (docs/093). The worker
+   * owns the buffered bytes — this proxy keeps the orchestrator route thin
+   * and mirrors how `proxyMcpTest` reaches into the container.
+   */
+  async proxyPresentSave(
+    presentId: string,
+    destPath: string,
+  ): Promise<{ ok: boolean; savedPath?: string; error?: string }> {
+    await this._workerReady;
+    return workerPost(
+      this.workerUrl,
+      "/present/save",
+      { presentId, destPath },
+    ) as Promise<{ ok: boolean; savedPath?: string; error?: string }>;
+  }
+
   // --- Worker resource lifecycle ---
 
   /** Start file watcher on session worker. */
@@ -1203,6 +1220,46 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               reason: status.reason,
             } as WsServerMessage);
           }
+          break;
+        }
+
+        // --- Present tool events (docs/093) ---
+
+        case "present_content": {
+          const evt = data as {
+            presentId?: string;
+            replaceId?: string;
+            content?: string;
+            mimeType?: string;
+            title?: string;
+            createdAt?: string;
+          };
+          if (
+            typeof evt.presentId === "string"
+            && typeof evt.content === "string"
+            && typeof evt.mimeType === "string"
+          ) {
+            this.emitMessage({
+              type: "present_content",
+              sessionId: this.sessionId,
+              presentId: evt.presentId,
+              ...(evt.replaceId !== undefined ? { replaceId: evt.replaceId } : {}),
+              content: evt.content,
+              mimeType: evt.mimeType,
+              ...(evt.title !== undefined ? { title: evt.title } : {}),
+              createdAt: evt.createdAt ?? new Date().toISOString(),
+            });
+          }
+          break;
+        }
+
+        case "present_cleared": {
+          const evt = data as { presentId?: string };
+          this.emitMessage({
+            type: "present_cleared",
+            sessionId: this.sessionId,
+            ...(typeof evt.presentId === "string" ? { presentId: evt.presentId } : {}),
+          });
           break;
         }
 

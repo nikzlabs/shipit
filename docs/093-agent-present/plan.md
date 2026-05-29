@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 description: Let the agent display visual artifacts (HTML, SVG, charts, markdown) in a dedicated Present tab without spinning up a dev server or touching the workspace.
 ---
