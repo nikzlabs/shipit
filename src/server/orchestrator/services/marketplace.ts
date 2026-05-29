@@ -27,6 +27,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import simpleGit from "simple-git";
 import type { GitManager } from "../../shared/git.js";
+import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { frontmatterField, scanSkillsDir } from "../../shared/skill-scan.js";
 import type {
   AgentId,
@@ -347,16 +348,35 @@ export function targetSkillDirName(pluginName: string, skillName: string): strin
   return `${pluginName}__${skillName}`;
 }
 
-/** `.claude/skills/` on Claude. (Codex is v1b — see plan.) */
-export function skillsRootFor(workspaceDir: string, agentId: AgentId): string {
-  return agentId === "codex"
-    ? path.join(workspaceDir, ".codex", "skills")
-    : path.join(workspaceDir, ".claude", "skills");
+/**
+ * Workspace skills root for an agent — `.claude/skills/` on Claude,
+ * `.codex/skills/` on Codex. The dotfolder name comes from
+ * `AgentCapabilities.skillsDirName`; adding a backend means one entry in
+ * `AGENT_DEFS`, not a new branch here. Falls back to `.claude` if the
+ * registry doesn't know the agent (defensive; should not happen in normal
+ * runtime). (Codex install is v1b — see plan.) (docs/155)
+ */
+export function skillsRootFor(
+  workspaceDir: string,
+  agentId: AgentId,
+  agentRegistry: AgentRegistry,
+): string {
+  const skillsDirName = agentRegistry.get(agentId)?.capabilities.skillsDirName ?? ".claude";
+  return path.join(workspaceDir, skillsDirName, "skills");
 }
 
-/** `/foo:bar` on Claude, `$foo:bar` on Codex. */
-function invocationToken(agentId: AgentId, pluginName: string, skillName: string): string {
-  const prefix = agentId === "codex" ? "$" : "/";
+/**
+ * Token the user types in chat to invoke an installed skill — `/foo:bar` on
+ * Claude, `$foo:bar` on Codex. Prefix comes from
+ * `AgentCapabilities.skillInvocationPrefix`. (docs/155)
+ */
+function invocationToken(
+  agentId: AgentId,
+  pluginName: string,
+  skillName: string,
+  agentRegistry: AgentRegistry,
+): string {
+  const prefix = agentRegistry.get(agentId)?.capabilities.skillInvocationPrefix ?? "/";
   return `${prefix}${pluginName}:${skillName}`;
 }
 
@@ -390,8 +410,9 @@ export async function installPlugin(opts: {
   cacheRoot: string;
   store: MarketplaceStore;
   git: GitManager;
+  agentRegistry: AgentRegistry;
 }): Promise<InstallResult> {
-  const { workspaceDir, agentId, marketplaceId, pluginName, cacheRoot, store, git } = opts;
+  const { workspaceDir, agentId, marketplaceId, pluginName, cacheRoot, store, git, agentRegistry } = opts;
   if (agentId !== "claude") {
     throw new ServiceError(400, "v1 only supports Claude installs (Codex is v1b)");
   }
@@ -407,7 +428,7 @@ export async function installPlugin(opts: {
   const skills = await readPluginSkills(pluginRoot);
   if (skills.length === 0) throw new ServiceError(400, `Plugin ${pluginName} has no skills`);
 
-  const skillsRoot = skillsRootFor(workspaceDir, agentId);
+  const skillsRoot = skillsRootFor(workspaceDir, agentId, agentRegistry);
   await fs.mkdir(skillsRoot, { recursive: true });
 
   const pinnedSha = typeof raw.source === "object" && raw.source?.sha ? raw.source.sha : "head";
@@ -451,7 +472,7 @@ export async function installPlugin(opts: {
       path.relative(workspaceDir, targetSkillMd),
       path.relative(workspaceDir, path.join(targetDir, INSTALL_MARKER_FILENAME)),
     );
-    invocationTokens.push(invocationToken(agentId, pluginName, skill.name));
+    invocationTokens.push(invocationToken(agentId, pluginName, skill.name, agentRegistry));
   }
 
   const message = installedDirs.length === 1
@@ -527,10 +548,10 @@ export async function uninstallPlugin(opts: {
   marketplaceId: string;
   pluginName: string;
   git: GitManager;
+  agentRegistry: AgentRegistry;
 }): Promise<{ removed: string[]; commitHash: string | null }> {
-  const { workspaceDir, agentId, marketplaceId, pluginName, git } = opts;
-  const skillsRoot = skillsRootFor(workspaceDir, agentId);
-  const installed = await scanInstalledPlugins(workspaceDir, agentId);
+  const { workspaceDir, agentId, marketplaceId, pluginName, git, agentRegistry } = opts;
+  const installed = await scanInstalledPlugins(workspaceDir, agentId, agentRegistry);
   const matching = installed.filter(
     (p) => p.marketplaceId === marketplaceId && p.pluginName === pluginName,
   );
@@ -543,9 +564,6 @@ export async function uninstallPlugin(opts: {
     await fs.rm(entry.directory, { recursive: true, force: true });
     removedPaths.push(path.relative(workspaceDir, entry.directory));
   }
-  // Avoid the unused-var lint when uninstall is called against a Codex skill
-  // root that doesn't actually exist; this just keeps the path resolved.
-  void skillsRoot;
 
   const commitHash = await git.commitPaths(
     removedPaths,
@@ -565,8 +583,9 @@ export async function uninstallPlugin(opts: {
 export async function scanInstalledPlugins(
   workspaceDir: string,
   agentId: AgentId,
+  agentRegistry: AgentRegistry,
 ): Promise<InstalledPluginInfo[]> {
-  const skillsRoot = skillsRootFor(workspaceDir, agentId);
+  const skillsRoot = skillsRootFor(workspaceDir, agentId, agentRegistry);
   let entries;
   try {
     entries = await fs.readdir(skillsRoot, { withFileTypes: true });

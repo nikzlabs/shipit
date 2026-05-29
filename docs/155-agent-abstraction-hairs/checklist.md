@@ -5,20 +5,20 @@ items inside a phase can be done in any order.
 
 ## Phase 0 — Capability knobs
 
-- [ ] Add `skillsDirName` to `AgentCapabilities` and populate for claude/codex.
-- [ ] Add `skillInvocationPrefix` to `AgentCapabilities` and populate.
-- [ ] Replace hair 5 (`services/skills.ts:28` + `services/marketplace.ts:351`) with capability reads.
-- [ ] Replace hair 6 (`services/marketplace.ts:359` + `MessageInput.tsx:333`) with capability reads.
-- [ ] Promote `AUTH_ENV_KEYS` from private to a registry method `getAuthEnvKey(agentId)`.
-- [ ] Replace hair 1 (`services/settings.ts:167` + `index.ts:1361`) with the registry method.
+- [x] Add `skillsDirName` to `AgentCapabilities` and populate for claude/codex.
+- [x] Add `skillInvocationPrefix` to `AgentCapabilities` and populate.
+- [x] Replace hair 5 (`services/skills.ts:28` + `services/marketplace.ts:351`) with capability reads.
+- [x] Replace hair 6 (`services/marketplace.ts:359` + `MessageInput.tsx:333`) with capability reads.
+- [x] Promote `AUTH_ENV_KEYS` from private to a registry method `getAuthEnvKey(agentId)`.
+- [x] Replace hair 1 (`services/settings.ts:167` + `index.ts:1361`) with the registry method.
 
 ## Phase 1 — Dispatch tables
 
-- [ ] Build `limitsProviders: Map<AgentId, LimitsProvider>` at app-DI.
-- [ ] Replace hair 2 (`index.ts:453-460`) with a one-line map lookup.
-- [ ] Delete or update the misleading comment that says "single callback serves every backend."
-- [ ] Add an `onAuthRequired` per-agent hook table.
-- [ ] Replace hair 3 (`agent-listeners.ts:865`) with a hook lookup.
+- [x] Build `limitsProviders: Map<AgentId, LimitsProvider>` at app-DI.
+- [x] Replace hair 2 (`index.ts:453-460`) with a one-line map lookup.
+- [x] Delete or update the misleading comment that says "single callback serves every backend."
+- [x] Add an `onAuthRequired` per-agent hook table.
+- [x] Replace hair 3 (`agent-listeners.ts:865`) with a hook lookup.
 
 ## Phase 2 — `AgentAuthManager` interface
 

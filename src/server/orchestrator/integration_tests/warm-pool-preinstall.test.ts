@@ -32,6 +32,8 @@ class FakeAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess
     models: [] as string[],
     supportsReview: true,
     supportsSteering: false,
+    skillsDirName: ".claude",
+    skillInvocationPrefix: "/",
   };
   readonly isStreaming = false;
   run(_params: AgentRunParams): void { /* unused */ }

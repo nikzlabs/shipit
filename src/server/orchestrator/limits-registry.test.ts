@@ -27,6 +27,13 @@ class StubLimitsProvider implements LimitsProvider {
     this.snapshots.push(snapshot);
     return this;
   }
+
+  // `setRateLimits` is part of the LimitsProvider interface (docs/155), but
+  // these registry tests drive the snapshot through `fetch()` directly. The
+  // no-op is enough to satisfy the type contract.
+  setRateLimits(): void {
+    /* unused in registry-level tests */
+  }
 }
 
 function makeSnapshot(

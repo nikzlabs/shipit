@@ -37,7 +37,7 @@ export async function registerFileRoutes(
   app: FastifyInstance,
   deps: ApiDeps & { marketplaceStore?: MarketplaceStore },
 ): Promise<void> {
-  const { sessionManager, defaultAgentId, runnerRegistry, marketplaceStore } = deps;
+  const { sessionManager, defaultAgentId, runnerRegistry, marketplaceStore, agentRegistry } = deps;
   const cacheRoot = getCatalogCacheRoot(deps.stateDir ?? deps.workspaceDir);
 
   // GET /api/sessions/:id/files — file tree
@@ -158,7 +158,8 @@ export async function registerFileRoutes(
         : undefined;
       const agentId = session?.agentId ?? queryAgent ?? defaultAgentId;
 
-      const projectSkills = await listSkills(dir, agentId);
+      const skillsDirName = agentRegistry.get(agentId)?.capabilities.skillsDirName ?? ".claude";
+      const projectSkills = await listSkills(dir, skillsDirName);
       if (agentId !== "codex") {
         return { skills: projectSkills };
       }
@@ -334,7 +335,7 @@ export async function registerFileRoutes(
         if (!dir) return;
         const session = sessionManager.get(request.params.id);
         const agentId = session?.agentId ?? defaultAgentId;
-        const installed = await scanInstalledPlugins(dir, agentId);
+        const installed = await scanInstalledPlugins(dir, agentId, agentRegistry);
         return { plugins: installed };
       },
     );
@@ -380,6 +381,7 @@ export async function registerFileRoutes(
             cacheRoot,
             store: marketplaceStore,
             git,
+            agentRegistry,
           });
         });
 
@@ -455,6 +457,7 @@ export async function registerFileRoutes(
               marketplaceId: request.params.marketplaceId,
               pluginName: request.params.pluginName,
               git,
+              agentRegistry,
             });
           });
           // Force respawn so any persistent agent drops the removed skills.

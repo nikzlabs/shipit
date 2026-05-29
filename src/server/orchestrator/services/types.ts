@@ -28,6 +28,12 @@ export interface AgentInfo {
    * gate its agent-aware mode selector (e.g. only offer `guarded` when present).
    */
   supportedPermissionModes: PermissionMode[];
+  /**
+   * Character the composer types when the user picks a skill from the menu
+   * (`/` for Claude, `$` for Codex). Mirrors `AgentCapabilities.skillInvocationPrefix`
+   * over the wire so the client doesn't repeat the per-agent branch. (docs/155)
+   */
+  skillInvocationPrefix: string;
 }
 
 export interface GlobalSettings {

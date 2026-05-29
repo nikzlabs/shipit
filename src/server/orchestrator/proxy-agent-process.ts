@@ -71,6 +71,8 @@ export class ProxyAgentProcess extends EventEmitter<{
     // which is what the client uses to gate the AI review affordance.
     supportsReview: false,
     supportsSteering: false,
+    skillsDirName: ".claude",
+    skillInvocationPrefix: "/",
   };
 
   private runner: ProxyAgentRunner;

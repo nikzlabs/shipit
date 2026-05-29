@@ -760,6 +760,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       supportsReview: a.capabilities.supportsReview,
       supportsSteering: a.capabilities.supportsSteering,
       supportedPermissionModes: a.capabilities.supportedPermissionModes,
+      skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
     })),
   });
 
