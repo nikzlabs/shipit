@@ -20,6 +20,7 @@ import {
   CheckIcon,
   CaretRightIcon,
   CaretDownIcon,
+  XIcon,
 } from "@phosphor-icons/react";
 import {
   Dialog,
@@ -182,6 +183,15 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
                 ? <CheckIcon size={ICON_SIZE.XS} />
                 : <CopyIcon size={ICON_SIZE.XS} />}
               {copied ? "Copied" : "Copy"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onOpenChange(false)}
+              className="h-9 w-9 max-md:h-10 max-md:w-10"
+              aria-label="Close"
+            >
+              <XIcon size={ICON_SIZE.MD} weight="bold" />
             </Button>
           </div>
         </DialogHeader>
