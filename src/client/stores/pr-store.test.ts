@@ -3,7 +3,7 @@ import { usePrStore } from "./pr-store.js";
 import type { PrCardState } from "./pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
 
-function makeCard(phase: PrCardState["phase"]): PrCardState {
+function makeCard(phase: PrCardState["phase"], overrides: Partial<PrCardState> = {}): PrCardState {
   return {
     cardId: "pr-card-s1",
     phase,
@@ -16,6 +16,7 @@ function makeCard(phase: PrCardState["phase"]): PrCardState {
       insertions: 10,
       deletions: 5,
     },
+    ...overrides,
   };
 }
 
@@ -149,6 +150,89 @@ describe("pr-store", () => {
       } finally {
         globalThis.fetch = originalFetch;
       }
+    });
+
+    it("flips the toggle optimistically before the request resolves", async () => {
+      usePrStore.getState().updateCard("s1", makeCard("open", {
+        autoMerge: { enabled: false, mergeMethod: "squash" },
+      }));
+
+      let resolveFetch: ((value: Response) => void) | undefined;
+      const fetchPromise = new Promise<Response>((resolve) => { resolveFetch = resolve; });
+      globalThis.fetch = vi.fn(() => fetchPromise) as typeof fetch;
+
+      const togglePromise = usePrStore.getState().toggleAutoMerge("s1", true);
+
+      // Optimistic flip is visible before the fetch resolves.
+      expect(usePrStore.getState().autoMergeBySession.s1?.enabled).toBe(true);
+      expect(usePrStore.getState().cardBySession.s1?.autoMerge?.enabled).toBe(true);
+
+      resolveFetch!(new Response(
+        JSON.stringify({ enabled: true, mergeMethod: "squash" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ));
+      await togglePromise;
+
+      expect(usePrStore.getState().autoMergeBySession.s1?.enabled).toBe(true);
+      expect(usePrStore.getState().cardBySession.s1?.autoMerge?.enabled).toBe(true);
+    });
+
+    it("reverts the optimistic flip when the request fails", async () => {
+      usePrStore.getState().updateCard("s1", makeCard("open", {
+        autoMerge: { enabled: false, mergeMethod: "squash" },
+      }));
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: "boom" }),
+      }) as typeof fetch;
+
+      await usePrStore.getState().toggleAutoMerge("s1", true);
+
+      expect(usePrStore.getState().autoMergeBySession.s1?.enabled).toBe(false);
+      expect(usePrStore.getState().cardBySession.s1?.autoMerge?.enabled).toBe(false);
+    });
+  });
+
+  describe("toggleAutoFix", () => {
+    it("flips the toggle optimistically before the request resolves", async () => {
+      usePrStore.getState().updateCard("s1", makeCard("open", {
+        autoFix: { enabled: false, status: "idle", attemptCount: 0, maxAttempts: 3 },
+      }));
+
+      let resolveFetch: ((value: Response) => void) | undefined;
+      const fetchPromise = new Promise<Response>((resolve) => { resolveFetch = resolve; });
+      globalThis.fetch = vi.fn(() => fetchPromise) as typeof fetch;
+
+      const togglePromise = usePrStore.getState().toggleAutoFix("s1", true);
+
+      // Optimistic flip is visible before the fetch resolves.
+      expect(usePrStore.getState().cardBySession.s1?.autoFix?.enabled).toBe(true);
+
+      resolveFetch!(new Response(
+        JSON.stringify({ enabled: true, status: "idle", attemptCount: 0 }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ));
+      await togglePromise;
+
+      expect(usePrStore.getState().cardBySession.s1?.autoFix?.enabled).toBe(true);
+    });
+
+    it("reverts the optimistic flip when the request fails", async () => {
+      usePrStore.getState().updateCard("s1", makeCard("open", {
+        autoFix: { enabled: false, status: "idle", attemptCount: 0, maxAttempts: 3 },
+      }));
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: "boom" }),
+      }) as typeof fetch;
+
+      await usePrStore.getState().toggleAutoFix("s1", true);
+
+      expect(usePrStore.getState().cardBySession.s1?.autoFix?.enabled).toBe(false);
     });
   });
 
