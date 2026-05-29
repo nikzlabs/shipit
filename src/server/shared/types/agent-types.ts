@@ -387,6 +387,14 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   /** Kill the running process. */
   kill(): void;
   /**
+   * Change the resident process's permission mode mid-stream without a
+   * restart. Optional — only the streaming Claude path supports it via the
+   * CLI's `set_permission_mode` control_request (docs/138, docs/140). The
+   * one-shot PTY path doesn't need it because each turn spawns fresh with
+   * the requested mode; adapters without a control channel may omit it.
+   */
+  setPermissionMode?(mode: PermissionMode | undefined): void;
+  /**
    * Write whatever MCP configuration this CLI expects before the worker
    * calls `run()`. Each backend owns its own wire format (Claude:
    * `--mcp-config` JSON; Codex: `~/.codex/config.toml`; future Cursor:

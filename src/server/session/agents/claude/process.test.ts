@@ -1,9 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ClaudeProcess } from "./process.js";
+import { EventEmitter } from "node:events";
+import { ClaudeProcess, StreamingClaudeProcess } from "./process.js";
 
 // Mock node-pty
 vi.mock("node-pty", () => {
   return {
+    spawn: vi.fn(),
+  };
+});
+
+// Mock node:child_process.spawn so StreamingClaudeProcess never touches a real
+// process. The mock returns an EventEmitter with `stdin.write` captured so
+// tests can assert exactly what NDJSON the class wrote.
+vi.mock("node:child_process", async () => {
+  // `vi.importActual` is the vitest-blessed way to get the real module inside
+  // a mock factory — the inline import() type is required by its signature.
+  // eslint-disable-next-line no-restricted-syntax
+  const real = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...real,
     spawn: vi.fn(),
   };
 });
@@ -17,7 +32,32 @@ vi.mock("../../../shared/strip-ansi.js", () => {
 
 
 import * as pty from "node-pty";
+import * as childProcess from "node:child_process";
 const mockPtySpawn = vi.mocked(pty.spawn);
+const mockChildSpawn = vi.mocked(childProcess.spawn);
+
+/** Minimal ChildProcess fake — captures stdin writes and lets tests fire stdout/stderr/close. */
+function createMockChildProcess() {
+  const stdoutEmitter = new EventEmitter();
+  const stderrEmitter = new EventEmitter();
+  const stdinWrites: string[] = [];
+  const stdin = {
+    write: vi.fn((data: string) => {
+      stdinWrites.push(data);
+      return true;
+    }),
+    writable: true,
+    destroyed: false,
+    writableEnded: false,
+  };
+  const proc: any = new EventEmitter();
+  proc.stdout = stdoutEmitter;
+  proc.stderr = stderrEmitter;
+  proc.stdin = stdin;
+  proc.kill = vi.fn();
+  proc.stdinWrites = stdinWrites;
+  return proc;
+}
 
 /** Callback-based mock matching the IPty interface. */
 function createMockPty() {
@@ -640,6 +680,63 @@ describe("ClaudeProcess", () => {
 
       const watchdogLog = logs.find((l) => l.text.includes("No output from Claude CLI"));
       expect(watchdogLog).toBeUndefined();
+    });
+  });
+});
+
+describe("StreamingClaudeProcess", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe("setPermissionMode", () => {
+    it("writes a set_permission_mode control_request NDJSON line to stdin (docs/138)", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first" });
+
+      // Discard the initial user message write so we can assert on the
+      // control_request in isolation.
+      mockProc.stdinWrites.length = 0;
+
+      streaming.setPermissionMode("plan");
+      expect(mockProc.stdinWrites).toHaveLength(1);
+      const line = mockProc.stdinWrites[0];
+      expect(line.endsWith("\n")).toBe(true);
+      const parsed = JSON.parse(line) as {
+        type: string;
+        request_id: string;
+        request: { subtype: string; mode: string };
+      };
+      expect(parsed.type).toBe("control_request");
+      expect(parsed.request).toEqual({ subtype: "set_permission_mode", mode: "plan" });
+      expect(parsed.request_id).toMatch(/^set-mode-/);
+    });
+
+    it("passes the CLI mode string through verbatim (adapter does the ShipIt → CLI mapping)", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first" });
+      mockProc.stdinWrites.length = 0;
+
+      streaming.setPermissionMode("auto");
+      streaming.setPermissionMode("default");
+
+      expect(mockProc.stdinWrites).toHaveLength(2);
+      const modes = mockProc.stdinWrites.map((line: string) => {
+        const parsed = JSON.parse(line) as { request: { mode: string } };
+        return parsed.request.mode;
+      });
+      expect(modes).toEqual(["auto", "default"]);
     });
   });
 });
