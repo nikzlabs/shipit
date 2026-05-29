@@ -4,6 +4,8 @@ import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { stripAnsi } from "../shared/strip-ansi.js";
+import type { AgentAuthManager } from "./agent-auth-manager.js";
+import type { AgentId } from "../shared/types.js";
 
 /**
  * Regex patterns to detect OAuth/verification URLs in Claude CLI output.
@@ -243,7 +245,9 @@ function ensureOnboardingComplete(): void {
   }
 }
 
-export class AuthManager extends EventEmitter {
+export class AuthManager extends EventEmitter implements AgentAuthManager {
+  readonly agentId: AgentId = "claude";
+
   private proc: IPty | null = null;
   private _authenticated = false;
   private credentialsPollInterval: ReturnType<typeof setInterval> | null = null;
@@ -254,6 +258,28 @@ export class AuthManager extends EventEmitter {
 
   get authenticated(): boolean {
     return this._authenticated;
+  }
+
+  /**
+   * {@link AgentAuthManager} surface. Aliases the Claude-specific entry points
+   * so orchestrator code can drive every backend through one shape — see
+   * docs/155 Phase 2.
+   *
+   *   - `start()` → {@link startOAuthFlow}
+   *   - `cancel()` → {@link kill} (Claude has no separate cancel; killing the
+   *     PTY before completion is the abort path)
+   *   - `isConfigured()` → {@link checkCredentials}
+   */
+  start(): void {
+    this.startOAuthFlow();
+  }
+
+  cancel(): void {
+    this.kill();
+  }
+
+  isConfigured(): boolean {
+    return this.checkCredentials();
   }
 
   /**
@@ -450,9 +476,14 @@ export class AuthManager extends EventEmitter {
         console.log("[auth] Authentication successful");
         this._authenticated = true;
         this.emit("auth_complete");
+        // Normalized AgentAuthManager event — listeners that key off the
+        // agent-id map (limits-registry rearm, etc.) subscribe here so they
+        // don't have to know which backend's CLI just finished.
+        this.emit("complete");
       } else {
         console.log("[auth] Authentication may have failed (no credentials found)");
         this.emit("auth_failed");
+        this.emit("failed");
       }
     });
   }
@@ -534,11 +565,13 @@ export class AuthManager extends EventEmitter {
         this.clearCredentialsPoll();
         this.kill();
         this.emit("auth_complete");
+        this.emit("complete");
       } else if (attempts >= 60) {
         // Give up after 30 seconds (60 × 500ms)
         console.log("[auth] Credentials poll timed out — no credentials found in", CLAUDE_CONFIG_DIR);
         this.clearCredentialsPoll();
         this.emit("auth_failed");
+        this.emit("failed");
       }
     }, 500);
   }

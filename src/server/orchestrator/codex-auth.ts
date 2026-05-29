@@ -42,6 +42,8 @@ import {
   statSync,
 } from "node:fs";
 import { stripAnsi } from "../shared/strip-ansi.js";
+import type { AgentAuthManager } from "./agent-auth-manager.js";
+import type { AgentId } from "../shared/types.js";
 
 // ---- Public types ----
 
@@ -253,7 +255,9 @@ export interface CodexAuthManagerOptions {
   timeoutMs?: number;
 }
 
-export class CodexAuthManager extends EventEmitter {
+export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
+  readonly agentId: AgentId = "codex";
+
   private proc: ChildProcess | null = null;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private outputBuffer = "";
@@ -288,6 +292,25 @@ export class CodexAuthManager extends EventEmitter {
    */
   checkCredentials(): boolean {
     return this.checkAuthFile();
+  }
+
+  /**
+   * {@link AgentAuthManager} surface. Aliases the Codex-specific entry points
+   * so the orchestrator can drive every backend through one shape — see
+   * docs/155 Phase 2.
+   *
+   *   - `start()` → {@link startDeviceFlow}
+   *   - `isConfigured()` → {@link checkCredentials}
+   *
+   * `cancel()` and `kill()` already exist on this class with the right
+   * shape; the interface just requires them.
+   */
+  start(): void {
+    this.startDeviceFlow();
+  }
+
+  isConfigured(): boolean {
+    return this.checkCredentials();
   }
 
   /**
@@ -403,6 +426,7 @@ export class CodexAuthManager extends EventEmitter {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[codex-auth] Failed to spawn codex login:", msg);
       this.emit("codex_auth_failed", { reason: "error", message: msg } satisfies CodexAuthFailedEvent);
+      this.emit("failed");
       return;
     }
 
@@ -432,6 +456,11 @@ export class CodexAuthManager extends EventEmitter {
       if (code === 0 && this.checkCredentials()) {
         console.log("[codex-auth] Authentication successful");
         this.emit("codex_auth_complete");
+        // Normalized AgentAuthManager event — see the matching emit in
+        // `AuthManager`. The legacy event keeps the per-agent SSE wiring
+        // working; the normalized event lets the limits-registry map-loop
+        // subscribe without knowing the backend.
+        this.emit("complete");
         return;
       }
 
@@ -446,6 +475,7 @@ export class CodexAuthManager extends EventEmitter {
         reason: "error",
         message: code === 0 ? "credentials file not written" : `codex login exited with code ${code ?? "null"}`,
       } satisfies CodexAuthFailedEvent);
+      this.emit("failed");
     });
 
     // Hard ceiling — the device code itself expires after 15 minutes.
@@ -533,6 +563,7 @@ export class CodexAuthManager extends EventEmitter {
   private failOnce(reason: CodexAuthFailureReason, message?: string): void {
     if (!this.proc) return;
     this.emit("codex_auth_failed", { reason, message } satisfies CodexAuthFailedEvent);
+    this.emit("failed");
   }
 
   private killProc(): void {

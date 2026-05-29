@@ -22,11 +22,11 @@ items inside a phase can be done in any order.
 
 ## Phase 2 — `AgentAuthManager` interface
 
-- [ ] Sketch the interface (`start`, `cancel`, `isConfigured`, events: `pending`/`complete`/`failed`).
-- [ ] Retrofit `auth.ts` (Claude OAuth) to the interface.
-- [ ] Retrofit `codex-auth.ts` to the interface.
-- [ ] Replace the WS dispatch table's per-agent handlers with a `Map<AgentId, AgentAuthManager>` lookup.
-- [ ] STOP-GATE: if the interface ends up mostly `unknown`-typed, abort this phase rather than force a bad shape.
+- [x] Sketch the interface (`start`, `cancel`, `signOut`, `isConfigured`, `kill`, normalized `complete`/`failed` events). Per-agent shaped events (`auth_url`, `codex_auth_pending`) stay on the concrete classes — payloads differ across backends, lifting them would force `unknown`-typed events and trip the STOP-GATE.
+- [x] Retrofit `auth.ts` (Claude OAuth) to the interface — `start()`/`cancel()`/`isConfigured()` alias the Claude-specific entry points; `complete`/`failed` emit alongside the legacy `auth_complete`/`auth_failed` events.
+- [x] Retrofit `codex-auth.ts` to the interface — `start()` aliases `startDeviceFlow()`; `cancel()`/`kill()`/`signOut()` already match; `complete`/`failed` emit alongside the legacy `codex_auth_*` events.
+- [x] Replace the post-completion dispatch with a `Map<AgentId, AgentAuthManager>` lookup: limits-registry rearm in `index.ts`, shared post-completion bookkeeping in `wireEventHandlers` (`app-lifecycle.ts`), and the shutdown-hook `kill()` calls (`shutdown-manager.ts`).
+- [x] STOP-GATE held: interface has zero `unknown` types — typed lifecycle methods plus zero-payload normalized events. Per-agent SSE broadcasts stay on the concrete classes where the payload shapes diverge.
 
 ## Phase 3 — Per-agent run-params prep hooks
 

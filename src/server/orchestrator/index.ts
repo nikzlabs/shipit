@@ -35,6 +35,7 @@ import { readDockerMemoryStats } from "./docker-memory.js";
 import { ClaudeLimitsProvider, CodexLimitsProvider } from "./limits/index.js";
 import type { LimitsProvider } from "./limits/types.js";
 import { LimitsRegistry } from "./limits-registry.js";
+import type { AgentAuthManager } from "./agent-auth-manager.js";
 import {
   setupContainerManager,
   buildRunnerFactory,
@@ -372,9 +373,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // hook closes over.
   prStatusPollerRef.ref = prStatusPoller;
 
+  // docs/155 Phase 2 — every per-agent auth manager implements the shared
+  // `AgentAuthManager` interface so the orchestrator can drive lifecycle
+  // operations through this map instead of branching on agent id at every
+  // call site (shutdown kill(), limits-registry rearm, common
+  // post-completion bookkeeping in wireEventHandlers, …). Adding a backend
+  // with its own auth flow is one `set()` here plus a new class that
+  // implements the interface.
+  const authManagers = new Map<AgentId, AgentAuthManager>();
+  authManagers.set("claude", authManager);
+  authManagers.set("codex", codexAuthManager);
+
   // ---- Event wiring (deployment + auth) ----
   wireEventHandlers({
-    authManager, codexAuthManager, githubAuthManager, agentRegistry,
+    authManager, codexAuthManager, authManagers,
+    githubAuthManager, agentRegistry,
     providerAccountManager,
     sseBroadcast, credentialsDir, sessionManager,
   });
@@ -448,16 +461,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const limitsProviders = new Map<AgentId, LimitsProvider>();
   limitsProviders.set("claude", claudeLimitsProvider);
   limitsProviders.set("codex", codexLimitsProvider);
+
   const limitsRegistry = !isTestMode
     ? new LimitsRegistry({ providers: limitsProviders, sseBroadcast })
     : null;
   if (limitsRegistry) {
-    authManager.on("auth_complete", () => {
-      limitsRegistry.markAuthRefreshed("claude");
-    });
-    codexAuthManager.on("codex_auth_complete", () => {
-      limitsRegistry.markAuthRefreshed("codex");
-    });
+    // One subscription per backend, keyed off the auth-manager map built
+    // above. Adding a new agent picks this up for free. The normalized
+    // `complete` event fires alongside each backend's legacy
+    // `auth_complete` / `codex_auth_complete` emit so existing per-agent SSE
+    // wiring is untouched. (docs/155 Phase 2)
+    for (const [agentId, mgr] of authManagers) {
+      mgr.on("complete", () => {
+        limitsRegistry.markAuthRefreshed(agentId);
+      });
+    }
   }
 
   /**
@@ -1557,7 +1575,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
     claudeOAuthRefresherRef.ref?.stop();
   });
   registerShutdownHook(app, {
-    startupTimer, authManager, codexAuthManager, runnerRegistry,
+    startupTimer, authManagers, runnerRegistry,
     dockerProxyServer, containerManager, databaseManager,
   });
 

@@ -1,7 +1,7 @@
 import type { Server as HttpServer } from "node:http";
 import type { FastifyInstance } from "fastify";
-import type { AuthManager } from "./auth.js";
-import type { CodexAuthManager } from "./codex-auth.js";
+import type { AgentAuthManager } from "./agent-auth-manager.js";
+import type { AgentId } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { DatabaseManager } from "../shared/database.js";
@@ -11,8 +11,12 @@ import type { DatabaseManager } from "../shared/database.js";
 /** Dependencies for shutdown hook. */
 export interface ShutdownDeps {
   startupTimer: ReturnType<typeof setTimeout>;
-  authManager: AuthManager;
-  codexAuthManager: CodexAuthManager;
+  /**
+   * Every per-agent auth manager, keyed by agent id. The shutdown hook
+   * iterates this map so adding a new backend doesn't require an explicit
+   * `kill()` line here. (docs/155 Phase 2)
+   */
+  authManagers: Map<AgentId, AgentAuthManager>;
   runnerRegistry: SessionRunnerRegistry;
   dockerProxyServer: HttpServer | null;
   containerManager: SessionContainerManager | null;
@@ -28,8 +32,9 @@ export function registerShutdownHook(
 ): void {
   app.addHook("onClose", async () => {
     clearTimeout(shutdownDeps.startupTimer);
-    shutdownDeps.authManager.kill();
-    shutdownDeps.codexAuthManager.kill();
+    for (const mgr of shutdownDeps.authManagers.values()) {
+      mgr.kill();
+    }
     shutdownDeps.runnerRegistry.disposeAll();
     if (shutdownDeps.dockerProxyServer) {
       await new Promise<void>((resolve) => shutdownDeps.dockerProxyServer!.close(() => resolve()));
