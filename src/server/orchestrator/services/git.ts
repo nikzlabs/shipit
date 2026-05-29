@@ -71,11 +71,11 @@ export async function getTurnDiff(
   stats: { totalInsertions: number; totalDeletions: number; filesChanged: number };
 }> {
   const changedFiles = await git.diffNameStatus(fromCommit, toCommit);
-  const diffSummary = await git.diffSummary();
+  const diffSummary = await git.diffSummary(`${fromCommit}...${toCommit}`);
 
-  const statsMap = new Map<string, { insertions: number; deletions: number }>();
+  const statsMap = new Map<string, { insertions: number; deletions: number; binary: boolean }>();
   for (const f of diffSummary) {
-    statsMap.set(f.file, { insertions: f.insertions, deletions: f.deletions });
+    statsMap.set(f.file, { insertions: f.insertions, deletions: f.deletions, binary: f.binary });
   }
 
   const files: FileDiff[] = [];
@@ -83,8 +83,8 @@ export async function getTurnDiff(
   let totalDeletions = 0;
 
   for (const entry of changedFiles) {
-    const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0 };
-    const isBinary = stats.insertions === 0 && stats.deletions === 0 && entry.status !== "D";
+    const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0, binary: false };
+    const isBinary = stats.binary;
 
     let status: FileDiff["status"];
     switch (entry.status) {
@@ -156,9 +156,9 @@ export async function getDiffVsBranch(
   const changedFiles = await git.diffNameStatus(mergeBaseHash, "HEAD");
   const diffSummary = await git.diffSummary(`${mergeBaseHash}...HEAD`);
 
-  const statsMap = new Map<string, { insertions: number; deletions: number }>();
+  const statsMap = new Map<string, { insertions: number; deletions: number; binary: boolean }>();
   for (const f of diffSummary) {
-    statsMap.set(f.file, { insertions: f.insertions, deletions: f.deletions });
+    statsMap.set(f.file, { insertions: f.insertions, deletions: f.deletions, binary: f.binary });
   }
 
   const files: FileDiff[] = [];
@@ -166,8 +166,8 @@ export async function getDiffVsBranch(
   let totalDeletions = 0;
 
   for (const entry of changedFiles) {
-    const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0 };
-    const isBinary = stats.insertions === 0 && stats.deletions === 0 && entry.status !== "D";
+    const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0, binary: false };
+    const isBinary = stats.binary;
 
     let status: FileDiff["status"];
     switch (entry.status) {
