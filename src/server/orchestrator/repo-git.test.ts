@@ -89,3 +89,57 @@ describe("ensureBareCache", () => {
     expect(fs.existsSync(markerPath)).toBe(true);
   });
 });
+
+/** Append a commit to the seed working clone and push it to the remote. */
+function advanceRemote(seedDir: string, remoteUrl: string, content: string): string {
+  fs.writeFileSync(path.join(seedDir, "README.md"), content);
+  execSync("git add . && git commit -m advance --no-gpg-sign", { cwd: seedDir, stdio: "ignore" });
+  // seed was the clone SOURCE for remote.git, so it has no remote configured.
+  execSync(`git push ${remoteUrl} HEAD:main --force`, { cwd: seedDir, stdio: "ignore" });
+  return execSync("git rev-parse HEAD", { cwd: seedDir }).toString().trim();
+}
+
+describe("RepoGit bare-cache fetch advances HEAD", () => {
+  it("fetchCache moves the bare cache HEAD when the remote advances", async () => {
+    // Regression for docs/157: `git clone --bare` configures no fetch
+    // refspec, so `git fetch --all` only writes FETCH_HEAD and the cache's
+    // HEAD (→ refs/heads/main) stays frozen at clone time forever. Every
+    // --local clone then branches from that stale snapshot.
+    const seedDir = path.join(tmpDir, "seed");
+    const cacheDir = path.join(tmpDir, "cache-advance");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+
+    const headBefore = await cacheGit.readHead();
+
+    const remoteHead = advanceRemote(seedDir, remoteUrl, "# advanced\n");
+    expect(remoteHead).not.toBe(headBefore);
+
+    // ttlMs=0 bypasses the 60s freshness guard so the fetch always runs.
+    await cacheGit.fetchCache(0);
+
+    const headAfter = await cacheGit.readHead();
+    expect(headAfter).toBe(remoteHead);
+    expect(headAfter).not.toBe(headBefore);
+  });
+
+  it("a fresh --local clone from the cache sees the advanced commit", async () => {
+    const seedDir = path.join(tmpDir, "seed");
+    const cacheDir = path.join(tmpDir, "cache-clone");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+
+    const remoteHead = advanceRemote(seedDir, remoteUrl, "# advanced again\n");
+    await cacheGit.fetchCache(0);
+
+    const workspaceDir = path.join(tmpDir, "workspace");
+    await cacheGit.cloneFromCache(workspaceDir, remoteUrl);
+
+    const cloneOriginHead = execSync("git rev-parse origin/main", { cwd: workspaceDir })
+      .toString()
+      .trim();
+    expect(cloneOriginHead).toBe(remoteHead);
+  });
+});
