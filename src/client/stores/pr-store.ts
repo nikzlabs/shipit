@@ -302,6 +302,38 @@ export const usePrStore = create<PrState>((set, get) => ({
   },
 
   toggleAutoFix: async (sessionId, enabled) => {
+    // The server may run a CI fix synchronously when enabling, so the POST can
+    // take several seconds. Flip the card optimistically so the toggle feels
+    // instant; revert on failure; reconcile from the server's authoritative
+    // {enabled, status, attemptCount} on success.
+    const prevAutoFix = get().cardBySession[sessionId]?.autoFix;
+
+    set((state) => {
+      const existing = state.cardBySession[sessionId];
+      if (!existing) return state;
+      const base = existing.autoFix
+        ?? { enabled: false, status: "idle" as const, attemptCount: 0, maxAttempts: 3 };
+      return {
+        cardBySession: {
+          ...state.cardBySession,
+          [sessionId]: { ...existing, autoFix: { ...base, enabled } },
+        },
+      };
+    });
+
+    const revert = () => {
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        if (!existing) return state;
+        return {
+          cardBySession: {
+            ...state.cardBySession,
+            [sessionId]: { ...existing, autoFix: prevAutoFix },
+          },
+        };
+      });
+    };
+
     try {
       const res = await fetch(`/api/sessions/${sessionId}/pr/auto-fix`, {
         method: "POST",
@@ -312,12 +344,39 @@ export const usePrStore = create<PrState>((set, get) => ({
         body: JSON.stringify({ enabled }),
       });
       if (!res.ok) {
-        const data = await res.json() as { error?: string };
+        const data = await res.json().catch(() => ({})) as { error?: string };
         console.error("[pr-store] Auto-fix toggle failed:", data.error);
+        revert();
+        return;
       }
-      // State updates come from SSE, not from the POST response
+      const data = await res.json() as {
+        enabled: boolean;
+        status: "idle" | "running" | "exhausted";
+        attemptCount: number;
+      };
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        if (!existing) return state;
+        const base = existing.autoFix
+          ?? { enabled: false, status: "idle" as const, attemptCount: 0, maxAttempts: 3 };
+        return {
+          cardBySession: {
+            ...state.cardBySession,
+            [sessionId]: {
+              ...existing,
+              autoFix: {
+                ...base,
+                enabled: data.enabled,
+                status: data.status,
+                attemptCount: data.attemptCount,
+              },
+            },
+          },
+        };
+      });
     } catch (err) {
       console.error("[pr-store] Auto-fix toggle failed:", err);
+      revert();
     }
   },
 
