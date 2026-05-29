@@ -7,7 +7,17 @@ import type { PrCardState } from "../stores/pr-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
-import type { PrMergeableState } from "../../server/shared/types.js";
+import type { PrMergeableState, SessionInfo } from "../../server/shared/types.js";
+
+function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionInfo {
+  return {
+    title: overrides.id,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    lastUsedAt: "2026-01-01T00:00:00.000Z",
+    remoteUrl: "https://github.com/o/r.git",
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   usePrStore.setState({
@@ -19,7 +29,7 @@ beforeEach(() => {
   // Without this, leftover state from a prior test (e.g. rebaseStatus = "in_progress")
   // would suppress the conflict UI and produce confusing test failures.
   useGitStore.getState().reset();
-  useSessionStore.setState({ activeRunnerSessions: new Set<string>(), isLoading: false, activity: undefined });
+  useSessionStore.setState({ activeRunnerSessions: new Set<string>(), isLoading: false, activity: undefined, sessions: [] });
   useCommentStore.setState({ commentsBySession: {} });
 });
 
@@ -162,6 +172,92 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Create PR")).toBeNull();
   });
 
+  it("shows the session title (not the branch slug) in the ready phase", () => {
+    useSessionStore.setState({
+      sessions: [makeSession({ id: "s1", title: "Add user authentication" })],
+    });
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      headBranch: "shipit/pr-panel-pf_7ol",
+      totalInsertions: 12,
+      totalDeletions: 3,
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    expect(screen.getByText("Add user authentication")).toBeInTheDocument();
+    expect(screen.queryByText("shipit/pr-panel-pf_7ol")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the first user message when the title is still the pre-graduation placeholder", () => {
+    useSessionStore.setState({
+      sessions: [makeSession({ id: "s1", title: "New session" })],
+      messages: [{ role: "user", text: "wire up dark mode toggle in the header" }],
+    });
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      headBranch: "shipit/new-work",
+      totalInsertions: 1,
+      totalDeletions: 0,
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    expect(screen.getByText("wire up dark mode toggle in the header")).toBeInTheDocument();
+    // Never fall back to the branch slug — that would be noise.
+    expect(screen.queryByText("shipit/new-work")).not.toBeInTheDocument();
+  });
+
+  it("never shows the branch slug as the pre-PR label, even when title and messages are both empty", () => {
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      headBranch: "shipit/new-work",
+      totalInsertions: 1,
+      totalDeletions: 0,
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    expect(screen.queryByText("shipit/new-work")).not.toBeInTheDocument();
+  });
+
+  it("exposes Copy branch name in the overflow menu with a tooltip showing the actual branch", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      headBranch: "shipit/copy-target",
+      totalInsertions: 1,
+      totalDeletions: 0,
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+    await user.click(screen.getByLabelText("Session actions"));
+
+    const item = screen.getByRole("menuitem", { name: "Copy branch name" });
+    expect(item).toBeInTheDocument();
+    expect(item).toHaveAttribute("title", "Copy shipit/copy-target");
+
+    await user.click(item);
+    expect(writeText).toHaveBeenCalledWith("shipit/copy-target");
+  });
+
+  it("hides the Copy branch name menu item when no branch is known", async () => {
+    const user = userEvent.setup();
+    render(<PrLifecycleCard sessionId="no-card" onSearch={vi.fn()} />);
+    await user.click(screen.getByLabelText("Session actions"));
+    expect(screen.queryByRole("menuitem", { name: "Copy branch name" })).toBeNull();
+  });
+
   it("keeps ready phase create button idle while a normal agent turn is running", () => {
     useSessionStore.setState({ isLoading: true, activity: { label: "Thinking..." } });
     setCard("s1", {
@@ -218,13 +314,13 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" />);
 
     // PR title replaces the "base ← head" branch label when a PR exists.
-    // Branch name remains accessible via the button's aria-label (and is
-    // copied to clipboard on click).
+    // Branch name no longer has an inline copy affordance — it moved to the
+    // overflow menu's "Copy branch name" item (see test below).
     expect(screen.getByText("Add feature")).toBeInTheDocument();
     expect(screen.queryByText("feature-branch")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Copy branch name feature-branch/i }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: /Copy branch name feature-branch/i }),
+    ).not.toBeInTheDocument();
     expect(screen.getByTitle("PR #42")).toBeInTheDocument();
     expect(screen.getByText(/CI/)).toBeInTheDocument();
   });
