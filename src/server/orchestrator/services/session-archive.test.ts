@@ -104,6 +104,62 @@ describe("archiveSession container teardown", () => {
     expect(fs.existsSync(workspaceDir)).toBe(false);
   });
 
+  it("cascades to child sessions when archiving a parent", async () => {
+    const parentWs = path.join(tmpDir, "parent-ws");
+    const parentId = makeSession(parentWs);
+    // Swap the default sess-1 id by making children with explicit ids.
+    const childWs = path.join(tmpDir, "child-ws");
+    const grandchildWs = path.join(tmpDir, "grandchild-ws");
+    fs.mkdirSync(childWs, { recursive: true });
+    fs.mkdirSync(grandchildWs, { recursive: true });
+
+    const childId = "child-1";
+    sessionManager.track(childId, "Child", childWs);
+    sessionManager.setRemoteUrl(childId, remoteUrl);
+    sessionManager.setParentSession(childId, parentId);
+
+    const grandchildId = "grandchild-1";
+    sessionManager.track(grandchildId, "Grandchild", grandchildWs);
+    sessionManager.setRemoteUrl(grandchildId, remoteUrl);
+    sessionManager.setParentSession(grandchildId, childId);
+
+    await archiveSession(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      parentId,
+    );
+
+    expect(sessionManager.get(parentId)?.archived).toBe(true);
+    expect(sessionManager.get(childId)?.archived).toBe(true);
+    expect(sessionManager.get(grandchildId)?.archived).toBe(true);
+    expect(fs.existsSync(parentWs)).toBe(false);
+    expect(fs.existsSync(childWs)).toBe(false);
+    expect(fs.existsSync(grandchildWs)).toBe(false);
+  });
+
+  it("archiving a child does not affect its parent", async () => {
+    const parentWs = path.join(tmpDir, "parent-ws");
+    const parentId = makeSession(parentWs);
+    const childWs = path.join(tmpDir, "child-ws");
+    fs.mkdirSync(childWs, { recursive: true });
+    const childId = "child-only";
+    sessionManager.track(childId, "Child", childWs);
+    sessionManager.setRemoteUrl(childId, remoteUrl);
+    sessionManager.setParentSession(childId, parentId);
+
+    await archiveSession(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      childId,
+    );
+
+    expect(sessionManager.get(childId)?.archived).toBe(true);
+    expect(sessionManager.get(parentId)?.archived).toBeFalsy();
+    expect(fs.existsSync(parentWs)).toBe(true);
+  });
+
   it("does not abort archive if container destroy throws", async () => {
     const workspaceDir = path.join(tmpDir, "ws");
     const sessionId = makeSession(workspaceDir);

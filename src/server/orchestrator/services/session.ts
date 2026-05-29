@@ -253,6 +253,24 @@ export async function archiveSession(
   pruneVolumes?: (sessionId: string) => Promise<void>,
   containerManager?: { destroy(sessionId: string): Promise<void> } | null,
 ): Promise<{ sessions: SessionInfo[] }> {
+  // Cascade to children first. A spawned child is an independent session
+  // (own workspace, branch, container) but it references the parent via
+  // `parent_session_id`; leaving children alive after the parent disappears
+  // strands them with a broken breadcrumb. Recursing through `archiveSession`
+  // means grandchildren are handled by the same path. Children are otherwise
+  // never archived automatically (see `markMergedAndPruneExcess`) — they only
+  // go away via explicit action on the child, or this cascade from the parent.
+  for (const child of sessionManager.findChildren(sessionId)) {
+    await archiveSession(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      child.id,
+      pruneVolumes,
+      containerManager,
+    );
+  }
+
   const session = sessionManager.get(sessionId);
 
   // Signal the compose-stop hook (in app-lifecycle.ts's setupServiceManager
@@ -396,14 +414,20 @@ export async function markMergedAndPruneExcess(
   // restart's disk-janitor pass.
   const toArchive = merged.slice(MAX_MERGED_SESSIONS_PER_REPO);
   for (const excess of toArchive) {
-    // Skip sessions with live (non-archived) child sessions. Archiving a
+    // Child sessions are never auto-archived. The user explicitly archives
+    // them (or archives the parent, which cascades through `archiveSession`).
+    // Auto-archiving a child would orphan it from the parent's spawn-card
+    // breadcrumb without any user-visible signal.
+    if (excess.parentSessionId) {
+      continue;
+    }
+    // Skip parents with live (non-archived) child sessions. Archiving a
     // parent disposes its runner, removes its workspace, and drops its
-    // volumes — but the children are independent sessions whose users may
-    // still be working in them, and they reference the parent via
-    // `parent_session_id`. Leaving the parent alive keeps the breadcrumb
-    // intact until the user explicitly archives it (which still works via
-    // the UI / DELETE route — this guard only fires on the automatic
-    // post-merge prune).
+    // volumes — and cascades to its children. The children are independent
+    // sessions whose users may still be working in them, so we keep the
+    // parent alive (preserving the breadcrumb) until the user explicitly
+    // archives it (which still works via the UI / DELETE route — this guard
+    // only fires on the automatic post-merge prune).
     if (sessionManager.findChildren(excess.id).length > 0) {
       continue;
     }
