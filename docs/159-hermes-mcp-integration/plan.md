@@ -96,89 +96,41 @@ Tailscale `*.ts.net` hostnames work from inside ShipIt session containers withou
 Settings → Instructions → **"Your Instructions"**. Append the block below. Replace `hermes` with the name you used in Step 2.
 
 ```text
-## Personal notification: end-of-turn summary
+## End-of-turn notification
 
-You have access to an MCP tool called `hermes__notify_turn_end`. Call it
-exactly once at the end of every turn, immediately before you stop producing
-output.
+Call `hermes__notify_turn_end` exactly once at the end of every turn, before
+you stop producing output. This is how the user gets notified you've
+finished — don't skip it. If the tool fails, try once and mention it in your
+final reply.
 
-This is how the user gets notified that you've finished. If you don't call
-it, they don't know. Don't skip it.
+Args:
+- `voiceSummary` (required string): one or two natural-English sentences
+  written for SPOKEN delivery. No markdown, no code, no file paths, no commit
+  hashes, no PR numbers. When there's no PR, make the summary self-
+  identifying — lead with a noun phrase about what you worked on so the user
+  knows the topic from the voice alone.
+    GOOD: "Done — added the post-turn webhook and pushed it up."
+    GOOD: "Stuck on a type error in the settings panel — mind taking a look?"
+    BAD : "Updated agent-execution.ts:451, ran typecheck ✓"
+- `needsAttention` (required boolean): true when blocked on the user
+  (question, error, decision needed). False when they can read the diff at
+  leisure.
+- `context` (optional): display-only metadata, not voiced verbatim. Include
+  `repo`, `prUrl`, `prTitle` when known — `prTitle` is high-value (becomes
+  the link label in text channels and the voice intro). If a PR exists and
+  you don't already know its title+URL, run `gh pr view --json url,title`
+  once. Leave `sessionName` unset (reserved).
 
-### When to call it
-
-- At the natural end of every turn, after the work for that turn is done and
-  any auto-commit has happened.
-- BEFORE you stop producing output. Once you stop, you cannot call it.
-- If you are asking the user a question and waiting for an answer, call it
-  with `needsAttention: true` so they know you're blocked.
-- If you hit an error and have to give up, call it with `needsAttention: true`
-  and a summary that explains what went wrong.
-
-### What to pass
-
-- `voiceSummary` (required, string): one or two sentences for SPOKEN
-  delivery. Natural English. No markdown, no code, no file paths, no commit
-  hashes, no PR numbers. Examples:
-    GOOD: "Finished the post-turn webhook and pushed it up."
-    GOOD: "Hit a type error in the settings panel I can't resolve — mind
-           taking a look?"
-    BAD : "Updated `agent-execution.ts:451`, ran `npm run typecheck`. ✓"
-    BAD : "Created PR #142 with commit abc1234."
-
-- `needsAttention` (required, boolean): true if you're blocked on the user
-  (asked a question, errored, need a decision). False if you finished the
-  requested work and they can read the diff at their leisure.
-
-- `context` (optional object): DISPLAY-ONLY metadata. Not voiced verbatim —
-  used to render links in text channels and (for `prTitle`/`sessionName`) as
-  a short voice intro before the summary. Include whichever you know:
-    - `repo` (string): short repo identifier, e.g. "shipit".
-    - `prUrl` (string): full pull-request URL.
-    - `prTitle` (string): pull-request title. HIGH VALUE — used as the
-      link label in text channels AND as the voice intro. Always include
-      when a PR exists.
-    - `sessionName` (string): the ShipIt session name. Reserved — ShipIt
-      doesn't expose this to the agent yet, leave unset.
-
-  If a PR exists for the current branch and you don't already know its title
-  and URL, run `gh pr view --json url,title` once before calling
-  notify_turn_end.
-
-### Examples
-
-After finishing a feature, with a PR:
+Example:
   hermes__notify_turn_end({
-    voiceSummary: "Done — added the post-turn webhook and pushed it up.",
+    voiceSummary: "Done — added the webhook and pushed it up.",
     needsAttention: false,
     context: {
       repo: "shipit",
-      prUrl: "https://github.com/owner/shipit/pull/123",
+      prUrl: "https://github.com/owner/repo/pull/123",
       prTitle: "Add post-turn webhook"
     }
   })
-
-After hitting a blocker, with a PR:
-  hermes__notify_turn_end({
-    voiceSummary: "Stuck — the migration needs a column I don't know how to name. Mind taking a look?",
-    needsAttention: true,
-    context: {
-      repo: "shipit",
-      prUrl: "https://github.com/owner/shipit/pull/123",
-      prTitle: "Add post-turn webhook"
-    }
-  })
-
-After answering a question, no code changes, no PR yet:
-  hermes__notify_turn_end({
-    voiceSummary: "Answered your question about the session lifecycle, no code changes.",
-    needsAttention: false,
-    context: { repo: "shipit" }
-  })
-
-If the tool is unavailable (connection error, server down), try once and
-move on. Don't retry in a loop. Mention the failure in your final reply so
-the user knows.
 ```
 
 The tool name follows Claude Code's MCP convention: `<server-name>__<tool-name>`. The prefix must match the Name from Step 2.
