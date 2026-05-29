@@ -23,6 +23,7 @@ import type {
   SystemTurnDeps,
   AgentDispatchOptions,
 } from "./session-runner.js";
+import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 
 /**
  * Run a single dispatched agent turn against the given runner.
@@ -94,7 +95,18 @@ export async function runDispatchedTurn(
       const summary =
         runner.turnSummary.split("\n")[0]?.slice(0, 120) || activity || "agent turn";
       const result = await deps.autoCommit(runner.sessionDir, summary);
-      if (result) {
+      if (result.conflictedFiles.length > 0 || result.rebaseInProgress) {
+        runner.emitMessage({
+          type: "system_notice",
+          sessionId: runner.sessionId,
+          level: "warn",
+          message: formatUnresolvedConflictNotice({
+            conflictedFiles: result.conflictedFiles,
+            rebaseInProgress: result.rebaseInProgress,
+          }),
+        });
+      }
+      if (result.commitHash) {
         commitHash = result.commitHash;
         runner.emitMessage({ type: "git_committed", hash: result.commitHash, message: summary });
         deps.scheduleAutoPush(runner.sessionDir);

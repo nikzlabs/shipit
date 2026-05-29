@@ -61,7 +61,7 @@ describe("GitManager: getCurrentBranch + global git config", () => {
     await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "file.txt"), "content");
-    const hash = await git.autoCommit("Test commit");
-    expect(hash).toBeTruthy();
+    const { commitHash } = await git.autoCommit("Test commit");
+    expect(commitHash).toBeTruthy();
   });
 });

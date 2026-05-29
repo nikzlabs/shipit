@@ -26,6 +26,26 @@ export type RebaseResult =
   | { status: "clean" }
   | { status: "conflicts"; conflicts: RebaseConflictFile[] };
 
+export interface AutoCommitResult {
+  /** New commit hash, or null when nothing was committed. */
+  commitHash: string | null;
+  /**
+   * Paths git reports as unmerged (`status.conflicted`). Non-empty during a
+   * merge or rebase with unresolved paths. When non-empty, no commit was
+   * made — the agent must finish resolving first.
+   */
+  conflictedFiles: string[];
+  /**
+   * True when a `.git/rebase-merge` or `.git/rebase-apply` directory exists
+   * — i.e. a rebase is mid-flight. When true, no commit was made even if
+   * `conflictedFiles` is empty (e.g. all conflicts have been staged but
+   * `git rebase --continue` hasn't been called yet). We deliberately rely on
+   * git's own state here instead of scanning file contents, so test files
+   * and docs that happen to contain marker-shaped text commit normally.
+   */
+  rebaseInProgress: boolean;
+}
+
 export class GitManager {
   private git: SimpleGit;
 
@@ -64,23 +84,42 @@ export class GitManager {
   }
 
   /**
-   * Stage all changes and commit. Returns the commit hash, or null
-   * if there was nothing to commit.
+   * Stage all working-tree changes and commit. Refuses the entire commit if
+   * git reports unmerged paths or a rebase is mid-flight — committing in
+   * that state would freeze a half-resolved merge/rebase onto the branch
+   * (the post-turn auto-push then publishes it). The agent has to finish
+   * resolving first; the next turn will commit the whole working tree
+   * atomically.
+   *
+   * We trust git's own conflict state (`status.conflicted` +
+   * `isRebaseInProgress`) rather than scanning file contents for marker
+   * strings. That avoids false positives on legitimate code that mentions
+   * `<<<<<<<` etc. (test fixtures, docs, this very codebase).
    */
-  async autoCommit(summary: string): Promise<string | null> {
-    // Check for changes before staging — skip entirely if nothing changed
+  async autoCommit(summary: string): Promise<AutoCommitResult> {
     const status = await this.git.status();
-    if (status.isClean()) {
-      return null;
+    const rebaseInProgress = await this.isRebaseInProgress();
+    const conflictedFiles = [...status.conflicted];
+
+    if (conflictedFiles.length > 0 || rebaseInProgress) {
+      console.warn(
+        "[git] autoCommit refused — git reports unresolved conflict state:",
+        rebaseInProgress ? "rebase in progress;" : "",
+        conflictedFiles.length > 0 ? `unmerged paths: ${conflictedFiles.join(", ")}` : "",
+      );
+      return { commitHash: null, conflictedFiles, rebaseInProgress };
     }
 
-    // Stage everything (new, modified, deleted) and commit
+    if (status.isClean()) {
+      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false };
+    }
+
     await this.git.add("-A");
     const message = summary || "Claude turn";
     const result = await this.git.commit(message);
     const hash = result.commit || "";
     console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
-    return hash;
+    return { commitHash: hash, conflictedFiles: [], rebaseInProgress: false };
   }
 
   /** Return recent commit log entries. */

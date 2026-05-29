@@ -204,9 +204,9 @@ describe("Integration: Phase 1 GET endpoints", () => {
     const dir = await createSession("s1", "Session 1");
     const git = new GitManager(dir);
     fs.writeFileSync(path.join(dir, "a.txt"), "hello");
-    const hash1 = await git.autoCommit("First");
+    const { commitHash: hash1 } = await git.autoCommit("First");
     fs.writeFileSync(path.join(dir, "b.txt"), "world");
-    const hash2 = await git.autoCommit("Second");
+    const { commitHash: hash2 } = await git.autoCommit("Second");
 
     const res = await app.inject({
       method: "GET",
