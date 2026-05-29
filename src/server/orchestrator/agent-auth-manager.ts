@@ -84,8 +84,8 @@ export interface AgentAuthManager extends EventEmitter {
  * still emit their legacy/CLI-specific events for back-compat; the events
  * below are the normalized surface the orchestrator's SSE wiring listens to.
  */
-export type AgentAuthManagerEvents = {
+export interface AgentAuthManagerEvents {
   pending: [details: AgentAuthPendingDetails];
   complete: [];
   failed: [payload?: AgentAuthFailedPayload];
-};
+}

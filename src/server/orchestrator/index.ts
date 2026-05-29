@@ -1295,7 +1295,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         attachToRunner, detachFromRunner,
         sessionManager, chatHistoryManager, createGitManager, createRepoGit,
         githubAuthManager,
-        usageManager, authManager, agentRegistry, credentialStore, providerAccountManager,
+        usageManager, authManager, authManagers, agentRegistry, credentialStore, providerAccountManager,
         repoStore, warmSessionForRepo, generateText,
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,

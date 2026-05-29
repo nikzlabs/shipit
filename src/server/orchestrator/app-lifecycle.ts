@@ -15,7 +15,8 @@ import { markMergedAndPruneExcess } from "./services/session.js";
 import type { SessionManager } from "./sessions.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import type { RepoGit } from "./repo-git.js";
-import type { AgentAuthManager } from "./agent-auth-manager.js";
+import type { AgentAuthManager, AgentAuthFailedPayload } from "./agent-auth-manager.js";
+import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
@@ -779,7 +780,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   // the concrete classes for back-compat with the unit tests and any
   // remaining direct listeners, but no SSE wiring depends on them.
   for (const [agentId, mgr] of authManagers) {
-    mgr.on("pending", (details) => {
+    mgr.on("pending", (details: AgentAuthPendingDetails) => {
       sseBroadcast("agent_auth_pending", { agentId, details });
     });
 
@@ -797,7 +798,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
     });
 
-    mgr.on("failed", (payload) => {
+    mgr.on("failed", (payload?: AgentAuthFailedPayload) => {
       console.log(`[${agentId}-auth] flow failed:`, payload?.reason ?? "", payload?.message ?? "");
       sseBroadcast("agent_auth_failed", {
         agentId,

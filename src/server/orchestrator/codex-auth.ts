@@ -412,9 +412,16 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
       // state (page reload mid-flow, fresh tab) re-renders the URL + code
       // instead of staring at a dead Sign-in button. Safe to re-emit — the
       // SSE handler is idempotent on the client (`setCodexDeviceAuth` just
-      // overwrites the slice).
+      // overwrites the slice). Emits both the legacy and normalized events
+      // so the unified `agent_auth_pending` SSE broadcast also fires.
       if (this.lastPendingEvent) {
         this.emit("codex_auth_pending", this.lastPendingEvent);
+        this.emit("pending", {
+          kind: "device-code",
+          verificationUri: this.lastPendingEvent.verificationUri,
+          userCode: this.lastPendingEvent.userCode,
+          expiresInSec: this.lastPendingEvent.expiresInSec,
+        });
       }
       return;
     }

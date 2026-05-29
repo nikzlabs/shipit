@@ -93,7 +93,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     }
   });
 
-  it("set_api_key authenticates and broadcasts auth_complete", async () => {
+  it("set_api_key authenticates and broadcasts agent_auth_complete", async () => {
     const unauthStub = new StubAuthManager() as unknown as AuthManager;
     (unauthStub as any).authenticated = false;
     (unauthStub as any).checkCredentials = () => {
@@ -135,7 +135,8 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       });
       expect(res.statusCode).toBe(200);
 
-      // auth_complete is broadcast via SSE, not WS — verify the stub auth state changed
+      // agent_auth_complete is broadcast via SSE (docs/155 Phase 2b), not WS
+      // — verify the stub auth state changed.
       expect(unauthStub.authenticated).toBe(true);
       client.close();
     } finally {
