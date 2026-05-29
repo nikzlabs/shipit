@@ -302,6 +302,24 @@ spawn instead of routing the message into an adapter no-op. When Phase 7
 removes the toggle, this flag goes with it — the "non-streaming under steering
 gate" state genuinely is unreachable by construction at that point.
 
+**Phase 6.6 — `handleAnswerQuestion` stale-kill fall-through.** Phase 6.5 added
+the `isStreamingActive` gate to `handleAnswerQuestion` but kept the legacy
+`writeStdin` fallback below it. For steering-capable adapters (the only kind
+in the registry — claude, codex) the gate-failed path landed raw bytes on a
+streaming process whose adapter expects NDJSON, and the line was silently
+dropped — the user reported the same "appears in the chat, agent doesn't
+react" symptom as the original send-path bug, this time on the AskUserQuestion
+answer flow. The fix mirrors `handleSendMessage`'s stale-kill at
+`send-message.ts:263`: when `existingAgent` is non-null and the steering gate
+fails, kill the stale ref, drop it from the runner, and fall through to the
+fresh-spawn `--resume` path so the answer reaches the model via a new turn.
+The `writeStdin` branch is preserved only behind `!steeringCapable` as a
+forward-compat safety net for hypothetical future PTY-only adapters, with the
+same `running=true` + `session_status` re-arm the steering branch performs so
+the UI's "Thinking…" indicator follows the agent state correctly. A
+`[answer-question]` diagnostic log pins gate state at handler entry,
+matching the `[steer-send]` shape from Phase 6.5.
+
 ## Open questions to resolve during build
 
 - Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.

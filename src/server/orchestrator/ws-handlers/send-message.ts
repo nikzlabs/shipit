@@ -420,21 +420,25 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   // Resolve the runner from the registry first so it survives WS disconnect.
   const runnerEarly = resolveRunner(ctx);
   const existingAgent = runnerEarly?.getAgent() ?? null;
+  const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
+  const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
+  const liveSteering = ctx.credentialStore.getLiveSteering();
+  // docs/140 — the CLI process must actually be in streaming mode for
+  // `sendUserMessage` to land; otherwise the adapter silently no-ops and the
+  // answer disappears.
+  const streamingActive = runnerEarly?.isStreamingActive ?? false;
+
+  // docs/140 diag — same shape as `[steer-send]` in handleSendMessage. If a
+  // future repro shows "answer appears in chat, agent doesn't react", this
+  // log pins the gate state and the recovery path the handler took.
+  console.log(
+    `[answer-question] runner=${runnerEarly?.sessionId} steeringCapable=${steeringCapable} liveSteering=${liveSteering} streamingActive=${streamingActive} existingAgent=${existingAgent ? "yes" : "null"} text=${JSON.stringify(answerText.slice(0, 80))}`,
+  );
+
   if (existingAgent) {
     // docs/140 — live steering: when the persistent streaming agent is blocked
     // on AskUserQuestion, route the answer through `sendUserMessage` so the
     // CLI receives a properly framed NDJSON user message on its piped stdin.
-    // `writeStdin` for streaming adapters is a raw passthrough that would emit
-    // a non-JSON line and the CLI would drop it. The legacy headless `-p` path
-    // (non-streaming) still uses raw stdin — that's what the adapter's default
-    // `sendUserMessage` falls back to.
-    const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
-    const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
-    const liveSteering = ctx.credentialStore.getLiveSteering();
-    // docs/140 — gate on isStreamingActive too. The CLI process must actually
-    // be in streaming mode for `sendUserMessage` to land; otherwise the
-    // adapter silently no-ops and the answer disappears.
-    const streamingActive = runnerEarly?.isStreamingActive ?? false;
     if (steeringCapable && liveSteering && streamingActive) {
       const answerSessionId = ctx.getActiveAppSessionId();
       existingAgent.sendUserMessage(answerText);
@@ -463,11 +467,61 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
       }
       return;
     }
-    // Non-streaming legacy: write answer to stdin (the CLI is paused after the
-    // orchestrator's AskUserQuestion interrupt, but `--resume` reads stdin on
-    // resume).
-    existingAgent.writeStdin(`${answerText  }\n`);
-    return;
+
+    // The steering gate failed but an agent ref is still resident. Two cases:
+    //
+    //   (A) `steeringCapable` adapter (claude / codex) — the resident process
+    //       is either a streaming process whose `isStreamingActive` flag was
+    //       cleared (stranded; `writeStdin` would land as raw bytes on a
+    //       process that expects NDJSON and get silently dropped) OR the user
+    //       flipped `liveSteering` off mid-turn (the streamer is still alive
+    //       but the user opted out of steering). Either way the safe recovery
+    //       is to kill the stale ref and fall through to the fresh-spawn
+    //       `--resume` path below — same shape as `handleSendMessage`'s
+    //       stale-kill at line 263.
+    //
+    //       Without this branch the previous code wrote raw text to stdin and
+    //       returned without flipping `runner.running` back to true or
+    //       emitting `session_status`. The optimistic answer bubble rendered
+    //       on the client and the agent never reacted — the exact symptom of
+    //       the steering "appears to work, doesn't react" bug closed by
+    //       ee313d3661, but on the answer path.
+    //
+    //   (B) `!steeringCapable` adapter — hypothetical PTY-only agent that
+    //       genuinely reads raw stdin during a turn. `writeStdin` is the
+    //       correct delivery and we must also re-arm `running=true` plus
+    //       `session_status` because the AskUserQuestion interrupt cleared it.
+    //       No agent in the registry is currently `!steeringCapable`, so this
+    //       branch is dead in production — kept as a forward-compat safety
+    //       net for future adapters.
+    if (steeringCapable) {
+      existingAgent.kill();
+      if (runnerEarly?.getAgent() === existingAgent) {
+        runnerEarly.setAgent(null);
+        runnerEarly.isStreamingActive = false;
+        // The AskUserQuestion-interrupt already cleared `running` on
+        // agent_result; reset defensively so the duplicate-drop check below
+        // doesn't strand this answer if a race left it true.
+        runnerEarly.running = false;
+      }
+      // Fall through to the fresh-spawn `--resume` path.
+    } else {
+      existingAgent.writeStdin(`${answerText}\n`);
+      if (runnerEarly) {
+        runnerEarly.running = true;
+        const sid = ctx.getActiveAppSessionId();
+        if (sid) {
+          ctx.sseBroadcast("session_agent_started", { sessionId: sid });
+          runnerEarly.emitMessage({
+            type: "session_status",
+            sessionId: sid,
+            running: true,
+            queueLength: runnerEarly.queueLength,
+          });
+        }
+      }
+      return;
+    }
   }
 
   // Defensive guard: if the runner is already marked as running but
