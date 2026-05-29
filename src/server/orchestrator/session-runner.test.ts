@@ -163,7 +163,8 @@ describe("SessionRunner", () => {
       autoCommit: vi.fn().mockResolvedValue({
         commitHash: null,
         parentHash: null,
-        skippedConflictedFiles: [],
+        conflictedFiles: [],
+        rebaseInProgress: false,
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {

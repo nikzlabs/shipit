@@ -1,18 +1,29 @@
 /**
- * Builds the chat-visible warning shown when `GitManager.autoCommit` excludes
- * files containing git conflict markers from the post-turn commit. Shared so
- * both the WS path (`post-turn.ts`) and the system-turn path
+ * Builds the chat-visible warning shown when `GitManager.autoCommit` refuses
+ * to commit because git reports an in-progress merge/rebase. Shared so both
+ * the WS path (`post-turn.ts`) and the system-turn path
  * (`dispatched-turn.ts`) produce the same message.
  */
-export function formatConflictMarkerNotice(skippedConflictedFiles: string[]): string {
-  if (skippedConflictedFiles.length === 0) {
-    throw new Error("formatConflictMarkerNotice: skippedConflictedFiles must be non-empty");
+export function formatUnresolvedConflictNotice(args: {
+  conflictedFiles: string[];
+  rebaseInProgress: boolean;
+}): string {
+  const { conflictedFiles, rebaseInProgress } = args;
+  if (conflictedFiles.length === 0 && !rebaseInProgress) {
+    throw new Error(
+      "formatUnresolvedConflictNotice: at least one of conflictedFiles / rebaseInProgress must be set",
+    );
   }
-  const list = skippedConflictedFiles.map((p) => `\`${p}\``).join(", ");
-  const noun = skippedConflictedFiles.length === 1 ? "file has" : "files have";
+  if (conflictedFiles.length > 0) {
+    const list = conflictedFiles.map((p) => `\`${p}\``).join(", ");
+    const noun = conflictedFiles.length === 1 ? "an unresolved conflict" : "unresolved conflicts";
+    return (
+      `Skipped auto-commit — git reports ${noun} in ${list}. ` +
+      `Resolve the conflict${conflictedFiles.length === 1 ? "" : "s"} and the next turn will commit the working tree.`
+    );
+  }
   return (
-    `Skipped auto-commit — ${list} ${noun} unresolved git conflict markers ` +
-    `(\`<<<<<<<\`, \`=======\`, \`>>>>>>>\`), which usually means a rebase or merge is mid-resolution. ` +
-    `Resolve the markers and the next turn will commit the working tree.`
+    `Skipped auto-commit — a git rebase is in progress. ` +
+    `Finish or abort the rebase and the next turn will commit the working tree.`
   );
 }

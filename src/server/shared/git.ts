@@ -30,32 +30,20 @@ export interface AutoCommitResult {
   /** New commit hash, or null when nothing was committed. */
   commitHash: string | null;
   /**
-   * Paths excluded from the commit because they contain git conflict markers
-   * (`<<<<<<<`, `=======`, `>>>>>>>`, `|||||||`). Callers should surface this
-   * to the user — a botched merge/rebase resolution must not get auto-pushed.
+   * Paths git reports as unmerged (`status.conflicted`). Non-empty during a
+   * merge or rebase with unresolved paths. When non-empty, no commit was
+   * made — the agent must finish resolving first.
    */
-  skippedConflictedFiles: string[];
-}
-
-/**
- * Repo-root-relative paths of working-tree files that contain git conflict
- * markers. Skips deleted entries (no content to inspect), files larger than
- * 5 MB, and anything that looks binary (null byte in the first 8 KB).
- */
-function fileHasConflictMarkers(absPath: string): boolean {
-  try {
-    const stat = fs.statSync(absPath);
-    if (!stat.isFile()) return false;
-    if (stat.size > 5_000_000) return false;
-    const buf = fs.readFileSync(absPath);
-    const sniffLen = Math.min(buf.length, 8192);
-    for (let i = 0; i < sniffLen; i++) {
-      if (buf[i] === 0) return false;
-    }
-    return /^(<{7}|={7}|>{7}|\|{7})( |\t|\r?$)/m.test(buf.toString("utf8"));
-  } catch {
-    return false;
-  }
+  conflictedFiles: string[];
+  /**
+   * True when a `.git/rebase-merge` or `.git/rebase-apply` directory exists
+   * — i.e. a rebase is mid-flight. When true, no commit was made even if
+   * `conflictedFiles` is empty (e.g. all conflicts have been staged but
+   * `git rebase --continue` hasn't been called yet). We deliberately rely on
+   * git's own state here instead of scanning file contents, so test files
+   * and docs that happen to contain marker-shaped text commit normally.
+   */
+  rebaseInProgress: boolean;
 }
 
 export class GitManager {
@@ -96,42 +84,34 @@ export class GitManager {
   }
 
   /**
-   * Stage all working-tree changes and commit. If ANY file contains git
-   * conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`, `|||||||`), refuse
-   * the entire commit and return the marker'd paths in
-   * `skippedConflictedFiles`. Presence of conflict markers means a rebase or
-   * merge is mid-resolution — committing anything at this point (even the
-   * "clean" files in the same turn) would freeze a half-resolved state and
-   * almost certainly get force-pushed onto the branch. The agent needs to
-   * finish resolving first; the next turn will commit the whole set.
+   * Stage all working-tree changes and commit. Refuses the entire commit if
+   * git reports unmerged paths or a rebase is mid-flight — committing in
+   * that state would freeze a half-resolved merge/rebase onto the branch
+   * (the post-turn auto-push then publishes it). The agent has to finish
+   * resolving first; the next turn will commit the whole working tree
+   * atomically.
    *
-   * `commitHash` is null when there was nothing to commit — either the
-   * working tree was already clean, or conflict markers were present. The
-   * two cases are distinguishable by inspecting `skippedConflictedFiles`.
+   * We trust git's own conflict state (`status.conflicted` +
+   * `isRebaseInProgress`) rather than scanning file contents for marker
+   * strings. That avoids false positives on legitimate code that mentions
+   * `<<<<<<<` etc. (test fixtures, docs, this very codebase).
    */
   async autoCommit(summary: string): Promise<AutoCommitResult> {
     const status = await this.git.status();
-    if (status.isClean()) {
-      return { commitHash: null, skippedConflictedFiles: [] };
-    }
+    const rebaseInProgress = await this.isRebaseInProgress();
+    const conflictedFiles = [...status.conflicted];
 
-    const repoRoot = (await this.git.revparse(["--show-toplevel"])).trim();
-    const skippedConflictedFiles: string[] = [];
-    for (const file of status.files) {
-      // Deleted files have no working-tree content to inspect.
-      if (file.index === "D" || file.working_dir === "D") continue;
-      const abs = path.join(repoRoot, file.path);
-      if (fileHasConflictMarkers(abs)) {
-        skippedConflictedFiles.push(file.path);
-      }
-    }
-
-    if (skippedConflictedFiles.length > 0) {
+    if (conflictedFiles.length > 0 || rebaseInProgress) {
       console.warn(
-        "[git] autoCommit refused — conflict markers in:",
-        skippedConflictedFiles.join(", "),
+        "[git] autoCommit refused — git reports unresolved conflict state:",
+        rebaseInProgress ? "rebase in progress;" : "",
+        conflictedFiles.length > 0 ? `unmerged paths: ${conflictedFiles.join(", ")}` : "",
       );
-      return { commitHash: null, skippedConflictedFiles };
+      return { commitHash: null, conflictedFiles, rebaseInProgress };
+    }
+
+    if (status.isClean()) {
+      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false };
     }
 
     await this.git.add("-A");
@@ -139,7 +119,7 @@ export class GitManager {
     const result = await this.git.commit(message);
     const hash = result.commit || "";
     console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
-    return { commitHash: hash, skippedConflictedFiles: [] };
+    return { commitHash: hash, conflictedFiles: [], rebaseInProgress: false };
   }
 
   /** Return recent commit log entries. */

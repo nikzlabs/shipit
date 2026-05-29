@@ -23,7 +23,7 @@ import type {
   SystemTurnDeps,
   AgentDispatchOptions,
 } from "./session-runner.js";
-import { formatConflictMarkerNotice } from "./services/conflict-marker-notice.js";
+import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 
 /**
  * Run a single dispatched agent turn against the given runner.
@@ -95,12 +95,15 @@ export async function runDispatchedTurn(
       const summary =
         runner.turnSummary.split("\n")[0]?.slice(0, 120) || activity || "agent turn";
       const result = await deps.autoCommit(runner.sessionDir, summary);
-      if (result.skippedConflictedFiles.length > 0) {
+      if (result.conflictedFiles.length > 0 || result.rebaseInProgress) {
         runner.emitMessage({
           type: "system_notice",
           sessionId: runner.sessionId,
           level: "warn",
-          message: formatConflictMarkerNotice(result.skippedConflictedFiles),
+          message: formatUnresolvedConflictNotice({
+            conflictedFiles: result.conflictedFiles,
+            rebaseInProgress: result.rebaseInProgress,
+          }),
         });
       }
       if (result.commitHash) {

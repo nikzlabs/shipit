@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import simpleGit from "simple-git";
 import { GitManager } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
@@ -55,11 +56,12 @@ describe("GitManager: init & autoCommit", () => {
     await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "hello.txt"), "hello world");
-    const { commitHash, skippedConflictedFiles } = await git.autoCommit("Add hello.txt");
+    const result = await git.autoCommit("Add hello.txt");
 
-    expect(commitHash).toBeTruthy();
-    expect(typeof commitHash).toBe("string");
-    expect(skippedConflictedFiles).toEqual([]);
+    expect(result.commitHash).toBeTruthy();
+    expect(typeof result.commitHash).toBe("string");
+    expect(result.conflictedFiles).toEqual([]);
+    expect(result.rebaseInProgress).toBe(false);
 
     const log = await git.log();
     expect(log[0].message).toBe("Add hello.txt");
@@ -69,9 +71,10 @@ describe("GitManager: init & autoCommit", () => {
     const git = new GitManager(tmpDir);
     await git.init();
 
-    const { commitHash, skippedConflictedFiles } = await git.autoCommit("Nothing here");
-    expect(commitHash).toBeNull();
-    expect(skippedConflictedFiles).toEqual([]);
+    const result = await git.autoCommit("Nothing here");
+    expect(result.commitHash).toBeNull();
+    expect(result.conflictedFiles).toEqual([]);
+    expect(result.rebaseInProgress).toBe(false);
   });
 
   it("commits modified files", async () => {
@@ -115,67 +118,106 @@ describe("GitManager: init & autoCommit", () => {
     expect(log[0].message).toBe("Claude turn");
   });
 
-  // ---- conflict markers ----
+  // ---- unresolved git conflict state ----
 
-  const CONFLICTED_CONTENT = [
-    "before",
-    "<<<<<<< HEAD",
-    "ours",
-    "=======",
-    "theirs",
-    ">>>>>>> feature",
-    "after",
-    "",
-  ].join("\n");
-
-  it("refuses the whole commit when any file has conflict markers", async () => {
+  /**
+   * Set up a real merge conflict on `file.txt`: main has "main 2", feature
+   * has "feature 1", both descend from a common ancestor. After calling
+   * `git merge feature`, git leaves the working tree in an unmerged state
+   * with the standard `<<<<<<< / ======= / >>>>>>>` markers in the file.
+   */
+  async function createMergeConflict(): Promise<GitManager> {
     const git = new GitManager(tmpDir);
     await git.init();
-    const initialHead = await git.getHeadHash();
+    const filePath = path.join(tmpDir, "file.txt");
+    fs.writeFileSync(filePath, "base\n");
+    await git.autoCommit("base");
 
-    // A clean file in the same turn as a conflicted one — conflict markers
-    // mean a rebase/merge is mid-resolution, so committing even the clean
-    // file would freeze a half-resolved state.
-    fs.writeFileSync(path.join(tmpDir, "clean.txt"), "all good");
-    fs.writeFileSync(path.join(tmpDir, "conflicted.txt"), CONFLICTED_CONTENT);
-    const { commitHash, skippedConflictedFiles } = await git.autoCommit("Mixed turn");
+    const sg = simpleGit(tmpDir);
+    await sg.checkoutLocalBranch("feature");
+    fs.writeFileSync(filePath, "feature 1\n");
+    await git.autoCommit("feature 1");
 
-    expect(commitHash).toBeNull();
-    expect(skippedConflictedFiles).toEqual(["conflicted.txt"]);
+    await sg.checkout("main");
+    fs.writeFileSync(filePath, "main 2\n");
+    await git.autoCommit("main 2");
 
-    // HEAD has not moved and both files are still uncommitted in the working tree.
-    expect(await git.getHeadHash()).toBe(initialHead);
-    expect(fs.readFileSync(path.join(tmpDir, "clean.txt"), "utf-8")).toBe("all good");
-    expect(fs.readFileSync(path.join(tmpDir, "conflicted.txt"), "utf-8")).toBe(CONFLICTED_CONTENT);
+    try {
+      await sg.merge(["feature"]);
+    } catch {
+      // Expected — merge produces a conflict.
+    }
+    return git;
+  }
+
+  it("refuses to commit while git reports unmerged paths", async () => {
+    const git = await createMergeConflict();
+    const headBeforeAutoCommit = await git.getHeadHash();
+
+    const result = await git.autoCommit("attempted turn during merge");
+
+    expect(result.commitHash).toBeNull();
+    expect(result.conflictedFiles).toEqual(["file.txt"]);
+    expect(result.rebaseInProgress).toBe(false);
+    // HEAD must not have advanced — no commit was created.
+    expect(await git.getHeadHash()).toBe(headBeforeAutoCommit);
   });
 
-  it("returns null commitHash and lists every marker'd file", async () => {
+  it("refuses to commit while a rebase is in progress", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
+    const filePath = path.join(tmpDir, "file.txt");
+    fs.writeFileSync(filePath, "base\n");
+    await git.autoCommit("base");
 
-    fs.writeFileSync(path.join(tmpDir, "a.txt"), CONFLICTED_CONTENT);
-    fs.writeFileSync(path.join(tmpDir, "b.txt"), CONFLICTED_CONTENT.replace("HEAD", "main"));
-    const { commitHash, skippedConflictedFiles } = await git.autoCommit("All conflicted");
+    const sg = simpleGit(tmpDir);
+    await sg.checkoutLocalBranch("feature");
+    fs.writeFileSync(filePath, "feature\n");
+    await git.autoCommit("feature");
 
-    expect(commitHash).toBeNull();
-    expect(skippedConflictedFiles.sort()).toEqual(["a.txt", "b.txt"]);
+    await sg.checkout("main");
+    fs.writeFileSync(filePath, "main\n");
+    await git.autoCommit("main");
+
+    await sg.checkout("feature");
+    // Rebase will conflict; GitManager.rebase() leaves the rebase in progress.
+    const rebaseResult = await git.rebase("main");
+    expect(rebaseResult.status).toBe("conflicts");
+    expect(await git.isRebaseInProgress()).toBe(true);
+
+    const headBeforeAutoCommit = await git.getHeadHash();
+    const result = await git.autoCommit("attempted turn during rebase");
+
+    expect(result.commitHash).toBeNull();
+    expect(result.rebaseInProgress).toBe(true);
+    expect(result.conflictedFiles.length).toBeGreaterThan(0);
+    expect(await git.getHeadHash()).toBe(headBeforeAutoCommit);
   });
 
-  it("does not treat coincidental delimiter-looking text as a conflict marker", async () => {
+  it("commits files that contain marker-shaped text when git reports no conflict", async () => {
+    // ShipIt's own test suite + docs reference the literal marker strings
+    // (`<<<<<<<`, `=======`, `>>>>>>>`). Those edits must still get
+    // committed — we trust git's `status.conflicted` instead of scanning
+    // file contents.
     const git = new GitManager(tmpDir);
     await git.init();
 
-    // Code that mentions the marker characters but doesn't form a real marker
-    // (no `<<<<<<< label` line) must still get committed.
-    const lookalike = [
-      "// docs reference: <<<<<<< is the start of a git conflict marker",
-      "const sep = '=======';",
+    const codeWithMarkers = [
+      "const CONFLICT_SAMPLE = `",
+      "<<<<<<< HEAD",
+      "ours",
+      "=======",
+      "theirs",
+      ">>>>>>> feature",
+      "`;",
       "",
     ].join("\n");
-    fs.writeFileSync(path.join(tmpDir, "doc.md"), lookalike);
-    const { commitHash, skippedConflictedFiles } = await git.autoCommit("Docs");
+    fs.writeFileSync(path.join(tmpDir, "fixture.ts"), codeWithMarkers);
 
-    expect(commitHash).toBeTruthy();
-    expect(skippedConflictedFiles).toEqual([]);
+    const result = await git.autoCommit("Add conflict fixture");
+
+    expect(result.commitHash).toBeTruthy();
+    expect(result.conflictedFiles).toEqual([]);
+    expect(result.rebaseInProgress).toBe(false);
   });
 });

@@ -229,8 +229,8 @@ export function createRunnerRegistry(
         autoCommit: async (sessionDir, summary) => {
           const git = createGitManager(sessionDir);
           const parentHash = await git.getHeadHash();
-          const { commitHash, skippedConflictedFiles } = await git.autoCommit(summary);
-          return { commitHash, parentHash, skippedConflictedFiles };
+          const { commitHash, conflictedFiles, rebaseInProgress } = await git.autoCommit(summary);
+          return { commitHash, parentHash, conflictedFiles, rebaseInProgress };
         },
         scheduleAutoPush: (sessionDir) => {
           if (!githubAuthManager.authenticated) return;
