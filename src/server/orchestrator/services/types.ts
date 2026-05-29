@@ -50,6 +50,12 @@ export interface GlobalSettings {
    */
   liveSteering: boolean;
   /**
+   * docs/146 — when true, the PR poller's auto-resolve loop fires on
+   * CONFLICTING transitions while the agent is idle. Force-pushes the
+   * resolved rebase; default off.
+   */
+  autoResolveConflicts: boolean;
+  /**
    * Provider subscription accounts grouped by provider (docs/150). Reserved
    * env/API-key routes are not represented here.
    */

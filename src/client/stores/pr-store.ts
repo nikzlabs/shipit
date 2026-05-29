@@ -71,6 +71,18 @@ export interface PrCardState {
     error?: { code: string; message: string; settingsUrl: string };
   };
   /**
+   * docs/146 — auto-resolve-conflicts state (open phase). Populated from
+   * the PR status snapshot; the failure banner only renders when
+   * `status === "exhausted"`.
+   */
+  autoResolve?: {
+    status: "idle" | "running" | "deferred" | "exhausted";
+    attemptCount: number;
+    maxAttempts: number;
+    lastError?: string;
+    nextEligibleAt?: number;
+  };
+  /**
    * PR-level (issue) comments — docs/133 Phase 4. Only populated while the PR
    * tab is open (the poller gates the fetch); `undefined` means "not fetched".
    */
@@ -250,6 +262,7 @@ export const usePrStore = create<PrState>((set, get) => ({
             checks: update.checks,
             autoFix: update.autoFix,
             autoMerge: update.autoMerge ?? nextAutoMerge[update.sessionId],
+            ...(update.autoResolve !== undefined ? { autoResolve: update.autoResolve } : {}),
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,

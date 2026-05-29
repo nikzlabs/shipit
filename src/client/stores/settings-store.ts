@@ -49,6 +49,8 @@ interface SettingsState {
   quickCaptureHotkey: string;
   autoCreatePr: boolean;
   liveSteering: boolean;
+  /** docs/146 — global gate for the auto-resolve-conflicts loop. */
+  autoResolveConflicts: boolean;
   /** Active Codex device-auth flow state — `null` when no flow is running. */
   codexDeviceAuth: CodexDeviceAuth | null;
   /** Last device-auth failure message — `null` when no error. */
@@ -65,6 +67,7 @@ interface SettingsState {
   setQuickCaptureHotkey: (hotkey: string) => void;
   setAutoCreatePr: (enabled: boolean) => void;
   setLiveSteering: (enabled: boolean) => void;
+  setAutoResolveConflicts: (enabled: boolean) => void;
   setCodexDeviceAuth: (state: CodexDeviceAuth | null) => void;
   setCodexDeviceAuthError: (message: string | null) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
@@ -113,6 +116,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   quickCaptureHotkey: getSavedQuickCaptureHotkey(),
   autoCreatePr: false,
   liveSteering: false,
+  autoResolveConflicts: false,
   codexDeviceAuth: null,
   codexDeviceAuthError: null,
   providerAccounts: [],
@@ -145,6 +149,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),
 
   setLiveSteering: (enabled) => set({ liveSteering: enabled }),
+
+  setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
 
   setCodexDeviceAuth: (state) => set({ codexDeviceAuth: state }),
 

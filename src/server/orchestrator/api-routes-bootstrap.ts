@@ -56,16 +56,39 @@ export async function registerBootstrapRoutes(
   );
 
   // PUT /api/settings — save global settings
-  app.put<{ Body: { gitIdentity?: { name: string; email: string }; systemPrompt?: string; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; autoCreatePr?: boolean; liveSteering?: boolean } }>(
+  app.put<{ Body: {
+    gitIdentity?: { name: string; email: string };
+    systemPrompt?: string;
+    maxIdleContainers?: number;
+    agentSystemInstructionsEnabled?: boolean;
+    autoCreatePr?: boolean;
+    liveSteering?: boolean;
+    /** docs/146 — global gate for the auto-resolve-conflicts loop. */
+    autoResolveConflicts?: boolean;
+  } }>(
     "/api/settings",
     async (request, reply) => {
       try {
-        return await saveGlobalSettings(
-          deps.agentRegistry, deps.workspaceDir, deps.credentialStore,
-          request.body.gitIdentity, request.body.systemPrompt, request.body.maxIdleContainers,
-          request.body.agentSystemInstructionsEnabled, request.body.autoCreatePr, request.body.liveSteering,
-          deps.providerAccountManager,
-        );
+        return await saveGlobalSettings({
+          agentRegistry: deps.agentRegistry,
+          workspaceDir: deps.workspaceDir,
+          credentialStore: deps.credentialStore,
+          providerAccountManager: deps.providerAccountManager,
+          // docs/146 — when the user toggles autoResolveConflicts false → true,
+          // re-broadcast every tracked session's snapshot so the (now-ungated)
+          // `autoResolve` block lands on existing connected clients without
+          // waiting for a genuine PR-status change.
+          onAutoResolveConflictsEnabled: () => {
+            deps.prStatusPoller?.broadcastAllSnapshots();
+          },
+          ...(request.body.gitIdentity !== undefined ? { gitIdentity: request.body.gitIdentity } : {}),
+          ...(request.body.systemPrompt !== undefined ? { systemPrompt: request.body.systemPrompt } : {}),
+          ...(request.body.maxIdleContainers !== undefined ? { maxIdleContainers: request.body.maxIdleContainers } : {}),
+          ...(request.body.agentSystemInstructionsEnabled !== undefined ? { agentSystemInstructionsEnabled: request.body.agentSystemInstructionsEnabled } : {}),
+          ...(request.body.autoCreatePr !== undefined ? { autoCreatePr: request.body.autoCreatePr } : {}),
+          ...(request.body.liveSteering !== undefined ? { liveSteering: request.body.liveSteering } : {}),
+          ...(request.body.autoResolveConflicts !== undefined ? { autoResolveConflicts: request.body.autoResolveConflicts } : {}),
+        });
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

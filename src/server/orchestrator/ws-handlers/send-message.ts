@@ -116,8 +116,14 @@ export async function handleSendMessage(
       const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
       const liveSteering = ctx.credentialStore.getLiveSteering();
       const streamingActive = runnerForQueue.isStreamingActive;
+      // docs/146 — suppress live steering when a system-driven turn is in
+      // flight (auto-resolve rebase-resolution turn, etc.). Steering an
+      // unrelated user message into the conflict-resolution prompt would
+      // derail the agent; the message lands in the queue instead and drains
+      // when the system turn finishes (the rebase-driver's drain hook).
+      const systemTurnInProgress = runnerForQueue.systemTurnInProgress;
 
-      if (steeringCapable && liveSteering && streamingActive && !reviewFilePath) {
+      if (steeringCapable && liveSteering && streamingActive && !reviewFilePath && !systemTurnInProgress) {
         // Steer the running agent — inject message mid-turn
         const steeringAgent = runnerForQueue.getAgent();
         // docs/140 diag — pin the gate state at the moment of steer dispatch.
@@ -439,7 +445,12 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     // docs/140 — live steering: when the persistent streaming agent is blocked
     // on AskUserQuestion, route the answer through `sendUserMessage` so the
     // CLI receives a properly framed NDJSON user message on its piped stdin.
-    if (steeringCapable && liveSteering && streamingActive) {
+    // docs/146 — also suppress steering when a system-driven turn is in flight
+    // (auto-resolve rebase-resolution turn). A user typing an answer mid-auto-
+    // resolve must not derail the resolution turn; the answer falls through to
+    // the queue branch below and drains when the system turn finishes.
+    const systemTurnInProgress = runnerEarly?.systemTurnInProgress ?? false;
+    if (steeringCapable && liveSteering && streamingActive && !systemTurnInProgress) {
       const answerSessionId = ctx.getActiveAppSessionId();
       existingAgent.sendUserMessage(answerText);
       if (answerSessionId && runnerEarly) {
