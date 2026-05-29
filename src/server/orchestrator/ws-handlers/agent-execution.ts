@@ -294,6 +294,20 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const currentAgent = existingAgent ?? ctx.agentFactory(ctx.getActiveAgentId());
   if (!existingAgent && runner) runner.setAgent(currentAgent);
 
+  // docs/140 — record whether the *currently resident* agent process is in
+  // streaming mode. The send-message handler reads this when deciding whether
+  // a mid-turn message can be steered or must be queued, separately from the
+  // adapter's static `supportsSteering` capability. Without this distinction,
+  // a setting-flip from off→on mid-turn (or any other path that leaves a
+  // one-shot PTY process running under a steering-capable adapter) would route
+  // `sendUserMessage` to a `ClaudeProcess` whose adapter silently no-ops, and
+  // the user's message would disappear.
+  //
+  // For existingAgent (reuse): useStreaming was true at gate time AND the
+  // previous turn left a streaming process resident → still streaming.
+  // For a fresh spawn: the flag mirrors what we just passed to `run()`.
+  if (runner) runner.isStreamingActive = useStreaming;
+
   // docs/140 — when reusing a persistent streaming agent, the previous turn
   // attached listeners that close over per-turn state (capturedSessionId,
   // persistUserMessage, the `streamingPostTurnFired` flag, etc.). Drop them
@@ -528,7 +542,14 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     // and called `runner.setAgent(NEW)`; clobbering it back to null here
     // would strand the new agent and the next event from it would log
     // `[sse-drop] ... dropped (no _agent)`.
-    if (runner?.getAgent() === currentAgent) runner.setAgent(null);
+    if (runner?.getAgent() === currentAgent) {
+      runner.setAgent(null);
+      // docs/140 — the persistent streaming process has actually exited; the
+      // next mid-turn send must NOT be routed through `sendUserMessage` (the
+      // adapter would write to a closed stdin). Reset so the steering gate
+      // falls through to the queue / fresh-spawn path.
+      runner.isStreamingActive = false;
+    }
 
     // Capture any OAuth token the CLI refreshed during this turn (non-streaming
     // path; the streaming path does this in the agent_result handler above).

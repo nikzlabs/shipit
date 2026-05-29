@@ -1047,7 +1047,11 @@ export function wireAgentListeners(
     if (runner) {
       // Identity-guard: a concurrent turn may have replaced the runner's
       // agent ref already; only clear if it's still our process.
-      if (runner.getAgent() === agent) runner.setAgent(null);
+      if (runner.getAgent() === agent) {
+        runner.setAgent(null);
+        // docs/140 — streaming process is gone; reset the gate.
+        runner.isStreamingActive = false;
+      }
       runner.running = false;
       if (turnSessionId) {
         emitToViewers({
@@ -1100,7 +1104,11 @@ export function wireAgentListeners(
       // Identity-guard: only clear the runner's agent ref if it still points
       // at us. A later turn may already have replaced it; clobbering to null
       // would silently drop every subsequent SSE event from that turn.
-      if (runner.getAgent() === agent) runner.setAgent(null);
+      if (runner.getAgent() === agent) {
+        runner.setAgent(null);
+        // docs/140 — streaming process is gone; reset the gate.
+        runner.isStreamingActive = false;
+      }
       runner.running = false;
       if (turnSessionId) {
         emitToViewers({

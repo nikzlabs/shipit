@@ -257,6 +257,20 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   guardedUnavailable: boolean;
   /**
+   * docs/140 — true when the orchestrator believes the *currently-resident*
+   * agent process was spawned with `useStreaming: true` (Claude
+   * `StreamingClaudeProcess`, or any future adapter whose `run({ useStreaming })`
+   * actually selected the streaming path). Distinct from
+   * `agentRegistry.get(...).capabilities.supportsSteering`, which is a static
+   * fact about the adapter type. Without this distinction the steer gate would
+   * route `sendUserMessage` to a one-shot PTY `ClaudeProcess` whose adapter
+   * silently no-ops, and the user's message disappears — see
+   * `docs/140-live-steering/plan.md` §"Post-stabilization cleanup". Set in
+   * `runAgentWithMessage` at spawn time and cleared on `agent.done` /
+   * `dispose`. Not persisted; resets on container/orchestrator restart.
+   */
+  isStreamingActive: boolean;
+  /**
    * docs/125 — per-turn allow-list for the chat-native review tool. Set to the
    * authorized file path when a `send_review_message` turn starts; the
    * `submit_review_comments` tool handler rejects any call whose `file_path`
@@ -439,6 +453,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _isRunning = false;
   private _wasInterrupted = false;
   private _guardedUnavailable = false;
+  private _isStreamingActive = false;
   private _activeReviewFilePath: string | null = null;
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
@@ -477,6 +492,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get guardedUnavailable(): boolean { return this._guardedUnavailable; }
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
+  get isStreamingActive(): boolean { return this._isStreamingActive; }
+  set isStreamingActive(v: boolean) { this._isStreamingActive = v; }
   get activeReviewFilePath(): string | null { return this._activeReviewFilePath; }
   set activeReviewFilePath(v: string | null) { this._activeReviewFilePath = v; }
   get accumulatedText(): string { return this._accumulatedText; }
@@ -655,6 +672,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._messageQueue.length = 0;
     this._turnEventBuffer = [];
     this._isRunning = false;
+    this._isStreamingActive = false;
     this.emit("disposed");
     this.removeAllListeners();
   }

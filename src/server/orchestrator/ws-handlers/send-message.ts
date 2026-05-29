@@ -104,13 +104,31 @@ export async function handleSendMessage(
       // its own turn so the per-turn review-tool allow-list is established
       // (docs/125). They fall through to the queue, which carries reviewFilePath
       // and applies the allow-list at dequeue/turn-start.
+      //
+      // docs/140 — also require `runner.isStreamingActive`. `supportsSteering` is
+      // a static fact about the adapter (Claude can stream), but the currently-
+      // resident process may not actually be a `StreamingClaudeProcess` (e.g.
+      // the agent spawned while the toggle was off and the user flipped it on
+      // mid-turn — see plan §"Post-stabilization cleanup"). Without this gate
+      // we'd call `sendUserMessage` on a one-shot PTY `ClaudeProcess` whose
+      // adapter silently no-ops, and the steer would vanish.
       const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
       const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
       const liveSteering = ctx.credentialStore.getLiveSteering();
+      const streamingActive = runnerForQueue.isStreamingActive;
 
-      if (steeringCapable && liveSteering && !reviewFilePath) {
+      if (steeringCapable && liveSteering && streamingActive && !reviewFilePath) {
         // Steer the running agent — inject message mid-turn
         const steeringAgent = runnerForQueue.getAgent();
+        // docs/140 diag — pin the gate state at the moment of steer dispatch.
+        // If a future repro shows "message appears in chat, agent doesn't
+        // react", check this log: streamingActive=false means the gate
+        // upstream (this.gate or agentInfo) was lying; agent=null means we
+        // tried to steer with no resident process; both fall through to the
+        // queue branch below today.
+        console.log(
+          `[steer-send] runner=${runnerForQueue.sessionId} steeringCapable=${steeringCapable} liveSteering=${liveSteering} streamingActive=${streamingActive} agent=${steeringAgent ? "yes" : "null"} text=${JSON.stringify(msg.text.slice(0, 80))}`,
+        );
         if (steeringAgent) {
           const capturedSessionId = ctx.getActiveAppSessionId();
 
@@ -236,8 +254,12 @@ export async function handleSendMessage(
   const staleAgent = runnerForQueue?.getAgent() ?? null;
   if (staleAgent) {
     const staleAgentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
+    // docs/140 — also require `runner.isStreamingActive` so we don't preserve a
+    // resident non-streaming agent under a steering-capable adapter (which would
+    // strand a one-shot PTY process the next turn can't talk to via NDJSON).
     const persistentStreaming = (staleAgentInfo?.capabilities.supportsSteering ?? false)
-      && ctx.credentialStore.getLiveSteering();
+      && ctx.credentialStore.getLiveSteering()
+      && (runnerForQueue?.isStreamingActive ?? false);
     if (!persistentStreaming) {
       staleAgent.kill();
     }
@@ -409,7 +431,11 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
     const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
     const liveSteering = ctx.credentialStore.getLiveSteering();
-    if (steeringCapable && liveSteering) {
+    // docs/140 — gate on isStreamingActive too. The CLI process must actually
+    // be in streaming mode for `sendUserMessage` to land; otherwise the
+    // adapter silently no-ops and the answer disappears.
+    const streamingActive = runnerEarly?.isStreamingActive ?? false;
+    if (steeringCapable && liveSteering && streamingActive) {
       const answerSessionId = ctx.getActiveAppSessionId();
       existingAgent.sendUserMessage(answerText);
       if (answerSessionId && runnerEarly) {
