@@ -3,10 +3,10 @@ import { existsSync, mkdirSync, readlinkSync, writeFileSync, readFileSync, rmSyn
 import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
-import { stripAnsi } from "../shared/strip-ansi.js";
-import type { AgentAuthManager } from "./agent-auth-manager.js";
-import type { AgentId } from "../shared/types.js";
-import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
+import { stripAnsi } from "../../../shared/strip-ansi.js";
+import type { AgentAuthManager } from "../../agent-auth-manager.js";
+import type { AgentId } from "../../../shared/types.js";
+import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
 
 /**
  * Regex patterns to detect OAuth/verification URLs in Claude CLI output.

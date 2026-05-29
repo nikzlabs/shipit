@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CodexAdapter } from "./codex-adapter.js";
-import type { AgentMcpReviewBridge, McpServerConfig } from "./agent-process.js";
+import { CodexAdapter } from "./adapter.js";
+import type { AgentMcpReviewBridge, McpServerConfig } from "../agent-process.js";
 
 /**
  * docs/125 / docs/155 hair 10 — Codex registers its MCP servers via a

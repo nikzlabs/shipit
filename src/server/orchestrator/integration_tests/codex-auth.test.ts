@@ -35,9 +35,9 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
-import { AuthManager } from "../auth.js";
+import { AuthManager } from "../agents/claude/auth-manager.js";
 import { AgentRegistry } from "../../shared/agent-registry.js";
-import { CodexAuthManager, type SpawnFn } from "../codex-auth.js";
+import { CodexAuthManager, type SpawnFn } from "../agents/codex/auth-manager.js";
 import {
   StubAuthManager,
   createTestCredentialStore,

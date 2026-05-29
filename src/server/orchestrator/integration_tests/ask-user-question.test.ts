@@ -5,7 +5,7 @@ import path from "node:path";
 import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
-import { AuthManager } from "../auth.js";
+import { AuthManager } from "../agents/claude/auth-manager.js";
 
 
 import type { FastifyInstance } from "fastify";

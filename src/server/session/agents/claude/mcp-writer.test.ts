@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
-import { ClaudeAdapter } from "./claude-adapter.js";
-import type { AgentMcpReviewBridge, McpServerConfig } from "./agent-process.js";
+import { ClaudeAdapter } from "./adapter.js";
+import type { AgentMcpReviewBridge, McpServerConfig } from "../agent-process.js";
 
 /**
  * docs/088 / docs/125 / docs/155 hair 10 — ClaudeAdapter writes a per-turn

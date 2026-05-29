@@ -36,7 +36,7 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
-import type { AuthManager } from "../auth.js";
+import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
 // ---------------------------------------------------------------------------

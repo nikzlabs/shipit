@@ -27,9 +27,9 @@ import type {
   AgentProcessEvents,
   AgentRunParams,
   AgentContentBlock,
-} from "./agent-process.js";
-import { resolveMcpServer } from "../mcp-resolve.js";
-import { getErrorMessage } from "../../shared/utils.js";
+} from "../agent-process.js";
+import { resolveMcpServer } from "../../mcp-resolve.js";
+import { getErrorMessage } from "../../../shared/utils.js";
 
 // ---- Codex JSON-RPC protocol types ----
 

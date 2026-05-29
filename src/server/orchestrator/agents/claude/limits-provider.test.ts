@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { ClaudeLimitsProvider } from "./claude-limits.js";
-import type { AuthManager } from "../auth.js";
+import { ClaudeLimitsProvider } from "./limits-provider.js";
+import type { AuthManager } from "./auth-manager.js";
 
 function makeAuthStub(
   result: Awaited<ReturnType<AuthManager["getAccessToken"]>>,

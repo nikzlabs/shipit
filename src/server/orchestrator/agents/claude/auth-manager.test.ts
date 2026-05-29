@@ -7,7 +7,7 @@ import {
   extractExpiresAt,
   extractPlanLabel,
   extractUrlFromBuffer,
-} from "./auth.js";
+} from "./auth-manager.js";
 
 describe("AUTH_URL_PATTERNS", () => {
   it("matches Anthropic console URLs", () => {

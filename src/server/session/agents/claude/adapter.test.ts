@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
-import { ClaudeAdapter, mapCliMcpStatus } from "./claude-adapter.js";
-import type { ClaudeEvent } from "../../shared/types.js";
-import type { McpServerStatus } from "../../shared/types/mcp-types.js";
+import { ClaudeAdapter, mapCliMcpStatus } from "./adapter.js";
+import type { ClaudeEvent } from "../../../shared/types.js";
+import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
 
 /** Minimal fake ClaudeProcess for testing the adapter in isolation. */
 class FakeInnerProcess extends EventEmitter {

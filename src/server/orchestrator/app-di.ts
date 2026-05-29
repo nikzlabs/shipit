@@ -3,8 +3,8 @@ import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
 import { AgentRegistry, isAllowedAgentEnvKey } from "../shared/agent-registry.js";
 import { RepoGit } from "./repo-git.js";
-import { AuthManager } from "./auth.js";
-import { CodexAuthManager } from "./codex-auth.js";
+import { AuthManager } from "./agents/claude/auth-manager.js";
+import { CodexAuthManager } from "./agents/codex/auth-manager.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
@@ -408,8 +408,8 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
  */
 async function buildLocalAgentFactory(): Promise<(agentId: AgentId) => AgentProcess> {
   const [{ ClaudeAdapter }, { CodexAdapter }] = await Promise.all([
-    import("../session/agents/claude-adapter.js"),
-    import("../session/agents/codex-adapter.js"),
+    import("../session/agents/claude/adapter.js"),
+    import("../session/agents/codex/adapter.js"),
   ]);
   return (agentId: AgentId): AgentProcess => {
     switch (agentId) {

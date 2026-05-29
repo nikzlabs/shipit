@@ -17,10 +17,10 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 
-import { ClaudeOAuthRefresher } from "./claude-oauth-refresher.js";
-import type { ClaudeOAuthRefresherDeps, RefreshResult } from "./claude-oauth-refresher.js";
-import type { ProviderAccountManager } from "./provider-account-manager.js";
-import type { ProviderAccount, AgentId } from "../shared/types.js";
+import { ClaudeOAuthRefresher } from "./oauth-refresher.js";
+import type { ClaudeOAuthRefresherDeps, RefreshResult } from "./oauth-refresher.js";
+import type { ProviderAccountManager } from "../../provider-account-manager.js";
+import type { ProviderAccount, AgentId } from "../../../shared/types.js";
 
 // ---- helpers ----
 

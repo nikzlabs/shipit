@@ -18,9 +18,9 @@
  * incoming event.
  */
 
-import type { CodexAuthManager } from "../codex-auth.js";
-import type { LimitsProvider } from "./types.js";
-import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../shared/types.js";
+import type { CodexAuthManager } from "./auth-manager.js";
+import type { LimitsProvider } from "../types.js";
+import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../../shared/types.js";
 
 export interface CodexLimitsDeps {
   codexAuthManager: Pick<CodexAuthManager, "getAccessToken">;

@@ -3,8 +3,8 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { CodexAdapter, unwrapShellCommand } from "./codex-adapter.js";
-import type { AgentEvent } from "./agent-process.js";
+import { CodexAdapter, unwrapShellCommand } from "./adapter.js";
+import type { AgentEvent } from "../agent-process.js";
 
 /**
  * To test the CodexAdapter without spawning a real process, we mock child_process.spawn.
