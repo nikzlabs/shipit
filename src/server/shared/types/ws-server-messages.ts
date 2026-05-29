@@ -507,6 +507,13 @@ export interface WsRebaseComplete {
 /** Server → Client: rebase was aborted. */
 export interface WsRebaseAborted {
   type: "rebase_aborted";
+  /**
+   * Set when the abort was caused by a server-side failure (e.g. fetch
+   * error, unresolvable base ref, non-conflict git rebase failure, runner
+   * busy). Absent for user-initiated aborts via the `/rebase/abort`
+   * endpoint, where reaching idle is the intended outcome.
+   */
+  reason?: string;
 }
 
 /** Server → Client: Docker Compose stack failed to start. */
