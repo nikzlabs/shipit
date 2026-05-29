@@ -18,6 +18,13 @@ interface GitState {
   diffDialogTitle: string | undefined;
   rebaseStatus: RebaseStatus;
   rebaseConflicts: RebaseConflict[];
+  /**
+   * Last server-reported rebase failure reason. Shown in the RebaseBanner
+   * with a dismiss button so a backed-out rebase doesn't disappear
+   * silently. Cleared when the user dismisses, starts another rebase, or a
+   * rebase completes successfully.
+   */
+  rebaseError: string | null;
   pushRejected: boolean;
 
   setCommits: (commits: GitCommit[]) => void;
@@ -30,6 +37,7 @@ interface GitState {
   closeDiffDialog: () => void;
   setRebaseStatus: (status: RebaseStatus) => void;
   setRebaseConflicts: (conflicts: RebaseConflict[]) => void;
+  setRebaseError: (error: string | null) => void;
   setPushRejected: (rejected: boolean) => void;
   reset: () => void;
 
@@ -51,6 +59,7 @@ const initialState = {
   diffDialogTitle: undefined as string | undefined,
   rebaseStatus: "idle" as RebaseStatus,
   rebaseConflicts: [] as RebaseConflict[],
+  rebaseError: null as string | null,
   pushRejected: false,
 };
 
@@ -77,6 +86,8 @@ export const useGitStore = create<GitState>((set) => ({
   setRebaseStatus: (status) => set({ rebaseStatus: status }),
 
   setRebaseConflicts: (conflicts) => set({ rebaseConflicts: conflicts }),
+
+  setRebaseError: (error) => set({ rebaseError: error }),
 
   setPushRejected: (rejected) => set({ pushRejected: rejected }),
 
@@ -128,7 +139,9 @@ export const useGitStore = create<GitState>((set) => ({
     // rebase_aborted). The HTTP response only signals that the flow has
     // started server-side — the actual rebase + agent resolution loop runs
     // asynchronously and reports progress via WS.
-    set({ rebaseStatus: "in_progress", pushRejected: false });
+    //
+    // Clear any prior error so a retry starts from a clean slate.
+    set({ rebaseStatus: "in_progress", pushRejected: false, rebaseError: null });
     try {
       const res = await fetch(`/api/sessions/${sessionId}/git/rebase`, {
         method: "POST",
@@ -140,8 +153,12 @@ export const useGitStore = create<GitState>((set) => ({
         throw new Error(data.error);
       }
       // Response is { status: "started" }; WS events take over from here.
-    } catch {
-      set({ rebaseStatus: "idle" });
+    } catch (err) {
+      // Surface the HTTP-level failure so the banner can show why instead
+      // of silently bouncing back to idle. Async server-side failures
+      // (post-200) come through the `rebase_aborted` WS event's `reason`.
+      const message = err instanceof Error ? err.message : "Rebase failed";
+      set({ rebaseStatus: "idle", rebaseError: message });
     }
   },
 

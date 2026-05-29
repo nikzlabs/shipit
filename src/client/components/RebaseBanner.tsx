@@ -14,6 +14,7 @@ import {
   CircleNotchIcon,
   WarningIcon,
   XCircleIcon,
+  XIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 
@@ -26,11 +27,48 @@ function Spinner() {
 export function RebaseBanner({ sessionId }: { sessionId: string }) {
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const rebaseConflicts = useGitStore((s) => s.rebaseConflicts);
+  const rebaseError = useGitStore((s) => s.rebaseError);
+  const setRebaseError = useGitStore((s) => s.setRebaseError);
   const pushRejected = useGitStore((s) => s.pushRejected);
   const startRebase = useGitStore((s) => s.startRebase);
   const abortRebase = useGitStore((s) => s.abortRebase);
 
   const baseBranch = "main";
+
+  // Error state takes priority over the push-rejected / idle branches: a
+  // failed rebase was just attempted, so surface the reason even if a
+  // push-rejected nudge is also live.
+  if (rebaseError && rebaseStatus === "idle") {
+    return (
+      <div className="mx-4 last:mb-2">
+        <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) text-xs">
+          <XCircleIcon size={ICON_SIZE.SM} className="text-(--color-error) shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="text-(--color-text-secondary)">Rebase failed</div>
+            <div className="mt-0.5 text-(--color-text-tertiary) break-words">{rebaseError}</div>
+          </div>
+          {pushRejected && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => startRebase(sessionId, baseBranch)}
+            >
+              <ArrowsClockwiseIcon size={ICON_SIZE.XS} />
+              Retry
+            </Button>
+          )}
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setRebaseError(null)}
+            className="shrink-0 text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
+          >
+            <XIcon size={ICON_SIZE.SM} />
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // Nothing to show
   if (!pushRejected && rebaseStatus === "idle") return null;
