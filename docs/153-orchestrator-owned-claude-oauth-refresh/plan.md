@@ -1,6 +1,5 @@
 ---
-status: planned
-priority: high
+status: done
 description: Move Claude OAuth refresh out of session CLIs into a single orchestrator-owned process to eliminate the multi-session refresh stampede that breaks every Claude session ~8h after auth.
 ---
 
