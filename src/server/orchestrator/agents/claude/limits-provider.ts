@@ -17,9 +17,9 @@
  * `setRateLimits()`. Same pattern as `CodexLimitsProvider`.
  */
 
-import type { AuthManager } from "../auth.js";
-import type { LimitsProvider } from "./types.js";
-import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../shared/types.js";
+import type { AuthManager } from "./auth-manager.js";
+import type { LimitsProvider } from "../types.js";
+import type { SubscriptionLimits, SubscriptionLimitsWindow } from "../../../shared/types.js";
 
 export interface ClaudeLimitsDeps {
   authManager: Pick<AuthManager, "getAccessToken">;

@@ -41,10 +41,10 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { stripAnsi } from "../shared/strip-ansi.js";
-import type { AgentAuthManager } from "./agent-auth-manager.js";
-import type { AgentId } from "../shared/types.js";
-import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
+import { stripAnsi } from "../../../shared/strip-ansi.js";
+import type { AgentAuthManager } from "../../agent-auth-manager.js";
+import type { AgentId } from "../../../shared/types.js";
+import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
 
 // ---- Public types ----
 

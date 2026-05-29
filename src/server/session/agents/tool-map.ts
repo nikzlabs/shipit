@@ -2,9 +2,14 @@
  * Canonical tool name mapping — normalizes agent-specific tool names into
  * a shared vocabulary so the client can render tool activity labels and
  * diff views without knowing which CLI is running.
+ *
+ * The per-agent slices live under `./<agentId>/tool-map.ts`. Adding a new
+ * backend is one new slice + one entry in `AGENT_TOOL_MAPS`. See docs/155.
  */
 
 import type { AgentId } from "./agent-process.js";
+import { CLAUDE_TOOL_MAP } from "./claude/tool-map.js";
+import { CODEX_TOOL_MAP } from "./codex/tool-map.js";
 
 export type CanonicalTool =
   | "file_read"
@@ -17,37 +22,6 @@ export type CanonicalTool =
   | "web_search"
   | "ask_user"
   | "browser";
-
-const CLAUDE_TOOL_MAP: Record<string, CanonicalTool> = {
-  Read: "file_read",
-  Write: "file_write",
-  Edit: "file_edit",
-  Bash: "shell",
-  Glob: "glob",
-  Grep: "grep",
-  WebFetch: "web_fetch",
-  WebSearch: "web_search",
-  AskUserQuestion: "ask_user",
-  // MCP browser tools (prefixed by CLI)
-  "mcp__playwright__browser_navigate": "browser",
-  "mcp__playwright__browser_snapshot": "browser",
-  "mcp__playwright__browser_click": "browser",
-  "mcp__playwright__browser_type": "browser",
-  "mcp__playwright__browser_take_screenshot": "browser",
-  "mcp__playwright__browser_scroll": "browser",
-  "mcp__playwright__browser_hover": "browser",
-  "mcp__playwright__browser_select_option": "browser",
-};
-
-const CODEX_TOOL_MAP: Record<string, CanonicalTool> = {
-  shell: "shell",
-  command: "shell",
-  file_write: "file_write",
-  file_read: "file_read",
-  file_edit: "file_edit",
-  apply_diff: "file_edit",
-  apply_patch: "file_edit",
-};
 
 const AGENT_TOOL_MAPS: Record<AgentId, Record<string, CanonicalTool>> = {
   claude: CLAUDE_TOOL_MAP,

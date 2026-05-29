@@ -9,9 +9,9 @@
 
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
-import { ClaudeProcess, StreamingClaudeProcess } from "../claude.js";
-import type { ClaudeEvent, ClaudeMcpServerInit } from "../../shared/types.js";
-import { CLAUDE_PERMISSION_MODES } from "../../shared/types.js";
+import { ClaudeProcess, StreamingClaudeProcess } from "./process.js";
+import type { ClaudeEvent, ClaudeMcpServerInit } from "../../../shared/types.js";
+import { CLAUDE_PERMISSION_MODES } from "../../../shared/types.js";
 import type {
   AgentId,
   AgentCapabilities,
@@ -21,10 +21,10 @@ import type {
   AgentProcess,
   AgentProcessEvents,
   AgentRunParams,
-} from "./agent-process.js";
-import type { McpServerStatus } from "../../shared/types/mcp-types.js";
-import type { SubscriptionLimitsWindow } from "../../shared/types/usage-limits-types.js";
-import { resolveMcpServer } from "../mcp-resolve.js";
+} from "../agent-process.js";
+import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
+import type { SubscriptionLimitsWindow } from "../../../shared/types/usage-limits-types.js";
+import { resolveMcpServer } from "../../mcp-resolve.js";
 
 export class ClaudeAdapter
   extends EventEmitter<AgentProcessEvents>

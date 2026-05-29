@@ -6,7 +6,7 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { RepoGit } from "../repo-git.js";
 import { SessionManager } from "../sessions.js";
-import type { AuthManager } from "../auth.js";
+import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
 import type { FastifyInstance } from "fastify";

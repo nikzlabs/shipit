@@ -26,7 +26,7 @@ import {
   createTestCredentialStore,
   createTestDatabaseManager,
 } from "./test-helpers.js";
-import type { AuthManager } from "../auth.js";
+import type { AuthManager } from "../agents/claude/auth-manager.js";
 
 describe("GET /api/sessions/:id/diagnostics", () => {
   let app: FastifyInstance;

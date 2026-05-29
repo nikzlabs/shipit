@@ -104,16 +104,21 @@ When the ShipIt repo is opened in production ShipIt, the outer orchestrator surf
 src/
   server/
     session/         Code that runs inside a session container
-      claude.ts      ClaudeProcess — spawns CLI, parses NDJSON, emits events
       terminal.ts    TerminalProcess — interactive PTY
       file-watcher.ts     FileWatcher — recursive fs.watch, debounced change events
       session-worker.ts   Fastify server that runs inside each container
-      agents/        Agent process adapters
+      agents/        Agent process adapters (docs/155)
         agent-process.ts   Base agent interface
         agent-registry.ts  Registry of available agents
-        claude-adapter.ts, codex-adapter.ts  CLI adapters
-        tool-map.ts        Tool name normalization
+        tool-map.ts        Canonical tool-name mapping (merges per-agent slices)
         index.ts           Barrel export
+        claude/      Claude-specific session-side code
+          adapter.ts       ClaudeAdapter — implements AgentProcess
+          process.ts       ClaudeProcess — spawns CLI, parses NDJSON, emits events
+          tool-map.ts      Claude → canonical tool-name slice
+        codex/       Codex-specific session-side code
+          adapter.ts       CodexAdapter — implements AgentProcess
+          tool-map.ts      Codex → canonical tool-name slice
 
     orchestrator/    Code that runs in the main process
       index.ts       Entry point — buildApp()
@@ -138,7 +143,16 @@ src/
       container-health.ts     Container health checks
       preview-proxy.ts     Reverse proxy for container previews
       docker-proxy.ts      Docker socket proxy for secure container access
-      auth.ts        AuthManager — Claude CLI OAuth
+      agents/        Per-agent orchestrator-side code (docs/155)
+        index.ts           buildAgentRuntime() — assembles per-agent maps
+        types.ts           LimitsProvider interface (and future runtime types)
+        claude/      AuthManager (OAuth), ClaudeOAuthRefresher, ClaudeLimitsProvider,
+                     prepareClaudeRunParams, CLAUDE_PARALLEL_SESSIONS_SECTION
+        codex/       CodexAuthManager (device flow), CodexLimitsProvider,
+                     prepareCodexRunParams, CODEX_PARALLEL_SESSIONS_SECTION
+      agent-auth-manager.ts   Shared AgentAuthManager interface
+      agent-run-params-prep.ts  PrepareRunParamsFn type + identity fallback
+      limits-registry.ts   LimitsRegistry — broadcasts subscription pills
       github-auth.ts GitHubAuthManager — GitHub token + API
       github-auth-checks.ts, github-auth-prs.ts, github-auth-repos.ts
       credential-store.ts  CredentialStore — unified credentials

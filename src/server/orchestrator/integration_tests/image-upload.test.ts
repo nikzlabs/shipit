@@ -6,7 +6,7 @@ import { buildApp } from "../index.js";
 import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
-import { AuthManager } from "../auth.js";
+import { AuthManager } from "../agents/claude/auth-manager.js";
 import { GitHubAuthManager } from "../github-auth.js";
 
 

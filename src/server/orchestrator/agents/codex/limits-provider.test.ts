@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { CodexLimitsProvider } from "./codex-limits.js";
-import type { CodexAuthManager } from "../codex-auth.js";
+import { CodexLimitsProvider } from "./limits-provider.js";
+import type { CodexAuthManager } from "./auth-manager.js";
 
 function makeAuthStub(
   result: Awaited<ReturnType<CodexAuthManager["getAccessToken"]>>,

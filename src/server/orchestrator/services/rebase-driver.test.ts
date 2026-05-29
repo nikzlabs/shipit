@@ -13,7 +13,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import type { AuthManager } from "../auth.js";
+import type { AuthManager } from "../agents/claude/auth-manager.js";
 
 /**
  * Fake agent for rebase tests. The test injects a "resolution function" that

@@ -5,7 +5,7 @@ import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, SessionRunnerIn
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import type { AuthManager } from "../auth.js";
+import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
 

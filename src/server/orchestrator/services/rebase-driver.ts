@@ -25,7 +25,7 @@ import type { AgentProcess, AgentId, AgentRunParams } from "../../shared/types.j
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
-import type { AuthManager } from "../auth.js";
+import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
 import { wireAgentListeners, type AgentListenerDeps } from "../ws-handlers/agent-listeners.js";

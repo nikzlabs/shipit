@@ -13,6 +13,8 @@
  */
 
 import type { AgentId } from "../shared/types.js";
+import { CLAUDE_PARALLEL_SESSIONS_SECTION } from "./agents/claude/system-prompt.js";
+import { CODEX_PARALLEL_SESSIONS_SECTION } from "./agents/codex/system-prompt.js";
 
 export interface AgentSystemInstructionOptions {
   /**
@@ -46,32 +48,12 @@ export function buildAgentSystemInstructions(
   // Per-agent "when to reach for `shipit session create`" guidance. The
   // section is only emitted when an `agentId` is supplied — the no-options
   // rendering used by the Settings UI baseline and the no-options test
-  // fixture skips it. The wording differs by agent because Claude has the
-  // in-process `Task` primitive (the right tool for in-turn fan-out) and
-  // Codex does not. See docs/117-agent-spawned-sessions/plan.md.
+  // fixture skips it. Per-agent wording lives in
+  // `agents/<id>/system-prompt.ts`; see docs/117 and docs/155 hair 9.
   const parallelSessionsSection = agentId === "claude"
-    ? `
-## Parallel sessions
-
-ShipIt sessions are persistent, sidebar-visible workspaces. Each one has its own container, branch, and chat history. The user can open them, switch between them, and review each as its own pull request.
-
-You have two fan-out primitives. They are NOT interchangeable:
-
-- Use the **\`Task\` tool** for in-turn fan-out: parallel research, parallel codegen on different files, anything where you will synthesize the results in your current reply. \`Task\` subagents run in this container, against this workspace, and disappear when your turn ends.
-- Use **\`shipit session create -p "<prompt>"\`** ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Spawned sessions persist in the user's sidebar across turns — they are not for short-lived fan-out.
-
-Spawning a session is heavy and user-visible: a new container, a new branch, a new sidebar entry. If you are unsure, ask the user. See /shipit-docs/sessions.md for the full CLI surface and the rejected subcommands.
-`
+    ? CLAUDE_PARALLEL_SESSIONS_SECTION
     : agentId === "codex"
-      ? `
-## Parallel sessions
-
-ShipIt sessions are persistent, sidebar-visible workspaces. Each one has its own container, branch, and chat history. The user can open them, switch between them, and review each as its own pull request.
-
-You can spawn a sibling session via \`shipit session create -p "<prompt>"\`. This is your only fan-out primitive — there is no in-process subagent tool available to you.
-
-Reach for it ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Do not use it as a generic optimization for your own work — spawning a session is heavy and user-visible (a new container, a new branch, a new sidebar entry). See /shipit-docs/sessions.md for the full CLI surface and the rejected subcommands.
-`
+      ? CODEX_PARALLEL_SESSIONS_SECTION
       : "";
 
   return `\

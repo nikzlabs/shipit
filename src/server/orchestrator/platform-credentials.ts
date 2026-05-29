@@ -26,7 +26,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { AuthManager } from "./auth.js";
+import type { AuthManager } from "./agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import { MCP_OAUTH_PROVIDERS } from "./mcp-oauth-providers.js";

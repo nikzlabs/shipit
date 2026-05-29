@@ -3,8 +3,8 @@ import type { IPty } from "node-pty";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../shared/types.js";
-import { stripAnsi } from "../shared/strip-ansi.js";
+import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../../../shared/types.js";
+import { stripAnsi } from "../../../shared/strip-ansi.js";
 
 /**
  * Phrases that signal an auth failure in CLI output. Used both for non-JSON
