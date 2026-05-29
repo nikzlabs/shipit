@@ -214,8 +214,10 @@ export function AppLayout({
                 onClick={onCloseMobileSidebar}
                 className="absolute inset-0 bg-(--color-bg-overlay)"
               />
-              {/* Drawer — full width on phones */}
-              <div className="relative flex h-full w-full max-w-sm bg-(--color-bg-primary) shadow-xl animate-in slide-in-from-left">
+              {/* Drawer — full width on mobile; the close (X) button is the
+                  primary dismiss affordance, so we don't reserve a backdrop
+                  gutter on the right. */}
+              <div className="relative flex h-full w-full bg-(--color-bg-primary) shadow-xl animate-in slide-in-from-left">
                 <SessionSidebar
                   sessions={sessions}
                   currentSessionId={currentSessionId}
