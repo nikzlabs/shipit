@@ -12,7 +12,7 @@
  * See docs/135-subscription-limits-badge/plan.md.
  */
 
-import type { AgentId, SubscriptionLimits } from "../../shared/types.js";
+import type { AgentId, SubscriptionLimits, SubscriptionLimitsWindow } from "../../shared/types.js";
 
 export interface LimitsProvider {
   /** Which agent backend this provider belongs to. */
@@ -34,4 +34,16 @@ export interface LimitsProvider {
    * `null` when the provider has no snapshot yet or has been signed out.
    */
   fetch(): Promise<SubscriptionLimits | null>;
+
+  /**
+   * Record a fresh rate-limit snapshot pushed from an agent turn (Claude:
+   * `rate_limit_event` stream messages; Codex: `account/rateLimits/updated`
+   * notification). Promoted onto the interface so the orchestrator's
+   * `recordAgentRateLimits` can be a one-line map lookup instead of an
+   * if/else cascade keyed by `agentId`. (docs/155)
+   */
+  setRateLimits(
+    session: SubscriptionLimitsWindow | null,
+    weekly: SubscriptionLimitsWindow | null,
+  ): void;
 }

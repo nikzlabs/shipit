@@ -6,6 +6,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import Docker from "dockerode";
 import type { AgentId, DockerMemoryStats } from "../shared/types.js";
+import { getAuthEnvKey } from "../shared/agent-registry.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
 import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
@@ -304,6 +305,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       console.error("[claude-oauth-refresh] nudge failed:", err);
     });
   };
+  /**
+   * docs/155 — per-agent dispatch for the WS `auth_required` handler. Each
+   * backend that needs a side effect on auth failure registers itself here;
+   * the listener calls `onAgentAuthRequired(agentId)` without knowing which
+   * agent it is. Adding a backend with its own hook (e.g. Codex device-flow
+   * restart) means one `set()` here.
+   */
+  const agentAuthRequiredHooks = new Map<AgentId, () => void>();
+  agentAuthRequiredHooks.set("claude", nudgeClaudeOAuthRefresh);
+  const onAgentAuthRequired = (agentId: AgentId): void => {
+    agentAuthRequiredHooks.get(agentId)?.();
+  };
   // docs/149 — same shape as the WS handler's readSystemPrompt, hoisted to
   // app scope so the system-turn hook can read it without per-connection state.
   const readSystemPromptApp = async (): Promise<string | undefined> => {
@@ -322,6 +335,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     credentialStore, secretStore, platformCredentials, runtimeMode, broadcastLog,
     usageManager, authManager,
     nudgeClaudeOAuthRefresh,
+    onAgentAuthRequired,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     ...(credentialsDir ? { credentialsDir } : {}),
     readSystemPrompt: readSystemPromptApp,
@@ -448,17 +462,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   /**
    * Push a fresh rate-limit snapshot for any agent into its provider and
-   * refresh the badge immediately. No-op in test mode (no registry). The
-   * dispatch is keyed by `agentId` so a single callback serves every
-   * backend — same contract from `agent-listeners.ts` for both Claude and
-   * Codex.
+   * refresh the badge immediately. The dispatch is a one-line lookup against
+   * the `limitsProviders` map built above — adding a new backend means one
+   * `Map.set()` at construction, not a new branch here. (docs/155)
+   * No-op for unknown agents and in test mode (no registry).
    */
   const recordAgentRateLimits: AppCtx["recordAgentRateLimits"] = (agentId, session, weekly) => {
-    if (agentId === "claude") {
-      claudeLimitsProvider.setRateLimits(session, weekly);
-    } else if (agentId === "codex") {
-      codexLimitsProvider.setRateLimits(session, weekly);
-    }
+    limitsProviders.get(agentId)?.setRateLimits(session, weekly);
     limitsRegistry?.markAuthRefreshed(agentId);
   };
 
@@ -559,6 +569,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       supportsReview: a.capabilities.supportsReview,
       supportsSteering: a.capabilities.supportsSteering,
       supportedPermissionModes: a.capabilities.supportedPermissionModes,
+      skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
     }));
     client.write(`event: agent_list\ndata: ${JSON.stringify({ agents })}\n\n`);
     client.write(`event: provider_accounts\ndata: ${JSON.stringify({ accounts: providerAccountManager.list() })}\n\n`);
@@ -1265,6 +1276,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         recordAgentRateLimits,
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},
         nudgeClaudeOAuthRefresh,
+        onAgentAuthRequired,
         workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
       };
@@ -1373,8 +1385,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             if (!info) { send({ type: "error", message: `Unknown agent: ${agentId}` }); return; }
             if (!info.installed) { send({ type: "error", message: `${info.name} CLI is not installed` }); return; }
             if (!info.authConfigured) {
-              const envKey = agentId === "codex" ? "OPENAI_API_KEY" : "";
-              send({ type: "error", message: `${envKey || "API key"} is not set. Add it in Settings → Agents.` });
+              const envKey = getAuthEnvKey(agentId);
+              send({ type: "error", message: `${envKey ?? "API key"} is not set. Add it in Settings → Agents.` });
               return;
             }
             ctx.setActiveAgentId(agentId);

@@ -417,6 +417,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     recordAgentRateLimits: ctx.recordAgentRateLimits,
     getSubscriptionLimitsSnapshot: ctx.getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh: ctx.nudgeClaudeOAuthRefresh,
+    onAgentAuthRequired: ctx.onAgentAuthRequired,
   };
   wireAgentListeners(currentAgent, runner, listenerDeps, {
     isNewSession,

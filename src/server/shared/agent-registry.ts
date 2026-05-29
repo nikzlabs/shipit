@@ -38,6 +38,8 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       models: ["sonnet", "opus", "haiku"],
       supportsReview: true,
       supportsSteering: true,
+      skillsDirName: ".claude",
+      skillInvocationPrefix: "/",
     },
   },
   {
@@ -71,14 +73,31 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       // works on both backends.
       supportsReview: true,
       supportsSteering: true,
+      skillsDirName: ".codex",
+      skillInvocationPrefix: "$",
     },
   },
 ];
 
-/** Env var required for each agent's auth (Claude uses OAuth, not an env var). */
+/**
+ * Env var required for each agent's auth (Claude uses OAuth, not an env var).
+ * Consumers should go through {@link getAuthEnvKey} rather than reading this
+ * map directly so a new backend's key (e.g. `CURSOR_API_KEY`) is one edit
+ * here, not three across services/settings + index.ts. (docs/155)
+ */
 const AUTH_ENV_KEYS: Partial<Record<AgentId, string>> = {
   codex: "OPENAI_API_KEY",
 };
+
+/**
+ * Name of the env var that holds an agent's API key, or `null` for backends
+ * that don't use one (Claude — OAuth). The string is the human-facing
+ * identifier the UI surfaces ("OPENAI_API_KEY is not set"), so don't change
+ * it without also updating the matching settings page copy.
+ */
+export function getAuthEnvKey(agentId: AgentId): string | null {
+  return AUTH_ENV_KEYS[agentId] ?? null;
+}
 
 /**
  * Literal exact-match allowlist of env var keys that can be set via the
@@ -198,7 +217,7 @@ export class AgentRegistry {
       // bill via Platform API. See docs/119-codex-subscription-auth/plan.md.
       if (this.checkCodexAuth()) return true;
     }
-    const envKey = AUTH_ENV_KEYS[id];
+    const envKey = getAuthEnvKey(id);
     if (!envKey) return false;
     const val = process.env[envKey];
     return typeof val === "string" && val.length > 0;

@@ -525,6 +525,8 @@ export class FakeClaudeProcess extends EventEmitter {
     models: ["claude-sonnet-4-20250514"],
     supportsReview: true,
     supportsSteering: false,
+    skillsDirName: ".claude",
+    skillInvocationPrefix: "/",
   };
 
   public runCalled = false;

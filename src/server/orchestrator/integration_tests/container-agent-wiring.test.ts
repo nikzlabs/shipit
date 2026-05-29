@@ -33,6 +33,8 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
     models: [] as string[],
     supportsReview: true,
     supportsSteering: false,
+    skillsDirName: ".claude",
+    skillInvocationPrefix: "/",
   };
 
   runCalled = false;

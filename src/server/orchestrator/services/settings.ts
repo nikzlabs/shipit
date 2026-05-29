@@ -7,7 +7,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
-import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
+import { getAuthEnvKey, isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AgentId, ProviderAccount } from "../../shared/types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
@@ -30,6 +30,7 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
     supportsReview: a.capabilities.supportsReview,
     supportsSteering: a.capabilities.supportsSteering,
     supportedPermissionModes: a.capabilities.supportedPermissionModes,
+    skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
   }));
 }
 
@@ -163,8 +164,8 @@ export function setAgent(
   if (!info) throw new ServiceError(400, `Unknown agent: ${agentId}`);
   if (!info.installed) throw new ServiceError(400, `${info.name} CLI is not installed in this environment`);
   if (!info.authConfigured) {
-    const envKey = agentId === "codex" ? "OPENAI_API_KEY" : "";
-    throw new ServiceError(400, `${envKey || "API key"} is not set. Add it in Settings → Agents.`);
+    const envKey = getAuthEnvKey(agentId);
+    throw new ServiceError(400, `${envKey ?? "API key"} is not set. Add it in Settings → Agents.`);
   }
   return { agentId };
 }

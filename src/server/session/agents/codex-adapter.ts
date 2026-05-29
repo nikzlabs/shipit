@@ -260,6 +260,8 @@ export class CodexAdapter
     // is available to the parent and any subagent it spawns.
     supportsReview: true,
     supportsSteering: true,
+    skillsDirName: ".codex",
+    skillInvocationPrefix: "$",
   };
 
   private proc: ChildProcess | null = null;

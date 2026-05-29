@@ -530,6 +530,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     recordAgentRateLimits: ctx.recordAgentRateLimits,
     getSubscriptionLimitsSnapshot: ctx.getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh: ctx.nudgeClaudeOAuthRefresh,
+    onAgentAuthRequired: ctx.onAgentAuthRequired,
   };
   wireAgentListeners(currentAgent, answerRunner, answerListenerDeps, {
     isNewSession: false,

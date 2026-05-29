@@ -139,9 +139,19 @@ export interface AppCtx {
    * a stale per-session token gets healed even if the next scheduled tick is
    * still minutes away. Single-flight inside the refresher; safe to call on
    * every auth_required without coordination. Optional — not wired in test
-   * or local-runtime contexts.
+   * or local-runtime contexts. Kept as a direct ref for non-WS callers
+   * (credentials sync); the WS-side `auth_required` handler routes through
+   * the agent-keyed {@link onAgentAuthRequired} table. (docs/155)
    */
   nudgeClaudeOAuthRefresh?: () => void;
+  /**
+   * docs/155 — per-agent dispatch for the WS-level `auth_required` event.
+   * Lets each backend register its own side effect (Claude: nudge the OAuth
+   * refresher; Codex: a future device-flow restart) at app-DI time so the
+   * listener's `auth_required` branch is agent-agnostic. Optional — no-op
+   * if the agent has no registered hook.
+   */
+  onAgentAuthRequired?: (agentId: AgentId) => void;
 
   // Config
   workspaceDir: string;
