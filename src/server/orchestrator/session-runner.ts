@@ -281,6 +281,18 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   isStreamingActive: boolean;
   /**
+   * docs/138 — the permission mode currently applied to the resident
+   * streaming agent process. Set after `agent.run()` at spawn time with the
+   * mode the CLI was launched with; updated when a mid-stream
+   * `set_permission_mode` control_request is pushed. Used by
+   * `runAgentWithMessage` to detect mode toggles between turns and push the
+   * control_request before the next `sendUserMessage` — otherwise the
+   * persistent CLI keeps its spawn-time mode for life and toggling the chip
+   * has no effect. Volatile: reset on dispose / setAgent(null) so a fresh
+   * spawn re-applies cleanly.
+   */
+  appliedPermissionMode: PermissionMode | undefined;
+  /**
    * docs/125 — per-turn allow-list for the chat-native review tool. Set to the
    * authorized file path when a `send_review_message` turn starts; the
    * `submit_review_comments` tool handler rejects any call whose `file_path`
@@ -465,6 +477,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _wasInterrupted = false;
   private _guardedUnavailable = false;
   private _isStreamingActive = false;
+  private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _activeReviewFilePath: string | null = null;
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
@@ -507,6 +520,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
   get isStreamingActive(): boolean { return this._isStreamingActive; }
   set isStreamingActive(v: boolean) { this._isStreamingActive = v; }
+  get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
+  set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
   get activeReviewFilePath(): string | null { return this._activeReviewFilePath; }
   set activeReviewFilePath(v: string | null) { this._activeReviewFilePath = v; }
   get accumulatedText(): string { return this._accumulatedText; }
@@ -524,7 +539,15 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
   getAgent(): AgentProcess | null { return this.agent; }
-  setAgent(a: AgentProcess | null): void { this.agent = a; }
+  setAgent(a: AgentProcess | null): void {
+    this.agent = a;
+    // Dropping the agent reference means the next turn either reuses a
+    // newly-set agent (which `runAgentWithMessage` re-tracks at spawn) or
+    // spawns fresh — either way the previously-applied mode is no longer
+    // authoritative. Reset so a stale value can't suppress a needed
+    // control_request on the next turn.
+    if (a === null) this._appliedPermissionMode = undefined;
+  }
 
   get messageQueue(): QueuedMessage[] { return this._messageQueue; }
   get queueLength(): number { return this._messageQueue.length; }
@@ -686,6 +709,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this._turnEventBuffer = [];
     this._isRunning = false;
     this._isStreamingActive = false;
+    this._appliedPermissionMode = undefined;
     this.emit("disposed");
     this.removeAllListeners();
   }

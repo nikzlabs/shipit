@@ -731,6 +731,21 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     // of issuing another `/agent/start` — the worker would 409 against the
     // still-running process and the orchestrator would fall back to a
     // `/agent/kill` + `/agent/start` cycle (SIGTERM, exit 143).
+    //
+    // docs/138 — the persistent CLI keeps its spawn-time `--permission-mode`
+    // for life unless we explicitly tell it otherwise. If the user toggled
+    // the mode chip between turns, push a `set_permission_mode`
+    // control_request before the user message so the next turn actually
+    // runs in the requested mode. Without this, plan → auto (or auto →
+    // plan, guarded → anything) updates the UI but leaves the CLI stuck.
+    if (
+      runner &&
+      runner.appliedPermissionMode !== effectivePermissionMode &&
+      existingAgent.setPermissionMode
+    ) {
+      existingAgent.setPermissionMode(effectivePermissionMode);
+      runner.appliedPermissionMode = effectivePermissionMode;
+    }
     existingAgent.sendUserMessage(prompt);
   } else {
     // docs/149 — assemble the full AgentRunParams via the shared helper so
@@ -753,6 +768,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
     });
     currentAgent.run({ ...runParams, useStreaming });
+    // Track what the just-spawned CLI was given so the next turn can detect a
+    // mode toggle and push a control_request instead of respawning.
+    if (runner) runner.appliedPermissionMode = effectivePermissionMode;
   }
   // "Agent process started" is now emitted from agent-listeners.ts
   // when the agent_init event arrives, so the log reflects an actual

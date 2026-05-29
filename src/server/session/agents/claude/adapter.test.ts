@@ -482,6 +482,47 @@ describe("ClaudeAdapter", () => {
     expect(inner.killed).toBe(true);
   });
 
+  describe("setPermissionMode (docs/138)", () => {
+    it("is a no-op when the inner process is not a StreamingClaudeProcess", () => {
+      // The one-shot PTY ClaudeProcess re-applies the mode at every spawn —
+      // there's nothing to push mid-process. Adapter must not throw or
+      // misroute a control_request to the wrong inner.
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+
+      adapter.setPermissionMode("plan");
+      adapter.setPermissionMode("auto");
+      adapter.setPermissionMode(undefined);
+
+      expect(inner.stdinData).toEqual([]);
+    });
+
+    it("forwards to the streaming inner with the ShipIt → CLI mapping", async () => {
+      // Build a fake StreamingClaudeProcess subclass so `instanceof` passes
+      // without spawning a real CLI. Capture the cliMode that the adapter
+      // pushes through `inner.setPermissionMode`.
+      const { StreamingClaudeProcess } = await import("./process.js");
+      const calls: string[] = [];
+      class FakeStreaming extends StreamingClaudeProcess {
+        override setPermissionMode(cliMode: string): void {
+          calls.push(cliMode);
+        }
+      }
+      const inner = new FakeStreaming();
+      const adapter = new ClaudeAdapter(inner as never);
+
+      adapter.setPermissionMode("plan");
+      adapter.setPermissionMode("guarded");
+      adapter.setPermissionMode("auto");
+      adapter.setPermissionMode(undefined);
+
+      // plan → "plan", guarded → CLI "auto" (the classifier-gated mode),
+      // ShipIt "auto" / undefined → CLI "default" (no-flag default the CLI
+      // reports in its init event).
+      expect(calls).toEqual(["plan", "auto", "default", "default"]);
+    });
+  });
+
   // docs/088 — Per-MCP-server liveness signal extracted from the Claude CLI
   // init event. These tests pin the contract that the worker depends on for
   // its `mcp_server_status` SSE broadcasts.

@@ -26,7 +26,7 @@
 
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
-import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
+import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode } from "../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, AgentDispatchOptions } from "./session-runner.js";
 import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
 import type { SSEEvent } from "./sse-client.js";
@@ -78,6 +78,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _wasInterrupted = false;
   private _guardedUnavailable = false;
   private _isStreamingActive = false;
+  private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _activeReviewFilePath: string | null = null;
 
   // Terminal (remote — runs inside container)
@@ -219,6 +220,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
   get isStreamingActive(): boolean { return this._isStreamingActive; }
   set isStreamingActive(v: boolean) { this._isStreamingActive = v; }
+  get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
+  set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
   get activeReviewFilePath(): string | null { return this._activeReviewFilePath; }
   set activeReviewFilePath(v: string | null) { this._activeReviewFilePath = v; }
 
@@ -249,6 +252,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // When the orchestrator sets the agent, it's creating a new one to run.
     // For the container runner, we create a proxy that receives events via SSE.
     this._agent = a as ProxyAgentProcess | null;
+    // See SessionRunner.setAgent — dropping the ref invalidates the
+    // previously-applied permission mode so the next turn re-applies cleanly.
+    if (a === null) this._appliedPermissionMode = undefined;
   }
 
   // --- Message queue ---
@@ -752,6 +758,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /** Inject a user message into the running streaming agent (live steering, docs/140). */
   async sendAgentMessage(text: string): Promise<void> {
     await workerPostMessage(this.workerUrl, text);
+  }
+
+  /**
+   * Change the streaming agent's permission mode mid-process (docs/138 /
+   * docs/140). `null` on the wire means ShipIt "auto" (no flag); the worker
+   * adapter maps to the CLI's `default` mode.
+   */
+  async setAgentPermissionModeOnWorker(mode: PermissionMode | undefined): Promise<void> {
+    await workerPost(this.workerUrl, "/agent/permission-mode", { mode: mode ?? null });
   }
 
   // --- Worker communication: terminal ---
@@ -1442,6 +1457,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     console.warn(`[container-runner:${this.sessionId}] Detected stuck running=true (worker reports no agent). Resetting.`);
     this._isRunning = false;
     this._isStreamingActive = false;
+    this._appliedPermissionMode = undefined;
     this._agent = null;
     this.emitMessage({
       type: "session_status",
@@ -1505,6 +1521,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.turn.reset();
     this._isRunning = false;
     this._isStreamingActive = false;
+    this._appliedPermissionMode = undefined;
     this.termBuf.reset();
     this.emit("disposed");
     this.removeAllListeners();

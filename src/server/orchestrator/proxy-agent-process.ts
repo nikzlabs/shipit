@@ -42,6 +42,7 @@ export interface ProxyAgentRunner {
   sendAgentMessage(text: string): Promise<void>;
   interruptAgentOnWorker(): Promise<void>;
   killAgentOnWorker(): Promise<void>;
+  setAgentPermissionModeOnWorker(mode: PermissionMode | undefined): Promise<void>;
 }
 
 /**
@@ -127,6 +128,19 @@ export class ProxyAgentProcess extends EventEmitter<{
   interrupt(): void {
     this.runner.interruptAgentOnWorker().catch((err: unknown) => {
       this.emit("error", describeWorkerError(err, "interrupt"));
+    });
+  }
+
+  /**
+   * Fire-and-forget POST to worker /agent/permission-mode. Failures land on
+   * the Logs panel rather than `error`: a failed mode switch shouldn't tear
+   * down the turn (the CLI keeps its previous mode and the user can re-try),
+   * and the next user message still goes through.
+   */
+  setPermissionMode(mode: PermissionMode | undefined): void {
+    this.runner.setAgentPermissionModeOnWorker(mode).catch((err: unknown) => {
+      const msgText = err instanceof Error ? err.message : String(err);
+      this.emit("log", "server", `Failed to change permission mode on worker: ${msgText}`);
     });
   }
 

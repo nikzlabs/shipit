@@ -560,6 +560,12 @@ export class FakeClaudeProcess extends EventEmitter {
   public interrupted = false;
   public stdinData: string[] = [];
   public readonly isStreaming = false;
+  /**
+   * docs/138 — every `setPermissionMode` call the orchestrator made on this
+   * agent, in order. Lets tests assert that a mid-stream mode toggle
+   * actually pushes a control_request instead of being silently swallowed.
+   */
+  public permissionModeCalls: (string | undefined)[] = [];
 
   /** Override emit to auto-translate raw Claude events → AgentEvent. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -620,6 +626,10 @@ export class FakeClaudeProcess extends EventEmitter {
 
   sendUserMessage(text: string) {
     this.writeStdin(text);
+  }
+
+  setPermissionMode(mode: string | undefined) {
+    this.permissionModeCalls.push(mode);
   }
 
   /**
