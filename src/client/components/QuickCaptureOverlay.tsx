@@ -172,39 +172,47 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
             This repo is still cloning.
           </div>
         )}
-        <div className="py-3">
-          <MessageInput
-            surface="overlay"
-            onSend={(payload) => void handleSend(payload)}
-            disabled={disabled}
-            isLoading={submitting}
-            permissionMode={permissionMode}
-            onPermissionModeChange={(mode) => useSettingsStore.getState().setPermissionMode(undefined, mode)}
-            pendingFiles={pendingFiles}
-            onRemoveFile={(index) => setPendingFiles((files) => files.filter((_, i) => i !== index))}
-            onAddFile={(path) => setPendingFiles((files) => files.some((f) => f.path === path) ? files : [...files, { path }])}
-            fileTree={[]}
-            skills={[]}
-            agents={agentList}
-            activeAgentId={selectedAgentId}
-            onAgentChange={(agentId) => {
-              saveAgentId(agentId);
-              setSelectedAgentId(agentId);
-              useUiStore.getState().setActiveAgentId(agentId);
-            }}
-            onModelChange={(model) => {
-              saveModelId(model);
-              setSelectedModel(model);
-            }}
-            modelInfo={modelInfo}
-            focusKey={QUICK_CAPTURE_FOCUS_KEY}
-            hasActiveSession={false}
-          />
-        </div>
-        <div className="flex items-center justify-between border-t border-(--color-border-primary) px-4 py-3 text-xs text-(--color-text-tertiary)">
-          <span>Enter to send · Shift+Enter for newline · Esc to dismiss</span>
-          {submitting && <span className="inline-flex items-center gap-1"><CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" /> Starting</span>}
-        </div>
+        {submitting ? (
+          <div className="flex items-center justify-center gap-2 px-4 py-16 text-sm text-(--color-text-secondary)">
+            <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" />
+            Starting session
+          </div>
+        ) : (
+          <>
+            <div className="py-3">
+              <MessageInput
+                surface="overlay"
+                onSend={(payload) => void handleSend(payload)}
+                disabled={disabled}
+                isLoading={submitting}
+                permissionMode={permissionMode}
+                onPermissionModeChange={(mode) => useSettingsStore.getState().setPermissionMode(undefined, mode)}
+                pendingFiles={pendingFiles}
+                onRemoveFile={(index) => setPendingFiles((files) => files.filter((_, i) => i !== index))}
+                onAddFile={(path) => setPendingFiles((files) => files.some((f) => f.path === path) ? files : [...files, { path }])}
+                fileTree={[]}
+                skills={[]}
+                agents={agentList}
+                activeAgentId={selectedAgentId}
+                onAgentChange={(agentId) => {
+                  saveAgentId(agentId);
+                  setSelectedAgentId(agentId);
+                  useUiStore.getState().setActiveAgentId(agentId);
+                }}
+                onModelChange={(model) => {
+                  saveModelId(model);
+                  setSelectedModel(model);
+                }}
+                modelInfo={modelInfo}
+                focusKey={QUICK_CAPTURE_FOCUS_KEY}
+                hasActiveSession={false}
+              />
+            </div>
+            <div className="flex items-center justify-between border-t border-(--color-border-primary) px-4 py-3 text-xs text-(--color-text-tertiary)">
+              <span>Enter to send · Shift+Enter for newline · Esc to dismiss</span>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
