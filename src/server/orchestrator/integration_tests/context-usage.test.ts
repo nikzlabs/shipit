@@ -260,8 +260,8 @@ describe("Integration: Context window usage (105)", () => {
     client.close();
   });
 
-  it("emits dynamic model_info from result.modelUsage.contextWindow (Opus 4.7 → 1M)", async () => {
-    // Two-bug regression: (a) Opus 4.7 has a 1M window, not 200K; (b) a tool-
+  it("emits dynamic model_info from result.modelUsage.contextWindow (Opus 4.8 → 1M)", async () => {
+    // Two-bug regression: (a) Opus 4.x has a 1M window, not 200K; (b) a tool-
     // heavy turn's top-level cache_read_input_tokens is the SUM across all API
     // calls and over-counts context. Both are fixed by reading
     // `result.modelUsage.contextWindow` and `result.usage.iterations[]`.
@@ -275,16 +275,16 @@ describe("Integration: Context window usage (105)", () => {
       type: "system",
       subtype: "init",
       session_id: "opus-1m-session",
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
     });
     await client.receiveType("session_started");
 
-    // Static fallback fires first via agent_init (still correct here because
-    // the longest substring "claude-opus-4-7" → 1_000_000).
+    // Static fallback fires first via agent_init — exact key
+    // "claude-opus-4-8" → 1_000_000.
     const initModelInfo = await client.receiveType("model_info");
     expect(initModelInfo).toMatchObject({
       type: "model_info",
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
       contextWindowTokens: 1_000_000,
     });
 
@@ -313,7 +313,7 @@ describe("Integration: Context window usage (105)", () => {
         ],
       },
       modelUsage: {
-        "claude-opus-4-7": { contextWindow: 1_000_000 },
+        "claude-opus-4-8": { contextWindow: 1_000_000 },
       },
     });
 
@@ -321,7 +321,7 @@ describe("Integration: Context window usage (105)", () => {
     const resultModelInfo = await client.receiveType("model_info");
     expect(resultModelInfo).toMatchObject({
       type: "model_info",
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
       contextWindowTokens: 1_000_000,
     });
 
@@ -345,11 +345,10 @@ describe("Integration: Context window usage (105)", () => {
     // Substring match (real CLI model identifiers contain dates/versions)
     expect(getContextWindowForModel("claude-sonnet-4-20250514")).toBe(200_000);
     expect(getContextWindowForModel("gpt-5.4-mini-2025")).toBe(272_000);
-    // Opus 4.7 has a 1M window — the longest substring "claude-opus-4-7"
-    // beats the shorter "opus" fallback (200K). This is the static fallback
-    // for the first frame; the authoritative window comes from the CLI's
+    // Opus 4.8 has a 1M window. This is the static fallback for the first
+    // frame; the authoritative window comes from the CLI's
     // `result.modelUsage.contextWindow` on the first turn.
-    expect(getContextWindowForModel("claude-opus-4-7")).toBe(1_000_000);
+    expect(getContextWindowForModel("claude-opus-4-8")).toBe(1_000_000);
     // Unknown
     expect(getContextWindowForModel("unknown-model-xyz")).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
     expect(getContextWindowForModel(undefined)).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
