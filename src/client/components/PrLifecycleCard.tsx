@@ -161,13 +161,26 @@ function BranchLabel({
 }
 
 /**
- * Pre-PR label: shows the session title so the user sees the work they're
- * doing (not the synthetic branch slug). Falls back to the branch name if no
- * session title exists yet.
+ * Pre-PR label: shows what the user asked for, not the synthetic branch slug.
+ *
+ * Resolution order:
+ *  1. The session title. `graduateSession` sets it to a snippet of the first
+ *     user message immediately, and an AI rename replaces it with a tidy
+ *     phrase a few seconds later — both are user-meaningful.
+ *  2. If the title is still the pre-graduation placeholder ("New session") or
+ *     somehow empty, fall back to the first user message from chat history so
+ *     we show *something the user typed* rather than nothing.
+ *
+ * We deliberately never fall back to the branch slug — `shipit/pf_7ol` reads
+ * as noise to the user and would be inconsistent with the post-PR view, which
+ * shows the PR title.
  */
-function SessionTitleLabel({ sessionId, fallbackBranch }: { sessionId: string; fallbackBranch?: string }) {
+function SessionTitleLabel({ sessionId }: { sessionId: string }) {
   const title = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId)?.title);
-  const text = title?.trim() || fallbackBranch;
+  const firstUserText = useSessionStore((s) => s.messages.find((m) => m.role === "user")?.text);
+  const trimmedTitle = title?.trim() ?? "";
+  const isPlaceholder = !trimmedTitle || trimmedTitle === "New session";
+  const text = isPlaceholder ? firstUserText?.trim() : trimmedTitle;
   if (!text) return null;
   return (
     <span className="h-6 text-xs flex items-center gap-1 min-w-0 overflow-hidden text-(--color-text-secondary)">
@@ -362,7 +375,7 @@ function ReadyPhase({
   return (
     <div className="flex items-center gap-3 flex-nowrap min-w-0 flex-1">
       <PrStateBadge sessionId={sessionId} />
-      <SessionTitleLabel sessionId={sessionId} fallbackBranch={card.headBranch} />
+      <SessionTitleLabel sessionId={sessionId} />
       <span className="ml-auto shrink-0 flex items-center gap-3">
         {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
         {hasDiffStats && (

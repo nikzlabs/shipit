@@ -190,7 +190,11 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("shipit/pr-panel-pf_7ol")).not.toBeInTheDocument();
   });
 
-  it("falls back to the branch name when the session has no title yet", () => {
+  it("falls back to the first user message when the title is still the pre-graduation placeholder", () => {
+    useSessionStore.setState({
+      sessions: [makeSession({ id: "s1", title: "New session" })],
+      messages: [{ role: "user", text: "wire up dark mode toggle in the header" }],
+    });
     setCard("s1", {
       cardId: "c1",
       phase: "ready",
@@ -201,7 +205,23 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
 
-    expect(screen.getByText("shipit/new-work")).toBeInTheDocument();
+    expect(screen.getByText("wire up dark mode toggle in the header")).toBeInTheDocument();
+    // Never fall back to the branch slug — that would be noise.
+    expect(screen.queryByText("shipit/new-work")).not.toBeInTheDocument();
+  });
+
+  it("never shows the branch slug as the pre-PR label, even when title and messages are both empty", () => {
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      headBranch: "shipit/new-work",
+      totalInsertions: 1,
+      totalDeletions: 0,
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    expect(screen.queryByText("shipit/new-work")).not.toBeInTheDocument();
   });
 
   it("exposes Copy branch name in the overflow menu with a tooltip showing the actual branch", async () => {
