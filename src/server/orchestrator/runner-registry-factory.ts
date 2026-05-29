@@ -14,6 +14,7 @@ import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap } from ".
 import type { RuntimeMode } from "./app-di.js";
 import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./auth.js";
+import type { AgentAuthManager } from "./agent-auth-manager.js";
 import { pushToOrigin } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { getErrorMessage } from "./validation.js";
@@ -171,6 +172,13 @@ export interface RunnerRegistryDeps {
    * system-turn listeners get the same routing.
    */
   onAgentAuthRequired?: (agentId: AgentId) => void;
+  /**
+   * docs/155 Phase 2c — per-agent auth manager map. Forwarded to the
+   * `AgentListenerDeps` so a system-turn that hits `auth_required` restarts
+   * the failing backend's auth flow (not always Claude OAuth). Optional;
+   * absent in tests that don't construct a real auth manager.
+   */
+  authManagers?: Map<AgentId, AgentAuthManager>;
 }
 
 /**
@@ -186,7 +194,7 @@ export function createRunnerRegistry(
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
-    usageManager, authManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
+    usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired,
   } = registryDeps;
 
@@ -215,6 +223,7 @@ export function createRunnerRegistry(
         broadcastLog: (source: WsLogEntry["source"], text: string) =>
           broadcastLog(runner.sessionId, source, text),
         getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
+        ...(authManagers ? { authManagers } : {}),
         ...(recordAgentRateLimits ? { recordAgentRateLimits } : {}),
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
         ...(nudgeClaudeOAuthRefresh ? { nudgeClaudeOAuthRefresh } : {}),

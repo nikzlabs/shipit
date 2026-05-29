@@ -411,6 +411,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     chatHistoryManager: ctx.chatHistoryManager,
     usageManager: ctx.usageManager,
     authManager: ctx.authManager,
+    authManagers: ctx.authManagers,
     sseBroadcast: ctx.sseBroadcast,
     broadcastLog: ctx.broadcastLog,
     getSelectedModel: ctx.getSelectedModel,

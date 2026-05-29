@@ -20,6 +20,7 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { AuthManager } from "./auth.js";
 import type { CodexAuthManager } from "./codex-auth.js";
+import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -88,6 +89,12 @@ export interface ApiDeps {
   chatHistoryManager: ChatHistoryManager;
   authManager: AuthManager;
   codexAuthManager: CodexAuthManager;
+  /**
+   * docs/155 Phase 2 — per-agent auth manager map, threaded through here so
+   * the WS `AppCtx` (built from `ApiDeps`) can dispatch `auth_required` to
+   * the failing turn's backend instead of always restarting Claude OAuth.
+   */
+  authManagers: Map<AgentId, AgentAuthManager>;
   broadcastLog: (sessionId: string, source: "stderr" | "stdout" | "server" | "preview" | "install", text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
   getSharedRepoDir: (repoUrl: string) => string;

@@ -215,7 +215,10 @@ export async function registerBootstrapRoutes(
         setApiKey(request.body.key);
         deps.authManager.kill();
         deps.authManager.checkCredentials();
-        deps.sseBroadcast("auth_complete", {});
+        // docs/155 Phase 2b — unified SSE event family. Setting an API key
+        // is the "authentication finished" signal for Claude; the client's
+        // `agent_auth_complete` handler refreshes the agent list.
+        deps.sseBroadcast("agent_auth_complete", { agentId: "claude" });
         return { success: true };
       } catch (err) {
         if (err instanceof ServiceError) {

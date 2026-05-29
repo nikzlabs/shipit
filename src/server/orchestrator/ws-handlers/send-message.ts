@@ -524,6 +524,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     chatHistoryManager: ctx.chatHistoryManager,
     usageManager: ctx.usageManager,
     authManager: ctx.authManager,
+    authManagers: ctx.authManagers,
     sseBroadcast: ctx.sseBroadcast,
     broadcastLog: ctx.broadcastLog,
     getSelectedModel: ctx.getSelectedModel,

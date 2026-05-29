@@ -42,6 +42,9 @@ import {
   statSync,
 } from "node:fs";
 import { stripAnsi } from "../shared/strip-ansi.js";
+import type { AgentAuthManager } from "./agent-auth-manager.js";
+import type { AgentId } from "../shared/types.js";
+import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
 
 // ---- Public types ----
 
@@ -253,7 +256,9 @@ export interface CodexAuthManagerOptions {
   timeoutMs?: number;
 }
 
-export class CodexAuthManager extends EventEmitter {
+export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
+  readonly agentId: AgentId = "codex";
+
   private proc: ChildProcess | null = null;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private outputBuffer = "";
@@ -288,6 +293,41 @@ export class CodexAuthManager extends EventEmitter {
    */
   checkCredentials(): boolean {
     return this.checkAuthFile();
+  }
+
+  /**
+   * {@link AgentAuthManager} surface. Aliases the Codex-specific entry points
+   * so the orchestrator can drive every backend through one shape — see
+   * docs/155 Phase 2.
+   *
+   *   - `start()` → {@link startDeviceFlow}
+   *   - `isConfigured()` → {@link checkCredentials}
+   *
+   * `cancel()` and `kill()` already exist on this class with the right
+   * shape; the interface just requires them.
+   */
+  start(): void {
+    this.startDeviceFlow();
+  }
+
+  isConfigured(): boolean {
+    return this.checkCredentials();
+  }
+
+  /**
+   * {@link AgentAuthManager.getPendingPayload} — translates the cached
+   * `CodexAuthPendingEvent` into the discriminated `device-code` shape the
+   * unified SSE wiring rebroadcasts. Returns `null` when no flow is in
+   * flight.
+   */
+  getPendingPayload(): AgentAuthPendingDetails | null {
+    if (!this.lastPendingEvent) return null;
+    return {
+      kind: "device-code",
+      verificationUri: this.lastPendingEvent.verificationUri,
+      userCode: this.lastPendingEvent.userCode,
+      expiresInSec: this.lastPendingEvent.expiresInSec,
+    };
   }
 
   /**
@@ -372,9 +412,16 @@ export class CodexAuthManager extends EventEmitter {
       // state (page reload mid-flow, fresh tab) re-renders the URL + code
       // instead of staring at a dead Sign-in button. Safe to re-emit — the
       // SSE handler is idempotent on the client (`setCodexDeviceAuth` just
-      // overwrites the slice).
+      // overwrites the slice). Emits both the legacy and normalized events
+      // so the unified `agent_auth_pending` SSE broadcast also fires.
       if (this.lastPendingEvent) {
         this.emit("codex_auth_pending", this.lastPendingEvent);
+        this.emit("pending", {
+          kind: "device-code",
+          verificationUri: this.lastPendingEvent.verificationUri,
+          userCode: this.lastPendingEvent.userCode,
+          expiresInSec: this.lastPendingEvent.expiresInSec,
+        });
       }
       return;
     }
@@ -403,6 +450,7 @@ export class CodexAuthManager extends EventEmitter {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[codex-auth] Failed to spawn codex login:", msg);
       this.emit("codex_auth_failed", { reason: "error", message: msg } satisfies CodexAuthFailedEvent);
+      this.emit("failed", { reason: "error", message: msg });
       return;
     }
 
@@ -432,6 +480,11 @@ export class CodexAuthManager extends EventEmitter {
       if (code === 0 && this.checkCredentials()) {
         console.log("[codex-auth] Authentication successful");
         this.emit("codex_auth_complete");
+        // Normalized AgentAuthManager event — see the matching emit in
+        // `AuthManager`. The legacy event keeps the per-agent SSE wiring
+        // working; the normalized event lets the limits-registry map-loop
+        // subscribe without knowing the backend.
+        this.emit("complete");
         return;
       }
 
@@ -442,10 +495,12 @@ export class CodexAuthManager extends EventEmitter {
         console.log("[codex-auth] Buffer (truncated, %d chars total):", this.outputBuffer.length, redacted);
       }
 
+      const failMessage = code === 0 ? "credentials file not written" : `codex login exited with code ${code ?? "null"}`;
       this.emit("codex_auth_failed", {
         reason: "error",
-        message: code === 0 ? "credentials file not written" : `codex login exited with code ${code ?? "null"}`,
+        message: failMessage,
       } satisfies CodexAuthFailedEvent);
+      this.emit("failed", { reason: "error", message: failMessage });
     });
 
     // Hard ceiling — the device code itself expires after 15 minutes.
@@ -528,11 +583,21 @@ export class CodexAuthManager extends EventEmitter {
     const ev: CodexAuthPendingEvent = { verificationUri, userCode, expiresInSec };
     this.lastPendingEvent = ev;
     this.emit("codex_auth_pending", ev);
+    // Normalized AgentAuthManager event — the orchestrator's SSE wiring
+    // rebroadcasts this as `agent_auth_pending` with `agentId: "codex"`,
+    // replacing the legacy `codex_auth_pending` SSE event family.
+    this.emit("pending", {
+      kind: "device-code",
+      verificationUri,
+      userCode,
+      expiresInSec,
+    });
   }
 
   private failOnce(reason: CodexAuthFailureReason, message?: string): void {
     if (!this.proc) return;
     this.emit("codex_auth_failed", { reason, message } satisfies CodexAuthFailedEvent);
+    this.emit("failed", { reason, message });
   }
 
   private killProc(): void {
