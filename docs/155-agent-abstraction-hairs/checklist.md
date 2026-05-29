@@ -59,11 +59,13 @@ The wire format was the last per-agent surface in our own code (not a CLI restri
 
 ## Phase 4 — Per-agent MCP writers
 
-- [ ] Define `writeMcpConfig(workspaceDir, servers, params)` method on each adapter.
-- [ ] Move `generateMcpConfig` (`session-worker.ts:178`) into Claude adapter.
-- [ ] Move `ensureCodexMcpConfig` (`session-worker.ts:443`) into Codex adapter.
-- [ ] Replace hair 10 — worker calls `adapter.writeMcpConfig(...)` unconditionally.
-- [ ] Confirm the `wireAgentEvents` and cleanup paths in `session-worker.ts` still fire correctly.
+- [x] Define `writeMcpConfig(ctx): AgentMcpWriteResult` method on the `AgentProcess` interface — `ctx` carries `{ servers, reviewBridge, onServerFailed }` (the per-spawn cross-cutting context the worker owns) and the result is `{ mcpConfigPath?, runtimeEnv?, cleanup? }` (Claude returns `mcpConfigPath` + `cleanup`; Codex returns `runtimeEnv` from env-indirection). New types `AgentMcpReviewBridge`, `AgentMcpWriteContext`, `AgentMcpWriteResult` live in `shared/types/agent-types.ts`.
+- [x] Move `generateMcpConfig` (`session-worker.ts:178`) into `ClaudeAdapter.writeMcpConfig` — writes the per-turn `/tmp/mcp-config-*.json` (Playwright + review bridge + `$secret:`-resolved user servers) and returns the path + an unlink cleanup. Missing-secret servers are reported via `ctx.onServerFailed()` (worker rebroadcasts as `mcp_server_status`).
+- [x] Move `ensureCodexMcpConfig` (`session-worker.ts:443`) into `CodexAdapter.writeMcpConfig` — rewrites the `<shipit-managed-mcp>` block in `~/.codex/config.toml` (review bridge + user servers as `[mcp_servers.*]`) and returns `runtimeEnv` so secrets stay out of disk. The compatibility wrapper `ensureCodexReviewMcpConfig` is gone.
+- [x] Replace hair 10 — worker's `/agent/start` now calls a single `invokeAgentMcpWriter(this.agent, params)` helper unconditionally; the two `agentId === "claude"` / `agentId === "codex"` branches are deleted. `withTemporaryEnv(mcpWrite.runtimeEnv ?? {}, …)` applies whatever the adapter returned; `mcpWrite.cleanup` is wired to `agent.on("done", …)` only if the adapter asked for it.
+- [x] Confirm the `wireAgentEvents` and cleanup paths in `session-worker.ts` still fire correctly — agent factory is called first, then `writeMcpConfig`, then `run()` with the adapter-supplied `mcpConfigPath` threaded through; cleanup attaches on `done` exactly when the adapter returned one (Claude only).
+- [x] `ProxyAgentProcess` (orchestrator-side) implements `writeMcpConfig` as a loud throw — MCP writing belongs inside the worker container on the real adapter; reaching the proxy method means a wiring bug.
+- [x] Tests + verification — `codex-review-mcp.test.ts` was migrated to `agents/codex-mcp-writer.test.ts` (tests `CodexAdapter.writeMcpConfig` directly — no SessionWorker reach-through, plus a new "drops missing-secret servers and calls onServerFailed" case); new sibling `agents/claude-mcp-writer.test.ts` covers ClaudeAdapter's writer end-to-end (playwright always present, review bridge conditional, `$secret:` substitution, missing-secret drop, cleanup unlinks). FakeWorkerAgent/FakeAgent/FakeCodexProcess stubs across integration tests grew a no-op `writeMcpConfig(): {}`. `npm run typecheck`, lint, and the full `src/server/orchestrator/integration_tests/` (744 tests) + `src/server/session/` (393 tests) suites pass.
 
 ## Phase 5 — Per-agent folder consolidation
 

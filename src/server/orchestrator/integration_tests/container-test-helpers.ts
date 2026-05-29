@@ -44,6 +44,9 @@ export class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements
   sendUserMessage(text: string): void { this.writeStdin(text); }
   interrupt(): void { this.interrupted = true; }
   kill(): void { this.killed = true; }
+  writeMcpConfig(): { mcpConfigPath?: string; runtimeEnv?: Record<string, string>; cleanup?: () => void } {
+    return {};
+  }
 }
 
 /** Stub TerminalProcess that doesn't spawn a real PTY. */
