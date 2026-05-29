@@ -198,6 +198,39 @@ describe("mcp-store (docs/088)", () => {
     expect(out).toEqual(result);
   });
 
+  it("testServer() updates statuses so a successful test clears a stale failure badge", async () => {
+    // Simulate the bug: a prior agent init left a `failed — connection failed`
+    // status on the server. The user fixes the config, hits Test, it succeeds
+    // — the badge should now reflect `loaded`, not the old failure.
+    useMcpStore.setState({
+      statuses: { linear: { state: "failed", reason: "connection failed" } },
+    });
+
+    const result: McpTestResult = { ok: true, tools: [{ name: "linear_create_issue" }] };
+    const fake = new FakeFetch();
+    fake.on("POST", "/api/mcp-servers/linear/test", () => result);
+    fake.install();
+
+    await useMcpStore.getState().testServer("linear");
+    expect(useMcpStore.getState().statuses.linear).toEqual({
+      state: "loaded",
+      reason: undefined,
+    });
+  });
+
+  it("testServer() records a failed test as a `failed` status with the error reason", async () => {
+    const result: McpTestResult = { ok: false, error: "401 unauthorized" };
+    const fake = new FakeFetch();
+    fake.on("POST", "/api/mcp-servers/linear/test", () => result);
+    fake.install();
+
+    await useMcpStore.getState().testServer("linear");
+    expect(useMcpStore.getState().statuses.linear).toEqual({
+      state: "failed",
+      reason: "401 unauthorized",
+    });
+  });
+
   it("applyStatus() merges a single server's status without disturbing others", () => {
     useMcpStore.getState().applyStatus("linear", "loaded");
     useMcpStore.getState().applyStatus("sentry", "failed", "missing secret: TOKEN");
