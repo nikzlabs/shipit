@@ -40,7 +40,8 @@ export interface WorkerSSEEvent {
     | "file_changes"
     | "service_request"
     | "install_log" | "install_done" | "install_error"
-    | "mcp_server_status";
+    | "mcp_server_status"
+    | "present_content" | "present_cleared";
   data: unknown;
 }
 

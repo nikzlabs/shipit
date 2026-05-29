@@ -18,6 +18,7 @@ export type {
   AgentProcessEvents,
   AgentRunParams,
   AgentMcpReviewBridge,
+  AgentMcpPresentBridge,
   AgentMcpWriteContext,
   AgentMcpWriteResult,
 } from "../../shared/types/agent-types.js";
