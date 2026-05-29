@@ -15,6 +15,7 @@ import { markMergedAndPruneExcess } from "./services/session.js";
 import type { SessionManager } from "./sessions.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import type { RepoGit } from "./repo-git.js";
+import type { GitManager } from "../shared/git.js";
 import type { AgentAuthManager, AgentAuthFailedPayload } from "./agent-auth-manager.js";
 import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -561,6 +562,13 @@ export interface PrPollerDeps {
   sseBroadcast: (event: string, data: unknown) => void;
   runnerRegistry: SessionRunnerRegistry;
   createRepoGit: (dir: string) => RepoGit;
+  /**
+   * Factory for a GitManager bound to a session's workspace dir. Passed to
+   * the poller so it can override GitHub's GraphQL diff numbers — which lag
+   * a few seconds after each push while GitHub reindexes — with the
+   * locally-computed `git diff base...HEAD` the diff dialog also uses.
+   */
+  createGitManager: (dir: string) => GitManager;
   getBareCacheDir: (repoUrl: string) => string;
   /**
    * Forwarded to `markMergedAndPruneExcess` so the auto-archive of merged
@@ -596,8 +604,8 @@ export function createPrStatusPoller(
 ): PrStatusPoller {
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
-    runnerRegistry, createRepoGit, getBareCacheDir, pruneSessionVolumes,
-    onRepoMainAdvanced, containerManager,
+    runnerRegistry, createRepoGit, createGitManager, getBareCacheDir,
+    pruneSessionVolumes, onRepoMainAdvanced, containerManager,
   } = pollerDeps;
 
   const prStatusPoller = deps.prStatusPoller ?? new PrStatusPoller({
@@ -606,6 +614,11 @@ export function createPrStatusPoller(
     sseBroadcast,
     runnerRegistry,
     getSharedRepoDir: getBareCacheDir,
+    // Lets the poller swap GitHub's GraphQL additions/deletions (which lag a
+    // few seconds after each push while GitHub reindexes) for the same
+    // locally-computed diff stats the click-through diff dialog uses, so the
+    // card's +N/-N button can't show stale numbers.
+    createGitManager,
     fetchAndFixCb: async (sessionId, owner, repo, failedChecks) => {
       const runner = runnerRegistry.get(sessionId);
       if (!runner) return;

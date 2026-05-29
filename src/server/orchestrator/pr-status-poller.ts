@@ -20,6 +20,7 @@
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { GitManager } from "../shared/git.js";
 import type { PrStatusSummary, AutoFixState, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import {
@@ -153,6 +154,16 @@ export class PrStatusPoller {
   private runnerRegistry?: SessionRunnerRegistry;
   /** Optional: called when a merged PR is detected — used to archive the session. */
   private onMergeDetectedCb?: (sessionId: string) => Promise<void>;
+  /**
+   * Optional: factory for a GitManager bound to a session's workspace dir.
+   * When wired, the poller overrides GitHub's GraphQL `additions`/`deletions`
+   * with a local `git diff --stat <base>...HEAD` so the PR card's diff numbers
+   * match what the user sees when they click through to the diff dialog
+   * (which is computed from the same local working tree). Without this,
+   * GitHub's indexing lag after an auto-push can leave the card showing the
+   * previous commit's numbers for a few polls until GitHub catches up.
+   */
+  private createGitManager?: (dir: string) => GitManager;
 
   /** sessionId → last known GraphQL PR node (cached for extracting check details). */
   private lastPrNodes = new Map<string, GraphQLPrNode>();
@@ -165,12 +176,14 @@ export class PrStatusPoller {
     getSharedRepoDir?: (repoUrl: string) => string;
     fetchAndFixCb?: FetchAndFixCb;
     onMergeDetectedCb?: (sessionId: string) => Promise<void>;
+    createGitManager?: (dir: string) => GitManager;
   }) {
     this.githubAuth = opts.githubAuth;
     this.sessionManager = opts.sessionManager;
     this.sseBroadcast = opts.sseBroadcast;
     this.runnerRegistry = opts.runnerRegistry;
     this.onMergeDetectedCb = opts.onMergeDetectedCb;
+    this.createGitManager = opts.createGitManager;
 
     // Bind broadcast as the change callback so collaborators don't need to
     // know about SSE plumbing — they just say "this session changed."
@@ -867,6 +880,25 @@ export class PrStatusPoller {
           // Any non-"none" state means GitHub registered something — no need
           // to keep the grace timer running.
           this.graceTracker.clearForSession(session.id);
+        }
+
+        // Prefer locally-computed diff stats over GitHub's GraphQL
+        // additions/deletions. GitHub reindexes a PR's diff on its side a
+        // few seconds (sometimes longer) after a push, so the GraphQL view
+        // can lag — leaving the card's +N/-N button showing the previous
+        // commit's numbers while the click-through diff dialog (computed
+        // locally from `git diff base...HEAD`) already shows the latest.
+        // Using the same local source for both keeps them consistent.
+        if (this.createGitManager && session.workspaceDir) {
+          try {
+            const local = await this.createGitManager(session.workspaceDir)
+              .diffStatVsBranch(summary.baseBranch);
+            summary.insertions = local.insertions;
+            summary.deletions = local.deletions;
+          } catch {
+            // Workspace gone (archived), bare repo without a checkout, etc.
+            // Fall back to GitHub's numbers.
+          }
         }
 
         const prev = this.lastKnown.get(session.id);
