@@ -14,6 +14,7 @@ import { parseGitHubRemote } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
+import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 
 /**
  * Resolve owner/repo from a known remote URL or by reading git remotes.
@@ -402,7 +403,15 @@ export async function flushPendingTurnCommit(
 
   const summary = runner?.turnSummary?.split("\n")[0]?.slice(0, 120) || "Agent turn";
   const parentHash = await git.getHeadHash();
-  const commitHash = await git.autoCommit(summary);
+  const { commitHash, conflictedFiles, rebaseInProgress } = await git.autoCommit(summary);
+  if ((conflictedFiles.length > 0 || rebaseInProgress) && runner) {
+    runner.emitMessage({
+      type: "system_notice",
+      sessionId: runner.sessionId,
+      level: "warn",
+      message: formatUnresolvedConflictNotice({ conflictedFiles, rebaseInProgress }),
+    });
+  }
   if (!commitHash) return null;
 
   if (runner && parentHash) {

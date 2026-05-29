@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import simpleGit from "simple-git";
 import { GitManager } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
@@ -55,21 +56,25 @@ describe("GitManager: init & autoCommit", () => {
     await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "hello.txt"), "hello world");
-    const hash = await git.autoCommit("Add hello.txt");
+    const result = await git.autoCommit("Add hello.txt");
 
-    expect(hash).toBeTruthy();
-    expect(typeof hash).toBe("string");
+    expect(result.commitHash).toBeTruthy();
+    expect(typeof result.commitHash).toBe("string");
+    expect(result.conflictedFiles).toEqual([]);
+    expect(result.rebaseInProgress).toBe(false);
 
     const log = await git.log();
     expect(log[0].message).toBe("Add hello.txt");
   });
 
-  it("returns null when there is nothing to commit", async () => {
+  it("returns null commitHash when there is nothing to commit", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
 
-    const hash = await git.autoCommit("Nothing here");
-    expect(hash).toBeNull();
+    const result = await git.autoCommit("Nothing here");
+    expect(result.commitHash).toBeNull();
+    expect(result.conflictedFiles).toEqual([]);
+    expect(result.rebaseInProgress).toBe(false);
   });
 
   it("commits modified files", async () => {
@@ -81,9 +86,9 @@ describe("GitManager: init & autoCommit", () => {
     await git.autoCommit("v1");
 
     fs.writeFileSync(filePath, "v2");
-    const hash = await git.autoCommit("v2");
+    const { commitHash } = await git.autoCommit("v2");
 
-    expect(hash).toBeTruthy();
+    expect(commitHash).toBeTruthy();
     const log = await git.log();
     expect(log[0].message).toBe("v2");
   });
@@ -97,9 +102,9 @@ describe("GitManager: init & autoCommit", () => {
     await git.autoCommit("Add file");
 
     fs.unlinkSync(filePath);
-    const hash = await git.autoCommit("Delete file");
+    const { commitHash } = await git.autoCommit("Delete file");
 
-    expect(hash).toBeTruthy();
+    expect(commitHash).toBeTruthy();
   });
 
   it("uses default message when summary is empty", async () => {
@@ -111,5 +116,108 @@ describe("GitManager: init & autoCommit", () => {
 
     const log = await git.log();
     expect(log[0].message).toBe("Claude turn");
+  });
+
+  // ---- unresolved git conflict state ----
+
+  /**
+   * Set up a real merge conflict on `file.txt`: main has "main 2", feature
+   * has "feature 1", both descend from a common ancestor. After calling
+   * `git merge feature`, git leaves the working tree in an unmerged state
+   * with the standard `<<<<<<< / ======= / >>>>>>>` markers in the file.
+   */
+  async function createMergeConflict(): Promise<GitManager> {
+    const git = new GitManager(tmpDir);
+    await git.init();
+    const filePath = path.join(tmpDir, "file.txt");
+    fs.writeFileSync(filePath, "base\n");
+    await git.autoCommit("base");
+
+    const sg = simpleGit(tmpDir);
+    await sg.checkoutLocalBranch("feature");
+    fs.writeFileSync(filePath, "feature 1\n");
+    await git.autoCommit("feature 1");
+
+    await sg.checkout("main");
+    fs.writeFileSync(filePath, "main 2\n");
+    await git.autoCommit("main 2");
+
+    try {
+      await sg.merge(["feature"]);
+    } catch {
+      // Expected — merge produces a conflict.
+    }
+    return git;
+  }
+
+  it("refuses to commit while git reports unmerged paths", async () => {
+    const git = await createMergeConflict();
+    const headBeforeAutoCommit = await git.getHeadHash();
+
+    const result = await git.autoCommit("attempted turn during merge");
+
+    expect(result.commitHash).toBeNull();
+    expect(result.conflictedFiles).toEqual(["file.txt"]);
+    expect(result.rebaseInProgress).toBe(false);
+    // HEAD must not have advanced — no commit was created.
+    expect(await git.getHeadHash()).toBe(headBeforeAutoCommit);
+  });
+
+  it("refuses to commit while a rebase is in progress", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+    const filePath = path.join(tmpDir, "file.txt");
+    fs.writeFileSync(filePath, "base\n");
+    await git.autoCommit("base");
+
+    const sg = simpleGit(tmpDir);
+    await sg.checkoutLocalBranch("feature");
+    fs.writeFileSync(filePath, "feature\n");
+    await git.autoCommit("feature");
+
+    await sg.checkout("main");
+    fs.writeFileSync(filePath, "main\n");
+    await git.autoCommit("main");
+
+    await sg.checkout("feature");
+    // Rebase will conflict; GitManager.rebase() leaves the rebase in progress.
+    const rebaseResult = await git.rebase("main");
+    expect(rebaseResult.status).toBe("conflicts");
+    expect(await git.isRebaseInProgress()).toBe(true);
+
+    const headBeforeAutoCommit = await git.getHeadHash();
+    const result = await git.autoCommit("attempted turn during rebase");
+
+    expect(result.commitHash).toBeNull();
+    expect(result.rebaseInProgress).toBe(true);
+    expect(result.conflictedFiles.length).toBeGreaterThan(0);
+    expect(await git.getHeadHash()).toBe(headBeforeAutoCommit);
+  });
+
+  it("commits files that contain marker-shaped text when git reports no conflict", async () => {
+    // ShipIt's own test suite + docs reference the literal marker strings
+    // (`<<<<<<<`, `=======`, `>>>>>>>`). Those edits must still get
+    // committed — we trust git's `status.conflicted` instead of scanning
+    // file contents.
+    const git = new GitManager(tmpDir);
+    await git.init();
+
+    const codeWithMarkers = [
+      "const CONFLICT_SAMPLE = `",
+      "<<<<<<< HEAD",
+      "ours",
+      "=======",
+      "theirs",
+      ">>>>>>> feature",
+      "`;",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(tmpDir, "fixture.ts"), codeWithMarkers);
+
+    const result = await git.autoCommit("Add conflict fixture");
+
+    expect(result.commitHash).toBeTruthy();
+    expect(result.conflictedFiles).toEqual([]);
+    expect(result.rebaseInProgress).toBe(false);
   });
 });

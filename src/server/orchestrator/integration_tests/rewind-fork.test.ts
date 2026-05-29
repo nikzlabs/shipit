@@ -100,7 +100,7 @@ describe("Integration: rewind and fork", () => {
     expect(initialHead).toBeTruthy();
 
     fs.writeFileSync(path.join(workspaceDir, "feature.txt"), "changed\n");
-    const changedHead = await git.autoCommit("change feature");
+    const { commitHash: changedHead } = await git.autoCommit("change feature");
     expect(changedHead).toBeTruthy();
 
     chatHistoryManager.append(sessionId, { role: "user", text: "change the file" });
@@ -139,7 +139,7 @@ describe("Integration: rewind and fork", () => {
     expect(initialHead).toBeTruthy();
 
     fs.writeFileSync(path.join(workspaceDir, "feature.txt"), "changed\n");
-    const changedHead = await git.autoCommit("change feature");
+    const { commitHash: changedHead } = await git.autoCommit("change feature");
     expect(changedHead).toBeTruthy();
 
     chatHistoryManager.append(sessionId, { role: "user", text: "change the file" });
@@ -242,7 +242,7 @@ describe("Integration: rewind and fork", () => {
     expect(initialHead).toBeTruthy();
 
     fs.writeFileSync(path.join(workspaceDir, "feature.txt"), "changed\n");
-    const changedHead = await git.autoCommit("change feature");
+    const { commitHash: changedHead } = await git.autoCommit("change feature");
     expect(changedHead).toBeTruthy();
 
     chatHistoryManager.append(sessionId, { role: "user", text: "change the file" });

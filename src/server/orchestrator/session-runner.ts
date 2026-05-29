@@ -154,7 +154,12 @@ export interface SystemTurnDeps {
   autoCommit: (
     sessionDir: string,
     summary: string,
-  ) => Promise<{ commitHash: string; parentHash: string | null } | null>;
+  ) => Promise<{
+    commitHash: string | null;
+    parentHash: string | null;
+    conflictedFiles: string[];
+    rebaseInProgress: boolean;
+  }>;
   /** Schedule a debounced auto-push after a commit. */
   scheduleAutoPush: (sessionDir: string) => void;
   /**

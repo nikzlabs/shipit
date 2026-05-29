@@ -68,11 +68,11 @@ describe("Integration: Diff review", () => {
   it("GET /api/sessions/:id/git/diff returns file changes between two commits", async () => {
     // Create initial file and commit
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 1;\n");
-    const hash1 = await git.autoCommit("Add hello.ts");
+    const { commitHash: hash1 } = await git.autoCommit("Add hello.ts");
 
     // Modify the file and commit
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 2;\nconst y = 3;\n");
-    const hash2 = await git.autoCommit("Modify hello.ts");
+    const { commitHash: hash2 } = await git.autoCommit("Modify hello.ts");
 
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff?from=${hash1}&to=${hash2}` });
     expect(res.statusCode).toBe(200);
@@ -92,7 +92,7 @@ describe("Integration: Diff review", () => {
 
     // Add a new file
     fs.writeFileSync(path.join(sessionDir, "new-file.ts"), "export const foo = 42;\n");
-    const hash2 = await git.autoCommit("Add new-file.ts");
+    const { commitHash: hash2 } = await git.autoCommit("Add new-file.ts");
 
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff?from=${initialHash}&to=${hash2}` });
     expect(res.statusCode).toBe(200);
@@ -106,11 +106,11 @@ describe("Integration: Diff review", () => {
   it("GET /api/sessions/:id/git/diff handles deleted files", async () => {
     // Create a file
     fs.writeFileSync(path.join(sessionDir, "to-delete.ts"), "delete me\n");
-    const hash1 = await git.autoCommit("Add to-delete.ts");
+    const { commitHash: hash1 } = await git.autoCommit("Add to-delete.ts");
 
     // Delete the file
     fs.unlinkSync(path.join(sessionDir, "to-delete.ts"));
-    const hash2 = await git.autoCommit("Delete to-delete.ts");
+    const { commitHash: hash2 } = await git.autoCommit("Delete to-delete.ts");
 
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff?from=${hash1}&to=${hash2}` });
     expect(res.statusCode).toBe(200);
@@ -146,7 +146,7 @@ describe("Integration: Diff review", () => {
     fs.writeFileSync(path.join(sessionDir, "a.ts"), "file a\n");
     fs.writeFileSync(path.join(sessionDir, "b.ts"), "file b\n");
     fs.writeFileSync(path.join(sessionDir, "c.ts"), "file c\n");
-    const hash2 = await git.autoCommit("Add three files");
+    const { commitHash: hash2 } = await git.autoCommit("Add three files");
 
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/git/diff?from=${initialHash}&to=${hash2}` });
     expect(res.statusCode).toBe(200);
