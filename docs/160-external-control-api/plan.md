@@ -50,7 +50,7 @@ These three additions close the headless gap with minimal new surface.
 
 ### 1. Auth — personal access tokens
 
-A new account-level config: zero or more personal access tokens, minted from the Settings UI. Each token is a 32-byte random string, stored hashed (not in plaintext) in `CredentialStore`. Tokens carry an optional human label (e.g. `"hermes"`, `"phone shortcut"`) so the user can revoke them individually.
+A new account-level config: zero or more personal access tokens, minted from the Settings UI. Each token is a 32-byte random string, stored hashed (not in plaintext) in `CredentialStore`. Tokens carry an optional human label (e.g. `"home dashboard"`, `"phone shortcut"`) so the user can revoke them individually.
 
 Token validation middleware applies to all `/api/*` routes:
 
@@ -189,5 +189,5 @@ Modified:
 
 ## Relationship to other docs
 
-- **`docs/159-hermes-mcp-integration/plan.md`** — outbound notifications. That doc covers ShipIt → external; this doc covers external → ShipIt. Together they form a two-way loop: an external agent can be told "ShipIt just finished a turn" (159) and then react by sending a follow-up message (this doc). Either is useful alone, but the pair is the natural shape.
+- **`docs/159-turn-end-notification-mcp/plan.md`** — outbound notifications. That doc covers ShipIt → external; this doc covers external → ShipIt. Together they form a two-way loop: an external system can be told "ShipIt just finished a turn" (159) and then react by sending a follow-up message (this doc). Either is useful alone, but the pair is the natural shape.
 - **`docs/043-websocket-vs-http-analysis/plan.md`** — the WS-vs-HTTP framework. The choices here are consistent with it: control and discrete state reads on HTTP, streaming on WS.

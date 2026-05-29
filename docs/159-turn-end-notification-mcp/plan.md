@@ -10,7 +10,7 @@ description: Recipe for connecting ShipIt agents to a personal external MCP serv
 
 At the end of every ShipIt agent turn, the agent calls one tool on an external MCP server you host. That server decides how to notify you — voice message, push, Slack, anything. The notification reads naturally because the agent shapes the summary specifically for spoken delivery, not as a status dump.
 
-The author calls the receiver "Hermes" and runs it on Tailscale; this doc uses that name as a running example. Substitute whatever you call yours.
+This doc uses `notify` as a placeholder name for the receiver. Substitute whatever lowercase alphanumeric name you choose for your MCP server — Claude Code's MCP convention is `<server-name>__<tool-name>`, so a server named `notify` exposes the tool as `notify__notify_turn_end`.
 
 ## What you'll do
 
@@ -82,9 +82,9 @@ Settings → MCP Servers → **"+ Add MCP Server"**:
 
 | Field | Value |
 |---|---|
-| Name | `hermes` — lowercase alphanumeric. The agent will see the tool as `<name>__notify_turn_end`. |
+| Name | `notify` — lowercase alphanumeric (any name; the agent will see the tool as `<name>__notify_turn_end`). |
 | Type | `http (remote endpoint)` |
-| URL | `https://hermes.<your-tailnet>.ts.net/mcp` (whatever URL the receiver exposes) |
+| URL | `https://notify.<your-tailnet>.ts.net/mcp` (whatever URL the receiver exposes) |
 | Headers (click "+ Add header") | Key: `Authorization` &nbsp;&nbsp; Value: `Bearer <token>` |
 
 Click **Save**. The server is account-level — available in every session and every repo. The bearer token is stored in the credentials volume; ShipIt never echoes it back to the UI.
@@ -93,12 +93,12 @@ Tailscale `*.ts.net` hostnames work from inside ShipIt session containers withou
 
 ## Step 3 — tell the agent to call it
 
-Settings → Instructions → **"Your Instructions"**. Append the block below. Replace `hermes` with the name you used in Step 2.
+Settings → Instructions → **"Your Instructions"**. Append the block below. Replace `notify` (the example server name) with the name you used in Step 2.
 
 ```text
 ## End-of-turn notification
 
-Call `hermes__notify_turn_end` exactly once at the end of every turn, before
+Call `notify__notify_turn_end` exactly once at the end of every turn, before
 you stop producing output. This is how the user gets notified you've
 finished — don't skip it. If the tool fails, try once and mention it in your
 final reply.
@@ -122,7 +122,7 @@ Args:
   once. Leave `sessionName` unset (reserved).
 
 Example:
-  hermes__notify_turn_end({
+  notify__notify_turn_end({
     voiceSummary: "Done — added the webhook and pushed it up.",
     needsAttention: false,
     context: {
