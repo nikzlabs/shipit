@@ -26,6 +26,38 @@ export type RebaseResult =
   | { status: "clean" }
   | { status: "conflicts"; conflicts: RebaseConflictFile[] };
 
+export interface AutoCommitResult {
+  /** New commit hash, or null when nothing was committed. */
+  commitHash: string | null;
+  /**
+   * Paths excluded from the commit because they contain git conflict markers
+   * (`<<<<<<<`, `=======`, `>>>>>>>`, `|||||||`). Callers should surface this
+   * to the user — a botched merge/rebase resolution must not get auto-pushed.
+   */
+  skippedConflictedFiles: string[];
+}
+
+/**
+ * Repo-root-relative paths of working-tree files that contain git conflict
+ * markers. Skips deleted entries (no content to inspect), files larger than
+ * 5 MB, and anything that looks binary (null byte in the first 8 KB).
+ */
+function fileHasConflictMarkers(absPath: string): boolean {
+  try {
+    const stat = fs.statSync(absPath);
+    if (!stat.isFile()) return false;
+    if (stat.size > 5_000_000) return false;
+    const buf = fs.readFileSync(absPath);
+    const sniffLen = Math.min(buf.length, 8192);
+    for (let i = 0; i < sniffLen; i++) {
+      if (buf[i] === 0) return false;
+    }
+    return /^(<{7}|={7}|>{7}|\|{7})( |\t|\r?$)/m.test(buf.toString("utf8"));
+  } catch {
+    return false;
+  }
+}
+
 export class GitManager {
   private git: SimpleGit;
 
@@ -64,23 +96,75 @@ export class GitManager {
   }
 
   /**
-   * Stage all changes and commit. Returns the commit hash, or null
-   * if there was nothing to commit.
+   * Stage all working-tree changes and commit. Files containing git conflict
+   * markers (`<<<<<<<`, `=======`, `>>>>>>>`, `|||||||`) are excluded from
+   * the commit so a botched merge/rebase resolution never gets auto-committed
+   * or auto-pushed. Their paths are returned in `skippedConflictedFiles` so
+   * callers can surface a chat notice.
+   *
+   * `commitHash` is null when there was nothing to commit — either the
+   * working tree was already clean, or every changed file contained conflict
+   * markers. The two cases are distinguishable by inspecting
+   * `skippedConflictedFiles`.
    */
-  async autoCommit(summary: string): Promise<string | null> {
-    // Check for changes before staging — skip entirely if nothing changed
+  async autoCommit(summary: string): Promise<AutoCommitResult> {
     const status = await this.git.status();
     if (status.isClean()) {
-      return null;
+      return { commitHash: null, skippedConflictedFiles: [] };
     }
 
-    // Stage everything (new, modified, deleted) and commit
+    const repoRoot = (await this.git.revparse(["--show-toplevel"])).trim();
+    const skippedConflictedFiles: string[] = [];
+    for (const file of status.files) {
+      // Deleted files have no working-tree content to inspect.
+      if (file.index === "D" || file.working_dir === "D") continue;
+      const abs = path.join(repoRoot, file.path);
+      if (fileHasConflictMarkers(abs)) {
+        skippedConflictedFiles.push(file.path);
+      }
+    }
+
     await this.git.add("-A");
+    if (skippedConflictedFiles.length > 0) {
+      // `git reset HEAD -- <paths>` unstages the conflicted files while
+      // leaving their working-tree contents alone — they stay visible to the
+      // user as uncommitted changes.
+      await this.git.reset(["HEAD", "--", ...skippedConflictedFiles]);
+    }
+
+    // Anything still staged after the unstage? `--quiet` exits 0 when there
+    // is nothing staged, 1 otherwise. simple-git surfaces non-zero exit as a
+    // thrown error, so catching it is how we detect "staged work exists".
+    let hasStaged = false;
+    try {
+      await this.git.raw(["diff", "--cached", "--quiet"]);
+    } catch {
+      hasStaged = true;
+    }
+    if (!hasStaged) {
+      console.warn(
+        "[git] autoCommit skipped — every changed file contains conflict markers:",
+        skippedConflictedFiles.join(", "),
+      );
+      return { commitHash: null, skippedConflictedFiles };
+    }
+
     const message = summary || "Claude turn";
     const result = await this.git.commit(message);
     const hash = result.commit || "";
-    console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
-    return hash;
+    const suffix =
+      skippedConflictedFiles.length > 0
+        ? ` (skipped ${skippedConflictedFiles.length} file(s) with conflict markers)`
+        : "";
+    console.log(
+      "[git] Committed:",
+      hash,
+      message,
+      "on branch:",
+      status.current ?? "(detached)",
+      suffix,
+    );
+    return { commitHash: hash, skippedConflictedFiles };
   }
 
   /** Return recent commit log entries. */

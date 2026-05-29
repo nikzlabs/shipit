@@ -55,21 +55,23 @@ describe("GitManager: init & autoCommit", () => {
     await git.init();
 
     fs.writeFileSync(path.join(tmpDir, "hello.txt"), "hello world");
-    const hash = await git.autoCommit("Add hello.txt");
+    const { commitHash, skippedConflictedFiles } = await git.autoCommit("Add hello.txt");
 
-    expect(hash).toBeTruthy();
-    expect(typeof hash).toBe("string");
+    expect(commitHash).toBeTruthy();
+    expect(typeof commitHash).toBe("string");
+    expect(skippedConflictedFiles).toEqual([]);
 
     const log = await git.log();
     expect(log[0].message).toBe("Add hello.txt");
   });
 
-  it("returns null when there is nothing to commit", async () => {
+  it("returns null commitHash when there is nothing to commit", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
 
-    const hash = await git.autoCommit("Nothing here");
-    expect(hash).toBeNull();
+    const { commitHash, skippedConflictedFiles } = await git.autoCommit("Nothing here");
+    expect(commitHash).toBeNull();
+    expect(skippedConflictedFiles).toEqual([]);
   });
 
   it("commits modified files", async () => {
@@ -81,9 +83,9 @@ describe("GitManager: init & autoCommit", () => {
     await git.autoCommit("v1");
 
     fs.writeFileSync(filePath, "v2");
-    const hash = await git.autoCommit("v2");
+    const { commitHash } = await git.autoCommit("v2");
 
-    expect(hash).toBeTruthy();
+    expect(commitHash).toBeTruthy();
     const log = await git.log();
     expect(log[0].message).toBe("v2");
   });
@@ -97,9 +99,9 @@ describe("GitManager: init & autoCommit", () => {
     await git.autoCommit("Add file");
 
     fs.unlinkSync(filePath);
-    const hash = await git.autoCommit("Delete file");
+    const { commitHash } = await git.autoCommit("Delete file");
 
-    expect(hash).toBeTruthy();
+    expect(commitHash).toBeTruthy();
   });
 
   it("uses default message when summary is empty", async () => {
@@ -111,5 +113,67 @@ describe("GitManager: init & autoCommit", () => {
 
     const log = await git.log();
     expect(log[0].message).toBe("Claude turn");
+  });
+
+  // ---- conflict markers ----
+
+  const CONFLICTED_CONTENT = [
+    "before",
+    "<<<<<<< HEAD",
+    "ours",
+    "=======",
+    "theirs",
+    ">>>>>>> feature",
+    "after",
+    "",
+  ].join("\n");
+
+  it("excludes files with conflict markers from the commit", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+
+    fs.writeFileSync(path.join(tmpDir, "clean.txt"), "all good");
+    fs.writeFileSync(path.join(tmpDir, "conflicted.txt"), CONFLICTED_CONTENT);
+    const { commitHash, skippedConflictedFiles } = await git.autoCommit("Mixed turn");
+
+    expect(commitHash).toBeTruthy();
+    expect(skippedConflictedFiles).toEqual(["conflicted.txt"]);
+
+    // The conflicted file must remain in the working tree as an uncommitted change.
+    const log = await git.log();
+    expect(log[0].message).toBe("Mixed turn");
+    const showed = await git.getFileAtCommit(commitHash!, "conflicted.txt");
+    expect(showed).toBe("");
+    expect(fs.readFileSync(path.join(tmpDir, "conflicted.txt"), "utf-8")).toBe(CONFLICTED_CONTENT);
+  });
+
+  it("returns null commitHash when every changed file has conflict markers", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+
+    fs.writeFileSync(path.join(tmpDir, "a.txt"), CONFLICTED_CONTENT);
+    fs.writeFileSync(path.join(tmpDir, "b.txt"), CONFLICTED_CONTENT.replace("HEAD", "main"));
+    const { commitHash, skippedConflictedFiles } = await git.autoCommit("All conflicted");
+
+    expect(commitHash).toBeNull();
+    expect(skippedConflictedFiles.sort()).toEqual(["a.txt", "b.txt"]);
+  });
+
+  it("does not treat coincidental delimiter-looking text as a conflict marker", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+
+    // Code that mentions the marker characters but doesn't form a real marker
+    // (no `<<<<<<< label` line) must still get committed.
+    const lookalike = [
+      "// docs reference: <<<<<<< is the start of a git conflict marker",
+      "const sep = '=======';",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(tmpDir, "doc.md"), lookalike);
+    const { commitHash, skippedConflictedFiles } = await git.autoCommit("Docs");
+
+    expect(commitHash).toBeTruthy();
+    expect(skippedConflictedFiles).toEqual([]);
   });
 });

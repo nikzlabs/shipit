@@ -160,7 +160,11 @@ describe("SessionRunner", () => {
     const fakeAgent = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
     runner.setSystemTurnDeps({
       agentFactory: () => fakeAgent,
-      autoCommit: vi.fn().mockResolvedValue(null),
+      autoCommit: vi.fn().mockResolvedValue({
+        commitHash: null,
+        parentHash: null,
+        skippedConflictedFiles: [],
+      }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
         sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn() } as any,

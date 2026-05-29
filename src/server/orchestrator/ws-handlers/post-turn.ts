@@ -2,6 +2,7 @@ import type { WsServerMessage } from "../../shared/types.js";
 import type { ConnectionCtx, AppCtx } from "./types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { withWorkspaceLock } from "../services/marketplace.js";
+import { formatConflictMarkerNotice } from "../services/conflict-marker-notice.js";
 
 /** Minimal handler context — postTurnCommit only needs git + chat history + auto-push. */
 type PostTurnCtx = Pick<ConnectionCtx & AppCtx, "createGitManager" | "chatHistoryManager"> & {
@@ -53,7 +54,15 @@ export async function postTurnCommit(
     const git = ctx.createGitManager(opts.sessionDir);
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
-    const commitHash = await git.autoCommit(firstLine);
+    const { commitHash, skippedConflictedFiles } = await git.autoCommit(firstLine);
+    if (skippedConflictedFiles.length > 0 && opts.sessionId) {
+      opts.emit({
+        type: "system_notice",
+        sessionId: opts.sessionId,
+        level: "warn",
+        message: formatConflictMarkerNotice(skippedConflictedFiles),
+      });
+    }
     if (!commitHash) {
       const currentHeadHash = await git.getHeadHash();
       if (
