@@ -6,8 +6,8 @@
  * real connections; this exists purely for the connectivity-test UX.
  *
  * Configs passed here are already RESOLVED (no `$secret:` placeholders) — the
- * caller substitutes them against `process.env` first, same as
- * `generateMcpConfig()`.
+ * caller substitutes them against `process.env` first, same as each agent
+ * adapter's `writeMcpConfig()`.
  */
 
 import { spawn } from "node:child_process";

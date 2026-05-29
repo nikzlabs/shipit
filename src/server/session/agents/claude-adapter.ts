@@ -8,6 +8,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import { ClaudeProcess, StreamingClaudeProcess } from "../claude.js";
 import type { ClaudeEvent, ClaudeMcpServerInit } from "../../shared/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../../shared/types.js";
@@ -15,12 +16,15 @@ import type {
   AgentId,
   AgentCapabilities,
   AgentEvent,
+  AgentMcpWriteContext,
+  AgentMcpWriteResult,
   AgentProcess,
   AgentProcessEvents,
   AgentRunParams,
 } from "./agent-process.js";
 import type { McpServerStatus } from "../../shared/types/mcp-types.js";
 import type { SubscriptionLimitsWindow } from "../../shared/types/usage-limits-types.js";
+import { resolveMcpServer } from "../mcp-resolve.js";
 
 export class ClaudeAdapter
   extends EventEmitter<AgentProcessEvents>
@@ -279,6 +283,88 @@ export class ClaudeAdapter
 
   kill(): void {
     this.inner.kill();
+  }
+
+  /**
+   * Write a per-turn JSON config file (`--mcp-config`) bundling the built-in
+   * Playwright server, the internal review bridge (docs/125, when present),
+   * and any user-configured MCP servers (docs/088 — `$secret:` placeholders
+   * resolved against `process.env`). Each missing-secret server is reported
+   * back to the worker so it can broadcast an `mcp_server_status` SSE event.
+   *
+   * NOTE on cwd: `--output-dir` only governs auto-generated filenames. When
+   * the agent passes a `filename` to `browser_take_screenshot` (or any tool
+   * with a suggestedFilename), `@playwright/mcp` resolves it relative to its
+   * own `process.cwd()` via `workspaceFile()` — NOT relative to
+   * `--output-dir`. If we let the server inherit the workspace as cwd,
+   * screenshots like `shot.png` land in `/workspace/` and get auto-committed.
+   * We work around this by launching the server through `sh -c` with an
+   * explicit `cd` into the output dir so suggested filenames also stay out
+   * of the repo. See coreBundle.js:`workspaceFile()` and
+   * `resolveClientFilename()`.
+   */
+  writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {
+    const configPath = `/tmp/mcp-config-${Date.now()}.json`;
+    const outputDir = "/tmp/.playwright-mcp";
+    // `--browser chromium` is required: our Dockerfiles install Chromium
+    // (Chrome doesn't ship for Linux ARM64). Without this flag,
+    // @playwright/mcp defaults to `chrome` and fails on the first browser
+    // tool call with "Chromium distribution 'chrome' is not found at
+    // /opt/google/chrome/chrome".
+    const mcpServers: Record<string, unknown> = {
+      playwright: {
+        command: "sh",
+        args: [
+          "-c",
+          `mkdir -p ${outputDir} && cd ${outputDir} && exec playwright-mcp --browser chromium --headless --no-sandbox --output-dir ${outputDir}`,
+        ],
+      },
+    };
+
+    // docs/125 — internal review tool. The bridge is a thin stdio→HTTP shim
+    // (mcp-review-bridge.ts) launched via tsx-by-absolute-path, mirroring the
+    // `gh`/`shipit` shim install in the Dockerfile (bare `tsx` fails to
+    // resolve when the agent's cwd is a user repo without a tsx dep). Skipped
+    // if the bridge isn't present (e.g. a stripped-down test image) so agent
+    // start never fails on it.
+    if (ctx.reviewBridge) {
+      mcpServers["shipit-review"] = {
+        command: ctx.reviewBridge.tsxBin,
+        args: [ctx.reviewBridge.bridgePath],
+      };
+    }
+
+    // docs/088: merge user-configured MCP servers. Configs arrive UNRESOLVED
+    // — `$secret:` placeholders are substituted here against the worker's own
+    // process.env (populated by 087's agent-env pipeline). A server that
+    // references a missing secret is dropped and reported over SSE; it never
+    // blocks agent start.
+    //
+    // We only emit `mcp_server_status` here for the *failure* case (missing
+    // secret) — that's a definitive "this server is not going to start"
+    // signal we know before the CLI runs. The matching `loaded` signal is
+    // emitted later when the Claude CLI's init event reports the server as
+    // `connected`; see `mcp_status` channel and `wireAgentEvents()` in the
+    // worker. Emitting `loaded` here would be misleading: it would mean "we
+    // sent the config" rather than "the connection succeeded."
+    for (const server of ctx.servers) {
+      const { resolved, missing } = resolveMcpServer(server);
+      if (resolved) {
+        mcpServers[server.name] = resolved;
+      } else {
+        const reason = `missing secret: ${missing.join(", ")}`;
+        console.warn(`[mcp] dropping server "${server.name}": ${reason}`);
+        ctx.onServerFailed(server.name, reason);
+      }
+    }
+
+    fs.writeFileSync(configPath, JSON.stringify({ mcpServers }, null, 2));
+    return {
+      mcpConfigPath: configPath,
+      cleanup: () => {
+        try { fs.unlinkSync(configPath); } catch { /* ignore */ }
+      },
+    };
   }
 }
 

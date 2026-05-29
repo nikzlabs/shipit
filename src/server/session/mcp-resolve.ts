@@ -62,9 +62,9 @@ export interface McpResolveResult {
  *   `/\$platform:([a-z][a-z0-9_]*)/g`        → `env[MCP_PLATFORM_<UPPER>]`
  *
  * Exported so every codepath that turns a stored MCP config into a live
- * config — the agent's `generateMcpConfig()` (via {@link resolveMcpServer})
- * AND the worker's `/mcp/test` connectivity check — substitutes the SAME
- * placeholder forms. Previously the test path had its own copy that only
+ * config — each agent adapter's `writeMcpConfig()` (via
+ * {@link resolveMcpServer}) AND the worker's `/mcp/test` connectivity check —
+ * substitutes the SAME placeholder forms. Previously the test path had its own copy that only
  * understood `$secret:`, so testing an OAuth-managed server (whose auth
  * header is `Bearer $platform:<source>`) sent the unresolved literal and the
  * provider answered `401`, even though the agent could use the server fine.

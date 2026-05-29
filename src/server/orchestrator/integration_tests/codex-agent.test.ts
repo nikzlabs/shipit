@@ -87,6 +87,10 @@ class FakeCodexProcess extends EventEmitter<AgentProcessEvents> implements Agent
     this.killed = true;
   }
 
+  writeMcpConfig(): { mcpConfigPath?: string; runtimeEnv?: Record<string, string>; cleanup?: () => void } {
+    return {};
+  }
+
   /** Helper: simulate a complete Codex turn. */
   finish(threadId = "codex-thread-001", code = 0) {
     this.emit("event", { type: "agent_result", status: "success", sessionId: threadId });

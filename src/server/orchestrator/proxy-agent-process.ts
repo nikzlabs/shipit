@@ -4,7 +4,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, PermissionMode } from "../shared/types.js";
+import type { AgentProcess, AgentId, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentRunParams, PermissionMode } from "../shared/types.js";
 import { WorkerTimeoutError } from "./worker-http.js";
 
 /**
@@ -129,5 +129,18 @@ export class ProxyAgentProcess extends EventEmitter<{
       const msg = err instanceof Error ? err.message : String(err);
       this.emit("log", "server", `Failed to kill agent on worker: ${msg}`);
     });
+  }
+
+  /**
+   * MCP-config writing happens inside the worker container, on the real
+   * Claude/Codex adapter the worker constructs there — not on this
+   * orchestrator-side proxy. The worker calls `agent.writeMcpConfig(...)`
+   * unconditionally before spawn (see `session-worker.ts` /agent/start).
+   * Reaching this method on the proxy means the worker delegated MCP
+   * writing to the orchestrator, which is the wrong direction and would
+   * skip per-turn JSON / config.toml regeneration — fail loudly.
+   */
+  writeMcpConfig(_ctx: AgentMcpWriteContext): AgentMcpWriteResult {
+    throw new Error("writeMcpConfig is not supported on ProxyAgentProcess — the worker writes its own MCP config before spawning the in-container adapter");
   }
 }
