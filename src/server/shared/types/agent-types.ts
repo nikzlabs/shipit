@@ -99,6 +99,17 @@ export interface AgentAssistantEvent {
    * than flattening it into the main conversation. (109 — subagent transparency)
    */
   parentToolUseId?: string;
+  /**
+   * When true, this event carries the FULL final text of a streamed assistant
+   * message — used by adapters (Codex) that previously emitted incremental
+   * deltas via individual `agent_assistant` events. The orchestrator uses this
+   * as the authoritative `turnSummary` (single-line commit / activity label)
+   * but does NOT append the text to `accumulatedText` or `chatMessageGroups`,
+   * because the deltas already populated those. Without this signal,
+   * `turnSummary` ends up as just the last delta (often a single character
+   * like ".") which became the commit message.
+   */
+  isStreamCompletion?: boolean;
 }
 
 /** Tool results flowing back to the agent. */

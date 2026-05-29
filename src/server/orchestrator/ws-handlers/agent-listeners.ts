@@ -632,6 +632,15 @@ export function wireAgentListeners(
       const toolBlocks = (event.content ?? [])
         .filter((b): b is ClaudeContentBlockToolUse => b.type === "tool_use");
 
+      // Stream completion (Codex deltas finished): replace turnSummary with
+      // the FULL text, but skip accumulator/chat-group updates — the deltas
+      // already populated those. Without this, turnSummary would be the last
+      // tiny delta (often "."), which became the commit message.
+      if (event.isStreamCompletion) {
+        if (text && runner) runner.turnSummary = text;
+        return;
+      }
+
       // Record every tool_use this turn — including subagent (Task) ones,
       // since their children dispatch MCP tools whose failures we still want
       // attributed to the right server. See `recordToolUses` block at the
