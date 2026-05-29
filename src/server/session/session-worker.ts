@@ -19,8 +19,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, McpServerConfig } from "./agents/agent-process.js";
-import { resolveMcpServer, substituteMcpPlaceholders } from "./mcp-resolve.js";
+import type {
+  AgentProcess,
+  AgentRunParams,
+  AgentEvent,
+  AgentId,
+  AgentMcpReviewBridge,
+  AgentMcpWriteResult,
+  McpServerConfig,
+} from "./agents/agent-process.js";
+import { substituteMcpPlaceholders } from "./mcp-resolve.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
 import os from "node:os";
@@ -162,219 +170,25 @@ export class SessionWorker extends EventEmitter {
   }
 
   /**
-   * Generate an MCP config file for Claude Code.
-   * Returns the config file path, or undefined if not applicable.
-   *
-   * NOTE on cwd: `--output-dir` only governs auto-generated filenames. When the
-   * agent passes a `filename` to `browser_take_screenshot` (or any tool with a
-   * suggestedFilename), `@playwright/mcp` resolves it relative to its own
-   * `process.cwd()` via `workspaceFile()` — NOT relative to `--output-dir`.
-   * If we let the server inherit the workspace as cwd, screenshots like
-   * `shot.png` land in `/workspace/` and get auto-committed. We work around
-   * this by launching the server through `sh -c` with an explicit `cd` into
-   * the output dir so suggested filenames also stay out of the repo.
-   * See coreBundle.js:`workspaceFile()` and `resolveClientFilename()`.
+   * Build the per-spawn context the adapter's `writeMcpConfig()` consumes.
+   * The worker owns the cross-cutting bits — the user-configured server list,
+   * the resolved review-bridge install paths, and the SSE failure broadcast —
+   * and the adapter owns the CLI-specific wire format. (docs/155 hair 10)
    */
-  private generateMcpConfig(agentId: AgentId, params?: AgentRunParams): string | undefined {
-    if (agentId !== "claude") return undefined;
-
-    const configPath = `/tmp/mcp-config-${Date.now()}.json`;
-    const outputDir = "/tmp/.playwright-mcp";
-    // `--browser chromium` is required: our Dockerfiles install Chromium
-    // (Chrome doesn't ship for Linux ARM64). Without this flag, @playwright/mcp
-    // defaults to `chrome` and fails on the first browser tool call with
-    // "Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome".
-    const mcpServers: Record<string, unknown> = {
-      playwright: {
-        command: "sh",
-        args: [
-          "-c",
-          `mkdir -p ${outputDir} && cd ${outputDir} && exec playwright-mcp --browser chromium --headless --no-sandbox --output-dir ${outputDir}`,
-        ],
+  private invokeAgentMcpWriter(
+    agent: AgentProcess,
+    params?: AgentRunParams,
+  ): AgentMcpWriteResult {
+    return agent.writeMcpConfig({
+      servers: params?.mcpServers ?? [],
+      reviewBridge: this.reviewBridgePaths(),
+      onServerFailed: (name, reason) => {
+        this.broadcastSSE({
+          type: "mcp_server_status",
+          data: { name, state: "failed", reason },
+        });
       },
-    };
-
-    // docs/125 — internal review tool. The bridge is a thin stdio→HTTP shim
-    // (mcp-review-bridge.ts) launched via tsx-by-absolute-path, mirroring the
-    // `gh`/`shipit` shim install in the Dockerfile (bare `tsx` fails to resolve
-    // when the agent's cwd is a user repo without a tsx dep). It reads
-    // WORKER_PORT from the inherited env to reach the worker's
-    // /agent-ops/review/submit broker. Skipped if the bridge file isn't present
-    // (e.g. a stripped-down test image) so agent start never fails on it.
-    const reviewBridge = this.reviewBridgePaths();
-    if (reviewBridge) {
-      mcpServers["shipit-review"] = {
-        command: reviewBridge.tsxBin,
-        args: [reviewBridge.bridgePath],
-      };
-    }
-
-    // docs/088: merge user-configured MCP servers. Configs arrive UNRESOLVED
-    // — `$secret:` placeholders are substituted here against the worker's own
-    // process.env (populated by 087's agent-env pipeline). A server that
-    // references a missing secret is dropped and reported over SSE; it never
-    // blocks agent start.
-    //
-    // We only emit `mcp_server_status` here for the *failure* case (missing
-    // secret) — that's a definitive "this server is not going to start" signal
-    // we know before the CLI runs. The matching `loaded` signal is emitted
-    // later when the Claude CLI's init event reports the server as
-    // `connected`; see ClaudeAdapter's `mcp_status` channel and
-    // `wireAgentEvents()`. Emitting `loaded` here would be misleading: it
-    // would mean "we sent the config" rather than "the connection succeeded."
-    for (const server of params?.mcpServers ?? []) {
-      const { resolved, missing } = resolveMcpServer(server);
-      if (resolved) {
-        mcpServers[server.name] = resolved;
-      } else {
-        const reason = `missing secret: ${missing.join(", ")}`;
-        console.warn(`[mcp] dropping server "${server.name}": ${reason}`);
-        this.broadcastSSE({
-          type: "mcp_server_status",
-          data: { name: server.name, state: "failed", reason },
-        });
-      }
-    }
-
-    fs.writeFileSync(configPath, JSON.stringify({ mcpServers }, null, 2));
-    return configPath;
-  }
-
-  private static readonly CODEX_MCP_BEGIN = "# <shipit-managed-mcp>";
-  private static readonly CODEX_MCP_END = "# </shipit-managed-mcp>";
-
-  private tomlString(value: string): string {
-    return JSON.stringify(value);
-  }
-
-  private tomlArray(values: string[]): string {
-    return `[${values.map((v) => this.tomlString(v)).join(", ")}]`;
-  }
-
-  private tomlInlineStringMap(values: Record<string, string>): string {
-    const entries = Object.entries(values).map(
-      ([key, value]) => `${this.tomlString(key)} = ${this.tomlString(value)}`,
-    );
-    return `{ ${entries.join(", ")} }`;
-  }
-
-  private replaceManagedCodexMcpBlock(existing: string, block: string): string {
-    const start = existing.indexOf(SessionWorker.CODEX_MCP_BEGIN);
-    const end = existing.indexOf(SessionWorker.CODEX_MCP_END);
-    const normalizedBlock = block.endsWith("\n") ? block : `${block}\n`;
-    if (start !== -1 && end !== -1 && end > start) {
-      const afterEnd = end + SessionWorker.CODEX_MCP_END.length;
-      return `${existing.slice(0, start).trimEnd()}\n\n${normalizedBlock}${existing.slice(afterEnd).trimStart()}`;
-    }
-    return `${existing.trimEnd()}${existing.trimEnd() ? "\n\n" : ""}${normalizedBlock}`;
-  }
-
-  /**
-   * docs/088/docs/125 — register ShipIt-managed MCP servers for Codex.
-   *
-   * Codex reads MCP server definitions from `~/.codex/config.toml` at
-   * app-server startup. Unlike Claude's per-turn temp JSON, this file persists
-   * next to Codex auth state, so we avoid writing resolved secrets into it for
-   * the common env/header cases:
-   *
-   * - stdio `env` entries become Codex `env_vars`, with the actual values
-   *   supplied to the spawned child process environment for this run.
-   * - HTTP `headers` entries become Codex `env_http_headers`, backed by
-   *   synthetic per-run environment variables.
-   *
-   * Resolved secrets embedded in `args` still have to be written literally
-   * because Codex has no argv env indirection.
-   */
-  private ensureCodexMcpConfig(params?: AgentRunParams): Record<string, string> {
-    const codexHome = process.env.CODEX_HOME || "/root/.codex";
-    const configPath = path.join(codexHome, "config.toml");
-    const runtimeEnv: Record<string, string> = {};
-    const lines: string[] = [
-      SessionWorker.CODEX_MCP_BEGIN,
-      "# ShipIt-managed MCP servers. This block is regenerated before each Codex turn.",
-    ];
-
-    const bridge = this.reviewBridgePaths();
-    if (bridge) {
-      lines.push(
-        "",
-        "# docs/125 — internal review tool bridge.",
-        "[mcp_servers.shipit-review]",
-        `command = ${this.tomlString(bridge.tsxBin)}`,
-        `args = ${this.tomlArray([bridge.bridgePath])}`,
-      );
-    }
-
-    for (const server of params?.mcpServers ?? []) {
-      const { resolved, missing } = resolveMcpServer(server);
-      if (!resolved) {
-        const reason = `missing secret: ${missing.join(", ")}`;
-        console.warn(`[mcp] dropping server "${server.name}": ${reason}`);
-        this.broadcastSSE({
-          type: "mcp_server_status",
-          data: { name: server.name, state: "failed", reason },
-        });
-        continue;
-      }
-
-      lines.push("", `[mcp_servers.${server.name}]`);
-      if (server.type === "stdio") {
-        const command = resolved.command;
-        if (typeof command === "string") {
-          lines.push(`command = ${this.tomlString(command)}`);
-        }
-        const args = resolved.args;
-        if (Array.isArray(args) && args.every((arg) => typeof arg === "string")) {
-          lines.push(`args = ${this.tomlArray(args)}`);
-        }
-        const env = resolved.env;
-        if (env && typeof env === "object" && !Array.isArray(env)) {
-          const envKeys: string[] = [];
-          for (const [key, value] of Object.entries(env)) {
-            if (typeof value !== "string") continue;
-            runtimeEnv[key] = value;
-            envKeys.push(key);
-          }
-          if (envKeys.length > 0) {
-            lines.push(`env_vars = ${this.tomlArray(envKeys)}`);
-          }
-        }
-      } else {
-        const url = resolved.url;
-        if (typeof url === "string") {
-          lines.push(`url = ${this.tomlString(url)}`);
-        }
-        const headers = resolved.headers;
-        if (headers && typeof headers === "object" && !Array.isArray(headers)) {
-          const envHeaders: Record<string, string> = {};
-          let i = 0;
-          for (const [header, value] of Object.entries(headers)) {
-            if (typeof value !== "string") continue;
-            const envKey = `SHIPIT_MCP_${server.name.toUpperCase()}_HTTP_HEADER_${i++}`;
-            runtimeEnv[envKey] = value;
-            envHeaders[header] = envKey;
-          }
-          if (Object.keys(envHeaders).length > 0) {
-            lines.push(`env_http_headers = ${this.tomlInlineStringMap(envHeaders)}`);
-          }
-        }
-      }
-    }
-
-    lines.push("", SessionWorker.CODEX_MCP_END, "");
-
-    try {
-      let existing = "";
-      try {
-        existing = fs.readFileSync(configPath, "utf-8");
-      } catch { /* no config yet */ }
-      fs.mkdirSync(codexHome, { recursive: true });
-      fs.writeFileSync(configPath, this.replaceManagedCodexMcpBlock(existing, lines.join("\n")));
-    } catch (err) {
-      console.warn(`[mcp] failed to register codex MCP config: ${getErrorMessage(err)}`);
-    }
-
-    return runtimeEnv;
+    });
   }
 
   /**
@@ -384,22 +198,13 @@ export class SessionWorker extends EventEmitter {
    * non-container environment doesn't break agent start. Mirrors the Dockerfile
    * `gh` shim's tsx-by-absolute-path invocation.
    */
-  private reviewBridgePaths(): { tsxBin: string; bridgePath: string } | null {
+  private reviewBridgePaths(): AgentMcpReviewBridge | null {
     const sessionDir = path.dirname(fileURLToPath(import.meta.url));
     const bridgePath = path.join(sessionDir, "mcp-review-bridge.ts");
     // <root>/src/server/session → <root>/node_modules/.bin/tsx
     const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
     if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
     return { tsxBin, bridgePath };
-  }
-
-  /**
-   * docs/125 — compatibility wrapper for tests and older call sites that only
-   * need the review bridge. The shared Codex MCP writer owns the generated
-   * block and preserves any user-owned config outside that block.
-   */
-  private ensureCodexReviewMcpConfig(): void {
-    this.ensureCodexMcpConfig();
   }
 
   private withTemporaryEnv<T>(values: Record<string, string>, fn: () => T): T {
@@ -434,25 +239,26 @@ export class SessionWorker extends EventEmitter {
       }
 
       try {
-        // Generate MCP config — built-in Playwright + user-configured servers.
-        const mcpConfigPath = this.generateMcpConfig(agentId, params);
-
-        // docs/088/docs/125 — Codex loads MCP servers from config.toml, not a
-        // per-run path, so register ShipIt-managed servers before spawn and
-        // provide any resolved secret values through the child environment.
-        const codexMcpEnv = agentId === "codex" ? this.ensureCodexMcpConfig(params) : {};
-
+        // docs/155 hair 10 — each adapter knows its own MCP wire format
+        // (Claude: per-turn `--mcp-config` JSON; Codex: `config.toml` block;
+        // Cursor: `mcp.json`). The worker hands over the cross-cutting
+        // context (user-configured servers, review-bridge paths, SSE
+        // failure channel) and consumes a uniform { mcpConfigPath?,
+        // runtimeEnv?, cleanup? } result.
         this.agent = this.agentFactory(agentId);
         this.wireAgentEvents(this.agent);
-        this.withTemporaryEnv(codexMcpEnv, () => {
-          this.agent?.run({ ...params, cwd: this.workspaceDir, mcpConfigPath });
+        const mcpWrite = this.invokeAgentMcpWriter(this.agent, params);
+
+        this.withTemporaryEnv(mcpWrite.runtimeEnv ?? {}, () => {
+          this.agent?.run({
+            ...params,
+            cwd: this.workspaceDir,
+            mcpConfigPath: mcpWrite.mcpConfigPath,
+          });
         });
 
-        // Clean up MCP config when agent finishes
-        if (mcpConfigPath) {
-          this.agent.on("done", () => {
-            try { fs.unlinkSync(mcpConfigPath); } catch { /* ignore */ }
-          });
+        if (mcpWrite.cleanup) {
+          this.agent.on("done", mcpWrite.cleanup);
         }
 
         return { started: true };
@@ -858,7 +664,7 @@ export class SessionWorker extends EventEmitter {
    *
    * Delegates substitution to the shared {@link substituteMcpPlaceholders}
    * helper so the test path understands the exact same placeholder forms as
-   * the agent's `generateMcpConfig()` — including `$platform:<source>` used by
+   * the adapter's `writeMcpConfig()` — including `$platform:<source>` used by
    * OAuth-managed servers. Without this, testing a connected Notion/Linear
    * server sent the literal `$platform:…` header and the provider returned a
    * misleading 401.

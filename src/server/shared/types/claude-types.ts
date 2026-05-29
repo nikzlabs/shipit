@@ -30,8 +30,8 @@ export interface ClaudeSystemEvent {
   /**
    * Real connection status for each MCP server the CLI tried to load. ShipIt
    * uses this as the authoritative liveness signal for `mcp_server_status`
-   * events, since `generateMcpConfig()` itself only knows whether secret
-   * placeholders resolved — not whether the spawned process or remote
+   * events, since `ClaudeAdapter.writeMcpConfig()` itself only knows whether
+   * secret placeholders resolved — not whether the spawned process or remote
    * endpoint actually accepted the connection. (docs/088)
    */
   mcp_servers?: ClaudeMcpServerInit[];

@@ -226,8 +226,8 @@ export interface AgentRunParams {
   mcpConfigPath?: string;
   /**
    * User-configured MCP servers (docs/088). Configs are UNRESOLVED — `env`
-   * and `headers` may still contain `$secret:` placeholders. The worker
-   * resolves them against its own `process.env` in `generateMcpConfig()`.
+   * and `headers` may still contain `$secret:` placeholders. The adapter's
+   * `writeMcpConfig()` resolves them against its own `process.env`.
    * Raw secret values never travel in this payload.
    */
   mcpServers?: McpServerConfig[];
@@ -251,6 +251,73 @@ export interface AgentRunParams {
    * for live steering. Ignored by non-streaming adapters. (docs/140)
    */
   useStreaming?: boolean;
+}
+
+// ---- Per-agent MCP config writer (docs/155 hair 10) ----
+
+/**
+ * Resolved paths to the internal review MCP bridge (docs/125). The worker
+ * resolves these once and hands them to the adapter so the adapter doesn't
+ * have to know where the bridge lives in the session worker layout.
+ */
+export interface AgentMcpReviewBridge {
+  tsxBin: string;
+  bridgePath: string;
+}
+
+/**
+ * Per-spawn context the worker passes into `AgentProcess.writeMcpConfig()`.
+ *
+ * The adapter owns the CLI-specific wire format (Claude: `--mcp-config` JSON
+ * file; Codex: `~/.codex/config.toml` block; Cursor: `mcp.json`). The worker
+ * owns the cross-cutting context — the user-configured server list, the
+ * review-bridge install paths, and the SSE channel that reports server-level
+ * failures (e.g. missing secrets).
+ */
+export interface AgentMcpWriteContext {
+  /**
+   * User-configured MCP servers (docs/088). Strings still carry `$secret:` /
+   * `$platform:` placeholders — the adapter substitutes them against
+   * `process.env` via `resolveMcpServer()` before writing them out.
+   */
+  servers: McpServerConfig[];
+  /**
+   * The internal review bridge (docs/125), or `null` when the worker can't
+   * locate the bridge files (stripped-down test image). Adapters that
+   * support the review tool skip the entry when this is null; others ignore it.
+   */
+  reviewBridge: AgentMcpReviewBridge | null;
+  /**
+   * Surface a server-level failure to the worker so it can broadcast an
+   * `mcp_server_status` SSE event. Called when an entry has to be dropped
+   * (e.g. missing secret); never blocks agent start.
+   */
+  onServerFailed: (name: string, reason: string) => void;
+}
+
+/**
+ * Result of `AgentProcess.writeMcpConfig()`. Every field is optional — an
+ * adapter that doesn't need a CLI-side config file (because it writes to a
+ * fixed location) returns `{}` and signals nothing back to the worker.
+ */
+export interface AgentMcpWriteResult {
+  /**
+   * Filesystem path to a Claude-style MCP JSON config; passed back into
+   * `run()` via `params.mcpConfigPath`. Codex/Cursor leave this undefined
+   * because their CLIs read from a fixed location (e.g. `config.toml`).
+   */
+  mcpConfigPath?: string;
+  /**
+   * Env vars the worker must set on the child process for this run. Codex
+   * uses this to expose `$secret:`-resolved values via env indirection
+   * without persisting the raw secret to `config.toml`.
+   */
+  runtimeEnv?: Record<string, string>;
+  /**
+   * Called by the worker when the agent's `done` event fires. Used by
+   * Claude to unlink the per-turn JSON file.
+   */
+  cleanup?: () => void;
 }
 
 // ---- AgentProcess interface ----
@@ -302,4 +369,15 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   interrupt(): void;
   /** Kill the running process. */
   kill(): void;
+  /**
+   * Write whatever MCP configuration this CLI expects before the worker
+   * calls `run()`. Each backend owns its own wire format (Claude:
+   * `--mcp-config` JSON; Codex: `~/.codex/config.toml`; future Cursor:
+   * `mcp.json`); the worker treats them uniformly via the result shape.
+   *
+   * (docs/155 — hair 10) Replaces the per-agent `if (agentId === "claude")`
+   * / `if (agentId === "codex")` branches that used to live in
+   * `session-worker.ts`.
+   */
+  writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult;
 }

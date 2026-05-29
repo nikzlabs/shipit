@@ -41,6 +41,9 @@ class FakeAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess
   sendUserMessage(_text: string): void { /* unused */ }
   interrupt(): void { /* unused */ }
   kill(): void { /* unused */ }
+  writeMcpConfig(): { mcpConfigPath?: string; runtimeEnv?: Record<string, string>; cleanup?: () => void } {
+    return {};
+  }
 }
 
 describe("warm-pool runPreInstall", () => {

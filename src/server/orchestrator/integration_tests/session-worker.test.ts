@@ -65,6 +65,10 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
   kill(): void {
     this.killed = true;
   }
+
+  writeMcpConfig(): { mcpConfigPath?: string; runtimeEnv?: Record<string, string>; cleanup?: () => void } {
+    return {};
+  }
 }
 
 // ---------------------------------------------------------------------------

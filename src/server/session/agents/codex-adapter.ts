@@ -14,18 +14,22 @@
 
 import { EventEmitter } from "node:events";
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import type {
   AgentId,
   AgentCapabilities,
   AgentEvent,
+  AgentMcpWriteContext,
+  AgentMcpWriteResult,
   AgentProcess,
   AgentProcessEvents,
   AgentRunParams,
   AgentContentBlock,
 } from "./agent-process.js";
+import { resolveMcpServer } from "../mcp-resolve.js";
+import { getErrorMessage } from "../../shared/utils.js";
 
 // ---- Codex JSON-RPC protocol types ----
 
@@ -256,7 +260,7 @@ export class CodexAdapter
     // explicit instruction — exactly what the composed review prompt asks for)
     // and custom MCP tools (`[mcp_servers.*]` in config.toml). The worker
     // writes the `shipit-review` bridge into the Codex config before spawn
-    // (see SessionWorker.ensureCodexReviewMcpConfig), so `submit_review_comments`
+    // (see CodexAdapter.writeMcpConfig), so `submit_review_comments`
     // is available to the parent and any subagent it spawns.
     supportsReview: true,
     supportsSteering: true,
@@ -468,6 +472,115 @@ export class CodexAdapter
     }
     this.pendingRequests.forEach(({ reject }) => reject(new Error("Process killed")));
     this.pendingRequests.clear();
+  }
+
+  // ---- MCP config writer (docs/088, docs/125, docs/155 hair 10) ----
+
+  /**
+   * Codex reads MCP server definitions from `~/.codex/config.toml` at
+   * app-server startup, not from a per-run path like Claude. So we rewrite
+   * the ShipIt-managed block in that file before every spawn and return any
+   * resolved secret values via `runtimeEnv` (the worker sets them on the
+   * child process env for this run). The block is delimited so we never
+   * clobber a user's own MCP entries elsewhere in the file.
+   *
+   * For stdio servers:
+   *  - `env` entries become Codex `env_vars` (the actual values are passed
+   *    through `runtimeEnv` to the spawned child, so the `.toml` itself
+   *    never has resolved secrets in it).
+   * For HTTP servers:
+   *  - `headers` entries become Codex `env_http_headers`, backed by
+   *    synthetic per-run environment variables.
+   *
+   * Resolved secrets embedded in `args` still have to be written literally
+   * because Codex has no argv env indirection.
+   */
+  writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {
+    const codexHome = process.env.CODEX_HOME || "/root/.codex";
+    const configPath = path.join(codexHome, "config.toml");
+    const runtimeEnv: Record<string, string> = {};
+    const lines: string[] = [
+      CODEX_MCP_BEGIN,
+      "# ShipIt-managed MCP servers. This block is regenerated before each Codex turn.",
+    ];
+
+    if (ctx.reviewBridge) {
+      lines.push(
+        "",
+        "# docs/125 — internal review tool bridge.",
+        "[mcp_servers.shipit-review]",
+        `command = ${tomlString(ctx.reviewBridge.tsxBin)}`,
+        `args = ${tomlArray([ctx.reviewBridge.bridgePath])}`,
+      );
+    }
+
+    for (const server of ctx.servers) {
+      const { resolved, missing } = resolveMcpServer(server);
+      if (!resolved) {
+        const reason = `missing secret: ${missing.join(", ")}`;
+        console.warn(`[mcp] dropping server "${server.name}": ${reason}`);
+        ctx.onServerFailed(server.name, reason);
+        continue;
+      }
+
+      lines.push("", `[mcp_servers.${server.name}]`);
+      if (server.type === "stdio") {
+        const command = resolved.command;
+        if (typeof command === "string") {
+          lines.push(`command = ${tomlString(command)}`);
+        }
+        const args = resolved.args;
+        if (Array.isArray(args) && args.every((arg) => typeof arg === "string")) {
+          lines.push(`args = ${tomlArray(args)}`);
+        }
+        const env = resolved.env;
+        if (env && typeof env === "object" && !Array.isArray(env)) {
+          const envKeys: string[] = [];
+          for (const [key, value] of Object.entries(env)) {
+            if (typeof value !== "string") continue;
+            runtimeEnv[key] = value;
+            envKeys.push(key);
+          }
+          if (envKeys.length > 0) {
+            lines.push(`env_vars = ${tomlArray(envKeys)}`);
+          }
+        }
+      } else {
+        const url = resolved.url;
+        if (typeof url === "string") {
+          lines.push(`url = ${tomlString(url)}`);
+        }
+        const headers = resolved.headers;
+        if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+          const envHeaders: Record<string, string> = {};
+          let i = 0;
+          for (const [header, value] of Object.entries(headers)) {
+            if (typeof value !== "string") continue;
+            const envKey = `SHIPIT_MCP_${server.name.toUpperCase()}_HTTP_HEADER_${i++}`;
+            runtimeEnv[envKey] = value;
+            envHeaders[header] = envKey;
+          }
+          if (Object.keys(envHeaders).length > 0) {
+            lines.push(`env_http_headers = ${tomlInlineStringMap(envHeaders)}`);
+          }
+        }
+      }
+    }
+
+    lines.push("", CODEX_MCP_END, "");
+
+    try {
+      let existing = "";
+      try {
+        existing = readFileSync(configPath, "utf-8");
+      } catch { /* no config yet */ }
+      mkdirSync(codexHome, { recursive: true });
+      writeFileSync(configPath, replaceManagedCodexMcpBlock(existing, lines.join("\n")));
+    } catch (err) {
+      console.warn(`[mcp] failed to register codex MCP config: ${getErrorMessage(err)}`);
+    }
+
+    return { runtimeEnv };
   }
 
   // ---- JSON-RPC transport ----
@@ -1084,4 +1197,37 @@ export class CodexAdapter
     const turnData = turnResult as { turnId?: string; turn?: { id?: string } } | undefined;
     this.currentTurnId = turnData?.turn?.id ?? turnData?.turnId ?? this.currentTurnId;
   }
+}
+
+// ---- TOML emit helpers (kept module-local — Codex is the only adapter
+// emitting a TOML block today, and breaking these out for symmetry with the
+// other adapters would over-generalize). ----
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function tomlArray(values: string[]): string {
+  return `[${values.map((v) => tomlString(v)).join(", ")}]`;
+}
+
+function tomlInlineStringMap(values: Record<string, string>): string {
+  const entries = Object.entries(values).map(
+    ([key, value]) => `${tomlString(key)} = ${tomlString(value)}`,
+  );
+  return `{ ${entries.join(", ")} }`;
+}
+
+const CODEX_MCP_BEGIN = "# <shipit-managed-mcp>";
+const CODEX_MCP_END = "# </shipit-managed-mcp>";
+
+function replaceManagedCodexMcpBlock(existing: string, block: string): string {
+  const start = existing.indexOf(CODEX_MCP_BEGIN);
+  const end = existing.indexOf(CODEX_MCP_END);
+  const normalizedBlock = block.endsWith("\n") ? block : `${block}\n`;
+  if (start !== -1 && end !== -1 && end > start) {
+    const afterEnd = end + CODEX_MCP_END.length;
+    return `${existing.slice(0, start).trimEnd()}\n\n${normalizedBlock}${existing.slice(afterEnd).trimStart()}`;
+  }
+  return `${existing.trimEnd()}${existing.trimEnd() ? "\n\n" : ""}${normalizedBlock}`;
 }
