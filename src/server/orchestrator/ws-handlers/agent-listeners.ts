@@ -6,6 +6,7 @@ import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../auth.js";
+import type { AgentAuthManager } from "../agent-auth-manager.js";
 import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
 
 /**
@@ -23,6 +24,14 @@ export interface AgentListenerDeps {
   chatHistoryManager: ChatHistoryManager;
   usageManager: UsageManager;
   authManager: AuthManager;
+  /**
+   * Per-agent auth manager map. The `auth_required` handler looks up the
+   * turn's backend and calls `.start()` on the matching manager — so a
+   * Codex turn that fails on auth kicks off the Codex device flow, not
+   * Claude OAuth. Optional for tests; falls back to the legacy Claude-only
+   * `authManager.startOAuthFlow()` when absent. (docs/155 Phase 2c)
+   */
+  authManagers?: Map<AgentId, AgentAuthManager>;
   /** App-level SSE broadcaster (session_list, session_started, etc.). */
   sseBroadcast: (event: string, data: unknown) => void;
   /** Append a line to the per-session log buffer. */
@@ -992,17 +1001,28 @@ export function wireAgentListeners(
   agent.on("auth_required", () => {
     console.log("[server] Agent CLI requires authentication, starting OAuth flow");
     emitToViewers({ type: "auth_required" });
-    deps.authManager.startOAuthFlow();
+    // docs/155 Phase 2c — look up the auth manager for the failing turn's
+    // backend and start ITS flow. Without the dispatch this branch always
+    // started Claude OAuth, which is wrong on a Codex turn (and would be
+    // wrong on any future backend). The fallback to `authManager` keeps
+    // legacy test contexts (which don't construct `authManagers`) working.
+    const turnSession = opts.capturedSessionId
+      ? deps.sessionManager.get(opts.capturedSessionId)
+      : null;
+    const failingAgentId = turnSession?.agentId;
+    const mgr = failingAgentId ? deps.authManagers?.get(failingAgentId) : undefined;
+    if (mgr) {
+      mgr.start();
+    } else {
+      deps.authManager.startOAuthFlow();
+    }
     // docs/153, docs/155 — let the per-agent module decide what to do on auth
     // failure. Claude registers a refresher nudge (so a token rotated while
     // this session sat idle gets propagated without a sign-in roundtrip);
     // other backends register their own hook or none at all. The listener
     // doesn't know the agent — that's the whole point of the table.
-    const turnSession = opts.capturedSessionId
-      ? deps.sessionManager.get(opts.capturedSessionId)
-      : null;
-    if (turnSession?.agentId) {
-      deps.onAgentAuthRequired?.(turnSession.agentId);
+    if (failingAgentId) {
+      deps.onAgentAuthRequired?.(failingAgentId);
     }
 
     // Tear the failed turn down. An auth failure ends the turn, but a

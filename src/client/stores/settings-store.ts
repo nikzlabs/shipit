@@ -4,9 +4,11 @@ import { getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, save
 
 /**
  * In-flight `codex login --device-auth` state. Server pushes this via SSE
- * (`codex_auth_pending`) when the CLI prints the verification URL + user
- * code; cleared on `codex_auth_complete` / `codex_auth_failed`. See
- * docs/119-codex-subscription-auth/plan.md.
+ * as an `agent_auth_pending` event with `agentId: "codex"` +
+ * `details.kind: "device-code"` when the CLI prints the verification URL +
+ * user code; cleared on `agent_auth_complete` / `agent_auth_failed` for the
+ * same `agentId`. See docs/119-codex-subscription-auth/plan.md and
+ * docs/155 Phase 2b for the unified event family.
  */
 export interface CodexDeviceAuth {
   verificationUri: string;

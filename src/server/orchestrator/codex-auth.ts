@@ -44,6 +44,7 @@ import {
 import { stripAnsi } from "../shared/strip-ansi.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { AgentId } from "../shared/types.js";
+import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
 
 // ---- Public types ----
 
@@ -314,6 +315,22 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
   }
 
   /**
+   * {@link AgentAuthManager.getPendingPayload} — translates the cached
+   * `CodexAuthPendingEvent` into the discriminated `device-code` shape the
+   * unified SSE wiring rebroadcasts. Returns `null` when no flow is in
+   * flight.
+   */
+  getPendingPayload(): AgentAuthPendingDetails | null {
+    if (!this.lastPendingEvent) return null;
+    return {
+      kind: "device-code",
+      verificationUri: this.lastPendingEvent.verificationUri,
+      userCode: this.lastPendingEvent.userCode,
+      expiresInSec: this.lastPendingEvent.expiresInSec,
+    };
+  }
+
+  /**
    * Resolve the ChatGPT-subscription access token persisted by
    * `codex login --device-auth`, for use by the subscription-limits
    * provider (see docs/135-subscription-limits-badge/plan.md).
@@ -426,7 +443,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[codex-auth] Failed to spawn codex login:", msg);
       this.emit("codex_auth_failed", { reason: "error", message: msg } satisfies CodexAuthFailedEvent);
-      this.emit("failed");
+      this.emit("failed", { reason: "error", message: msg });
       return;
     }
 
@@ -471,11 +488,12 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
         console.log("[codex-auth] Buffer (truncated, %d chars total):", this.outputBuffer.length, redacted);
       }
 
+      const failMessage = code === 0 ? "credentials file not written" : `codex login exited with code ${code ?? "null"}`;
       this.emit("codex_auth_failed", {
         reason: "error",
-        message: code === 0 ? "credentials file not written" : `codex login exited with code ${code ?? "null"}`,
+        message: failMessage,
       } satisfies CodexAuthFailedEvent);
-      this.emit("failed");
+      this.emit("failed", { reason: "error", message: failMessage });
     });
 
     // Hard ceiling — the device code itself expires after 15 minutes.
@@ -558,12 +576,21 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     const ev: CodexAuthPendingEvent = { verificationUri, userCode, expiresInSec };
     this.lastPendingEvent = ev;
     this.emit("codex_auth_pending", ev);
+    // Normalized AgentAuthManager event — the orchestrator's SSE wiring
+    // rebroadcasts this as `agent_auth_pending` with `agentId: "codex"`,
+    // replacing the legacy `codex_auth_pending` SSE event family.
+    this.emit("pending", {
+      kind: "device-code",
+      verificationUri,
+      userCode,
+      expiresInSec,
+    });
   }
 
   private failOnce(reason: CodexAuthFailureReason, message?: string): void {
     if (!this.proc) return;
     this.emit("codex_auth_failed", { reason, message } satisfies CodexAuthFailedEvent);
-    this.emit("failed");
+    this.emit("failed", { reason, message });
   }
 
   private killProc(): void {

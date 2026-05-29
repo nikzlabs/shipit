@@ -6,6 +6,7 @@ import type { ChatHistoryManager } from "../chat-history.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../auth.js";
+import type { AgentAuthManager } from "../agent-auth-manager.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
@@ -98,6 +99,12 @@ export interface AppCtx {
   githubAuthManager: GitHubAuthManager;
   usageManager: UsageManager;
   authManager: AuthManager;
+  /**
+   * Per-agent auth manager map (docs/155 Phase 2). Drives the
+   * `auth_required` dispatch in `agent-listeners.ts` — the failing turn's
+   * backend gets its own auth flow restarted, not Claude's.
+   */
+  authManagers: Map<AgentId, AgentAuthManager>;
   agentRegistry: AgentRegistry;
   credentialStore: CredentialStore;
   providerAccountManager: ProviderAccountManager;

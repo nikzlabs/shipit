@@ -4,9 +4,11 @@ import type { AgentOption } from "../agent-types.js";
 
 /**
  * State for an in-flight `codex login --device-auth` flow. The orchestrator
- * pushes this to the client over SSE when the CLI prints the verification
- * URL + user code; it stays set until `codex_auth_complete` /
- * `codex_auth_failed` arrives. See feature 119.
+ * pushes this to the client over SSE as an `agent_auth_pending` event with
+ * `agentId: "codex"` and `details.kind: "device-code"` when the CLI prints
+ * the verification URL + user code; it stays set until `agent_auth_complete`
+ * / `agent_auth_failed` arrives for the same agent. See feature 119 and
+ * docs/155 Phase 2b for the unified event family.
  */
 export interface CodexDeviceAuthState {
   verificationUri: string;
@@ -18,8 +20,9 @@ export interface CodexAuthCardProps {
   agent: AgentOption | undefined;
   /**
    * Active device-auth flow state, or `null` when no flow is running. Driven
-   * from the SSE `codex_auth_pending` / `codex_auth_complete` /
-   * `codex_auth_failed` events.
+   * from the unified SSE `agent_auth_pending` / `agent_auth_complete` /
+   * `agent_auth_failed` events (filtered to `agentId: "codex"`). See
+   * docs/155 Phase 2b.
    */
   deviceAuth?: CodexDeviceAuthState | null;
   /** Last failure reason (if any) — surfaces inline as an error. */
@@ -74,9 +77,10 @@ export function CodexAuthCard({
   const [showApiKeyPanel, setShowApiKeyPanel] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
   // Tracks the gap between clicking "Sign in" and the SSE-delivered
-  // `codex_auth_pending` event arriving (or a failure). Without this guard
-  // the button is clickable for ~hundreds of ms, letting fast double-clicks
-  // spawn duplicate `codex login --device-auth` flows on the orchestrator.
+  // `agent_auth_pending` (codex / device-code) event arriving (or a failure).
+  // Without this guard the button is clickable for ~hundreds of ms, letting
+  // fast double-clicks spawn duplicate `codex login --device-auth` flows on
+  // the orchestrator.
   const [startingDeviceAuth, setStartingDeviceAuth] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 

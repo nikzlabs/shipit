@@ -26,7 +26,28 @@ items inside a phase can be done in any order.
 - [x] Retrofit `auth.ts` (Claude OAuth) to the interface — `start()`/`cancel()`/`isConfigured()` alias the Claude-specific entry points; `complete`/`failed` emit alongside the legacy `auth_complete`/`auth_failed` events.
 - [x] Retrofit `codex-auth.ts` to the interface — `start()` aliases `startDeviceFlow()`; `cancel()`/`kill()`/`signOut()` already match; `complete`/`failed` emit alongside the legacy `codex_auth_*` events.
 - [x] Replace the post-completion dispatch with a `Map<AgentId, AgentAuthManager>` lookup: limits-registry rearm in `index.ts`, shared post-completion bookkeeping in `wireEventHandlers` (`app-lifecycle.ts`), and the shutdown-hook `kill()` calls (`shutdown-manager.ts`).
-- [x] STOP-GATE held: interface has zero `unknown` types — typed lifecycle methods plus zero-payload normalized events. Per-agent SSE broadcasts stay on the concrete classes where the payload shapes diverge.
+
+### Phase 2b — Unify the SSE event family (carved out from Phase 2)
+
+The wire format was the last per-agent surface in our own code (not a CLI restriction). Adding Cursor would otherwise mean a third `cursor_auth_*` event triplet plus three client handlers — same shape of duplication this phase set out to remove. Listed here because it belongs to Phase 2 (auth-manager dispatch); not covered by Phases 3-5.
+
+- [ ] Extend `AgentAuthManager` with typed `pending` event (`AgentAuthPendingDetails` discriminated union: `code-paste-url` | `device-code`), optional-payload `failed` event (`{reason?, message?}`), and `getPendingPayload()` for SSE replay.
+- [ ] Add `WsAgentAuthPending` / `WsAgentAuthComplete` / `WsAgentAuthFailed` WS-message + SSE-event types in `ws-server-messages.ts`.
+- [ ] Remove the old `WsCodexAuthPending` / `WsCodexAuthComplete` / `WsCodexAuthFailed` types — the unified family supersedes them. Keep `WsAuthRequired` (it's a per-session WS message with different semantics: "this turn failed, please sign in").
+- [ ] Emit the typed `pending`/`failed` events from `AuthManager` and `CodexAuthManager` alongside their legacy emits; implement `getPendingPayload()` on each (Codex returns its cached device-flow payload; Claude returns null since no replay cache exists today).
+- [ ] Replace per-agent SSE broadcasts in `wireEventHandlers` with one loop over the auth-manager map (`agent_auth_pending` / `agent_auth_complete` / `agent_auth_failed`, all carrying `agentId`). Delete the per-agent legacy SSE emits.
+- [ ] Replace the codex-specific SSE-on-connect replay in `index.ts` with a loop over the map calling `getPendingPayload()` — every backend that has a cached pending payload replays it on reconnect.
+- [ ] Update the other SSE rebroadcasters to the unified names: `api-routes-bootstrap.ts` (post-API-key `auth_complete` → `agent_auth_complete`) and `claude-oauth-refresher.ts` (revoked-account `auth_required` → `agent_auth_failed` with `reason: "revoked"`).
+- [ ] Update the client `useServerEvents` SSE handlers and the stores/components downstream of them (`session-store.setAuthUrl`, `settings-store.setCodexDeviceAuth*`, `CodexAuthCard`) to consume the unified events.
+
+### Phase 2c — Dispatch table at the auth_required call site
+
+- [ ] Replace the hardcoded `deps.authManager.startOAuthFlow()` in `agent-listeners.ts:995` with a map lookup (`deps.authManagers.get(turnSession.agentId)?.start()`) so the auth-required handler restarts the right backend's flow, not Claude's, when a non-Claude turn fails. Pipe `authManagers` through `AppCtx` and the agent-listeners deps.
+
+### Tests + verification
+
+- [ ] Update integration tests to the new SSE event names (`integration_tests/codex-auth.test.ts`, `integration_tests/claude-auth.test.ts`, helpers).
+- [ ] `npm run typecheck`, `npm run lint:dev`, `npx vitest run src/server/orchestrator/`, full integration suite.
 
 ## Phase 3 — Per-agent run-params prep hooks
 
