@@ -19,7 +19,7 @@ This doc is for the user's personal use — not a feature ShipIt is shipping. It
 
 ## Why MCP, not a webhook
 
-See `docs/158-post-turn-webhook/plan.md` for the rejected webhook design and the reasoning. Short version: a deterministic notification with no model-generated summary is no better than the passive UI notification ShipIt already shows; the value is entirely in the model writing the summary, which the webhook cannot force. MCP requires the model to cooperate, but that's the exact cooperation we need anyway.
+A server-side post-turn webhook was the first thing considered. It would fire deterministically on every turn end, including failure modes (crashed agent, hit Stop, ran out of context) where an MCP-driven tool call cannot. That sounds attractive, but the value of a notification is entirely in the model-written summary that gets read aloud — a deterministic "the turn ended" with no useful summary is no better than the passive UI notification ShipIt already shows. MCP requires the model to cooperate, but that's the cooperation we need anyway. The webhook would deliver low-quality notifications exactly in the cases where it has a structural advantage over MCP, and identical-quality notifications in every other case. MCP also composes better: the same server can expose query tools (`ask_hermes`, look-ups) alongside the notify tool, one config surface instead of two.
 
 ## Architecture
 
