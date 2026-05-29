@@ -440,14 +440,15 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   // than getting offset by ad-hoc `pl-5` padding under the icon. `self-start`
   // anchors this whole block to the top of the parent's centered slot so the
   // first row's center stays at the same y as the right-side action cluster
-  // even when the block grows multiple rows tall.
+  // (40px h-10 box) even when the block grows multiple rows tall — both
+  // first-row anchors are `min-h-10` so the center lands at y=20.
   return (
     <div className="min-w-0 flex-1 self-start flex items-start gap-x-3">
-      <div className="min-h-8 flex items-center shrink-0">
+      <div className="min-h-10 flex items-center shrink-0">
         <PrStateBadge sessionId={sessionId} url={pr.url} prNumber={pr.number} />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="min-h-8 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <div className="min-h-10 flex flex-wrap items-center gap-x-3 gap-y-1">
           <div className="flex-1 min-w-0 flex items-center">
             <BranchLabel
               baseBranch={pr.baseBranch}
@@ -757,7 +758,7 @@ export function PrLifecycleCard({
       title={clickable ? "Open PR details" : undefined}
       className={`shrink-0 flex items-start gap-2 px-4 border-b border-(--color-border-primary) ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
     >
-      <div className="min-w-0 flex-1 min-h-10 flex items-center py-1">
+      <div className="min-w-0 flex-1 min-h-10 flex items-center">
         {phaseContent}
       </div>
       <div className="shrink-0 h-10 flex items-center gap-1">
