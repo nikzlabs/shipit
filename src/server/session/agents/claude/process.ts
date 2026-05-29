@@ -470,6 +470,26 @@ export class StreamingClaudeProcess extends EventEmitter {
     this.proc?.on("close", () => clearTimeout(forceKillTimer));
   }
 
+  /**
+   * Push a `set_permission_mode` control_request onto stdin so the persistent
+   * CLI process changes mode mid-stream — no restart, same session_id. The
+   * CLI replies with a control_response and emits a fresh `init` event
+   * carrying the new mode (which the orchestrator's existing init listener
+   * uses for guarded-availability detection). `mode` is the CLI's string
+   * (`"plan"`, `"auto"`, `"default"`, …) — the adapter does the ShipIt → CLI
+   * mapping.
+   */
+  setPermissionMode(cliMode: string): void {
+    const requestId = `set-mode-${++this.requestIdCounter}-${Date.now()}`;
+    const msg = {
+      type: "control_request",
+      request_id: requestId,
+      request: { subtype: "set_permission_mode", mode: cliMode },
+    };
+    console.log(`[streaming-claude] setPermissionMode → ${cliMode}`);
+    this.writeToStdin(`${JSON.stringify(msg)}\n`);
+  }
+
   kill(): void {
     this.clearWatchdog();
     if (this.proc) {

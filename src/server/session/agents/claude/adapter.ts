@@ -10,7 +10,7 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { ClaudeProcess, StreamingClaudeProcess } from "./process.js";
-import type { ClaudeEvent, ClaudeMcpServerInit } from "../../../shared/types.js";
+import type { ClaudeEvent, ClaudeMcpServerInit, PermissionMode } from "../../../shared/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../../../shared/types.js";
 import type {
   AgentId,
@@ -309,6 +309,22 @@ export class ClaudeAdapter
 
   kill(): void {
     this.inner.kill();
+  }
+
+  /**
+   * Change permission mode on the resident process. Only meaningful for the
+   * persistent streaming process — the one-shot PTY path re-applies the mode
+   * at every spawn, so there's nothing to do here. ShipIt → CLI mapping
+   * matches what `ClaudeProcess` / `StreamingClaudeProcess` push as
+   * `--permission-mode` at spawn: `plan` → `"plan"`, `guarded` → `"auto"`
+   * (the CLI's classifier-gated mode), `auto` / undefined → `"default"`
+   * (the no-flag default the CLI reports in its init event).
+   */
+  setPermissionMode(mode: PermissionMode | undefined): void {
+    if (!(this.inner instanceof StreamingClaudeProcess)) return;
+    const cliMode =
+      mode === "plan" ? "plan" : mode === "guarded" ? "auto" : "default";
+    this.inner.setPermissionMode(cliMode);
   }
 
   /**

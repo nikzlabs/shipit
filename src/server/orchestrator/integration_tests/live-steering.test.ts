@@ -291,6 +291,107 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("pushes setPermissionMode on the persistent agent when the user toggles modes between turns (docs/138)", async () => {
+    // Regression: the streaming CLI keeps its spawn-time `--permission-mode`
+    // for life. Toggling the chip used to update the UI / settings store but
+    // never reach the CLI, so plan → auto (or back) silently didn't take
+    // effect. The fix pushes a `set_permission_mode` control_request on the
+    // existingAgent before the next sendUserMessage.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Turn 1: open in plan mode → spawn with permissionMode "plan".
+    client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("mode-toggle-session");
+    expect(claude.runCalled).toBe(true);
+    expect(claude.lastPermissionMode).toBe("plan");
+    // No mid-stream mode change yet — the spawn flag carries the initial mode.
+    expect(claude.permissionModeCalls).toEqual([]);
+
+    // End turn 1 — process stays alive (streaming).
+    claude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "mode-toggle-session",
+      duration_ms: 100,
+    });
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+
+    // Turn 2: user toggled back to auto (the WS message omits permissionMode).
+    // The orchestrator MUST push a setPermissionMode(undefined) before
+    // sendUserMessage so the persistent CLI actually leaves plan mode.
+    client.send({ type: "send_message", text: "Now do it" });
+
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (claude.stdinData.some((d) => d.includes("Now do it"))) {
+          resolve();
+          return;
+        }
+        if (Date.now() - start > 2000) {
+          reject(new Error("Turn 2 message was never delivered"));
+          return;
+        }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+
+    // setPermissionMode(undefined) — exactly one call, mapping ShipIt "auto"
+    // back to the CLI's no-flag default.
+    expect(claude.permissionModeCalls).toEqual([undefined]);
+    // Same process — no respawn, no kill.
+    expect(claude.killed).toBe(false);
+    expect(claude.lastPrompt).toBe("Plan it");
+
+    client.close();
+  });
+
+  it("does NOT push setPermissionMode when the requested mode matches what's already applied (docs/138)", async () => {
+    // The mismatch check exists so we don't spam the CLI with redundant
+    // control_requests when the user just clicks Send twice in the same mode.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Turn one", permissionMode: "plan" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("mode-stable-session");
+    expect(claude.lastPermissionMode).toBe("plan");
+
+    claude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "mode-stable-session",
+      duration_ms: 100,
+    });
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+
+    // Turn 2: same plan mode — no control_request needed.
+    client.send({ type: "send_message", text: "Turn two", permissionMode: "plan" });
+
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (claude.stdinData.some((d) => d.includes("Turn two"))) {
+          resolve();
+          return;
+        }
+        if (Date.now() - start > 2000) {
+          reject(new Error("Turn 2 message was never delivered"));
+          return;
+        }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+
+    expect(claude.permissionModeCalls).toEqual([]);
+
+    client.close();
+  });
+
   it("falls back to the queue path when liveSteering is off, even if the agent supports steering", async () => {
     // Flip the setting off for this test only.
     credentialStore.setLiveSteering(false);

@@ -30,6 +30,7 @@ import type {
   AgentMcpWriteResult,
   McpServerConfig,
 } from "./agents/agent-process.js";
+import type { PermissionMode } from "../shared/types.js";
 import { substituteMcpPlaceholders } from "./mcp-resolve.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
@@ -321,6 +322,37 @@ export class SessionWorker extends EventEmitter {
       this.agent.writeStdin(data);
       return { written: true };
     });
+
+    // POST /agent/permission-mode — change the resident agent's permission
+    // mode mid-stream without a restart. The adapter pushes a
+    // `set_permission_mode` control_request onto the streaming CLI's stdin;
+    // adapters that don't support mid-stream switching (one-shot PTY) no-op.
+    // See docs/138 / docs/140 for the protocol details. `mode: null` is the
+    // wire encoding for ShipIt "auto" (no flag), so the JSON body always
+    // travels as a string-or-null.
+    const ALLOWED_MODES = new Set(["plan", "guarded", "auto"]);
+    app.post<{ Body: { mode: string | null } }>(
+      "/agent/permission-mode",
+      async (request, reply) => {
+        if (!this.agent) {
+          return reply.code(404).send({ error: "No agent running" });
+        }
+        if (!this.agent.setPermissionMode) {
+          return reply.code(400).send({ error: "Agent does not support mid-stream permission-mode changes" });
+        }
+        const raw = request.body?.mode;
+        let mode: PermissionMode | undefined;
+        if (raw === null || raw === undefined) {
+          mode = undefined;
+        } else if (typeof raw === "string" && ALLOWED_MODES.has(raw)) {
+          mode = raw as PermissionMode;
+        } else {
+          return reply.code(400).send({ error: `Invalid mode: ${JSON.stringify(raw)}` });
+        }
+        this.agent.setPermissionMode(mode);
+        return { success: true };
+      },
+    );
 
     // POST /agent/message — inject a user message (live steering, docs/140)
     app.post<{ Body: { text: string } }>(
