@@ -302,12 +302,12 @@ function FailedChecksList({ checks }: { checks: PrCardState["checks"] }) {
   return (
     <div className="mt-1 space-y-0.5">
       {visible.map((check) => (
-        <div key={check.name} className="text-xs text-(--color-text-secondary) pl-5">
+        <div key={check.name} className="text-xs text-(--color-text-secondary)">
           <XCircleIcon size={12} className="inline text-(--color-error)" /> {check.name} — <span className="text-(--color-text-tertiary)">{check.summary}</span>
         </div>
       ))}
       {remaining > 0 && (
-        <div className="text-xs text-(--color-text-tertiary) pl-5">
+        <div className="text-xs text-(--color-text-tertiary)">
           and {remaining} more...
         </div>
       )}
@@ -321,7 +321,7 @@ function DeploymentStatusRow({ deployments }: { deployments: GitHubDeploymentSta
   if (deployments.length === 0) return null;
 
   return (
-    <div className="mt-1.5 pl-5 flex flex-col gap-1">
+    <div className="mt-1.5 flex flex-col gap-1">
       {deployments.map((d, i) => {
         const isActive = d.state === "success";
         const isPending = d.state === "pending" || d.state === "in_progress" || d.state === "queued";
@@ -434,74 +434,84 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
   // the conflict state.
   const showConflictUi = isConflicting && rebaseStatus === "idle";
 
+  // Two-column layout so additional rows (auto-merge text, failed checks,
+  // deploys) and the wrapped badges row all align under the PR title rather
+  // than getting offset by ad-hoc `pl-5` padding under the icon. `self-start`
+  // anchors this whole block to the top of the parent's centered slot so the
+  // first row's center stays at the same y as the right-side action cluster
+  // even when the block grows multiple rows tall.
   return (
-    <div className="min-w-0 flex-1">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+    <div className="min-w-0 flex-1 self-start flex items-start gap-x-3">
+      <div className="min-h-8 flex items-center shrink-0">
         <PrStateBadge sessionId={sessionId} url={pr.url} prNumber={pr.number} />
-        <div className="flex-1 min-w-0 flex items-center">
-          <BranchLabel
-            baseBranch={pr.baseBranch}
-            headBranch={pr.headBranch}
-            prTitle={pr.title}
-            prBody={pr.body}
-          />
-        </div>
-        <span className="basis-full sm:basis-auto min-w-0 flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
-          <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
-          {pendingReviewCount > 0 && (
-            <PendingReviewButton sessionId={sessionId} count={pendingReviewCount} />
-          )}
-          <CiIndicator checks={card.checks} />
-          {showConflictUi && <MergeConflictIndicator />}
-          {showConflictUi && (
-            <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
-          )}
-          {showMergeButton && (
-            <MergeButton sessionId={sessionId} autoMerge={autoMerge} />
-          )}
-          {showFixButton && (
-            <FixCIButton sessionId={sessionId} />
-          )}
-        </span>
       </div>
-      {autoMerge?.enabled && !isCiPassed && !isCiNone && (
-        <div className="mt-1 text-xs text-(--color-text-secondary) pl-5">
-          Will merge when CI passes
-        </div>
-      )}
-      {autoMerge?.error && autoMerge.managed && (
-        <div className="mt-1 text-xs text-(--color-warning) pl-5 flex items-center gap-1">
-          <WarningIcon size={12} /> {autoMerge.error.message}
-        </div>
-      )}
-      {autoMerge?.error && !autoMerge.managed && (
-        <div className="mt-1 text-xs text-(--color-warning) pl-5 flex items-center gap-1">
-          <WarningIcon size={12} /> {autoMerge.error.message}{" "}
-          <a
-            href={autoMerge.error.settingsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline hover:opacity-80"
-          >
-            {autoMerge.error.code === "auto_merge_not_enabled" ? "Enable in repository settings" : "Configure branch protection"}
-          </a>
-        </div>
-      )}
-      {isAutoFixRunning && (
-        <div className="mt-1 flex items-center gap-2 pl-5">
-          <Spinner />
-          <span className="text-xs text-(--color-warning)">
-            Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
+      <div className="min-w-0 flex-1">
+        <div className="min-h-8 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <div className="flex-1 min-w-0 flex items-center">
+            <BranchLabel
+              baseBranch={pr.baseBranch}
+              headBranch={pr.headBranch}
+              prTitle={pr.title}
+              prBody={pr.body}
+            />
+          </div>
+          <span className="basis-full sm:basis-auto min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <DiffStats ins={pr.insertions} del={pr.deletions} onClick={openDiff} />
+            {pendingReviewCount > 0 && (
+              <PendingReviewButton sessionId={sessionId} count={pendingReviewCount} />
+            )}
+            <CiIndicator checks={card.checks} />
+            {showConflictUi && <MergeConflictIndicator />}
+            {showConflictUi && (
+              <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
+            )}
+            {showMergeButton && (
+              <MergeButton sessionId={sessionId} autoMerge={autoMerge} />
+            )}
+            {showFixButton && (
+              <FixCIButton sessionId={sessionId} />
+            )}
           </span>
         </div>
-      )}
-      {isAutoFixExhausted && (
-        <div className="mt-1 text-xs text-(--color-text-tertiary) pl-5">
-          Auto-fix exhausted ({autoFix.maxAttempts}/{autoFix.maxAttempts} attempts)
-        </div>
-      )}
-      {isCiFailed && !isAutoFixRunning && <FailedChecksList checks={card.checks} />}
-      {deployments && deployments.length > 0 && <DeploymentStatusRow deployments={deployments} />}
+        {autoMerge?.enabled && !isCiPassed && !isCiNone && (
+          <div className="mt-1 text-xs text-(--color-text-secondary)">
+            Will merge when CI passes
+          </div>
+        )}
+        {autoMerge?.error && autoMerge.managed && (
+          <div className="mt-1 text-xs text-(--color-warning) flex items-center gap-1">
+            <WarningIcon size={12} /> {autoMerge.error.message}
+          </div>
+        )}
+        {autoMerge?.error && !autoMerge.managed && (
+          <div className="mt-1 text-xs text-(--color-warning) flex items-center gap-1">
+            <WarningIcon size={12} /> {autoMerge.error.message}{" "}
+            <a
+              href={autoMerge.error.settingsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:opacity-80"
+            >
+              {autoMerge.error.code === "auto_merge_not_enabled" ? "Enable in repository settings" : "Configure branch protection"}
+            </a>
+          </div>
+        )}
+        {isAutoFixRunning && (
+          <div className="mt-1 flex items-center gap-2">
+            <Spinner />
+            <span className="text-xs text-(--color-warning)">
+              Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
+            </span>
+          </div>
+        )}
+        {isAutoFixExhausted && (
+          <div className="mt-1 text-xs text-(--color-text-tertiary)">
+            Auto-fix exhausted ({autoFix.maxAttempts}/{autoFix.maxAttempts} attempts)
+          </div>
+        )}
+        {isCiFailed && !isAutoFixRunning && <FailedChecksList checks={card.checks} />}
+        {deployments && deployments.length > 0 && <DeploymentStatusRow deployments={deployments} />}
+      </div>
     </div>
   );
 }
@@ -694,7 +704,7 @@ export function PrLifecycleCard({
       <div className="min-w-0 flex-1 min-h-10 flex items-center py-1">
         {phaseContent}
       </div>
-      <div className="shrink-0 min-h-10 flex items-center gap-1">
+      <div className="shrink-0 h-10 flex items-center gap-1">
         {onSearch && (
           <button
             onClick={onSearch}
