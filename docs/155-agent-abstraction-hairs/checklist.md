@@ -51,10 +51,11 @@ The wire format was the last per-agent surface in our own code (not a CLI restri
 
 ## Phase 3 — Per-agent run-params prep hooks
 
-- [ ] Add `prepareRunParams(params): AgentRunParams` hook per agent module.
-- [ ] Move `settingsPath` injection out of `session-agent-run-params.ts:106` into Claude's hook.
-- [ ] Replace hair 4 with the hook table call.
-- [ ] Audit `AgentRunParams` for other "Claude-only" / "Codex-only" fields and route them through hooks.
+- [x] Add `prepareRunParams(params, input): AgentRunParams` hook per agent module — defined in new `agent-run-params-prep.ts` with `prepareClaudeRunParams`, `prepareCodexRunParams`, and an `identityPrepareRunParams` fallback used when the map has no entry for an `AgentId` (so a Cursor/Gemini drop-in works before its hook is wired). The hook receives a small `PrepareRunParamsInput` carrying runtime flags (today: `autoCreatePrActive`) so backends consult only an explicit, audited surface — not the full assembler context.
+- [x] Move `settingsPath` injection out of `session-agent-run-params.ts:106` into Claude's hook — `prepareClaudeRunParams` returns the params with `/etc/shipit/managed-settings.json` attached.
+- [x] Replace hair 4 with the hook table call — `buildAgentRunParams` resolves the hook via `getPrepareRunParams(deps.runParamsPreps, agentId)` and invokes it. The map is constructed once in `index.ts` (next to `authManagers`) and threaded through `AppCtx`, `ApiDeps`, and `RunnerRegistryDeps` so both the WS path (`agent-execution.ts`) and the system-turn path (`runner-registry-factory.ts buildRunParams`) share the same prep table.
+- [x] Audit `AgentRunParams` for other "Claude-only" / "Codex-only" fields and route them through hooks — `autoCreatePr` was the only other Claude-only field documented on the run-params shape. Moved into Claude's hook (it was previously set unconditionally; Codex adapter ignored it). `useStreaming` is set at the WS call site (`currentAgent.run({ ...runParams, useStreaming })`) rather than inside `buildAgentRunParams`, so it didn't need routing through a hook. No Codex-only run-params fields exist today (Codex's MCP config-toml writing lives in `session-worker.ts` and is Phase 4 work, not Phase 3).
+- [x] Tests + verification — new unit tests in `agent-run-params-prep.test.ts` cover the per-agent hooks, identity fallback, and registry lookup (including a "Cursor not registered yet" case). `npm run typecheck`, `npm run lint:dev`, and the full `src/server/orchestrator/integration_tests/` suite (744 tests) pass; `agent-spawned-session.test.ts` continues to assert the spawned session's first turn carries `settingsPath = "/etc/shipit/managed-settings.json"` via the new hook path.
 
 ## Phase 4 — Per-agent MCP writers
 

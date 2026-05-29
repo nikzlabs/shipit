@@ -37,6 +37,11 @@ import type { LimitsProvider } from "./limits/types.js";
 import { LimitsRegistry } from "./limits-registry.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import {
+  prepareClaudeRunParams,
+  prepareCodexRunParams,
+  type PrepareRunParamsFn,
+} from "./agent-run-params-prep.js";
+import {
   setupContainerManager,
   buildRunnerFactory,
   createIdleEnforcer,
@@ -340,13 +345,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   authManagers.set("claude", authManager);
   authManagers.set("codex", codexAuthManager);
 
+  // docs/155 Phase 3 — per-agent run-params prep table. Each entry is a pure
+  // function that takes the shared `AgentRunParams` from buildAgentRunParams
+  // and returns the backend-specific final shape (Claude injects
+  // `settingsPath` + `autoCreatePr`; Codex is identity). Wired here so a new
+  // backend is one `runParamsPreps.set("cursor", …)` instead of a new branch
+  // in `session-agent-run-params.ts`.
+  const runParamsPreps = new Map<AgentId, PrepareRunParamsFn>();
+  runParamsPreps.set("claude", prepareClaudeRunParams);
+  runParamsPreps.set("codex", prepareCodexRunParams);
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, runtimeMode, broadcastLog,
-    usageManager, authManager, authManagers,
+    usageManager, authManager, authManagers, runParamsPreps,
     nudgeClaudeOAuthRefresh,
     onAgentAuthRequired,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
@@ -789,6 +804,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     authManager,
     codexAuthManager,
     authManagers,
+    runParamsPreps,
     broadcastLog,
     sseBroadcast,
     getSharedRepoDir: getBareCacheDir,
@@ -1295,7 +1311,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         attachToRunner, detachFromRunner,
         sessionManager, chatHistoryManager, createGitManager, createRepoGit,
         githubAuthManager,
-        usageManager, authManager, authManagers, agentRegistry, credentialStore, providerAccountManager,
+        usageManager, authManager, authManagers, runParamsPreps, agentRegistry, credentialStore, providerAccountManager,
         repoStore, warmSessionForRepo, generateText,
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,

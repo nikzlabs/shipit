@@ -15,6 +15,10 @@ import type { AgentId, AgentRunParams, PermissionMode } from "../shared/types.js
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
 import { buildAgentSystemInstructions } from "./agent-instructions.js";
+import {
+  getPrepareRunParams,
+  type PrepareRunParamsFn,
+} from "./agent-run-params-prep.js";
 
 export interface BuildAgentRunParamsDeps {
   credentialStore: CredentialStore;
@@ -33,6 +37,14 @@ export interface BuildAgentRunParamsDeps {
    * persisted model (set at spawn time).
    */
   getSelectedModel: () => string | undefined;
+  /**
+   * Per-agent run-params prep hooks (docs/155 Phase 3). Each backend's hook
+   * injects its own backend-specific fields — Claude's adds `settingsPath`
+   * and `autoCreatePr`; others are identity today. Optional so test setups
+   * without the map fall back to the identity hook. See
+   * `agent-run-params-prep.ts`.
+   */
+  runParamsPreps?: Map<AgentId, PrepareRunParamsFn>;
 }
 
 export interface BuildAgentRunParamsArgs {
@@ -99,24 +111,20 @@ export async function buildAgentRunParams(
     systemPrompt = systemPrompt ? `${systemPrompt}\n\n${replay}` : replay;
   }
 
-  // Claude-only: point the CLI at the baked managed-settings file (carries
-  // the branch-block PreToolUse hook + Stop-hook PR enforcement). Stop-hook
-  // self-gates on the SHIPIT_AUTO_CREATE_PR env var, which `autoCreatePr`
-  // below drives — so settings can be wired unconditionally.
-  const settingsPath = agentId === "claude"
-    ? "/etc/shipit/managed-settings.json"
-    : undefined;
-
-  const params: AgentRunParams = {
+  // docs/155 Phase 3 — `settingsPath` and `autoCreatePr` used to be injected
+  // here behind an `agentId === "claude"` branch. Both are documented on
+  // `AgentRunParams` as Claude-only; non-Claude adapters ignored them. The
+  // shared shape now stays agent-agnostic — the per-agent prep hook below
+  // decides which backend-specific fields to add.
+  const baseParams: AgentRunParams = {
     prompt,
     cwd: sessionDir,
     ...(agentSessionId !== undefined ? { sessionId: agentSessionId } : {}),
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(selectedModel !== undefined ? { model: selectedModel } : {}),
-    ...(settingsPath !== undefined ? { settingsPath } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
-    autoCreatePr,
   };
-  return params;
+  const prepare = getPrepareRunParams(deps.runParamsPreps, agentId);
+  return prepare(baseParams, { autoCreatePrActive: autoCreatePr });
 }
