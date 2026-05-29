@@ -1,6 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "mode": "auto",
   "includePaths": ["docker/agent-cli/**"],
   "rangeStrategy": "pin",
   "packageRules": [
