@@ -76,6 +76,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _isRunning = false;
   private _wasInterrupted = false;
   private _guardedUnavailable = false;
+  private _isStreamingActive = false;
   private _activeReviewFilePath: string | null = null;
 
   // Terminal (remote — runs inside container)
@@ -213,6 +214,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get guardedUnavailable(): boolean { return this._guardedUnavailable; }
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
+  get isStreamingActive(): boolean { return this._isStreamingActive; }
+  set isStreamingActive(v: boolean) { this._isStreamingActive = v; }
   get activeReviewFilePath(): string | null { return this._activeReviewFilePath; }
   set activeReviewFilePath(v: string | null) { this._activeReviewFilePath = v; }
 
@@ -1378,6 +1381,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (workerRunning) return true;
     console.warn(`[container-runner:${this.sessionId}] Detected stuck running=true (worker reports no agent). Resetting.`);
     this._isRunning = false;
+    this._isStreamingActive = false;
     this._agent = null;
     this.emitMessage({
       type: "session_status",
@@ -1440,6 +1444,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.sse.resolvePendingConnect();
     this.turn.reset();
     this._isRunning = false;
+    this._isStreamingActive = false;
     this.termBuf.reset();
     this.emit("disposed");
     this.removeAllListeners();

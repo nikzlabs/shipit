@@ -102,9 +102,25 @@ export class ProxyAgentProcess extends EventEmitter<{
   sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
     // Delegate to worker /agent/message so the real streaming logic inside
     // the session container handles the injection (docs/140).
-    this.runner.sendAgentMessage(text).catch((err: unknown) => {
+    //
+    // Diag: log dispatch + outcome so a repro pins where the chain breaks.
+    // Pair with `[steer-send]` upstream and `[streaming-claude] sendUserMessage`
+    // / `[steer-worker]` downstream.
+    console.log(
+      `[steer-proxy] agentId=${this.agentId} → /agent/message (bytes=${text.length}, text=${JSON.stringify(text.slice(0, 80))})`,
+    );
+    void this._sendAgentMessageWithLogging(text);
+  }
+
+  private async _sendAgentMessageWithLogging(text: string): Promise<void> {
+    try {
+      await this.runner.sendAgentMessage(text);
+      console.log(`[steer-proxy] /agent/message accepted (agentId=${this.agentId})`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[steer-proxy] /agent/message FAILED (agentId=${this.agentId}): ${msg}`);
       this.emit("error", describeWorkerError(err, "stdin"));
-    });
+    }
   }
 
   /** Fire-and-forget POST to worker /agent/interrupt. */

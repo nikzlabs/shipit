@@ -291,6 +291,17 @@ Net result: one path per adapter capability, not two paths gated by a user
 setting. The dual-mode tax in `send-message.ts`, `agent-execution.ts`, and
 the `result`-vs-`done` post-turn bifurcation is paid down considerably.
 
+**Interim state (Phase 6.5 — already landed).** Because the toggle still exists
+and the silent-drop class of bugs kept biting users in production, the runner
+now tracks an `isStreamingActive` flag set at `runAgentWithMessage` (mirrors
+the `useStreaming` chosen for that spawn) and cleared on `done` / `error` /
+`dispose`. Both `handleSendMessage` and `handleAnswerQuestion` require
+`isStreamingActive` in addition to capability + setting before taking the
+`sendUserMessage` branch; without it they fall through to the queue / fresh
+spawn instead of routing the message into an adapter no-op. When Phase 7
+removes the toggle, this flag goes with it — the "non-streaming under steering
+gate" state genuinely is unreachable by construction at that point.
+
 ## Open questions to resolve during build
 
 - Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.

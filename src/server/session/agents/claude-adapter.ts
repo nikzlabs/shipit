@@ -264,9 +264,35 @@ export class ClaudeAdapter
 
   sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
     if (this.inner instanceof StreamingClaudeProcess) {
+      console.log(
+        `[claude-adapter] sendUserMessage → streaming (bytes=${text.length}, text=${JSON.stringify(text.slice(0, 80))})`,
+      );
       this.inner.sendUserMessage(text);
+      return;
     }
-    // Non-streaming: no-op (caller should not reach here for non-streaming agents)
+    // docs/140 — the orchestrator's steering gate (`runner.isStreamingActive`)
+    // should have routed around this branch when the resident process is a
+    // one-shot PTY ClaudeProcess. If we got here, the gate disagrees with the
+    // adapter — silent no-op would make the user's message disappear with no
+    // feedback. Log loudly, emit a server-facing log (so the Logs panel shows
+    // a clear failure), and emit an `error` so wireAgentListeners surfaces
+    // it in chat. The runner's error-path teardown is acceptable because the
+    // alternative — silently swallowing the steer — was the bug the user kept
+    // hitting.
+    console.warn(
+      `[claude-adapter] sendUserMessage called on non-streaming inner — message DROPPED (text=${JSON.stringify(text.slice(0, 80))})`,
+    );
+    this.emit(
+      "log",
+      "server",
+      "Live steering failed: the agent process is not in streaming mode. The message was not delivered to the CLI.",
+    );
+    this.emit(
+      "error",
+      new Error(
+        "Live steering could not deliver the message: the agent process is not streaming. Try sending again after the current turn finishes, or toggle live steering off.",
+      ),
+    );
   }
 
   writeStdin(data: string): void {
