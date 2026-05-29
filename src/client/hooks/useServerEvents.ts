@@ -109,6 +109,14 @@ export function useServerEvents(): void {
     // revocation). The legacy event names (`auth_required`, `auth_complete`,
     // `codex_auth_*`) are gone; adding a new backend is one variant added to
     // the discriminated `details.kind` union, not three new listeners here.
+    // docs/155: the three SSE auth handlers below dispatch on the runtime
+    // event's `agentId` + `details.kind` to route each backend's payload into
+    // a different store slice (sessionStore.setAuthUrl vs
+    // settingsStore.setCodexDeviceAuth*). That's discriminated-union
+    // narrowing of received wire data, not abstraction-leaking dispatch —
+    // adding a backend means adding one more `else if` here that targets
+    // whatever store slice owns its sign-in card. The disables sit inline
+    // so a new backend wires its narrowing without re-tripping the leak guard.
     es.addEventListener("agent_auth_pending", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         agentId: AgentId;
@@ -116,8 +124,10 @@ export function useServerEvents(): void {
           | { kind: "code-paste-url"; verificationUri: string }
           | { kind: "device-code"; verificationUri: string; userCode: string; expiresInSec: number };
       };
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude" && data.details.kind === "code-paste-url") {
         useSessionStore.getState().setAuthUrl(data.details.verificationUri);
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex" && data.details.kind === "device-code") {
         useSettingsStore.getState().setCodexDeviceAuth({
           verificationUri: data.details.verificationUri,
@@ -130,8 +140,10 @@ export function useServerEvents(): void {
 
     es.addEventListener("agent_auth_complete", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { agentId: AgentId };
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude") {
         useSessionStore.getState().setAuthUrl(null);
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex") {
         useSettingsStore.getState().setCodexDeviceAuth(null);
         useSettingsStore.getState().setCodexDeviceAuthError(null);
@@ -144,11 +156,13 @@ export function useServerEvents(): void {
         reason?: "timeout" | "denied" | "error" | "revoked";
         message?: string;
       };
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       if (data.agentId === "claude") {
         // Clear the URL so the sign-in card flips back to "Sign in" — also
         // the path the legacy `auth_required {}` broadcast took for
         // refresher-revoked accounts.
         useSessionStore.getState().setAuthUrl(null);
+      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex") {
         useSettingsStore.getState().setCodexDeviceAuth(null);
         const fallback = data.reason === "timeout"

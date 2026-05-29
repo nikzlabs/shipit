@@ -2,6 +2,55 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import globals from "globals";
 
+// ── Shared `no-restricted-syntax` entries ──────────────────────────────────
+// Factored out so per-file-scope blocks (client, per-agent folders, tests)
+// can compose the right subset without copy-pasting selectors. ESLint flat
+// config replaces the array wholesale when a later block re-declares the
+// rule, so anything that wants to keep these has to spread them in.
+const RESTRICTED_SYNTAX_BASE = [
+  {
+    selector: "CallExpression > MemberExpression[property.name='then']",
+    message: "Prefer async/await over .then(). Use store methods or async helpers. Add eslint-disable if .then() is intentional (fire-and-forget in sync context, lazy(), Promise two-arg form).",
+  },
+  {
+    selector: "TSImportType",
+    message: "Avoid inline import() types. Use a top-level `import type { X } from '...'` instead. Add eslint-disable if dynamic import() is intentional (lazy(), conditional loading).",
+  },
+];
+
+const RESTRICTED_USEEFFECT = {
+  selector: "CallExpression[callee.name='useEffect']",
+  message: "useEffect is restricted. Prefer event handlers, derived state, useMemo, or key props. If useEffect is genuinely needed (external system sync, browser API subscription, cleanup), add eslint-disable-next-line with a justification.",
+};
+
+// ── Agent abstraction leak guard (docs/155) ────────────────────────────────
+// Flags inline `agentId === "claude"` / `agentId === "codex"` (and the
+// MemberExpression form `something.agentId === "claude"`) outside the
+// per-agent folders. The whole point of the per-agent layout is that a
+// new backend is one folder to add — every leaked dispatch is a place a
+// future Cursor/Gemini contributor would have to remember to update.
+//
+// Scoped narrowly to identifiers whose name ends in `agentId`/`AgentId`
+// so it doesn't fire on unrelated literal comparisons (DB row reads
+// where the field is `agent_id`, request query strings named `agent`,
+// runtime input validators where the variable is `saved`/`provider`).
+//
+// Exemptions: per-agent folders (`agents/<id>/`) own the per-agent
+// dispatch by definition; tests are allowed to assert per-agent
+// behavior directly. Legitimate runtime exceptions (input validation,
+// marketplace v1 gate, CLI-shape recovery paths) add an inline
+// `eslint-disable-next-line` with a one-line rationale.
+const RESTRICTED_AGENT_ID_LEAK = [
+  {
+    selector: "BinaryExpression[operator=/^[!=]==$/][left.type='Identifier'][left.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex)$/]",
+    message: "Avoid `agentId === \"claude\" | \"codex\"` comparisons outside `agents/<id>/` folders — they break the agent abstraction (docs/155). Use a capability flag (`AgentCapabilities`), an `AgentRegistry` method, or a `Map<AgentId, …>` runtime table instead. If the branch is a genuine per-CLI-shape exception (marketplace v1 gate, Claude-only `--resume` recovery, runtime input validation), add `eslint-disable-next-line no-restricted-syntax` with a one-line rationale.",
+  },
+  {
+    selector: "BinaryExpression[operator=/^[!=]==$/][left.type='MemberExpression'][left.property.type='Identifier'][left.property.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex)$/]",
+    message: "Avoid `.agentId === \"claude\" | \"codex\"` comparisons outside `agents/<id>/` folders — they break the agent abstraction (docs/155). Use a capability flag (`AgentCapabilities`), an `AgentRegistry` method, or a `Map<AgentId, …>` runtime table instead. If the branch is a genuine per-CLI-shape exception (marketplace v1 gate, Claude-only `--resume` recovery, runtime input validation), add `eslint-disable-next-line no-restricted-syntax` with a one-line rationale.",
+  },
+];
+
 export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
@@ -117,14 +166,8 @@ export default tseslint.config(
       // ── Custom restrictions ──────────────────────────────────────────────
       "no-restricted-syntax": [
         "error",
-        {
-          selector: "CallExpression > MemberExpression[property.name='then']",
-          message: "Prefer async/await over .then(). Use store methods or async helpers. Add eslint-disable if .then() is intentional (fire-and-forget in sync context, lazy(), Promise two-arg form).",
-        },
-        {
-          selector: "TSImportType",
-          message: "Avoid inline import() types. Use a top-level `import type { X } from '...'` instead. Add eslint-disable if dynamic import() is intentional (lazy(), conditional loading).",
-        },
+        ...RESTRICTED_SYNTAX_BASE,
+        ...RESTRICTED_AGENT_ID_LEAK,
       ],
     },
   },
@@ -148,18 +191,9 @@ export default tseslint.config(
       ],
       "no-restricted-syntax": [
         "error",
-        {
-          selector: "CallExpression > MemberExpression[property.name='then']",
-          message: "Prefer async/await over .then(). Use store methods or async helpers. Add eslint-disable if .then() is intentional (fire-and-forget in sync context, lazy(), Promise two-arg form).",
-        },
-        {
-          selector: "TSImportType",
-          message: "Avoid inline import() types. Use a top-level `import type { X } from '...'` instead. Add eslint-disable if dynamic import() is intentional (lazy(), conditional loading).",
-        },
-        {
-          selector: "CallExpression[callee.name='useEffect']",
-          message: "useEffect is restricted. Prefer event handlers, derived state, useMemo, or key props. If useEffect is genuinely needed (external system sync, browser API subscription, cleanup), add eslint-disable-next-line with a justification.",
-        },
+        ...RESTRICTED_SYNTAX_BASE,
+        RESTRICTED_USEEFFECT,
+        ...RESTRICTED_AGENT_ID_LEAK,
       ],
     },
   },
@@ -197,6 +231,25 @@ export default tseslint.config(
       ],
     },
   },
+  // ── Per-agent folder exemption (docs/155 hair-leak guard) ───────────────
+  // The whole point of `agents/<id>/` folders is that they own their per-CLI
+  // dispatch — `agentId === "claude"` is exactly the kind of branch we
+  // expect inside `agents/claude/`. Drop the leak guard for these paths so
+  // the rule fires only when per-agent logic leaks back out into shared code.
+  {
+    files: [
+      "src/server/session/agents/claude/**",
+      "src/server/session/agents/codex/**",
+      "src/server/orchestrator/agents/claude/**",
+      "src/server/orchestrator/agents/codex/**",
+    ],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ...RESTRICTED_SYNTAX_BASE,
+      ],
+    },
+  },
   {
     files: ["**/*.test.ts", "**/*.test.tsx"],
     rules: {
@@ -212,6 +265,15 @@ export default tseslint.config(
       "@typescript-eslint/unbound-method": "off",
       // Test assertions on possibly-undefined are fine
       "@typescript-eslint/no-unnecessary-type-assertion": "off",
+      // Tests assert per-agent behavior directly (parameterized fixtures,
+      // SSE-event filtering by `agentId`) — that's not a leak, that's
+      // intentional. Drop the docs/155 leak guard for tests but keep the
+      // base restrictions (.then(), TSImportType) and useEffect for clients.
+      "no-restricted-syntax": [
+        "error",
+        ...RESTRICTED_SYNTAX_BASE,
+        RESTRICTED_USEEFFECT,
+      ],
     },
   },
   {

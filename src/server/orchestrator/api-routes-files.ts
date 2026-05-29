@@ -160,6 +160,7 @@ export async function registerFileRoutes(
 
       const skillsDirName = agentRegistry.get(agentId)?.capabilities.skillsDirName ?? ".claude";
       const projectSkills = await listSkills(dir, skillsDirName);
+      // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 8: Codex ships built-in skills inside ~/.codex/skills/; Claude has none today. Becomes an optional runner method (`getBuiltinSkills?()`) once a second backend ships built-ins.
       if (agentId !== "codex") {
         return { skills: projectSkills };
       }

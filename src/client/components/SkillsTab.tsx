@@ -48,6 +48,7 @@ export function SkillsTab({ hasActiveSession }: { hasActiveSession: boolean }) {
   // the route-backed external system.
   // eslint-disable-next-line no-restricted-syntax -- effect for one-shot fetch when the active agent flips
   useEffect(() => {
+    // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 7: marketplace install is Claude-only in v1; becomes a capability flag once Codex install (v1b) lands.
     if (agentId !== "claude") return;
     void fetchMarketplaces(agentId);
   }, [agentId, fetchMarketplaces]);
@@ -106,6 +107,7 @@ export function SkillsTab({ hasActiveSession }: { hasActiveSession: boolean }) {
   };
 
   // Codex is v1b — show a friendly empty state on the tab rather than half-rendering.
+  // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 7: marketplace install is Claude-only in v1; becomes a capability flag once Codex install (v1b) lands.
   if (agentId !== "claude") {
     return (
       <div className="px-5 py-4 text-sm text-(--color-text-secondary)">

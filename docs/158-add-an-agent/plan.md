@@ -269,6 +269,14 @@ If you find yourself editing one of these to make the new backend work,
 stop. That's a hair that hasn't been cleaned up yet — file a new
 docs/155-style entry instead of working around it.
 
+The ESLint rule `no-restricted-syntax` in `eslint.config.js` enforces this
+guardrail by flagging any new `agentId === "claude" | "codex"` (or the
+`something.agentId === …` form) outside the per-agent folders. If your new
+backend genuinely needs a per-CLI-shape branch in shared code (a real
+CLI-shape difference, not a hair), add `eslint-disable-next-line
+no-restricted-syntax -- <one-line rationale>` and link the doc that
+documents the difference. Don't widen the exempt-folders glob.
+
 ## File-count target
 
 At a glance, adding a new backend should touch roughly:

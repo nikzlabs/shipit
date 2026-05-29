@@ -23,6 +23,14 @@ type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
   const activeAgentId = ctx.getActiveAgentId();
 
+  // docs/155: per-backend auth gate; mirrored in services/agent.ts (HTTP
+  // dispatch path). `AgentAuthManager.isConfigured()` + the
+  // `Map<AgentId, AgentAuthManager>` from `buildAgentRuntime()` could front
+  // this dispatch, but Claude's `checkCredentials()` (re-read on-disk creds)
+  // and Codex's `agentRegistry.refreshAuth("codex")` (re-read env-var) plus
+  // the per-backend error copy are still distinct. Consolidation tracked but
+  // not done; the disables below annotate the surviving branches.
+  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
   if (activeAgentId === "claude") {
     if (!ctx.authManager.authenticated) {
       ctx.authManager.checkCredentials();
@@ -35,6 +43,7 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
     return true;
   }
 
+  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
   if (activeAgentId === "codex") {
     ctx.agentRegistry.refreshAuth("codex");
     const info = ctx.agentRegistry.get("codex");
