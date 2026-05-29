@@ -2,7 +2,6 @@
 const MODEL_DISPLAY_NAMES: Record<string, string> = {
   // Claude CLI aliases
   sonnet: "Sonnet 4.7",
-  opus: "Opus 4.7",
   haiku: "Haiku 4.5",
   "claude-opus-4-8": "Opus 4.8",
   // Codex model IDs. Display names normalize the ChatGPT backend's

@@ -31,16 +31,11 @@ export const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
  * first frame (before the first `result` event arrives).
  */
 export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  // Claude — 200K is the default. Specific 4.7 keys override the substring
-  // fallback so "claude-opus-4-7" resolves to its real 1M window even before
+  // Claude — 200K is the default. Specific keys override the substring
+  // fallback so "claude-opus-4-8" resolves to its real 1M window even before
   // the first `result` event populates `modelUsage.contextWindow`.
   "sonnet": 200_000,
   "claude-sonnet": 200_000,
-  "opus": 200_000,
-  "claude-opus": 200_000,
-  "claude-opus-4-7": 1_000_000,
-  // Opus 4.8 — assumed 1M context like 4.7 until the CLI's first `result`
-  // event reports the authoritative value via `modelUsage.contextWindow`.
   "claude-opus-4-8": 1_000_000,
   "haiku": 200_000,
   "claude-haiku": 200_000,

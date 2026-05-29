@@ -13,6 +13,27 @@ import { CLAUDE_PERMISSION_MODES } from "./types/agent-types.js";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Single source of truth for the Claude models offered in the picker.
+ *
+ * Mixed style is intentional:
+ * - Bare family names (`sonnet`, `haiku`) are CLI aliases that always resolve
+ *   to the latest of that family on the installed CLI.
+ * - Explicit dated/versioned IDs (`claude-opus-4-8`) are listed when a new
+ *   model ships before the CLI's alias is bumped to point at it. The CLI
+ *   forwards `--model` to the API as-is, so any API-recognized ID works even
+ *   if the CLI's local alias table hasn't caught up.
+ *
+ * No bare `opus` alias: on CLI ≤ 2.1.148 it resolves to Opus 4.7, which we no
+ * longer surface. Once Anthropic ships a CLI release where `opus` resolves to
+ * Opus 4.8 (or newer), we can re-add the alias and retire the explicit
+ * versioned entry the same way.
+ *
+ * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
+ * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
+ */
+export const CLAUDE_MODELS = ["sonnet", "haiku", "claude-opus-4-8"];
+
 export interface AgentInfo {
   id: AgentId;
   name: string;
@@ -35,13 +56,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsPermissionModes: true,
       supportedPermissionModes: CLAUDE_PERMISSION_MODES,
       toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-      // The bare names are CLI aliases that always resolve to the latest of
-      // the family ("opus" → newest Opus the installed CLI knows about).
-      // Explicit dated/versioned IDs are listed when a new model ships before
-      // the CLI's alias is bumped to point at it — the CLI forwards `--model`
-      // to the API as-is, so any API-recognized ID works even if the CLI's
-      // local alias table doesn't know about it yet.
-      models: ["sonnet", "opus", "haiku", "claude-opus-4-8"],
+      models: CLAUDE_MODELS,
       supportsReview: true,
       supportsSteering: true,
       skillsDirName: ".claude",
