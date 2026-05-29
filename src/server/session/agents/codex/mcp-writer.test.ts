@@ -48,6 +48,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
     return adapter.writeMcpConfig({
       servers,
       reviewBridge: bridge,
+      presentBridge: null,
       onServerFailed,
     }).runtimeEnv;
   }

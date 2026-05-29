@@ -4,6 +4,7 @@ import { useFileStore } from "../file-store.js";
 import { useTerminalStore } from "../terminal-store.js";
 import { useUiStore } from "../ui-store.js";
 import { usePreviewStore } from "../preview-store.js";
+import { usePresentStore } from "../present-store.js";
 import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
@@ -19,6 +20,7 @@ export function resetSessionState() {
   useTerminalStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
+  usePresentStore.getState().reset();
 }
 
 /**
@@ -44,6 +46,7 @@ export function resumeSessionInternal(sessionId: string) {
   useGitStore.getState().reset();
   useTerminalStore.getState().reset();
   useUiStore.getState().reset();
+  usePresentStore.getState().reset();
 
   // Restore incoming session's preview state (or reset to defaults)
   preview.restoreSession(sessionId);
@@ -74,6 +77,7 @@ export function fullResetAllStores() {
   useTerminalStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
+  usePresentStore.getState().reset();
   usePrStore.getState().reset();
   useSettingsStore.getState().reset();
   useRepoStore.getState().reset();

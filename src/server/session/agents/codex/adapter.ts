@@ -514,6 +514,16 @@ export class CodexAdapter
       );
     }
 
+    if (ctx.presentBridge) {
+      lines.push(
+        "",
+        "# docs/093 — internal present tool bridge.",
+        "[mcp_servers.shipit-present]",
+        `command = ${tomlString(ctx.presentBridge.tsxBin)}`,
+        `args = ${tomlArray([ctx.presentBridge.bridgePath])}`,
+      );
+    }
+
     for (const server of ctx.servers) {
       const { resolved, missing } = resolveMcpServer(server);
       if (!resolved) {

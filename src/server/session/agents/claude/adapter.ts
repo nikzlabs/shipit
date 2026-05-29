@@ -360,6 +360,16 @@ export class ClaudeAdapter
       };
     }
 
+    // docs/093 — internal `present` tool. Same stdio→HTTP bridge pattern as
+    // the review tool; lets the agent display HTML/SVG/markdown to the user
+    // in the Present tab without writing files to the workspace.
+    if (ctx.presentBridge) {
+      mcpServers["shipit-present"] = {
+        command: ctx.presentBridge.tsxBin,
+        args: [ctx.presentBridge.bridgePath],
+      };
+    }
+
     // docs/088: merge user-configured MCP servers. Configs arrive UNRESOLVED
     // — `$secret:` placeholders are substituted here against the worker's own
     // process.env (populated by 087's agent-env pipeline). A server that

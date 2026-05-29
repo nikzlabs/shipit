@@ -266,6 +266,17 @@ export interface AgentMcpReviewBridge {
 }
 
 /**
+ * Resolved paths to the internal present MCP bridge (docs/093). Same shape
+ * and lifecycle as {@link AgentMcpReviewBridge} — kept as a separate type so
+ * the two bridges can evolve independently and a future adapter can choose
+ * to expose one without the other.
+ */
+export interface AgentMcpPresentBridge {
+  tsxBin: string;
+  bridgePath: string;
+}
+
+/**
  * Per-spawn context the worker passes into `AgentProcess.writeMcpConfig()`.
  *
  * The adapter owns the CLI-specific wire format (Claude: `--mcp-config` JSON
@@ -287,6 +298,12 @@ export interface AgentMcpWriteContext {
    * support the review tool skip the entry when this is null; others ignore it.
    */
   reviewBridge: AgentMcpReviewBridge | null;
+  /**
+   * The internal present bridge (docs/093), or `null` when the worker can't
+   * locate the bridge files. Adapters add it as another MCP entry so the
+   * agent CLI can call the `present` tool.
+   */
+  presentBridge: AgentMcpPresentBridge | null;
   /**
    * Surface a server-level failure to the worker so it can broadcast an
    * `mcp_server_status` SSE event. Called when an entry has to be dropped

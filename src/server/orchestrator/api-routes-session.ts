@@ -175,6 +175,57 @@ export async function registerSessionRoutes(
     return { worktrees: listWorktrees(sessionManager, request.params.id) };
   });
 
+  // POST /api/sessions/:id/present/save — copy a buffered presentation
+  // (docs/093) to the workspace. The bytes live only in the session worker's
+  // in-memory PresentBuffer; we proxy through to the worker which performs
+  // the byte-exact copy and lets the file watcher + auto-commit pipeline pick
+  // it up. Client-driven (not agent-mediated) because after context
+  // compaction or several turns the agent may not have the exact bytes any
+  // more — save must match what the user saw.
+  app.post<{
+    Params: { id: string };
+    Body: { presentId?: string; destPath?: string };
+  }>("/api/sessions/:id/present/save", async (request, reply) => {
+    const session = sessionManager.get(request.params.id);
+    if (!session) {
+      reply.code(404).send({ error: "Session not found" });
+      return;
+    }
+    const { presentId, destPath } = request.body ?? {};
+    if (typeof presentId !== "string" || !presentId) {
+      reply.code(400).send({ error: "presentId is required" });
+      return;
+    }
+    if (typeof destPath !== "string" || !destPath) {
+      reply.code(400).send({ error: "destPath is required" });
+      return;
+    }
+    const runner = deps.runnerRegistry.get(request.params.id);
+    if (!runner) {
+      reply.code(404).send({ error: "Session is not active" });
+      return;
+    }
+    const proxy = runner as { proxyPresentSave?: (id: string, path: string) => Promise<unknown> };
+    if (typeof proxy.proxyPresentSave !== "function") {
+      reply.code(501).send({ error: "Present save is not supported on this runner" });
+      return;
+    }
+    try {
+      const result = await proxy.proxyPresentSave(presentId, destPath) as {
+        ok?: boolean;
+        savedPath?: string;
+        error?: string;
+      };
+      if (result.ok === false || result.error) {
+        reply.code(400).send({ error: result.error ?? "Save failed" });
+        return;
+      }
+      return { ok: true, savedPath: result.savedPath };
+    } catch (err) {
+      reply.code(500).send({ error: `Failed to save presentation: ${getErrorMessage(err)}` });
+    }
+  });
+
   // ---- Session mutations ----
 
   // GET /api/sessions/all — list all sessions (active + archived)
