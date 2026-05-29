@@ -1183,7 +1183,12 @@ export class SessionWorker extends EventEmitter {
  * `claude --model gpt-5.5`, which the Claude CLI rejects as "There's an issue
  * with the selected model". Exported for the regression test.
  */
+// docs/155 hair 11: legitimate construction switch — adapter instantiation
+// has to dispatch on the discriminator somewhere; concentrating it in one
+// factory (with a regression test in session-worker-agent-factory.test.ts)
+// is the correct design.
 export const createWorkerAgent: WorkerAgentFactory = (agentId: AgentId) =>
+  // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: see comment above
   agentId === "codex"
     ? new CodexAdapter()
     : new ClaudeAdapter(new ClaudeProcess());

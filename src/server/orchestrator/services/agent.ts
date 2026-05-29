@@ -109,7 +109,16 @@ export async function dispatchAgentMessage(
   // 3. Auth gate — mirror ensureActiveAgentAuthenticated from the WS handler.
   //    Without this, the dispatched run would hang the same way an
   //    unauthenticated `send_message` would.
+  //
+  //    docs/155: per-backend auth gate. `AgentAuthManager.isConfigured()`
+  //    exists and could front a `Map<AgentId, …>` dispatch, but the
+  //    per-backend behavior still differs (Claude refreshes from disk via
+  //    `checkCredentials()`; Codex re-reads its env-var via
+  //    `agentRegistry.refreshAuth`) and the error copy differs per backend.
+  //    Consolidating both is tracked but not done; the disables below
+  //    annotate the surviving branches.
   const activeAgentId = runner.agentId;
+  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
   if (activeAgentId === "claude") {
     if (!deps.authManager.authenticated) {
       deps.authManager.checkCredentials();
@@ -117,6 +126,7 @@ export async function dispatchAgentMessage(
     if (!deps.authManager.authenticated) {
       throw new ServiceError(401, "Claude is not authenticated. Sign in to continue.");
     }
+  // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
   } else if (activeAgentId === "codex") {
     deps.agentRegistry.refreshAuth("codex");
     const info = deps.agentRegistry.get("codex");

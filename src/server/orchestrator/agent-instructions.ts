@@ -16,6 +16,24 @@ import type { AgentId } from "../shared/types.js";
 import { CLAUDE_PARALLEL_SESSIONS_SECTION } from "./agents/claude/system-prompt.js";
 import { CODEX_PARALLEL_SESSIONS_SECTION } from "./agents/codex/system-prompt.js";
 
+/**
+ * Per-agent "Parallel sessions" prompt fragments, keyed so the builder
+ * does a single Map lookup instead of an `agentId === "claude"`/`"codex"`
+ * if-cascade (docs/155 hair 9). The fragments themselves live in each
+ * agent's `agents/<id>/system-prompt.ts`; this map only collects them
+ * for the dispatcher below. Backends without a fragment register no
+ * entry and fall through to the empty string at the call site.
+ *
+ * Kept local (and not derived from `buildAgentRuntime`'s
+ * `parallelSessionsSections`) because the fragments are static module
+ * constants and `buildAgentSystemInstructions` is also called from the
+ * Settings UI baseline path that has no app-DI context.
+ */
+const PARALLEL_SESSIONS_SECTIONS: ReadonlyMap<AgentId, string> = new Map([
+  ["claude", CLAUDE_PARALLEL_SESSIONS_SECTION],
+  ["codex", CODEX_PARALLEL_SESSIONS_SECTION],
+]);
+
 export interface AgentSystemInstructionOptions {
   /**
    * Identity of the agent the prompt is being assembled for. Drives the
@@ -50,11 +68,9 @@ export function buildAgentSystemInstructions(
   // rendering used by the Settings UI baseline and the no-options test
   // fixture skips it. Per-agent wording lives in
   // `agents/<id>/system-prompt.ts`; see docs/117 and docs/155 hair 9.
-  const parallelSessionsSection = agentId === "claude"
-    ? CLAUDE_PARALLEL_SESSIONS_SECTION
-    : agentId === "codex"
-      ? CODEX_PARALLEL_SESSIONS_SECTION
-      : "";
+  const parallelSessionsSection = agentId
+    ? PARALLEL_SESSIONS_SECTIONS.get(agentId) ?? ""
+    : "";
 
   return `\
 You are an expert software engineer working inside ShipIt, a browser-based IDE for building software through conversation. The user sees your responses in a chat panel alongside a live file tree, preview pane, and terminal. Your goal is to help the user build, debug, and ship software efficiently.
