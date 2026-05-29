@@ -15,6 +15,7 @@ import type { RuntimeMode } from "./app-di.js";
 import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./auth.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
+import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import { pushToOrigin } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { getErrorMessage } from "./validation.js";
@@ -179,6 +180,13 @@ export interface RunnerRegistryDeps {
    * absent in tests that don't construct a real auth manager.
    */
   authManagers?: Map<AgentId, AgentAuthManager>;
+  /**
+   * docs/155 Phase 3 — per-agent run-params prep hooks. Forwarded into the
+   * system-turn `buildRunParams` so dispatched/CI-fix turns inject the same
+   * Claude-only / Codex-only fields the WS path does. Optional; absent in
+   * minimal test setups.
+   */
+  runParamsPreps?: Map<AgentId, PrepareRunParamsFn>;
 }
 
 /**
@@ -195,7 +203,7 @@ export function createRunnerRegistry(
     credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
-    nudgeClaudeOAuthRefresh, onAgentAuthRequired,
+    nudgeClaudeOAuthRefresh, onAgentAuthRequired, runParamsPreps,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -289,6 +297,7 @@ export function createRunnerRegistry(
               sessionManager,
               readSystemPrompt: readSystemPrompt ?? (() => Promise.resolve(undefined)),
               getSelectedModel: () => session?.model,
+              ...(runParamsPreps ? { runParamsPreps } : {}),
             },
             sessionId,
             agentId,

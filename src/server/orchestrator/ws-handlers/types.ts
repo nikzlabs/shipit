@@ -7,6 +7,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../auth.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
+import type { PrepareRunParamsFn } from "../agent-run-params-prep.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
@@ -105,6 +106,16 @@ export interface AppCtx {
    * backend gets its own auth flow restarted, not Claude's.
    */
   authManagers: Map<AgentId, AgentAuthManager>;
+  /**
+   * Per-agent run-params prep hooks (docs/155 Phase 3). Each backend's hook
+   * injects its own Claude-only / Codex-only fields onto `AgentRunParams`
+   * (Claude: `settingsPath`, `autoCreatePr`; Codex: identity). The shared
+   * `buildAgentRunParams` invokes the hook for the spawning agent so the
+   * old `agentId === "claude" ? "/etc/shipit/managed-settings.json" : …`
+   * branch can go away. Optional on the AppCtx because legacy test setups
+   * skip the map; fallback inside `buildAgentRunParams` is identity.
+   */
+  runParamsPreps?: Map<AgentId, PrepareRunParamsFn>;
   agentRegistry: AgentRegistry;
   credentialStore: CredentialStore;
   providerAccountManager: ProviderAccountManager;
