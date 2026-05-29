@@ -661,6 +661,50 @@ export const usePrStore = create<PrState>((set, get) => ({
   },
 
   toggleAutoMerge: async (sessionId, enabled) => {
+    // Snapshot prior auto-merge state so we can revert if the request fails.
+    // Optimistic flip below keeps the toggle responsive; without it the UI
+    // sits on the old value until the server round-trip + SSE poll lands.
+    const prevAutoMerge = get().autoMergeBySession[sessionId];
+    const prevCardAutoMerge = get().cardBySession[sessionId]?.autoMerge;
+
+    set((state) => {
+      const existing = state.cardBySession[sessionId];
+      const base = state.autoMergeBySession[sessionId]
+        ?? existing?.autoMerge
+        ?? { enabled: false, mergeMethod: "squash" as const };
+      const optimistic = { ...base, enabled };
+      return {
+        autoMergeBySession: {
+          ...state.autoMergeBySession,
+          [sessionId]: optimistic,
+        },
+        cardBySession: {
+          ...state.cardBySession,
+          ...(existing ? { [sessionId]: { ...existing, autoMerge: optimistic } } : {}),
+        },
+      };
+    });
+
+    const revert = () => {
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        const nextAutoMerge = { ...state.autoMergeBySession };
+        if (prevAutoMerge) {
+          nextAutoMerge[sessionId] = prevAutoMerge;
+        } else {
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete nextAutoMerge[sessionId];
+        }
+        return {
+          autoMergeBySession: nextAutoMerge,
+          cardBySession: {
+            ...state.cardBySession,
+            ...(existing ? { [sessionId]: { ...existing, autoMerge: prevCardAutoMerge } } : {}),
+          },
+        };
+      });
+    };
+
     try {
       const res = await fetch(`/api/sessions/${sessionId}/pr/auto-merge`, {
         method: "POST",
@@ -671,8 +715,9 @@ export const usePrStore = create<PrState>((set, get) => ({
         body: JSON.stringify({ enabled }),
       });
       if (!res.ok) {
-        const data = await res.json() as { error?: string };
+        const data = await res.json().catch(() => ({})) as { error?: string };
         console.error("[pr-store] Auto-merge toggle failed:", data.error);
+        revert();
         return;
       }
       const data = await res.json() as { enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean };
@@ -697,6 +742,7 @@ export const usePrStore = create<PrState>((set, get) => ({
       });
     } catch (err) {
       console.error("[pr-store] Auto-merge toggle failed:", err);
+      revert();
     }
   },
 
