@@ -99,11 +99,18 @@ export function useNotification() {
     if (notifyOnFinish && typeof Notification !== "undefined" && Notification.permission === "granted") {
       const title = context?.repoLabel ? `ShipIt · ${context.repoLabel}` : "ShipIt";
       const fullBody = context?.sessionName ? `[${context.sessionName}] ${body}` : body;
-      const n = new Notification(title, { body: fullBody });
-      n.onclick = () => {
-        window.focus();
-        n.close();
-      };
+      // Mobile Chrome throws "Illegal constructor" — there `Notification` must
+      // be shown via ServiceWorkerRegistration.showNotification(). We don't
+      // register a SW, so swallow the error and rely on the tab title change.
+      try {
+        const n = new Notification(title, { body: fullBody });
+        n.onclick = () => {
+          window.focus();
+          n.close();
+        };
+      } catch {
+        // no-op on platforms that disallow direct construction
+      }
     }
   }, []);
 
@@ -127,11 +134,15 @@ export function useNotification() {
         document.title = `\u25cf ${count} sessions need attention \u2014 ShipIt`;
         titleChangedRef.current = true;
         if (notifyOnFinish && typeof Notification !== "undefined" && Notification.permission === "granted") {
-          const n = new Notification("ShipIt", { body: `${count} sessions finished` });
-          n.onclick = () => {
-            window.focus();
-            n.close();
-          };
+          try {
+            const n = new Notification("ShipIt", { body: `${count} sessions finished` });
+            n.onclick = () => {
+              window.focus();
+              n.close();
+            };
+          } catch {
+            // mobile Chrome disallows direct Notification construction
+          }
         }
       }
     }, 3000);
