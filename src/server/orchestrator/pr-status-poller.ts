@@ -37,6 +37,7 @@ import {
 import { AutoFixManager, MAX_AUTO_FIX_ATTEMPTS, type FetchAndFixCb } from "./auto-fix-manager.js";
 import { AutoMergeManager } from "./auto-merge-manager.js";
 import { CiGraceTracker } from "./ci-grace-tracker.js";
+import { AutoConflictResolveManager, MAX_AUTO_RESOLVE_ATTEMPTS, type RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
 
 // Re-export the pure parser helpers so existing callers
 // (`pr-status-poller.test.ts`, `services/github-ci-fix.ts`) keep working
@@ -149,6 +150,13 @@ export class PrStatusPoller {
   private autoMerge: AutoMergeManager;
   /** "No checks yet" grace window + per-repo workflow detection. */
   private graceTracker: CiGraceTracker;
+  /**
+   * docs/146 — auto-resolve-conflicts state machine. Constructed only when
+   * `runnerRegistry` is supplied (the feature needs the registry to look up
+   * runners for the pre-attempt gate). Skipped wiring in degraded test
+   * setups leaves the manager `undefined` and the feature inactive.
+   */
+  public autoConflictResolveManager: AutoConflictResolveManager | undefined;
 
   /** Optional: runner registry for server-initiated fix prompts. */
   private runnerRegistry?: SessionRunnerRegistry;
@@ -168,6 +176,14 @@ export class PrStatusPoller {
   /** sessionId → last known GraphQL PR node (cached for extracting check details). */
   private lastPrNodes = new Map<string, GraphQLPrNode>();
 
+  /**
+   * docs/146 — global enable getter for the auto-resolve loop. Captured so
+   * the manager reads the setting at decision time rather than mirroring it
+   * into per-session state. Optional — if absent, the manager treats the
+   * feature as disabled.
+   */
+  private isAutoResolveEnabled: () => boolean;
+
   constructor(opts: {
     githubAuth: GitHubAuthManager;
     sessionManager: SessionManager;
@@ -176,7 +192,17 @@ export class PrStatusPoller {
     getSharedRepoDir?: (repoUrl: string) => string;
     fetchAndFixCb?: FetchAndFixCb;
     onMergeDetectedCb?: (sessionId: string) => Promise<void>;
+    /**
+     * When set, the poller swaps GitHub's GraphQL additions/deletions (which
+     * lag a few seconds after each push while GitHub reindexes) for the same
+     * locally-computed diff stats the click-through diff dialog uses, so the
+     * card's +N/-N button can't show stale numbers.
+     */
     createGitManager?: (dir: string) => GitManager;
+    /** docs/146 — global gate getter for the auto-resolve loop. */
+    isAutoResolveEnabled?: () => boolean;
+    /** docs/146 — rebase-and-resolve callback. Late-bindable via the manager's setter. */
+    rebaseAndResolveCb?: RebaseAndResolveCb;
   }) {
     this.githubAuth = opts.githubAuth;
     this.sessionManager = opts.sessionManager;
@@ -184,6 +210,7 @@ export class PrStatusPoller {
     this.runnerRegistry = opts.runnerRegistry;
     this.onMergeDetectedCb = opts.onMergeDetectedCb;
     this.createGitManager = opts.createGitManager;
+    this.isAutoResolveEnabled = opts.isAutoResolveEnabled ?? (() => false);
 
     // Bind broadcast as the change callback so collaborators don't need to
     // know about SSE plumbing — they just say "this session changed."
@@ -191,6 +218,19 @@ export class PrStatusPoller {
     this.autoFix = new AutoFixManager(onSessionChange, opts.fetchAndFixCb);
     this.autoMerge = new AutoMergeManager(this.githubAuth, onSessionChange);
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);
+    // docs/146 — the manager requires the runner registry for its pre-attempt
+    // gate (needs to look up `runner.running` / call `verifyRunningState`).
+    // Without it, leave the manager unwired and the feature inactive — matches
+    // the "skip wiring when runnerRegistry is absent" contract.
+    if (opts.runnerRegistry) {
+      const registry = opts.runnerRegistry;
+      this.autoConflictResolveManager = new AutoConflictResolveManager(
+        onSessionChange,
+        (sessionId) => registry.get(sessionId),
+        this.isAutoResolveEnabled,
+        opts.rebaseAndResolveCb,
+      );
+    }
   }
 
   // ---- Global gate (Strategy 1) ----
@@ -451,6 +491,7 @@ export class PrStatusPoller {
     this.lastKnown.delete(sessionId);
     this.autoFix.delete(sessionId);
     this.autoMerge.delete(sessionId);
+    this.autoConflictResolveManager?.delete(sessionId);
     this.lastPrNodes.delete(sessionId);
     this.inFlightVerify.delete(sessionId);
     this.verifiedAbsent.delete(sessionId);
@@ -461,6 +502,23 @@ export class PrStatusPoller {
     if (repoKey && !this.repoHasTrackedSessions(repoKey)) {
       this.lastPolledAt.delete(repoKey);
     }
+  }
+
+  /**
+   * docs/146 — re-broadcast every tracked session's PR snapshot. Used when
+   * `autoResolveConflicts` flips false → true so existing sessions get the
+   * (now-ungated) `autoResolve` block onto their snapshot without waiting
+   * for a genuine PR-status change.
+   */
+  broadcastAllSnapshots(): void {
+    const updates: PrStatusSummary[] = [];
+    for (const [sessionId, summary] of this.lastKnown) {
+      // Skip sessions whose terminal-state snapshots already promoted them
+      // (the merged/closed bulk-view short-circuit handles them).
+      if (this.mergedSessions.has(sessionId)) continue;
+      updates.push(this.attachAutomationState(summary));
+    }
+    if (updates.length > 0) this.sseBroadcast("pr_status", { updates });
   }
 
   /**
@@ -675,6 +733,22 @@ export class PrStatusPoller {
           managed: mergeState.managed,
           settingsUrl: mergeState.settingsUrl,
           error: mergeState.error,
+        },
+      };
+    }
+    // docs/146 — attach auto-resolve state ONLY when the global setting is
+    // on. Belt-and-suspenders against a disabled user seeing a lingering
+    // failure banner from the snapshot.
+    const resolveState = this.autoConflictResolveManager?.get(summary.sessionId);
+    if (resolveState && this.isAutoResolveEnabled()) {
+      result = {
+        ...result,
+        autoResolve: {
+          status: resolveState.status,
+          attemptCount: resolveState.attemptCount,
+          maxAttempts: MAX_AUTO_RESOLVE_ATTEMPTS,
+          ...(resolveState.lastError !== undefined ? { lastError: resolveState.lastError } : {}),
+          ...(resolveState.nextEligibleAt !== undefined ? { nextEligibleAt: resolveState.nextEligibleAt } : {}),
         },
       };
     }
@@ -922,6 +996,19 @@ export class PrStatusPoller {
           console.error(`[pr-poller] Managed auto-merge error for ${session.id}:`, err);
         });
 
+        // docs/146 — auto-resolve transitions. Fire-and-forget; the poller
+        // loop is synchronous and we don't want one session's worker HTTP
+        // roundtrip (verifyRunningState) to delay other sessions on the same
+        // repo's poll iteration.
+        if (this.autoConflictResolveManager) {
+          const headShaForResolve = extractHeadSha(prNode) ?? "";
+          this.autoConflictResolveManager
+            .handleTransition(session.id, summary, summary.baseBranch, headShaForResolve)
+            .catch((err: unknown) => {
+              console.error(`[pr-poller] Auto-resolve handleTransition error for ${session.id}:`, err);
+            });
+        }
+
         // Attach automation state before comparison and broadcast
         const withAutomation = this.attachAutomationState(summary);
 
@@ -1025,6 +1112,11 @@ export class PrStatusPoller {
     this.lastKnown.set(sessionId, summary);
     this.sessionManager.setPrStatus(sessionId, summary);
     this.mergedSessions.add(sessionId);
+    // docs/146 — release the manager's per-session state when the PR moves
+    // to a terminal state (merged or closed-without-merge). Without this,
+    // the state is dormant-but-harmless (subsequent polls short-circuit
+    // before reaching the manager) but the map grows unbounded.
+    this.autoConflictResolveManager?.delete(sessionId);
     this.sseBroadcast("pr_status", { updates: [summary] });
 
     if (isMerged && this.onMergeDetectedCb) {

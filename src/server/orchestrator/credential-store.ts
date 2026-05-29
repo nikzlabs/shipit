@@ -21,6 +21,11 @@ interface CredentialData {
    */
   liveSteering?: boolean;
   /**
+   * When true, the PR poller's auto-resolve loop fires when a tracked PR
+   * transitions to CONFLICTING while the agent is idle. (docs/146)
+   */
+  autoResolveConflicts?: boolean;
+  /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
    * the `mcp__<server>__<KEY>` namespace, not here.
@@ -356,6 +361,17 @@ export class CredentialStore {
 
   setLiveSteering(enabled: boolean): void {
     this.data.liveSteering = enabled;
+    this.save();
+  }
+
+  // ---- Auto-resolve conflicts (docs/146) ----
+
+  getAutoResolveConflicts(): boolean {
+    return this.data.autoResolveConflicts ?? false;
+  }
+
+  setAutoResolveConflicts(enabled: boolean): void {
+    this.data.autoResolveConflicts = enabled;
     this.save();
   }
 

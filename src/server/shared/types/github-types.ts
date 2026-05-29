@@ -179,6 +179,23 @@ export interface PrAutoMergeError {
   settingsUrl: string;
 }
 
+/**
+ * Auto-resolve-conflicts state for a session's PR, managed by the poller via
+ * `AutoConflictResolveManager`. Present only when the global
+ * `autoResolveConflicts` setting is on and the session has run through at
+ * least one auto-resolve transition. (docs/146)
+ */
+export interface AutoConflictResolveState {
+  /** Idle = ready / between attempts. Running = attempt in flight. Deferred = wanted to fire but blocked (agent busy, dirty tree, etc.). Exhausted = terminal until user activity or head SHA change. */
+  status: "idle" | "running" | "deferred" | "exhausted";
+  /** 1-indexed count of attempts that did real work. Reset on head SHA change or user activity. */
+  attemptCount: number;
+  /** Last failure / defer reason — surfaced in the exhausted banner. */
+  lastError?: string;
+  /** Epoch ms; the next eligible attempt time after a failure cooldown. */
+  nextEligibleAt?: number;
+}
+
 /** Auto-merge state for a session's PR, managed by the poller. */
 export interface AutoMergeState {
   enabled: boolean;
@@ -299,6 +316,19 @@ export interface PrStatusSummary {
     /** GitHub settings URL for configuring branch protection. */
     settingsUrl?: string;
     error?: PrAutoMergeError;
+  };
+  /**
+   * Auto-resolve-conflicts state — present when the global
+   * `autoResolveConflicts` setting is on AND the session has seen at least
+   * one transition through the manager. (docs/146) Omitted when the setting
+   * is off so the failure banner does not render for disabled users.
+   */
+  autoResolve?: {
+    status: "idle" | "running" | "deferred" | "exhausted";
+    attemptCount: number;
+    maxAttempts: number; // always 3 — echoes MAX_AUTO_RESOLVE_ATTEMPTS
+    lastError?: string;
+    nextEligibleAt?: number;
   };
 }
 

@@ -13,4 +13,5 @@ export const handleGlobalSettings: Handler<WsGlobalSettings> = (_ctx, data) => {
   settings.setHasSystemPrompt(data.systemPrompt.length > 0);
   ui.setAgentList(data.agents);
   if (data.liveSteering !== undefined) settings.setLiveSteering(data.liveSteering);
+  if (data.autoResolveConflicts !== undefined) settings.setAutoResolveConflicts(data.autoResolveConflicts);
 };

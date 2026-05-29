@@ -225,6 +225,8 @@ export interface WsGlobalSettings {
   }[];
   /** When true, mid-turn messages steer the running agent. (docs/140) */
   liveSteering: boolean;
+  /** docs/146 — global gate for the auto-resolve-conflicts loop. */
+  autoResolveConflicts?: boolean;
 }
 
 // ---- Template messages ----
@@ -514,6 +516,46 @@ export interface WsRebaseAborted {
    * endpoint, where reaching idle is the intended outcome.
    */
   reason?: string;
+}
+
+/**
+ * Server → Client: an auto-resolve-conflicts attempt has started. (docs/146)
+ *
+ * Fires from the rebase-driver wrapper at the top of an attempt. The inner
+ * `rebase_started` / `rebase_conflicts` / `rebase_complete` events still fire
+ * from `runRebaseFlow` as a side effect — this envelope is the outer
+ * attempt-loop signal carrying `attempt` (only meaningful in the retry
+ * context).
+ */
+export interface WsAutoResolveStarted {
+  type: "auto_resolve_started";
+  sessionId: string;
+  baseBranch: string;
+  /** 1-indexed attempt number. Pairs with the same field on WsAutoResolveResult. */
+  attempt: number;
+}
+
+/**
+ * Server → Client: an auto-resolve-conflicts attempt has settled. (docs/146)
+ *
+ * `success`, `error`, and `deferred` are per-attempt outcomes. `exhausted` is
+ * the manager-emitted terminal envelope (cap reached) and is the only outcome
+ * the failure banner renders.
+ */
+export interface WsAutoResolveResult {
+  type: "auto_resolve_result";
+  sessionId: string;
+  outcome: "success" | "exhausted" | "deferred" | "error";
+  /** 1-indexed; matches the `attempt` field on the prior WsAutoResolveStarted for the same attempt. */
+  attempt: number;
+  /**
+   * Only meaningful when outcome === "success". Mirrors WsRebaseComplete.forcePushed
+   * so the PR-card sub-banner can optionally show "rebased locally, push deferred"
+   * without listening to two channels.
+   */
+  forcePushed?: boolean;
+  /** Failure / defer reason. Required when outcome === "exhausted" — the failure banner needs it. */
+  lastError?: string;
 }
 
 /** Server → Client: Docker Compose stack failed to start. */
@@ -1022,6 +1064,8 @@ export type WsServerMessage =
   | WsRebaseConflicts
   | WsRebaseComplete
   | WsRebaseAborted
+  | WsAutoResolveStarted
+  | WsAutoResolveResult
   | WsReviewUpdated
   | WsAgentReviewAdded
   | WsSubscriptionLimits;

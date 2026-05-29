@@ -245,6 +245,16 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
 
   // Agent state
   running: boolean;
+  /**
+   * docs/146 — set true while a system-driven turn is running (auto-resolve
+   * rebase-resolution turn, etc.) so a concurrent user `send_message` does
+   * NOT live-steer into it. Live steering is suppressed by checking this
+   * flag in `send-message.ts`; the message lands in the queue instead and
+   * drains when the system turn finishes. The flag is owned by the system-
+   * turn driver — `runRebaseResolutionTurn` flips it true at `setAgent` and
+   * false in the `done` handler.
+   */
+  systemTurnInProgress: boolean;
   wasInterrupted: boolean;
   /**
    * Volatile per-runner flag (docs/138): set true once a turn requested guarded
@@ -451,6 +461,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private agent: AgentProcess | null = null;
   private _agentId: AgentId;
   private _isRunning = false;
+  private _systemTurnInProgress = false;
   private _wasInterrupted = false;
   private _guardedUnavailable = false;
   private _isStreamingActive = false;
@@ -488,6 +499,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
 
   get running(): boolean { return this._isRunning; }
   set running(v: boolean) { this._isRunning = v; }
+  get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
+  set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
   get guardedUnavailable(): boolean { return this._guardedUnavailable; }

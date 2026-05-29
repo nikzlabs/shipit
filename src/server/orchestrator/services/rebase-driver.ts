@@ -32,6 +32,7 @@ import { wireAgentListeners, type AgentListenerDeps } from "../ws-handlers/agent
 import { ServiceError } from "./types.js";
 import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
+import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
 
 /**
  * Maximum number of conflict iterations before bailing out. A multi-commit
@@ -59,6 +60,24 @@ export interface RebaseDriverDeps {
   /** Factory for creating agents. Falls back to runner.createAgent if available. */
   agentFactory?: (agentId: AgentId) => AgentProcess;
   sseBroadcast: (event: string, data: unknown) => void;
+  /**
+   * docs/146 — fired immediately after `runner.setAgent(agent)` in
+   * `runRebaseResolutionTurn`, so the auto-resolve wrapper can mark the
+   * "agent was spawned" boundary. Anything thrown BEFORE this fires is a
+   * pre-spawn failure (fetch, ancestry check) and should not burn a budget
+   * attempt; anything thrown AFTER means real work happened. Optional —
+   * user-driven rebases ignore this.
+   */
+  onAgentSpawned?: () => void;
+  /**
+   * docs/146 — drain callback fired from the rebase-resolution turn's `done`
+   * handler so a user message queued during the auto-resolve attempt drains
+   * automatically when the resolve completes. The driver doesn't know about
+   * WS handlers, so the callback is supplied by the caller. Optional —
+   * tests / user-driven rebases (where the post-turn WS path drains itself)
+   * can leave it unset.
+   */
+  drainQueue?: () => Promise<void> | void;
 }
 
 export type RebaseFlowOutcome =
@@ -246,8 +265,16 @@ function runRebaseResolutionTurn(
 
     const agent = createFn(agentId);
     runner.setAgent(agent);
+    // docs/146 — flip `systemTurnInProgress` BEFORE the spawn callback fires,
+    // so any concurrent WS send_message in the same tick sees the flag set
+    // and suppresses live steering. Cleared in the `done` handler below.
+    runner.systemTurnInProgress = true;
     runner.running = true;
     resetRunnerTurnState(runner);
+    // docs/146 — signal to the auto-resolve wrapper that real work has started.
+    // The wrapper uses this to classify a subsequent throw as a real-work
+    // error vs. a pre-spawn defer.
+    deps.onAgentSpawned?.();
 
     const activity = "Resolving conflicts...";
     runner.emitMessage({ type: "system_user_message", text: prompt, activity });
@@ -281,6 +308,11 @@ function runRebaseResolutionTurn(
     // runner state; we just need to unblock the outer rebase loop.
     agent.on("error", (err: Error) => {
       console.error("[rebase] agent error:", err.message);
+      // docs/146 — clear the system-turn flag on the error path too. Without
+      // this, a turn that errors out before `done` fires would leave the
+      // flag stuck true and the next user turn would silently lose live
+      // steering.
+      runner.systemTurnInProgress = false;
       reject(err);
     });
 
@@ -299,7 +331,22 @@ function runRebaseResolutionTurn(
       // by the listener. Force it false so the rebase loop's next iteration
       // can start cleanly.
       runner.running = false;
+      // docs/146 — clear the system-turn flag so live steering is allowed
+      // again. Clear BEFORE `onAgentFinished()` so a re-entrant subscriber
+      // running on the synchronous "idle" emit sees the correct state.
+      runner.systemTurnInProgress = false;
       sseBroadcast("session_agent_finished", { sessionId: runner.sessionId });
+      // docs/146 — drain a user message that landed in the queue during the
+      // resolution turn. Without this, the queued message would sit
+      // stranded until the next WS send_message arrives. Fire-and-forget;
+      // the drain is its own promise chain and any failure should not block
+      // the rebase loop from continuing or the outer Promise from resolving.
+      const drainPromise = deps.drainQueue?.();
+      if (drainPromise && typeof drainPromise.then === "function") {
+        drainPromise.catch((err: unknown) => {
+          console.error("[rebase] drainQueue failed:", err);
+        });
+      }
       runner.onAgentFinished();
       resolve();
     });
@@ -313,4 +360,172 @@ function runRebaseResolutionTurn(
       cwd: runner.sessionDir,
     } as AgentRunParams);
   });
+}
+
+// ---------------------------------------------------------------------------
+// runAutoResolveAttempt — docs/146 wrapper around runRebaseFlow.
+// ---------------------------------------------------------------------------
+
+/** Default wall-clock cap on a single auto-resolve attempt. */
+export const AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Wraps `runRebaseFlow` for the auto-conflict-resolve path. (docs/146)
+ *
+ * Pre-flight gates (don't burn budget):
+ *   - dirty tree, in-progress rebase, no GitHub auth → deferred.
+ *
+ * Translation of `runRebaseFlow`'s outcome:
+ *   - `up_to_date` (GitHub said CONFLICTING but our local view disagrees) →
+ *     deferred with `suppressEmit: true` so the WS layer doesn't flash
+ *     "rebased then deferred" after the inner `rebase_complete`.
+ *   - `rebased` / `conflicts_resolved` → success carrying `forcePushed`.
+ *   - `ServiceError(409)` from the running-guard → deferred (TOCTOU backstop).
+ *   - Any throw BEFORE `onAgentSpawned` fires (fetch failure, ancestry
+ *     check, base-ref resolution) → deferred with a synthetic label, so a
+ *     network blip doesn't burn budget. Anything thrown AFTER spawn → error
+ *     (real work happened).
+ *
+ * Wall-clock timeout (default 10 min, overridable via `timeoutMs`): if the
+ * agent never finishes, this wrapper does the full runner-state teardown
+ * `git.rebaseAbort()` alone doesn't cover. See "Timeout teardown" in doc 146.
+ *
+ * Does NOT emit `auto_resolve_started` / `auto_resolve_result` itself — the
+ * manager owns those envelopes and ties them to attempt accounting. The inner
+ * `rebase_started` / `rebase_conflicts` / `rebase_complete` / `rebase_aborted`
+ * events still fire from `runRebaseFlow` as a side effect.
+ */
+export async function runAutoResolveAttempt(
+  deps: RebaseDriverDeps & {
+    /** Wall-clock timeout for the whole attempt. Default 10 min. */
+    timeoutMs?: number;
+    /** Injectable clock — included for symmetry with the manager but currently unused inside the wrapper. */
+    now?: () => number;
+  },
+  baseBranch: string,
+): Promise<AutoResolveResult> {
+  const { git, githubAuthManager, runner } = deps;
+
+  // Pre-flight 1: no GitHub auth. The auto-path diverges from doc 094's
+  // user-driven flow here — without auth the agent would do real work, the
+  // local rebase would succeed, but the force-push silently no-ops while the
+  // PR on GitHub still shows CONFLICTING. Burning agent turns on a remote
+  // that will never see the result is wasteful; the failure mode is
+  // structurally invisible. Pre-flight gate skips the attempt entirely.
+  if (!githubAuthManager.authenticated) {
+    return { outcome: "deferred", lastError: "no_github_auth", didWork: false };
+  }
+
+  // Pre-flight 2: dirty tree. Defensive — shouldn't happen for an idle
+  // session, but the auto-path must NEVER stash silently (a stash here would
+  // surprise the user, and `git stash pop` on top of a rebase is a hazard).
+  try {
+    const clean = await git.isClean();
+    if (!clean) {
+      return { outcome: "deferred", lastError: "dirty_tree", didWork: false };
+    }
+  } catch (err) {
+    return { outcome: "deferred", lastError: `is_clean_failed: ${getErrorMessage(err)}`, didWork: false };
+  }
+
+  // Pre-flight 3: stale rebase from a previous orchestrator crash mid-flight.
+  // `runRebaseFlow` would call `git.rebase(baseRef)` which fails when a
+  // rebase is already in progress. Abort and defer; the next poll retries
+  // from a clean state without burning budget.
+  try {
+    if (await git.isRebaseInProgress()) {
+      try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
+      return { outcome: "deferred", lastError: "stale_rebase", didWork: false };
+    }
+  } catch (err) {
+    return { outcome: "deferred", lastError: `is_rebase_in_progress_failed: ${getErrorMessage(err)}`, didWork: false };
+  }
+
+  // `didSpawn` flips true inside `runRebaseResolutionTurn` via the
+  // `onAgentSpawned` callback. Used to classify a downstream throw: pre-spawn
+  // → deferred (no budget burn); post-spawn → error (real work happened).
+  let didSpawn = false;
+  const wrappedDeps: RebaseDriverDeps = {
+    ...deps,
+    onAgentSpawned: () => { didSpawn = true; },
+  };
+
+  const timeoutMs = deps.timeoutMs ?? AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS;
+
+  // Wall-clock timeout. Resolves the outer promise early with an error
+  // outcome and tears down all the runner state `git.rebaseAbort()` alone
+  // doesn't cover. Without the teardown, the session is left with
+  // `running = true` and a zombie agent ref, blocking every subsequent user
+  // turn until the orchestrator restarts.
+  let settled = false;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<AutoResolveResult>((resolve) => {
+    timeoutHandle = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      void (async () => {
+        // 1. Kill the in-flight agent process.
+        try { runner.getAgent()?.kill(); } catch { /* defensive */ }
+        // 2. Clear the agent ref so the next turn doesn't pick up the dead reference.
+        runner.setAgent(null);
+        // 3. Reset running flag; the listener's normal `agent_result` reset
+        //    never runs because we killed before completion.
+        runner.running = false;
+        // 4. Clear system-turn flag so live steering is allowed again.
+        runner.systemTurnInProgress = false;
+        // 5. Emit "idle" so any deferred subscribers re-evaluate.
+        runner.onAgentFinished();
+        // 6. Abort the underlying git rebase (best-effort).
+        try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
+        // 7. Surface a `rebase_aborted` so the UI clears the rebase banner
+        //    doc 094 raised. The inner driver doesn't emit this on our
+        //    timeout path because it never gets the chance.
+        runner.emitMessage({ type: "rebase_aborted" });
+        resolve({ outcome: "error", lastError: "timeout", didWork: true });
+      })();
+    }, timeoutMs);
+  });
+
+  // The actual flow. Wrap the throwing/early-exit cases into the AutoResolveResult shape.
+  const flowPromise = (async (): Promise<AutoResolveResult> => {
+    try {
+      const result = await runRebaseFlow(wrappedDeps, baseBranch);
+      if (result.status === "up_to_date") {
+        // GitHub said CONFLICTING; our local view says HEAD already contains
+        // every commit in base. Races between GraphQL mergeability recompute
+        // and our local fetch. Suppress the `auto_resolve_result deferred`
+        // emit on this specific path — `runRebaseFlow` already emitted
+        // `rebase_complete { forcePushed: false }` and a contradicting
+        // `auto_resolve_result deferred` would flash "rebased then deferred"
+        // in the UI.
+        return { outcome: "deferred", didWork: false, suppressEmit: true };
+      }
+      // rebased / conflicts_resolved
+      return { outcome: "success", forcePushed: result.status !== "aborted" && "forcePushed" in result ? result.forcePushed : false, didWork: true };
+    } catch (err) {
+      // 409 from the running-guard. Pre-spawn, no real work; defer.
+      if (err instanceof ServiceError && err.statusCode === 409) {
+        return { outcome: "deferred", didWork: false };
+      }
+      // Pre-spawn throw (fetch failure, ancestry check, base-ref resolution).
+      // Defer rather than count against budget — a network blip should not
+      // exhaust the per-session attempts.
+      if (!didSpawn) {
+        return { outcome: "deferred", lastError: getErrorMessage(err), didWork: false };
+      }
+      // Post-spawn throw. Real work happened (one or more agent turns).
+      // Ensure the underlying rebase is aborted before returning — without
+      // this cleanup the next attempt's stale-rebase pre-flight defers and
+      // the per-session budget never reaches the cap. `runRebaseFlow` aborts
+      // on its own internal paths (lockfile/abort/continue failures) but a
+      // bubbled-up agent process error escapes before those run.
+      try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
+      return { outcome: "error", lastError: getErrorMessage(err), didWork: true };
+    }
+  })();
+
+  const winner = await Promise.race([flowPromise, timeoutPromise]);
+  settled = true;
+  if (timeoutHandle) clearTimeout(timeoutHandle);
+  return winner;
 }

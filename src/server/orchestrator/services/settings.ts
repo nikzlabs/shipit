@@ -63,6 +63,7 @@ export async function getGlobalSettings(
   const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
   const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
   const liveSteering = credentialStore?.getLiveSteering() ?? false;
+  const autoResolveConflicts = credentialStore?.getAutoResolveConflicts() ?? false;
   // Settings page renders the per-agent "Parallel sessions" guidance as a
   // preview. Pick the first installed-and-authed agent so a Codex-only host
   // shows Codex's variant, not Claude's. Fall back to the first registered
@@ -72,7 +73,7 @@ export async function getGlobalSettings(
     ? buildAgentSystemInstructions({ agentId: previewAgent.id })
     : "";
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
-  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, providerAccounts };
+  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -92,19 +93,46 @@ export function setGitIdentityService(
   return { name: trimmedName, email: trimmedEmail };
 }
 
-/** Save global settings (git identity, system prompt, and/or maxIdleContainers). */
+/**
+ * Save global settings.
+ *
+ * docs/146 — the parameter shape is an options object rather than the legacy
+ * 11-positional-list. Each per-feature toggle (autoCreatePr, liveSteering,
+ * autoResolveConflicts, agentSystemInstructionsEnabled, …) is opt-in: omit
+ * the field to leave it unchanged. Adding a new toggle is a single named
+ * field instead of "what's the 12th positional argument?".
+ */
+export interface SaveGlobalSettingsOptions {
+  agentRegistry: AgentRegistry;
+  workspaceDir: string;
+  credentialStore: CredentialStore;
+  providerAccountManager?: ProviderAccountManager;
+  /** docs/146 — fired exactly when `autoResolveConflicts` transitions false → true. */
+  onAutoResolveConflictsEnabled?: () => void;
+  gitIdentity?: { name: string; email: string };
+  systemPrompt?: string;
+  maxIdleContainers?: number;
+  agentSystemInstructionsEnabled?: boolean;
+  autoCreatePr?: boolean;
+  liveSteering?: boolean;
+  /**
+   * docs/146 — when true, the PR poller's auto-resolve loop fires on
+   * CONFLICTING transitions while the agent is idle.
+   */
+  autoResolveConflicts?: boolean;
+}
+
 export async function saveGlobalSettings(
-  agentRegistry: AgentRegistry,
-  workspaceDir: string,
-  credentialStore: CredentialStore,
-  gitIdentity?: { name: string; email: string },
-  systemPrompt?: string,
-  maxIdleContainers?: number,
-  agentSystemInstructionsEnabled?: boolean,
-  autoCreatePr?: boolean,
-  liveSteering?: boolean,
-  providerAccountManager?: ProviderAccountManager,
+  opts: SaveGlobalSettingsOptions,
 ): Promise<GlobalSettings> {
+  const {
+    agentRegistry, workspaceDir, credentialStore, providerAccountManager,
+    onAutoResolveConflictsEnabled,
+    gitIdentity, systemPrompt, maxIdleContainers,
+    agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
+    autoResolveConflicts,
+  } = opts;
+
   // Save git identity if provided
   if (gitIdentity) {
     const name = typeof gitIdentity.name === "string" ? gitIdentity.name.trim() : "";
@@ -150,6 +178,17 @@ export async function saveGlobalSettings(
   // Save live steering toggle if provided
   if (liveSteering !== undefined) {
     credentialStore.setLiveSteering(liveSteering);
+  }
+
+  // docs/146 — save auto-resolve toggle. On a false → true edge, fire the
+  // re-broadcast hook so existing tracked sessions get their now-ungated
+  // `autoResolve` block onto the next SSE snapshot without waiting for a
+  // genuine PR-status change (which can take tens of minutes on a sticky
+  // conflict).
+  if (autoResolveConflicts !== undefined) {
+    const prev = credentialStore.getAutoResolveConflicts();
+    credentialStore.setAutoResolveConflicts(autoResolveConflicts);
+    if (!prev && autoResolveConflicts) onAutoResolveConflictsEnabled?.();
   }
 
   return getGlobalSettings(agentRegistry, workspaceDir, credentialStore, providerAccountManager);
