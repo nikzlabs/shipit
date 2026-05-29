@@ -7,4 +7,5 @@ export const handleRebaseComplete: Handler<WsRebaseComplete> = (_ctx, _data) => 
   git.setRebaseStatus("idle");
   git.setRebaseConflicts([]);
   git.setPushRejected(false);
+  git.setRebaseError(null);
 };

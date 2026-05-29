@@ -121,13 +121,10 @@ export async function runRebaseFlow(
   // 4. Begin rebase.
   runner.emitMessage({ type: "rebase_started", baseBranch });
 
-  let result;
-  try {
-    result = await git.rebase(baseRef);
-  } catch (err) {
-    runner.emitMessage({ type: "rebase_aborted" });
-    throw err;
-  }
+  // Errors propagate to the route's `flowPromise.catch`, which emits a single
+  // `rebase_aborted` carrying the error message. Don't emit here too — before
+  // this dedupe the user got two aborts for one failure.
+  let result = await git.rebase(baseRef);
 
   // 5. Clean rebase — go straight to force push.
   if (result.status === "clean") {
@@ -142,7 +139,6 @@ export async function runRebaseFlow(
     iter++;
     if (iter > MAX_REBASE_ITERATIONS) {
       try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-      runner.emitMessage({ type: "rebase_aborted" });
       throw new ServiceError(
         500,
         `Too many conflict iterations (>${MAX_REBASE_ITERATIONS}) — rebase aborted`,
@@ -164,9 +160,9 @@ export async function runRebaseFlow(
       result = await git.rebaseContinue();
     } catch (err) {
       // Continue can fail if there is nothing staged (agent didn't actually
-      // resolve anything). Abort to leave the tree clean.
+      // resolve anything). Abort to leave the tree clean. The route's
+      // `flowPromise.catch` emits a single `rebase_aborted` with the reason.
       try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-      runner.emitMessage({ type: "rebase_aborted" });
       throw err;
     }
   }

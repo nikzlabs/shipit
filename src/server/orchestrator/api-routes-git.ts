@@ -260,8 +260,11 @@ export async function registerGitRoutes(
         // Don't await: respond immediately, but log async failures.
         flowPromise.catch((err: unknown) => {
           console.error(`[rebase] flow failed for session ${sessionId}:`, err);
-          // Emit aborted so the UI clears its progress state.
-          runner.emitMessage({ type: "rebase_aborted" });
+          // Emit aborted (with the reason) so the UI both clears its progress
+          // state and surfaces the failure — without `reason` the old code
+          // silently bounced the banner from "in_progress" back to "idle" and
+          // the user had no way to tell what went wrong.
+          runner.emitMessage({ type: "rebase_aborted", reason: getErrorMessage(err) });
         });
 
         return { status: "started" };
