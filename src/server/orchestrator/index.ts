@@ -385,7 +385,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({
     deps, githubAuthManager, sessionManager, sseBroadcast,
-    runnerRegistry, createRepoGit, getBareCacheDir,
+    runnerRegistry, createRepoGit, createGitManager, getBareCacheDir,
     // Skip the volume-prune fallback in test mode so the poller's
     // auto-archive-on-merge path doesn't shell out to docker from tests.
     pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,

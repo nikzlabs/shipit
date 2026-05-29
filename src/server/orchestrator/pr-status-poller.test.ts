@@ -11,6 +11,7 @@ import * as workflowLoader from "./workflow-loader.js";
 import type { ParsedWorkflow } from "./workflow-loader.js";
 import type { SessionManager } from "./sessions.js";
 import type { GitHubAuthManager } from "./github-auth.js";
+import type { GitManager } from "../shared/git.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 
 /**
@@ -125,7 +126,7 @@ const CONVERSATION_OVERRIDES = {
   },
 };
 
-function makeSessionManager(sessions: { id: string; branch?: string; remoteUrl?: string }[]): SessionManager {
+function makeSessionManager(sessions: { id: string; branch?: string; remoteUrl?: string; workspaceDir?: string }[]): SessionManager {
   return {
     list: () => sessions.map((s) => ({
       id: s.id,
@@ -134,6 +135,7 @@ function makeSessionManager(sessions: { id: string; branch?: string; remoteUrl?:
       lastUsedAt: new Date().toISOString(),
       branch: s.branch,
       remoteUrl: s.remoteUrl,
+      workspaceDir: s.workspaceDir,
     })),
     get: (id: string) => sessions.find((s) => s.id === id) as never,
     setPrStatus: vi.fn(),
@@ -862,6 +864,66 @@ describe("PrStatusPoller", () => {
     expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
       updates: expect.arrayContaining([
         expect.objectContaining({ sessionId: "s1", prBody: "New description" }),
+      ]),
+    }));
+  });
+
+  it("overrides GitHub additions/deletions with locally-computed diff stats when createGitManager is wired", async () => {
+    // GitHub reports 100/20 (lagging post-push), but local git diff shows
+    // 250/50 — the freshly committed numbers the user sees in the diff
+    // dialog. The broadcast must carry the local numbers so the +N/-N
+    // button on the PR card stays consistent with the click-through view.
+    githubAuth = makeGitHubAuth({
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ additions: 100, deletions: 20 })] } } },
+    });
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo", workspaceDir: "/sessions/s1" },
+    ]);
+
+    const diffStatVsBranch = vi.fn().mockResolvedValue({ insertions: 250, deletions: 50 });
+    const createGitManager = vi.fn().mockReturnValue({ diffStatVsBranch });
+
+    poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      createGitManager: createGitManager as unknown as (dir: string) => GitManager,
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(createGitManager).toHaveBeenCalledWith("/sessions/s1");
+    expect(diffStatVsBranch).toHaveBeenCalledWith("main");
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: expect.arrayContaining([
+        expect.objectContaining({ sessionId: "s1", insertions: 250, deletions: 50 }),
+      ]),
+    }));
+  });
+
+  it("falls back to GitHub additions/deletions when local diff throws (archived workspace, etc.)", async () => {
+    githubAuth = makeGitHubAuth({
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode({ additions: 100, deletions: 20 })] } } },
+    });
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo", workspaceDir: "/gone" },
+    ]);
+
+    const diffStatVsBranch = vi.fn().mockRejectedValue(new Error("ENOENT"));
+    const createGitManager = vi.fn().mockReturnValue({ diffStatVsBranch });
+
+    poller = new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast,
+      createGitManager: createGitManager as unknown as (dir: string) => GitManager,
+    });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: expect.arrayContaining([
+        expect.objectContaining({ sessionId: "s1", insertions: 100, deletions: 20 }),
       ]),
     }));
   });
