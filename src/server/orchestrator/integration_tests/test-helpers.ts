@@ -221,12 +221,20 @@ export class TestClient {
  * checkCredentials() always returns false.
  */
 export class StubAuthManager extends EventEmitter {
+  readonly agentId = "claude" as const;
   authenticated = true; // Tests assume auth is already done
   checkCredentials() { return this.authenticated; }
   startOAuthFlow() { /* no-op */ }
   sendCode(_code: string) { /* no-op */ }
   signOut() { this.authenticated = false; }
   kill() { /* no-op */ }
+  // docs/155 Phase 2 — AgentAuthManager surface. Aliases mirror the real
+  // `AuthManager` so the stub satisfies the interface the orchestrator
+  // dispatches through (e.g. agent-listeners' auth_required handler).
+  start() { this.startOAuthFlow(); }
+  cancel() { this.kill(); }
+  isConfigured() { return this.checkCredentials(); }
+  getPendingPayload() { return null; }
 }
 
 /**

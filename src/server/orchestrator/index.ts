@@ -35,6 +35,7 @@ import { readDockerMemoryStats } from "./docker-memory.js";
 import { ClaudeLimitsProvider, CodexLimitsProvider } from "./limits/index.js";
 import type { LimitsProvider } from "./limits/types.js";
 import { LimitsRegistry } from "./limits-registry.js";
+import type { AgentAuthManager } from "./agent-auth-manager.js";
 import {
   setupContainerManager,
   buildRunnerFactory,
@@ -327,13 +328,25 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     } catch { return undefined; }
   };
 
+  // docs/155 Phase 2 — every per-agent auth manager implements the shared
+  // `AgentAuthManager` interface so the orchestrator can drive lifecycle
+  // operations through this map instead of branching on agent id at every
+  // call site (shutdown kill(), limits-registry rearm, SSE event family in
+  // wireEventHandlers, agent-listeners auth_required dispatch). Adding a
+  // backend with its own auth flow is one `set()` here plus a new class
+  // that implements the interface. Hoisted above runner-registry
+  // construction so system-turn listeners can pick it up too.
+  const authManagers = new Map<AgentId, AgentAuthManager>();
+  authManagers.set("claude", authManager);
+  authManagers.set("codex", codexAuthManager);
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, runtimeMode, broadcastLog,
-    usageManager, authManager,
+    usageManager, authManager, authManagers,
     nudgeClaudeOAuthRefresh,
     onAgentAuthRequired,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
@@ -373,8 +386,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   prStatusPollerRef.ref = prStatusPoller;
 
   // ---- Event wiring (deployment + auth) ----
+  // `authManagers` map is built above the runner-registry construction (see
+  // docs/155 Phase 2) so system-turn listeners can pick it up.
   wireEventHandlers({
-    authManager, codexAuthManager, githubAuthManager, agentRegistry,
+    authManagers,
+    githubAuthManager, agentRegistry,
     providerAccountManager,
     sseBroadcast, credentialsDir, sessionManager,
   });
@@ -448,16 +464,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const limitsProviders = new Map<AgentId, LimitsProvider>();
   limitsProviders.set("claude", claudeLimitsProvider);
   limitsProviders.set("codex", codexLimitsProvider);
+
   const limitsRegistry = !isTestMode
     ? new LimitsRegistry({ providers: limitsProviders, sseBroadcast })
     : null;
   if (limitsRegistry) {
-    authManager.on("auth_complete", () => {
-      limitsRegistry.markAuthRefreshed("claude");
-    });
-    codexAuthManager.on("codex_auth_complete", () => {
-      limitsRegistry.markAuthRefreshed("codex");
-    });
+    // One subscription per backend, keyed off the auth-manager map built
+    // above. Adding a new agent picks this up for free. The normalized
+    // `complete` event fires alongside each backend's legacy
+    // `auth_complete` / `codex_auth_complete` emit so existing per-agent SSE
+    // wiring is untouched. (docs/155 Phase 2)
+    for (const [agentId, mgr] of authManagers) {
+      mgr.on("complete", () => {
+        limitsRegistry.markAuthRefreshed(agentId);
+      });
+    }
   }
 
   /**
@@ -574,16 +595,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     client.write(`event: agent_list\ndata: ${JSON.stringify({ agents })}\n\n`);
     client.write(`event: provider_accounts\ndata: ${JSON.stringify({ accounts: providerAccountManager.list() })}\n\n`);
 
-    // In-flight Codex device-auth flow — replay the pending event so a
-    // client that connected after the original broadcast (e.g. page reload
-    // while waiting for the user to approve the device code) lands back
-    // on the Step 1 / Step 2 view instead of the dead "Sign in" button.
-    // The server's `codex login --device-auth` process keeps polling for
-    // up to 15 min regardless of WS / SSE lifecycle, so the in-flight
-    // state outlives any single browser tab. See feature 119.
-    const codexPending = codexAuthManager.getPendingEvent();
-    if (codexPending) {
-      client.write(`event: codex_auth_pending\ndata: ${JSON.stringify(codexPending)}\n\n`);
+    // In-flight per-agent auth flows — replay each backend's pending payload
+    // so a client that connected after the original broadcast (e.g. page
+    // reload while waiting for the user to approve a sign-in) lands back on
+    // the live sign-in card instead of the dead "Sign in" button. Each
+    // backend's CLI keeps running regardless of WS / SSE lifecycle (Codex
+    // device-flow polls for up to 15 min; Claude OAuth PTY stays alive
+    // until completion), so the in-flight state outlives any single tab.
+    // Driven by the auth-manager map — adding a backend that wants replay
+    // is one `getPendingPayload()` implementation. (docs/155 Phase 2b)
+    for (const [agentId, mgr] of authManagers) {
+      const details = mgr.getPendingPayload();
+      if (details) {
+        client.write(`event: agent_auth_pending\ndata: ${JSON.stringify({ agentId, details })}\n\n`);
+      }
     }
 
     // Process metadata — the client uses processStartedAt to render a
@@ -763,6 +788,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     chatHistoryManager,
     authManager,
     codexAuthManager,
+    authManagers,
     broadcastLog,
     sseBroadcast,
     getSharedRepoDir: getBareCacheDir,
@@ -1269,7 +1295,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         attachToRunner, detachFromRunner,
         sessionManager, chatHistoryManager, createGitManager, createRepoGit,
         githubAuthManager,
-        usageManager, authManager, agentRegistry, credentialStore, providerAccountManager,
+        usageManager, authManager, authManagers, agentRegistry, credentialStore, providerAccountManager,
         repoStore, warmSessionForRepo, generateText,
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
@@ -1557,7 +1583,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
     claudeOAuthRefresherRef.ref?.stop();
   });
   registerShutdownHook(app, {
-    startupTimer, authManager, codexAuthManager, runnerRegistry,
+    startupTimer, authManagers, runnerRegistry,
     dockerProxyServer, containerManager, databaseManager,
   });
 

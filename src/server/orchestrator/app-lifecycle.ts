@@ -15,8 +15,8 @@ import { markMergedAndPruneExcess } from "./services/session.js";
 import type { SessionManager } from "./sessions.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import type { RepoGit } from "./repo-git.js";
-import type { AuthManager } from "./auth.js";
-import type { CodexAuthManager, CodexAuthFailedEvent, CodexAuthPendingEvent } from "./codex-auth.js";
+import type { AgentAuthManager, AgentAuthFailedPayload } from "./agent-auth-manager.js";
+import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
@@ -709,8 +709,14 @@ export function createLogBuffer(): {
 
 /** Dependencies for event handler wiring. */
 export interface EventWiringDeps {
-  authManager: AuthManager;
-  codexAuthManager: CodexAuthManager;
+  /**
+   * Every per-agent auth manager, keyed by agent id. Drives the per-agent
+   * auth wiring loop — pending/complete/failed SSE rebroadcasts plus the
+   * common post-completion bookkeeping (registry refresh, provider-account
+   * migration, token re-push, agent_list broadcast). Adding a new backend
+   * is one entry here. (docs/155 Phase 2 + 2b)
+   */
+  authManagers: Map<AgentId, AgentAuthManager>;
   githubAuthManager: GitHubAuthManager;
   agentRegistry: AgentRegistry;
   /** Used to re-register the default provider-account row after a fresh sign-in. */
@@ -724,7 +730,7 @@ export interface EventWiringDeps {
 
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { authManager, codexAuthManager, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager } = eventDeps;
+  const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager } = eventDeps;
 
   /**
    * A3 (docs/142): after a Claude/Codex re-auth, force the fresh source token
@@ -764,54 +770,43 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
     })),
   });
 
-  // ---- Claude auth event handlers ----
-  authManager.on("auth_url", (url: string) => {
-    sseBroadcast("auth_required", { url });
-  });
+  // ---- Per-agent auth wiring (docs/155 Phase 2 + 2b) ----
+  // One subscription set per backend, keyed off the auth-manager map. The
+  // SSE events are unified into the `agent_auth_*` family — payload shape
+  // differences (Claude's paste-code URL vs Codex's device URL + user code)
+  // live in the discriminated `details` field on `agent_auth_pending`, so
+  // adding a new backend doesn't add a third event triplet. The legacy
+  // per-agent events (`auth_url`, `codex_auth_pending`, …) keep firing on
+  // the concrete classes for back-compat with the unit tests and any
+  // remaining direct listeners, but no SSE wiring depends on them.
+  for (const [agentId, mgr] of authManagers) {
+    mgr.on("pending", (details: AgentAuthPendingDetails) => {
+      sseBroadcast("agent_auth_pending", { agentId, details });
+    });
 
-  authManager.on("auth_complete", () => {
-    // After a fresh sign-in, re-register the default provider-account row if
-    // it was dropped on the previous sign-out. The migration is a no-op when
-    // any Claude account row already exists, so re-auth into an existing
-    // account stays untouched. See DELETE /api/auth/api-key for the matching
-    // teardown.
-    providerAccountManager.migrateDefaultAccounts();
-    agentRegistry.refreshAuth("claude");
-    repushTokenToPinnedSessions("claude");
-    sseBroadcast("auth_complete", {});
-    sseBroadcast("agent_list", agentListPayload());
-    sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  });
+    mgr.on("complete", () => {
+      // After a fresh sign-in, re-register the default provider-account row
+      // if it was dropped on the previous sign-out. The migration is a no-op
+      // when any account row for the agent already exists, so re-auth into
+      // an existing account stays untouched. See the matching teardown in
+      // `DELETE /api/auth/api-key` (Claude) and `DELETE /api/codex-auth`.
+      providerAccountManager.migrateDefaultAccounts();
+      agentRegistry.refreshAuth(agentId);
+      repushTokenToPinnedSessions(agentId);
+      sseBroadcast("agent_auth_complete", { agentId });
+      sseBroadcast("agent_list", agentListPayload());
+      sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
+    });
 
-  authManager.on("auth_failed", () => {
-    console.log("[auth] OAuth flow failed — client should provide API key");
-  });
-
-  // ---- Codex (ChatGPT subscription) auth event handlers ----
-  // Mirrors the Claude flow but uses the device-authorization grant. Each
-  // event is broadcast over SSE because it describes orchestrator-wide
-  // agent auth state, not a per-session turn. See feature 119.
-  codexAuthManager.on("codex_auth_pending", (ev: CodexAuthPendingEvent) => {
-    sseBroadcast("codex_auth_pending", ev);
-  });
-
-  codexAuthManager.on("codex_auth_complete", () => {
-    // Mirror the Claude flow: re-register the default Codex provider-account
-    // row in case the previous sign-out dropped it.
-    providerAccountManager.migrateDefaultAccounts();
-    agentRegistry.refreshAuth("codex");
-    // No-op until Codex registers token files in AGENT_TOKEN_FILES; wired now
-    // so extending the token sync to Codex (docs/142) covers A3 automatically.
-    repushTokenToPinnedSessions("codex");
-    sseBroadcast("codex_auth_complete", {});
-    sseBroadcast("agent_list", agentListPayload());
-    sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  });
-
-  codexAuthManager.on("codex_auth_failed", (ev: CodexAuthFailedEvent) => {
-    console.log("[codex-auth] Device flow failed:", ev.reason, ev.message ?? "");
-    sseBroadcast("codex_auth_failed", ev);
-  });
+    mgr.on("failed", (payload?: AgentAuthFailedPayload) => {
+      console.log(`[${agentId}-auth] flow failed:`, payload?.reason ?? "", payload?.message ?? "");
+      sseBroadcast("agent_auth_failed", {
+        agentId,
+        ...(payload?.reason ? { reason: payload.reason } : {}),
+        ...(payload?.message ? { message: payload.message } : {}),
+      });
+    });
+  }
 
   // ---- GitHub auth event handlers ----
   // The orchestrator marks the stored token invalid (via

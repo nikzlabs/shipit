@@ -509,10 +509,11 @@ export class ClaudeOAuthRefresher extends EventEmitter {
 
   /**
    * Emit the per-account auth-required signals. Two channels:
-   *   - The existing global `auth_required` SSE — drives the UI card flip
-   *     ("Sign in" state) just like the AuthManager's OAuth-url event does
-   *     today. Sufficient for the single-account v1 UX.
-   *   - The new per-account `claude_account_unauthenticated` SSE — carries
+   *   - The unified `agent_auth_failed` SSE with `reason: "revoked"` —
+   *     drives the UI card flip ("Sign in" state) without naming Claude in
+   *     the event itself. (docs/155 Phase 2b — replaces the legacy
+   *     `auth_required` broadcast.)
+   *   - The per-account `claude_account_unauthenticated` SSE — carries
    *     `{ accountId }` for docs/150 multi-account failover to consume.
    */
   private emitUnauthenticated(accountId: string): void {
@@ -521,7 +522,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     state.emittedUnauthenticated = true;
     this.emit("account_unauthenticated", accountId);
     this.deps.sseBroadcast("claude_account_unauthenticated", { accountId });
-    this.deps.sseBroadcast("auth_required", {});
+    this.deps.sseBroadcast("agent_auth_failed", { agentId: "claude", reason: "revoked" });
   }
 
   /**

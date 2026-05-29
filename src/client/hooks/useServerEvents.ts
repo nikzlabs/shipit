@@ -102,13 +102,62 @@ export function useServerEvents(): void {
       useRepoStore.getState().updateRepoWarmSession(data.url, data.sessionId);
     });
 
-    es.addEventListener("auth_required", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { url?: string };
-      useSessionStore.getState().setAuthUrl(data.url ?? null);
+    // ---- Unified per-agent auth events (docs/155 Phase 2b) ----
+    // The orchestrator broadcasts one event family for every backend's
+    // sign-in lifecycle: `agent_auth_pending` (sign-in card content arriving),
+    // `agent_auth_complete` (success), `agent_auth_failed` (failure or
+    // revocation). The legacy event names (`auth_required`, `auth_complete`,
+    // `codex_auth_*`) are gone; adding a new backend is one variant added to
+    // the discriminated `details.kind` union, not three new listeners here.
+    es.addEventListener("agent_auth_pending", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as {
+        agentId: AgentId;
+        details:
+          | { kind: "code-paste-url"; verificationUri: string }
+          | { kind: "device-code"; verificationUri: string; userCode: string; expiresInSec: number };
+      };
+      if (data.agentId === "claude" && data.details.kind === "code-paste-url") {
+        useSessionStore.getState().setAuthUrl(data.details.verificationUri);
+      } else if (data.agentId === "codex" && data.details.kind === "device-code") {
+        useSettingsStore.getState().setCodexDeviceAuth({
+          verificationUri: data.details.verificationUri,
+          userCode: data.details.userCode,
+          expiresInSec: data.details.expiresInSec,
+        });
+        useSettingsStore.getState().setCodexDeviceAuthError(null);
+      }
     });
 
-    es.addEventListener("auth_complete", () => {
-      useSessionStore.getState().setAuthUrl(null);
+    es.addEventListener("agent_auth_complete", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { agentId: AgentId };
+      if (data.agentId === "claude") {
+        useSessionStore.getState().setAuthUrl(null);
+      } else if (data.agentId === "codex") {
+        useSettingsStore.getState().setCodexDeviceAuth(null);
+        useSettingsStore.getState().setCodexDeviceAuthError(null);
+      }
+    });
+
+    es.addEventListener("agent_auth_failed", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as {
+        agentId: AgentId;
+        reason?: "timeout" | "denied" | "error" | "revoked";
+        message?: string;
+      };
+      if (data.agentId === "claude") {
+        // Clear the URL so the sign-in card flips back to "Sign in" — also
+        // the path the legacy `auth_required {}` broadcast took for
+        // refresher-revoked accounts.
+        useSessionStore.getState().setAuthUrl(null);
+      } else if (data.agentId === "codex") {
+        useSettingsStore.getState().setCodexDeviceAuth(null);
+        const fallback = data.reason === "timeout"
+          ? "Sign-in timed out. Try again."
+          : data.reason === "denied"
+            ? "Sign-in was denied."
+            : "Sign-in failed. Try again.";
+        useSettingsStore.getState().setCodexDeviceAuthError(data.message ?? fallback);
+      }
     });
 
     // The orchestrator pushes `github_status` whenever the stored GitHub
@@ -183,38 +232,6 @@ export function useServerEvents(): void {
           useUiStore.getState().setActiveAgentId(firstAuthed.id as AgentId);
         }
       }
-    });
-
-    // ---- Codex (ChatGPT subscription) device-auth events ----
-    // The orchestrator drives `codex login --device-auth` and pushes the
-    // verification URL + user code as soon as the CLI prints them. The
-    // CodexAuthCard reads `codexDeviceAuth` from settings-store. See
-    // docs/119-codex-subscription-auth/plan.md.
-
-    es.addEventListener("codex_auth_pending", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { verificationUri: string; userCode: string; expiresInSec: number };
-      useSettingsStore.getState().setCodexDeviceAuth({
-        verificationUri: data.verificationUri,
-        userCode: data.userCode,
-        expiresInSec: data.expiresInSec,
-      });
-      useSettingsStore.getState().setCodexDeviceAuthError(null);
-    });
-
-    es.addEventListener("codex_auth_complete", () => {
-      useSettingsStore.getState().setCodexDeviceAuth(null);
-      useSettingsStore.getState().setCodexDeviceAuthError(null);
-    });
-
-    es.addEventListener("codex_auth_failed", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { reason: "timeout" | "denied" | "error"; message?: string };
-      useSettingsStore.getState().setCodexDeviceAuth(null);
-      const fallback = data.reason === "timeout"
-        ? "Sign-in timed out. Try again."
-        : data.reason === "denied"
-          ? "Sign-in was denied."
-          : "Sign-in failed. Try again.";
-      useSettingsStore.getState().setCodexDeviceAuthError(data.message ?? fallback);
     });
 
     es.addEventListener("provider_accounts", (e: MessageEvent) => {

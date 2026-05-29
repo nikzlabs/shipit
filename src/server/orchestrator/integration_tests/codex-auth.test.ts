@@ -9,11 +9,14 @@
  *   POST /api/codex-auth/start
  *     -> CodexAuthManager spawns (faked) `codex login --device-auth`
  *     -> stdout prints the verification URL + user code
- *     -> SSE `codex_auth_pending` { verificationUri, userCode }
+ *     -> SSE `agent_auth_pending` { agentId: "codex", details: { kind: "device-code", ... } }
  *   fake codex writes auth.json + exits 0
- *     -> SSE `codex_auth_complete`
+ *     -> SSE `agent_auth_complete` { agentId: "codex" }
  *     -> agentRegistry.refreshAuth("codex") flips authConfigured
  *     -> SSE `agent_list` with codex authConfigured: true
+ *
+ * The SSE event family is unified (docs/155 Phase 2b) — payload-shape
+ * differences across backends live in the discriminated `details` field.
  *
  * The credentials file lands in a temp dir that the manager's injected
  * `checkAuthFile` probe points at, mirroring the real
@@ -256,12 +259,18 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     expect(start.statusCode).toBe(202);
     expect(start.json()).toMatchObject({ success: true, pending: true });
 
-    // CLI prints the verification URL + user code -> SSE codex_auth_pending.
+    // CLI prints the verification URL + user code -> SSE agent_auth_pending.
+    // docs/155 Phase 2b — unified event family; the per-agent payload lives
+    // in the discriminated `details.kind: "device-code"` variant.
     fakeProc.stdout.push(Buffer.from(CANONICAL_OUTPUT, "utf-8"));
-    const pending = await sse.waitFor("codex_auth_pending");
-    expect(pending.verificationUri).toBe("https://auth.openai.com/codex/device");
-    expect(pending.userCode).toBe("K8RE-8MIGC");
-    expect(pending.expiresInSec as number).toBeGreaterThan(0);
+    const pending = await sse.waitFor(
+      "agent_auth_pending",
+      (d) => (d as { agentId?: string }).agentId === "codex",
+    ) as { agentId: string; details: { kind: string; verificationUri: string; userCode: string; expiresInSec: number } };
+    expect(pending.details.kind).toBe("device-code");
+    expect(pending.details.verificationUri).toBe("https://auth.openai.com/codex/device");
+    expect(pending.details.userCode).toBe("K8RE-8MIGC");
+    expect(pending.details.expiresInSec).toBeGreaterThan(0);
 
     // User approves: the CLI writes auth.json under the (temp) credentials
     // dir and exits 0.
@@ -269,7 +278,10 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     fakeProc.emit("close", 0);
 
     // Completion broadcast, then agent_list with codex authConfigured: true.
-    await sse.waitFor("codex_auth_complete");
+    await sse.waitFor(
+      "agent_auth_complete",
+      (d) => (d as { agentId?: string }).agentId === "codex",
+    );
     const after = await sse.waitFor(
       "agent_list",
       (d) => findCodex(d)?.authConfigured === true,
@@ -280,7 +292,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     expect(fs.existsSync(authFilePath)).toBe(true);
   });
 
-  it("broadcasts codex_auth_failed on non-zero exit and leaves codex unauthenticated", async () => {
+  it("broadcasts agent_auth_failed on non-zero exit and leaves codex unauthenticated", async () => {
     sse = await SseTestClient.connect(port);
     await sse.waitFor("agent_list", (d) => !!findCodex(d));
 
@@ -288,14 +300,20 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     expect(start.statusCode).toBe(202);
 
     fakeProc.stdout.push(Buffer.from(CANONICAL_OUTPUT, "utf-8"));
-    await sse.waitFor("codex_auth_pending");
+    await sse.waitFor(
+      "agent_auth_pending",
+      (d) => (d as { agentId?: string }).agentId === "codex",
+    );
 
     // CLI exits non-zero without writing credentials.
     fakeProc.emit("close", 1);
 
-    const failed = await sse.waitFor("codex_auth_failed");
+    const failed = await sse.waitFor(
+      "agent_auth_failed",
+      (d) => (d as { agentId?: string }).agentId === "codex",
+    ) as { agentId: string; reason: string; message: string };
     expect(failed.reason).toBe("error");
-    expect(String(failed.message)).toMatch(/code 1/);
+    expect(failed.message).toMatch(/code 1/);
 
     // No credentials file -> registry still reports codex unauthenticated.
     expect(fs.existsSync(authFilePath)).toBe(false);
@@ -310,7 +328,10 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     expect(first.statusCode).toBe(202);
 
     fakeProc.stdout.push(Buffer.from(CANONICAL_OUTPUT, "utf-8"));
-    await sse.waitFor("codex_auth_pending");
+    await sse.waitFor(
+      "agent_auth_pending",
+      (d) => (d as { agentId?: string }).agentId === "codex",
+    );
 
     // A second start against the running flow re-emits the cached pending
     // event (page-reload recovery) rather than spawning a second process.
@@ -318,7 +339,10 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     expect(second.statusCode).toBe(202);
     expect(second.json()).toMatchObject({ pending: true });
 
-    const replay = await sse.waitFor("codex_auth_pending");
-    expect(replay.userCode).toBe("K8RE-8MIGC");
+    const replay = await sse.waitFor(
+      "agent_auth_pending",
+      (d) => (d as { agentId?: string }).agentId === "codex",
+    ) as { agentId: string; details: { kind: string; userCode: string } };
+    expect(replay.details.userCode).toBe("K8RE-8MIGC");
   });
 });

@@ -303,8 +303,10 @@ describe("ClaudeOAuthRefresher", () => {
     expect(rig.repushCalls.length).toBe(0);
     expect(rig.refresher._inspectForTest("claude-default").failureCount).toBe(1);
     expect(rig.refresher._inspectForTest("claude-default").hasTimer).toBe(true);
-    // No auth_required SSE on rate-limit, only on revoked.
-    expect(rig.sseCalls.find((c) => c.event === "auth_required")).toBeUndefined();
+    // No agent_auth_failed SSE on rate-limit, only on revoked. (docs/155 Phase 2b
+    // unified the refresher's legacy `auth_required` emit into the
+    // `agent_auth_failed` family.)
+    expect(rig.sseCalls.find((c) => c.event === "agent_auth_failed")).toBeUndefined();
     expect(rig.sseCalls.find((c) => c.event === "claude_account_unauthenticated")).toBeUndefined();
   });
 
@@ -327,7 +329,12 @@ describe("ClaudeOAuthRefresher", () => {
 
     const sseEvents = rig.sseCalls.map((c) => c.event);
     expect(sseEvents).toContain("claude_account_unauthenticated");
-    expect(sseEvents).toContain("auth_required");
+    // docs/155 Phase 2b — refresher signals "this account is dead, show
+    // sign-in" via the unified `agent_auth_failed` event with
+    // `reason: "revoked"`. Replaces the legacy `auth_required` broadcast.
+    expect(sseEvents).toContain("agent_auth_failed");
+    const failed = rig.sseCalls.find((c) => c.event === "agent_auth_failed");
+    expect(failed!.data).toEqual({ agentId: "claude", reason: "revoked" });
 
     const perAccount = rig.sseCalls.find((c) => c.event === "claude_account_unauthenticated");
     expect(perAccount!.data).toEqual({ accountId: "claude-default" });
