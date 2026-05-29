@@ -191,7 +191,20 @@ export const useMcpStore = create<McpState>((set, get) => ({
   },
 
   testServer: async (id) => {
-    return request<McpTestResult>("POST", `/api/mcp-servers/${encodeURIComponent(id)}/test`);
+    const result = await request<McpTestResult>(
+      "POST",
+      `/api/mcp-servers/${encodeURIComponent(id)}/test`,
+    );
+    // The Test button is the user's "did I configure this right?" signal — its
+    // outcome should also update the badge, which would otherwise stay stale
+    // on whatever the last agent init reported (commonly `failed` from a prior
+    // bad config the user just fixed).
+    if (result.ok) {
+      get().applyStatus(id, "loaded");
+    } else {
+      get().applyStatus(id, "failed", result.error);
+    }
+    return result;
   },
 
   applyStatus: (name, state, reason) => {
