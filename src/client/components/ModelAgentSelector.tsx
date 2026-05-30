@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
+import { formatModelName } from "../utils/format-model.js";
 import { getSavedModelId } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import {
@@ -64,22 +64,35 @@ export function ModelAgentSelector({
   const pinnedAgentId = currentSession?.agentPinned ? currentSession.agentId : undefined;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
-  // Resolve the CLI's raw model ID (e.g. "claude-sonnet-4-6") to an alias ("sonnet")
-  const resolvedModel = modelInfo?.model ? resolveModelAlias(modelInfo.model) : undefined;
-  // The effective model fallback chain:
-  //   1. Pending UI selection — wins so mid-session model changes are
-  //      reflected in the trigger label immediately, before the next turn's
-  //      agent_init confirms the new model. Cleared (below) once a fresh
-  //      resolvedModel arrives, after which resolvedModel takes over.
-  //   2. Live CLI report from the last turn (resolvedModel)
-  //   3. The session's own persisted model — wins over localStorage so switching
-  //      sessions doesn't bleed the last-selected model into other sessions
-  //   4. localStorage's last selection (used for the new-session view)
-  //   5. First model the active agent supports
+
+  // The persisted selection for this session. Always one of the agent's
+  // hardcoded row keys (e.g. "sonnet", "claude-opus-4-8"):
+  //   - the session's own persisted model wins over localStorage so switching
+  //     sessions doesn't bleed the last-selected model into other sessions
+  //   - localStorage's last selection seeds the new-session view
+  //   - the first model the active agent supports is the final fallback
   const savedModel = getSavedModelId();
-  const effectiveModel =
-    pendingModel ?? resolvedModel ?? sessionModel ?? savedModel ?? activeAgent?.models[0];
-  const displayName = formatModelName(effectiveModel ?? "");
+  const persistedSelection = sessionModel ?? savedModel ?? activeAgent?.models[0];
+
+  // Which hardcoded model is selected — drives the dropdown checkmark. A pending
+  // pick wins so a mid-session switch highlights immediately, before the next
+  // turn's agent_init confirms it. Because this is always a hardcoded row key, a
+  // model the CLI may have switched to that we don't offer matches no row and so
+  // highlights nothing; we still surface it in the label below.
+  const selectedModel = pendingModel ?? persistedSelection;
+
+  // The raw model id the CLI reported running this turn (e.g. "claude-opus-4-8"
+  // or the versioned "claude-sonnet-4-6"); undefined before the first turn.
+  const liveModel = modelInfo?.model ?? undefined;
+
+  // The trigger label. An optimistic pick wins for instant feedback; otherwise
+  // show whatever the CLI actually reported this turn (so a mid-turn switch is
+  // reflected and the right name survives a page reload), falling back to the
+  // persisted selection before the first turn. formatModelName maps both
+  // versioned ids and our hardcoded keys to pretty names, and shows the raw id
+  // for anything it doesn't recognize.
+  const displayName = formatModelName(pendingModel ?? liveModel ?? persistedSelection ?? "");
+
   // The picker is interactive whenever it isn't in a loading transition.
   // Mid-session, the dropdown still opens — only cross-agent rows are locked
   // (see `isAgentLocked` in the row render below).
@@ -109,12 +122,13 @@ export function ModelAgentSelector({
     [onAgentChange, onModelChange, pinnedAgentId],
   );
 
-  // Clear pending model once the CLI confirms it (inline during render)
-  const prevResolvedRef = useRef(resolvedModel);
-  if (resolvedModel && resolvedModel !== prevResolvedRef.current) {
+  // Clear the optimistic pending pick once the CLI confirms a model for the
+  // turn, after which liveModel / persistedSelection drive the label and checkmark.
+  const prevLiveRef = useRef(liveModel);
+  if (liveModel && liveModel !== prevLiveRef.current) {
     setPendingModel(undefined);
   }
-  prevResolvedRef.current = resolvedModel;
+  prevLiveRef.current = liveModel;
 
   return (
     <div data-testid="model-agent-selector">
@@ -162,7 +176,7 @@ export function ModelAgentSelector({
 
                   {/* Model rows */}
                   {agent.models.map((model) => {
-                    const isCurrentModel = isActiveAgent && effectiveModel === model;
+                    const isCurrentModel = isActiveAgent && selectedModel === model;
                     const rowDisabled = !isAvailable || isAgentLocked;
 
                     return (
