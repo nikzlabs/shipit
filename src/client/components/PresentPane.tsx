@@ -47,6 +47,26 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
     if (isActiveTab) markSeen();
   }, [isActiveTab, markSeen, activeIndex]);
 
+  // Keyboard nav scoped to this pane — read latest index via the store rather
+  // than depending on `safeIndex` so the listener doesn't re-install on every
+  // navigation. Declared before the empty-state early return so the hook order
+  // stays stable when `presentations` empties on session switch (React #300).
+  // eslint-disable-next-line no-restricted-syntax -- keyboard nav scoped to this pane
+  useEffect(() => {
+    if (!isActiveTab) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") {
+        const { activePresentIndex } = usePresentStore.getState();
+        usePresentStore.getState().setActiveIndex(activePresentIndex - 1);
+      } else if (e.key === "ArrowRight") {
+        const { activePresentIndex } = usePresentStore.getState();
+        usePresentStore.getState().setActiveIndex(activePresentIndex + 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isActiveTab]);
+
   if (presentations.length === 0) {
     return (
       <div className="absolute inset-0 flex flex-col items-center justify-center text-sm text-(--color-text-tertiary) p-6 text-center">
@@ -63,25 +83,6 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
 
   const onPrev = () => setActiveIndex(safeIndex - 1);
   const onNext = () => setActiveIndex(safeIndex + 1);
-
-  // Keyboard nav scoped to this pane — read latest index via the store rather
-  // than depending on `safeIndex` so the listener doesn't re-install on every
-  // navigation.
-  // eslint-disable-next-line no-restricted-syntax -- keyboard nav scoped to this pane
-  useEffect(() => {
-    if (!isActiveTab) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowLeft") {
-        const { activePresentIndex } = usePresentStore.getState();
-        usePresentStore.getState().setActiveIndex(activePresentIndex - 1);
-      } else if (e.key === "ArrowRight") {
-        const { activePresentIndex } = usePresentStore.getState();
-        usePresentStore.getState().setActiveIndex(activePresentIndex + 1);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isActiveTab]);
 
   return (
     <div className="absolute inset-0 flex flex-col">

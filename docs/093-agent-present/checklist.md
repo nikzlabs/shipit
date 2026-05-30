@@ -66,6 +66,17 @@ Tracking Tier 1 (inline artifacts). Tier 2 (scratch dir) is deferred.
 - [ ] Manual: sandboxed iframe cannot read parent cookies/storage or navigate the top frame
 - [x] `npm run lint:dev` and `npm run typecheck` clean
 
+## Persistence across session switches + #300 fix
+
+- [x] `PresentStateEntry` + `WsPresentStateMessage` added to `ws-server-messages.ts` and wired into the union
+- [x] Runner-side `presentations` cache on `SessionRunnerInterface` (optional) + `ContainerSessionRunner` (maintained in SSE `present_content` / `present_cleared` handlers)
+- [x] `attachToRunner` (index.ts) replays `present_state` on viewer attach when the cache is non-empty
+- [x] Client `handlePresentState` handler + `usePresentStore.hydrate()` (no unseen bump, no auto-switch)
+- [x] `addOrReplace` dedupes by `presentId` so live/replay overlap doesn't duplicate
+- [x] Auto-switch moved from App-level effect into `handlePresentContent` (live 0→1 edge only)
+- [x] Fix React #300 in `PresentPane` — all hooks declared before the empty-state early return
+- [x] Store tests for `hydrate` (snapshot replace, no unseen bump, index clamp) and presentId dedupe
+
 ## Deferred follow-ups
 
 Polish and defense-in-depth left out of the shipping PR. None blocks the

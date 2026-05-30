@@ -1086,6 +1086,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             } as WsServerMessage);
           }
         }
+        // Replay agent-emitted presentations (docs/093) so the Present tab
+        // hydrates from the runner's authoritative cache. Without this, a tab
+        // opened after the `present` tool fired — or re-opened after a session
+        // switch — would show nothing, since the live `present_content` stream
+        // it relies on already passed. `present_state` is a silent sync: it
+        // does NOT bump the unseen badge or auto-switch the panel.
+        if (runner.presentations && runner.presentations.length > 0) {
+          send({
+            type: "present_state",
+            sessionId: runner.sessionId,
+            presentations: runner.presentations,
+          });
+        }
         // Replay compose warnings (e.g. old-format migration hints) when no
         // ServiceManager exists — the warning was stored before the WS listener
         // was attached, so emitMessage couldn't deliver it.

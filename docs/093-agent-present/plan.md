@@ -496,6 +496,54 @@ GET /present/:sessionId/:presentId/*  →  container GET /present-files/{present
 
 ---
 
+## Persistence across session switches (runner cache + `present_state` replay)
+
+The initial Tier 1 ship populated the client `present-store` *only* from the
+live `present_content` WS stream. That worked while the user was watching the
+session as the tool fired, but the Present tab vanished in two cases the user
+reported:
+
+1. `present` fires while the user is in a **different** session; navigating to
+   the present session later shows no tab (the live message was discarded by
+   the stale-session guard, and nothing replays it).
+2. `present` fires, the user switches away and comes back — `present-store` is
+   reset on session switch and never re-hydrated.
+
+The fix treats the orchestrator runner as the persistence layer (the worker's
+`PresentBuffer` is the ultimate source of truth, but it isn't queried on
+attach). Mechanism:
+
+- **Runner-side cache.** `ContainerSessionRunner` maintains a `presentations`
+  array, updated in its SSE `present_content` / `present_cleared` handlers
+  (mirroring the client reducer: replace-by-`replaceId`, dedupe-by-`presentId`,
+  else append; drop-one / wipe-all on cleared). Exposed via an optional
+  `presentations` getter on `SessionRunnerInterface` (container-only; in-process
+  runners don't host the tool and omit it).
+- **`present_state` replay.** On viewer attach, `attachToRunner` (index.ts)
+  sends a new `WsPresentStateMessage` carrying the full cached list when it's
+  non-empty — same place it already replays service/queue/session-status state.
+- **Silent hydrate.** The client `handlePresentState` handler calls a new
+  `usePresentStore.hydrate()` that replaces the list **without** bumping the
+  unseen badge or auto-switching the panel. Auto-switch moved out of the
+  App-level `presentations.length` effect (which would falsely fire on a
+  hydrate) into the live `handlePresentContent` handler, gated on the 0→1 edge.
+- **Idempotency.** `addOrReplace` now dedupes by `presentId`, so a live
+  `present_content` overlapping a `present_state` hydrate replaces in place
+  instead of duplicating.
+
+This resolves open question #2 for the *session-switch* axis. Browser **refresh**
+still drops presentations (the store isn't persisted to localStorage and HTTP
+bootstrap doesn't carry present state) — that remains acceptable per the
+ephemeral design, and the runner cache only survives as long as the container.
+
+### React #300 guard
+
+`PresentPane` previously declared its keyboard-nav `useEffect` *after* an early
+return for the empty state. When `present-store` reset to empty on session
+switch, the early return fired and skipped that hook → "rendered fewer hooks
+than expected" (#300). All hooks now run unconditionally before the early
+return.
+
 ## Key files (to be updated when implemented)
 
 ### Tier 1

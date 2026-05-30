@@ -34,6 +34,13 @@ interface PresentState {
 
   /** Apply a `present_content` WS message. */
   addOrReplace: (p: { presentId: string; replaceId?: string; content: string; mimeType: string; title?: string; createdAt: string }) => void;
+  /**
+   * Apply a `present_state` WS message — a full snapshot replayed on viewer
+   * attach. Replaces the list wholesale WITHOUT bumping the unseen badge or
+   * auto-switching the panel (it's a silent sync, not a fresh arrival). The
+   * active index is clamped so the carousel stays in bounds.
+   */
+  hydrate: (presentations: Presentation[]) => void;
   /** Apply a `present_cleared` WS message. `presentId` undefined → wipe all. */
   clear: (presentId?: string) => void;
   /** Switch the visible entry (carousel navigation, click handler). */
@@ -75,6 +82,26 @@ export const usePresentStore = create<PresentState>((set) => ({
         }
       }
 
+      // Idempotent re-delivery: a `present_state` hydrate may overlap with a
+      // live `present_content` for the same id. Replace in place rather than
+      // appending a duplicate.
+      const dupeIdx = s.presentations.findIndex((q) => q.presentId === p.presentId);
+      if (dupeIdx >= 0) {
+        const next = [...s.presentations];
+        next[dupeIdx] = {
+          presentId: p.presentId,
+          content: p.content,
+          mimeType: p.mimeType,
+          ...(p.title !== undefined ? { title: p.title } : {}),
+          createdAt: p.createdAt,
+        };
+        return {
+          presentations: next,
+          activePresentIndex: dupeIdx,
+          unseenCount: s.unseenCount + 1,
+        };
+      }
+
       // Brand-new entry — append + activate so the user sees the latest.
       const next: Presentation = {
         presentId: p.presentId,
@@ -89,6 +116,15 @@ export const usePresentStore = create<PresentState>((set) => ({
         activePresentIndex: presentations.length - 1,
         unseenCount: s.unseenCount + 1,
       };
+    }),
+
+  hydrate: (presentations) =>
+    set((s) => {
+      const activePresentIndex =
+        presentations.length === 0
+          ? 0
+          : Math.max(0, Math.min(s.activePresentIndex, presentations.length - 1));
+      return { presentations, activePresentIndex };
     }),
 
   clear: (presentId) =>
