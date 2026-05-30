@@ -431,6 +431,22 @@ export class GitManager {
     return status.isClean();
   }
 
+  /**
+   * Paths with uncommitted changes in the working tree — staged, unstaged,
+   * and untracked. Includes both sides of a rename. Used to flag docs the
+   * agent touched in the current turn before auto-commit has run.
+   */
+  async uncommittedPaths(): Promise<string[]> {
+    const status = await this.git.status();
+    const paths = new Set<string>();
+    for (const f of status.files) paths.add(f.path);
+    for (const r of status.renamed) {
+      paths.add(r.from);
+      paths.add(r.to);
+    }
+    return [...paths];
+  }
+
   /** Check if a rebase is in progress. */
   async isRebaseInProgress(): Promise<boolean> {
     try {

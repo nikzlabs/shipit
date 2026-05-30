@@ -15,6 +15,7 @@ import {
   getFileContent,
   getRawFilePath,
   listDocs,
+  getSessionChangedPaths,
   listSkills,
   getDocContent,
   saveUploadedFile,
@@ -137,7 +138,21 @@ export async function registerFileRoutes(
   app.get<{ Params: { id: string } }>("/api/sessions/:id/docs", async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
-    return { docs: await listDocs(dir) };
+    const docs = await listDocs(dir);
+    // Flag docs the agent actually changed this session, using git (committed
+    // branch changes + uncommitted edits) rather than file mtimes. Git rewrites
+    // mtimes on every checkout/fetch/reset, so the mtime heuristic falsely
+    // flagged files the session never touched. Best-effort — on any git error
+    // we leave the flag unset and the client falls back gracefully.
+    try {
+      const changed = await getSessionChangedPaths(deps.createGitManager(dir));
+      for (const doc of docs) {
+        if (changed.has(doc.path)) doc.changedInSession = true;
+      }
+    } catch {
+      // No git / unresolvable base — leave changedInSession unset.
+    }
+    return { docs };
   });
 
   // GET /api/sessions/:id/skills — user-invocable skills for the composer's `/`

@@ -123,12 +123,13 @@ export class SessionManager {
 
   /**
    * Reset the session's `created_at` to the current time. Called after
-   * workspace setup completes (e.g. clone, refresh) so that filesystem
-   * mtimes captured during setup don't appear as "modified during the
-   * session" — the docs viewer compares `modifiedAt > createdAt` to detect
-   * agent-touched files, and warm-pool warming inserts the session row
-   * before the clone writes files, which would otherwise mark every file
-   * in the workspace as session-modified.
+   * workspace setup completes (e.g. clone, refresh) so the session's recorded
+   * creation time reflects when it became usable rather than when the warm
+   * row was pre-inserted (warm-pool warming inserts the row before the clone
+   * writes files). The docs viewer's "modified in this session" detection is
+   * now git-based (see `getSessionChangedPaths`), so it no longer depends on
+   * this reset, but keeping `created_at` post-setup still makes the sidebar's
+   * displayed creation time meaningful.
    */
   markStarted(id: string): void {
     const now = new Date().toISOString();
