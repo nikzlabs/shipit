@@ -128,8 +128,8 @@ reclaims more disk and costs more to restore. We only descend when guards pass
 | Tier | On disk | Container | Reclaims | Restore cost | When |
 |---|---|---|---|---|---|
 | **`hot`** | full checkout + `node_modules` + build artifacts | may be running/idle | — | none | default / active |
-| **`light`** *(new, soft)* | full checkout, **`node_modules` + build artifacts dropped** | stopped | the bulk of the disk (deps dominate) | re-run `agent.install` / restore from dep-cache; **branch, checkout, and uncommitted work preserved** | idle a while, or merged + idle |
-| **`evicted`** | **workspace wiped**, restore via clone-from-cache | destroyed | everything | full clone + fetch (today's "archived" cost) | long-idle, or user-archived, or far beyond the merged view cap |
+| **`light`** *(new, soft)* | full checkout, **`node_modules` + build artifacts dropped** | stopped | the bulk of the disk (deps dominate) | re-run `agent.install` / restore from dep-cache; **branch, checkout, and uncommitted work preserved** | idle ≥ `IDLE_LIGHT`, or disk-pressure |
+| **`evicted`** | **workspace wiped**, restore via clone-from-cache | destroyed | everything | full clone + fetch (today's "archived" cost) | idle ≥ `IDLE_EVICT`, disk-pressure, or user-archive |
 
 Notes:
 
@@ -147,44 +147,87 @@ Notes:
   declared `node_modules` volumes are exactly what we reclaim). Workspace `fs.rm`
   only happens at `evicted`.
 
-### Cleanup triggers (gentle escalation, by idle age)
+### What is *not* a trigger
 
-Driven by `lastUsedAt` age, **not** by merge events. Merge stops being a
-destructive trigger entirely — it only changes ranking/listing.
+- **Merge is never a disk trigger.** Detecting a merged PR only updates
+  `mergedAt` (and deletes the remote head branch, as today). It changes
+  *listing*, never *disk*. A just-merged session stays `hot` on disk until it
+  goes idle like any other session. This is the core fix for "merge wiped my
+  workspace."
+- **The merged view cap (`MAX_MERGED_SESSIONS_PER_REPO`) is never a disk
+  trigger.** Falling outside the top-N only removes a session from the sidebar;
+  its disk follows the same idle ladder as everything else.
+- **WebSocket disconnect / browser close is never a trigger.** Per the
+  WS-lifecycle invariant in `CLAUDE.md`, a socket close only calls
+  `detachFromRunner()` (decrements `viewerCount`). It starts the *grace clock*
+  for container stop but never directly changes a disk tier.
 
-1. **Container eviction** *(exists today)* — `viewerCount === 0 && !running`
-   beyond the idle-container cap (`docs/063`). Stops the container; tier stays
-   `hot` on disk.
-2. **`hot` → `light`** — after `IDLE_LIGHT` (proposed default ~24h idle) **or**
-   when a session is merged-and-idle and falls outside the active group. Cheap,
-   reversible, no data loss.
-3. **`light` → `evicted`** — after `IDLE_EVICT` (proposed default ~14–30d idle),
-   or immediately on explicit user-archive, or when a merged session drops far
-   below the view cap *and* has been idle past `IDLE_LIGHT`.
-4. **Existing safety-net janitor** (`disk-janitor.ts`,
-   `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS`) remains the backstop for `evicted`
-   workspaces that outlive their welcome, plus orphan caches.
+### The driver: one periodic sweep
 
-(Exact constants are tunable; the structure is the point. Thresholds live next to
-`MAX_MERGED_SESSIONS_PER_REPO` so they're discoverable.)
+A single periodic **idle-session sweep** (extend the existing idle-container
+enforcer from `docs/063`, or a sibling loop on the same cadence — proposed
+~60s tick) evaluates every non-`warm` session each pass and applies **at most one
+transition per session per tick** — always the *lowest* one whose condition and
+guards are satisfied. It is idempotent: re-running the sweep on an already-settled
+session is a no-op. Centralizing every time-based transition in one loop means
+there is exactly one place that reasons about idleness, instead of timers
+scattered across merge handlers, WS close, and the janitor.
 
-### Guards before any destructive step
+"Idle age" everywhere below means `now - Date.parse(lastUsedAt)`. `lastUsedAt` is
+bumped at **turn start and turn end**, and we additionally bump it on **viewer
+attach** (opening the session), so any interaction resets the whole ladder — a
+session you keep opening never descends.
 
-Every descent that could surprise the user is gated. **None** of these may be
-overridden by an automatic trigger (explicit user-archive may override with a
-confirm, but still respects "running"):
+### The transitions
 
-- **Not running** — `runnerRegistry.get(id)?.running` is false. *(exists)*
-- **No attached viewer** — `viewerCount === 0`. A session open in a tab is in
-  use even with no agent turn. *(new — closes the main "breaks live work" gap)*
-- **No uncommitted / unpushed work** — the workspace is clean and its branch tip
-  is in the bare cache. If dirty, either skip (for `light`/auto) or auto-commit
-  to the session branch before `evicted` so nothing is silently lost. *(new)*
-- **Not a parent with live children / not an un-merged child** — preserve the
-  existing breadcrumb guards (`services/session.ts:441-453`).
+Each row: the move, the **trigger** that evaluates it, the **condition** that
+must hold, the **guards** that must all pass, and the **effect**.
 
-`light` is safe enough that it needs only "not running" + "no viewer"; the
-dirty-work guard matters most for `evicted`.
+| Move | Trigger | Condition (any) | Guards (all) | Effect |
+|---|---|---|---|---|
+| **container running → stopped** *(within `hot`)* | sweep | idle ≥ `IDLE_STOP` (~30m) **or** idle-container cap exceeded (`docs/063`) | not running; `viewerCount === 0` | dispose runner / stop container; **disk untouched**, deps preserved, instant restart |
+| **`hot` → `light`** | sweep | idle ≥ `IDLE_LIGHT` (~24h) **or** disk-pressure pass selects it (LRU, see below) | not running; `viewerCount === 0` | `ServiceManager.stop({ removeVolumes: true })` — drop `node_modules`/build volumes; keep checkout, branch, uncommitted edits; `diskTier = light` |
+| **`light` → `evicted`** | sweep | idle ≥ `IDLE_EVICT` (~14–30d) **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0`; **clean tree** (else auto-commit + push to the session branch first) | `fs.rm` workspace; destroy container; `diskTier = evicted` |
+| **any tier → `evicted` + `userArchived`** | explicit user "Archive" action | user clicked archive | not running (else confirm/decline); dirty tree → auto-commit + push first | `userArchived = true`; run the `evicted` cleanup; cascade to children (existing behavior) |
+| **`light` → `hot`** | user selects / messages the session | — | — | reinstall deps (`agent.install` / dep-cache); start container; `diskTier = hot`. Branch + checkout + uncommitted work intact |
+| **`evicted` → `hot`** | user selects / messages the session (incl. unarchive) | — | — | force-fresh fetch + clone-from-cache, new branch off current `origin/main` (Part 3); `diskTier = hot` |
+| **safety-net sweep** | `disk-janitor.ts` at orchestrator startup | `evicted` workspace older than `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS`; orphan caches | — | reclaim leftover on-disk remnants the live sweep missed (interrupted shutdown, legacy rows) |
+
+**Disk-pressure pass.** In addition to the idle thresholds, when free disk on the
+host drops below a low-water mark, the same sweep escalates the **least-recently-
+used** eligible sessions (`hot → light`, then `light → evicted`) until free space
+crosses a high-water mark — regardless of whether they've hit `IDLE_LIGHT` /
+`IDLE_EVICT` yet. This keeps the time thresholds generous (good UX) while still
+guaranteeing we reclaim space under pressure (the original disk-saving goal).
+Guards still apply, so a pressure pass never touches a running/open/dirty session.
+
+### Guards (the gate every automatic descent passes)
+
+A transition's guard column above references these. **No automatic trigger may
+override them.** Explicit user-archive may override "no viewer" and (with a
+confirm) "running", but still auto-commits dirty work rather than losing it.
+
+- **Not running** — `runnerRegistry.get(id)?.running` is false. *(exists today,
+  `services/session.ts:434`)*
+- **No attached viewer** — `viewerCount === 0`. A session open in a tab is in use
+  even with no agent turn mid-flight. *(new — closes the main "auto-archive broke
+  my open session" gap)*
+- **No uncommitted / unpushed work** — workspace clean **and** branch tip present
+  in the bare cache. Required only for `evicted` (the destructive rung); if dirty,
+  auto-commit + push to the session branch first so nothing is silently lost.
+  `light` doesn't need this guard — it preserves the tree. *(new)*
+- **Breadcrumb guards** — not a parent with live children, not an un-merged
+  child. Preserve existing logic (`services/session.ts:441-453`).
+
+### Proposed constants (tunable; co-locate with `MAX_MERGED_SESSIONS_PER_REPO`)
+
+| Constant | Meaning | Proposed default |
+|---|---|---|
+| `IDLE_STOP` | idle before container stop (disk stays `hot`) | 30 min |
+| `IDLE_LIGHT` | idle before `hot → light` | 24 h |
+| `IDLE_EVICT` | idle before `light → evicted` | 14 d |
+| `DISK_FREE_LOW` / `DISK_FREE_HIGH` | disk-pressure water marks | host-tuned |
+| `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` | janitor backstop for `evicted` (exists) | 30 d (prod) |
 
 ---
 

@@ -10,12 +10,18 @@
 - [ ] Reflect `diskTier` in `AllSessionsDialog`
 
 ## Part 2 — Disk cleanup tiers
-- [ ] Implement `hot → light` (drop `node_modules`/build via compose volume removal; keep checkout)
-- [ ] Implement `light → evicted` (existing workspace `fs.rm` path)
-- [ ] Idle ladder triggers (`IDLE_LIGHT`, `IDLE_EVICT`) by `lastUsedAt` age
-- [ ] Guards: not-running, no-attached-viewer, no-uncommitted/unpushed-work (auto-commit before `evicted`)
+- [ ] Single periodic idle-session sweep (extend `docs/063` enforcer): one transition per session per tick, idempotent
+- [ ] Bump `lastUsedAt` on viewer attach (so opening a session resets the ladder), in addition to turn start/end
+- [ ] `container stop` within `hot` after `IDLE_STOP` (disk untouched)
+- [ ] Implement `hot → light` after `IDLE_LIGHT` (drop `node_modules`/build via compose volume removal; keep checkout)
+- [ ] Implement `light → evicted` after `IDLE_EVICT` (existing workspace `fs.rm` path)
+- [ ] Disk-pressure pass: LRU escalation between low/high water marks, guards still apply
+- [ ] Remove disk reclamation from the merge path — merge becomes listing-only (no `fs.rm`)
+- [ ] Define constants (`IDLE_STOP`, `IDLE_LIGHT`, `IDLE_EVICT`, `DISK_FREE_LOW/HIGH`) next to `MAX_MERGED_SESSIONS_PER_REPO`
+- [ ] Guards: not-running, no-attached-viewer, clean-tree (auto-commit + push before `evicted`)
 - [ ] Preserve parent/child breadcrumb guards
-- [ ] Align `disk-janitor.ts` backstop with the tier model
+- [ ] User-archive action: `userArchived = true` + `evicted` cleanup, cascade to children
+- [ ] Align `disk-janitor.ts` startup backstop with the tier model
 
 ## Part 3 — Restore freshness
 - [ ] `evicted` restore forces a fresh fetch (`fetchCache(ttlMs = 0)`) and asserts HEAD advanced
