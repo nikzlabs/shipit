@@ -575,7 +575,11 @@ export function FilePreviewModal({
             </div>
           </div>
           {showSiblingTabs && siblings && (
-            <div className="flex px-4" role="tablist" aria-label="Related docs">
+            <div
+              className="flex px-4 overflow-x-auto overscroll-x-contain"
+              role="tablist"
+              aria-label="Related docs"
+            >
               {siblings.map((sib) => {
                 const active = sib.path === filePath;
                 return (
@@ -584,7 +588,7 @@ export function FilePreviewModal({
                     role="tab"
                     aria-selected={active}
                     onClick={() => handleSwitchSibling(sib.path)}
-                    className={`px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 -mb-px ${
+                    className={`shrink-0 whitespace-nowrap px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 -mb-px ${
                       active
                         ? "text-(--color-text-primary) border-(--color-accent)"
                         : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
