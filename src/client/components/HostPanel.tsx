@@ -81,7 +81,9 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
   }, []);
 
   // Poll while the tab is open; stop when it's hidden so a background ops
-  // session isn't hammering the Docker socket.
+  // session isn't hammering the Docker socket. This is a genuine external-system
+  // sync (a polling timer with cleanup), which the rule explicitly permits.
+  // eslint-disable-next-line no-restricted-syntax -- interval polling of the host overview with cleanup on unmount/tab-hide
   useEffect(() => {
     if (!isActiveTab) return;
     void refresh();

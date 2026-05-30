@@ -1179,6 +1179,7 @@ export default function App() {
       {settingsOpen && (
         <Settings
           initialContent={systemPromptContent} onSaveInstructions={handleInstructionsSave}
+          onResumeSession={(sid) => handleSessionResume(sid, navigate)}
           githubStatus={githubStatus}
           onGitHubTokenSubmit={async (token) => { const result = await useSettingsStore.getState().submitGitHubToken(token); if (result) usePrStore.getState().setImportSearchResults(result.repos); }}
           onGitHubLogout={() => useSettingsStore.getState().gitHubLogout().catch(() => {})}

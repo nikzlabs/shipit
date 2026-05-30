@@ -1,5 +1,4 @@
 import { useState, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import { XIcon, WrenchIcon } from "@phosphor-icons/react";
 import type { AgentOption } from "../agent-types.js";
 import type { AgentId, ProviderAccount } from "../../server/shared/types.js";
@@ -15,7 +14,6 @@ import { SkillsTab } from "./SkillsTab.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useSessionStore } from "../stores/session-store.js";
-import { handleSessionResume } from "../stores/actions/session-actions.js";
 import { isValidQuickCaptureHotkey } from "../hooks/useQuickCaptureHotkey.js";
 
 const MAX_LENGTH = 50_000;
@@ -61,6 +59,8 @@ export interface SettingsProps {
   onToggleAgentSystemInstructions: (enabled: boolean) => void;
   hasActiveSession: boolean;
   onClose: () => void;
+  /** docs/128 — resume/navigate to a session (e.g. a freshly created ops session). */
+  onResumeSession?: (sessionId: string) => void;
 }
 
 function ToggleSwitch({ enabled, onToggle, testId }: { enabled: boolean; onToggle: (v: boolean) => void; testId?: string }) {
@@ -280,8 +280,7 @@ function AutoResolveConflictsSettings() {
  * operator == ShipIt user). Creating an ops session POSTs the ops template to
  * a fresh session, which sets the server-authoritative `kind: "ops"`.
  */
-function OpsSessionSettings({ onClose }: { onClose: () => void }) {
-  const navigate = useNavigate();
+function OpsSessionSettings({ onClose, onResumeSession }: { onClose: () => void; onResumeSession?: (sessionId: string) => void }) {
   const [creating, setCreating] = useState(false);
 
   const handleCreate = async () => {
@@ -298,7 +297,7 @@ function OpsSessionSettings({ onClose }: { onClose: () => void }) {
       const id = data.session?.id;
       if (id) {
         onClose();
-        handleSessionResume(id, (p) => void navigate(p));
+        onResumeSession?.(id);
       }
     } catch (err) {
       useUiStore.getState().setToast({ message: "Failed to create ops session" });
@@ -543,6 +542,7 @@ export function Settings({
   onToggleAgentSystemInstructions,
   hasActiveSession,
   onClose,
+  onResumeSession,
 }: SettingsProps) {
   const activeTab = useUiStore((s) => s.settingsTab) ?? "agent-claude";
   const setActiveTab = useUiStore((s) => s.setSettingsTab);
@@ -1071,7 +1071,7 @@ export function Settings({
 
               <div className="border-t border-(--color-border-secondary)" />
 
-              <OpsSessionSettings onClose={onClose} />
+              <OpsSessionSettings onClose={onClose} onResumeSession={onResumeSession} />
 
               <div className="border-t border-(--color-border-secondary)" />
 
