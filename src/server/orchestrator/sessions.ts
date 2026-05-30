@@ -16,6 +16,8 @@ interface SessionRow {
   warm: number;
   branch: string | null;
   session_type: string | null;
+  /** docs/128 — server-authoritative session kind ("ops" or null). */
+  kind: string | null;
   branch_renamed: number;
   merged_at: string | null;
   model: string | null;
@@ -52,6 +54,7 @@ export class SessionManager {
     if (row.archived) info.archived = true;
     if (row.warm) info.warm = true;
     if (row.branch) info.branch = row.branch;
+    if (row.kind === "ops") info.kind = "ops";
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
     if (row.model) info.model = row.model;
@@ -271,6 +274,16 @@ export class SessionManager {
     this.db.prepare(
       "UPDATE sessions SET branch = ? WHERE id = ?",
     ).run(branch, id);
+  }
+
+  /**
+   * docs/128 — set the server-authoritative session kind. Currently only
+   * `"ops"` is meaningful; it is the gate for the privileged journal mounts +
+   * read-only Docker proxy in container creation. Set once at creation by the
+   * gated ops template route; the container cannot flip it.
+   */
+  setKind(id: string, kind: "ops"): void {
+    this.db.prepare("UPDATE sessions SET kind = ? WHERE id = ?").run(kind, id);
   }
 
   /** Store the selected model for a session. */

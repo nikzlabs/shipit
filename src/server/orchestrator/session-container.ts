@@ -38,7 +38,7 @@ import {
   type HealthDeps,
   type HealthMonitorState,
 } from "./container-health.js";
-import { resolveShipitConfig, AGENT_DEFAULTS, type ShipitConfig } from "../shared/shipit-config.js";
+import { resolveShipitConfig, AGENT_DEFAULTS, type ShipitConfig, type HostMount } from "../shared/shipit-config.js";
 
 // ---------------------------------------------------------------------------
 // Re-export sub-module public symbols for backwards compatibility
@@ -103,6 +103,18 @@ export interface ContainerConfig {
   extraLabels?: Record<string, string>;
   /** Whether this session needs Docker access (Docker CLI + proxy). */
   dockerAccess?: boolean;
+  /**
+   * docs/128 — privileged "ops" session. Gates the read-only journal mounts and
+   * the `DOCKER_HOST` → read-only docker-socket-proxy wiring. Derived from the
+   * server-authoritative `session.kind === "ops"`, never from workspace files.
+   */
+  opsSession?: boolean;
+  /**
+   * docs/128 — allow-listed read-only host mounts (journal paths) parsed from
+   * `x-shipit-host-mounts`. Only applied to the container when `opsSession` is
+   * true; otherwise dropped at config-build time.
+   */
+  hostMounts?: HostMount[];
 }
 
 export interface SessionContainer {
@@ -308,7 +320,7 @@ export function readAgentConfig(workspaceDir: string): ShipitConfig {
         `falling back to default agent resources ` +
         `(${d.memory} MiB / ${d.cpu} CPU / ${d.pids} pids): ${detail}`,
     );
-    return { agent: { ...AGENT_DEFAULTS, install: [] }, warnings: [] };
+    return { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], warnings: [] };
   }
 }
 
@@ -781,6 +793,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     cpuQuota?: number;
     pidsLimit?: number;
     dockerAccess?: boolean;
+    opsSession?: boolean;
+    hostMounts?: HostMount[];
   }): ContainerConfig {
     return buildContainerConfig({
       imageName: this.imageName,
@@ -809,7 +823,17 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     credentialsDir: string;
     depCacheDir?: string;
     env?: Record<string, string>;
+    /**
+     * docs/128 — set true only when the session's server-authoritative
+     * `kind === "ops"`. Enables the privileged journal mounts + read-only
+     * Docker proxy wiring. The caller (runner factory) is the gate; this
+     * method then reads the workspace's allow-listed `x-shipit-host-mounts`
+     * and applies them. A non-ops session with a forged `x-shipit-host-mounts`
+     * passes `opsSession` falsy here, so its mounts are dropped downstream.
+     */
+    opsSession?: boolean;
   }): ContainerConfig {
+    const cfg = readAgentConfig(opts.workspaceDir);
     const limits = resolveAgentDockerLimits(opts.workspaceDir);
     return this.buildConfig({
       sessionId: opts.sessionId,
@@ -822,6 +846,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       cpuQuota: limits.cpuQuota,
       pidsLimit: limits.pidsLimit,
       dockerAccess: limits.dockerAccess,
+      opsSession: opts.opsSession,
+      hostMounts: opts.opsSession ? cfg.hostMounts : undefined,
     });
   }
 

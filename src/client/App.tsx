@@ -56,6 +56,7 @@ const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ de
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { PresentPane } from "./components/PresentPane.js";
+import { HostPanel } from "./components/HostPanel.js";
 import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
@@ -197,10 +198,20 @@ export default function App() {
   // hide their tabs. Coerce a persisted "preview"/"terminal" selection to a
   // panel that does work, so the right panel never lands on a dead tab.
   const isLocalMode = runtimeMode === "local";
-  const rightTab =
-    isLocalMode && (rightTabRaw === "preview" || rightTabRaw === "terminal")
-      ? "files"
-      : rightTabRaw;
+  // docs/128 — an ops session has no app preview and no PR lifecycle, so those
+  // tabs are hidden; a dedicated read-only "Host" tab takes their place. Coerce
+  // a persisted preview/pr selection to Host so the panel never lands on a tab
+  // that isn't rendered for this kind of session.
+  const isOpsSession = useMemo(
+    () => sessions.find((s) => s.id === wsSessionId)?.kind === "ops",
+    [sessions, wsSessionId],
+  );
+  const rightTab = (() => {
+    if (isOpsSession && (rightTabRaw === "preview" || rightTabRaw === "pr")) return "host";
+    if (!isOpsSession && rightTabRaw === "host") return "files";
+    if (isLocalMode && (rightTabRaw === "preview" || rightTabRaw === "terminal")) return "files";
+    return rightTabRaw;
+  })();
   const mobilePanel = useUiStore((s) => s.mobilePanel);
   const showTemplates = useUiStore((s) => s.showTemplates);
   const templates = useUiStore((s) => s.templates);
@@ -702,7 +713,7 @@ export default function App() {
   });
 
   const handleTabChange = useCallback(
-    (tab: "preview" | "docs" | "files" | "terminal" | "history" | "services" | "pr" | "present") => {
+    (tab: "preview" | "docs" | "files" | "terminal" | "history" | "services" | "pr" | "host" | "present") => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
@@ -975,8 +986,11 @@ export default function App() {
   const rightPanel = (
     <>
       <div className="flex h-10 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
-        {!isLocalMode && (
+        {!isLocalMode && !isOpsSession && (
           <button onClick={() => handleTabChange("preview")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "preview" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Preview</button>
+        )}
+        {isOpsSession && (
+          <button onClick={() => handleTabChange("host")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "host" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Host</button>
         )}
         {composeServices.length > 0 && (
           <button onClick={() => handleTabChange("services")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "services" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Services</button>
@@ -995,7 +1009,7 @@ export default function App() {
           </button>
         )}
         <button onClick={() => handleTabChange("history")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "history" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>History</button>
-        {hasPr && (
+        {hasPr && !isOpsSession && (
           <button onClick={() => handleTabChange("pr")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "pr" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>PR</button>
         )}
       </div>
@@ -1022,6 +1036,8 @@ export default function App() {
           <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
         ) : rightTab === "present" ? (
           <PresentPane isActiveTab={rightTab === "present"} />
+        ) : rightTab === "host" ? (
+          <HostPanel isActiveTab={rightTab === "host"} />
         ) : null}
       </div>
     </>
@@ -1163,6 +1179,7 @@ export default function App() {
       {settingsOpen && (
         <Settings
           initialContent={systemPromptContent} onSaveInstructions={handleInstructionsSave}
+          onResumeSession={(sid) => handleSessionResume(sid, navigate)}
           githubStatus={githubStatus}
           onGitHubTokenSubmit={async (token) => { const result = await useSettingsStore.getState().submitGitHubToken(token); if (result) usePrStore.getState().setImportSearchResults(result.repos); }}
           onGitHubLogout={() => useSettingsStore.getState().gitHubLogout().catch(() => {})}

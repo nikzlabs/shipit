@@ -5,6 +5,9 @@ import type { ProjectTemplate } from "../shared/types.js";
 import { FRONTEND_TEMPLATES } from "./templates-frontend.js";
 import { FULLSTACK_TEMPLATES } from "./templates-fullstack.js";
 import { BACKEND_TEMPLATES } from "./templates-backend.js";
+import { OPS_TEMPLATE, OPS_TEMPLATE_ID } from "./templates-ops.js";
+
+export { OPS_TEMPLATE, OPS_TEMPLATE_ID } from "./templates-ops.js";
 
 // Re-export sub-module symbols for backwards compatibility
 export { VITE_GITIGNORE, NEXTJS_GITIGNORE, ASTRO_GITIGNORE, NODE_GITIGNORE } from "./template-gitignores.js";
@@ -41,8 +44,13 @@ export function listTemplates(): Omit<ProjectTemplate, "files">[] {
 
 /**
  * Find a template by ID.
+ *
+ * The ops template (docs/128) is resolvable here so `applyTemplate` can scaffold
+ * it, but it is deliberately absent from `listTemplates()` — it is created only
+ * from the gated Settings affordance, never the general new-project grid.
  */
 export function getTemplate(id: string): ProjectTemplate | undefined {
+  if (id === OPS_TEMPLATE_ID) return OPS_TEMPLATE;
   return TEMPLATES.find((t) => t.id === id);
 }
 

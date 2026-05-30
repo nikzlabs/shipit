@@ -24,6 +24,7 @@ type RightTab =
   | "history"
   | "services"
   | "pr"
+  | "host"
   | "present";
 
 type MobilePanel = "chat" | "preview";
