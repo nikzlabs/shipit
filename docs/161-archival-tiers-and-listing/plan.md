@@ -184,22 +184,27 @@ session resets the ladder.
 
 Tier escalation is the **one** disk task that accumulates *steadily* — unlike the
 janitor's existing items, which only exist when an earlier teardown crashed (see
-its docstring: "None of them accumulate steadily"). Putting `hot → light` /
-`light → evicted` in the startup-only janitor therefore means:
+its docstring: "None of them accumulate steadily").
 
-- **On prod (auto-deploys on push):** startup is frequent, so escalation runs
-  often enough. Fine.
-- **On a long-uptime box (rare restarts):** idle sessions keep their
-  `node_modules` until the next restart — disk is reclaimed in bursts at boot,
-  not continuously. Acceptable as long as we don't rely on continuous reclaim.
+**Important: prod does *not* auto-deploy on push — deploys are triggered
+manually.** (The current `disk-janitor.ts` docstring claims "ShipIt's prod box
+auto-deploys on push (so startup is frequent in practice)" — that assumption is
+stale and must be corrected when this lands.) So a startup-only janitor can go a
+long time between runs on prod, and idle `node_modules` would pile up unbounded in
+the meantime. **Startup-only is therefore not sufficient by itself** — the
+on-demand pass below is the *primary* steady-state reclaim, not a long-uptime
+fallback. The startup run remains as the post-(unclean-)restart safety net.
 
-To cover the long-uptime case **without** adding a timer, the janitor's escalation
-logic is *also* invoked **on-demand at disk-consuming moments** — right before a
-session create or a container start, run the same age-based pass (cheap, reads the
-DB + a `statfs`). This is lazy reclaim, like a cache evicting on insert: we only
-pay when we're about to need space, and it needs no cron. If even that proves
-insufficient under sustained pressure, promoting the janitor pass to a real timer
-is a later, isolated change — but we start cron-free per the explicit decision.
+**On-demand trigger — *after* session start, asynchronously.** When a session is
+started/activated, kick the same age-based escalation pass **after** the session
+is up and the user has control — never on the start path itself, so we don't add
+latency to session start. It's a fire-and-forget background pass (reads the DB +
+a `statfs`, applies guarded transitions to *other* idle sessions). Rationale:
+starting a session is exactly when we consume disk, so it's the natural moment to
+reclaim from the long idle tail — but the reclaim must not block the thing the
+user is waiting for. No cron, no added start latency. If sustained pressure ever
+outpaces this, promoting the pass to a real timer is a later, isolated change —
+but we start cron-free per the explicit decision.
 
 ### The transitions
 
@@ -209,16 +214,16 @@ pass), and the **effect**.
 | Move | Trigger | Condition | Guards | Effect |
 |---|---|---|---|---|
 | **container running → stopped** *(within `hot`)* | idle-container enforcer (`docs/063`, event-driven) | idle-container cap exceeded | not running; `viewerCount === 0` | dispose runner / stop container; **disk untouched**, deps preserved, instant restart |
-| **`hot` → `light`** | disk-janitor pass (startup + on-demand before create/start) | idle ≥ `IDLE_LIGHT` (~24h), **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0` | `ServiceManager.stop({ removeVolumes: true })` — drop `node_modules`/build volumes; keep checkout, branch, uncommitted edits; `diskTier = light` |
-| **`light` → `evicted`** | disk-janitor pass (startup + on-demand) | idle ≥ `IDLE_EVICT` (~14–30d), **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0`; **clean tree** (else auto-commit + push first) | `fs.rm` workspace; destroy container; `diskTier = evicted` |
+| **`hot` → `light`** | disk-janitor pass (startup safety-net + **async after each session start**) | idle ≥ `IDLE_LIGHT` (~24h), **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0` | `ServiceManager.stop({ removeVolumes: true })` — drop `node_modules`/build volumes; keep checkout, branch, uncommitted edits; `diskTier = light` |
+| **`light` → `evicted`** | disk-janitor pass (startup + async after session start) | idle ≥ `IDLE_EVICT` (~14–30d), **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0`; **clean tree** (else auto-commit + push first) | `fs.rm` workspace; destroy container; `diskTier = evicted` |
 | **any tier → `evicted` + `userArchived`** | explicit user "Archive" action | user clicked archive | not running (else confirm/decline); dirty tree → auto-commit + push first | `userArchived = true`; run the `evicted` cleanup; cascade to children (existing) |
 | **`light` → `hot`** | user selects / messages the session | — | — | reinstall deps (`agent.install` / dep-cache); start container; `diskTier = hot`. Branch + checkout + uncommitted work intact |
 | **`evicted` → `hot`** | user selects / messages the session (incl. unarchive) | — | — | force-fresh fetch + clone-from-cache, new branch off current `origin/main` (Part 3); `diskTier = hot` |
 
-**Disk-pressure pass.** Folded into the same janitor logic: when free disk drops
-below a low-water mark (checked at the on-demand moments above, not on a timer),
-escalate the **least-recently-used** eligible sessions (`hot → light`, then
-`light → evicted`) until free space crosses a high-water mark — regardless of
+**Disk-pressure pass.** Folded into the same janitor logic: when the async
+after-start pass observes free disk below a low-water mark (a `statfs`, not a
+timer), it escalates the **least-recently-used** eligible sessions (`hot → light`,
+then `light → evicted`) until free space crosses a high-water mark — regardless of
 whether they've hit `IDLE_LIGHT` / `IDLE_EVICT`. Keeps the time thresholds
 generous while still reclaiming under pressure. Guards still apply.
 

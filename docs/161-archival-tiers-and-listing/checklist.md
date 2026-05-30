@@ -13,8 +13,8 @@
 - [ ] Bump `lastUsedAt` on viewer attach (so opening a session resets the ladder), in addition to turn start/end
 - [ ] `container stop`: keep on existing idle-container enforcer (`docs/063`, cap-driven, event-driven) — no change to its trigger
 - [ ] Add tier-escalation logic to `disk-janitor.ts`: `hot → light` after `IDLE_LIGHT`, `light → evicted` after `IDLE_EVICT`, by `lastUsedAt` age
-- [ ] Invoke the same janitor escalation on-demand before session create / container start (lazy reclaim, covers long-uptime boxes without a timer)
-- [ ] Update `disk-janitor.ts` docstring: tier escalation is the one steadily-accumulating item, justified by frequent prod restarts + on-demand pass
+- [ ] Invoke the escalation pass **async, after each session start** (never on the start path — no added start latency); this is the primary steady-state reclaim since prod deploys manually
+- [ ] Correct the `disk-janitor.ts` docstring's stale "auto-deploys on push / startup is frequent" claim — prod is manually deployed, so startup-only is insufficient; tier escalation is the one steadily-accumulating item
 - [ ] `hot → light` effect: drop `node_modules`/build via compose volume removal; keep checkout
 - [ ] `light → evicted` effect: existing workspace `fs.rm` path
 - [ ] Disk-pressure pass: LRU escalation between low/high water marks, checked on-demand (no timer), guards still apply
