@@ -314,3 +314,85 @@ describe("markMergedAndPruneExcess — subsession guard", () => {
     expect(sessionManager.get(oldestId)?.archived).toBe(true);
   });
 });
+
+describe("markMergedAndPruneExcess — activity-aware ranking", () => {
+  it("keeps a session merged long ago but recently worked in, archiving a staler one", async () => {
+    // The session with the OLDEST merge time has the most recent activity (the
+    // user went back to it to open a follow-up PR). Under merge-time-only
+    // ranking it would be archived; under activity ranking it must survive and
+    // a session with older last-activity is archived in its place.
+    const recentlyUsedId = trackMergedSession({});
+    const staleAId = trackMergedSession({});
+    const staleBId = trackMergedSession({});
+    const staleCId = trackMergedSession({});
+
+    const rows: { id: string; merged: string; lastUsed: string }[] = [
+      { id: recentlyUsedId, merged: "2024-01-01 08:00:00", lastUsed: "2026-05-30T12:00:00.000Z" },
+      { id: staleAId, merged: "2024-01-01 09:00:00", lastUsed: "2024-02-01T00:00:00.000Z" },
+      { id: staleBId, merged: "2024-01-01 09:30:00", lastUsed: "2024-02-02T00:00:00.000Z" },
+      { id: staleCId, merged: "2024-01-01 09:45:00", lastUsed: "2024-02-03T00:00:00.000Z" },
+    ];
+    for (const r of rows) {
+      dbManager.db
+        .prepare("UPDATE sessions SET merged_at = ?, last_used_at = ? WHERE id = ?")
+        .run(r.merged, r.lastUsed, r.id);
+    }
+
+    const triggerId = trackMergedSession({});
+
+    await markMergedAndPruneExcess(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      triggerId,
+    );
+
+    // recentlyUsed has the oldest merge time but the newest activity → kept.
+    expect(sessionManager.get(recentlyUsedId)?.archived).toBeFalsy();
+    // staleA has the oldest activity → archived.
+    expect(sessionManager.get(staleAId)?.archived).toBe(true);
+  });
+
+  it("does not auto-archive a merged session whose agent is currently running", async () => {
+    // Five merged sessions, limit 3 → two archive candidates by activity. The
+    // oldest candidate has a running agent (user resumed it to open a follow-up
+    // PR), so it must be skipped; the other candidate is archived in its place.
+    const runningId = trackMergedSession({});
+    const idleId = trackMergedSession({});
+    const keepAId = trackMergedSession({});
+    const keepBId = trackMergedSession({});
+
+    const rows: { id: string; merged: string; lastUsed: string }[] = [
+      { id: runningId, merged: "2024-01-01 09:00:00", lastUsed: "2024-02-01T00:00:00.000Z" },
+      { id: idleId, merged: "2024-01-01 09:30:00", lastUsed: "2024-02-02T00:00:00.000Z" },
+      { id: keepAId, merged: "2024-01-01 09:45:00", lastUsed: "2026-05-30T11:00:00.000Z" },
+      { id: keepBId, merged: "2024-01-01 09:50:00", lastUsed: "2026-05-30T11:30:00.000Z" },
+    ];
+    for (const r of rows) {
+      dbManager.db
+        .prepare("UPDATE sessions SET merged_at = ?, last_used_at = ? WHERE id = ?")
+        .run(r.merged, r.lastUsed, r.id);
+    }
+
+    const triggerId = trackMergedSession({});
+
+    // Registry reports the oldest candidate as having a live (running) agent.
+    const dispose = vi.fn();
+    runnerRegistry = {
+      get: (id: string) => (id === runningId ? { running: true, disposed: false } : undefined),
+      dispose,
+    } as unknown as SessionRunnerRegistry;
+
+    await markMergedAndPruneExcess(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      triggerId,
+    );
+
+    // Running session is left alive despite being an archive candidate.
+    expect(sessionManager.get(runningId)?.archived).toBeFalsy();
+    // The idle candidate is archived in its place.
+    expect(sessionManager.get(idleId)?.archived).toBe(true);
+  });
+});

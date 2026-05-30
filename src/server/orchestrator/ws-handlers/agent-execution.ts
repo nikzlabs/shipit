@@ -255,6 +255,15 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     ? await ctx.createGitManager(capturedSessionDir).getHeadHash()
     : null;
 
+  // Bump `last_used_at` at turn *start*, not just turn end (agent-listeners
+  // tracks it on `agent_result`). Starting a turn is the user interacting with
+  // the session — and the post-merge auto-archive prune ranks merged sessions
+  // by most-recent activity. Without this, going back to a previously-merged
+  // session to open a follow-up PR wouldn't refresh its activity time until the
+  // turn finished, leaving a window where a concurrent merge elsewhere could
+  // pick this session as "oldest" and archive it mid-turn.
+  if (capturedSessionId) ctx.sessionManager.track(capturedSessionId);
+
   // Resolve the runner via the registry (by session ID) when possible. This
   // makes the runner reference survive WebSocket disconnects — critical for
   // queue-drained turns that may finish after the originating WS is gone.
