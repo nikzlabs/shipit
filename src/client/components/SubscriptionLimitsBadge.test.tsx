@@ -6,7 +6,8 @@ import {
   tierColor,
   formatPct,
   formatResetCountdown,
-  effectivePct,
+  formatAge,
+  meterDisplay,
 } from "./SubscriptionLimitsBadge.js";
 import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
 
@@ -53,30 +54,45 @@ describe("formatResetCountdown", () => {
   });
 });
 
-describe("effectivePct", () => {
-  it("returns the cached pct while the window is still open", () => {
+describe("formatAge", () => {
+  it("formats snapshot age compactly", () => {
     const now = Date.parse("2026-05-19T12:00:00Z");
-    expect(effectivePct(96, "2026-05-19T17:00:00Z", now)).toBe(96);
+    expect(formatAge(now - 30_000, now)).toBe("just now");
+    expect(formatAge(now - 5 * 60_000, now)).toBe("5 min ago");
+    expect(formatAge(now - 3 * 60 * 60_000, now)).toBe("3h ago");
+    expect(formatAge(now - 2 * 24 * 60 * 60_000, now)).toBe("2d ago");
+  });
+});
+
+describe("meterDisplay", () => {
+  const now = Date.parse("2026-05-19T12:00:00Z");
+  const future = "2026-05-19T17:00:00Z";
+  const past = "2026-05-19T11:59:00Z";
+
+  it("classifies a fresh known window", () => {
+    expect(meterDisplay({ usedPct: 42, resetAt: future }, now, now)).toEqual({
+      kind: "known",
+      pct: 42,
+      stale: false,
+    });
   });
 
-  it("collapses to 0 once the reset timestamp has elapsed", () => {
-    const now = Date.parse("2026-05-19T12:00:00Z");
-    expect(effectivePct(100, "2026-05-19T11:59:00Z", now)).toBe(0);
-    expect(effectivePct(100, "2026-05-19T12:00:00Z", now)).toBe(0);
+  it("marks a known window stale once it ages past the threshold", () => {
+    const old = now - 20 * 60_000;
+    expect(meterDisplay({ usedPct: 42, resetAt: future }, old, now)).toEqual({
+      kind: "known",
+      pct: 42,
+      stale: true,
+    });
   });
 
-  it("preserves the cached pct when resetAt is unparseable", () => {
-    const now = Date.parse("2026-05-19T12:00:00Z");
-    expect(effectivePct(73, "not-a-date", now)).toBe(73);
+  it("classifies an elapsed window as reset (regardless of usedPct)", () => {
+    expect(meterDisplay({ usedPct: 100, resetAt: past }, now, now)).toEqual({ kind: "reset" });
+    expect(meterDisplay({ usedPct: null, resetAt: past }, now, now)).toEqual({ kind: "reset" });
   });
 
-  it("returns null when utilization is unknown (regardless of resetAt)", () => {
-    // The provider reported the window's existence and reset time but not
-    // its utilization — don't fake a number, including don't coerce to 0
-    // even if the reset has elapsed.
-    const now = Date.parse("2026-05-19T12:00:00Z");
-    expect(effectivePct(null, "2026-05-19T17:00:00Z", now)).toBeNull();
-    expect(effectivePct(null, "2026-05-19T11:59:00Z", now)).toBeNull();
+  it("classifies a null-utilization open window as unknown", () => {
+    expect(meterDisplay({ usedPct: null, resetAt: future }, now, now)).toEqual({ kind: "unknown" });
   });
 });
 
@@ -251,7 +267,7 @@ describe("SubscriptionLimitPill", () => {
     expect(meters[1].style.color).toContain("--color-text-secondary");
   });
 
-  it("shows 0% (no countdown) once the meter's resetAt has elapsed", () => {
+  it("shows an explicit 'reset' state once the meter's resetAt has elapsed", () => {
     const past = new Date(Date.now() - 60_000).toISOString();
     const future = new Date(Date.now() + 60 * 60_000).toISOString();
     const { container } = render(
@@ -263,18 +279,16 @@ describe("SubscriptionLimitPill", () => {
         })}
       />,
     );
-    // 5h window has elapsed → meter snaps to 0%, no "resets in now" text.
-    expect(screen.getByText(/5h 0%/)).toBeInTheDocument();
+    // 5h window has elapsed → muted "reset" label, not a fabricated 0%/100%.
+    expect(screen.getByText(/5h · reset/)).toBeInTheDocument();
+    expect(screen.queryByText(/5h 0%/)).toBeNull();
     expect(screen.queryByText(/5h 100%/)).toBeNull();
-    expect(screen.getByText(/5h 0%/)).not.toHaveTextContent(/resets in/);
+    // No gauge fill in the reset state — only the still-open weekly has one.
+    const fills = container.querySelectorAll<HTMLElement>("[aria-hidden]");
+    expect(fills.length).toBe(1);
     // Weekly window is still open — unchanged.
     expect(screen.getByText(/7d 91%/)).toBeInTheDocument();
     expect(screen.getByText(/7d 91%/)).toHaveTextContent(/resets in/);
-    // The post-reset meter also re-tiers (was full, now neutral) and
-    // its fill collapses to 0%.
-    const fills = container.querySelectorAll<HTMLElement>("[aria-hidden]");
-    expect(fills[0].style.width).toBe("0%");
-    expect(fills[0].style.backgroundColor).toContain("--color-text-secondary");
   });
 
   it("clamps fill width to the 0–100 range for out-of-range inputs", () => {
@@ -310,10 +324,11 @@ describe("SubscriptionLimitPill", () => {
     expect(container.querySelector("span")?.getAttribute("title")).toContain("Max 20x");
   });
 
-  it("renders countdown-only meter (no fill bar, no percentage) when usedPct is null", () => {
+  it("renders an explicit unknown state (no percentage, no countdown) when usedPct is null", () => {
     // Claude CLI 2.1.140 reports the window without `utilization` below its
-    // warning thresholds (anthropics/claude-code#50518). The pill should
-    // surface the countdown honestly rather than fake a number.
+    // warning thresholds (anthropics/claude-code#50518). The pill must read as
+    // "unknown" rather than a bare reset countdown that looks like data
+    // (docs/161).
     const future = new Date(Date.now() + 60 * 60_000).toISOString();
     const { container } = render(
       <SubscriptionLimitPill
@@ -324,14 +339,32 @@ describe("SubscriptionLimitPill", () => {
         })}
       />,
     );
-    // Countdown text is always present (not gated on >90%), no "NN%" digits.
-    expect(screen.getByText(/5h · resets in/)).toBeInTheDocument();
+    // Explicit "—" marker, no percentage, and the reset countdown is NOT the
+    // headline (it moves to the tooltip).
+    expect(screen.getByText(/5h · —/)).toBeInTheDocument();
     expect(screen.queryByText(/\d+%/)).toBeNull();
+    expect(screen.queryByText(/resets in/)).toBeNull();
     // No fill bar (`aria-hidden` is the fill div in the percentage path).
     expect(container.querySelector("[aria-hidden]")).toBeNull();
-    // Tooltip explains the absence rather than asserting a percentage.
+    // Tooltip explains the absence and points at the refresh button.
     expect(container.querySelector("span")?.getAttribute("title")).toContain(
-      "utilization not reported",
+      "usage not reported",
     );
+  });
+
+  it("dims a stale known meter", () => {
+    const future = new Date(Date.now() + 60 * 60_000).toISOString();
+    const { container } = render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({
+          session: { usedPct: 42, resetAt: future },
+          weekly: null,
+          fetchedAt: Date.now() - 20 * 60_000,
+        })}
+      />,
+    );
+    const meter = container.querySelector('[data-meter-pct="42"]');
+    expect(meter?.className).toContain("opacity-50");
   });
 });

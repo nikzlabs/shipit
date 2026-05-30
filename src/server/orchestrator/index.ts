@@ -483,6 +483,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     for (const [agentId, mgr] of authManagers) {
       mgr.on("complete", () => {
         limitsRegistry.markAuthRefreshed(agentId);
+        // docs/161 — seed one `/api/oauth/usage` baseline per sign-in so the
+        // Claude pill shows a low-usage number without waiting for the user to
+        // click refresh. Self-skips if an API snapshot already exists and is a
+        // no-op for providers without an on-demand path (Codex).
+        void limitsRegistry.refreshNow(agentId, "seed");
       });
     }
   }
@@ -798,6 +803,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     runParamsPreps,
     broadcastLog,
     sseBroadcast,
+    ...(limitsRegistry
+      ? {
+          refreshSubscriptionLimits: (agentId: AgentId, reason: "manual" | "seed") =>
+            limitsRegistry.refreshNow(agentId, reason),
+        }
+      : {}),
     getSharedRepoDir: getBareCacheDir,
     createSessionDir,
     generateText,

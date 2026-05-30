@@ -21,6 +21,14 @@ export interface SubscriptionLimitsWindow {
   usedPct: number | null;
   /** ISO timestamp of when the window resets. */
   resetAt: string;
+  /**
+   * Where this window's number came from. `"event"` = the CLI's
+   * `rate_limit_event` stream (free, live near the limit, but `usedPct` is
+   * `null` below a warning threshold). `"usage-api"` = an on-demand
+   * `/api/oauth/usage` fetch (the only source of a low-usage number). Lets
+   * the tooltip explain provenance. Absent on legacy/Codex windows.
+   */
+  source?: "event" | "usage-api";
 }
 
 export interface SubscriptionLimits {
@@ -38,6 +46,15 @@ export interface SubscriptionLimits {
   weekly: SubscriptionLimitsWindow | null;
   /** Epoch ms when this snapshot was last updated. */
   fetchedAt: number;
+  /**
+   * Epoch ms until which an on-demand `/api/oauth/usage` refresh is locked
+   * out after a 429 (Anthropic rate-limits that endpoint to a handful of
+   * calls, then 429s for ~30 min — see docs/161). The client disables the
+   * refresh button and shows a countdown while `now < lockedUntil`. Absent
+   * when not locked. Providers without an on-demand path (Codex) never set
+   * it.
+   */
+  lockedUntil?: number;
 }
 
 /**

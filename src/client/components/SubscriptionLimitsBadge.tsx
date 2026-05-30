@@ -1,4 +1,13 @@
-import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
+import { ArrowClockwiseIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { useCallback, useState } from "react";
+import { ICON_SIZE } from "../design-tokens.js";
+import { useApi } from "../hooks/useApi.js";
+import type {
+  AgentId,
+  SubscriptionLimits,
+  SubscriptionLimitsMap,
+  SubscriptionLimitsWindow,
+} from "../../server/shared/types.js";
 
 /**
  * Stable ordering of pills in the header. Matches the provider
@@ -12,20 +21,23 @@ const AGENT_LABEL: Record<AgentId, string> = {
   codex: "Codex",
 };
 
+/**
+ * A known percentage older than this reads as "stale": the number is shown
+ * dimmed and the tooltip carries its age. Claude's event numbers refresh on
+ * every turn near the limit; the `/api/oauth/usage` number only refreshes on
+ * the manual button, so at low usage it can legitimately age.
+ */
+const STALE_AFTER_MS = 15 * 60_000;
+
 interface SubscriptionLimitsBadgeProps {
   limits: SubscriptionLimitsMap;
 }
 
 /**
- * Header badge group rendering one **pill per fetchable provider**,
- * matching the chrome of `UptimeBadge` / `DockerMemoryBadge` (a single
- * `rounded-full bg-(--color-bg-hover)` pill). Inside each pill: the
- * provider label followed by up to two meters — `5h NN%` and `7d NN%`.
- * Each meter is a tier-colored number with a thin underline gauge whose
- * fill width is proportional to the percentage, so urgency reads from
- * both color and width without nesting pills inside the pill.
- *
- * See docs/135-subscription-limits-badge/plan.md.
+ * Header badge group rendering one **pill per fetchable provider** plus a
+ * single account-global refresh button (Claude only — it's the one with an
+ * on-demand `/api/oauth/usage` path). See docs/161 and
+ * docs/135-subscription-limits-badge/plan.md.
  */
 export function SubscriptionLimitsBadge({ limits }: SubscriptionLimitsBadgeProps) {
   const pills: { agentId: AgentId; snapshot: SubscriptionLimits }[] = [];
@@ -34,6 +46,8 @@ export function SubscriptionLimitsBadge({ limits }: SubscriptionLimitsBadgeProps
     if (snap) pills.push({ agentId: id, snapshot: snap });
   }
   if (pills.length === 0) return null;
+
+  const claude = limits.claude;
 
   return (
     <>
@@ -44,6 +58,7 @@ export function SubscriptionLimitsBadge({ limits }: SubscriptionLimitsBadgeProps
           snapshot={snapshot}
         />
       ))}
+      {claude && <LimitsRefreshButton snapshot={claude} />}
     </>
   );
 }
@@ -54,16 +69,21 @@ interface SubscriptionLimitPillProps {
 }
 
 export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPillProps) {
+  const now = Date.now();
   const hasData = snapshot.session !== null || snapshot.weekly !== null;
 
   return (
     <span
       className="inline-flex items-center gap-2 text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) font-medium tabular-nums text-(--color-text-secondary)"
-      title={buildTooltip(label, snapshot)}
+      title={buildTooltip(label, snapshot, now)}
     >
       <span>{label}</span>
-      {snapshot.session && <Meter shortLabel="5h" pct={snapshot.session.usedPct} resetAt={snapshot.session.resetAt} />}
-      {snapshot.weekly && <Meter shortLabel="7d" pct={snapshot.weekly.usedPct} resetAt={snapshot.weekly.resetAt} />}
+      {snapshot.session && (
+        <Meter shortLabel="5h" window={snapshot.session} fetchedAt={snapshot.fetchedAt} now={now} />
+      )}
+      {snapshot.weekly && (
+        <Meter shortLabel="7d" window={snapshot.weekly} fetchedAt={snapshot.fetchedAt} now={now} />
+      )}
       {!hasData && <span>—</span>}
     </span>
   );
@@ -71,55 +91,80 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
 
 interface MeterProps {
   shortLabel: string;
-  pct: number | null;
-  resetAt: string;
+  window: SubscriptionLimitsWindow;
+  fetchedAt: number;
+  now: number;
+}
+
+type MeterDisplay =
+  | { kind: "known"; pct: number; stale: boolean }
+  | { kind: "reset" }
+  | { kind: "unknown" };
+
+/**
+ * Classify how a window should render. The three "no live number" flavors are
+ * deliberately distinct (docs/161): a window whose reset has elapsed reads as
+ * **reset** (rolled over — the cached number is meaningless), a window the
+ * provider never gave a number for reads as **unknown** (`—`), and a known
+ * number older than `STALE_AFTER_MS` reads as **known but stale** (dimmed).
+ */
+export function meterDisplay(
+  window: SubscriptionLimitsWindow,
+  fetchedAt: number,
+  now: number,
+): MeterDisplay {
+  const resetMs = Date.parse(window.resetAt);
+  const elapsed = !Number.isNaN(resetMs) && resetMs <= now;
+  if (elapsed) return { kind: "reset" };
+  if (window.usedPct === null) return { kind: "unknown" };
+  return { kind: "known", pct: window.usedPct, stale: now - fetchedAt > STALE_AFTER_MS };
 }
 
 /**
- * A single 5h / 7d meter: tier-colored `"5h NN%"` text with a thin
- * underline gauge beneath it. The gauge's fill bar grows to `pct%` of
- * the meter's width and carries the same tier color as the text, so
- * urgency reads from both width and color. Unlike the earlier
- * full-height fill chip, the bar is a 2px underline — that keeps each
- * provider as a single pill (matching `UptimeBadge` / `DockerMemoryBadge`)
- * instead of nesting pills inside the pill. The tier colors come from
- * the per-theme `--color-context-*` tokens (shared with `ContextDial`),
- * which are tuned for contrast on both dark and light themes.
- *
- * When `pct` is `null` (Claude reported the window's existence and reset
- * time but not utilization — see anthropics/claude-code#50518) the meter
- * degrades to a countdown-only "5h · resets in 4h 12m" with no fill bar,
- * staying at the neutral secondary color. It re-upgrades to the full
- * percentage meter the moment a later event carries a number.
+ * A single 5h / 7d meter. Known windows render the tier-colored `"5h NN%"`
+ * with a thin underline gauge (dimmed when stale). Reset and unknown windows
+ * render an explicit muted label instead of a percentage so the user can tell
+ * "ShipIt doesn't know this number" from "it's 42%" at a glance — the old
+ * behavior of showing a bare reset countdown looked like real data when it
+ * wasn't (docs/161). The reset time itself moves to the tooltip in those
+ * states.
  */
-function Meter({ shortLabel, pct, resetAt }: MeterProps) {
-  // Once `resetAt` has elapsed the window has rolled over — the cached
-  // pct is no longer meaningful (badge updates on the next agent turn's
-  // rate_limit_event, so otherwise the pill would sit at "5h 100% resets
-  // in now" until the next turn lands).
-  const displayPct = effectivePct(pct, resetAt);
+function Meter({ shortLabel, window, fetchedAt, now }: MeterProps) {
+  const display = meterDisplay(window, fetchedAt, now);
 
-  if (displayPct === null) {
+  if (display.kind === "reset") {
+    return (
+      <span
+        className="inline-flex items-center whitespace-nowrap text-(--color-text-secondary)"
+        data-meter-pct="reset"
+      >
+        {shortLabel} · reset
+      </span>
+    );
+  }
+
+  if (display.kind === "unknown") {
     return (
       <span
         className="inline-flex items-center whitespace-nowrap text-(--color-text-secondary)"
         data-meter-pct="unknown"
       >
-        {shortLabel} · resets in {formatResetCountdown(resetAt)}
+        {shortLabel} · —
       </span>
     );
   }
 
-  const fillWidth = `${Math.max(0, Math.min(100, displayPct))}%`;
-  const color = tierColor(displayPct);
-  const countdown = displayPct > 90 ? formatResetCountdown(resetAt) : null;
+  const pct = display.pct;
+  const fillWidth = `${Math.max(0, Math.min(100, pct))}%`;
+  const color = tierColor(pct);
+  const countdown = pct > 90 ? formatResetCountdown(window.resetAt, now) : null;
   return (
     <span
-      className="relative inline-flex items-center whitespace-nowrap pb-0.75"
-      data-meter-pct={Math.round(displayPct)}
+      className={`relative inline-flex items-center whitespace-nowrap pb-0.75${display.stale ? " opacity-50" : ""}`}
+      data-meter-pct={Math.round(pct)}
       style={{ color }}
     >
-      {shortLabel} {formatPct(displayPct)}
+      {shortLabel} {formatPct(pct)}
       {countdown && <span className="ml-1 text-(--color-text-secondary)">resets in {countdown}</span>}
       <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-(--color-text-secondary)/25">
         <span
@@ -133,22 +178,53 @@ function Meter({ shortLabel, pct, resetAt }: MeterProps) {
 }
 
 /**
- * Returns 0 when `resetAt` is a valid timestamp that has already
- * elapsed (the window has rolled over since the last poll), otherwise
- * returns the cached `pct` unchanged. Unparseable `resetAt` values
- * preserve the cached value so a bad payload doesn't silently zero out
- * the meter. A `null` input stays `null` — the provider hasn't reported
- * utilization yet and we don't fake a number to fill the gap.
+ * Account-global refresh button. Fires a single on-demand `/api/oauth/usage`
+ * fetch (Claude) via `POST /api/limits/refresh`; the server is single-flight
+ * and 429-lockout-guarded, and the result returns over the `subscription_limits`
+ * SSE broadcast. While `lockedUntil` is in the future the button is disabled
+ * with a countdown so it can't re-trip the upstream rate limit (docs/161).
  */
-export function effectivePct(
-  pct: number | null,
-  resetAt: string,
-  nowMs = Date.now(),
-): number | null {
-  if (pct === null) return null;
-  const resetMs = Date.parse(resetAt);
-  if (!Number.isNaN(resetMs) && resetMs <= nowMs) return 0;
-  return pct;
+function LimitsRefreshButton({ snapshot }: { snapshot: SubscriptionLimits }) {
+  const api = useApi();
+  const [refreshing, setRefreshing] = useState(false);
+  const now = Date.now();
+  const locked = snapshot.lockedUntil !== undefined && snapshot.lockedUntil > now;
+  const lockCountdown = locked
+    ? formatResetCountdown(new Date(snapshot.lockedUntil!).toISOString(), now)
+    : null;
+
+  const onClick = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await api.post("/api/limits/refresh", { agentId: snapshot.agentId });
+    } catch {
+      // Swallow — the SSE broadcast (or its absence) is the source of truth;
+      // a failed refresh just leaves the last-known numbers in place.
+    } finally {
+      setRefreshing(false);
+    }
+  }, [api, snapshot.agentId]);
+
+  const title = locked
+    ? `Usage refresh rate-limited — retry in ${lockCountdown}`
+    : "Refresh usage from Anthropic";
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={refreshing || locked}
+      className="inline-flex items-center justify-center rounded-full p-1 text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-40"
+      title={title}
+      aria-label="Refresh subscription usage"
+    >
+      {refreshing ? (
+        <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+      ) : (
+        <ArrowClockwiseIcon size={ICON_SIZE.XS} />
+      )}
+    </button>
+  );
 }
 
 /**
@@ -188,26 +264,43 @@ export function formatResetCountdown(iso: string, nowMs = Date.now()): string {
   return `${days}d ${hours}h`;
 }
 
-function buildTooltip(label: string, snap: SubscriptionLimits): string {
+/** Compact "N min ago" / "just now" for a snapshot age. */
+export function formatAge(fetchedAt: number, nowMs = Date.now()): string {
+  const diffMs = nowMs - fetchedAt;
+  if (!Number.isFinite(diffMs) || diffMs < 60_000) return "just now";
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function buildTooltip(label: string, snap: SubscriptionLimits, now: number): string {
   const lines: string[] = [];
   lines.push(snap.plan ? `${label} — ${snap.plan}` : label);
-  if (snap.session) {
-    lines.push(formatWindowLine("5h window", snap.session));
-  }
-  if (snap.weekly) {
-    lines.push(formatWindowLine("Weekly", snap.weekly));
+  if (snap.session) lines.push(formatWindowLine("5h window", snap.session, now));
+  if (snap.weekly) lines.push(formatWindowLine("Weekly", snap.weekly, now));
+  lines.push(`Updated ${formatAge(snap.fetchedAt, now)}`);
+  if (snap.lockedUntil !== undefined && snap.lockedUntil > now) {
+    lines.push(
+      `Usage refresh rate-limited — retry in ${formatResetCountdown(
+        new Date(snap.lockedUntil).toISOString(),
+        now,
+      )}`,
+    );
   }
   return lines.join("\n");
 }
 
-function formatWindowLine(
-  label: string,
-  window: { usedPct: number | null; resetAt: string },
-): string {
+function formatWindowLine(label: string, window: SubscriptionLimitsWindow, now: number): string {
+  const resetMs = Date.parse(window.resetAt);
+  const elapsed = !Number.isNaN(resetMs) && resetMs <= now;
+  if (elapsed) return `${label}: just reset — refresh to update`;
   if (window.usedPct === null) {
-    return `${label}: resets ${formatReset(window.resetAt)} (utilization not reported)`;
+    return `${label}: usage not reported — click refresh to fetch (resets ${formatReset(window.resetAt)})`;
   }
-  return `${label}: ${formatPct(window.usedPct)} used (resets ${formatReset(window.resetAt)})`;
+  const src = window.source === "usage-api" ? " · from /usage" : "";
+  return `${label}: ${formatPct(window.usedPct)} used (resets ${formatReset(window.resetAt)})${src}`;
 }
 
 function formatReset(iso: string): string {

@@ -76,6 +76,23 @@ export class LimitsRegistry {
   }
 
   /**
+   * Run a provider's on-demand `/api/oauth/usage` fetch (Claude) and
+   * rebroadcast the merged snapshot. `"manual"` is the user's refresh button;
+   * `"seed"` is the once-per-sign-in baseline. No-ops for providers without an
+   * on-demand path (Codex) or unknown agents. Never throws.
+   */
+  async refreshNow(agentId: AgentId, reason: "manual" | "seed"): Promise<void> {
+    const provider = this.providers.get(agentId);
+    if (!provider?.refreshNow) return;
+    try {
+      await provider.refreshNow(reason);
+    } catch (err) {
+      console.error(`[limits] on-demand refresh for ${agentId} failed:`, err);
+    }
+    await this.refreshOne(agentId);
+  }
+
+  /**
    * Notify the registry that a provider's credentials have been cleared.
    * Deletes the cached snapshot and broadcasts so the client drops the
    * corresponding pill immediately.
@@ -110,6 +127,7 @@ export class LimitsRegistry {
     const prev = this.cache.get(agentId);
     const isChange =
       prev?.plan !== snapshot.plan ||
+      prev?.lockedUntil !== snapshot.lockedUntil ||
       !windowEqual(prev.session, snapshot.session) ||
       !windowEqual(prev.weekly, snapshot.weekly);
     this.cache.set(agentId, snapshot);
