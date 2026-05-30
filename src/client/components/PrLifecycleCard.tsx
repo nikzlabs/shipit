@@ -437,18 +437,20 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
 
   // Two-column layout so additional rows (auto-merge text, failed checks,
   // deploys) and the wrapped badges row all align under the PR title rather
-  // than getting offset by ad-hoc `pl-5` padding under the icon. `self-start`
-  // anchors this whole block to the top of the parent's centered slot so the
-  // first row's center stays at the same y as the right-side action cluster
-  // (40px h-10 box) even when the block grows multiple rows tall — both
-  // first-row anchors are `min-h-10` so the center lands at y=20.
+  // than getting offset by ad-hoc `pl-5` padding under the icon. Each first-row
+  // anchor (left badge box, title line) is `h-6` and the parent is
+  // `items-start`, so when the block grows multiple rows tall the badge and
+  // title stay centered on the first line — matching the right-side action
+  // cluster (also `h-6`, top-anchored). The card's own `py-2` then provides
+  // symmetric top/bottom padding so the last wrapped row never touches the
+  // bottom border.
   return (
-    <div className="min-w-0 flex-1 self-start flex items-start gap-x-3">
-      <div className="min-h-10 flex items-center shrink-0">
+    <div className="min-w-0 flex-1 flex items-start gap-x-3">
+      <div className="h-6 flex items-center shrink-0">
         <PrStateBadge sessionId={sessionId} url={pr.url} prNumber={pr.number} />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="min-h-10 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <div className="flex-1 min-w-0 flex items-center">
             <BranchLabel
               baseBranch={pr.baseBranch}
@@ -756,12 +758,12 @@ export function PrLifecycleCard({
       key={sessionId}
       onClick={handleClick}
       title={clickable ? "Open PR details" : undefined}
-      className={`shrink-0 flex items-start gap-2 px-4 border-b border-(--color-border-primary) ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
+      className={`shrink-0 flex items-start gap-2 px-4 py-2 border-b border-(--color-border-primary) ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
     >
-      <div className="min-w-0 flex-1 min-h-10 flex items-center">
+      <div className="min-w-0 flex-1 flex items-center">
         {phaseContent}
       </div>
-      <div className="shrink-0 h-10 flex items-center gap-1">
+      <div className="shrink-0 h-6 flex items-center gap-1">
         {onSearch && (
           <button
             onClick={onSearch}
