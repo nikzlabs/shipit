@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 description: Show Claude subscription limits at low usage (where the CLI stream reports nothing) via a budget-aware manual refresh of /api/oauth/usage, without reintroducing the 429 lockout.
 ---
@@ -113,6 +113,37 @@ the freshest near-limit number; the manual/sign-in API number fills the
 baseline whenever the event stream has only `usedPct: null`. Track a per-window
 `source` + `fetchedAt` so the tooltip can say where the number came from and how
 old it is.
+
+## Pill display states (the confusing-information fix)
+
+The current pill renders `Claude 5h · resets in 4h` whenever `usedPct` is
+`null` — a reset countdown with **no percentage**, which *looks* like real
+usage data but actually means "we don't know your usage." That's the confusing
+state. Each window must instead read its state explicitly. Per window, from
+`usedPct`, `resetAt`, and the snapshot's `fetchedAt`:
+
+| State | Condition | Pill text | Gauge | Tooltip |
+|-------|-----------|-----------|-------|---------|
+| **Known** | `usedPct != null`, `resetAt` not elapsed | `5h 42%` (tier color; countdown appended above 90%) | yes | `5h window: 42% used (resets …)` + age |
+| **Just reset** | `resetAt` elapsed | `5h · reset` (muted) | no | `5h window just rolled over — usage ~empty, refresh to confirm` |
+| **Unknown** | `usedPct == null`, not elapsed | `5h · —` (muted) | no | `Usage not reported yet — run a turn near the limit or click refresh. Resets …` |
+| **Stale** | Known but `now − fetchedAt` > 15 min | same as Known, **dimmed** | yes, dimmed | `… (updated N min ago)` |
+
+Key rule: **the reset countdown is never the headline for Unknown.** It moves
+to the tooltip; the visible text is an explicit "—" so the user can tell at a
+glance "ShipIt doesn't know this number" from "ShipIt knows it's 42%." Stale vs.
+just-reset vs. never-known are the three flavors of "no live number," and the
+user asked for them to be visually distinct — Unknown shows `—`, Just-reset
+shows `reset`, Stale shows a dimmed last-known number with an age in the tooltip.
+
+The **refresh button** (`⟳`) sits at the end of the pill group (account-global,
+one button, not per-window). States:
+
+- **Idle** — clickable; click → `POST /api/limits/refresh` → single-flight
+  `/api/oauth/usage` fetch → SSE rebroadcast.
+- **In-flight** — spinner while the fetch is outstanding.
+- **Locked** — disabled with a countdown title (`Rate-limited — retry in N min`)
+  while `lockedUntil` is in the future, so it can't re-trip the 429.
 
 ## On the manual button vs. product principle §5
 

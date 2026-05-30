@@ -1,28 +1,29 @@
 # 161 checklist
 
 ## Server
-- [ ] Add single-flight `/api/oauth/usage` fetch to `ClaudeLimitsProvider` (OAuth bearer, schema parse)
-- [ ] Lockout state: record `lockedUntil` on 429 (Retry-After or 30min default); no-op triggers while locked
-- [ ] Reuse `isAccessTokenExpired` pre-check; skip doomed request, keep last-known on skip
-- [ ] Merge rule: event `usedPct` (non-null) wins; API number fills `null` windows; track `source` + `fetchedAt`
-- [ ] `refreshNow()` entry point on registry/provider; broadcast updated snapshot over SSE
+- [x] Add single-flight `/api/oauth/usage` fetch to `ClaudeLimitsProvider` (OAuth bearer, schema parse)
+- [x] Lockout state: record `lockedUntil` on 429 (Retry-After or 30min default); no-op triggers while locked
+- [x] Reuse access-token expiry pre-check; skip doomed request, keep last-known on skip
+- [x] Merge rule: event `usedPct` (non-null) wins; API number fills `null` windows; track `source` + `fetchedAt`
+- [x] `refreshNow()` entry point on registry/provider; broadcast updated snapshot over SSE
 
 ## Triggers
-- [ ] One fetch on Claude `auth_complete` (sign-in baseline)
-- [ ] `refresh_subscription_limits` WS message (or HTTP route) + handler → `refreshNow()`
-- [ ] Confirm NO automatic per-turn fetch is wired
+- [x] One fetch on Claude `auth_complete` (sign-in baseline, `"seed"`)
+- [x] `POST /api/limits/refresh` route + `refreshSubscriptionLimits` dep → `refreshNow("manual")`
+- [x] Confirm NO automatic per-turn fetch is wired
 
 ## Client
-- [ ] Refresh glyph on `SubscriptionLimitsBadge` pill
-- [ ] Disabled + countdown while `lockedUntil` in the future
-- [ ] Tooltip shows source (event vs. usage endpoint) + age
+- [x] Refresh glyph on `SubscriptionLimitsBadge` pill group (Claude)
+- [x] Disabled + countdown while `lockedUntil` in the future
+- [x] Explicit unknown (`—`) / reset / stale (dimmed) meter states
+- [x] Tooltip shows source (`/usage`) + age + lock state
 
 ## Types
-- [ ] Extend `usage-limits-types.ts` with `source` / `lockedUntil` as needed
-- [ ] Extend `LimitsProvider` interface if `refreshNow()` is added there
+- [x] Extend `usage-limits-types.ts` with window `source` + snapshot `lockedUntil`
+- [x] Extend `LimitsProvider` interface with optional `refreshNow()`
 
 ## Verify
-- [ ] At low usage, click refresh → real percentage appears
-- [ ] Spamming refresh stays disabled during lockout; never re-trips 429
-- [ ] Near-limit live event still overrides the manual number
-- [ ] lint:dev + typecheck clean
+- [x] Provider unit tests: merge, 429 lockout, seed self-skip, event-wins
+- [x] Badge unit tests: unknown/reset/stale states, formatAge, meterDisplay
+- [x] lint:dev + typecheck clean
+- [ ] Manual browser check: low-usage click → percentage appears; locked button greys out (not done — dev preview is heavy/manual; verified via tests only)

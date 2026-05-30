@@ -46,6 +46,7 @@ import { registerMcpRoutes } from "./api-routes-mcp.js";
 import { registerReviewRoutes } from "./api-routes-reviews.js";
 import { registerUpdateRoutes } from "./api-routes-updates.js";
 import { registerAgentRoutes } from "./api-routes-agent.js";
+import { registerLimitsRoutes } from "./api-routes-limits.js";
 import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
 import type { SecretStore } from "./secret-store.js";
@@ -107,6 +108,12 @@ export interface ApiDeps {
   runParamsPreps: Map<AgentId, PrepareRunParamsFn>;
   broadcastLog: (sessionId: string, source: "stderr" | "stdout" | "server" | "preview" | "install", text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
+  /**
+   * docs/161 — run a provider's on-demand `/api/oauth/usage` refresh and
+   * rebroadcast over SSE. Backs the header pill's refresh button. Omitted in
+   * test mode (no `LimitsRegistry`); the route then 503s.
+   */
+  refreshSubscriptionLimits?: (agentId: AgentId, reason: "manual" | "seed") => Promise<void>;
   getSharedRepoDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
   // Phase 3 additions
@@ -256,7 +263,11 @@ export async function registerApiRoutes(
   }
   await registerUpdateRoutes(app);
   await registerAgentRoutes(app, deps);
+<<<<<<< HEAD
   await registerVoiceRoutes(app, deps);
+=======
+  await registerLimitsRoutes(app, deps);
+>>>>>>> 720469723 (The feature is complete and the user has been notified. All tasks are marked done, quality gates pass, and PR #846 refle)
 
   // Marketplace catalogs (docs/149). Wired only when a store is provided so
   // test setups that don't need this surface keep their route table minimal.
