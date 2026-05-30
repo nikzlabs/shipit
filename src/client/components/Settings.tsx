@@ -240,7 +240,7 @@ function LiveSteeringSettings() {
         <div className="flex items-center justify-between py-1 gap-4">
           <div>
             <span className="text-sm text-(--color-text-primary)">Inject messages mid-turn</span>
-            <p className="text-xs text-(--color-text-tertiary)">Send a message while the agent is running to steer it without waiting for the turn to finish. Experimental — toggle off to return to the stable queue-based mode.</p>
+            <p className="text-xs text-(--color-text-tertiary)">Send a message while the agent is running to steer it without waiting for the turn to finish. On by default — it also keeps the agent process alive across interrupts so answering an AskUserQuestion or continuing after a stop works cleanly. Toggle off to return to the queue-based mode (one process per turn).</p>
           </div>
           <ToggleSwitch enabled={liveSteering} onToggle={(v) => void handleToggle(v)} testId="settings-live-steering" />
         </div>

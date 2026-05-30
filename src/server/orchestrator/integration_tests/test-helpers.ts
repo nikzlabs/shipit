@@ -824,7 +824,14 @@ export function createTestCredentialStore(tmpDir: string): CredentialStore {
   const credDir = path.join(tmpDir, "credentials");
   initGlobalGitConfig(credDir);
   setGitIdentity("Test User", "test@test.com");
-  return new CredentialStore(credDir);
+  const store = new CredentialStore(credDir);
+  // Production defaults `liveSteering` ON (persistent streaming process). The
+  // broad integration suite asserts the one-shot / `done`-based turn flow, so
+  // pin the fixture OFF to keep that path under test. The streaming path has
+  // dedicated coverage in live-steering.test.ts / ask-user-question.test.ts,
+  // which opt in via `setLiveSteering(true)`.
+  store.setLiveSteering(false);
+  return store;
 }
 
 /** Create an in-memory DatabaseManager for tests. */
