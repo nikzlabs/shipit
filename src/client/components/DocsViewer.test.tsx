@@ -495,7 +495,7 @@ describe("DocsViewer", () => {
           modifiedAt: "2026-01-03T00:00:00.000Z",
         }),
       ];
-      render(<DocsViewer {...props} sessionStartedAt="2026-01-01T00:00:00.000Z" />);
+      render(<DocsViewer {...props} />);
 
       // The checklist has its own status frontmatter, but the plan is still
       // the only primary list row for the feature.
@@ -596,31 +596,24 @@ describe("DocsViewer", () => {
   });
 
   describe("modified-in-session group", () => {
-    const SESSION_START = "2026-01-01T00:00:00.000Z";
-    const BEFORE = "2025-12-01T00:00:00.000Z";
-    const AFTER_1 = "2026-01-02T00:00:00.000Z";
-    const AFTER_2 = "2026-01-03T00:00:00.000Z";
+    // `modifiedAt` (mtime) now only orders the group; membership is driven by
+    // the server-computed `changedInSession` flag.
+    const OLDER = "2026-01-02T00:00:00.000Z";
+    const NEWER = "2026-01-03T00:00:00.000Z";
 
-    it("does not render the group when sessionStartedAt is missing", () => {
+    it("does not render the group when no doc is flagged changedInSession", () => {
       const props = defaultProps();
-      props.files = [makeDoc({ path: "a.md", title: "A", status: "planned", modifiedAt: AFTER_1 })];
+      props.files = [makeDoc({ path: "a.md", title: "A", status: "planned", modifiedAt: NEWER })];
       render(<DocsViewer {...props} />);
       expect(screen.queryByText("Modified in this session")).not.toBeInTheDocument();
     });
 
-    it("does not render the group when no doc was modified after session start", () => {
-      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
-      props.files = [makeDoc({ path: "a.md", title: "A", status: "planned", modifiedAt: BEFORE })];
-      render(<DocsViewer {...props} />);
-      expect(screen.queryByText("Modified in this session")).not.toBeInTheDocument();
-    });
-
-    it("surfaces session-modified docs at the top, sorted by recency", () => {
-      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+    it("surfaces changedInSession docs at the top, sorted by recency", () => {
+      const props = defaultProps();
       props.files = [
-        makeDoc({ path: "docs/001-old/plan.md", title: "Old", status: "planned", modifiedAt: BEFORE }),
-        makeDoc({ path: "docs/002-recent/plan.md", title: "Recent", status: "planned", modifiedAt: AFTER_1 }),
-        makeDoc({ path: "docs/003-newest/plan.md", title: "Newest", status: "in-progress", modifiedAt: AFTER_2 }),
+        makeDoc({ path: "docs/001-old/plan.md", title: "Old", status: "planned", modifiedAt: OLDER }),
+        makeDoc({ path: "docs/002-recent/plan.md", title: "Recent", status: "planned", changedInSession: true, modifiedAt: OLDER }),
+        makeDoc({ path: "docs/003-newest/plan.md", title: "Newest", status: "in-progress", changedInSession: true, modifiedAt: NEWER }),
       ];
       render(<DocsViewer {...props} />);
       expect(screen.getByText("Modified in this session")).toBeInTheDocument();
@@ -629,39 +622,39 @@ describe("DocsViewer", () => {
           btn.getAttribute("aria-label") !== "Search docs" &&
           !btn.textContent?.includes("Reload"),
       );
-      // Most recently modified first.
+      // Most recently modified first (mtime tiebreaks within the changed set).
       expect(items[0].textContent).toContain("Newest");
       expect(items[1].textContent).toContain("Recent");
-      // Old (modified before session) appears in the regular Tracked section below.
+      // Old (not changed this session) appears in the regular Tracked section below.
       expect(items[2].textContent).toContain("Old");
     });
 
     it("renders a Modified badge on docs in the session-modified group", () => {
-      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+      const props = defaultProps();
       props.files = [
-        makeDoc({ path: "a.md", title: "A", status: "planned", modifiedAt: AFTER_1 }),
+        makeDoc({ path: "a.md", title: "A", status: "planned", changedInSession: true }),
       ];
       render(<DocsViewer {...props} />);
       expect(screen.getByText("Modified")).toBeInTheDocument();
     });
 
     it("excludes session-modified docs from the regular tab counts", () => {
-      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+      const props = defaultProps();
       props.files = [
-        makeDoc({ path: "a.md", title: "A", status: "in-progress", modifiedAt: AFTER_1 }),
-        makeDoc({ path: "b.md", title: "B", status: "planned", modifiedAt: BEFORE }),
+        makeDoc({ path: "a.md", title: "A", status: "in-progress", changedInSession: true }),
+        makeDoc({ path: "b.md", title: "B", status: "planned" }),
         makeDoc({ path: "README.md", title: "README" }),
       ];
       render(<DocsViewer {...props} />);
-      // "A" was modified in session → moved to top group, leaving 1 tracked + 1 other.
+      // "A" was changed in session → moved to top group, leaving 1 tracked + 1 other.
       expect(screen.getByText("Tracked (1)")).toBeInTheDocument();
       expect(screen.getByText("Other (1)")).toBeInTheDocument();
     });
 
     it("includes untracked (no-status) docs in the session-modified group", () => {
-      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+      const props = defaultProps();
       props.files = [
-        makeDoc({ path: "NOTES.md", title: "NOTES", modifiedAt: AFTER_1 }),
+        makeDoc({ path: "NOTES.md", title: "NOTES", changedInSession: true }),
       ];
       render(<DocsViewer {...props} />);
       expect(screen.getByText("Modified in this session")).toBeInTheDocument();
@@ -673,19 +666,19 @@ describe("DocsViewer", () => {
       // this session. The two derive the same display title from the parent
       // directory name, so listing both would render as a visual duplicate.
       // The checklist remains reachable via the modal's sibling tabs.
-      const props = { ...defaultProps(), sessionStartedAt: SESSION_START };
+      const props = defaultProps();
       props.files = [
         makeDoc({
           path: "docs/124-feature/plan.md",
           title: "Feature",
           status: "planned",
           priority: "high",
-          modifiedAt: AFTER_1,
+          changedInSession: true,
         }),
         makeDoc({
           path: "docs/124-feature/checklist.md",
           title: "Feature",
-          modifiedAt: AFTER_2,
+          changedInSession: true,
         }),
       ];
       render(<DocsViewer {...props} />);

@@ -174,10 +174,19 @@ export interface DocEntry {
    */
   description?: string;
   /**
-   * File mtime as ISO 8601 string. Used by the client to surface docs that
-   * were modified during the current session at the top of the docs tab.
+   * File mtime as ISO 8601 string. Retained for display/sorting, but NOT used
+   * to decide "modified in this session" — git rewrites mtimes on checkout,
+   * which produced false positives. See `changedInSession`.
    */
   modifiedAt?: string;
+  /**
+   * True when this doc was actually changed in the current session, as
+   * determined server-side from git (committed branch changes since divergence
+   * from the base branch, plus uncommitted edits). Authoritative replacement
+   * for the old mtime-vs-session-start heuristic. Absent when git state could
+   * not be resolved.
+   */
+  changedInSession?: boolean;
   /**
    * Checkbox progress aggregated from `- [ ]` / `- [x]` items at any
    * indentation level. For a tracked plan, this comes from its sibling

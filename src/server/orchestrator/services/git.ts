@@ -134,6 +134,41 @@ export async function getTurnDiff(
   };
 }
 
+/**
+ * Repo-relative paths changed in the current session: everything committed on
+ * this branch since it diverged from the base branch, plus uncommitted
+ * working-tree changes. This is the authoritative "what did the agent touch
+ * this session" signal — far more reliable than file mtimes, which git
+ * rewrites on every checkout/fetch/reset and thus produce false positives for
+ * files the session never modified.
+ *
+ * Best-effort: returns an empty set when there's no resolvable base branch or
+ * no merge-base (e.g. a brand-new local project), so callers degrade to
+ * flagging nothing rather than flagging everything.
+ */
+export async function getSessionChangedPaths(
+  git: GitManager,
+  baseBranch = "main",
+): Promise<Set<string>> {
+  const paths = new Set<string>();
+
+  const baseRef = await git.resolveBaseBranchRef(baseBranch);
+  if (baseRef) {
+    const mergeBaseHash = await git.mergeBase(baseRef, "HEAD");
+    if (mergeBaseHash) {
+      const committed = await git.diffNameStatus(mergeBaseHash, "HEAD");
+      for (const entry of committed) {
+        paths.add(entry.path);
+        if (entry.oldPath) paths.add(entry.oldPath);
+      }
+    }
+  }
+
+  for (const p of await git.uncommittedPaths()) paths.add(p);
+
+  return paths;
+}
+
 /** Get full diff between current HEAD and a base branch (for PR diffs). */
 export async function getDiffVsBranch(
   git: GitManager,
