@@ -3,10 +3,11 @@
  */
 
 import fs from "node:fs/promises";
+import os from "node:os";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo } from "../../shared/types.js";
-import { getTemplate, applyTemplate as applyTemplateFiles, generatePackageLock } from "../templates.js";
+import { getTemplate, applyTemplate as applyTemplateFiles, generatePackageLock, OPS_TEMPLATE_ID } from "../templates.js";
 import { ServiceError } from "./types.js";
 
 /** Create a GitHub repo with a template applied, committed, and pushed.
@@ -75,8 +76,17 @@ export async function applyTemplate(
   if (!templateId || typeof templateId !== "string" || !templateId.trim()) {
     throw new ServiceError(400, "Template ID is required");
   }
-  const template = getTemplate(templateId.trim());
+  const trimmedTemplateId = templateId.trim();
+  const template = getTemplate(trimmedTemplateId);
   if (!template) throw new ServiceError(400, `Unknown template: ${templateId}`);
+
+  const isOps = trimmedTemplateId === OPS_TEMPLATE_ID;
+  // docs/128 — the privileged ops template only ever bootstraps a *fresh*
+  // session. Refusing an existing sessionId prevents an ordinary session from
+  // being retrofitted into a privileged one via this route.
+  if (isOps && sessionId) {
+    throw new ServiceError(400, "Ops session must be created fresh (use sessionId 'new')");
+  }
 
   let appSessionId = sessionId;
   let sessionDir: string;
@@ -86,13 +96,18 @@ export async function applyTemplate(
     if (!session?.workspaceDir) throw new ServiceError(404, "Session not found");
     sessionDir = session.workspaceDir;
   } else {
-    const created = await createSessionDir(template.name);
+    const created = await createSessionDir(isOps ? `Ops — ${os.hostname()}` : template.name);
     appSessionId = created.appSessionId;
     sessionDir = created.workspaceDir;
     // New session directory needs git init before we can commit template files
     const newGit = createGitManager(sessionDir);
     await newGit.init();
   }
+
+  // docs/128 — set the server-authoritative kind BEFORE the agent container can
+  // ever boot. This single field (never a workspace file) gates the privileged
+  // journal mounts + read-only Docker proxy in container-lifecycle.ts.
+  if (isOps) sessionManager.setKind(appSessionId, "ops");
 
   await applyTemplateFiles(template, sessionDir);
   if (template.files["package.json"]) {

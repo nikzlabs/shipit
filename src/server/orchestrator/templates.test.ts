@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listTemplates, getTemplate, applyTemplate } from "./templates.js";
+import { listTemplates, getTemplate, applyTemplate, OPS_TEMPLATE_ID } from "./templates.js";
 
 describe("listTemplates", () => {
   it("returns all 12 templates", () => {
@@ -49,6 +49,38 @@ describe("getTemplate", () => {
 
   it("returns undefined for unknown ID", () => {
     expect(getTemplate("nonexistent")).toBeUndefined();
+  });
+
+  // docs/128 — the ops template is resolvable by id (the gated Settings route
+  // applies it) but deliberately absent from listTemplates() so it never shows
+  // up in the ordinary "new project" picker.
+  it("resolves the ops template by id but hides it from listTemplates()", () => {
+    const ops = getTemplate(OPS_TEMPLATE_ID);
+    expect(ops).toBeDefined();
+    expect(ops!.category).toBe("utility");
+    expect(listTemplates().some((t) => t.id === OPS_TEMPLATE_ID)).toBe(false);
+  });
+
+  it("ops template embeds the proxy compose + allow-listed journal host mounts", () => {
+    const ops = getTemplate(OPS_TEMPLATE_ID)!;
+    expect(Object.keys(ops.files)).toEqual(
+      expect.arrayContaining([
+        "README.md",
+        "shipit.yaml",
+        "docker-compose.yml",
+        "prompts/investigate-loop.md",
+        "prompts/diagnose-stuck-session.md",
+        "prompts/daily-health.md",
+      ]),
+    );
+    // The proxy mounts the real socket read-only; nothing else gets it.
+    expect(ops.files["docker-compose.yml"]).toContain("docker-socket-proxy");
+    expect(ops.files["docker-compose.yml"]).toContain("/var/run/docker.sock:/var/run/docker.sock:ro");
+    expect(ops.files["docker-compose.yml"]).toContain("POST: 0");
+    // Only the journal paths are declared as host mounts — never the socket.
+    expect(ops.files["shipit.yaml"]).toContain("x-shipit-host-mounts");
+    expect(ops.files["shipit.yaml"]).toContain("/var/log/journal");
+    expect(ops.files["shipit.yaml"]).not.toContain("docker.sock");
   });
 
   it("returns template with files for every known template", () => {

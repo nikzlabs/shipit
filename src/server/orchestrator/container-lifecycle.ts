@@ -18,6 +18,7 @@ import {
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import type { HostMount } from "../shared/shipit-config.js";
 import {
   ensureSessionCredentialsScaffold,
   perSessionCredentialsDir,
@@ -29,6 +30,15 @@ import {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CPU_PERIOD = 100_000; // 100ms
+
+/**
+ * docs/128 — DNS target an ops session's agent uses to reach the Docker daemon.
+ * Points at the `docker-socket-proxy` compose sibling (a read-only proxy that
+ * mounts the real host socket and rejects mutating endpoints), reachable by
+ * service name once the agent joins the session compose network. The ops agent
+ * never mounts the real socket; all Docker access flows through this proxy.
+ */
+export const OPS_DOCKER_HOST = "tcp://docker-socket-proxy:2375";
 
 // ---------------------------------------------------------------------------
 // Internal types for dependency injection
@@ -61,6 +71,8 @@ export interface LifecycleDeps {
 
 interface MountSpec {
   binds: string[];
+  /** docs/128 — read-only host bind mounts (journal paths), ops sessions only. */
+  hostBinds: string[];
   mounts: {
     Type: "volume"; Source: string; Target: string; ReadOnly?: boolean;
     VolumeOptions?: { Subpath?: string };
@@ -77,6 +89,7 @@ export function buildMounts(
   credentialsVolume: string | undefined,
 ): MountSpec {
   const binds: string[] = [];
+  const hostBinds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
   const workspaceDir = CONTAINER_WORKSPACE_DIR;
   // config.workspaceDir is the git repo directory (session.workspaceDir).
@@ -146,7 +159,25 @@ export function buildMounts(
     }
   }
 
-  return { binds, mounts, workspaceDir };
+  // docs/128 — privileged read-only host mounts for ops sessions. These are
+  // gated on `config.opsSession`, which the caller derives from the
+  // server-authoritative `session.kind === "ops"`. A non-ops session that
+  // forged `x-shipit-host-mounts` in its shipit.yaml never reaches here with
+  // `opsSession` set, so its mounts are silently dropped.
+  if (config.opsSession && config.hostMounts) {
+    for (const m of config.hostMounts) {
+      // Only bind a host path that actually exists — journald storage is
+      // platform-specific (/var/log/journal vs /run/log/journal), so the
+      // template declares both and we mount whichever is present. Docker would
+      // otherwise auto-create a missing source as an empty dir, masking the
+      // real journal and confusing the agent's investigation prompts.
+      if (fs.existsSync(m.source)) {
+        hostBinds.push(`${m.source}:${m.target}:ro`);
+      }
+    }
+  }
+
+  return { binds, hostBinds, mounts, workspaceDir };
 }
 
 export function buildEnv(
@@ -184,6 +215,11 @@ export function buildEnv(
     env.push(`DOCKER_HOST=tcp://${dockerProxyHost}:${dockerProxyPort}`);
     const sessionPrefix = config.sessionId.slice(0, 12);
     env.push(`COMPOSE_PROJECT_NAME=shipit-${sessionPrefix}`);
+  } else if (config.opsSession) {
+    // docs/128 — ops sessions do NOT get the read-write session docker-proxy.
+    // Instead the agent reaches Docker read-only through the docker-socket-proxy
+    // compose sibling, joined over the session compose network by DNS name.
+    env.push(`DOCKER_HOST=${OPS_DOCKER_HOST}`);
   }
   if (config.env) {
     for (const [key, value] of Object.entries(config.env)) {
@@ -267,11 +303,14 @@ export async function createContainer(
     );
   }
 
-  const { binds, mounts, workspaceDir } = buildMounts(
+  const { binds, hostBinds, mounts, workspaceDir } = buildMounts(
     config,
     deps.workspaceVolume,
     deps.credentialsVolume,
   );
+  // docs/128 — privileged read-only host binds (ops sessions only) are appended
+  // to the regular workspace/credential binds.
+  const allBinds = [...binds, ...hostBinds];
 
   const env = buildEnv(
     config,
@@ -284,8 +323,10 @@ export async function createContainer(
   // Expose orchestrator API so the agent can query service status/logs
   env.push(...await buildOrchestratorCallbackEnv(config.sessionId));
 
-  // Use Docker-capable image when Docker access is requested
-  const imageName = (config.dockerAccess && deps.dockerImageName)
+  // Use Docker-capable image when Docker access is requested, or for ops
+  // sessions (docs/128) — the ops agent runs `docker ps/logs/inspect` against
+  // the read-only proxy, so it needs the docker CLI baked into that image.
+  const imageName = ((config.dockerAccess || config.opsSession) && deps.dockerImageName)
     ? deps.dockerImageName
     : config.imageName;
 
@@ -356,7 +397,7 @@ export async function createContainer(
         ...config.extraLabels,
       },
       HostConfig: {
-        Binds: binds.length > 0 ? binds : undefined,
+        Binds: allBinds.length > 0 ? allBinds : undefined,
         Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
         Memory: config.memoryLimit,
         CpuQuota: config.cpuQuota,
@@ -579,6 +620,10 @@ export function buildContainerConfig(
     cpuQuota?: number;
     pidsLimit?: number;
     dockerAccess?: boolean;
+    /** docs/128 — privileged ops session (read-only Docker proxy + journal mounts). */
+    opsSession?: boolean;
+    /** docs/128 — allow-listed read-only host mounts; applied only when opsSession. */
+    hostMounts?: HostMount[];
   },
 ): ContainerConfig {
   return {
@@ -594,5 +639,7 @@ export function buildContainerConfig(
     pidsLimit: opts.pidsLimit ?? deps.defaultPidsLimit,
     env: opts.env,
     dockerAccess: opts.dockerAccess,
+    opsSession: opts.opsSession,
+    hostMounts: opts.opsSession ? opts.hostMounts : undefined,
   };
 }

@@ -9,8 +9,10 @@ import {
   buildOrchestratorCallbackEnv,
   buildContainerConfig,
   DEP_CACHE_CONTAINER_PATH,
+  OPS_DOCKER_HOST,
 } from "./container-lifecycle.js";
 import type { ContainerConfig } from "./session-container.js";
+import type { HostMount } from "../shared/shipit-config.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -81,6 +83,64 @@ describe("buildMounts", () => {
 });
 
 // ---------------------------------------------------------------------------
+// docs/128 — ops session host-mount security gate
+//
+// The whole point of these tests: privileged read-only host binds are applied
+// ONLY when the caller passes `opsSession: true`, which is derived from the
+// server-authoritative `session.kind === "ops"`. A non-ops session that forged
+// `x-shipit-host-mounts` in its workspace shipit.yaml must NOT get host binds —
+// otherwise the agent (which can write its own workspace) could mount arbitrary
+// host paths and exfiltrate the host. We use real existing/nonexistent paths so
+// the `fs.existsSync` allow-check runs for real, no fs mocking.
+// ---------------------------------------------------------------------------
+
+describe("buildMounts — ops session host mounts (docs/128)", () => {
+  // `/tmp` exists on every test host; the bogus path does not. The gate only
+  // binds sources that actually exist, so these two stand in for "journal
+  // present" vs "journal absent".
+  const presentMount: HostMount = { source: "/tmp", target: "/var/log/journal", readOnly: true };
+  const absentMount: HostMount = {
+    source: "/nonexistent-shipit-ops-test-path-xyz",
+    target: "/run/log/journal",
+    readOnly: true,
+  };
+
+  it("binds existing host paths read-only when opsSession is true", () => {
+    const config = baseConfig({ opsSession: true, hostMounts: [presentMount] });
+    const result = buildMounts(config, undefined, undefined);
+    expect(result.hostBinds).toContain("/tmp:/var/log/journal:ro");
+  });
+
+  it("SECURITY: drops host mounts when opsSession is false even if hostMounts is forged", () => {
+    // Simulates a non-ops session whose user-controlled shipit.yaml declared
+    // host mounts. The server gate keys off kind, not the workspace file, so
+    // `opsSession` is falsy here and nothing is bound.
+    const config = baseConfig({ opsSession: false, hostMounts: [presentMount] });
+    const result = buildMounts(config, undefined, undefined);
+    expect(result.hostBinds).toHaveLength(0);
+  });
+
+  it("SECURITY: drops host mounts when opsSession is undefined", () => {
+    const config = baseConfig({ hostMounts: [presentMount] });
+    const result = buildMounts(config, undefined, undefined);
+    expect(result.hostBinds).toHaveLength(0);
+  });
+
+  it("skips a declared host mount whose source path does not exist", () => {
+    const config = baseConfig({ opsSession: true, hostMounts: [presentMount, absentMount] });
+    const result = buildMounts(config, undefined, undefined);
+    expect(result.hostBinds).toContain("/tmp:/var/log/journal:ro");
+    expect(result.hostBinds.some((b) => b.includes("nonexistent"))).toBe(false);
+  });
+
+  it("produces no host binds for an ops session with no declared mounts", () => {
+    const config = baseConfig({ opsSession: true });
+    const result = buildMounts(config, undefined, undefined);
+    expect(result.hostBinds).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildEnv
 // ---------------------------------------------------------------------------
 
@@ -110,6 +170,29 @@ describe("buildEnv", () => {
     expect(env).toContain("WORKSPACE_DIR=/workspace");
     expect(env).toContain("WORKER_PORT=9100");
     expect(env).toContain("HOME=/root");
+  });
+
+  it("docs/128: points an ops session at the read-only docker-socket-proxy", () => {
+    const config = baseConfig({ opsSession: true });
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
+    expect(env).toContain(`DOCKER_HOST=${OPS_DOCKER_HOST}`);
+    // Ops sessions do NOT get the read-write session compose project name.
+    expect(env.some((e) => e.startsWith("COMPOSE_PROJECT_NAME="))).toBe(false);
+  });
+
+  it("docs/128 SECURITY: a non-ops session never gets DOCKER_HOST from the ops branch", () => {
+    const config = baseConfig({ opsSession: false });
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
+    expect(env.some((e) => e.startsWith("DOCKER_HOST="))).toBe(false);
+  });
+
+  it("docs/128: dockerAccess (read-write proxy) takes precedence over the ops branch", () => {
+    // A session can't be both, but if both flags were set the read-write proxy
+    // path wins and the ops read-only host must not be applied.
+    const config = baseConfig({ dockerAccess: true, opsSession: true });
+    const env = buildEnv(config, "/workspace", 9100, "docker-proxy", 2375);
+    expect(env).toContain("DOCKER_HOST=tcp://docker-proxy:2375");
+    expect(env).not.toContain(`DOCKER_HOST=${OPS_DOCKER_HOST}`);
   });
 
   it("passes through a stable orchestrator host override for worker callbacks", async () => {

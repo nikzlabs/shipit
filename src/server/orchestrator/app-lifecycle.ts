@@ -210,6 +210,8 @@ export interface RunnerFactoryDeps {
   deps: AppDeps;
   containerManager: SessionContainerManager | null;
   credentialsDir: string;
+  /** docs/128 — used to resolve a session's server-authoritative `kind` (ops). */
+  sessionManager?: SessionManager;
   /** Runtime mode — selects ContainerSessionRunner vs in-process SessionRunner. */
   runtimeMode: RuntimeMode;
   /**
@@ -257,6 +259,9 @@ async function createContainerForRunner(opts: {
   depCacheDir?: string;
   /** Destroy any existing (stale) container under this sessionId first. */
   destroyExisting: boolean;
+  /** docs/128 — true when the session's server-side `kind === "ops"`. Enables
+   *  the privileged journal mounts + read-only Docker proxy wiring. */
+  opsSession?: boolean;
   /** Optional qualifier appended to the failure broadcast (e.g. "from standby fallback"). */
   failureContext?: string;
   broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
@@ -286,6 +291,7 @@ async function createContainerForRunner(opts: {
       workspaceDir: opts.workspaceDir,
       credentialsDir: opts.credentialsDir,
       depCacheDir: opts.depCacheDir,
+      opsSession: opts.opsSession,
     });
     const createStart = Date.now();
     const sc = await mgr.create(config);
@@ -325,7 +331,7 @@ async function createContainerForRunner(opts: {
 export function buildRunnerFactory(
   factoryDeps: RunnerFactoryDeps,
 ): SessionRunnerFactory | undefined {
-  const { deps, containerManager, credentialsDir, runtimeMode, broadcastLog, oomBreaker } = factoryDeps;
+  const { deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker } = factoryDeps;
 
   // Explicit injection always wins (tests, custom orchestrations).
   if (deps.runnerFactory) return deps.runnerFactory;
@@ -406,6 +412,7 @@ export function buildRunnerFactory(
           credentialsDir,
           depCacheDir: o.depCacheDir,
           destroyExisting: false,
+          opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
           failureContext: "from standby fallback",
           broadcastLog,
           oomBreaker,
@@ -431,6 +438,7 @@ export function buildRunnerFactory(
       credentialsDir,
       depCacheDir: o.depCacheDir,
       destroyExisting: !!existing,
+      opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
       broadcastLog,
       oomBreaker,
     });

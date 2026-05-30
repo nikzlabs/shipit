@@ -66,6 +66,16 @@ export interface SessionInfo {
   /** Agent's conversation ID (e.g. Claude CLI session_id for --resume). */
   agentSessionId?: string;
   title: string;
+  /**
+   * docs/128 — server-authoritative session kind. Undefined means an ordinary
+   * repo/local session. `"ops"` marks a privileged host-debugging session
+   * created from the gated ops template: it gets read-only journal mounts and a
+   * read-only Docker socket proxy. This field is set server-side at creation and
+   * is NOT writable from inside the container, so an ordinary session can never
+   * forge its way into the privileged mount path (the gate keys off `kind`, not
+   * any workspace marker file).
+   */
+  kind?: "ops";
   createdAt: string;
   lastUsedAt: string;
   /** Per-session workspace directory, e.g. "/workspace/sessions/abc123". */
@@ -649,4 +659,41 @@ export interface WsChatHistoryMessage {
    * renders them as a nested tree (109 — subagent transparency).
    */
   subagentEvents?: WsSubagentEvent[];
+}
+
+// ---- Ops session host overview (docs/128) ----
+
+/** One ShipIt-managed container as seen by the orchestrator's Docker client. */
+export interface HostContainerInfo {
+  /** Short (12-char) container id. */
+  id: string;
+  /** Container name(s), leading slash stripped. */
+  name: string;
+  image: string;
+  /** Docker state: running | exited | restarting | paused | created | dead. */
+  state: string;
+  /** Human status, e.g. "Up 3 hours" / "Exited (137) 2 minutes ago". */
+  status: string;
+  /** Unix seconds the container was created. */
+  createdAt: number;
+  /** Owning session id, when the container carries the shipit-session-id label. */
+  sessionId?: string;
+  /** Owning session title, resolved from the session store. */
+  sessionTitle?: string;
+  /** True when an agent turn is currently running for the owning session. */
+  agentRunning?: boolean;
+}
+
+/**
+ * Read-only host snapshot rendered inline in the ops session's Host tab. Built
+ * from the orchestrator's own Docker client (it runs on the host), NOT from the
+ * agent container. Informational only — no control actions (docs/128 §5).
+ */
+export interface HostOverview {
+  generatedAt: string;
+  /** False when the orchestrator's Docker client couldn't be reached. */
+  dockerAvailable: boolean;
+  /** Total / running counts across all ShipIt-managed containers. */
+  totals: { containers: number; running: number };
+  containers: HostContainerInfo[];
 }
