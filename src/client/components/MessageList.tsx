@@ -344,7 +344,9 @@ export function MessageList({
     fork: getPreview(gapPosition, "fork"),
   });
 
-  const forkDefaultName = defaultSessionNameFor(sessionTitle ?? "Fork from here");
+  const forkDefaultName = sessionTitle
+    ? defaultSessionNameFor(`Forked: ${sessionTitle}`)
+    : defaultSessionNameFor("Fork from here");
 
   const shouldShowGapBefore = (messageIndex: number): boolean => {
     if (!hasRewindControls) return false;
