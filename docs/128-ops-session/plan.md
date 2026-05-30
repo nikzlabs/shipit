@@ -62,18 +62,30 @@ declares the privileged mounts).
 
 | Mount / env | Purpose | Risk surface |
 |---|---|---|
-| `/var/run/docker.sock` (read-only) | `docker ps`, `docker logs`, `docker inspect`, `docker events`, `docker stats` | Read access only — agent can observe but not stop/rm/exec |
+| `DOCKER_HOST=tcp://docker-socket-proxy:2375` | Reach the daemon **only** through the read-only proxy (see below) — `docker ps`, `docker logs`, `docker inspect`, `docker events`, `docker stats` | Read access only — proxy rejects stop/rm/exec |
 | `/var/log/journal` (read-only) | `journalctl --since`, grep for `LOOP DETECTED`, `[container]`, dispose stack traces | Read access only |
 | `/run/log/journal` (read-only, fallback) | Volatile journal when `/var/log/journal` isn't persistent | Read access only |
-| `DOCKER_HOST` env (unset) / use socket directly | Standard docker CLI path | — |
+| `/var/run/docker.sock` — **NOT mounted into the agent container** | The real socket is mounted only into the proxy sibling, never the agent | — |
 | `/var/lib/docker` — **NOT mounted** | Avoid leaking container layer data, secrets in env files, etc. | — |
 | Other host paths — **NOT mounted** | `/etc`, `/root`, `/home`, etc. stay out | — |
 
+Note the agent reaches Docker over **TCP to the proxy**, not by
+mounting a socket. ShipIt already drives the agent container's Docker
+path via `DOCKER_HOST`: `container-lifecycle.ts` sets
+`DOCKER_HOST=tcp://{dockerProxyHost}:{dockerProxyPort}` whenever a
+session has `dockerAccess`. The ops session does **not** use that
+read-write session docker-proxy; it points `DOCKER_HOST` at its own
+**read-only** `docker-socket-proxy` sibling instead. So the only
+privileged *mounts* on the agent container are the two journal paths;
+the Docker access is an env var pointed at a hardened TCP endpoint.
+
 The agent's container itself runs with the same resource limits as
-any session container (1.5 GB RAM, 0.5 CPU, no Docker access via the
-proxy). The privilege escalation is **only** the read-only socket
-and journal — not Docker socket write access, not docker-proxy
-elevation, not capability grants.
+any session container (1.5 GB RAM, 0.5 CPU) and does **not** get the
+read-write session docker-proxy (`dockerAccess` stays off). The
+privilege escalation is **only** read-only Docker (via the hardened
+proxy TCP endpoint) and the read-only journal mounts — not Docker
+socket write access, not docker-proxy elevation, not capability
+grants.
 
 ### Read-only socket — how
 
@@ -86,19 +98,29 @@ Two options:
 
 1. **Sidecar read-only proxy.** Run a small reverse-proxy container
    (e.g., [tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy))
-   that intercepts the Docker API and rejects mutating endpoints
-   (`POST /containers/.../stop`, `POST /containers/.../kill`, etc.).
-   The ops session mounts the proxy's socket, not the real one.
+   that mounts the real `/var/run/docker.sock`, intercepts the Docker
+   API, and rejects mutating endpoints (`POST /containers/.../stop`,
+   `POST /containers/.../kill`, etc.). The proxy exposes a **TCP
+   listener** (`2375`); the agent reaches it via
+   `DOCKER_HOST=tcp://docker-socket-proxy:2375` over a shared compose
+   network. The agent container never mounts the real socket.
    Battle-tested approach; recommended.
 
 2. **Group-restricted access + agent rule.** Mount the real socket
    but rely on the agent's prompt to not call mutating commands.
    Fragile. Skip.
 
-Pick (1). The proxy is a 20-line `docker-compose` service we can
-build into the ops session's `shipit.yaml` so it starts alongside
-the agent container — same lifecycle, isolated network, no extra
-operational burden.
+Pick (1). The proxy is a ~20-line compose service. **It is a sibling
+container, not a child of the agent** — ShipIt's `ServiceManager`
+(`service-manager.ts`, `docker compose up -d`) starts compose
+services as host-level siblings alongside (and after) the agent
+container, on the session's compose network. That's exactly the
+topology this needs: the proxy mounts the host socket, the agent
+talks to it over the compose network via `DOCKER_HOST`, and the two
+share the same session lifecycle. It is declared as a normal compose
+service in the ops workspace's `docker-compose.yml` (with
+`x-shipit-preview` omitted so it doesn't surface in the preview
+panel) — no socket bind-mount on the agent container is involved.
 
 ### Workspace contents
 
@@ -147,9 +169,9 @@ lives in a gated **"Ops / Host"** section in Settings
 (`Settings.tsx`) — a short explanation plus a single "Create ops
 session for this host" button. This is also the natural home for the
 operator gate (the button is only shown/enabled for the host
-operator; see "Auth gate"). Creation calls the
-`POST /api/sessions/from-template` route with `template: "ops"`
-(implementation step 2).
+operator; see "Auth gate"). Creation calls the existing
+`POST /api/sessions/:id/template` route with `:id = "new"` and body
+`{ templateId: "ops" }` (implementation step 2).
 
 **2. Rendered in its own dedicated sidebar group once it exists.**
 An ops session has no normal `remoteUrl`, so today it would already
@@ -217,12 +239,21 @@ independently.)
    `POST=0`, etc. (the allow-list matrix is in the proxy's README).
    Lives in `docker/ops-session/docker-compose.proxy.yml`.
 
-2. **Ops session template** — a workspace template
-   (`src/server/orchestrator/templates*.ts` family) that produces the
-   `ops/` workspace contents above. Reachable from the
-   `POST /api/sessions/from-template` route with `template: "ops"`.
-   The template is gated — only the operator can pick it (auth
-   check on the route).
+2. **Ops session template** — a workspace template that produces the
+   `ops/` workspace contents above, applied via the existing
+   `POST /api/sessions/:id/template` route with body
+   `{ templateId: "ops" }` (`:id` may be `"new"` to create a fresh
+   session; see `applyTemplate` in `services/templates.ts`). Note the
+   ops template is a **different shape** than the existing project
+   scaffolds: today templates are in-memory `files: Record<string,
+   string>` maps (`templates.ts` / `ProjectTemplate`) committed into
+   the workspace, whereas the ops template must also (a) set the
+   server-authoritative `kind: "ops"` on the session and (b) declare
+   the privileged journal mounts. So this is not a drop-in entry in
+   the existing `getTemplate()` registry — step 2 includes extending
+   the template type/flow to carry that extra metadata, or adding a
+   dedicated creation path. The template is gated — only the operator
+   can pick it (auth check on the route).
 
 3. **Privileged mount support** — `shipit.yaml` currently doesn't
    support mounting arbitrary host paths into the agent container.
@@ -235,12 +266,21 @@ independently.)
 
 4. **Container creation respects host mounts** — `container-lifecycle.ts`
    `createContainer` reads the allow-listed mounts and adds them to
-   `HostConfig.Mounts` with `ReadOnly: true`. Guards: the feature only
-   activates when the agent container is being created for a session
-   whose workspace has the `ops`-template marker file (e.g.,
-   `.shipit/ops-session-marker`). Without the marker, the mounts are
-   silently dropped. Defense-in-depth so a user-modified `shipit.yaml`
-   can't smuggle in mounts.
+   `HostConfig.Mounts` with `ReadOnly: true`. **The gate keys off the
+   server-authoritative `kind: "ops"` field on the session** (set at
+   creation by the gated template route, step 5) — never off a file
+   inside the workspace. This is critical: the agent has full write
+   access to its own workspace, so a workspace marker file
+   (`.shipit/ops-session-marker`) is *forgeable* — any ordinary
+   session's agent, or a malicious cloned repo, could write the marker
+   plus a crafted `shipit.yaml` and obtain a read-only Docker endpoint
+   + journal mounts (a host-wide information disclosure: every
+   container's env, secrets, and logs). Because `kind` is set
+   server-side at creation and is not writable from inside the
+   container, an ordinary session can never flip itself into an ops
+   session. A user-edited `shipit.yaml` declaring
+   `x-shipit-host-mounts` on a non-ops session has its mounts silently
+   dropped.
 
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is
@@ -254,10 +294,11 @@ independently.)
 
 5a. **Settings create affordance** — add a gated "Ops / Host" section
    to `Settings.tsx` with a short explainer and a "Create ops session
-   for this host" button that POSTs to `/api/sessions/from-template`
-   with `template: "ops"`. The button is the operator gate's UI
-   surface — shown/enabled only for the host operator (see "Auth
-   gate"). No phantom card appears in the sidebar before creation.
+   for this host" button that POSTs to `/api/sessions/new/template`
+   with body `{ templateId: "ops" }`. The button is the operator
+   gate's UI surface — shown/enabled only for the host operator (see
+   "Auth gate"); the route enforces the same gate server-side. No
+   phantom card appears in the sidebar before creation.
 
 5b. **Read-only "Host" tab** — add `"host"` to the `RightTab` union
    (`src/client/stores/ui-store.ts`) and gate its tab button + the
@@ -286,8 +327,11 @@ independently.)
      gating works (non-operator can't create it).
    - Unit: `shipit.yaml` parser rejects host mounts outside the
      allow-list.
-   - Integration: container with the marker file gets the mounts;
-     same workspace without the marker doesn't.
+   - Integration: a session with `kind: "ops"` gets the journal
+     mounts + read-only-proxy `DOCKER_HOST`; a non-ops session with an
+     identical (user-forged) `shipit.yaml` does **not** — the mounts
+     are dropped because the gate keys off the server-side `kind`, not
+     the workspace.
    - Client: a `kind: "ops"` session renders in the "Host / Ops"
      group, not in a repo or orphan group; Preview/PR tabs are hidden
      and the Host tab is present.
