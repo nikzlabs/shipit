@@ -355,8 +355,15 @@ export class CredentialStore {
 
   // ---- Live steering ----
 
+  // Defaults ON: the persistent streaming process is the only path that
+  // handles interrupt-then-continue (AskUserQuestion answers, manual stop +
+  // clarifying message) without re-sending an interrupted assistant turn
+  // through `--resume`, which the API rejects once that turn carries signed
+  // extended-thinking blocks ("thinking blocks ... cannot be modified", 400).
+  // A user who explicitly turned it off keeps `false`; only the unset case
+  // flips on. See docs/140.
   getLiveSteering(): boolean {
-    return this.data.liveSteering ?? false;
+    return this.data.liveSteering ?? true;
   }
 
   setLiveSteering(enabled: boolean): void {

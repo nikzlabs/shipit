@@ -13,10 +13,36 @@ running agent fold it into the current turn — the way the native Claude CLI an
 the Claude VSCode extension behave. Today ShipIt queues mid-turn messages and
 runs them as a fresh turn only after the current one finishes.
 
-This is **opt-in and reversible**: the existing per-turn one-shot path is stable
-and stays the default. Live steering is a capability-gated mode the user can
-turn on (and off) in settings. If steering misbehaves, the user flips back to
-the queue without losing anything.
+**Rollout update (default ON).** Live steering now defaults **on**
+(`CredentialStore.getLiveSteering()` returns `?? true`; a user who explicitly
+turned it off keeps `false`). The trigger was a production 400 —
+`thinking blocks in the latest assistant message cannot be modified` — that
+the one-shot `--resume` path hits whenever it continues an *interrupted*
+assistant turn that carries signed extended-thinking blocks (now the model
+default). The two flows that interrupt-then-continue are AskUserQuestion
+answers and manual stop + clarifying message; both re-send the truncated turn
+through `--resume`. The persistent streaming process avoids `--resume`
+entirely — it keeps the CLI's own conversation state and continues via
+`sendUserMessage`, so the interrupted turn is never re-serialized.
+
+Validated empirically against the pinned CLI (2.1.150), live API:
+- Streaming `control_request` interrupt + `sendUserMessage` on the same
+  process → next turn succeeds, **no 400** (the CLI inserts a
+  `[Request interrupted by user]` user turn and moves on).
+- The exact AskUserQuestion flow (thinking → AskUserQuestion tool_use →
+  control_request interrupt → answer via `sendUserMessage`) → clean, no 400.
+- AskUserQuestion still **auto-resolves** in `--input-format stream-json`
+  (emits an `is_error` tool_result, model continues), so the interrupt is
+  still required — the note under the agent_assistant branch holds for 2.1.150.
+
+The setting remains as a reversible escape hatch (toggle off → the one-shot
+per-turn queue path, unchanged). The broad integration suite still exercises
+the one-shot path: `createTestCredentialStore` pins `liveSteering=false`, and
+the dedicated streaming tests (`live-steering.test.ts`,
+`ask-user-question.test.ts`) opt in via `setLiveSteering(true)`.
+
+Originally this was framed as **opt-in and reversible**: the per-turn one-shot
+path is stable and *was* the default. It is now the non-default fallback.
 
 **Both backends can steer.** Claude steers via `--input-format stream-json`
 (persistent process, inject user-message NDJSON on stdin). Codex steers via the

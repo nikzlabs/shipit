@@ -115,7 +115,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   soundOnFinish: getSavedSoundOnFinish(),
   quickCaptureHotkey: getSavedQuickCaptureHotkey(),
   autoCreatePr: false,
-  liveSteering: false,
+  liveSteering: true,
   autoResolveConflicts: false,
   codexDeviceAuth: null,
   codexDeviceAuthError: null,
