@@ -46,4 +46,21 @@ export interface LimitsProvider {
     session: SubscriptionLimitsWindow | null,
     weekly: SubscriptionLimitsWindow | null,
   ): void;
+
+  /**
+   * Optional on-demand fetch of the authoritative usage snapshot from the
+   * provider's HTTP endpoint (Claude: `/api/oauth/usage`). This is the only
+   * way to learn the **low-usage** number the event stream omits below a
+   * warning threshold. Returns when the internal cache has been updated (so
+   * the caller can `fetch()` + broadcast). Must never throw; on 429 it sets
+   * an internal lockout and no-ops until it elapses.
+   *
+   * `reason: "seed"` is the once-per-sign-in baseline fetch and self-skips if
+   * a usage-api snapshot already exists; `reason: "manual"` is the user's
+   * refresh button and always attempts (subject only to the lockout).
+   *
+   * Absent on providers with no HTTP usage endpoint (Codex), so callers must
+   * null-check.
+   */
+  refreshNow?(reason: "manual" | "seed"): Promise<void>;
 }
