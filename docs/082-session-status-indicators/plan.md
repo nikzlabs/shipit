@@ -89,6 +89,10 @@ Priority order (highest wins):
 
 All icons are 12px (`ICON_SIZE.XS`), consistent with the current `CiDot`.
 
+### Auto-merge badge (overlay on the status dot)
+
+Auto-merge is a session-level preference that can be armed before any PR exists (stored in `pr-store`'s `autoMergeBySession`, falling back to the open-phase `card.autoMerge`). When armed, `SessionStatusDot` overlays a small `GitMergeIcon` (accent blue, `weight="bold"`) as a corner badge on whatever primary status is showing — so one slot conveys both the CI/agent state and "this will merge itself." When there's no CI/agent status yet (idle / pre-PR), the merge glyph renders standalone at `ICON_SIZE.XS`. The badge is independent of CI/PR state by design: the preference is session-level, so the indicator must show whenever the preference is on, not only once a PR/CI exists. The tooltip composes both facts, e.g. `"CI passed 3/3 · Auto-merge enabled"`. The same `GitMergeIcon` is duplicated on the `AutoMergeToggle` label (`PrStatusControls.tsx`) so the sidebar badge and the toggle that controls it share one glyph. We use `GitMergeIcon` (not `LightningIcon`, which already means "Quick session" in the sidebar). Per the answered design question, the badge tracks on/off only — it does not call out auto-merge error / managed-config states.
+
 ### "Agent finished" tracking
 
 ## Data flow

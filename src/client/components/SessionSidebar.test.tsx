@@ -37,7 +37,7 @@ afterEach(() => {
   cleanup();
   // Reset cross-test state so SessionStatusDot tests don't leak into others.
   useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
-  usePrStore.setState({ cardBySession: {}, statusBySession: {} });
+  usePrStore.setState({ cardBySession: {}, statusBySession: {}, autoMergeBySession: {} });
   useUiStore.getState().setProjectSettingsRepoUrl(null);
   useRepoStore.setState({ collapsedParents: new Set<string>() });
 });
@@ -337,6 +337,41 @@ describe("SessionSidebar", () => {
       expect(screen.getByTitle("Auto-fix running")).toBeTruthy();
       expect(screen.queryByTitle("Agent running")).toBeNull();
       expect(screen.queryByTitle(/CI failed/)).toBeNull();
+    });
+
+    it("overlays the auto-merge badge on the CI status when auto-merge is armed", () => {
+      const card: PrCardState = {
+        cardId: "card-1",
+        phase: "open",
+        checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+      };
+      usePrStore.setState({ cardBySession: { "s1": card }, autoMergeBySession: { "s1": { enabled: true, mergeMethod: "squash" } } });
+
+      const sessions = [baseSession({ id: "s1", title: "Armed session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      // A single slot conveys both the CI result and the armed auto-merge.
+      expect(screen.getByTitle("CI passed 3/3 · Auto-merge enabled")).toBeTruthy();
+    });
+
+    it("shows the auto-merge indicator even with no CI/PR yet (preference is session-level)", () => {
+      // Auto-merge can be armed before any PR exists, so the badge must not be
+      // gated on CI/PR state.
+      usePrStore.setState({ autoMergeBySession: { "s1": { enabled: true, mergeMethod: "squash" } } });
+
+      const sessions = [baseSession({ id: "s1", title: "Armed pre-PR session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      expect(screen.getByTitle("Auto-merge enabled")).toBeTruthy();
+    });
+
+    it("shows no auto-merge indicator when the preference is off", () => {
+      usePrStore.setState({ autoMergeBySession: { "s1": { enabled: false, mergeMethod: "squash" } } });
+
+      const sessions = [baseSession({ id: "s1", title: "Unarmed session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      expect(screen.queryByTitle(/Auto-merge enabled/)).toBeNull();
     });
   });
 

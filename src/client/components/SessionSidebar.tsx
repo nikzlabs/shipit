@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsSixVerticalIcon, GithubLogoIcon, LightningIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import type { ReactNode } from "react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, LightningIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -131,40 +132,65 @@ interface SessionItemProps {
 /** Consolidated status dot replacing separate AgentDot + CiDot. */
 function SessionStatusDot({ sessionId }: { sessionId: string }) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
+  // Auto-merge is a session-level preference that can be armed before any PR
+  // exists, so read it from the persistent per-session map (falling back to the
+  // open-phase card value) rather than gating on CI/PR state.
+  const autoMerge = usePrStore((s) => s.autoMergeBySession[sessionId] ?? s.cardBySession[sessionId]?.autoMerge);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
 
   const checks = card?.checks;
   const autoFix = card?.autoFix;
+  const autoMergeOn = autoMerge?.enabled ?? false;
 
-  // Priority 1: Auto-fix running (a specific form of agent activity)
+  // Resolve the primary status glyph + its tooltip (null when idle / no data).
+  let primary: ReactNode = null;
+  let title = "";
+
   if (autoFix?.status === "running") {
-    return <span className="shrink-0 text-(--color-autofix) flex" title="Auto-fix running"><WrenchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
+    // Priority 1: Auto-fix running (a specific form of agent activity)
+    title = "Auto-fix running";
+    primary = <span className="text-(--color-autofix) flex"><WrenchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
+  } else if (isAgentRunning) {
+    // Priority 2: Agent running — takes precedence over CI status; the agent
+    // may already be addressing the failure, so don't surface a stale CI-failed
+    // indicator while it's working.
+    title = "Agent running";
+    primary = <span className="w-2 h-2 rounded-full bg-(--color-success) animate-pulse" />;
+  } else if (checks?.state === "failure") {
+    // Priority 3: CI failed (auto-fix not running and agent idle)
+    title = `CI failed ${checks.failed} of ${checks.total}`;
+    primary = <span className="text-(--color-error) flex"><XCircleIcon size={ICON_SIZE.XS} /></span>;
+  } else if (checks?.state === "pending") {
+    // Priority 4: CI pending
+    title = `CI running ${checks.passed}/${checks.total}`;
+    primary = <span className="text-(--color-warning) flex"><CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
+  } else if (checks?.state === "success") {
+    // Priority 5: CI passed
+    title = `CI passed ${checks.total}/${checks.total}`;
+    primary = <span className="text-(--color-success) flex"><CheckCircleIcon size={ICON_SIZE.XS} /></span>;
   }
 
-  // Priority 2: Agent running — takes precedence over CI status; the agent
-  // may already be addressing the failure, so don't surface a stale CI-failed
-  // indicator while it's working.
-  if (isAgentRunning) {
-    return <span className="w-2 h-2 rounded-full bg-(--color-success) animate-pulse shrink-0" title="Agent running" />;
+  if (!autoMergeOn) {
+    // Priority 6: idle / no data — nothing to show when auto-merge is off.
+    if (!primary) return null;
+    return <span className="shrink-0 flex" title={title}>{primary}</span>;
   }
 
-  // Priority 3: CI failed (auto-fix not running and agent idle, both checked above)
-  if (checks?.state === "failure") {
-    return <span className="shrink-0 text-(--color-error) flex" title={`CI failed ${checks.failed} of ${checks.total}`}><XCircleIcon size={ICON_SIZE.XS} /></span>;
+  const autoMergeTitle = title ? `${title} · Auto-merge enabled` : "Auto-merge enabled";
+
+  // Auto-merge armed but no CI/agent status yet: the merge glyph stands alone.
+  if (!primary) {
+    return <span className="shrink-0 text-(--color-accent) flex" title={autoMergeTitle}><GitMergeIcon size={ICON_SIZE.XS} weight="bold" /></span>;
   }
 
-  // Priority 4: CI pending
-  if (checks?.state === "pending") {
-    return <span className="shrink-0 text-(--color-warning) flex" title={`CI running ${checks.passed}/${checks.total}`}><CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" /></span>;
-  }
-
-  // Priority 5: CI passed
-  if (checks?.state === "success") {
-    return <span className="shrink-0 text-(--color-success) flex" title={`CI passed ${checks.total}/${checks.total}`}><CheckCircleIcon size={ICON_SIZE.XS} /></span>;
-  }
-
-  // Priority 6: idle / no data
-  return null;
+  // Auto-merge armed alongside a CI/agent status: overlay the merge glyph as a
+  // small corner badge so a single slot conveys both facts.
+  return (
+    <span className="relative shrink-0 flex items-center justify-center" title={autoMergeTitle}>
+      {primary}
+      <GitMergeIcon size={9} weight="bold" className="absolute -bottom-1 -right-1.5 text-(--color-accent)" />
+    </span>
+  );
 }
 
 export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch }: SessionItemProps) {
