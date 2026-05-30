@@ -41,7 +41,7 @@ export function createDeepgramProvider(apiKey: string, fetchImpl: typeof fetch =
       }
 
       const data = (await res.json()) as {
-        results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> };
+        results?: { channels?: { alternatives?: { transcript?: string }[] }[] };
       };
       return (data.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "").trim();
     },
