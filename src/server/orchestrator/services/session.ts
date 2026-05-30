@@ -406,14 +406,34 @@ export async function markMergedAndPruneExcess(
   }
 
   const merged = sessionManager.listMergedNotArchivedByRemoteUrl(session.remoteUrl);
-  // Archive oldest merged sessions beyond the per-repo limit
-  // (list is sorted newest-first). Forward `pruneVolumes` so the
-  // auto-archive path reclaims per-session named volumes immediately —
-  // idle eviction has usually disposed the runner by now, so without
-  // this the named volumes would leak until the next orchestrator
+  // Rank merged sessions by most-recent *activity*, not merge time alone, then
+  // archive everything beyond the per-repo limit. A session merged days ago but
+  // recently worked in — the user went back to it to open a follow-up PR — must
+  // not be treated as "oldest" and archived out from under live work.
+  // `last_used_at` is bumped at turn start and turn end, so it tracks real
+  // interaction; `merged_at` is the floor. We parse both in JS rather than
+  // ordering in SQL because the two columns use different on-disk formats
+  // (SQLite `datetime('now')` "YYYY-MM-DD HH:MM:SS" vs ISO 8601 from
+  // `toISOString()`), so a lexical `MAX()` would compare them incorrectly.
+  const activityMs = (s: SessionInfo): number =>
+    Math.max(Date.parse(s.mergedAt ?? "") || 0, Date.parse(s.lastUsedAt) || 0);
+  const ranked = [...merged].sort((a, b) => activityMs(b) - activityMs(a));
+  // Forward `pruneVolumes` so the auto-archive path reclaims per-session named
+  // volumes immediately — idle eviction has usually disposed the runner by now,
+  // so without this the named volumes would leak until the next orchestrator
   // restart's disk-janitor pass.
-  const toArchive = merged.slice(MAX_MERGED_SESSIONS_PER_REPO);
+  const toArchive = ranked.slice(MAX_MERGED_SESSIONS_PER_REPO);
   for (const excess of toArchive) {
+    // Never auto-archive a session whose agent is currently running. The user
+    // may have returned to a previously-merged session and started a new turn
+    // (e.g. to open a follow-up PR). Archiving force-disposes the runner, kills
+    // the agent mid-turn, destroys the container, and removes the workspace —
+    // silently breaking live work. A later merge (or idle eviction) reconsiders
+    // it once it's idle, and its bumped `last_used_at` keeps it out of the
+    // archive slice anyway.
+    if (runnerRegistry.get(excess.id)?.running) {
+      continue;
+    }
     // Child sessions are never auto-archived. The user explicitly archives
     // them (or archives the parent, which cascades through `archiveSession`).
     // Auto-archiving a child would orphan it from the parent's spawn-card
