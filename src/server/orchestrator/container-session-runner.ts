@@ -27,6 +27,7 @@
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode } from "../shared/types.js";
+import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, AgentDispatchOptions } from "./session-runner.js";
 import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
 import type { SSEEvent } from "./sse-client.js";
@@ -110,6 +111,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // Per-session detected ports
   private _detectedPorts: number[] = [];
+
+  // Authoritative cache of agent-emitted presentations (docs/093), mirrored
+  // from the SSE present_content/present_cleared stream so a viewer attaching
+  // after the tool fired can hydrate via the `present_state` replay.
+  private _presentations: PresentStateEntry[] = [];
 
   // Compose service management
   private _serviceManager: ServiceManager | null = null;
@@ -312,6 +318,30 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get detectedPorts(): number[] { return this._detectedPorts; }
   set detectedPorts(ports: number[]) { this._detectedPorts = ports; }
+
+  get presentations(): PresentStateEntry[] { return this._presentations; }
+
+  /**
+   * Apply a present_content entry to the local cache, mirroring the client
+   * store's reducer: when `replaceId` points at a known entry (revision flow)
+   * replace it in place; when the new `presentId` already exists replace that
+   * (idempotent re-delivery); otherwise append.
+   */
+  private cachePresentation(entry: PresentStateEntry, replaceId?: string): void {
+    if (replaceId) {
+      const idx = this._presentations.findIndex((p) => p.presentId === replaceId);
+      if (idx >= 0) {
+        this._presentations[idx] = entry;
+        return;
+      }
+    }
+    const existing = this._presentations.findIndex((p) => p.presentId === entry.presentId);
+    if (existing >= 0) {
+      this._presentations[existing] = entry;
+      return;
+    }
+    this._presentations.push(entry);
+  }
 
   /** Timestamp of the most recent SSE event from the worker, or 0 if none yet. */
   get lastSseEventAt(): number { return this.sse.lastActivityAt; }
@@ -1280,15 +1310,23 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             && typeof evt.content === "string"
             && typeof evt.mimeType === "string"
           ) {
-            this.emitMessage({
-              type: "present_content",
-              sessionId: this.sessionId,
+            const entry: PresentStateEntry = {
               presentId: evt.presentId,
-              ...(evt.replaceId !== undefined ? { replaceId: evt.replaceId } : {}),
               content: evt.content,
               mimeType: evt.mimeType,
               ...(evt.title !== undefined ? { title: evt.title } : {}),
               createdAt: evt.createdAt ?? new Date().toISOString(),
+            };
+            this.cachePresentation(entry, evt.replaceId);
+            this.emitMessage({
+              type: "present_content",
+              sessionId: this.sessionId,
+              presentId: entry.presentId,
+              ...(evt.replaceId !== undefined ? { replaceId: evt.replaceId } : {}),
+              content: entry.content,
+              mimeType: entry.mimeType,
+              ...(entry.title !== undefined ? { title: entry.title } : {}),
+              createdAt: entry.createdAt,
             });
           }
           break;
@@ -1296,6 +1334,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
         case "present_cleared": {
           const evt = data as { presentId?: string };
+          if (typeof evt.presentId === "string") {
+            this._presentations = this._presentations.filter(
+              (p) => p.presentId !== evt.presentId,
+            );
+          } else {
+            this._presentations = [];
+          }
           this.emitMessage({
             type: "present_cleared",
             sessionId: this.sessionId,

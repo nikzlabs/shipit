@@ -998,6 +998,30 @@ export interface WsPresentClearedMessage {
   presentId?: string;
 }
 
+/** A single presentation entry as carried in a `present_state` replay. */
+export interface PresentStateEntry {
+  presentId: string;
+  content: string;
+  mimeType: string;
+  title?: string;
+  createdAt: string;
+}
+
+/**
+ * Server → Client: the full current set of presentations for a session
+ * (docs/093). Emitted on viewer attach so a tab that was opened after the
+ * `present` tool fired — or re-opened after a session switch — hydrates from
+ * the runner's authoritative cache rather than relying on the live
+ * `present_content` stream it may have missed. Unlike `present_content`, this
+ * does NOT bump the unseen badge or auto-switch the right panel; it's a silent
+ * state sync.
+ */
+export interface WsPresentStateMessage {
+  type: "present_state";
+  sessionId: string;
+  presentations: PresentStateEntry[];
+}
+
 /**
  * Server → Client: an agent review card was added to chat history (docs/151).
  *
@@ -1110,4 +1134,5 @@ export type WsServerMessage =
   | WsAgentReviewAdded
   | WsPresentContentMessage
   | WsPresentClearedMessage
+  | WsPresentStateMessage
   | WsSubscriptionLimits;

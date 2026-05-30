@@ -9,6 +9,7 @@
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams } from "../shared/types.js";
 import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
+import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 
@@ -360,6 +361,16 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
 
   // Detected ports (per-session)
   detectedPorts: number[];
+
+  /**
+   * Authoritative cache of agent-emitted presentations (docs/093), mirroring
+   * the worker's PresentBuffer. Container-only — direct/in-process runners
+   * don't host the present MCP tool and omit this. Maintained from the SSE
+   * `present_content` / `present_cleared` stream so `attachToRunner` can replay
+   * a `present_state` message to a late- or re-connecting viewer whose Present
+   * tab would otherwise be empty after a session switch.
+   */
+  readonly presentations?: PresentStateEntry[];
 
   // Remote terminal support (container mode)
   readonly supportsRemoteTerminal?: boolean;
