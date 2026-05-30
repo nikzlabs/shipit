@@ -2,8 +2,10 @@ import { useState } from "react";
 import {
   CaretDownIcon,
   CheckCircleIcon,
+  GitMergeIcon,
   InfoIcon,
 } from "@phosphor-icons/react";
+import type { ReactNode } from "react";
 import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { useGitStore } from "../stores/git-store.js";
@@ -18,7 +20,7 @@ function ToggleSwitch({
   onToggle,
   title,
 }: {
-  label: string;
+  label: ReactNode;
   enabled: boolean;
   onToggle: () => void;
   title: string;
@@ -77,7 +79,7 @@ export function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; a
   return (
     <span className="flex items-center gap-1">
       <ToggleSwitch
-        label="Auto-merge"
+        label={<span className="inline-flex items-center gap-1"><GitMergeIcon size={ICON_SIZE.XS} className="text-(--color-accent)" />Auto-merge</span>}
         enabled={enabled}
         onToggle={() => toggleAutoMerge(sessionId, !enabled)}
         title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
