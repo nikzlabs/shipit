@@ -479,6 +479,25 @@ describe("ClaudeProcess", () => {
       expect(tools.split(",")).toContain("mcp__shipit-review__*");
     });
 
+    // Same rationale as shipit-review: the worker-registered `shipit-present`
+    // bridge isn't user-configured, so it must be allowlisted explicitly or
+    // headless `-p` mode rejects `present` as "permission not yet granted".
+    it.each([
+      ["auto" as const, undefined],
+      ["plan" as const, "plan" as const],
+      ["guarded" as const, "guarded" as const],
+    ])("allowlists mcp__shipit-present__* in %s mode", (_label, permissionMode) => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", permissionMode });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools.split(",")).toContain("mcp__shipit-present__*");
+    });
+
     // docs/138: `Skill` must be allowlisted in every permission mode so an
     // explicit `/my-skill` invocation is honored even in headless `-p` mode
     // (no human to approve the prompt) and even in plan mode.
