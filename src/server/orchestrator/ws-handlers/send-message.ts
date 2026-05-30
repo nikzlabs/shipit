@@ -1,11 +1,10 @@
 import fs from "node:fs/promises";
-import type { WsClientMessage, WsServerMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
+import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
-import { getErrorMessage, validateImages, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
+import { validateImages, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { graduateSession } from "../services/graduate-session.js";
-import { wireAgentListeners, recordSteeredMessage, persistTurnInProgress, type AgentListenerDeps } from "./agent-listeners.js";
-import { runAgentWithMessage, drainNextQueuedMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
-import { postTurnCommit } from "./post-turn.js";
+import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.js";
+import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
@@ -432,131 +431,63 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     return;
   }
 
-  // Resolve the runner from the registry first so it survives WS disconnect.
+  // An AskUserQuestion answer is, by construction, the *next turn* of a session
+  // whose previous turn already ended: the agent emitted the tool_use, the
+  // orchestrator interrupted it (`agent.interrupt()` in agent-listeners.ts),
+  // and the resulting `agent_result` flipped `running=false`. So the answer is
+  // handled exactly like a normal user message — delegate to
+  // `runAgentWithMessage`, which owns the canonical turn machinery:
+  // `resetRunnerTurnState`, `existingAgent.removeAllListeners()` before
+  // re-wiring, and a fresh `streamingPostTurnFired` closure.
+  //
+  // The previous implementation hand-rolled a steering branch that called
+  // `existingAgent.sendUserMessage(answerText)` directly, bypassing all of
+  // that. Because the interrupted turn's listeners stayed attached, the
+  // answered turn's `agent_result` hit the *previous* turn's
+  // `streamingPostTurnFired` guard (already `true`) and short-circuited —
+  // skipping the queue drain, auto-commit, PR card, and
+  // `session_agent_finished`. Symptom: "the answer pastes into chat but the
+  // agent never starts." Routing through `runAgentWithMessage` makes the reset
+  // + re-wire unconditional, which is the fix.
   const runnerEarly = resolveRunner(ctx);
-  const existingAgent = runnerEarly?.getAgent() ?? null;
-  const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
-  const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
-  const liveSteering = ctx.credentialStore.getLiveSteering();
-  // docs/140 — the CLI process must actually be in streaming mode for
-  // `sendUserMessage` to land; otherwise the adapter silently no-ops and the
-  // answer disappears.
-  const streamingActive = runnerEarly?.isStreamingActive ?? false;
 
-  // docs/140 diag — same shape as `[steer-send]` in handleSendMessage. If a
-  // future repro shows "answer appears in chat, agent doesn't react", this
-  // log pins the gate state and the recovery path the handler took.
-  console.log(
-    `[answer-question] runner=${runnerEarly?.sessionId} steeringCapable=${steeringCapable} liveSteering=${liveSteering} streamingActive=${streamingActive} existingAgent=${existingAgent ? "yes" : "null"} text=${JSON.stringify(answerText.slice(0, 80))}`,
-  );
-
-  if (existingAgent) {
-    // docs/140 — live steering: when the persistent streaming agent is blocked
-    // on AskUserQuestion, route the answer through `sendUserMessage` so the
-    // CLI receives a properly framed NDJSON user message on its piped stdin.
-    // docs/146 — also suppress steering when a system-driven turn is in flight
-    // (auto-resolve rebase-resolution turn). A user typing an answer mid-auto-
-    // resolve must not derail the resolution turn; the answer falls through to
-    // the queue branch below and drains when the system turn finishes.
-    const systemTurnInProgress = runnerEarly?.systemTurnInProgress ?? false;
-    if (steeringCapable && liveSteering && streamingActive && !systemTurnInProgress) {
-      const answerSessionId = ctx.getActiveAppSessionId();
-      existingAgent.sendUserMessage(answerText);
-      if (answerSessionId && runnerEarly) {
-        // Same ordering fix as live steering: the answer is a mid-turn user
-        // message, so anchor + fold it into the in-progress set rather than
-        // appending it out-of-band (docs/140).
-        recordSteeredMessage(runnerEarly, answerText);
-        persistTurnInProgress(ctx.chatHistoryManager, runnerEarly, answerSessionId);
-        runnerEarly.emitMessage({
-          type: "message_steered",
-          text: answerText,
-          sessionId: answerSessionId,
-        });
-        // The AskUserQuestion-interrupt in `agent-listeners.ts` ended the
-        // previous turn (agent_result → `running=false`). Re-arm the runner so
-        // the UI shows "thinking" while the streaming process processes this
-        // answer as the next turn.
-        runnerEarly.running = true;
-        runnerEarly.emitMessage({
-          type: "session_status",
-          sessionId: answerSessionId,
-          running: true,
-          queueLength: runnerEarly.queueLength,
-        });
-      }
-      return;
-    }
-
-    // The steering gate failed but an agent ref is still resident. Two cases:
-    //
-    //   (A) `steeringCapable` adapter (claude / codex) — the resident process
-    //       is either a streaming process whose `isStreamingActive` flag was
-    //       cleared (stranded; `writeStdin` would land as raw bytes on a
-    //       process that expects NDJSON and get silently dropped) OR the user
-    //       flipped `liveSteering` off mid-turn (the streamer is still alive
-    //       but the user opted out of steering). Either way the safe recovery
-    //       is to kill the stale ref and fall through to the fresh-spawn
-    //       `--resume` path below — same shape as `handleSendMessage`'s
-    //       stale-kill at line 263.
-    //
-    //       Without this branch the previous code wrote raw text to stdin and
-    //       returned without flipping `runner.running` back to true or
-    //       emitting `session_status`. The optimistic answer bubble rendered
-    //       on the client and the agent never reacted — the exact symptom of
-    //       the steering "appears to work, doesn't react" bug closed by
-    //       ee313d3661, but on the answer path.
-    //
-    //   (B) `!steeringCapable` adapter — hypothetical PTY-only agent that
-    //       genuinely reads raw stdin during a turn. `writeStdin` is the
-    //       correct delivery and we must also re-arm `running=true` plus
-    //       `session_status` because the AskUserQuestion interrupt cleared it.
-    //       No agent in the registry is currently `!steeringCapable`, so this
-    //       branch is dead in production — kept as a forward-compat safety
-    //       net for future adapters.
-    if (steeringCapable) {
-      existingAgent.kill();
-      if (runnerEarly?.getAgent() === existingAgent) {
+  // Kill any stale resident agent before the new turn — EXCEPT a persistent
+  // streaming agent we can reuse. Mirrors `handleSendMessage`'s stale-kill
+  // (docs/140): a steering-capable adapter with `liveSteering` on and a still-
+  // streaming process is the one case `runAgentWithMessage` carries the answer
+  // in via `sendUserMessage` rather than respawning. `!systemTurnInProgress`
+  // preserves the old "don't steer into a system-driven turn" guard (docs/146).
+  // Every other resident ref (liveSteering off, a stranded non-streaming
+  // process under a steering adapter) must be killed so the delegated turn
+  // spawns a fresh `--resume` agent instead of writing to a process that can't
+  // receive the message.
+  const staleAgent = runnerEarly?.getAgent() ?? null;
+  if (staleAgent) {
+    const staleAgentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
+    const persistentStreaming =
+      (staleAgentInfo?.capabilities.supportsSteering ?? false) &&
+      ctx.credentialStore.getLiveSteering() &&
+      (runnerEarly?.isStreamingActive ?? false) &&
+      !(runnerEarly?.systemTurnInProgress ?? false);
+    if (!persistentStreaming) {
+      staleAgent.kill();
+      if (runnerEarly?.getAgent() === staleAgent) {
         runnerEarly.setAgent(null);
         runnerEarly.isStreamingActive = false;
-        // The AskUserQuestion-interrupt already cleared `running` on
-        // agent_result; reset defensively so the duplicate-drop check below
-        // doesn't strand this answer if a race left it true.
+        // The AskUserQuestion interrupt already cleared `running`; reset
+        // defensively so the duplicate guard below doesn't strand the answer
+        // if a race left it true.
         runnerEarly.running = false;
       }
-      // Fall through to the fresh-spawn `--resume` path.
-    } else {
-      existingAgent.writeStdin(`${answerText}\n`);
-      if (runnerEarly) {
-        runnerEarly.running = true;
-        const sid = ctx.getActiveAppSessionId();
-        if (sid) {
-          ctx.sseBroadcast("session_agent_started", { sessionId: sid });
-          runnerEarly.emitMessage({
-            type: "session_status",
-            sessionId: sid,
-            running: true,
-            queueLength: runnerEarly.queueLength,
-          });
-        }
-      }
-      return;
     }
   }
 
-  // Defensive guard: if the runner is already marked as running but
-  // `getAgent()` returned null, an agent-start is already in flight on
-  // this session — either from a parallel `answer_question` (UI
-  // double-click, two browser tabs) or from a system-turn that hasn't
-  // yet reached `setAgent`. The worker rejects duplicate /agent/start
-  // with 409, so the parallel start would fail anyway, but without
-  // this guard the orchestrator still goes through the full setup and
-  // emits a misleading flow of "Agent process started" log entries
-  // (now mitigated by moving that log to the agent_init handler).
-  // Match the handleSendMessage pattern: drop the duplicate when the
-  // worker confirms a turn is in flight. Note: there's no
-  // verifyRunningState() short-circuit here because the most common
-  // case is a genuine duplicate, not a stranded `running=true` flag.
+  // Defensive duplicate guard: a still-running runner here means a parallel
+  // answer / turn is already in flight (UI double-click, two tabs, or a
+  // genuinely-not-interrupted turn). The worker would reject the duplicate
+  // /agent/start with 409 anyway, but dropping early avoids a misleading
+  // setup flow. After the stale-kill above this only stays true for a reused
+  // persistent-streaming agent whose turn really is still active.
   if (runnerEarly?.running) {
     console.warn(
       `[answer_question] Runner ${runnerEarly.sessionId} already running — dropping duplicate answer (text="${answerText.slice(0, 60)}")`,
@@ -564,10 +495,9 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     return;
   }
 
-  // Agent has finished — send the answer as a new prompt with --resume.
   if (!ensureActiveAgentAuthenticated(ctx)) return;
 
-  // Ensure a runner exists for this session and attach to it
+  // Ensure a runner exists for this session and attach to it.
   {
     const answerActiveId = ctx.getActiveAppSessionId();
     const answerActiveDir = ctx.getActiveSessionDir();
@@ -578,146 +508,29 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     }
   }
 
-  // Capture session context at turn start — immune to session switches
   const capturedSessionId = ctx.getActiveAppSessionId();
-  const capturedSessionDir = ctx.getActiveSessionDir();
-  const turnStartHeadHash = capturedSessionDir
-    ? await ctx.createGitManager(capturedSessionDir).getHeadHash()
-    : null;
-
-  // Resolve runner via the registry so it survives WS disconnect.
-  const answerRunner = resolveRunner(ctx, capturedSessionId);
-
-  // Reset turn-scoped state directly on the runner.
-  if (answerRunner) {
-    answerRunner.turnSummary = "";
-    answerRunner.accumulatedText = "";
-    answerRunner.accumulatedToolUse = [];
-    answerRunner.chatMessageGroups = [];
-    answerRunner.needsNewMessageGroup = true;
-    answerRunner.steeredMessages = [];
-  }
-  const currentAgent = ctx.agentFactory(ctx.getActiveAgentId());
-  if (answerRunner) answerRunner.setAgent(currentAgent);
-
-  const persistUserMessage = (sessionId: string) => {
-    // docs/140 diag — see comment in agent-execution.ts persistUserMessage.
-    console.log(
-      `[persist-user] handleAnswerQuestion session=${sessionId} text=${JSON.stringify(answerText.slice(0, 60))}`,
-    );
-    ctx.chatHistoryManager.append(sessionId, { role: "user", text: answerText });
-  };
-
-  // Persist the user answer immediately if we have a session
-  if (capturedSessionId) {
-    persistUserMessage(capturedSessionId);
-  }
-
-  // Shared emit helper — also used by onError below.
-  const emitDone = (msg: WsServerMessage) => {
-    if (answerRunner) answerRunner.emitMessage(msg);
-    else ctx.send(msg);
-  };
-
-  const answerListenerDeps: AgentListenerDeps = {
-    sessionManager: ctx.sessionManager,
-    chatHistoryManager: ctx.chatHistoryManager,
-    usageManager: ctx.usageManager,
-    authManager: ctx.authManager,
-    authManagers: ctx.authManagers,
-    sseBroadcast: ctx.sseBroadcast,
-    broadcastLog: ctx.broadcastLog,
-    getSelectedModel: ctx.getSelectedModel,
-    recordAgentRateLimits: ctx.recordAgentRateLimits,
-    getSubscriptionLimitsSnapshot: ctx.getSubscriptionLimitsSnapshot,
-    nudgeClaudeOAuthRefresh: ctx.nudgeClaudeOAuthRefresh,
-    onAgentAuthRequired: ctx.onAgentAuthRequired,
-  };
-  wireAgentListeners(currentAgent, answerRunner, answerListenerDeps, {
-    isNewSession: false,
-    persistUserMessage,
-    fallbackTitle: answerText.slice(0, 80) || "Answer",
-    capturedSessionId,
-    onError: () => drainNextQueuedMessage(ctx, answerRunner, capturedSessionId, capturedSessionDir, emitDone),
-  });
-  currentAgent.on("done", async (code: number | null) => {
-    console.log("[agent] process exited with code", code);
-    ctx.broadcastLog("server", `Agent process exited with code ${code}`);
-    // Identity-guard: a concurrent turn (typically a system-dispatched turn
-    // racing with this answer_question) may have replaced the runner's
-    // agent ref already; only clear if it's still our process.
-    if (answerRunner?.getAgent() === currentAgent) answerRunner.setAgent(null);
-
-    try {
-      if (capturedSessionDir) {
-        await postTurnCommit(ctx, {
-          sessionDir: capturedSessionDir,
-          sessionId: capturedSessionId,
-          emit: emitDone,
-          // Pass the captured runner's summary explicitly — ctx.getTurnSummary()
-          // returns "" after WS disconnect (it routes through attachedRunner).
-          turnSummary: answerRunner?.turnSummary ?? "",
-          turnStartHeadHash,
-        });
-      }
-    } catch (err) {
-      console.error("[git] auto-commit failed:", getErrorMessage(err));
-    }
-
-    // Mirror the cleanup that runAgentWithMessage's done handler performs.
-    // `agent-listeners.ts` already flips `running` to false and emits
-    // `session_status { running: false }` on agent_result, but the SSE
-    // `session_agent_finished` broadcast is owned by the handler, not the
-    // listeners. Without this, sidebars on other tabs would keep showing
-    // the "agent running" dot until they reconnect. Defensive `running=false`
-    // covers the no-result-event crash path the same way it does in
-    // agent-execution.ts.
-    if (answerRunner) {
-      answerRunner.running = false;
-      if (capturedSessionId) {
-        ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
-      }
-      answerRunner.onAgentFinished();
-    }
-  });
-
-  // Look up agent session ID for --resume
   const session = capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined;
-  const agentSessionId = session?.agentSessionId ?? capturedSessionId;
+  const agentSessionId = session?.agentSessionId ?? capturedSessionId ?? undefined;
 
-  // Mark the runner as running BEFORE starting the agent — same pattern as
-  // handleSendMessage/runAgentWithMessage. Without this:
-  //   - the SSE `session_agent_started` event is never broadcast, so the
-  //     sidebar keeps the "Waiting for your input" attention indicator and
-  //     the active-runner dot doesn't appear;
-  //   - if the WS reconnects mid-turn, the reattach path in index.ts skips
-  //     the `session_status` replay (gated on `runner.running`), so the
-  //     reattached viewer's "Thinking..." indicator stays cleared even
-  //     though the agent is actively running.
-  if (answerRunner) answerRunner.running = true;
-  if (capturedSessionId) {
-    ctx.sseBroadcast("session_agent_started", { sessionId: capturedSessionId });
-  }
-  // Emit session_status to all attached viewers so the chat panel's
-  // "Thinking..." indicator and sidebar's active-runner dot show up even
-  // without optimistic client-side state (e.g., a second tab that didn't
-  // initiate the answer).
-  if (answerRunner && capturedSessionId) {
-    answerRunner.emitMessage({
+  // `runAgentWithMessage` does not flip `running` or emit `session_status` —
+  // its WS callers do (see handleSendMessage). Mark running + announce BEFORE
+  // delegating so the chat panel shows "Thinking..." and a reconnecting viewer
+  // replays the running state (index.ts gates the replay on `runner.running`).
+  const turnRunner = resolveRunner(ctx, capturedSessionId);
+  if (turnRunner) turnRunner.running = true;
+  if (turnRunner && capturedSessionId) {
+    turnRunner.emitMessage({
       type: "session_status",
       sessionId: capturedSessionId,
       running: true,
-      queueLength: answerRunner.queueLength,
+      queueLength: turnRunner.queueLength,
     });
   }
 
-  const systemPrompt = await ctx.readSystemPrompt();
-  currentAgent.run({
-    prompt: answerText,
-    sessionId: agentSessionId,
-    systemPrompt,
-    cwd: capturedSessionDir ?? ctx.workspaceDir,
+  await runAgentWithMessage(ctx, {
+    userText: answerText,
+    validatedFiles: [],
+    ...(agentSessionId !== undefined ? { agentSessionId } : {}),
+    isNewSession: false,
   });
-  // "Agent process started" is emitted from agent-listeners.ts on
-  // agent_init — see the matching comment in agent-execution.ts.
 }

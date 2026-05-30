@@ -335,6 +335,119 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     client.close();
   });
 
+  it("runs the answered turn's post-turn flow (auto-commit) under live steering — regression for the stale streamingPostTurnFired guard", async () => {
+    // Root cause of "the answer pastes into chat but the agent never starts /
+    // nothing happens": the old handleAnswerQuestion steering branch called
+    // `existingAgent.sendUserMessage(answerText)` directly, WITHOUT going
+    // through `runAgentWithMessage`. So it never re-wired listeners. The
+    // AskUserQuestion-interrupt turn's `agent_result` had already set that
+    // turn's `streamingPostTurnFired` closure flag to true; because the answer
+    // turn reused those same listeners, its `agent_result` hit the stale guard
+    // and skipped the entire post-turn block (queue drain, auto-commit, PR
+    // card, session_agent_finished).
+    //
+    // The fix routes the answer through `runAgentWithMessage`, whose reuse path
+    // calls `existingAgent.removeAllListeners()` and wires a FRESH
+    // `streamingPostTurnFired=false` closure. This test pins that the answered
+    // turn's post-turn auto-commit actually fires — observable as a
+    // `git_committed` WS message — which the broken path never emitted.
+    const credentialStore = createTestCredentialStore(tmpDir);
+    credentialStore.setLiveSteering(true);
+
+    await app.close();
+    app = await buildApp({
+      credentialStore,
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      agentFactory: () => {
+        lastClaude = new FakeClaudeProcess();
+        return lastClaude as any;
+      },
+      workspaceDir: tmpDir,
+      serveStatic: false,
+    });
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = /:(\d+)$/.exec(address);
+    port = match ? Number(match[1]) : 0;
+
+    // A real git-initialized session dir so post-turn auto-commit can produce a
+    // commit (and emit `git_committed`) when the workspace has changes.
+    const { sessionId, sessionDir } = await createTestSession(sessionManager, tmpDir, "Steer-commit");
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    // Turn 1: spawn the streaming agent.
+    client.send({ type: "send_message", text: "Pick something", sessionId });
+    const claude = await waitForClaude(() => lastClaude);
+    expect(claude.lastUseStreaming).toBe(true);
+    claude.initSession(sessionId);
+
+    // Drive to the AskUserQuestion interrupt: agent_result(error) ends the turn
+    // (running=false) but keeps the streaming process alive. This also sets the
+    // FIRST turn's streamingPostTurnFired=true — the stale flag the bug reused.
+    claude.emit("event", {
+      type: "result",
+      subtype: "error",
+      session_id: sessionId,
+      duration_ms: 50,
+      result: "error_during_execution",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(claude.killed).toBe(false);
+
+    // Drain everything buffered so the next receive() picks up post-answer msgs.
+    while (true) {
+      try {
+        await client.receive(50);
+      } catch {
+        break;
+      }
+    }
+
+    // Create a working-tree change so the answered turn has something to commit.
+    fs.writeFileSync(path.join(sessionDir, "answer-output.txt"), "from the answered turn");
+
+    // Answer the question. Under the fix this reuses the streaming agent via
+    // sendUserMessage AND re-wires fresh listeners.
+    client.send({
+      type: "answer_question",
+      toolUseId: "ask-commit-1",
+      answers: { "0": "Redis" },
+      text: "Redis",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    // Reused process — not killed, not respawned, answer delivered.
+    expect(claude.killed).toBe(false);
+    expect(lastClaude).toBe(claude);
+    expect(claude.stdinData).toContain("Redis");
+
+    // End the answered turn. With fresh listeners this fires the streaming
+    // post-turn block → auto-commit → `git_committed`. With the stale guard it
+    // would be silently skipped.
+    claude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: sessionId,
+      duration_ms: 80,
+    });
+
+    let sawCommit = false;
+    const deadline = Date.now() + 2000;
+    while (!sawCommit && Date.now() < deadline) {
+      let msg;
+      try {
+        msg = await client.receive(500);
+      } catch {
+        break;
+      }
+      if (msg.type === "git_committed") sawCommit = true;
+    }
+    expect(sawCommit).toBe(true);
+
+    client.close();
+  });
+
   it("does not interrupt when AskUserQuestion is emitted with missing/empty questions", async () => {
     // The model occasionally emits AskUserQuestion with malformed input (no
     // `questions` field, or an empty array). The Claude CLI's input validator
