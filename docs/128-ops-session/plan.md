@@ -136,15 +136,63 @@ V1 ships with "same auth" — host operator == ShipIt user.
 
 ### Surfacing in the UI
 
-The ops session shows up in the session list like any other session.
-Two small affordances:
+The ops session is a genuinely different kind of session, not a
+normal repo-backed one, so the UI treats it as its own thing rather
+than blending it into the list. Three decisions:
 
-1. A subtle "ops" badge on the session card so the operator can find
-   it quickly.
-2. The session's title defaults to `Ops — {hostname}` so it's
-   self-describing in the sidebar.
+**1. Created from Settings, not from a phantom list card.** Before
+the ops session exists there is nothing to render in the sidebar, so
+a placeholder card would just be confusing. The create affordance
+lives in a gated **"Ops / Host"** section in Settings
+(`Settings.tsx`) — a short explanation plus a single "Create ops
+session for this host" button. This is also the natural home for the
+operator gate (the button is only shown/enabled for the host
+operator; see "Auth gate"). Creation calls the
+`POST /api/sessions/from-template` route with `template: "ops"`
+(implementation step 2).
 
-No new modal, no new panel, no new tab. Inline by default (§1, §2).
+**2. Rendered in its own dedicated sidebar group once it exists.**
+An ops session has no normal `remoteUrl`, so today it would already
+fall into `SessionSidebar.tsx`'s `OrphanSessionGroup` ("Other
+sessions"). Instead of letting it blend in, we render it in a
+distinct, pinned **"Host / Ops"** group (its own labeled group,
+separate from repo groups and the local/orphan groups), keyed off
+`kind: "ops"`. The card keeps a subtle "ops" badge and the default
+title `Ops — {hostname}` so it's self-describing.
+
+**3. A different right-panel tab set.** Not all of the usual tabs are
+meaningful for an ops session, and the host signals we *do* want
+aren't surfaced by any existing tab. Right-panel tabs are already
+conditional per-session (`RightTab` union in `ui-store.ts`; App.tsx
+hides Preview/Terminal in local mode, Services unless compose
+services exist, PR unless a PR exists), so a per-kind tab set is the
+established pattern, not a new mechanism. For `kind: "ops"`:
+
+| Tab | Ops session | Why |
+|---|---|---|
+| Preview | **hidden** | No app preview to render |
+| PR | **hidden** | Ops session has no PR / merge lifecycle |
+| Files | keep | The `ops/` workspace + `prompts/` |
+| Terminal | keep | Legit ad-hoc escape hatch (§5) |
+| History | keep | Chat history doubles as the incident log |
+| Services | keep (conditional) | The `docker-socket-proxy` compose service |
+| **Host** | **new** | Read-only inline view of host/Docker signals |
+
+**The new "Host" tab** renders, read-only and inline, the signals
+the orchestrator already collects (and which the "reject Portainer"
+argument in the Problem section leans on): the list of session
+containers with status + health, per-session log-ring tails, the
+container-health monitor's current verdicts, and a `docker events` /
+journal tail. This is informational rendering in the spirit of §1/§2
+(same shape as the PR card or Services tab) — **not** a control
+surface. It carries no action buttons; the operator never clicks
+"kill container" here. Any *action* still goes through the agent in
+chat (§5). That boundary is what keeps the Host tab on the right side
+of the "no shell-shaped affordances" line.
+
+This supersedes the earlier "no new tab" framing: ops sessions are
+different enough that a dedicated read-only panel is the correct
+inline surface, and the conditional-tab pattern makes it cheap.
 
 ### What we explicitly do NOT do
 
@@ -194,9 +242,35 @@ independently.)
    silently dropped. Defense-in-depth so a user-modified `shipit.yaml`
    can't smuggle in mounts.
 
-5. **UI badge + title** — add `kind: "ops"` (or similar) to
-   `session-types.ts`, render a small badge in `SessionCard.tsx`.
-   Default title in the template is `Ops — {hostname}`.
+5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
+   `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is
+   no `kind` field today, session types are distinguished by ad-hoc
+   flags (`warm`, `parentSessionId`, `mergedAt`), so this one field is
+   what drives both the grouping and the tab logic. Render the ops
+   session in its own pinned **"Host / Ops"** group in
+   `SessionSidebar.tsx` (separate from `RepoGroup` and
+   `OrphanSessionGroup`), with a subtle "ops" badge on the card.
+   Default title from the template is `Ops — {hostname}`.
+
+5a. **Settings create affordance** — add a gated "Ops / Host" section
+   to `Settings.tsx` with a short explainer and a "Create ops session
+   for this host" button that POSTs to `/api/sessions/from-template`
+   with `template: "ops"`. The button is the operator gate's UI
+   surface — shown/enabled only for the host operator (see "Auth
+   gate"). No phantom card appears in the sidebar before creation.
+
+5b. **Read-only "Host" tab** — add `"host"` to the `RightTab` union
+   (`src/client/stores/ui-store.ts`) and gate its tab button + the
+   Preview/PR hides on `kind === "ops"` in `App.tsx` (same conditional
+   pattern as the existing `isLocalMode` / `composeServices.length`
+   checks). The tab content renders, read-only, the orchestrator's
+   existing host signals — session-container list with status +
+   health, per-session log-ring tails, container-health-monitor
+   verdicts, and a `docker events` / journal tail. New read endpoints
+   are needed to feed it (the orchestrator collects these signals but
+   doesn't expose them to the client yet); add them following the
+   `add-endpoint` skill. **No action buttons** — informational only;
+   mutations go through the agent in chat (§5).
 
 6. **Pre-baked investigation prompts** — write the three prompts under
    `prompts/` and link them from the template's README. Each prompt
@@ -214,6 +288,11 @@ independently.)
      allow-list.
    - Integration: container with the marker file gets the mounts;
      same workspace without the marker doesn't.
+   - Client: a `kind: "ops"` session renders in the "Host / Ops"
+     group, not in a repo or orphan group; Preview/PR tabs are hidden
+     and the Host tab is present.
+   - Gating: the Settings "Create ops session" button is hidden/
+     disabled for a non-operator.
 
 ## Risks / open questions
 
