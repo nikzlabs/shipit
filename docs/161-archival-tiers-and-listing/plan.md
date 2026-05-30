@@ -162,44 +162,65 @@ Notes:
   `detachFromRunner()` (decrements `viewerCount`). It starts the *grace clock*
   for container stop but never directly changes a disk tier.
 
-### The driver: one periodic sweep
+### No new cron — reuse the two triggers we already have
 
-A single periodic **idle-session sweep** (extend the existing idle-container
-enforcer from `docs/063`, or a sibling loop on the same cadence — proposed
-~60s tick) evaluates every non-`warm` session each pass and applies **at most one
-transition per session per tick** — always the *lowest* one whose condition and
-guards are satisfied. It is idempotent: re-running the sweep on an already-settled
-session is a no-op. Centralizing every time-based transition in one loop means
-there is exactly one place that reasons about idleness, instead of timers
-scattered across merge handlers, WS close, and the janitor.
+We deliberately do **not** add a new periodic sweep. Every transition hangs off a
+mechanism that already exists, so there is no extra timer to own:
 
-"Idle age" everywhere below means `now - Date.parse(lastUsedAt)`. `lastUsedAt` is
-bumped at **turn start and turn end**, and we additionally bump it on **viewer
-attach** (opening the session), so any interaction resets the whole ladder — a
-session you keep opening never descends.
+1. **The idle-container enforcer** *(`docs/063`, event-driven)* — already fires on
+   viewer disconnect and agent-finish when the idle-container cap is exceeded. It
+   owns the **container stop** rung.
+2. **`disk-janitor.ts`** *(runs once at orchestrator startup)* — already the home
+   for all other disk reclamation. It owns the **`hot → light`** and
+   **`light → evicted`** escalations, evaluated by `lastUsedAt` age, exactly like
+   it already prunes caches by `last_used_at`.
+3. **User actions / session select** *(event-driven)* — own archive and restore.
+
+"Idle age" means `now - Date.parse(lastUsedAt)`. `lastUsedAt` is bumped at turn
+start and end; we additionally bump it on **viewer attach**, so reopening a
+session resets the ladder.
+
+### Consequence of janitor-cadence escalation (read before accepting)
+
+Tier escalation is the **one** disk task that accumulates *steadily* — unlike the
+janitor's existing items, which only exist when an earlier teardown crashed (see
+its docstring: "None of them accumulate steadily"). Putting `hot → light` /
+`light → evicted` in the startup-only janitor therefore means:
+
+- **On prod (auto-deploys on push):** startup is frequent, so escalation runs
+  often enough. Fine.
+- **On a long-uptime box (rare restarts):** idle sessions keep their
+  `node_modules` until the next restart — disk is reclaimed in bursts at boot,
+  not continuously. Acceptable as long as we don't rely on continuous reclaim.
+
+To cover the long-uptime case **without** adding a timer, the janitor's escalation
+logic is *also* invoked **on-demand at disk-consuming moments** — right before a
+session create or a container start, run the same age-based pass (cheap, reads the
+DB + a `statfs`). This is lazy reclaim, like a cache evicting on insert: we only
+pay when we're about to need space, and it needs no cron. If even that proves
+insufficient under sustained pressure, promoting the janitor pass to a real timer
+is a later, isolated change — but we start cron-free per the explicit decision.
 
 ### The transitions
 
-Each row: the move, the **trigger** that evaluates it, the **condition** that
-must hold, the **guards** that must all pass, and the **effect**.
+Each row: the move, the **trigger**, the **condition**, the **guards** (all must
+pass), and the **effect**.
 
-| Move | Trigger | Condition (any) | Guards (all) | Effect |
+| Move | Trigger | Condition | Guards | Effect |
 |---|---|---|---|---|
-| **container running → stopped** *(within `hot`)* | sweep | idle ≥ `IDLE_STOP` (~30m) **or** idle-container cap exceeded (`docs/063`) | not running; `viewerCount === 0` | dispose runner / stop container; **disk untouched**, deps preserved, instant restart |
-| **`hot` → `light`** | sweep | idle ≥ `IDLE_LIGHT` (~24h) **or** disk-pressure pass selects it (LRU, see below) | not running; `viewerCount === 0` | `ServiceManager.stop({ removeVolumes: true })` — drop `node_modules`/build volumes; keep checkout, branch, uncommitted edits; `diskTier = light` |
-| **`light` → `evicted`** | sweep | idle ≥ `IDLE_EVICT` (~14–30d) **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0`; **clean tree** (else auto-commit + push to the session branch first) | `fs.rm` workspace; destroy container; `diskTier = evicted` |
-| **any tier → `evicted` + `userArchived`** | explicit user "Archive" action | user clicked archive | not running (else confirm/decline); dirty tree → auto-commit + push first | `userArchived = true`; run the `evicted` cleanup; cascade to children (existing behavior) |
+| **container running → stopped** *(within `hot`)* | idle-container enforcer (`docs/063`, event-driven) | idle-container cap exceeded | not running; `viewerCount === 0` | dispose runner / stop container; **disk untouched**, deps preserved, instant restart |
+| **`hot` → `light`** | disk-janitor pass (startup + on-demand before create/start) | idle ≥ `IDLE_LIGHT` (~24h), **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0` | `ServiceManager.stop({ removeVolumes: true })` — drop `node_modules`/build volumes; keep checkout, branch, uncommitted edits; `diskTier = light` |
+| **`light` → `evicted`** | disk-janitor pass (startup + on-demand) | idle ≥ `IDLE_EVICT` (~14–30d), **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0`; **clean tree** (else auto-commit + push first) | `fs.rm` workspace; destroy container; `diskTier = evicted` |
+| **any tier → `evicted` + `userArchived`** | explicit user "Archive" action | user clicked archive | not running (else confirm/decline); dirty tree → auto-commit + push first | `userArchived = true`; run the `evicted` cleanup; cascade to children (existing) |
 | **`light` → `hot`** | user selects / messages the session | — | — | reinstall deps (`agent.install` / dep-cache); start container; `diskTier = hot`. Branch + checkout + uncommitted work intact |
 | **`evicted` → `hot`** | user selects / messages the session (incl. unarchive) | — | — | force-fresh fetch + clone-from-cache, new branch off current `origin/main` (Part 3); `diskTier = hot` |
-| **safety-net sweep** | `disk-janitor.ts` at orchestrator startup | `evicted` workspace older than `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS`; orphan caches | — | reclaim leftover on-disk remnants the live sweep missed (interrupted shutdown, legacy rows) |
 
-**Disk-pressure pass.** In addition to the idle thresholds, when free disk on the
-host drops below a low-water mark, the same sweep escalates the **least-recently-
-used** eligible sessions (`hot → light`, then `light → evicted`) until free space
-crosses a high-water mark — regardless of whether they've hit `IDLE_LIGHT` /
-`IDLE_EVICT` yet. This keeps the time thresholds generous (good UX) while still
-guaranteeing we reclaim space under pressure (the original disk-saving goal).
-Guards still apply, so a pressure pass never touches a running/open/dirty session.
+**Disk-pressure pass.** Folded into the same janitor logic: when free disk drops
+below a low-water mark (checked at the on-demand moments above, not on a timer),
+escalate the **least-recently-used** eligible sessions (`hot → light`, then
+`light → evicted`) until free space crosses a high-water mark — regardless of
+whether they've hit `IDLE_LIGHT` / `IDLE_EVICT`. Keeps the time thresholds
+generous while still reclaiming under pressure. Guards still apply.
 
 ### Guards (the gate every automatic descent passes)
 
@@ -223,11 +244,14 @@ confirm) "running", but still auto-commits dirty work rather than losing it.
 
 | Constant | Meaning | Proposed default |
 |---|---|---|
-| `IDLE_STOP` | idle before container stop (disk stays `hot`) | 30 min |
-| `IDLE_LIGHT` | idle before `hot → light` | 24 h |
-| `IDLE_EVICT` | idle before `light → evicted` | 14 d |
-| `DISK_FREE_LOW` / `DISK_FREE_HIGH` | disk-pressure water marks | host-tuned |
+| `maxIdleContainers` | container-stop cap (exists, `docs/063`) | 5 |
+| `IDLE_LIGHT` | idle before `hot → light` (janitor) | 24 h |
+| `IDLE_EVICT` | idle before `light → evicted` (janitor) | 14 d |
+| `DISK_FREE_LOW` / `DISK_FREE_HIGH` | disk-pressure water marks (checked on-demand, no timer) | host-tuned |
 | `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` | janitor backstop for `evicted` (exists) | 30 d (prod) |
+
+Container stop is governed by the existing `maxIdleContainers` cap, not a time
+threshold, so there is no `IDLE_STOP` constant.
 
 ---
 
