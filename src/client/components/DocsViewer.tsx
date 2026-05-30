@@ -11,12 +11,6 @@ export interface DocsViewerProps {
   files: DocEntry[];
   onFileClick: (path: string) => void;
   onRefresh: () => void;
-  /**
-   * ISO timestamp of when the current session was created. When provided, docs
-   * whose `modifiedAt` is later than this are pulled into a "Modified in this
-   * session" group at the top of the panel.
-   */
-  sessionStartedAt?: string;
 }
 
 const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["variant"]; order: number }> = {
@@ -279,18 +273,18 @@ function sortTrackedDocs(docs: DocEntry[]): DocEntry[] {
 }
 
 /**
- * Returns true when a doc was modified after the session started.
- * Both timestamps are ISO 8601 strings; lexical comparison works because
- * ISO 8601 strings sort chronologically.
+ * Returns true when a doc was actually changed in the current session.
+ * Derived server-side from git (committed branch changes + uncommitted edits),
+ * which is reliable; the old mtime-vs-session-start heuristic produced false
+ * positives because git rewrites file mtimes on every checkout/fetch/reset.
  */
-function wasModifiedInSession(doc: DocEntry, sessionStartedAt: string | undefined): boolean {
-  if (!sessionStartedAt || !doc.modifiedAt) return false;
-  return doc.modifiedAt > sessionStartedAt;
+function wasModifiedInSession(doc: DocEntry): boolean {
+  return doc.changedInSession === true;
 }
 
 type Tab = "tracked" | "other";
 
-export function DocsViewer({ files: allFiles, onFileClick, onRefresh, sessionStartedAt }: DocsViewerProps) {
+export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsViewerProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -316,11 +310,11 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, sessionSta
     () =>
       files.filter(
         (f) =>
-          wasModifiedInSession(f, sessionStartedAt) &&
+          wasModifiedInSession(f) &&
           !hasTrackedPlanSibling(f.path, files) &&
           (isTracked(f) || !hasTrackedSibling(f.path, files)),
       ),
-    [files, sessionStartedAt],
+    [files],
   );
   const modifiedPaths = useMemo(
     () => new Set(modifiedInSession.map((f) => f.path)),
