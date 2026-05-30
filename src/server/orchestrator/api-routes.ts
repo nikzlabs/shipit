@@ -263,11 +263,8 @@ export async function registerApiRoutes(
   }
   await registerUpdateRoutes(app);
   await registerAgentRoutes(app, deps);
-<<<<<<< HEAD
   await registerVoiceRoutes(app, deps);
-=======
   await registerLimitsRoutes(app, deps);
->>>>>>> 720469723 (The feature is complete and the user has been notified. All tasks are marked done, quality gates pass, and PR #846 refle)
 
   // Marketplace catalogs (docs/149). Wired only when a store is provided so
   // test setups that don't need this surface keep their route table minimal.
