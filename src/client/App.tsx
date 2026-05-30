@@ -733,19 +733,6 @@ export default function App() {
     [],
   );
 
-  // docs/093 — auto-switch to the Present tab the first time an agent
-  // presentation arrives in this session. After the user has manually moved
-  // away, we don't yank them back; only the count-of-1 transition triggers.
-  // Reads `rightTab` via `getState()` so the dep array stays a single edge
-  // detector (`presentations.length`) rather than re-running on every tab flip.
-  // eslint-disable-next-line no-restricted-syntax -- one-shot UI focus
-  useEffect(() => {
-    if (presentations.length !== 1) return;
-    if (useUiStore.getState().rightTab === "present") return;
-    useUiStore.getState().setRightTab("present");
-    usePresentStore.getState().markSeen();
-  }, [presentations.length]);
-
   // docs/133 Phase 4: tell the server whether the PR tab is the active
   // right-panel tab for this session, so the poller fetches the heavier
   // conversation fields (issue comments + review threads) only while the panel

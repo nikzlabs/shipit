@@ -51,6 +51,37 @@ describe("present-store", () => {
     expect(presentations[1].presentId).toBe("p2");
   });
 
+  it("dedupes by presentId — re-delivery replaces in place rather than appending", () => {
+    usePresentStore.getState().addOrReplace(makePresent());
+    // Same id arrives again (e.g. live present_content overlapping a hydrate).
+    usePresentStore.getState().addOrReplace(makePresent({ title: "Hi again" }));
+    const { presentations, activePresentIndex } = usePresentStore.getState();
+    expect(presentations).toHaveLength(1);
+    expect(presentations[0].title).toBe("Hi again");
+    expect(activePresentIndex).toBe(0);
+  });
+
+  it("hydrate replaces the whole list without bumping the unseen count", () => {
+    usePresentStore.getState().hydrate([
+      { presentId: "p1", content: "<p>a</p>", mimeType: "text/html", createdAt: "2026-05-29T00:00:00.000Z" },
+      { presentId: "p2", content: "<p>b</p>", mimeType: "text/html", createdAt: "2026-05-29T00:00:01.000Z" },
+    ]);
+    const { presentations, unseenCount } = usePresentStore.getState();
+    expect(presentations.map((p) => p.presentId)).toEqual(["p1", "p2"]);
+    expect(unseenCount).toBe(0);
+  });
+
+  it("hydrate clamps the active index into the new bounds", () => {
+    usePresentStore.getState().addOrReplace(makePresent());
+    usePresentStore.getState().addOrReplace(makePresent({ presentId: "p2" }));
+    usePresentStore.getState().setActiveIndex(1);
+    // Hydrate to a shorter list — active index must clamp.
+    usePresentStore.getState().hydrate([
+      { presentId: "p1", content: "<p>a</p>", mimeType: "text/html", createdAt: "2026-05-29T00:00:00.000Z" },
+    ]);
+    expect(usePresentStore.getState().activePresentIndex).toBe(0);
+  });
+
   it("clear with presentId drops just that entry", () => {
     usePresentStore.getState().addOrReplace(makePresent());
     usePresentStore.getState().addOrReplace(makePresent({ presentId: "p2" }));
