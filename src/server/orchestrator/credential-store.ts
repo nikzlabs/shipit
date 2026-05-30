@@ -50,6 +50,13 @@ interface CredentialData {
    */
   mcpOAuthClients?: Record<string, McpOAuthRegisteredClient>;
   providerAccounts?: Partial<Record<AgentId, ProviderAccount[]>>;
+  /**
+   * Voice provider API keys (docs/144) keyed by provider id ("openai",
+   * "elevenlabs", "deepgram", …). Each provider that needs its own credential
+   * gets its own entry so STT, TTS, and cleanup can run on different accounts.
+   * Server-side only — never returned to the browser (see plan threat model).
+   */
+  voiceProviderKeys?: Record<string, string>;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -318,6 +325,38 @@ export class CredentialStore {
   clearGithubToken(): void {
     delete this.data.githubToken;
     this.save();
+  }
+
+  // ---- Voice provider API keys (docs/144) ----
+
+  /** The stored key for a voice provider id, or null when none is set. */
+  getVoiceProviderKey(providerId: string): string | null {
+    const key = this.data.voiceProviderKeys?.[providerId];
+    if (typeof key === "string" && key.trim()) {
+      return key;
+    }
+    return null;
+  }
+
+  setVoiceProviderKey(providerId: string, key: string): void {
+    this.data.voiceProviderKeys ??= {};
+    this.data.voiceProviderKeys[providerId] = key;
+    this.save();
+  }
+
+  clearVoiceProviderKey(providerId: string): void {
+    if (this.data.voiceProviderKeys && providerId in this.data.voiceProviderKeys) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by provider id
+      delete this.data.voiceProviderKeys[providerId];
+      this.save();
+    }
+  }
+
+  /** Provider ids that currently have a non-empty key. */
+  getConfiguredVoiceProviders(): string[] {
+    return Object.entries(this.data.voiceProviderKeys ?? {})
+      .filter(([, v]) => typeof v === "string" && v.trim())
+      .map(([id]) => id);
   }
 
   // ---- Max idle containers ----

@@ -22,6 +22,9 @@ import { AgentReviewCard } from "./AgentReviewCard.js";
 import { UserReviewCard } from "./UserReviewCard.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
+import { PlayTurnButton } from "./PlayTurnButton.js";
+import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
 
@@ -249,6 +252,42 @@ export function MessageList({
   const hasRewindControls = !!onRewindAtGap;
 
   const messages = messagesProp;
+
+  const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
+
+  // Per-completed-turn Play button (docs/144). A "turn" is the run of
+  // assistant messages between one user message and the next. We mark the
+  // LAST assistant message of each *complete* turn (not streaming) with the
+  // concatenated, speakable prose to read aloud; the footer renders Play
+  // there. Turns that are entirely tool calls (no speakable prose) are
+  // skipped so the button doesn't appear on a tool-only turn.
+  const turnProseByLastIndex = useMemo(() => {
+    const map = new Map<number, string>();
+    if (!voicePlaybackEnabled) return map;
+    let runStart = -1; // index of first assistant message in the current run
+    const flush = (lastAssistantIdx: number) => {
+      if (lastAssistantIdx < 0 || runStart < 0) return;
+      const last = messages[lastAssistantIdx];
+      if (last.streaming) return; // turn still being written — no Play yet
+      const prose = extractTurnProse(messages.slice(runStart, lastAssistantIdx + 1));
+      if (prose && hasSpeakableProse(prose)) map.set(lastAssistantIdx, prose);
+    };
+    let lastAssistantIdx = -1;
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      const isProseAssistant = m.role === "assistant" && !m.isError && !m.notice;
+      if (isProseAssistant) {
+        if (runStart < 0) runStart = i;
+        lastAssistantIdx = i;
+      } else if (m.role === "user") {
+        flush(lastAssistantIdx);
+        runStart = -1;
+        lastAssistantIdx = -1;
+      }
+    }
+    flush(lastAssistantIdx);
+    return map;
+  }, [messages, voicePlaybackEnabled]);
 
   const lastTodoWriteId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -704,6 +743,12 @@ export function MessageList({
                 <span className="inline-flex items-center ml-1 align-middle">
                   <TypingDots />
                 </span>
+              )}
+
+              {voicePlaybackEnabled && turnProseByLastIndex.has(i) && (
+                <div className="mt-1.5 flex items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                  <PlayTurnButton turnId={msg.commitHash ?? `turn-${i}`} text={turnProseByLastIndex.get(i)!} />
+                </div>
               )}
             </div>
             </div>

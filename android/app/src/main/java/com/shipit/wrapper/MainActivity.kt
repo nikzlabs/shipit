@@ -1,12 +1,15 @@
 package com.shipit.wrapper
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import android.webkit.CookieManager
+import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -15,6 +18,7 @@ import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import com.shipit.wrapper.databinding.ActivityMainBinding
 
 /**
@@ -33,6 +37,25 @@ class MainActivity : AppCompatActivity() {
 
     private var configuredHost: String? = null
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+
+    // Voice dictation (docs/144): a WebView getUserMedia() call surfaces as an
+    // onPermissionRequest. We can only grant it once the OS-level RECORD_AUDIO
+    // permission is held, so we stash the pending request, run the runtime
+    // permission prompt, then grant or deny on its result.
+    private var pendingPermissionRequest: PermissionRequest? = null
+
+    private val audioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val request = pendingPermissionRequest
+        pendingPermissionRequest = null
+        if (request == null) return@registerForActivityResult
+        if (granted) {
+            request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+        } else {
+            request.deny()
+        }
+    }
 
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.GetMultipleContents(),
@@ -119,6 +142,25 @@ class MainActivity : AppCompatActivity() {
                 }.getOrElse {
                     fileChooserCallback = null
                     false
+                }
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest) {
+                val wantsAudio = request.resources.any { it == PermissionRequest.RESOURCE_AUDIO_CAPTURE }
+                if (!wantsAudio) {
+                    // We only support mic capture; deny anything else (camera, etc.).
+                    request.deny()
+                    return
+                }
+                val granted = ContextCompat.checkSelfPermission(
+                    this@MainActivity,
+                    Manifest.permission.RECORD_AUDIO,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (granted) {
+                    request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                } else {
+                    pendingPermissionRequest = request
+                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                 }
             }
         }

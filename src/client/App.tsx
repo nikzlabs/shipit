@@ -225,6 +225,8 @@ export default function App() {
   const contextTokens = useUiStore((s) => s.contextTokens);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
   const quickCaptureHotkey = useSettingsStore((s) => s.quickCaptureHotkey);
+  const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
+  const voiceHotkeyModeB = useSettingsStore((s) => s.voiceHotkeyModeB);
   const projectSettingsRepoUrl = useUiStore((s) => s.projectSettingsRepoUrl);
   const projectSettingsTab = useUiStore((s) => s.projectSettingsTab);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
@@ -710,6 +712,13 @@ export default function App() {
 
   useQuickCaptureHotkey(quickCaptureHotkey, () => {
     useUiStore.getState().setQuickCaptureOpen(true);
+  });
+
+  // docs/144 Mode B — voice hotkey opens the overlay *and* auto-starts mic.
+  // Only active when voice input is enabled; reuses the same conflict-checked
+  // matcher as the text-only quick-capture hotkey.
+  useQuickCaptureHotkey(voiceInputEnabled ? voiceHotkeyModeB : "", () => {
+    useUiStore.getState().setQuickCaptureOpen(true, true);
   });
 
   const handleTabChange = useCallback(

@@ -156,6 +156,95 @@ export function saveQuickCaptureHotkey(hotkey: string): void {
   }
 }
 
+// ---- Voice settings (docs/144) ----
+
+const VOICE_INPUT_ENABLED_KEY = "shipit-voice-input-enabled";
+const STT_PROVIDER_KEY = "shipit-stt-provider";
+const CLEANUP_ENABLED_KEY = "shipit-voice-cleanup-enabled";
+const VOICE_HOTKEY_MODE_A_KEY = "shipit-voice-hotkey-mode-a";
+const VOICE_HOTKEY_MODE_B_KEY = "shipit-voice-hotkey-mode-b";
+const VOICE_LANGUAGE_KEY = "shipit-voice-language";
+const VOICE_PLAYBACK_ENABLED_KEY = "shipit-voice-playback-enabled";
+const TTS_PROVIDER_KEY = "shipit-tts-provider";
+const TTS_VOICE_KEY = "shipit-tts-voice";
+const TTS_SPEED_KEY = "shipit-tts-speed";
+
+export const VOICE_HOTKEY_MODE_A_DEFAULT = "ctrl+shift+space";
+export const VOICE_HOTKEY_MODE_B_DEFAULT = "ctrl+shift+m";
+export const TTS_VOICE_DEFAULT = "alloy";
+export const TTS_SPEED_DEFAULT = 1;
+
+function getSavedBool(key: string, fallback: boolean): boolean {
+  try {
+    const saved = localStorage.getItem(key);
+    return saved === null ? fallback : saved === "true";
+  } catch {
+    return fallback;
+  }
+}
+
+function saveBool(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+function getSavedString(key: string, fallback: string): string {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveString(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export const getSavedVoiceInputEnabled = (): boolean => getSavedBool(VOICE_INPUT_ENABLED_KEY, false);
+export const saveVoiceInputEnabled = (v: boolean): void => saveBool(VOICE_INPUT_ENABLED_KEY, v);
+export const getSavedSttProvider = (): string => getSavedString(STT_PROVIDER_KEY, "openai");
+export const saveSttProvider = (v: string): void => saveString(STT_PROVIDER_KEY, v);
+export const getSavedCleanupEnabled = (): boolean => getSavedBool(CLEANUP_ENABLED_KEY, true);
+export const saveCleanupEnabled = (v: boolean): void => saveBool(CLEANUP_ENABLED_KEY, v);
+export const getSavedVoiceHotkeyModeA = (): string => getSavedString(VOICE_HOTKEY_MODE_A_KEY, VOICE_HOTKEY_MODE_A_DEFAULT);
+export const saveVoiceHotkeyModeA = (v: string): void => saveString(VOICE_HOTKEY_MODE_A_KEY, v);
+export const getSavedVoiceHotkeyModeB = (): string => getSavedString(VOICE_HOTKEY_MODE_B_KEY, VOICE_HOTKEY_MODE_B_DEFAULT);
+export const saveVoiceHotkeyModeB = (v: string): void => saveString(VOICE_HOTKEY_MODE_B_KEY, v);
+export const getSavedVoiceLanguage = (): string => getSavedString(VOICE_LANGUAGE_KEY, "");
+export const saveVoiceLanguage = (v: string): void => saveString(VOICE_LANGUAGE_KEY, v);
+export const getSavedVoicePlaybackEnabled = (): boolean => getSavedBool(VOICE_PLAYBACK_ENABLED_KEY, false);
+export const saveVoicePlaybackEnabled = (v: boolean): void => saveBool(VOICE_PLAYBACK_ENABLED_KEY, v);
+export const getSavedTtsProvider = (): string => getSavedString(TTS_PROVIDER_KEY, "openai");
+export const saveTtsProvider = (v: string): void => saveString(TTS_PROVIDER_KEY, v);
+export const getSavedTtsVoice = (): string => getSavedString(TTS_VOICE_KEY, TTS_VOICE_DEFAULT);
+export const saveTtsVoice = (v: string): void => saveString(TTS_VOICE_KEY, v);
+
+export function getSavedTtsSpeed(): number {
+  try {
+    const raw = localStorage.getItem(TTS_SPEED_KEY);
+    if (raw === null) return TTS_SPEED_DEFAULT;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : TTS_SPEED_DEFAULT;
+  } catch {
+    return TTS_SPEED_DEFAULT;
+  }
+}
+
+export function saveTtsSpeed(value: number): void {
+  try {
+    localStorage.setItem(TTS_SPEED_KEY, String(value));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 const COLLAPSED_REPOS_KEY = "shipit-collapsed-repos";
 
 export function getSavedCollapsedRepos(): Set<string> {
