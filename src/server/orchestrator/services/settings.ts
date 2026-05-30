@@ -62,7 +62,7 @@ export async function getGlobalSettings(
   const maxIdleContainers = credentialStore?.getMaxIdleContainers() ?? 5;
   const agentSystemInstructionsEnabled = credentialStore?.getAgentSystemInstructionsEnabled() ?? true;
   const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
-  const liveSteering = credentialStore?.getLiveSteering() ?? false;
+  const liveSteering = credentialStore?.getLiveSteering() ?? true;
   const autoResolveConflicts = credentialStore?.getAutoResolveConflicts() ?? false;
   // Settings page renders the per-agent "Parallel sessions" guidance as a
   // preview. Pick the first installed-and-authed agent so a Codex-only host

@@ -7,7 +7,6 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
-import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 
 
 import type { FastifyInstance } from "fastify";
@@ -17,6 +16,7 @@ import {
   FakeClaudeProcess,
   waitForClaude,
   createTestDatabaseManager,
+  createTestCredentialStore,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 
@@ -39,13 +39,16 @@ describe("Integration: Claude message flow — basics", () => {
     chatHistoryManager = new ChatHistoryManager(dbManager);
 
     // Set up global git config so sessions inherit identity automatically.
-    initGlobalGitConfig(path.join(tmpDir, "credentials"));
-    setGitIdentity("Test User", "test@example.com");
+    // createTestCredentialStore also pins liveSteering=false, so this suite
+    // exercises the one-shot / queue turn path (mid-turn messages queue rather
+    // than steer into a persistent streaming process).
+    const credentialStore = createTestCredentialStore(tmpDir);
 
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,
+      credentialStore,
       authManager: new StubAuthManager() as unknown as AuthManager,
       agentFactory: () => {
         lastClaude = new FakeClaudeProcess();

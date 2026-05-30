@@ -161,7 +161,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   ttsVoice: getSavedTtsVoice(),
   ttsSpeed: getSavedTtsSpeed(),
   autoCreatePr: false,
-  liveSteering: false,
+  liveSteering: true,
   autoResolveConflicts: false,
   codexDeviceAuth: null,
   codexDeviceAuthError: null,
