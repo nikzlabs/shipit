@@ -273,6 +273,11 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
           <p className="truncate leading-snug">{session.title}</p>
           <div className="flex items-center gap-1.5 mt-0.5">
             <SessionStatusDot sessionId={session.id} />
+            {session.kind === "ops" && (
+              <span className="text-[9px] font-semibold uppercase tracking-wide text-(--color-text-tertiary) border border-(--color-border-secondary) rounded px-1 leading-tight shrink-0">
+                ops
+              </span>
+            )}
             {repoLabel && (
               <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
             )}
@@ -317,6 +322,49 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
           </OverflowMenu>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * docs/128 — pinned group for privileged ops/host-debugging sessions. Keyed off
+ * the server-authoritative `kind: "ops"` field, separate from repo and orphan
+ * groups, with a Wrench icon so it reads as "the host tools" rather than a repo.
+ */
+function OpsSessionGroup({
+  sessions,
+  currentSessionId,
+  onResume,
+  onArchive,
+  isTouch,
+}: {
+  sessions: SessionInfo[];
+  currentSessionId?: string;
+  onResume: (sessionId: string) => void;
+  onArchive: (sessionId: string) => void;
+  isTouch: boolean;
+}) {
+  if (sessions.length === 0) return null;
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10">
+        <span className="w-5 h-5 flex items-center justify-center shrink-0 text-(--color-text-tertiary)">
+          <WrenchIcon size={ICON_SIZE.XS} weight="fill" />
+        </span>
+        <span className="text-xs font-semibold text-(--color-text-secondary) truncate tracking-wide">
+          Host / Ops
+        </span>
+      </div>
+      {sessions.map((session) => (
+        <SessionItem
+          key={session.id}
+          session={session}
+          isCurrent={session.id === currentSessionId}
+          onResume={onResume}
+          onArchive={onArchive}
+          isTouch={isTouch}
+        />
+      ))}
     </div>
   );
 }
@@ -657,6 +705,11 @@ export function SessionSidebar({
   const repoGroups = useMemo(() => {
     const grouped = new Map<string, SessionInfo[]>();
 
+    // docs/128 — ops sessions are a distinct kind, not repo-backed. Pull them
+    // out before the repo/orphan distribution so they render in their own
+    // pinned "Host / Ops" group instead of falling into "Other sessions".
+    const opsSessions = sessions.filter((s) => s.kind === "ops");
+
     // Initialize groups for all known repos
     for (const repo of repos) {
       grouped.set(repo.url, []);
@@ -664,6 +717,7 @@ export function SessionSidebar({
 
     // Distribute sessions into groups
     for (const s of sessions) {
+      if (s.kind === "ops") continue;
       const key = s.remoteUrl ?? "";
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key)!.push(s);
@@ -708,8 +762,13 @@ export function SessionSidebar({
         return { kind: "orphan" as const, url, label, sessions: group };
       });
 
-    // Preserve the server-provided repo order, then append non-empty unmatched groups.
-    return [...known, ...orphan];
+    // docs/128 — pin the ops group at the very top when it exists.
+    const ops = opsSessions.length > 0
+      ? [{ kind: "ops" as const, sessions: opsSessions }]
+      : [];
+
+    // Ops first (pinned), then server-provided repo order, then non-empty unmatched groups.
+    return [...ops, ...known, ...orphan];
   }, [repos, sessions]);
 
   const handleViewAll = useCallback((repoUrl: string) => {
@@ -966,7 +1025,16 @@ export function SessionSidebar({
             </Button>
           </div>
         ) : (
-          repoGroups.map((group) => group.kind === "repo" ? (
+          repoGroups.map((group) => group.kind === "ops" ? (
+            <OpsSessionGroup
+              key="ops"
+              sessions={group.sessions}
+              currentSessionId={currentSessionId}
+              onResume={onResume}
+              onArchive={onArchive}
+              isTouch={isTouch}
+            />
+          ) : group.kind === "repo" ? (
             <RepoGroup
               key={group.repo.url}
               repo={group.repo}

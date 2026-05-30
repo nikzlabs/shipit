@@ -215,7 +215,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const loopDetector = createSessionLoopDetector();
 
   // ---- Runner factory ----
-  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, runtimeMode, broadcastLog, oomBreaker });
+  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker });
 
   // ---- Service manager registry (per-session compose stacks) ----
   const serviceManagers = new Map<string, ServiceManager>();

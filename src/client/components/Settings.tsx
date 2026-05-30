@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
-import { XIcon } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
+import { XIcon, WrenchIcon } from "@phosphor-icons/react";
 import type { AgentOption } from "../agent-types.js";
 import type { AgentId, ProviderAccount } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -13,6 +14,8 @@ import { McpServerSettings } from "./McpServerSettings.js";
 import { SkillsTab } from "./SkillsTab.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+import { handleSessionResume } from "../stores/actions/session-actions.js";
 import { isValidQuickCaptureHotkey } from "../hooks/useQuickCaptureHotkey.js";
 
 const MAX_LENGTH = 50_000;
@@ -267,6 +270,68 @@ function AutoResolveConflictsSettings() {
           <ToggleSwitch enabled={autoResolveConflicts} onToggle={(v) => void handleToggle(v)} testId="settings-auto-resolve-conflicts" />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * docs/128 — gated "Ops / Host" section. The create button is the operator
+ * gate's UI surface; the route enforces the same gate server-side (v1: host
+ * operator == ShipIt user). Creating an ops session POSTs the ops template to
+ * a fresh session, which sets the server-authoritative `kind: "ops"`.
+ */
+function OpsSessionSettings({ onClose }: { onClose: () => void }) {
+  const navigate = useNavigate();
+  const [creating, setCreating] = useState(false);
+
+  const handleCreate = async () => {
+    setCreating(true);
+    try {
+      const res = await fetch("/api/sessions/new/template", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ templateId: "ops" }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { session?: { id: string } };
+      await useSessionStore.getState().refreshSessions();
+      const id = data.session?.id;
+      if (id) {
+        onClose();
+        handleSessionResume(id, (p) => void navigate(p));
+      }
+    } catch (err) {
+      useUiStore.getState().setToast({ message: "Failed to create ops session" });
+      console.error("[settings] create ops session failed:", err);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-(--color-text-primary) flex items-center gap-2">
+        <WrenchIcon size={ICON_SIZE.SM} weight="fill" />
+        Ops / Host
+      </h3>
+      <p className="text-sm text-(--color-text-secondary)">
+        Create a privileged session for debugging this ShipIt host. The agent gets
+        <strong className="text-(--color-text-primary)"> read-only </strong>
+        Docker access (via a hardened proxy) and read-only systemd journal mounts —
+        enough to investigate stuck containers, OOMs, and restart loops without
+        leaving ShipIt. No write access to Docker, no other host paths.
+      </p>
+      <Button
+        variant="primary"
+        size="md"
+        onClick={() => void handleCreate()}
+        disabled={creating}
+        className="rounded-md gap-1.5"
+        data-testid="settings-create-ops-session"
+      >
+        <WrenchIcon size={ICON_SIZE.SM} />
+        {creating ? "Creating…" : "Create ops session for this host"}
+      </Button>
     </div>
   );
 }
@@ -1003,6 +1068,10 @@ export function Settings({
                   </Button>
                 </div>
               </div>
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              <OpsSessionSettings onClose={onClose} />
 
               <div className="border-t border-(--color-border-secondary)" />
 

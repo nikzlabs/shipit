@@ -231,6 +231,58 @@ describe("parseShipitConfig", () => {
     });
     expect(config.warnings).toEqual([]);
   });
+
+  // ---- x-shipit-host-mounts (docs/128) ----
+
+  it("defaults host mounts to empty array", () => {
+    const config = parseShipitConfig({});
+    expect(config.hostMounts).toEqual([]);
+  });
+
+  it("parses allow-listed host mounts as read-only", () => {
+    const config = parseShipitConfig({
+      "x-shipit-host-mounts": ["/var/log/journal", "/run/log/journal"],
+    });
+    expect(config.hostMounts).toEqual([
+      { source: "/var/log/journal", target: "/var/log/journal", readOnly: true },
+      { source: "/run/log/journal", target: "/run/log/journal", readOnly: true },
+    ]);
+    expect(config.warnings).toEqual([]);
+  });
+
+  it("de-duplicates repeated host mounts", () => {
+    const config = parseShipitConfig({
+      "x-shipit-host-mounts": ["/var/log/journal", "/var/log/journal"],
+    });
+    expect(config.hostMounts).toEqual([
+      { source: "/var/log/journal", target: "/var/log/journal", readOnly: true },
+    ]);
+  });
+
+  it("rejects host mounts outside the allow-list", () => {
+    expect(() => parseShipitConfig({ "x-shipit-host-mounts": ["/etc"] })).toThrow(ShipitConfigError);
+    expect(() => parseShipitConfig({ "x-shipit-host-mounts": ["/root/.ssh"] })).toThrow(
+      "is not allowed",
+    );
+    expect(() => parseShipitConfig({ "x-shipit-host-mounts": ["/var/lib/docker"] })).toThrow(
+      ShipitConfigError,
+    );
+  });
+
+  it("rejects a non-list host-mounts value", () => {
+    expect(() => parseShipitConfig({ "x-shipit-host-mounts": "/var/log/journal" })).toThrow(
+      "must be a list",
+    );
+  });
+
+  it("rejects non-string host-mount entries", () => {
+    expect(() => parseShipitConfig({ "x-shipit-host-mounts": [42] })).toThrow(ShipitConfigError);
+  });
+
+  it("does not warn on the x-shipit-host-mounts top-level key", () => {
+    const config = parseShipitConfig({ "x-shipit-host-mounts": ["/var/log/journal"] });
+    expect(config.warnings).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

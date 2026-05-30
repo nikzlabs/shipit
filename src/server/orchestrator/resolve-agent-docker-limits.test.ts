@@ -165,6 +165,7 @@ describe("applyEnvCaps", () => {
   function cfg(memory = 1024, cpu = 0.5, pids = 256) {
     return {
       agent: { ...AGENT_DEFAULTS, memory, cpu, pids, install: [] },
+      hostMounts: [],
       warnings: [],
     };
   }
@@ -193,6 +194,7 @@ describe("applyEnvCaps", () => {
     const result = applyEnvCaps({
       agent: { ...AGENT_DEFAULTS, install: [] },
       compose: { file: "docker-compose.yml", dockerSocket: true },
+      hostMounts: [],
       warnings: [],
     });
     expect(result.effective.dockerAccess).toBe(true);

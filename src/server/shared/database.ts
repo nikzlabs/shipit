@@ -366,6 +366,15 @@ const MIGRATIONS: Migration[] = [
          AND id NOT IN (SELECT review_id FROM file_review_comments);
     `);
   },
+  // Migration 22: server-authoritative session kind (docs/128 — ops session).
+  // `kind` distinguishes a privileged host-debugging "ops" session from an
+  // ordinary repo/local session. It is set server-side at creation by the gated
+  // ops template and is the sole gate for the privileged journal mounts +
+  // read-only Docker proxy in container creation — never a workspace marker
+  // file (which the agent could forge). NULL = ordinary session.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT");
+  },
 ];
 
 export class DatabaseManager {

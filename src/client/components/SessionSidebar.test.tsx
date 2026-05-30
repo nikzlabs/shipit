@@ -473,6 +473,41 @@ describe("SessionSidebar", () => {
     });
   });
 
+  describe("ops sessions (docs/128)", () => {
+    it("renders an ops session under the pinned 'Host / Ops' group, not a repo group", () => {
+      const sessions = [
+        baseSession({ id: "ops-1", title: "Ops — prod-host", kind: "ops", remoteUrl: "" }),
+        baseSession({ id: "s1", title: "Regular work", remoteUrl: repoA.url }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.getByText("Host / Ops")).toBeTruthy();
+      expect(screen.getByText("Ops — prod-host")).toBeTruthy();
+      // The ops badge marks the row.
+      expect(screen.getByText("ops")).toBeTruthy();
+    });
+
+    it("does not render a 'Host / Ops' group when there are no ops sessions", () => {
+      const sessions = [baseSession({ id: "s1", title: "Regular work", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.queryByText("Host / Ops")).toBeNull();
+    });
+
+    it("keeps an ops session out of its repo group even if it carries a remoteUrl", () => {
+      // Defensive: kind wins over remoteUrl for grouping, so a stray remote on an
+      // ops session never pulls it into a repo bucket.
+      const sessions = [
+        baseSession({ id: "ops-1", title: "Ops host", kind: "ops", remoteUrl: repoA.url }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      const opsRow = screen.getByText("Ops host");
+      const opsGroupHeader = screen.getByText("Host / Ops");
+      // Ops row should appear after the Host/Ops header (same group), and the repo
+      // group should report no sessions.
+      expect(opsGroupHeader.compareDocumentPosition(opsRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.getByText("No sessions")).toBeTruthy();
+    });
+  });
+
   it("renders multiple repo groups for multi-repo", () => {
     const sessions = [
       baseSession({ id: "s1", title: "Frontend fix", remoteUrl: repoA.url }),

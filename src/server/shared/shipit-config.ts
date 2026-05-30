@@ -43,6 +43,22 @@ export interface ComposeConfig {
   dockerSocket: boolean;
 }
 
+/**
+ * docs/128 — a single allow-listed read-only host path mounted into the agent
+ * container. Only used by privileged "ops" sessions; the container-creation
+ * gate additionally requires the session's server-side `kind === "ops"`, so a
+ * forged `x-shipit-host-mounts` in an ordinary session's shipit.yaml has its
+ * mounts dropped.
+ */
+export interface HostMount {
+  /** Host path (must be one of the allow-listed sources). */
+  source: string;
+  /** Container path (fixed mapping; equal to the source for the journal/socket paths). */
+  target: string;
+  /** Always read-only — host mounts are never writable from the agent. */
+  readOnly: true;
+}
+
 export interface ShipitConfig {
   /** Schema version. Currently 1. */
   version?: number;
@@ -50,6 +66,12 @@ export interface ShipitConfig {
   agent: AgentConfig;
   /** Compose file configuration. Undefined if no compose path specified or detected. */
   compose?: ComposeConfig;
+  /**
+   * docs/128 — allow-listed read-only host mounts (`x-shipit-host-mounts`).
+   * Empty for ordinary sessions. Even when populated, mounts are only applied
+   * to the agent container when the session's server-side `kind === "ops"`.
+   */
+  hostMounts: HostMount[];
   /** Warnings emitted during parsing (unknown keys, migration hints). */
   warnings: string[];
 }
@@ -76,8 +98,22 @@ export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
 // Known keys for validation
 // ---------------------------------------------------------------------------
 
-const KNOWN_TOP_LEVEL_KEYS = new Set(["version", "agent", "compose"]);
+const KNOWN_TOP_LEVEL_KEYS = new Set(["version", "agent", "compose", "x-shipit-host-mounts"]);
 const KNOWN_AGENT_KEYS = new Set(["memory", "cpu", "pids", "install"]);
+
+/**
+ * docs/128 — the only host paths an ops session may bind-mount (read-only) into
+ * the agent container. Maps host source → container target. Anything outside
+ * this map is rejected by the parser. `/var/run/docker.sock` is listed for
+ * completeness, but in practice the agent reaches Docker via the read-only
+ * proxy over `DOCKER_HOST`, not by mounting the socket — the real socket is
+ * mounted only into the docker-socket-proxy sibling (a compose service).
+ */
+export const ALLOWED_HOST_MOUNT_SOURCES: Readonly<Record<string, string>> = {
+  "/var/run/docker.sock": "/var/run/docker.sock",
+  "/var/log/journal": "/var/log/journal",
+  "/run/log/journal": "/run/log/journal",
+};
 
 /** Old-format keys that trigger migration warnings. */
 const OLD_FORMAT_KEYS: Record<string, string> = {
@@ -100,7 +136,7 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
   const warnings: string[] = [];
 
   if (doc === null || doc === undefined) {
-    return { agent: { ...AGENT_DEFAULTS, install: [] }, warnings };
+    return { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], warnings };
   }
 
   if (typeof doc !== "object" || Array.isArray(doc)) {
@@ -138,7 +174,49 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
   // ---- compose ----
   const compose = parseComposeConfig(raw.compose);
 
-  return { version, agent, compose, warnings };
+  // ---- x-shipit-host-mounts (docs/128) ----
+  const hostMounts = parseHostMounts(raw["x-shipit-host-mounts"]);
+
+  return { version, agent, compose, hostMounts, warnings };
+}
+
+/**
+ * docs/128 — parse `x-shipit-host-mounts`: a list of host source paths to bind
+ * read-only into the agent container. Each entry must be one of the allow-listed
+ * sources (`ALLOWED_HOST_MOUNT_SOURCES`); anything else throws. Duplicates are
+ * de-duplicated. Returns [] when the key is absent.
+ *
+ * Note: this only describes intent. Whether the mounts are actually applied is
+ * decided at container-creation time and gated on the session's server-side
+ * `kind === "ops"` — a forged entry on an ordinary session is dropped there.
+ */
+function parseHostMounts(raw: unknown): HostMount[] {
+  if (raw === undefined || raw === null) return [];
+
+  if (!Array.isArray(raw)) {
+    throw new ShipitConfigError("`x-shipit-host-mounts` must be a list of host paths");
+  }
+
+  const seen = new Set<string>();
+  const mounts: HostMount[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const entry: unknown = raw[i];
+    if (typeof entry !== "string") {
+      throw new ShipitConfigError(`\`x-shipit-host-mounts[${i}]\` must be a string host path`);
+    }
+    const source = entry.trim();
+    const target = ALLOWED_HOST_MOUNT_SOURCES[source];
+    if (!target) {
+      const allowed = Object.keys(ALLOWED_HOST_MOUNT_SOURCES).join(", ");
+      throw new ShipitConfigError(
+        `\`x-shipit-host-mounts[${i}]\`: host mount \`${source}\` is not allowed. Allowed: ${allowed}`,
+      );
+    }
+    if (seen.has(source)) continue;
+    seen.add(source);
+    mounts.push({ source, target, readOnly: true });
+  }
+  return mounts;
 }
 
 function parseAgentConfig(raw: unknown, warnings: string[]): AgentConfig {
@@ -245,7 +323,7 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
     content = fs.readFileSync(yamlPath, "utf-8");
   } catch {
     // File doesn't exist or can't be read — use defaults
-    config = { agent: { ...AGENT_DEFAULTS, install: [] }, warnings: [] };
+    config = { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], warnings: [] };
   }
 
   if (content !== undefined) {
@@ -260,7 +338,7 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
     }
   } else {
     // Already set above in the catch block, but TypeScript needs this
-    config ??= { agent: { ...AGENT_DEFAULTS, install: [] }, warnings: [] };
+    config ??= { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], warnings: [] };
   }
 
   return config;
