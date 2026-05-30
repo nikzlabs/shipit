@@ -1,11 +1,62 @@
 ---
-status: planned
-priority: medium
-title: Goal command
-description: ShipIt-managed `/goal` per docs/132's Bucket-4 design — session metadata + per-turn agent-instructions injection, with optional Codex `thread/goal/*` augmentation when the pinned CLI supports it.
+status: rejected
+title: Goal command (ShipIt-managed substrate)
+description: REJECTED — a ShipIt-managed `/goal` substrate that re-implements CLI goal mode on session metadata. Superseded by native CLI support (see docs/154). Kept as reference for a possible future ground-up re-implementation.
 ---
 
 # Goal command
+
+> **Status: rejected.** See [Why this was rejected](#why-this-was-rejected)
+> below. This design re-implements, inside ShipIt, a feature both CLIs now
+> ship (or are shipping) natively. The native path is tracked in
+> [docs/154](../154-native-goal-command/plan.md). This doc is retained as a
+> reference design in case ShipIt ever needs to own the full goal substrate
+> itself (e.g. a Go re-implementation, or a backend with no native goal API).
+
+## Why this was rejected
+
+This doc grew into a ~1,800-line plan to build a ShipIt-managed `/goal`
+substrate — session-metadata persistence, a per-turn context prelude, a
+between-turn keep-alive process model, and an "augmentation" layer over
+Codex's then-experimental `thread/goal/*` JSON-RPC API. In other words, it
+re-implements, inside ShipIt, behavior the agent CLIs already own.
+
+Two facts make that re-implementation the wrong investment:
+
+- **Codex shipped goal mode as a stable, public API.** As of the Codex CLI
+  **0.133.0** release, goal mode is on-by-default (no longer experimental)
+  and exposes a documented JSON-RPC surface: `thread/goal/{get,set,clear}`
+  requests plus `thread/goal/{updated,cleared}` notifications. Codex owns
+  goal persistence (its own SQLite table: status `active | paused |
+  budget_limited | complete`, token budget, usage) and the model-side tools
+  (`create_goal`, `update_goal`, `get_goal`). ShipIt does not need to
+  re-implement any of that — it needs a thin adapter over the existing API.
+
+- **Claude `/goal` is TUI-only with no programmatic surface.** It is a
+  session-scoped Stop-hook-backed slash command that only works in the
+  interactive REPL; it does not dispatch through `claude -p` or
+  stream-json input. There is nothing to adapt today, so the right answer
+  for Claude is "not yet supported," not "build a parallel substrate."
+
+Given a stable native API on one backend and no API on the other, building a
+full ShipIt-owned substrate would mean carrying a large, backend-specific
+re-implementation that duplicates — and must stay in sync with — Codex's own
+goal engine. The native path (a thin adapter over `thread/goal/*`, gated on
+the pinned Codex version) delivers the same user-facing feature for a
+fraction of the surface area. That path is now tracked in
+[docs/154](../154-native-goal-command/plan.md).
+
+**Why keep this doc instead of deleting it.** The substrate design here is
+the correct blueprint *if* ShipIt ever has to own goal mode end-to-end —
+for example a from-scratch (Go) re-implementation, or supporting a backend
+whose goal feature has no programmatic API. The Bucket-4 analysis, the
+context-injection point (`assembleAgentPrompt`, not
+`agent-instructions.ts`), the persistent-process keep-alive interactions,
+and the cross-turn rehydrate reasoning all remain valid and hard-won. They
+are preserved here so a future effort doesn't have to rediscover them.
+
+The implementation checklist in `checklist.md` is retained unchanged for the
+same reason; none of its items are active work.
 
 ## Problem
 
