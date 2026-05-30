@@ -360,12 +360,12 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                     </div>
                   </button>
                   {isOther && (
-                    <input
-                      type="text"
+                    <textarea
                       value={otherTexts.get(qIndex) ?? ""}
                       onChange={(e) => handleOtherTextChange(qIndex, e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && !needsSubmitButton) {
+                        if (e.key === "Enter" && !e.shiftKey && !needsSubmitButton) {
+                          e.preventDefault();
                           const text = otherTexts.get(qIndex)?.trim();
                           if (text) {
                             const answers: Record<string, string> = { [String(qIndex)]: text };
@@ -375,7 +375,8 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                         }
                       }}
                       placeholder="Type your answer..."
-                      className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus)"
+                      rows={1}
+                      className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] resize-none rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) field-sizing-content max-h-[40vh] overflow-y-auto"
                       data-testid="other-input"
                       autoFocus
                     />
