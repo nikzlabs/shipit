@@ -177,4 +177,28 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     await user.click(screen.getByTestId("model-option-opus"));
     expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent(/opus/i);
   });
+
+  it("keeps the full model name when the CLI confirms it mid-turn (regression: showed bare 'opus')", () => {
+    // Reproduces the reload-mid-turn bug: the session is on Opus 4.8, and the
+    // CLI's agent_init arrives after the initial render reporting the versioned
+    // id "claude-opus-4-8". The label must stay "Opus 4.8", not collapse to the
+    // bare family alias "opus".
+    localStorage.removeItem("vibe-model-id");
+    setSessionState(makeSession({ id: "s1", model: "claude-opus-4-8", agentId: "claude", agentPinned: true }));
+    const props = {
+      agents,
+      activeAgentId: "claude" as const,
+      onAgentChange: vi.fn(),
+      onModelChange: vi.fn(),
+      hasActiveSession: true,
+    };
+    const { rerender } = render(<ModelAgentSelector {...props} modelInfo={null} />);
+    // Before the CLI reports, the persisted session model drives the label.
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Opus 4.8");
+    // CLI confirms the running model — versioned id, exactly what agent_init emits.
+    rerender(
+      <ModelAgentSelector {...props} modelInfo={{ model: "claude-opus-4-8", contextWindowTokens: 200000 }} />,
+    );
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Opus 4.8");
+  });
 });
