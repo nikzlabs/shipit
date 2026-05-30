@@ -47,6 +47,7 @@ import { registerReviewRoutes } from "./api-routes-reviews.js";
 import { registerUpdateRoutes } from "./api-routes-updates.js";
 import { registerAgentRoutes } from "./api-routes-agent.js";
 import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
+import { registerVoiceRoutes } from "./api-routes-voice.js";
 import type { SecretStore } from "./secret-store.js";
 import type { FileReviewStore } from "./review-store.js";
 import type { AgentReviewStore } from "./agent-review-store.js";
@@ -255,6 +256,7 @@ export async function registerApiRoutes(
   }
   await registerUpdateRoutes(app);
   await registerAgentRoutes(app, deps);
+  await registerVoiceRoutes(app, deps);
 
   // Marketplace catalogs (docs/149). Wired only when a store is provided so
   // test setups that don't need this surface keep their route table minimal.

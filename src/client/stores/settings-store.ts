@@ -1,6 +1,21 @@
 import { create } from "zustand";
 import type { PermissionMode, FileContextRef, ProviderAccount } from "../../server/shared/types.js";
-import { getSavedNotifyOnFinish, saveNotifyOnFinish, getSavedSoundOnFinish, saveSoundOnFinish, getSavedQuickCaptureHotkey, saveQuickCaptureHotkey } from "../utils/local-storage.js";
+import {
+  getSavedNotifyOnFinish, saveNotifyOnFinish,
+  getSavedSoundOnFinish, saveSoundOnFinish,
+  getSavedQuickCaptureHotkey, saveQuickCaptureHotkey,
+  getSavedVoiceInputEnabled, saveVoiceInputEnabled,
+  getSavedSttProvider, saveSttProvider,
+  getSavedCleanupEnabled, saveCleanupEnabled,
+  getSavedVoiceHotkeyModeA, saveVoiceHotkeyModeA,
+  getSavedVoiceHotkeyModeB, saveVoiceHotkeyModeB,
+  getSavedVoiceLanguage, saveVoiceLanguage,
+  getSavedVoicePlaybackEnabled, saveVoicePlaybackEnabled,
+  getSavedTtsProvider, saveTtsProvider,
+  getSavedTtsVoice, saveTtsVoice,
+  getSavedTtsSpeed, saveTtsSpeed,
+} from "../utils/local-storage.js";
+import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
 
 /**
  * In-flight `codex login --device-auth` state. Server pushes this via SSE
@@ -47,6 +62,17 @@ interface SettingsState {
   notifyOnFinish: boolean;
   soundOnFinish: boolean;
   quickCaptureHotkey: string;
+  /** docs/144 — voice dictation + playback settings (non-credential; the API key is server-side only). */
+  voiceInputEnabled: boolean;
+  sttProvider: string;
+  cleanupEnabled: boolean;
+  voiceHotkeyModeA: string;
+  voiceHotkeyModeB: string;
+  voiceLanguage: string;
+  voicePlaybackEnabled: boolean;
+  ttsProvider: string;
+  ttsVoice: string;
+  ttsSpeed: number;
   autoCreatePr: boolean;
   liveSteering: boolean;
   /** docs/146 — global gate for the auto-resolve-conflicts loop. */
@@ -65,6 +91,16 @@ interface SettingsState {
   setNotifyOnFinish: (enabled: boolean) => void;
   setSoundOnFinish: (enabled: boolean) => void;
   setQuickCaptureHotkey: (hotkey: string) => void;
+  setVoiceInputEnabled: (enabled: boolean) => void;
+  setSttProvider: (provider: string) => void;
+  setCleanupEnabled: (enabled: boolean) => void;
+  setVoiceHotkeyModeA: (hotkey: string) => void;
+  setVoiceHotkeyModeB: (hotkey: string) => void;
+  setVoiceLanguage: (language: string) => void;
+  setVoicePlaybackEnabled: (enabled: boolean) => void;
+  setTtsProvider: (provider: string) => void;
+  setTtsVoice: (voice: string) => void;
+  setTtsSpeed: (speed: number) => void;
   setAutoCreatePr: (enabled: boolean) => void;
   setLiveSteering: (enabled: boolean) => void;
   setAutoResolveConflicts: (enabled: boolean) => void;
@@ -114,6 +150,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   notifyOnFinish: getSavedNotifyOnFinish(),
   soundOnFinish: getSavedSoundOnFinish(),
   quickCaptureHotkey: getSavedQuickCaptureHotkey(),
+  voiceInputEnabled: getSavedVoiceInputEnabled(),
+  sttProvider: getSavedSttProvider(),
+  cleanupEnabled: getSavedCleanupEnabled(),
+  voiceHotkeyModeA: getSavedVoiceHotkeyModeA(),
+  voiceHotkeyModeB: getSavedVoiceHotkeyModeB(),
+  voiceLanguage: getSavedVoiceLanguage(),
+  voicePlaybackEnabled: getSavedVoicePlaybackEnabled(),
+  ttsProvider: getSavedTtsProvider(),
+  ttsVoice: getSavedTtsVoice(),
+  ttsSpeed: getSavedTtsSpeed(),
   autoCreatePr: false,
   liveSteering: false,
   autoResolveConflicts: false,
@@ -144,6 +190,71 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setQuickCaptureHotkey: (hotkey) => {
     saveQuickCaptureHotkey(hotkey);
     set({ quickCaptureHotkey: hotkey });
+  },
+
+  setVoiceInputEnabled: (enabled) => {
+    saveVoiceInputEnabled(enabled);
+    set({ voiceInputEnabled: enabled });
+  },
+
+  setSttProvider: (provider) => {
+    saveSttProvider(provider);
+    set({ sttProvider: provider });
+  },
+
+  setCleanupEnabled: (enabled) => {
+    saveCleanupEnabled(enabled);
+    set({ cleanupEnabled: enabled });
+  },
+
+  setVoiceHotkeyModeA: (hotkey) => {
+    saveVoiceHotkeyModeA(hotkey);
+    set({ voiceHotkeyModeA: hotkey });
+  },
+
+  setVoiceHotkeyModeB: (hotkey) => {
+    saveVoiceHotkeyModeB(hotkey);
+    set({ voiceHotkeyModeB: hotkey });
+  },
+
+  setVoiceLanguage: (language) => {
+    saveVoiceLanguage(language);
+    set({ voiceLanguage: language });
+  },
+
+  setVoicePlaybackEnabled: (enabled) => {
+    saveVoicePlaybackEnabled(enabled);
+    set({ voicePlaybackEnabled: enabled });
+  },
+
+  setTtsProvider: (provider) => {
+    saveTtsProvider(provider);
+    // The saved voice/speed may not exist for the new provider — snap them
+    // back to that provider's defaults so playback requests stay valid.
+    const { ttsVoice, ttsSpeed } = get();
+    const updates: { ttsProvider: string; ttsVoice?: string; ttsSpeed?: number } = { ttsProvider: provider };
+    if (!isValidVoice(provider, ttsVoice)) {
+      const nextVoice = defaultVoiceFor(provider);
+      saveTtsVoice(nextVoice);
+      updates.ttsVoice = nextVoice;
+    }
+    const speeds = providerSpeeds(provider);
+    if (!speeds.includes(ttsSpeed)) {
+      const nextSpeed = speeds.includes(1) ? 1 : speeds[0];
+      saveTtsSpeed(nextSpeed);
+      updates.ttsSpeed = nextSpeed;
+    }
+    set(updates);
+  },
+
+  setTtsVoice: (voice) => {
+    saveTtsVoice(voice);
+    set({ ttsVoice: voice });
+  },
+
+  setTtsSpeed: (speed) => {
+    saveTtsSpeed(speed);
+    set({ ttsSpeed: speed });
   },
 
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),

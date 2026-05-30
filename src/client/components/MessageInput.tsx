@@ -16,6 +16,10 @@ import { FileAttachmentChips } from "./FileAttachmentChips.js";
 import { FileUploadChips } from "./FileUploadChips.js";
 import { Popover, PopoverAnchor } from "./ui/popover.js";
 import { WithTooltip } from "./ui/tooltip.js";
+import { MicButton } from "./MicButton.js";
+import { useVoiceInput } from "../voice/use-voice-input.js";
+import { spliceTranscript } from "../voice/insert-transcript.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { getSavedDraftMessage, saveDraftMessage } from "../utils/local-storage.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
@@ -29,6 +33,16 @@ const SUPPORTS_FIELD_SIZING =
   typeof CSS !== "undefined" && typeof CSS.supports === "function"
     ? CSS.supports("field-sizing", "content")
     : false;
+
+/** Render a hotkey string like "ctrl+shift+space" as "Ctrl+Shift+Space" for tooltips. */
+function formatHotkeyLabel(hotkey: string): string {
+  return hotkey
+    .split("+")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => (p === "mod" ? "Cmd/Ctrl" : p.charAt(0).toUpperCase() + p.slice(1)))
+    .join("+");
+}
 
 /**
  * Payload handed to `onSend`. Carries everything the parent needs to dispatch
@@ -210,6 +224,65 @@ export function MessageInput({
     },
     [isOverlay, sessionUpload],
   );
+
+  // ── Voice dictation (docs/144) ───────────────────────────────────────────
+  // Mode A wires into the chat MessageInput; Mode B into the overlay's. The
+  // hook is mode-agnostic — it produces a cleaned transcript and we splice it
+  // into `text`. There is no path from here to a send action: the textarea
+  // always gets the words, the user always presses Send.
+  const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
+  const cleanupEnabled = useSettingsStore((s) => s.cleanupEnabled);
+  const voiceLanguage = useSettingsStore((s) => s.voiceLanguage);
+  const sttProvider = useSettingsStore((s) => s.sttProvider);
+  const voiceHotkeyModeA = useSettingsStore((s) => s.voiceHotkeyModeA);
+  const voiceHotkeyModeB = useSettingsStore((s) => s.voiceHotkeyModeB);
+  const quickCaptureAutoMic = useUiStore((s) => s.quickCaptureAutoMic);
+
+  const voice = useVoiceInput({
+    enabled: voiceInputEnabled,
+    hotkey: isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA,
+    cleanup: cleanupEnabled,
+    language: voiceLanguage || undefined,
+    sttProvider,
+    // Distinct ids so a session switch aborts a chat recording; the overlay
+    // is its own short-lived surface and never "switches" underneath itself.
+    sessionId: isOverlay ? "overlay" : sessionId,
+  });
+
+  // The single transcript→textarea splice. Cursor/selection come from the
+  // live textarea so dictation stitches into partially-typed text.
+  // eslint-disable-next-line no-restricted-syntax -- transcript subscription with cleanup
+  useEffect(() => {
+    return voice.onTranscript((transcript) => {
+      const ta = textareaRef.current;
+      setText((prev) => {
+        const res = spliceTranscript({
+          value: prev,
+          selectionStart: ta?.selectionStart,
+          selectionEnd: ta?.selectionEnd,
+          transcript,
+        });
+        requestAnimationFrame(() => {
+          const el = textareaRef.current;
+          if (el) {
+            el.focus();
+            el.setSelectionRange(res.cursor, res.cursor);
+          }
+        });
+        return res.value;
+      });
+    });
+  }, [voice.onTranscript]);
+
+  // Mode B: when the overlay was opened via the voice hotkey, auto-start mic.
+  // eslint-disable-next-line no-restricted-syntax -- one-shot auto-start on overlay open
+  useEffect(() => {
+    if (!isOverlay) return;
+    if (quickCaptureAutoMic && voiceInputEnabled) {
+      voice.startRecording();
+      useUiStore.getState().setQuickCaptureAutoMic(false);
+    }
+  }, [isOverlay, quickCaptureAutoMic, voiceInputEnabled]);
 
   // Per-session draft persistence: remember what the user has typed when they
   // switch to a different session, and recover it when they switch back. Keyed
@@ -653,6 +726,21 @@ export function MessageInput({
             </button>
             </WithTooltip>
 
+            {/* Mic — dictation entry point (docs/144). Only when voice input is
+                enabled in settings, so the endpoint surface stays off for users
+                who don't opt in. */}
+            {voiceInputEnabled && (
+              <MicButton
+                voice={voice}
+                hotkeyLabel={formatHotkeyLabel(isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA)}
+                onOpenSettings={() => {
+                  const ui = useUiStore.getState();
+                  ui.setSettingsTab("voice");
+                  ui.setSettingsOpen(true);
+                }}
+              />
+            )}
+
             {/* Permission mode selector (3-state, agent-aware — docs/138) */}
             {onPermissionModeChange && (
               <PermissionModeSelector
@@ -731,6 +819,14 @@ export function MessageInput({
               </button>
             )}
           </div>
+
+          {/* Cleanup fell through to the raw transcript — non-fatal, dismissed
+              on the next successful dictation (docs/144). */}
+          {voice.cleanupWarning && (
+            <div className="px-3 pb-2 text-xs text-(--color-text-tertiary)">
+              {voice.cleanupWarning}
+            </div>
+          )}
         </div>
       </div>
       </PopoverAnchor>
