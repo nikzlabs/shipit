@@ -482,6 +482,54 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
+  // docs/124 (SIGTERM-loop follow-up): repeated/concurrent start sequences must
+  // not race each other through B2's kill+restart. Without serialization, each
+  // caller's kill tears down the agent another caller just started, producing
+  // the field SIGHUP/SIGTERM loop ("Agent process exited with code 129 / 143").
+  // The per-runner `_startInFlight` mutex chains them so every start observes a
+  // settled worker state. All callers must resolve cleanly.
+  it("_startAgentViaProxy serializes concurrent start sequences (no kill+restart race)", async () => {
+    // Pre-occupy and DON'T release — every caller is forced through B2's
+    // kill+restart path, the exact codepath that races without the mutex.
+    const preStartRes = await fetch(`${workerUrl}/agent/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: "claude", params: { prompt: "stuck" } }),
+    });
+    expect(preStartRes.status).toBe(200);
+    expect(lastAgent).toBeTruthy();
+
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-409-serialize",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Fire N concurrent starts. Serialized through `_startInFlight`, each one
+    // runs after the previous settles, so all resolve. Unserialized, the
+    // interleaved kills make all-but-one reject with "Agent already running".
+    const N = 5;
+    const results = await Promise.all(
+      Array.from({ length: N }, async (_, i): Promise<{ ok: true } | { ok: false; err: unknown }> => {
+        try {
+          await runner._startAgentViaProxy("claude", { prompt: `caller-${i}`, cwd: "/workspace" });
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, err };
+        }
+      }),
+    );
+    for (const [i, r] of results.entries()) {
+      const errMsg = r.ok ? "" : ((r.err as Error | undefined)?.message ?? "unknown");
+      expect(r.ok, `caller ${i} failed: ${errMsg}`).toBe(true);
+    }
+
+    runner.dispose();
+  });
+
   // ---- auth_required ----
 
   it("proxy receives auth_required event via SSE", async () => {
