@@ -57,3 +57,35 @@ describe("ToolUseItem apply_patch", () => {
     expect(screen.getByText("-old")).toBeInTheDocument();
   });
 });
+
+describe("ToolUseItem output modal input", () => {
+  it("shows the agent's input fields, not just the output", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Read", {
+          file_path: "/workspace/src/foo.ts",
+          offset: 10,
+          limit: 50,
+        })}
+        result={{ toolUseId: "t1", content: "file content here" }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Show output"));
+
+    // Field labels for the raw input keys are rendered in the modal.
+    expect(screen.getByText("file_path")).toBeInTheDocument();
+    expect(screen.getByText("offset")).toBeInTheDocument();
+    expect(screen.getByText("limit")).toBeInTheDocument();
+    // Non-string args that used to be dropped are now shown.
+    expect(screen.getByText("10")).toBeInTheDocument();
+    expect(screen.getByText("50")).toBeInTheDocument();
+    // file_path is shown workspace-relative (one-liner + modal field).
+    expect(screen.getAllByText("src/foo.ts").length).toBeGreaterThan(0);
+    // The output section still renders below the input.
+    expect(screen.getByText("Output")).toBeInTheDocument();
+  });
+});

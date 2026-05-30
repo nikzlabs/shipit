@@ -163,11 +163,6 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     ? (tool.input.url as string)
     : null;
 
-  // Full command text for the modal header
-  const fullCommandText = "command" in tool.input && tool.input.command
-    ? (tool.input.command as string)
-    : filePathText ?? patternText ?? queryText ?? urlText ?? "";
-
   return (
     <div className="min-w-0 overflow-hidden">
       <div className="group/tool text-xs text-(--color-text-secondary) pl-[1em] py-1 font-mono flex items-center gap-2 opacity-70 border-l-2 border-(--color-text-tertiary)/40">
@@ -212,7 +207,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
       {showModal && result && (
         <ToolOutputModal
           toolName={tool.name}
-          command={fullCommandText}
+          input={tool.input}
           result={result}
           onClose={() => setShowModal(false)}
         />
@@ -253,24 +248,13 @@ function FormattedToolName({ name, highlight }: { name: string; highlight: boole
   );
 }
 
-/** Full-screen modal showing tool command and output. */
-function ToolOutputModal({ toolName, command, result, onClose }: {
+/** Full-screen modal showing the agent's tool input and the tool's output. */
+function ToolOutputModal({ toolName, input, result, onClose }: {
   toolName: string;
-  command: string;
+  input: Record<string, unknown>;
   result: ToolResultBlock;
   onClose: () => void;
 }) {
-  // Codex's "shell" is bash too — give it the same highlighted treatment as Claude's Bash.
-  const isBash = toolName === "Bash" || toolName === "shell";
-  const highlighted = useMemo(() => {
-    if (!isBash || !command) return null;
-    try {
-      return hljs.highlight(command, { language: "bash" }).value;
-    } catch {
-      return null;
-    }
-  }, [isBash, command]);
-
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
     <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Tool output">
@@ -285,24 +269,92 @@ function ToolOutputModal({ toolName, command, result, onClose }: {
         </button>
       </div>
       <div className="flex-1 overflow-auto p-4">
-        {isBash && command ? (
-          <div className="mb-4 pb-4 border-b border-(--color-border-secondary)">
-            <div className="text-xs text-(--color-text-secondary) font-mono mb-1">{toolName === "shell" ? "Shell" : "Bash"}</div>
-            <pre className="text-xs font-mono whitespace-pre-wrap wrap-break-word rounded bg-(--color-bg-secondary) p-3 leading-relaxed">
-              {highlighted ? (
-              <code className="hljs bg-transparent!" dangerouslySetInnerHTML={{ __html: highlighted }} />
-            ) : (
-              <code className="text-(--color-text-primary)">{command}</code>
-            )}
-            </pre>
-          </div>
-        ) : (
-          <pre className="text-xs text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all mb-4 pb-4 border-b border-(--color-border-secondary)">{toolName}{command ? ` ${command}` : ""}</pre>
-        )}
+        <ToolInput toolName={toolName} input={input} />
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-(--color-text-tertiary) mb-2">Output</div>
         <ToolResult tool={toolName} result={result} />
       </div>
     </DialogContent>
     </Dialog>
+  );
+}
+
+/** Renders the agent's tool-call input as labeled fields above the output. */
+function ToolInput({ toolName, input }: { toolName: string; input: Record<string, unknown> }) {
+  const keys = Object.keys(input);
+  return (
+    <div className="mb-4 pb-4 border-b border-(--color-border-secondary)">
+      <div className="text-xs text-(--color-text-secondary) font-mono mb-2">{toolName === "shell" ? "Shell" : toolName}</div>
+      {keys.length === 0 ? (
+        <div className="text-xs text-(--color-text-tertiary) font-mono italic">(no input)</div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {keys.map((key) => (
+            <ToolInputField key={key} toolName={toolName} fieldKey={key} value={input[key]} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Renders one input field: bash-highlighted command, add/remove-tinted diff strings, or plain/JSON value. */
+function ToolInputField({ toolName, fieldKey, value }: { toolName: string; fieldKey: string; value: unknown }) {
+  // Codex's "shell" is bash too — give its command the same highlighted treatment as Claude's Bash.
+  const isBash = toolName === "Bash" || toolName === "shell";
+  const isCommand = fieldKey === "command" && typeof value === "string";
+  const highlighted = useMemo(() => {
+    if (!isCommand || !isBash || typeof value !== "string") return null;
+    try {
+      return hljs.highlight(value, { language: "bash" }).value;
+    } catch {
+      return null;
+    }
+  }, [isCommand, isBash, value]);
+
+  const tone: "add" | "del" | "plain" =
+    fieldKey === "new_string" || (toolName === "Write" && fieldKey === "content")
+      ? "add"
+      : fieldKey === "old_string"
+        ? "del"
+        : "plain";
+
+  const isPath = (fieldKey === "file_path" || fieldKey === "path") && typeof value === "string";
+  const display = isPath
+    ? sessionRelativePath(value)
+    : typeof value === "string"
+      ? value
+      : JSON.stringify(value, null, 2);
+
+  const toneClass =
+    tone === "add"
+      ? "bg-(--color-success)/10 text-(--color-success)"
+      : tone === "del"
+        ? "bg-(--color-error)/10 text-(--color-error)"
+        : "bg-(--color-bg-secondary) text-(--color-text-primary)";
+
+  return (
+    <div>
+      <div className="text-[11px] font-mono text-(--color-accent) mb-1 flex items-center gap-1.5">
+        <span>{fieldKey}</span>
+        {tone === "del" && <ToolInputTag label="removed" />}
+        {tone === "add" && <ToolInputTag label="added" />}
+      </div>
+      <pre className={`text-xs font-mono whitespace-pre-wrap wrap-break-word rounded p-3 leading-relaxed ${toneClass}`}>
+        {highlighted ? (
+          <code className="hljs bg-transparent!" dangerouslySetInnerHTML={{ __html: highlighted }} />
+        ) : (
+          <code>{display}</code>
+        )}
+      </pre>
+    </div>
+  );
+}
+
+function ToolInputTag({ label }: { label: string }) {
+  return (
+    <span className="text-[9px] border border-current rounded px-1 py-px leading-tight opacity-60 text-(--color-text-tertiary)">
+      {label}
+    </span>
   );
 }
 
