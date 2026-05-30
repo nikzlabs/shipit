@@ -339,7 +339,7 @@ describe("SessionSidebar", () => {
       expect(screen.queryByTitle(/CI failed/)).toBeNull();
     });
 
-    it("overlays the auto-merge badge on the CI status when auto-merge is armed", () => {
+    it("shows the auto-merge badge alongside the CI status when auto-merge is armed", () => {
       const card: PrCardState = {
         cardId: "card-1",
         phase: "open",
@@ -350,8 +350,9 @@ describe("SessionSidebar", () => {
       const sessions = [baseSession({ id: "s1", title: "Armed session", remoteUrl: repoA.url })];
       render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
 
-      // A single slot conveys both the CI result and the armed auto-merge.
-      expect(screen.getByTitle("CI passed 3/3 · Auto-merge enabled")).toBeTruthy();
+      // CI status and the auto-merge attribute are independent indicators.
+      expect(screen.getByTitle("CI passed 3/3")).toBeTruthy();
+      expect(screen.getByTitle("Auto-merge enabled")).toBeTruthy();
     });
 
     it("shows the auto-merge indicator even with no CI/PR yet (preference is session-level)", () => {
