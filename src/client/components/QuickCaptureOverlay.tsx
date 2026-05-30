@@ -13,8 +13,6 @@ import { MessageInput, type SendPayload } from "./MessageInput.js";
 import { Button } from "./ui/button.js";
 import type { FileContextRef } from "../../server/shared/types.js";
 
-const QUICK_CAPTURE_FOCUS_KEY = "__quick_capture__";
-
 export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
   const open = useUiStore((s) => s.quickCaptureOpen);
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
@@ -204,7 +202,6 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
                   setSelectedModel(model);
                 }}
                 modelInfo={modelInfo}
-                focusKey={QUICK_CAPTURE_FOCUS_KEY}
                 hasActiveSession={false}
               />
             </div>

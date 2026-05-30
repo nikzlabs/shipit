@@ -413,6 +413,31 @@ describe("MessageInput", () => {
       expect(textarea.value).toBe("hello world");
     });
 
+    it("does not load or save drafts on the overlay surface", () => {
+      // Pre-seed a draft under the overlay's historical key — if the overlay
+      // ever ran the persistence path it would pick this up and prefill the
+      // quick-capture input, which is exactly the bug we don't want.
+      localStorage.setItem("shipit-draft-message:__quick_capture__", "stale overlay draft");
+
+      render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          surface="overlay"
+          focusKey="__quick_capture__"
+        />,
+      );
+      const textarea = screen.getByPlaceholderText(
+        "Describe what to build... (type @ to attach files)",
+      ) as HTMLTextAreaElement;
+      expect(textarea.value).toBe("");
+
+      // Typing should not write to localStorage either — the overlay is a
+      // fresh launcher, not a per-session composer.
+      fireEvent.change(textarea, { target: { value: "fresh prompt" } });
+      expect(localStorage.getItem("shipit-draft-message:__quick_capture__")).toBe("stale overlay draft");
+    });
+
     it("clears the saved draft after sending", () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} focusKey="session-A" />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
