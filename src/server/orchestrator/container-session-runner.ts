@@ -81,6 +81,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _activeReviewFilePath: string | null = null;
 
+  // Per-runner mutex for `_startAgentViaProxy`. Concurrent callers chain on
+  // this promise so docs/142's B2 kill+restart cannot interleave with another
+  // /agent/start — the SIGHUP/SIGTERM loop docs/124's follow-up flagged.
+  private _startInFlight: Promise<void> = Promise.resolve();
+
   // Terminal (remote — runs inside container)
   private _terminal: TerminalProcess | null = null;
 
@@ -625,6 +630,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * Rescue-session UI surfaces it. (Refines doc 124 §1.3.)
    */
   async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
+    // Serialize start sequences per runner. The B2 recovery path below can
+    // kill the worker's agent and start a fresh one; if a second caller is
+    // mid-kill+restart at the same moment, the two sequences tear down each
+    // other's agents (SIGHUP 129 / SIGTERM 143 loop — docs/124 follow-up).
+    // Chaining on `_startInFlight` makes each start observe a settled worker
+    // state before it begins. Errors don't poison the chain (`.catch`).
+    const prev = this._startInFlight;
+    let release: () => void = () => {};
+    this._startInFlight = new Promise<void>((r) => { release = r; });
+    try {
+      await prev.catch(() => {});
+      await this._doStartAgentViaProxy(agentId, params);
+    } finally {
+      release();
+    }
+  }
+
+  private async _doStartAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
     await this._workerReady;
 
     // Kick off SSE setup BEFORE waiting on the install gate. The install
