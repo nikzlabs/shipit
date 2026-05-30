@@ -428,6 +428,55 @@ Deferred for follow-ups:
   for offline use; the integration point would be the same browser-side
   hooks with a "no upload" code path.
 
+### Multi-provider refactor (shipped — ElevenLabs TTS + Deepgram STT)
+
+The original v1 hardcoded OpenAI in three places (service dispatch, the
+credential model, and voice validation). A follow-up generalised those
+so a new provider is added by data, not by editing the service layer.
+**ElevenLabs (TTS) and Deepgram (STT) shipped on the back of it.** Three
+pieces:
+
+1. **Shared catalog — `src/server/shared/voice-catalog.ts`.** The single
+   source of truth both layers import. Pure data + selectors: each
+   `VoiceProviderInfo` lists its `capabilities` (`stt` / `tts` /
+   `cleanup`), whether it `requiresKey`, and (for TTS) its `voices`,
+   `speeds`, and inclusive `speedRange`. Selectors (`getVoiceProvider`,
+   `sttProviders`, `ttsProviders`, `keyRequiringProviders`,
+   `providerVoices`, `providerSupports`, `isValidVoice`,
+   `defaultVoiceFor`, `providerSpeeds`) drive both the Settings dropdowns
+   and server-side validation, so the two can never drift. Lives under
+   `src/server/shared/` (not a top-level `src/shared/`); the client
+   imports it via `../../server/shared/voice-catalog.js`.
+
+2. **Multi-key credential model.** `CredentialData.voiceProviderApiKey`
+   (single OpenAI key) was replaced by
+   `voiceProviderKeys?: Record<string, string>` keyed by provider id, with
+   `getVoiceProviderKey(id)`, `setVoiceProviderKey(id, key)`,
+   `clearVoiceProviderKey(id)`, and `getConfiguredVoiceProviders()` on
+   `CredentialStore`. Each provider's key is stored under its own id, so
+   ElevenLabs and Deepgram keys live alongside the OpenAI one. The
+   security posture is unchanged: keys are server-side only, no GET route
+   returns a raw key, and `/api/voice/credentials/status` returns just
+   `{ configured: string[] }` (the list of provider ids that have a key),
+   never the key itself.
+
+3. **Server provider registry — `src/server/orchestrator/voice/registry.ts`.**
+   `getVoiceAdapters(providerId)` maps an id to its `createStt` /
+   `createTts` factories and `ttsContentType`. The service layer
+   (`services/voice.ts`) validates the requested provider against the
+   catalog, then dispatches through the registry — it no longer names
+   OpenAI. New adapters: `voice/providers/elevenlabs-tts.ts` (ElevenLabs
+   `text-to-speech`, `eleven_multilingual_v2`) and
+   `voice/providers/deepgram.ts` (Deepgram `listen`, `nova-2`).
+
+The request shape gained a `provider` field: `POST /api/voice/speak`
+takes `{ text, voice, speed, provider? }`; `POST /api/voice/transcribe`
+reads an `sttProvider` multipart field; `POST`/`DELETE
+/api/voice/credentials` take `{ provider, apiKey? }`. All default to
+`openai` when omitted, so existing clients keep working. Adding the
+next provider (e.g. AssemblyAI) is: write the adapter, register it,
+add a catalog entry — no service-layer edit.
+
 ### Hotkeys: avoiding the macOS minefield
 
 `Cmd+M` minimizes the browser window on macOS — the page never sees the
@@ -843,6 +892,10 @@ Captured here so future readers know they were considered, not forgotten:
 
 ### Server (new)
 
+- `src/server/shared/voice-catalog.ts` — shared provider catalog (pure data + selectors), imported by both client and server
+- `src/server/orchestrator/voice/registry.ts` — `getVoiceAdapters(id)`: maps a provider id to its STT/TTS factories + `ttsContentType`
+- `src/server/orchestrator/voice/providers/elevenlabs-tts.ts` — ElevenLabs TTS adapter
+- `src/server/orchestrator/voice/providers/deepgram.ts` — Deepgram STT adapter
 - `src/server/orchestrator/voice/providers/types.ts` — `SttProvider`, `CleanupProvider`, and `TtsProvider` interfaces
 - `src/server/orchestrator/voice/providers/whisper.ts` — OpenAI Whisper STT adapter
 - `src/server/orchestrator/voice/providers/claude-cleanup.ts` — Anthropic cleanup adapter that takes the OAuth bearer returned by `AuthManager.getAccessToken()` and posts the locked prompt to the Anthropic API (or shells out to a one-shot `claude` CLI invocation if the OAuth scope rejects direct API use — see open questions)
@@ -858,7 +911,7 @@ Captured here so future readers know they were considered, not forgotten:
 
 ### Server (modified)
 
-- `src/server/orchestrator/credential-store.ts` — add `voiceProviderApiKey?: string` (and `voiceProvider?: "openai"`) to `CredentialData`
+- `src/server/orchestrator/credential-store.ts` — multi-key voice credential model: `voiceProviderKeys?: Record<string, string>` on `CredentialData` plus `getVoiceProviderKey` / `setVoiceProviderKey` / `clearVoiceProviderKey` / `getConfiguredVoiceProviders`
 - `src/server/orchestrator/api-routes.ts` — register the new routes module
 - `src/server/orchestrator/services/index.ts` — re-export voice service
 - `src/server/orchestrator/app-di.ts` — wire the voice provider factories and the TTS cache. `CredentialStore` is already in DI; no new manager needed.

@@ -15,6 +15,7 @@ import {
   getSavedTtsVoice, saveTtsVoice,
   getSavedTtsSpeed, saveTtsSpeed,
 } from "../utils/local-storage.js";
+import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
 
 /**
  * In-flight `codex login --device-auth` state. Server pushes this via SSE
@@ -228,7 +229,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setTtsProvider: (provider) => {
     saveTtsProvider(provider);
-    set({ ttsProvider: provider });
+    // The saved voice/speed may not exist for the new provider — snap them
+    // back to that provider's defaults so playback requests stay valid.
+    const { ttsVoice, ttsSpeed } = get();
+    const updates: { ttsProvider: string; ttsVoice?: string; ttsSpeed?: number } = { ttsProvider: provider };
+    if (!isValidVoice(provider, ttsVoice)) {
+      const nextVoice = defaultVoiceFor(provider);
+      saveTtsVoice(nextVoice);
+      updates.ttsVoice = nextVoice;
+    }
+    const speeds = providerSpeeds(provider);
+    if (!speeds.includes(ttsSpeed)) {
+      const nextSpeed = speeds.includes(1) ? 1 : speeds[0];
+      saveTtsSpeed(nextSpeed);
+      updates.ttsSpeed = nextSpeed;
+    }
+    set(updates);
   },
 
   setTtsVoice: (voice) => {

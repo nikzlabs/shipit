@@ -17,19 +17,18 @@ import type { ApiDeps } from "./api-routes.js";
 
 /** Minimal in-memory credential store covering just the voice methods. */
 function makeCredentialStore() {
-  let key: string | null = null;
-  let provider: "openai" | null = null;
+  const keys = new Map<string, string>();
   return {
-    getVoiceProviderApiKey: vi.fn((): string | null => key),
-    getVoiceProvider: vi.fn((): "openai" | null => provider),
-    setVoiceProviderApiKey: vi.fn((k: string, p: "openai" = "openai") => {
-      key = k;
-      provider = p;
+    getVoiceProviderKey: vi.fn((id: string): string | null => keys.get(id) ?? null),
+    setVoiceProviderKey: vi.fn((id: string, k: string) => {
+      keys.set(id, k);
     }),
-    clearVoiceProviderApiKey: vi.fn(() => {
-      key = null;
-      provider = null;
+    clearVoiceProviderKey: vi.fn((id: string) => {
+      keys.delete(id);
     }),
+    getConfiguredVoiceProviders: vi.fn((): string[] =>
+      [...keys.entries()].filter(([, v]) => v.trim()).map(([id]) => id),
+    ),
   };
 }
 
@@ -79,24 +78,23 @@ afterEach(() => {
 });
 
 describe("GET /api/voice/credentials/status", () => {
-  it("reports not configured and leaks no key when none set", async () => {
+  it("reports an empty list and leaks no key when none set", async () => {
     const { app } = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/voice/credentials/status" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body).toEqual({ configured: false });
+    expect(body).toEqual({ configured: [] });
     await app.close();
   });
 
-  it("reports configured but never leaks the key when set", async () => {
+  it("lists configured provider ids but never leaks the key when set", async () => {
     const credentialStore = makeCredentialStore();
-    credentialStore.setVoiceProviderApiKey("sk-super-secret-123", "openai");
+    credentialStore.setVoiceProviderKey("openai", "sk-super-secret-123");
     const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/credentials/status" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.configured).toBe(true);
-    expect(body.provider).toBe("openai");
+    expect(body.configured).toEqual(["openai"]);
     // Security: status must NEVER carry the raw key under any field name.
     expect(JSON.stringify(body)).not.toContain("sk-super-secret-123");
     expect(body.apiKey).toBeUndefined();
@@ -115,8 +113,34 @@ describe("POST/DELETE /api/voice/credentials", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
-    expect(credentialStore.setVoiceProviderApiKey).toHaveBeenCalledWith("sk-abc", "openai");
-    expect(credentialStore.getVoiceProviderApiKey()).toBe("sk-abc");
+    expect(credentialStore.setVoiceProviderKey).toHaveBeenCalledWith("openai", "sk-abc");
+    expect(credentialStore.getVoiceProviderKey("openai")).toBe("sk-abc");
+    await app.close();
+  });
+
+  it("stores a per-provider key (deepgram) under its own id", async () => {
+    const { app, credentialStore } = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/credentials",
+      payload: { apiKey: "dg-xyz", provider: "deepgram" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(credentialStore.setVoiceProviderKey).toHaveBeenCalledWith("deepgram", "dg-xyz");
+    expect(credentialStore.getVoiceProviderKey("deepgram")).toBe("dg-xyz");
+    expect(credentialStore.getVoiceProviderKey("openai")).toBeNull();
+    await app.close();
+  });
+
+  it("rejects an unknown provider with 400", async () => {
+    const { app } = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/credentials",
+      payload: { apiKey: "sk-abc", provider: "bogus" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Unknown voice provider/i);
     await app.close();
   });
 
@@ -125,7 +149,7 @@ describe("POST/DELETE /api/voice/credentials", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/voice/credentials",
-      payload: { apiKey: "   " },
+      payload: { apiKey: "   ", provider: "openai" },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toMatch(/API key is required/i);
@@ -134,13 +158,17 @@ describe("POST/DELETE /api/voice/credentials", () => {
 
   it("clears the key on DELETE", async () => {
     const credentialStore = makeCredentialStore();
-    credentialStore.setVoiceProviderApiKey("sk-abc", "openai");
+    credentialStore.setVoiceProviderKey("openai", "sk-abc");
     const { app } = await buildApp({ credentialStore });
-    const res = await app.inject({ method: "DELETE", url: "/api/voice/credentials" });
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/api/voice/credentials",
+      payload: { provider: "openai" },
+    });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
-    expect(credentialStore.clearVoiceProviderApiKey).toHaveBeenCalled();
-    expect(credentialStore.getVoiceProviderApiKey()).toBeNull();
+    expect(credentialStore.clearVoiceProviderKey).toHaveBeenCalledWith("openai");
+    expect(credentialStore.getVoiceProviderKey("openai")).toBeNull();
     await app.close();
   });
 });
@@ -185,9 +213,36 @@ describe("POST /api/voice/speak", () => {
     await app.close();
   });
 
+  it("returns 400 for a TTS provider with no key configured", async () => {
+    const { app } = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/speak",
+      payload: { text: "Hello", voice: "21m00Tcm4TlvDq8ikWAM", speed: 1, provider: "elevenlabs" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/No API key configured/i);
+    await app.close();
+  });
+
+  it("returns 400 for a voice that doesn't belong to the provider", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("openai", "sk-abc");
+    const { app } = await buildApp({ credentialStore });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/speak",
+      // "21m00..." is an ElevenLabs voice id, invalid for OpenAI.
+      payload: { text: "Hello", voice: "21m00Tcm4TlvDq8ikWAM", speed: 1, provider: "openai" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/Unknown voice/i);
+    await app.close();
+  });
+
   it("returns audio bytes when a key is set and the TTS provider yields audio", async () => {
     const credentialStore = makeCredentialStore();
-    credentialStore.setVoiceProviderApiKey("sk-abc", "openai");
+    credentialStore.setVoiceProviderKey("openai", "sk-abc");
 
     // Stub global fetch so the OpenAI TTS provider returns a streamed body.
     const audioBytes = new Uint8Array([1, 2, 3, 4, 5]);
@@ -236,7 +291,7 @@ describe("POST /api/voice/transcribe", () => {
 describe("SECURITY: no GET route returns the raw key", () => {
   it("GET /api/voice/credentials is not a route (404)", async () => {
     const credentialStore = makeCredentialStore();
-    credentialStore.setVoiceProviderApiKey("sk-super-secret-123", "openai");
+    credentialStore.setVoiceProviderKey("openai", "sk-super-secret-123");
     const { app } = await buildApp({ credentialStore });
     const res = await app.inject({ method: "GET", url: "/api/voice/credentials" });
     expect(res.statusCode).toBe(404);

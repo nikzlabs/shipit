@@ -2,15 +2,15 @@
  * Voice API routes (docs/144).
  *
  * Surface:
- *   POST   /api/voice/credentials         set the OpenAI voice key (server-only)
- *   DELETE /api/voice/credentials         clear it
- *   GET    /api/voice/credentials/status  { configured, provider? } — never the key
+ *   POST   /api/voice/credentials         { provider, apiKey } set a key (server-only)
+ *   DELETE /api/voice/credentials         { provider } clear it
+ *   GET    /api/voice/credentials/status  { configured: string[] } — never the key
  *   GET    /api/voice/cleanup/status      { provider } — which cleanup path runs
- *   POST   /api/voice/transcribe          multipart audio → { text, rawText, ... }
- *   POST   /api/voice/speak               { text, voice, speed } → audio/mpeg | 204
+ *   POST   /api/voice/transcribe          multipart audio (+ sttProvider) → { text, rawText, ... }
+ *   POST   /api/voice/speak               { text, voice, speed, provider } → audio | 204
  *
- * The key lives only on the server; audio flows browser→orchestrator→OpenAI in
- * both directions so the browser never opens an authenticated OpenAI
+ * Keys live only on the server; audio flows browser→orchestrator→provider in
+ * both directions so the browser never opens an authenticated provider
  * connection (plan threat model).
  */
 
@@ -48,16 +48,16 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     "/api/voice/credentials",
     async (request, reply) => {
       try {
-        return setVoiceKey(credentialStore, request.body?.apiKey ?? "");
+        return setVoiceKey(credentialStore, request.body?.provider ?? "openai", request.body?.apiKey ?? "");
       } catch (err) {
         handleError(reply, err, "Failed to set voice key");
       }
     },
   );
 
-  app.delete("/api/voice/credentials", async (_request, reply) => {
+  app.delete<{ Body: { provider?: string } }>("/api/voice/credentials", async (request, reply) => {
     try {
-      return clearVoiceKey(credentialStore);
+      return clearVoiceKey(credentialStore, request.body?.provider ?? "openai");
     } catch (err) {
       handleError(reply, err, "Failed to clear voice key");
     }
@@ -77,6 +77,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     let audio: Buffer | null = null;
     let mimeType: string | undefined;
     let language: string | undefined;
+    let sttProvider: string | undefined;
     let cleanup = true;
 
     try {
@@ -89,6 +90,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
           }
           const value = typeof part.value === "string" ? part.value : "";
           if (part.fieldname === "language") language = value;
+          else if (part.fieldname === "sttProvider") sttProvider = value;
           else if (part.fieldname === "cleanup") cleanup = value !== "false";
         }
       } else {
@@ -111,6 +113,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
         cleanup,
         ...(mimeType ? { mimeType } : {}),
         ...(language ? { language } : {}),
+        ...(sttProvider ? { sttProvider } : {}),
       });
     } catch (err) {
       handleError(reply, err, "Failed to transcribe");
@@ -119,18 +122,19 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
 
   // ---- Speech (TTS) ----
 
-  app.post<{ Body: { text?: string; voice?: string; speed?: number } }>(
+  app.post<{ Body: { text?: string; voice?: string; speed?: number; provider?: string } }>(
     "/api/voice/speak",
     async (request, reply) => {
       const text = request.body?.text ?? "";
       const voice = request.body?.voice ?? "alloy";
       const speed = typeof request.body?.speed === "number" ? request.body.speed : 1;
+      const provider = request.body?.provider ?? "openai";
       if (!text.trim()) {
         reply.code(400).send({ error: "text is required" });
         return;
       }
       try {
-        const result = await speakVoice(credentialStore, ttsCache, { text, voice, speed });
+        const result = await speakVoice(credentialStore, ttsCache, { text, voice, speed, provider });
         if (!result) {
           reply.code(204).send();
           return;

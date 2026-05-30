@@ -62,6 +62,8 @@ export interface UseVoiceInputOptions {
   cleanup?: boolean;
   /** Optional language hint passed to STT + cleanup. */
   language?: string;
+  /** STT provider id (e.g. "openai", "deepgram"). Defaults server-side to "openai". */
+  sttProvider?: string;
   /**
    * Current session id. A change aborts an in-flight recording and
    * discards the audio (the user switched sessions mid-press).
@@ -90,7 +92,7 @@ interface TranscribeResponse {
 }
 
 export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
-  const { enabled, hotkey, cleanup = true, language, sessionId } = options;
+  const { enabled, hotkey, cleanup = true, language, sttProvider, sessionId } = options;
 
   const [state, setState] = useState<VoiceInputState>("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -103,8 +105,8 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
   const capTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startedAtRef = useRef(0);
   // Latest config for use inside event listeners without re-binding them.
-  const cfgRef = useRef({ cleanup, language });
-  cfgRef.current = { cleanup, language };
+  const cfgRef = useRef({ cleanup, language, sttProvider });
+  cfgRef.current = { cleanup, language, sttProvider };
   // Live session id so a startCapture() that resolves AFTER a session switch
   // can discard its recording — the abort effect can't catch a capture that
   // wasn't assigned to captureRef yet (plan: switch mid-record → insert nothing).
@@ -127,6 +129,7 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
       form.append("audio", blob, "audio");
       form.append("cleanup", String(cfgRef.current.cleanup));
       if (cfgRef.current.language) form.append("language", cfgRef.current.language);
+      if (cfgRef.current.sttProvider) form.append("sttProvider", cfgRef.current.sttProvider);
       // mimeType travels with the blob; included as a field for servers that prefer it.
       form.append("mimeType", mimeType);
 

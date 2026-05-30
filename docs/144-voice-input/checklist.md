@@ -60,6 +60,19 @@
 - [ ] Verify mic permission flow end-to-end (first-time grant, deny + re-grant, app backgrounding mid-capture).
 - [ ] Verify playback continues with the screen locked and that pause works after unlock.
 
+## Phase 7 — Multi-provider refactor (ElevenLabs TTS + Deepgram STT)
+
+- [x] Add the shared provider catalog `src/server/shared/voice-catalog.ts` (pure data + selectors: `getVoiceProvider`, `sttProviders`, `ttsProviders`, `keyRequiringProviders`, `providerVoices`, `providerSupports`, `isValidVoice`, `defaultVoiceFor`, `providerSpeeds`); unit tests.
+- [x] Replace the single-key credential model with a multi-key one: `voiceProviderKeys?: Record<string, string>` on `CredentialData` plus `getVoiceProviderKey` / `setVoiceProviderKey` / `clearVoiceProviderKey` / `getConfiguredVoiceProviders` on `CredentialStore`.
+- [x] Add the server provider registry `voice/registry.ts` (`getVoiceAdapters(id)` → STT/TTS factories + `ttsContentType`); unit tests.
+- [x] Implement `voice/providers/elevenlabs-tts.ts` (ElevenLabs `text-to-speech`, `eleven_multilingual_v2`); unit tests against a fake fetch.
+- [x] Implement `voice/providers/deepgram.ts` (Deepgram `listen`, `nova-2`, smart_format); unit tests against a fake fetch.
+- [x] Make `services/voice.ts` data-driven: validate the requested provider against the catalog and dispatch through the registry instead of hardcoding OpenAI; speak validates `isValidVoice` + catalog `speedRange`.
+- [x] Add a `provider` field to the voice routes (`speak` body, `transcribe` `sttProvider` multipart field, `credentials` POST/DELETE body), defaulting to `openai`; update `api-routes-voice.test.ts` to the multi-key API.
+- [x] Settings UI: per-provider key fields from `keyRequiringProviders()`, STT/TTS provider dropdowns, voices/speeds from the catalog; `setTtsProvider` snaps stale voice/speed to valid defaults.
+- [x] Client wiring: `sttProvider` threaded through `use-voice-input` + `MessageInput`; `playback-store` sends `provider` and namespaces its cache key by provider.
+- [ ] Manual QA: configure an ElevenLabs key, play a turn with an ElevenLabs voice; configure a Deepgram key, dictate with Deepgram STT; confirm OpenAI still works with no provider field.
+
 ## Phase 6 — Cross-browser QA + polish
 
 - [ ] Chrome desktop: dictation (both modes), playback (short turn, long turn, code-only turn suppresses Play), cache hit on second Play.

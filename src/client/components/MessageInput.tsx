@@ -233,6 +233,7 @@ export function MessageInput({
   const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
   const cleanupEnabled = useSettingsStore((s) => s.cleanupEnabled);
   const voiceLanguage = useSettingsStore((s) => s.voiceLanguage);
+  const sttProvider = useSettingsStore((s) => s.sttProvider);
   const voiceHotkeyModeA = useSettingsStore((s) => s.voiceHotkeyModeA);
   const voiceHotkeyModeB = useSettingsStore((s) => s.voiceHotkeyModeB);
   const quickCaptureAutoMic = useUiStore((s) => s.quickCaptureAutoMic);
@@ -242,6 +243,7 @@ export function MessageInput({
     hotkey: isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA,
     cleanup: cleanupEnabled,
     language: voiceLanguage || undefined,
+    sttProvider,
     // Distinct ids so a session switch aborts a chat recording; the overlay
     // is its own short-lived surface and never "switches" underneath itself.
     sessionId: isOverlay ? "overlay" : sessionId,

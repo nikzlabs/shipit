@@ -2,17 +2,20 @@
  * Voice service layer (docs/144).
  *
  * Composes the credential store, the Claude OAuth auth manager, the provider
- * adapters, and the TTS cache into pure-ish async functions the route calls.
+ * registry, and the TTS cache into pure-ish async functions the route calls.
  * Routes never touch providers directly — this is the documented service-layer
  * pattern (CLAUDE.md "Service layer pattern").
+ *
+ * Provider selection is data-driven: the request names a provider id, the
+ * service validates it against the shared catalog and dispatches through the
+ * registry. Adding a provider needs no change here.
  */
 
 import type { CredentialStore } from "../credential-store.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import { ServiceError } from "./types.js";
 import {
-  createWhisperProvider,
-  createOpenAiTtsProvider,
+  getVoiceAdapters,
   pickCleanupProvider,
   cleanTranscript,
   stripForTts,
@@ -22,13 +25,20 @@ import {
   type CleanupErrorCode,
   type CleanupProvider,
 } from "../voice/index.js";
+import {
+  getVoiceProvider,
+  isValidVoice,
+  providerSupports,
+} from "../../shared/voice-catalog.js";
 
-export const OPENAI_TTS_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"] as const;
-const TTS_PROVIDER_KEY = "openai-tts";
+const DEFAULT_STT_PROVIDER = "openai";
+const DEFAULT_TTS_PROVIDER = "openai";
+/** Provider whose key backs the OpenAI cleanup fallback. */
+const CLEANUP_OPENAI_PROVIDER = "openai";
 
 export interface VoiceCredentialStatus {
-  configured: boolean;
-  provider?: "openai";
+  /** Provider ids that currently have a server-side key. */
+  configured: string[];
 }
 
 export interface TranscribeResult {
@@ -51,22 +61,31 @@ function mapProviderError(err: unknown, fallback: string): ServiceError {
 
 // ---- Credentials ----
 
-export function setVoiceKey(credentialStore: CredentialStore, apiKey: string): { ok: true } {
+export function setVoiceKey(
+  credentialStore: CredentialStore,
+  providerId: string,
+  apiKey: string,
+): { ok: true } {
+  const provider = getVoiceProvider(providerId);
+  if (!provider?.requiresKey) {
+    throw new ServiceError(400, `Unknown voice provider: ${providerId}`);
+  }
   const trimmed = apiKey.trim();
   if (!trimmed) throw new ServiceError(400, "API key is required");
-  credentialStore.setVoiceProviderApiKey(trimmed, "openai");
+  credentialStore.setVoiceProviderKey(providerId, trimmed);
   return { ok: true };
 }
 
-export function clearVoiceKey(credentialStore: CredentialStore): { ok: true } {
-  credentialStore.clearVoiceProviderApiKey();
+export function clearVoiceKey(credentialStore: CredentialStore, providerId: string): { ok: true } {
+  if (!getVoiceProvider(providerId)) {
+    throw new ServiceError(400, `Unknown voice provider: ${providerId}`);
+  }
+  credentialStore.clearVoiceProviderKey(providerId);
   return { ok: true };
 }
 
 export function getVoiceCredentialStatus(credentialStore: CredentialStore): VoiceCredentialStatus {
-  const key = credentialStore.getVoiceProviderApiKey();
-  if (!key) return { configured: false };
-  return { configured: true, provider: credentialStore.getVoiceProvider() ?? "openai" };
+  return { configured: credentialStore.getConfiguredVoiceProviders() };
 }
 
 /**
@@ -79,7 +98,7 @@ export async function getCleanupStatus(
   authManager: AuthManager,
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ provider: CleanupProvider["id"] | null }> {
-  const key = credentialStore.getVoiceProviderApiKey();
+  const key = credentialStore.getVoiceProviderKey(CLEANUP_OPENAI_PROVIDER);
   const provider = await pickCleanupProvider(authManager, key, fetchImpl);
   return { provider: provider?.id ?? null };
 }
@@ -89,14 +108,29 @@ export async function getCleanupStatus(
 export async function transcribeVoice(
   credentialStore: CredentialStore,
   authManager: AuthManager,
-  input: { audio: Buffer; mimeType?: string; language?: string; cleanup: boolean },
+  input: {
+    audio: Buffer;
+    mimeType?: string;
+    language?: string;
+    cleanup: boolean;
+    sttProvider?: string;
+  },
   fetchImpl: typeof fetch = fetch,
 ): Promise<TranscribeResult> {
-  const key = credentialStore.getVoiceProviderApiKey();
-  if (!key) throw new ServiceError(400, "No voice API key configured");
+  const providerId = input.sttProvider ?? DEFAULT_STT_PROVIDER;
+  if (!providerSupports(providerId, "stt")) {
+    throw new ServiceError(400, `Provider does not support transcription: ${providerId}`);
+  }
+  const adapters = getVoiceAdapters(providerId);
+  if (!adapters?.createStt) {
+    throw new ServiceError(400, `No transcription adapter for provider: ${providerId}`);
+  }
+
+  const key = credentialStore.getVoiceProviderKey(providerId);
+  if (!key) throw new ServiceError(400, `No API key configured for ${providerId}`);
   if (input.audio.length === 0) throw new ServiceError(400, "Empty audio");
 
-  const stt = createWhisperProvider(key, fetchImpl);
+  const stt = adapters.createStt(key, fetchImpl);
   let raw: string;
   try {
     raw = await stt.transcribe(input.audio, {
@@ -110,7 +144,8 @@ export async function transcribeVoice(
   if (!raw) return { text: "", rawText: "" };
   if (!input.cleanup) return { text: raw, rawText: raw };
 
-  const provider = await pickCleanupProvider(authManager, key, fetchImpl);
+  const cleanupKey = credentialStore.getVoiceProviderKey(CLEANUP_OPENAI_PROVIDER);
+  const provider = await pickCleanupProvider(authManager, cleanupKey, fetchImpl);
   const result = await cleanTranscript(raw, provider, {
     ...(input.language ? { language: input.language } : {}),
   });
@@ -132,29 +167,41 @@ export async function transcribeVoice(
 export async function speakVoice(
   credentialStore: CredentialStore,
   ttsCache: TtsCache,
-  input: { text: string; voice: string; speed: number },
+  input: { text: string; voice: string; speed: number; provider?: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ audio: Buffer; contentType: string } | null> {
   const cleaned = stripForTts(input.text);
   if (!cleaned) return null;
 
+  const providerId = input.provider ?? DEFAULT_TTS_PROVIDER;
+  const catalogEntry = getVoiceProvider(providerId);
+  if (!catalogEntry || !providerSupports(providerId, "tts")) {
+    throw new ServiceError(400, `Provider does not support playback: ${providerId}`);
+  }
+  const adapters = getVoiceAdapters(providerId);
+  if (!adapters?.createTts) {
+    throw new ServiceError(400, `No playback adapter for provider: ${providerId}`);
+  }
+
   const voice = input.voice;
-  if (!OPENAI_TTS_VOICES.includes(voice as (typeof OPENAI_TTS_VOICES)[number])) {
+  if (!isValidVoice(providerId, voice)) {
     throw new ServiceError(400, `Unknown voice: ${voice}`);
   }
   const speed = input.speed;
-  if (!Number.isFinite(speed) || speed < 0.25 || speed > 4) {
-    throw new ServiceError(400, "Speed must be between 0.25 and 4");
+  const range = catalogEntry.speedRange ?? { min: 0.25, max: 4 };
+  if (!Number.isFinite(speed) || speed < range.min || speed > range.max) {
+    throw new ServiceError(400, `Speed must be between ${range.min} and ${range.max}`);
   }
 
-  const key = credentialStore.getVoiceProviderApiKey();
-  if (!key) throw new ServiceError(400, "No voice API key configured");
+  const key = credentialStore.getVoiceProviderKey(providerId);
+  if (!key) throw new ServiceError(400, `No API key configured for ${providerId}`);
 
-  const cacheKey = ttsCacheKey(cleaned, voice, speed, TTS_PROVIDER_KEY);
+  const cacheKey = ttsCacheKey(cleaned, voice, speed, providerId);
   const cached = ttsCache.get(cacheKey);
-  if (cached) return { audio: cached, contentType: "audio/mpeg" };
+  const contentType = adapters.ttsContentType ?? "audio/mpeg";
+  if (cached) return { audio: cached, contentType };
 
-  const tts = createOpenAiTtsProvider(key, fetchImpl);
+  const tts = adapters.createTts(key, fetchImpl);
   let stream: ReadableStream<Uint8Array>;
   try {
     stream = await tts.speak(cleaned, { voice, speed, format: "mp3" });
@@ -171,5 +218,5 @@ export async function speakVoice(
   }
   const audio = Buffer.concat(chunks);
   ttsCache.set(cacheKey, audio);
-  return { audio, contentType: "audio/mpeg" };
+  return { audio, contentType };
 }

@@ -91,12 +91,12 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => {
     errorMessage: null,
 
     play: async (turnId, text) => {
-      const { ttsVoice, ttsSpeed } = useSettingsStore.getState();
+      const { ttsProvider, ttsVoice, ttsSpeed } = useSettingsStore.getState();
       // Switching turns stops and frees the previous element.
       teardownAudio();
       set({ state: "loading", playingTurnId: turnId, positionMs: 0, durationMs: 0, errorMessage: null });
 
-      const key = cacheKey(turnId, ttsVoice, ttsSpeed);
+      const key = cacheKey(turnId, `${ttsProvider}:${ttsVoice}`, ttsSpeed);
       let url = blobCache.get(key);
       if (url) {
         // LRU touch: move to most-recently-used so it survives eviction.
@@ -109,7 +109,7 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => {
           const res = await fetch("/api/voice/speak", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, voice: ttsVoice, speed: ttsSpeed }),
+            body: JSON.stringify({ text, voice: ttsVoice, speed: ttsSpeed, provider: ttsProvider }),
           });
           if (res.status === 204) {
             set({ state: "idle", playingTurnId: null });
