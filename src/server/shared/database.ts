@@ -375,6 +375,36 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT");
   },
+  // Migration 23: split the overloaded `archived` flag into two independent
+  // axes plus a disk-idle clock (docs/161). `disk_tier` records how much of the
+  // session is on disk ('hot' = full checkout + deps, 'light' = checkout only,
+  // 'evicted' = workspace wiped, restore via clone-from-cache); `user_archived`
+  // is the explicit "hide this from the sidebar" action; `last_viewed_at` is
+  // bumped on viewer attach and read ONLY by the disk-idle ladder (never by the
+  // listing predicate, which keys off `last_used_at`).
+  //
+  // Migrating the legacy boolean: `archived = 1` was written by BOTH explicit
+  // user-archive AND the post-merge auto-prune, with no discriminator. We use
+  // the one fact we know — auto-prune only ever archived MERGED sessions:
+  //   - unmerged + archived → definitely user-archived (auto never touches it).
+  //   - merged + archived   → ambiguous; default to NOT user-hidden so the
+  //     listing predicate governs visibility (it stays out of the sidebar while
+  //     idle but returns to Active if reopened). Worst case is a merged session
+  //     the user meant to hide stays reachable from All Sessions — strictly
+  //     better than stranding reopened work.
+  // Both map to `disk_tier = 'evicted'`: the old archive already wiped the
+  // workspace, so the checkout is gone either way.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN disk_tier TEXT NOT NULL DEFAULT 'hot'");
+    db.exec("ALTER TABLE sessions ADD COLUMN user_archived INTEGER NOT NULL DEFAULT 0");
+    db.exec("ALTER TABLE sessions ADD COLUMN last_viewed_at TEXT");
+    db.exec(
+      "UPDATE sessions SET user_archived = 1, disk_tier = 'evicted' WHERE archived = 1 AND merged_at IS NULL",
+    );
+    db.exec(
+      "UPDATE sessions SET user_archived = 0, disk_tier = 'evicted' WHERE archived = 1 AND merged_at IS NOT NULL",
+    );
+  },
 ];
 
 export class DatabaseManager {

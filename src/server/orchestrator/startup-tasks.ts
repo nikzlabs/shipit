@@ -49,7 +49,7 @@ export async function runRepoMigration(
   const migratedRepoUrls: string[] = [];
 
   if (repoStore.list().length === 0) {
-    const allSessions = sessionManager.list();
+    const allSessions = sessionManager.listAll();
     const seenUrls = new Set<string>();
     for (const session of allSessions) {
       if (session.remoteUrl && !seenUrls.has(session.remoteUrl)) {
