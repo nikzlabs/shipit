@@ -1,4 +1,5 @@
-import { useState, useRef } from "react";
+// eslint-disable-next-line no-restricted-imports -- credential/cleanup status fetch on mount
+import { useState, useRef, useEffect } from "react";
 import { XIcon, WrenchIcon } from "@phosphor-icons/react";
 import type { AgentOption } from "../agent-types.js";
 import type { AgentId, ProviderAccount } from "../../server/shared/types.js";
@@ -23,7 +24,7 @@ const MAX_LENGTH = 50_000;
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "skills" | "mcp" | "advanced";
+type Tab = "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "skills" | "mcp" | "voice" | "advanced";
 
 const providerNames: Record<AgentId, string> = {
   claude: "Claude",
@@ -514,6 +515,404 @@ function ProviderAccountSection({ provider }: { provider: AgentId }) {
   );
 }
 
+const TTS_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"] as const;
+const TTS_SPEEDS = [1, 1.25, 1.5, 2] as const;
+const VOICE_LANGUAGES: { code: string; label: string }[] = [
+  { code: "", label: "Auto (browser locale)" },
+  { code: "en", label: "English" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "it", label: "Italian" },
+  { code: "pt", label: "Portuguese" },
+  { code: "nl", label: "Dutch" },
+  { code: "ru", label: "Russian" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "zh", label: "Chinese" },
+];
+
+const CLEANUP_STATUS_LABELS: Record<string, string> = {
+  "claude-oauth": "Cleanup via your Claude subscription",
+  "openai-cleanup": "Cleanup via your OpenAI key",
+};
+
+const inputClass =
+  "w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-tertiary) px-3 py-2 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none";
+
+function HotkeyField({
+  id,
+  label,
+  value,
+  onSave,
+  disabled,
+  disabledHint,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onSave: (v: string) => void;
+  disabled?: boolean;
+  disabledHint?: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const valid = isValidQuickCaptureHotkey(draft);
+  return (
+    <div className="space-y-1.5">
+      <label className="block text-sm text-(--color-text-primary)" htmlFor={id}>
+        {label}
+      </label>
+      <div className="flex items-center gap-2">
+        <input
+          id={id}
+          value={draft}
+          disabled={disabled}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => { if (valid && !disabled) onSave(draft.toLowerCase()); }}
+          className={`w-56 ${inputClass} ${disabled ? "opacity-50" : ""}`}
+          placeholder="ctrl+shift+space"
+        />
+        <Button variant="secondary" size="sm" disabled={!valid || disabled} onClick={() => onSave(draft.toLowerCase())}>
+          Save
+        </Button>
+      </div>
+      {disabled && disabledHint ? (
+        <p className="text-xs text-(--color-text-tertiary)">{disabledHint}</p>
+      ) : !valid ? (
+        <p className="text-xs text-(--color-error)">Use Ctrl/Cmd plus Alt or Shift, for example ctrl+shift+space.</p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * "Voice" settings tab (docs/144) — dictation + playback. The OpenAI key is
+ * the only server-side credential here: it is POSTed to /api/voice/credentials
+ * and never read back (status is a boolean). Every other field lives in the
+ * client settings-store (localStorage). The cleanup-provider line is read-only
+ * — the orchestrator picks the provider, the user only sees which one is live.
+ */
+function VoiceSettings() {
+  const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
+  const setVoiceInputEnabled = useSettingsStore((s) => s.setVoiceInputEnabled);
+  const cleanupEnabled = useSettingsStore((s) => s.cleanupEnabled);
+  const setCleanupEnabled = useSettingsStore((s) => s.setCleanupEnabled);
+  const voiceHotkeyModeA = useSettingsStore((s) => s.voiceHotkeyModeA);
+  const setVoiceHotkeyModeA = useSettingsStore((s) => s.setVoiceHotkeyModeA);
+  const voiceHotkeyModeB = useSettingsStore((s) => s.voiceHotkeyModeB);
+  const setVoiceHotkeyModeB = useSettingsStore((s) => s.setVoiceHotkeyModeB);
+  const voiceLanguage = useSettingsStore((s) => s.voiceLanguage);
+  const setVoiceLanguage = useSettingsStore((s) => s.setVoiceLanguage);
+  const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
+  const setVoicePlaybackEnabled = useSettingsStore((s) => s.setVoicePlaybackEnabled);
+  const ttsVoice = useSettingsStore((s) => s.ttsVoice);
+  const setTtsVoice = useSettingsStore((s) => s.setTtsVoice);
+  const ttsSpeed = useSettingsStore((s) => s.ttsSpeed);
+  const setTtsSpeed = useSettingsStore((s) => s.setTtsSpeed);
+
+  const [keyConfigured, setKeyConfigured] = useState<boolean | null>(null);
+  const [keyDraft, setKeyDraft] = useState("");
+  const [savingKey, setSavingKey] = useState(false);
+  const [keyError, setKeyError] = useState<string | null>(null);
+  const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "error">("idle");
+  const [testMessage, setTestMessage] = useState<string | null>(null);
+  const [cleanupProvider, setCleanupProvider] = useState<string | null>(null);
+
+  const refreshKeyStatus = async () => {
+    try {
+      const res = await fetch("/api/voice/credentials/status");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { configured: boolean };
+      setKeyConfigured(data.configured);
+    } catch {
+      setKeyConfigured(false);
+    }
+  };
+
+  const refreshCleanupStatus = async () => {
+    try {
+      const res = await fetch("/api/voice/cleanup/status");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { provider: string | null };
+      setCleanupProvider(data.provider);
+    } catch {
+      setCleanupProvider(null);
+    }
+  };
+
+  // eslint-disable-next-line no-restricted-syntax -- one-shot status fetch on mount
+  useEffect(() => {
+    void refreshKeyStatus();
+    void refreshCleanupStatus();
+  }, []);
+
+  const saveKey = async () => {
+    const apiKey = keyDraft.trim();
+    if (!apiKey) return;
+    setSavingKey(true);
+    setKeyError(null);
+    try {
+      const res = await fetch("/api/voice/credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "openai", apiKey }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      setKeyDraft("");
+      setTestState("idle");
+      setTestMessage(null);
+      await refreshKeyStatus();
+      await refreshCleanupStatus();
+    } catch (err) {
+      setKeyError(err instanceof Error ? err.message : "Couldn't save key");
+    } finally {
+      setSavingKey(false);
+    }
+  };
+
+  const clearKey = async () => {
+    setSavingKey(true);
+    setKeyError(null);
+    try {
+      const res = await fetch("/api/voice/credentials", { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setTestState("idle");
+      setTestMessage(null);
+      await refreshKeyStatus();
+      await refreshCleanupStatus();
+    } catch (err) {
+      setKeyError(err instanceof Error ? err.message : "Couldn't clear key");
+    } finally {
+      setSavingKey(false);
+    }
+  };
+
+  // Verifies the key against the OpenAI account by synthesizing one short
+  // sentence (the TTS direction). The same key covers Whisper, so a successful
+  // TTS round-trip confirms the credential without needing mic permission here.
+  const runTest = async () => {
+    setTestState("testing");
+    setTestMessage(null);
+    try {
+      const res = await fetch("/api/voice/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "Voice is configured correctly.", voice: ttsVoice, speed: ttsSpeed }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => URL.revokeObjectURL(url);
+      void audio.play().catch(() => undefined);
+      setTestState("ok");
+      setTestMessage("Key works — you should hear a test sentence.");
+    } catch (err) {
+      setTestState("error");
+      setTestMessage(err instanceof Error ? err.message : "Test failed");
+    }
+  };
+
+  return (
+    <div className="px-5 py-4 flex flex-col gap-6 overflow-y-auto h-full">
+      {/* Shared credential */}
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-sm font-medium text-(--color-text-primary)">OpenAI voice key</h3>
+          <p className="text-xs text-(--color-text-tertiary) mt-0.5">
+            One key powers transcription and playback. Stored server-side and never sent back to the browser.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs ${
+              keyConfigured
+                ? "bg-(--color-success)/10 text-(--color-success)"
+                : "bg-(--color-bg-hover) text-(--color-text-tertiary)"
+            }`}
+            data-testid="voice-key-status"
+          >
+            {keyConfigured === null ? "Checking…" : keyConfigured ? "Key configured ✓" : "Not set"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="password"
+            value={keyDraft}
+            onChange={(e) => setKeyDraft(e.target.value)}
+            placeholder="sk-…"
+            className={inputClass}
+            data-testid="voice-key-input"
+            autoComplete="off"
+          />
+          <Button variant="primary" size="sm" disabled={!keyDraft.trim() || savingKey} onClick={() => void saveKey()}>
+            {savingKey ? "Saving…" : "Save"}
+          </Button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!keyConfigured || testState === "testing"}
+            onClick={() => void runTest()}
+            data-testid="voice-key-test"
+          >
+            {testState === "testing" ? "Testing…" : "Test"}
+          </Button>
+          {keyConfigured && (
+            <Button variant="ghost" size="sm" disabled={savingKey} onClick={() => void clearKey()} className="text-(--color-error) hover:text-(--color-error)">
+              Clear key
+            </Button>
+          )}
+        </div>
+        {keyError && <p className="text-xs text-(--color-error)">{keyError}</p>}
+        {testMessage && (
+          <p className={`text-xs ${testState === "error" ? "text-(--color-error)" : "text-(--color-success)"}`}>{testMessage}</p>
+        )}
+      </div>
+
+      <div className="border-t border-(--color-border-secondary)" />
+
+      {/* Voice input (dictation) */}
+      <div className="space-y-4">
+        <h3 className="text-sm font-medium text-(--color-text-primary)">Voice input (dictation)</h3>
+
+        <div className="flex items-center justify-between gap-4 py-1">
+          <div>
+            <span className="text-sm text-(--color-text-primary)">Enable voice input</span>
+            <p className="text-xs text-(--color-text-tertiary)">Show the mic button and enable push-to-talk dictation.</p>
+          </div>
+          <ToggleSwitch enabled={voiceInputEnabled} onToggle={setVoiceInputEnabled} testId="voice-input-enabled" />
+        </div>
+
+        <div className="space-y-1.5">
+          <span className="block text-sm text-(--color-text-primary)">Speech-to-text provider</span>
+          <label className="flex items-center gap-2 text-sm text-(--color-text-secondary)">
+            <input type="radio" name="stt-provider" checked readOnly />
+            OpenAI Whisper
+          </label>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-4 py-1">
+            <div>
+              <span className="text-sm text-(--color-text-primary)">Clean up transcripts with an LLM</span>
+              <p className="text-xs text-(--color-text-tertiary)">Fixes mis-hearings, fillers, and casing before the text lands in the box.</p>
+            </div>
+            <ToggleSwitch enabled={cleanupEnabled} onToggle={setCleanupEnabled} testId="voice-cleanup-enabled" />
+          </div>
+          {cleanupEnabled && (
+            <p className="text-xs text-(--color-text-tertiary)" data-testid="voice-cleanup-status">
+              {cleanupProvider
+                ? CLEANUP_STATUS_LABELS[cleanupProvider] ?? `Cleanup via ${cleanupProvider}`
+                : "No cleanup provider available — raw transcript will be inserted"}
+            </p>
+          )}
+        </div>
+
+        <HotkeyField
+          id="voice-hotkey-mode-a"
+          label="Mode A hotkey (mic into current input)"
+          value={voiceHotkeyModeA}
+          onSave={setVoiceHotkeyModeA}
+        />
+        <HotkeyField
+          id="voice-hotkey-mode-b"
+          label="Mode B hotkey (open quick-capture overlay with mic on)"
+          value={voiceHotkeyModeB}
+          onSave={setVoiceHotkeyModeB}
+        />
+
+        <div className="space-y-1.5">
+          <label className="block text-sm text-(--color-text-primary)" htmlFor="voice-language">
+            Language
+          </label>
+          <select
+            id="voice-language"
+            value={voiceLanguage}
+            onChange={(e) => setVoiceLanguage(e.target.value)}
+            className={`w-56 ${inputClass}`}
+            data-testid="voice-language"
+          >
+            {VOICE_LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="border-t border-(--color-border-secondary)" />
+
+      {/* Voice playback */}
+      <div className="space-y-4">
+        <h3 className="text-sm font-medium text-(--color-text-primary)">Voice playback</h3>
+
+        <div className="flex items-center justify-between gap-4 py-1">
+          <div>
+            <span className="text-sm text-(--color-text-primary)">Enable voice playback</span>
+            <p className="text-xs text-(--color-text-tertiary)">Show a Play button on each completed assistant turn.</p>
+          </div>
+          <ToggleSwitch enabled={voicePlaybackEnabled} onToggle={setVoicePlaybackEnabled} testId="voice-playback-enabled" />
+        </div>
+
+        <div className="space-y-1.5">
+          <span className="block text-sm text-(--color-text-primary)">Text-to-speech provider</span>
+          <label className="flex items-center gap-2 text-sm text-(--color-text-secondary)">
+            <input type="radio" name="tts-provider" checked readOnly />
+            OpenAI TTS
+          </label>
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="block text-sm text-(--color-text-primary)" htmlFor="tts-voice">
+            Voice
+          </label>
+          <select
+            id="tts-voice"
+            value={ttsVoice}
+            onChange={(e) => setTtsVoice(e.target.value)}
+            className={`w-56 ${inputClass}`}
+            data-testid="tts-voice"
+          >
+            {TTS_VOICES.map((v) => (
+              <option key={v} value={v}>
+                {v.charAt(0).toUpperCase() + v.slice(1)}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-1.5">
+          <span className="block text-sm text-(--color-text-primary)">Playback speed</span>
+          <div className="flex items-center gap-2" data-testid="tts-speed">
+            {TTS_SPEEDS.map((s) => (
+              <button
+                key={s}
+                onClick={() => setTtsSpeed(s)}
+                className={`rounded-md border px-3 py-1 text-sm transition-colors ${
+                  ttsSpeed === s
+                    ? "border-(--color-accent) bg-(--color-accent)/15 text-(--color-text-primary)"
+                    : "border-(--color-border-secondary) text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
+                }`}
+              >
+                {s}×
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Settings({
   initialContent,
   onSaveInstructions,
@@ -604,7 +1003,7 @@ export function Settings({
   const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
 
-  const generalTabs = ["github", "git", "instructions", "skills", "mcp", "advanced"] as const;
+  const generalTabs = ["github", "git", "instructions", "skills", "mcp", "voice", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "agent-claude": return "Claude";
@@ -614,6 +1013,7 @@ export function Settings({
       case "instructions": return "Instructions";
       case "skills": return "Skills";
       case "mcp": return "MCP Servers";
+      case "voice": return "Voice";
       case "advanced": return "Advanced";
     }
   };
@@ -813,6 +1213,10 @@ export function Settings({
 
           <TabsContent value="mcp">
             <McpServerSettings hasActiveSession={hasActiveSession} />
+          </TabsContent>
+
+          <TabsContent value="voice">
+            <VoiceSettings />
           </TabsContent>
 
           <TabsContent value="github">

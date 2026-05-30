@@ -32,3 +32,4 @@ export * from "./host.js";
 export * from "./pr-lifecycle.js";
 export * from "./post-interrupt-commit.js";
 export * from "./agent.js";
+export * from "./voice.js";

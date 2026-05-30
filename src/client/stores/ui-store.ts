@@ -37,6 +37,7 @@ type SettingsTab =
   | "instructions"
   | "skills"
   | "mcp"
+  | "voice"
   | "advanced"
   | undefined;
 
@@ -76,6 +77,13 @@ interface UiState {
   cumulativeOutputTokens: number;
   settingsOpen: boolean;
   quickCaptureOpen: boolean;
+  /**
+   * docs/144 Mode B — when the quick-capture overlay is opened via the
+   * voice hotkey, this is set so the overlay auto-starts mic capture on
+   * mount. Cleared once the overlay consumes it (so a subsequent text-only
+   * open doesn't spuriously record).
+   */
+  quickCaptureAutoMic: boolean;
   settingsTab: SettingsTab;
   /**
    * URL of the repo whose Project Settings dialog is open, or `null` when
@@ -134,7 +142,8 @@ interface UiState {
   setContextTokens: (tokens: number) => void;
   setCumulativeTokens: (input: number, output: number) => void;
   setSettingsOpen: (open: boolean) => void;
-  setQuickCaptureOpen: (open: boolean) => void;
+  setQuickCaptureOpen: (open: boolean, autoMic?: boolean) => void;
+  setQuickCaptureAutoMic: (active: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
   /**
    * Open (or close, with `null`) the per-repo Project Settings dialog. Pass a
@@ -173,6 +182,7 @@ const initialState = {
   cumulativeOutputTokens: 0,
   settingsOpen: false,
   quickCaptureOpen: false,
+  quickCaptureAutoMic: false,
   settingsTab: undefined as SettingsTab,
   projectSettingsRepoUrl: null as string | null,
   projectSettingsTab: "secrets" as ProjectSettingsTab,
@@ -227,7 +237,10 @@ export const useUiStore = create<UiState>((set) => ({
 
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
 
-  setQuickCaptureOpen: (quickCaptureOpen) => set({ quickCaptureOpen }),
+  setQuickCaptureOpen: (quickCaptureOpen, autoMic = false) =>
+    set({ quickCaptureOpen, quickCaptureAutoMic: quickCaptureOpen ? autoMic : false }),
+
+  setQuickCaptureAutoMic: (quickCaptureAutoMic) => set({ quickCaptureAutoMic }),
 
   setSettingsTab: (settingsTab) => set({ settingsTab }),
 
@@ -259,6 +272,7 @@ export const useUiStore = create<UiState>((set) => ({
     set({
       settingsOpen: false,
       quickCaptureOpen: false,
+      quickCaptureAutoMic: false,
       projectSettingsRepoUrl: null,
       currentSessionUsage: null,
       allUsageStats: null,

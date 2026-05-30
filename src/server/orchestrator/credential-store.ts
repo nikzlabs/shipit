@@ -50,6 +50,14 @@ interface CredentialData {
    */
   mcpOAuthClients?: Record<string, McpOAuthRegisteredClient>;
   providerAccounts?: Partial<Record<AgentId, ProviderAccount[]>>;
+  /**
+   * Voice (STT/TTS/cleanup) provider API key (docs/144). One key covers both
+   * Whisper transcription and TTS since both live on the same OpenAI account.
+   * Server-side only — never returned to the browser (see plan threat model).
+   */
+  voiceProviderApiKey?: string;
+  /** Forward-compat: which provider the key belongs to. Only "openai" in v1. */
+  voiceProvider?: "openai";
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -317,6 +325,32 @@ export class CredentialStore {
 
   clearGithubToken(): void {
     delete this.data.githubToken;
+    this.save();
+  }
+
+  // ---- Voice provider API key (docs/144) ----
+
+  getVoiceProviderApiKey(): string | null {
+    const key = this.data.voiceProviderApiKey;
+    if (typeof key === "string" && key.trim()) {
+      return key;
+    }
+    return null;
+  }
+
+  getVoiceProvider(): "openai" | null {
+    return this.data.voiceProvider ?? (this.getVoiceProviderApiKey() ? "openai" : null);
+  }
+
+  setVoiceProviderApiKey(key: string, provider: "openai" = "openai"): void {
+    this.data.voiceProviderApiKey = key;
+    this.data.voiceProvider = provider;
+    this.save();
+  }
+
+  clearVoiceProviderApiKey(): void {
+    delete this.data.voiceProviderApiKey;
+    delete this.data.voiceProvider;
     this.save();
   }
 
