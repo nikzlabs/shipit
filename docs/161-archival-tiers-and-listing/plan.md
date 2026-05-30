@@ -70,12 +70,27 @@ beyond what already exists (`mergedAt`, `lastUsedAt`, `userArchived`,
 `parentSessionId`). Define, per session:
 
 ```
-reopenedAfterMerge = mergedAt != null AND lastUsedAt > mergedAt
+reopenedAfterMerge = mergedAt != null
+                     AND Date.parse(lastUsedAt) > Date.parse(mergedAt)
 ```
 
-`lastUsedAt` is bumped at **turn start** (and end), so the instant the user sends
-a message in a merged session, `reopenedAfterMerge` becomes true. This is the
-one-line answer to "I went back to a merged session to start a follow-up PR."
+**Evaluate in JS, not SQL.** `merged_at` and `last_used_at` are stored in
+*incompatible* string formats — `markMerged` writes `datetime('now')`
+(`"YYYY-MM-DD HH:MM:SS"`, space-separated, no zone) while `track`/`markStarted`
+write `toISOString()` (`"YYYY-MM-DDThh:mm:ss.sssZ"`). A lexical/SQL `>` is wrong:
+`'T'` (0x54) > `' '` (0x20), so an ISO `lastUsedAt` at the *same* wall-clock
+second as `mergedAt` always sorts greater, falsely marking a never-reopened
+just-merged session as reopened. Parse both with `Date.parse` — exactly what the
+existing `activityMs` helper does (`services/session.ts:418-419`, which documents
+this same hazard).
+
+`lastUsedAt` is bumped at **turn start** (and end) — and **only** by turn
+activity, never by merely opening the session (see Part 2: a separate
+`lastViewedAt` drives the disk-idle clock). So `reopenedAfterMerge` becomes true
+the instant the user *sends a message* in a merged session — not when they just
+click in to look — which is the precise answer to "I went back to a merged
+session to start a follow-up PR." Listing the session for a passive view would
+strand it in Active forever.
 
 Sidebar visibility predicate (replaces `WHERE archived = 0`):
 
@@ -176,9 +191,15 @@ mechanism that already exists, so there is no extra timer to own:
    it already prunes caches by `last_used_at`.
 3. **User actions / session select** *(event-driven)* — own archive and restore.
 
-"Idle age" means `now - Date.parse(lastUsedAt)`. `lastUsedAt` is bumped at turn
-start and end; we additionally bump it on **viewer attach**, so reopening a
-session resets the ladder.
+"Idle age" for the disk ladder means `now - max(Date.parse(lastUsedAt),
+Date.parse(lastViewedAt))`. `lastUsedAt` tracks **turn activity only** (it must
+stay that way — Part 1's `reopenedAfterMerge` predicate keys on it, and a
+viewer-attach bump there would promote a merely-opened merged session to Active
+forever). To keep "don't escalate a session I just had open" working without
+corrupting that predicate, **viewer attach bumps a separate `lastViewedAt`
+column** that *only* the disk ladder reads. The "no attached viewer" guard
+already prevents escalating a currently-open session; `lastViewedAt` additionally
+keeps a recently-closed one warm.
 
 ### Consequence of janitor-cadence escalation (read before accepting)
 
@@ -238,10 +259,25 @@ confirm) "running", but still auto-commits dirty work rather than losing it.
 - **No attached viewer** — `viewerCount === 0`. A session open in a tab is in use
   even with no agent turn mid-flight. *(new — closes the main "auto-archive broke
   my open session" gap)*
-- **No uncommitted / unpushed work** — workspace clean **and** branch tip present
-  in the bare cache. Required only for `evicted` (the destructive rung); if dirty,
-  auto-commit + push to the session branch first so nothing is silently lost.
-  `light` doesn't need this guard — it preserves the tree. *(new)*
+- **No uncommitted / unpushed work** — required only for `evicted` (the
+  destructive rung); `light` preserves the tree so it skips this guard. *(new)*
+  Two implementation details the janitor pass must handle, because at `light` the
+  **container is stopped** — there is no worker to run git through:
+  - *Evaluate + remediate on the on-disk checkout directly.* A `light` session
+    still has its workspace checkout on disk (only `node_modules`/build artifacts
+    were dropped), so the janitor operates the git state via `RepoGit` /
+    `simpleGit(workspaceDir)` from the orchestrator — the same way it already
+    shells git for cache work — not via the (stopped) container. If dirty,
+    auto-commit on the session branch, then `git push origin <branch>`.
+  - *Durability check must verify `origin`, not the bare cache.* A fresh push
+    lands on `origin`; the bare cache only learns the new tip on its next
+    `fetchCache` of that branch, so "branch tip present in the bare cache" can be
+    **false immediately after a successful push** and would wrongly block (or, if
+    skipped, evict before the work is recoverable). The correct gate is **"the
+    auto-commit was pushed to `origin` successfully"** (a recoverable state —
+    `evicted → hot` re-clones from the cache, which `ensureBareCache` refreshes
+    from `origin`). If the push fails (offline / no GitHub auth), **do not
+    evict** — leave the session at `light` so the local commit survives on disk.
 - **Breadcrumb guards** — not a parent with live children, not an un-merged
   child. Preserve existing logic (`services/session.ts:441-453`).
 
@@ -271,9 +307,15 @@ When a session is selected and needs rehydration:
   path, `services/session.ts:139-207`). **This path must guarantee the restored
   workspace is cut from up-to-date `origin/<defaultBranch>`, not a frozen cache
   snapshot.** Concretely:
-  - Force a **fresh fetch** before cloning — do **not** let the 60s TTL skip it
-    (`fetchCache(ttlMs = 0)` on the restore path), and assert HEAD advanced (the
-    `readHead()` before/after logging already exists, `repo-git.ts:126`).
+  - Force a **fresh fetch** before cloning. The call site already exists —
+    `unarchiveSession` calls `cacheGit.fetchCache()` before `cloneFromCache`
+    (`services/session.ts:173-174`); the only change is passing `ttlMs = 0` so the
+    60s TTL can't skip it. The enforceable contract is **"the fetch actually ran
+    (TTL bypassed) and did not error"** — *not* "HEAD advanced." An unchanged HEAD
+    is the normal, correct case when `origin/main` simply hasn't moved since the
+    last fetch; asserting advancement would spuriously fail restores on a quiet
+    repo. (`fetchCache` already *logs* `advanced`/`unchanged` at
+    `repo-git.ts:175-183` — keep it as a log, not an assertion.)
   - Base the new branch on the **freshly fetched** `origin/<defaultBranch>`
     (`getDefaultBranch` → `origin/main`), which is exactly the right base for a
     follow-up PR off a merged session.
@@ -282,9 +324,15 @@ When a session is selected and needs rehydration:
     create*; this doc extends the same guarantee to *restore*, which currently
     relies on a possibly-skipped TTL fetch.
 
-Surfacing: if the fetch fails (offline / GitHub down), restore off the cache with
-a **logged, user-visible** staleness warning rather than silently serving old
-`main` — same principle as 157's "surface staleness in bootstrap."
+Surfacing / failure handling: if the `fetchCache(0)` fails (offline / GitHub
+down), restore **must fall through to clone-from-cache** with a **logged,
+user-visible** staleness warning — not abort the restore. Note the current
+retry loop (`services/session.ts:171-183`) wraps `fetchCache` + `cloneFromCache`
+together and only retries on clone/lock errors; a thrown `fetchCache(0)` there
+would be retried 3× and then rethrown, aborting restore. The implementation must
+separate the two: a failed fetch is caught and downgraded to "serve cached
+`main` + warn," while clone failures keep their retry. Same principle as 157's
+"surface staleness in bootstrap."
 
 ---
 
@@ -294,13 +342,53 @@ a **logged, user-visible** staleness warning rather than silently serving old
   default `'hot'`. Replaces the disk meaning of `archived`.
 - **`userArchived` column**: boolean, the explicit user "hide this" action.
   Replaces the visibility meaning of `archived`.
-- **Migration:** existing `archived = 1` rows → `userArchived = 1`,
-  `diskTier = 'evicted'` (they already have no workspace on disk). Existing
-  `archived = 0` → `userArchived = 0`, `diskTier = 'hot'`. The old `archived`
-  boolean can be derived (`diskTier === 'evicted' && userArchived`) during a
-  transition window, then dropped.
-- `SessionInfo` (`domain-types.ts:64`) gains `diskTier` and `userArchived`;
-  `archived?` is kept read-only/derived until clients migrate.
+- **`lastViewedAt` column**: ISO timestamp bumped on viewer attach; read *only*
+  by the disk-idle ladder (see Part 2). Never read by the listing predicate.
+- `SessionInfo` (`domain-types.ts:64`) gains `diskTier`, `userArchived`,
+  `lastViewedAt`; `archived?` is kept read-only/derived until clients migrate.
+
+### `archived` is two meanings — split every consumer deliberately
+
+Today `archived` is read with *two different intents*. A single derivation
+formula (`diskTier === 'evicted' && userArchived`) is **wrong** because some
+callers mean "hidden from the user" and others mean "workspace not on disk." Each
+consumer must be reassigned explicitly:
+
+| Caller | Current meaning | New predicate |
+|---|---|---|
+| `list()` filter (`sessions.ts:72`) | hidden | `visibleInSidebar` (Part 1) |
+| `findAllByRemoteUrl` cache-retention (`services/session.ts:331`) | repo still referenced | **must count `evicted` sessions** as live refs — they restore via the cache. Drop the `archived = 0` filter here, or it deletes the bare cache out from under a restorable session. |
+| `listMergedNotArchived[ByRemoteUrl]` (`sessions.ts:206,217`) | merged + still shown | `merged_at IS NOT NULL AND NOT userArchived` |
+| `unarchiveSession` precondition (`services/session.ts:136`) | is restorable | `diskTier === 'evicted' OR userArchived` |
+| child-spawn guards (`child-sessions.ts:148,476,632`) | parent/child retired | `userArchived` (an `evicted`-but-listed session can still spawn) |
+| headless guard (`headless-sessions.ts:91`) | session gone | `userArchived` |
+| settings/title/startup (`settings.ts:329`, `startup-tasks.ts:167`) | active | `!userArchived` |
+
+The breadcrumb guards in `markMergedAndPruneExcess` (`services/session.ts:441-453`)
+are unaffected — they gate the *listing* prune, which no longer touches disk.
+
+### Migration (auto-archive vs user-archive can't be perfectly told apart)
+
+Today a single `archived = 1` is written by **both** explicit user-archive **and**
+the auto-prune in `markMergedAndPruneExcess` (`services/session.ts:454`); the
+schema records no discriminator. Mapping *all* `archived = 1 → userArchived = 1`
+is wrong: it would permanently hide every auto-pruned merged session (the one
+state that force-removes from the sidebar regardless of activity), so reopening
+one could never return it to Active.
+
+Use the one fact we *do* know — **auto-prune only ever archives merged sessions**
+(it iterates `listMergedNotArchivedByRemoteUrl`):
+
+- `archived = 1 AND merged_at IS NULL` → **definitely** user-archived (auto never
+  touches unmerged) → `userArchived = 1, diskTier = 'evicted'`.
+- `archived = 1 AND merged_at IS NOT NULL` → **ambiguous** (auto-pruned, or a user
+  who hid a merged session). Default to `userArchived = 0, diskTier = 'evicted'`
+  so it follows the listing predicate: it stays out of the sidebar while idle
+  (old merged, outside the top-N view cap → "Not listed"), but correctly returns
+  to Active if reopened. This is the safe default — the worst case is a merged
+  session the user *meant* to hide remains reachable from All Sessions, which is
+  strictly better than stranding reopened work.
+- `archived = 0` → `userArchived = 0, diskTier = 'hot'`.
 
 ---
 
