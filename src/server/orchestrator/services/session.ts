@@ -133,7 +133,9 @@ export async function unarchiveSession(
   sessionId: string,
 ): Promise<{ session: SessionInfo; sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
-  if (!session?.archived) throw new ServiceError(404, "Session not found or not archived");
+  if (!session || (session.diskTier !== "evicted" && !session.userArchived)) {
+    throw new ServiceError(404, "Session not found or not restorable");
+  }
 
   // Sessions with remoteUrl need their clone restored
   if (session.remoteUrl && session.workspaceDir) {
@@ -166,11 +168,25 @@ export async function unarchiveSession(
     // Remove stale remnants
     await fs.rm(session.workspaceDir, { recursive: true, force: true });
 
-    // Clone from bare cache into session dir
-    // Retry clone (lock contention)
+    // An evicted session may have been demoted long ago; its bare cache can be
+    // far behind the remote (e.g. the PR merged and `main` advanced). Force a
+    // fresh fetch (ttl 0, bypassing the freshness marker) so the restored clone
+    // and its new branch base reflect current upstream. A fetch failure is not
+    // fatal — fall back to whatever the cache already has rather than aborting
+    // the restore.
+    try {
+      await cacheGit.fetchCache(0);
+    } catch (fetchErr) {
+      console.warn(
+        `[unarchiveSession] fetchCache failed for ${session.remoteUrl}; restoring from stale cache:`,
+        fetchErr,
+      );
+    }
+
+    // Clone from bare cache into session dir. Retry only the clone (lock
+    // contention) — the fetch above already ran once and is non-fatal.
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        await cacheGit.fetchCache();
         await cacheGit.cloneFromCache(session.workspaceDir, session.remoteUrl);
         break;
       } catch (cloneErr) {
@@ -343,37 +359,39 @@ export async function archiveSession(
   return { sessions: sessionManager.list() };
 }
 
-/** Maximum number of merged sessions to keep per repository before archiving old ones. */
-const MAX_MERGED_SESSIONS_PER_REPO = 3;
-
 /**
- * Mark a session as merged and archive excess merged sessions beyond the
- * per-repository limit. Called when a PR merge is detected — keeps the most
- * recent merged sessions alive.
+ * Mark a session as merged and clean up its remote head branch. Called when a
+ * PR merge is detected.
  *
- * Also deletes the remote head branch (best-effort) for the just-merged
- * session so feature branches don't accumulate on GitHub. Many repos enable
- * "automatically delete head branches" upstream, in which case our delete is
- * a harmless no-op; for repos without that setting, this is the cleanup.
+ * Demotion of excess merged sessions out of the sidebar is no longer an
+ * archive/disk operation: `SessionManager.list()` derives sidebar visibility
+ * from the per-repo top-N merged predicate (`filterVisibleInSidebar`), so
+ * older merged sessions drop off the list automatically while their workspace
+ * and container stay on disk (hot) until the disk-idle ladder evicts them.
+ * This function therefore only marks merged + deletes the remote branch; it no
+ * longer force-archives or disposes runners.
  *
- * The limit is applied **per repository**: only merged sessions in the same
- * repo as the just-merged session are considered for archiving. Sessions in
- * other repos are left alone, even if they themselves have many merged
- * sessions — pruning only runs in the repo where activity just occurred.
+ * Deletes the remote head branch (best-effort) for the just-merged session so
+ * feature branches don't accumulate on GitHub. Many repos enable "automatically
+ * delete head branches" upstream, in which case our delete is a harmless no-op;
+ * for repos without that setting, this is the cleanup.
+ *
+ * `_runnerRegistry`, `_pruneVolumes`, and `_containerManager` are retained in
+ * the signature (prefixed unused) so the PR-poller wiring and other callers
+ * don't have to change while disk eviction is owned elsewhere.
  */
 export async function markMergedAndPruneExcess(
   sessionManager: SessionManager,
-  runnerRegistry: SessionRunnerRegistry,
+  _runnerRegistry: SessionRunnerRegistry,
   getBareCacheDir: (url: string) => string,
   sessionId: string,
-  pruneVolumes?: (sessionId: string) => Promise<void>,
+  _pruneVolumes?: (sessionId: string) => Promise<void>,
   createRepoGit?: (dir: string) => RepoGit,
   githubAuthManager?: GitHubAuthManager,
-  containerManager?: { destroy(sessionId: string): Promise<void> } | null,
+  _containerManager?: { destroy(sessionId: string): Promise<void> } | null,
 ): Promise<{ sessions: SessionInfo[] }> {
   sessionManager.markMerged(sessionId);
 
-  // Scope pruning to the same repository as the merged session.
   const session = sessionManager.get(sessionId);
   if (!session?.remoteUrl) {
     return { sessions: sessionManager.list() };
@@ -403,62 +421,6 @@ export async function markMergedAndPruneExcess(
         String(err),
       );
     }
-  }
-
-  const merged = sessionManager.listMergedNotArchivedByRemoteUrl(session.remoteUrl);
-  // Rank merged sessions by most-recent *activity*, not merge time alone, then
-  // archive everything beyond the per-repo limit. A session merged days ago but
-  // recently worked in — the user went back to it to open a follow-up PR — must
-  // not be treated as "oldest" and archived out from under live work.
-  // `last_used_at` is bumped at turn start and turn end, so it tracks real
-  // interaction; `merged_at` is the floor. We parse both in JS rather than
-  // ordering in SQL because the two columns use different on-disk formats
-  // (SQLite `datetime('now')` "YYYY-MM-DD HH:MM:SS" vs ISO 8601 from
-  // `toISOString()`), so a lexical `MAX()` would compare them incorrectly.
-  const activityMs = (s: SessionInfo): number =>
-    Math.max(Date.parse(s.mergedAt ?? "") || 0, Date.parse(s.lastUsedAt) || 0);
-  const ranked = [...merged].sort((a, b) => activityMs(b) - activityMs(a));
-  // Forward `pruneVolumes` so the auto-archive path reclaims per-session named
-  // volumes immediately — idle eviction has usually disposed the runner by now,
-  // so without this the named volumes would leak until the next orchestrator
-  // restart's disk-janitor pass.
-  const toArchive = ranked.slice(MAX_MERGED_SESSIONS_PER_REPO);
-  for (const excess of toArchive) {
-    // Never auto-archive a session whose agent is currently running. The user
-    // may have returned to a previously-merged session and started a new turn
-    // (e.g. to open a follow-up PR). Archiving force-disposes the runner, kills
-    // the agent mid-turn, destroys the container, and removes the workspace —
-    // silently breaking live work. A later merge (or idle eviction) reconsiders
-    // it once it's idle, and its bumped `last_used_at` keeps it out of the
-    // archive slice anyway.
-    if (runnerRegistry.get(excess.id)?.running) {
-      continue;
-    }
-    // Child sessions are never auto-archived. The user explicitly archives
-    // them (or archives the parent, which cascades through `archiveSession`).
-    // Auto-archiving a child would orphan it from the parent's spawn-card
-    // breadcrumb without any user-visible signal.
-    if (excess.parentSessionId) {
-      continue;
-    }
-    // Skip parents with live (non-archived) child sessions. Archiving a
-    // parent disposes its runner, removes its workspace, and drops its
-    // volumes — and cascades to its children. The children are independent
-    // sessions whose users may still be working in them, so we keep the
-    // parent alive (preserving the breadcrumb) until the user explicitly
-    // archives it (which still works via the UI / DELETE route — this guard
-    // only fires on the automatic post-merge prune).
-    if (sessionManager.findChildren(excess.id).length > 0) {
-      continue;
-    }
-    await archiveSession(
-      sessionManager,
-      runnerRegistry,
-      getBareCacheDir,
-      excess.id,
-      pruneVolumes,
-      containerManager,
-    );
   }
 
   return { sessions: sessionManager.list() };

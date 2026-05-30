@@ -330,8 +330,14 @@ async function sweepOrphanSessionVolumes(
 ): Promise<number> {
   const SESSION_VOLUME_RE = /^shipit-([a-f0-9-]{12})_/;
 
+  // Preserve volumes for every session that still holds on-disk state, i.e.
+  // anything not `evicted`. `list()` would exclude merged sessions that fell
+  // out of the sidebar's top-N view even though they're still `hot` — their
+  // volumes must survive for a warm resume.
   const livePrefixes = new Set(
-    sessionManager.list().map((s) => s.id.slice(0, 12).toLowerCase()),
+    sessionManager.listAll()
+      .filter((s) => s.diskTier !== "evicted")
+      .map((s) => s.id.slice(0, 12).toLowerCase()),
   );
 
   let listOut: string;
@@ -409,8 +415,13 @@ async function sweepOrphanSessionNetworks(
 ): Promise<number> {
   const SESSION_NETWORK_RE = /^shipit-session-([a-f0-9-]{12})/;
 
+  // Preserve networks for every session that still holds on-disk state, i.e.
+  // anything not `evicted` (see `sweepOrphanSessionVolumes` for why `list()`
+  // is too narrow here).
   const livePrefixes = new Set(
-    sessionManager.list().map((s) => s.id.slice(0, 12).toLowerCase()),
+    sessionManager.listAll()
+      .filter((s) => s.diskTier !== "evicted")
+      .map((s) => s.id.slice(0, 12).toLowerCase()),
   );
 
   let listOut: string;
@@ -703,12 +714,16 @@ async function sweepOrphanMergedBranches(
 ): Promise<number> {
   if (!githubAuthManager.authenticated) return 0;
 
-  // Build a remote → live-branches index from non-archived sessions.
-  // Archived sessions' branches are NOT preserved: unarchive generates a
-  // fresh branch (see `unarchiveSession` in services/session.ts), so the
-  // old branch is truly orphaned.
+  // Build a remote → live-branches index from every non-evicted session.
+  // We deliberately use `listAll()` (minus evicted), NOT `list()`: a merged
+  // session that has dropped out of the sidebar's per-repo top-N view is still
+  // `hot` on disk and the user can resume it, so its branch must be preserved.
+  // Only `evicted` sessions' branches are treated as orphaned, because
+  // `unarchiveSession` generates a fresh branch on restore (see
+  // services/session.ts), so the old branch is truly abandoned.
   const liveByRemote = new Map<string, Set<string>>();
-  for (const s of sessionManager.list()) {
+  for (const s of sessionManager.listAll()) {
+    if (s.diskTier === "evicted") continue;
     if (!s.remoteUrl || !s.branch) continue;
     let set = liveByRemote.get(s.remoteUrl);
     if (!set) {

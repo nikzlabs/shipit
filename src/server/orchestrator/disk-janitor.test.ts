@@ -322,10 +322,10 @@ describe("runDiskJanitor", () => {
     const recent = new Date(Date.now() - 5 * 86_400_000).toISOString();
     const remote = "https://github.com/example/repo.git";
     underlyingDb!.prepare(
-      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived) VALUES (?, ?, ?, ?, ?, ?, 1)",
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run("old-session", "Old", old, old, oldDir, remote);
     underlyingDb!.prepare(
-      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived) VALUES (?, ?, ?, ?, ?, ?, 1)",
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run("recent-session", "Recent", recent, recent, recentDir, remote);
 
     const result = await runDiskJanitor({
@@ -350,7 +350,7 @@ describe("runDiskJanitor", () => {
     fs.mkdirSync(oldDir, { recursive: true });
     const old = new Date(Date.now() - 365 * 86_400_000).toISOString();
     underlyingDb!.prepare(
-      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived) VALUES (?, ?, ?, ?, ?, ?, 1)",
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run("old-session", "Old", old, old, oldDir, "https://github.com/example/repo.git");
 
     const result = await runDiskJanitor({
@@ -374,7 +374,7 @@ describe("runDiskJanitor", () => {
     const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
     // No remote_url — should be skipped even though it's older than the threshold.
     underlyingDb!.prepare(
-      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, archived) VALUES (?, ?, ?, ?, ?, 1)",
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run("no-remote-session", "No remote", old, old, oldDir);
 
     const result = await runDiskJanitor({
@@ -504,7 +504,7 @@ describe("runDiskJanitor", () => {
     fs.mkdirSync(oldDir, { recursive: true });
     const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
     underlyingDb!.prepare(
-      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived) VALUES (?, ?, ?, ?, ?, ?, 1)",
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run("old-session", "Old", old, old, oldDir, "https://github.com/example/repo.git");
 
     const runDocker = (): Promise<string> => Promise.reject(new Error("volume boom"));
@@ -819,7 +819,7 @@ describe("runDiskJanitor", () => {
     // branch is now orphaned — unarchiveSession would generate a fresh branch
     // anyway, so deletion is safe.
     underlyingDb!.prepare(
-      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, branch, archived) VALUES (?, ?, ?, ?, ?, ?, 1)",
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, branch, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run(
       "22222222-2222-2222-2222-222222222222", "Archived", "2026-05-12", "2026-05-12",
       repoUrl, "shipit/orphan-branch",
@@ -842,6 +842,47 @@ describe("runDiskJanitor", () => {
 
     expect(deleted).toEqual(["shipit/orphan-branch"]);
     expect(result.orphanBranchesRemoved).toBe(1);
+  });
+
+  it("preserves the branch of a hot merged session even when it fell out of the sidebar (docs/161)", async () => {
+    // Regression for the docs/161 decoupling: a merged session that dropped out
+    // of `list()` (the per-repo top-N view cap) is still `hot` on disk and
+    // resumable, so its branch MUST NOT be treated as orphaned. The sweep keys
+    // off `listAll()` minus evicted, not `list()`.
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    // Merged, hot (default disk_tier), NOT user-archived. Points at a branch
+    // whose PR is merged — the old `list()`-based sweep would have deleted it.
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, branch, merged_at, archived) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+    ).run(
+      "33333333-3333-3333-3333-333333333333", "Hot merged", "2026-05-12", "2026-05-12",
+      repoUrl, "shipit/hot-merged", "2026-05-12 00:00:00",
+    );
+
+    const githubAuthManager = buildGitHubStub({
+      "example/repo": [{ name: "hot-merged", states: ["MERGED"] }],
+    });
+    const { factory, deleted } = buildRepoGitFactory();
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(deleted).toEqual([]);
+    expect(result.orphanBranchesRemoved).toBe(0);
   });
 
   it("joins refs by PR head ref (regression: associatedPullRequests returned empty)", async () => {
@@ -994,8 +1035,10 @@ describe("runDiskJanitor", () => {
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
     ).run(liveId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+    // archivedId must be disk-evicted: the credential sweep keys off
+    // listArchived() = disk_tier 'evicted'.
     underlyingDb!.prepare(
-      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 1)",
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
 
     // Lay down per-session credential dirs for all three.

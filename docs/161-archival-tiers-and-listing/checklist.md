@@ -1,15 +1,15 @@
 # 161 — Checklist
 
 ## Part 1 — Listing decoupled from disk
-- [ ] Add `diskTier` (`hot|light|evicted`), `userArchived`, `lastViewedAt` columns
-- [ ] Add `diskTier` / `userArchived` / `lastViewedAt` to `SessionInfo` (`domain-types.ts`)
-- [ ] Migration: split `archived` by `merged_at` (unmerged→`userArchived=1`; merged→`userArchived=0`); both `diskTier='evicted'`
-- [ ] Reassign every `archived` consumer per the data-model table (visibility=`userArchived` vs disk-present=`diskTier`); **fix `findAllByRemoteUrl` cache-retention to count `evicted` sessions**
-- [ ] Flip `SessionManager.list()` off `archived` onto the `visibleInSidebar` predicate
-- [ ] Implement `reopenedAfterMerge` as `Date.parse(lastUsedAt) > Date.parse(mergedAt)` **in JS, not SQL** (format-incompatible columns); plus top-N merged view cap in the service layer
-- [ ] Make `markMergedAndPruneExcess` a *listing* prune (no `fs.rm`), not a disk prune
-- [ ] Sidebar grouping: Active vs Recently merged; restore-on-select for non-`hot` sessions
-- [ ] Reflect `diskTier` in `AllSessionsDialog`
+- [x] Add `diskTier` (`hot|light|evicted`), `userArchived`, `lastViewedAt` columns (only `hot`/`evicted` wired this slice)
+- [x] Add `diskTier` / `userArchived` / `lastViewedAt` to `SessionInfo` (`domain-types.ts`)
+- [x] Migration: split `archived` by `merged_at` (unmerged→`userArchived=1`; merged→`userArchived=0`); both `diskTier='evicted'`
+- [x] Reassign every `archived` consumer per the data-model table (visibility=`userArchived` vs disk-present=`diskTier`); **fixed `findAllByRemoteUrl` cache-retention to count `evicted` sessions**; `findChildren`→`user_archived`; disk-janitor volume/network/branch sweeps→`listAll()` minus `evicted`
+- [x] Flip `SessionManager.list()` off `archived` onto the `filterVisibleInSidebar` predicate
+- [x] Implement `reopenedAfterMerge` as `Date.parse(lastUsedAt) > Date.parse(mergedAt)` **in JS, not SQL** (format-incompatible columns); plus top-N merged view cap in `filterVisibleInSidebar`
+- [x] Make `markMergedAndPruneExcess` a *listing* prune (no `fs.rm`, no archive, no runner disposal)
+- [ ] Sidebar grouping: Active vs Recently merged (deferred — sidebar content unchanged this slice; restore-on-select handled in `AllSessionsDialog`, extended to cover `diskTier === 'evicted'`)
+- [ ] Reflect `diskTier` in `AllSessionsDialog` (deferred — in this slice every `evicted` session is also `userArchived`, so the existing archived UI is equivalent)
 
 ## Part 2 — Disk cleanup tiers (no new cron)
 - [ ] Bump a **separate `lastViewedAt`** on viewer attach (NOT `lastUsedAt` — that would corrupt `reopenedAfterMerge`); disk-idle age = `max(lastUsedAt, lastViewedAt)`
@@ -28,15 +28,17 @@
 - [ ] User-archive action: `userArchived = true` + `evicted` cleanup, cascade to children
 
 ## Part 3 — Restore freshness
-- [ ] `evicted` restore forces a fresh fetch (`fetchCache(ttlMs = 0)`); contract is "fetch ran + didn't error", NOT "HEAD advanced" (unchanged HEAD is normal)
-- [ ] Separate fetch from clone in the retry loop: failed fetch → fall through to clone-from-cache + staleness warning (don't abort restore); clone errors keep their 3× retry
-- [ ] Base restored branch on freshly-fetched `origin/<defaultBranch>`
-- [ ] `light` restore reinstalls deps, preserves branch + checkout + uncommitted work
+- [x] `evicted` restore forces a fresh fetch (`fetchCache(ttlMs = 0)`); contract is "fetch ran + didn't error", NOT "HEAD advanced" (unchanged HEAD is normal)
+- [x] Separate fetch from clone in the retry loop: failed fetch → fall through to clone-from-cache + staleness warning (don't abort restore); clone errors keep their 3× retry
+- [x] Base restored branch on freshly-fetched `origin/<defaultBranch>` (already in place)
+- [ ] `light` restore reinstalls deps, preserves branch + checkout + uncommitted work (Part 2)
 
 ## Tests
-- [ ] Unit: `visibleInSidebar` / `reopenedAfterMerge` predicate cases
-- [ ] Integration: merged session reopened (new turn) reappears in `list()`
-- [ ] Integration: auto-prune demotes from sidebar without wiping workspace
-- [ ] Integration: guards block destructive descent for running/open/dirty sessions
-- [ ] Integration: `evicted` restore branch tip equals current `origin/main` tip
-- [ ] Migration test: existing `archived` rows map to `userArchived` + `evicted`
+- [x] Unit: `filterVisibleInSidebar` / `reopenedAfterMerge` predicate cases (`sessions.test.ts`)
+- [x] Unit: `archive`/`unarchive` set `userArchived` + `diskTier`; `listArchived`/`listAll`/`list` semantics
+- [x] Unit: `markMergedAndPruneExcess` no longer archives/disposes excess (`session-merge.test.ts`)
+- [x] Unit: disk-janitor preserves a hot merged session's branch when it fell out of `list()` (`disk-janitor.test.ts`)
+- [ ] Integration: merged session reopened (new turn) reappears in `list()` (deferred)
+- [ ] Integration: guards block destructive descent for running/open/dirty sessions (Part 2)
+- [ ] Integration: `evicted` restore branch tip equals current `origin/main` tip (deferred)
+- [x] Migration semantics covered by archive/unarchive unit tests; disk-janitor tests insert `disk_tier='evicted'` rows directly

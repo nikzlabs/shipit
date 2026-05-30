@@ -100,7 +100,11 @@ export function AllSessionsDialog({
 
   const handleResume = async (sessionId: string) => {
     const session = sessions.find((s) => s.id === sessionId);
-    if (session?.archived) {
+    // Restore the workspace before resuming when the session has no live
+    // on-disk checkout: either the user hid it (`archived`/`userArchived`) or
+    // the disk-idle ladder evicted it (`diskTier === "evicted"`). `unarchive`
+    // re-clones from the bare cache on a fresh branch.
+    if (session && (session.archived || session.userArchived || session.diskTier === "evicted")) {
       await onUnarchive(sessionId);
     }
     onResume(sessionId);

@@ -82,8 +82,35 @@ export interface SessionInfo {
   workspaceDir?: string;
   /** Cached origin remote URL (e.g. "https://github.com/owner/repo.git"). */
   remoteUrl: string;
-  /** Whether this session has been archived (hidden from sidebar). */
+  /**
+   * Back-compat alias for `userArchived` (docs/161): true when the user
+   * explicitly hid the session from the sidebar. Derived, read-only — the
+   * authoritative field is `userArchived`. Kept until all clients migrate.
+   */
   archived?: boolean;
+  /**
+   * docs/161 — how much of the session is on disk right now. Orthogonal to
+   * listing: a session can be listed in the sidebar while disk-evicted (it
+   * restores on select) and fully on disk while not listed.
+   *   - `hot`     — full checkout + node_modules + build artifacts.
+   *   - `light`   — checkout (incl. uncommitted edits) kept; deps dropped.
+   *   - `evicted` — workspace wiped; restore via clone-from-cache off fresh main.
+   */
+  diskTier?: "hot" | "light" | "evicted";
+  /**
+   * docs/161 — the explicit "hide this session" action. The only thing that
+   * force-removes a session from the sidebar regardless of activity; reversible
+   * from All Sessions. Distinct from `diskTier`: hiding never destroys disk and
+   * disk reclamation never hides.
+   */
+  userArchived?: boolean;
+  /**
+   * docs/161 — bumped on viewer attach. Read ONLY by the disk-idle ladder
+   * (`now - max(lastUsedAt, lastViewedAt)`); never by the listing predicate,
+   * which keys off `lastUsedAt` so a merely-opened merged session isn't
+   * promoted to Active forever.
+   */
+  lastViewedAt?: string;
   /** Branch name for sessions cloned from a repo. */
   branch?: string;
   /** If true, this is a pre-created warm session not yet visible in the sidebar. */

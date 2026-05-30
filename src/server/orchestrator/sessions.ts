@@ -13,6 +13,12 @@ interface SessionRow {
   remote_url: string | null;
   conversation_replay: string | null;
   archived: number;
+  /** docs/161 — 'hot' | 'light' | 'evicted'. How much is on disk right now. */
+  disk_tier: string;
+  /** docs/161 — explicit "hide from sidebar" action. */
+  user_archived: number;
+  /** docs/161 — bumped on viewer attach; read only by the disk-idle ladder. */
+  last_viewed_at: string | null;
   warm: number;
   branch: string | null;
   session_type: string | null;
@@ -33,6 +39,65 @@ interface SessionRow {
   spawned_by_turn: string | null;
 }
 
+/** Maximum number of merged sessions shown per repository in the sidebar. */
+export const MAX_MERGED_SESSIONS_PER_REPO = 3;
+
+/**
+ * docs/161 — true when a merged session has been *worked in* since its merge,
+ * i.e. the user returned to it to start a follow-up PR. Keys on `lastUsedAt`
+ * (bumped only by turn activity, never by merely opening the session), so it
+ * becomes true the instant the user sends a message in a merged session.
+ *
+ * Evaluated in JS, not SQL: `merged_at` is written by `datetime('now')`
+ * ("YYYY-MM-DD HH:MM:SS") while `last_used_at` is `toISOString()`
+ * ("…THH:MM:SS.sssZ"). A lexical `>` is wrong — 'T' (0x54) > ' ' (0x20), so an
+ * ISO timestamp at the same wall-clock second always sorts greater, falsely
+ * marking a just-merged session as reopened. `Date.parse` normalizes both.
+ */
+export function reopenedAfterMerge(s: SessionInfo): boolean {
+  if (!s.mergedAt) return false;
+  const merged = Date.parse(s.mergedAt);
+  const used = Date.parse(s.lastUsedAt);
+  if (Number.isNaN(merged) || Number.isNaN(used)) return false;
+  return used > merged;
+}
+
+/**
+ * docs/161 — the sidebar visibility predicate. Pure derivation over session
+ * metadata; `diskTier` is deliberately NOT consulted (a disk-evicted but recent
+ * session stays listed and restores on select). Input must already exclude
+ * warm and user-archived sessions. A session is visible when it is:
+ *   - active (never merged), or
+ *   - merged but reopened (worked in since the merge), or
+ *   - among the top-N most-recently-merged for its repo (the view cap).
+ * Exceeding the cap only removes it from the sidebar — zero disk consequence.
+ */
+export function filterVisibleInSidebar(
+  sessions: SessionInfo[],
+  maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
+): SessionInfo[] {
+  // Rank merged-not-reopened sessions per repo by mergedAt desc; keep top N.
+  const mergedByRepo = new Map<string, SessionInfo[]>();
+  for (const s of sessions) {
+    if (!s.mergedAt || reopenedAfterMerge(s)) continue;
+    const key = s.remoteUrl ?? "";
+    let group = mergedByRepo.get(key);
+    if (!group) {
+      group = [];
+      mergedByRepo.set(key, group);
+    }
+    group.push(s);
+  }
+  const topMergedIds = new Set<string>();
+  for (const group of mergedByRepo.values()) {
+    group.sort((a, b) => (Date.parse(b.mergedAt ?? "") || 0) - (Date.parse(a.mergedAt ?? "") || 0));
+    for (const s of group.slice(0, maxMerged)) topMergedIds.add(s.id);
+  }
+  return sessions.filter(
+    (s) => !s.mergedAt || reopenedAfterMerge(s) || topMergedIds.has(s.id),
+  );
+}
+
 export class SessionManager {
   private db;
 
@@ -51,7 +116,13 @@ export class SessionManager {
     if (row.agent_session_id) info.agentSessionId = row.agent_session_id;
     if (row.workspace_dir) info.workspaceDir = row.workspace_dir;
     if (row.conversation_replay) info.conversationReplay = row.conversation_replay;
-    if (row.archived) info.archived = true;
+    info.diskTier = row.disk_tier === "light" || row.disk_tier === "evicted" ? row.disk_tier : "hot";
+    if (row.user_archived) {
+      info.userArchived = true;
+      // Back-compat: `archived` now means "user explicitly hid it".
+      info.archived = true;
+    }
+    if (row.last_viewed_at) info.lastViewedAt = row.last_viewed_at;
     if (row.warm) info.warm = true;
     if (row.branch) info.branch = row.branch;
     if (row.kind === "ops") info.kind = "ops";
@@ -69,12 +140,17 @@ export class SessionManager {
     return info;
   }
 
-  /** List all non-archived, non-warm sessions, most recently used first. */
+  /**
+   * docs/161 — sessions shown in the active sidebar. No longer keyed on the
+   * legacy `archived` flag: returns non-warm, non-user-archived sessions that
+   * satisfy `filterVisibleInSidebar` (active, reopened-merged, or within the
+   * per-repo merged view cap). Disk tier is irrelevant to visibility.
+   */
   list(): SessionInfo[] {
     const rows = this.db.prepare(
-      "SELECT * FROM sessions WHERE archived = 0 AND warm = 0 ORDER BY last_used_at DESC, rowid DESC",
+      "SELECT * FROM sessions WHERE user_archived = 0 AND warm = 0 ORDER BY last_used_at DESC, rowid DESC",
     ).all() as SessionRow[];
-    return rows.map((r) => this.fromRow(r));
+    return filterVisibleInSidebar(rows.map((r) => this.fromRow(r)));
   }
 
   /** All session IDs including warm and archived — for container lifecycle decisions. */
@@ -183,17 +259,32 @@ export class SessionManager {
     return this.get(id) ?? null;
   }
 
-  /** Archive a session. */
+  /**
+   * Hide a session from the sidebar and reclaim its disk (docs/161). Sets the
+   * explicit `user_archived` flag and drops `disk_tier` to `evicted` (the
+   * caller wipes the workspace). The legacy `archived` column is left untouched
+   * — it is no longer read by application code.
+   */
   archive(id: string): boolean {
-    const result = this.db.prepare("UPDATE sessions SET archived = 1 WHERE id = ?").run(id);
+    const result = this.db.prepare(
+      "UPDATE sessions SET user_archived = 1, disk_tier = 'evicted' WHERE id = ?",
+    ).run(id);
     return result.changes > 0;
   }
 
-  /** Unarchive a session. */
+  /**
+   * Restore a session to the sidebar and mark it back on disk (docs/161).
+   * Restorable when it was user-hidden OR disk-evicted; the caller re-clones
+   * the workspace. Returns false when neither applies (nothing to restore).
+   */
   unarchive(id: string): boolean {
-    const row = this.db.prepare("SELECT archived FROM sessions WHERE id = ?").get(id) as { archived: number } | undefined;
-    if (!row?.archived) return false;
-    this.db.prepare("UPDATE sessions SET archived = 0 WHERE id = ?").run(id);
+    const row = this.db.prepare(
+      "SELECT user_archived, disk_tier FROM sessions WHERE id = ?",
+    ).get(id) as { user_archived: number; disk_tier: string } | undefined;
+    if (!row || (!row.user_archived && row.disk_tier !== "evicted")) return false;
+    this.db.prepare(
+      "UPDATE sessions SET user_archived = 0, disk_tier = 'hot' WHERE id = ?",
+    ).run(id);
     return true;
   }
 
@@ -205,29 +296,35 @@ export class SessionManager {
     return result.changes > 0;
   }
 
-  /** List merged-but-not-archived sessions, most recently merged first. */
+  /** List merged, not-user-hidden sessions, most recently merged first. */
   listMergedNotArchived(): SessionInfo[] {
     const rows = this.db.prepare(
-      "SELECT * FROM sessions WHERE merged_at IS NOT NULL AND archived = 0 ORDER BY merged_at DESC",
+      "SELECT * FROM sessions WHERE merged_at IS NOT NULL AND user_archived = 0 ORDER BY merged_at DESC",
     ).all() as SessionRow[];
     return rows.map((r) => this.fromRow(r));
   }
 
   /**
-   * List merged-but-not-archived sessions scoped to a single repository,
+   * List merged, not-user-hidden sessions scoped to a single repository,
    * most recently merged first.
    */
   listMergedNotArchivedByRemoteUrl(remoteUrl: string): SessionInfo[] {
     const rows = this.db.prepare(
-      "SELECT * FROM sessions WHERE merged_at IS NOT NULL AND archived = 0 AND remote_url = ? ORDER BY merged_at DESC",
+      "SELECT * FROM sessions WHERE merged_at IS NOT NULL AND user_archived = 0 AND remote_url = ? ORDER BY merged_at DESC",
     ).all(remoteUrl) as SessionRow[];
     return rows.map((r) => this.fromRow(r));
   }
 
-  /** List all archived sessions, most recently used first. */
+  /**
+   * docs/161 — sessions whose workspace has been reclaimed (`disk_tier =
+   * 'evicted'`). The disk-janitor uses this for its credential/workspace
+   * backstop sweeps and to exclude evicted sessions' branches from the
+   * live-branch set. (User-hidden sessions are always evicted, so they are
+   * included; a still-on-disk session, listed or not, is never returned.)
+   */
   listArchived(): SessionInfo[] {
     const rows = this.db.prepare(
-      "SELECT * FROM sessions WHERE archived = 1 ORDER BY last_used_at DESC, rowid DESC",
+      "SELECT * FROM sessions WHERE disk_tier = 'evicted' ORDER BY last_used_at DESC, rowid DESC",
     ).all() as SessionRow[];
     return rows.map((r) => this.fromRow(r));
   }
@@ -256,10 +353,14 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET warm = ? WHERE id = ?").run(warm ? 1 : 0, id);
   }
 
-  /** Find all non-archived sessions with the given remote URL. */
+  /**
+   * Find all sessions with the given remote URL, including evicted/hidden ones.
+   * Callers (branch-collision avoidance, repo-wide bookkeeping) must see every
+   * session that still owns a branch, not just the sidebar-visible subset.
+   */
   findAllByRemoteUrl(remoteUrl: string): SessionInfo[] {
     const rows = this.db.prepare(
-      "SELECT * FROM sessions WHERE remote_url = ? AND archived = 0",
+      "SELECT * FROM sessions WHERE remote_url = ?",
     ).all(remoteUrl) as SessionRow[];
     return rows.map((r) => this.fromRow(r));
   }
@@ -325,7 +426,7 @@ export class SessionManager {
   }
 
   /**
-   * docs/117 — return every non-archived session whose `parent_session_id`
+   * docs/117 — return every non-user-archived session whose `parent_session_id`
    * matches the given parent. Sorted most-recently-spawned first so the
    * sidebar's "spawned in this turn" group naturally bubbles to the top.
    *
@@ -337,7 +438,7 @@ export class SessionManager {
    */
   findChildren(parentSessionId: string): SessionInfo[] {
     const rows = this.db.prepare(
-      "SELECT * FROM sessions WHERE parent_session_id = ? AND archived = 0 ORDER BY last_used_at DESC, rowid DESC",
+      "SELECT * FROM sessions WHERE parent_session_id = ? AND user_archived = 0 ORDER BY last_used_at DESC, rowid DESC",
     ).all(parentSessionId) as SessionRow[];
     return rows.map((r) => this.fromRow(r));
   }

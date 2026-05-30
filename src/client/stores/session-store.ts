@@ -343,7 +343,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => ({
       sessions: result.sessions,
       allSessions: state.allSessions.map((s) =>
-        s.id === sessionId ? { ...s, archived: undefined } : s,
+        s.id === sessionId
+          ? { ...s, archived: undefined, userArchived: undefined, diskTier: "hot" as const }
+          : s,
       ),
     }));
   },
@@ -365,7 +367,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         sessions: result.sessions,
         allSessions: state.allSessions.map((s) =>
-          s.id === sessionId ? { ...s, archived: true } : s,
+          s.id === sessionId
+            ? { ...s, archived: true, userArchived: true, diskTier: "evicted" as const }
+            : s,
         ),
         turnUsage: rest,
       };
