@@ -219,8 +219,13 @@ export function MessageInput({
   // below — so the swap is synchronous and doesn't flicker the previous text
   // into view for one frame. Saves on every keystroke as well (via the effect
   // further down) so the draft also survives reloads, not just session swaps.
+  //
+  // Skipped for the overlay surface: the quick-capture overlay is a fresh
+  // "new session" launcher, not a per-session composer — restoring whatever
+  // the user last typed there on each open is surprising rather than helpful.
+  const persistDraft = surface !== "overlay";
   const draftFocusKeyRef = useRef<string | undefined>(undefined);
-  if (focusKey !== draftFocusKeyRef.current) {
+  if (persistDraft && focusKey !== draftFocusKeyRef.current) {
     // Persist the *previous* session's text under its key before swapping in
     // the new session's draft. `text` here is still the previous session's
     // value because state updates from this branch haven't applied yet.
@@ -253,8 +258,8 @@ export function MessageInput({
   // a freshly-consumed prefill is what gets persisted (not the empty default).
   // eslint-disable-next-line no-restricted-syntax -- per-session draft persistence
   useEffect(() => {
-    if (focusKey) saveDraftMessage(focusKey, text);
-  }, [text, focusKey]);
+    if (persistDraft && focusKey) saveDraftMessage(focusKey, text);
+  }, [text, focusKey, persistDraft]);
 
   // Consume prefill text from store (e.g. "Start Session" from docs viewer, "Send to Agent" from services panel)
   // eslint-disable-next-line no-restricted-syntax -- existing usage
