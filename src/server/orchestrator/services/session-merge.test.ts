@@ -210,177 +210,29 @@ describe("markMergedAndPruneExcess — branch cleanup", () => {
   });
 });
 
-describe("markMergedAndPruneExcess — subsession guard", () => {
-  it("does not auto-archive merged sessions that have live child sessions", async () => {
-    // Seed four already-merged sessions in the same repo with explicit
-    // merged_at timestamps so the sort order is deterministic. `parentId`
-    // is the oldest (so it would normally be pruned), and `secondOldestId`
-    // is the next oldest (so it should still be pruned).
-    const seeded: { id: string; mergedAt: string }[] = [
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:00:00" }, // parent — oldest
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:30:00" }, // second oldest
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:45:00" }, // kept
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:50:00" }, // kept
-    ];
-    for (const s of seeded) {
-      dbManager.db.prepare("UPDATE sessions SET merged_at = ? WHERE id = ?").run(s.mergedAt, s.id);
-    }
-    const [parentId, secondOldestId] = seeded.map((s) => s.id);
-
-    // Give the parent a non-archived child session.
-    const childId = crypto.randomUUID();
-    sessionManager.track(childId, "Child session", `${tmpDir}/${childId}`);
-    sessionManager.setParentSession(childId, parentId);
-
-    // Mark a fifth session merged — this triggers the prune. With five
-    // merged sessions in the repo and a limit of three, the two oldest are
-    // candidates for archive.
-    const triggerId = trackMergedSession({});
-
-    await markMergedAndPruneExcess(
-      sessionManager,
-      runnerRegistry,
-      getBareCacheDir,
-      triggerId,
-    );
-
-    // Parent stayed alive (has a live child); second-oldest was archived.
-    expect(sessionManager.get(parentId)?.archived).toBeFalsy();
-    expect(sessionManager.get(secondOldestId)?.archived).toBe(true);
-  });
-
-  it("does not auto-archive a merged session that is itself a child of another session", async () => {
-    // Five merged sessions in the repo; the oldest is a CHILD of some parent.
-    // Without the child guard, the oldest would be archived (limit 3). With
-    // it, the child is skipped and the next-oldest (a regular session) is
-    // archived instead.
-    const seeded: { id: string; mergedAt: string }[] = [
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:00:00" }, // oldest — will be marked child
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:30:00" }, // next-oldest — should be archived
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:45:00" },
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:50:00" },
-    ];
-    for (const s of seeded) {
-      dbManager.db.prepare("UPDATE sessions SET merged_at = ? WHERE id = ?").run(s.mergedAt, s.id);
-    }
-    const [childId, nextOldestId] = seeded.map((s) => s.id);
-
-    // Mark the oldest as a child of some other (independent) session.
-    const parentId = crypto.randomUUID();
-    sessionManager.track(parentId, "Parent session", `${tmpDir}/${parentId}`);
-    sessionManager.setParentSession(childId, parentId);
-
-    const triggerId = trackMergedSession({});
-
-    await markMergedAndPruneExcess(
-      sessionManager,
-      runnerRegistry,
-      getBareCacheDir,
-      triggerId,
-    );
-
-    // The child stayed alive; the next-oldest was archived in its place.
-    expect(sessionManager.get(childId)?.archived).toBeFalsy();
-    expect(sessionManager.get(nextOldestId)?.archived).toBe(true);
-  });
-
-  it("still auto-archives a merged session whose only children are already archived", async () => {
-    const seeded: { id: string; mergedAt: string }[] = [
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:00:00" },
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:30:00" },
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:45:00" },
-      { id: trackMergedSession({}), mergedAt: "2024-01-01 09:50:00" },
-    ];
-    for (const s of seeded) {
-      dbManager.db.prepare("UPDATE sessions SET merged_at = ? WHERE id = ?").run(s.mergedAt, s.id);
-    }
-    const oldestId = seeded[0].id;
-
-    // Child exists but is archived → parent is not "blocked" anymore.
-    const childId = crypto.randomUUID();
-    sessionManager.track(childId, "Child session", `${tmpDir}/${childId}`);
-    sessionManager.setParentSession(childId, oldestId);
-    sessionManager.archive(childId);
-
-    const triggerId = trackMergedSession({});
-
-    await markMergedAndPruneExcess(
-      sessionManager,
-      runnerRegistry,
-      getBareCacheDir,
-      triggerId,
-    );
-
-    expect(sessionManager.get(oldestId)?.archived).toBe(true);
-  });
-});
-
-describe("markMergedAndPruneExcess — activity-aware ranking", () => {
-  it("keeps a session merged long ago but recently worked in, archiving a staler one", async () => {
-    // The session with the OLDEST merge time has the most recent activity (the
-    // user went back to it to open a follow-up PR). Under merge-time-only
-    // ranking it would be archived; under activity ranking it must survive and
-    // a session with older last-activity is archived in its place.
-    const recentlyUsedId = trackMergedSession({});
-    const staleAId = trackMergedSession({});
-    const staleBId = trackMergedSession({});
-    const staleCId = trackMergedSession({});
-
-    const rows: { id: string; merged: string; lastUsed: string }[] = [
-      { id: recentlyUsedId, merged: "2024-01-01 08:00:00", lastUsed: "2026-05-30T12:00:00.000Z" },
-      { id: staleAId, merged: "2024-01-01 09:00:00", lastUsed: "2024-02-01T00:00:00.000Z" },
-      { id: staleBId, merged: "2024-01-01 09:30:00", lastUsed: "2024-02-02T00:00:00.000Z" },
-      { id: staleCId, merged: "2024-01-01 09:45:00", lastUsed: "2024-02-03T00:00:00.000Z" },
-    ];
-    for (const r of rows) {
-      dbManager.db
-        .prepare("UPDATE sessions SET merged_at = ?, last_used_at = ? WHERE id = ?")
-        .run(r.merged, r.lastUsed, r.id);
+describe("markMergedAndPruneExcess — no longer archives excess", () => {
+  // docs/161: demotion of excess merged sessions out of the sidebar is now a
+  // pure listing concern (`SessionManager.list()` → `filterVisibleInSidebar`),
+  // NOT an archive/disk operation. `markMergedAndPruneExcess` must therefore
+  // leave every other merged session untouched: no `archived` flag, no disk
+  // eviction, no runner disposal. The per-repo top-N cap is exercised directly
+  // against the predicate in `sessions.test.ts`.
+  it("does not archive any merged session even when far beyond the per-repo cap", async () => {
+    // Seed six already-merged sessions in the same repo — well past the cap.
+    const seeded: { id: string; mergedAt: string }[] = [];
+    for (let i = 0; i < 6; i++) {
+      const id = trackMergedSession({});
+      const mergedAt = `2024-01-01 09:0${i}:00`;
+      dbManager.db.prepare("UPDATE sessions SET merged_at = ? WHERE id = ?").run(mergedAt, id);
+      seeded.push({ id, mergedAt });
     }
 
     const triggerId = trackMergedSession({});
 
-    await markMergedAndPruneExcess(
-      sessionManager,
-      runnerRegistry,
-      getBareCacheDir,
-      triggerId,
-    );
-
-    // recentlyUsed has the oldest merge time but the newest activity → kept.
-    expect(sessionManager.get(recentlyUsedId)?.archived).toBeFalsy();
-    // staleA has the oldest activity → archived.
-    expect(sessionManager.get(staleAId)?.archived).toBe(true);
-  });
-
-  it("does not auto-archive a merged session whose agent is currently running", async () => {
-    // Five merged sessions, limit 3 → two archive candidates by activity. The
-    // oldest candidate has a running agent (user resumed it to open a follow-up
-    // PR), so it must be skipped; the other candidate is archived in its place.
-    const runningId = trackMergedSession({});
-    const idleId = trackMergedSession({});
-    const keepAId = trackMergedSession({});
-    const keepBId = trackMergedSession({});
-
-    const rows: { id: string; merged: string; lastUsed: string }[] = [
-      { id: runningId, merged: "2024-01-01 09:00:00", lastUsed: "2024-02-01T00:00:00.000Z" },
-      { id: idleId, merged: "2024-01-01 09:30:00", lastUsed: "2024-02-02T00:00:00.000Z" },
-      { id: keepAId, merged: "2024-01-01 09:45:00", lastUsed: "2026-05-30T11:00:00.000Z" },
-      { id: keepBId, merged: "2024-01-01 09:50:00", lastUsed: "2026-05-30T11:30:00.000Z" },
-    ];
-    for (const r of rows) {
-      dbManager.db
-        .prepare("UPDATE sessions SET merged_at = ?, last_used_at = ? WHERE id = ?")
-        .run(r.merged, r.lastUsed, r.id);
-    }
-
-    const triggerId = trackMergedSession({});
-
-    // Registry reports the oldest candidate as having a live (running) agent.
-    const dispose = vi.fn();
+    const disposeSpy = vi.fn();
     runnerRegistry = {
-      get: (id: string) => (id === runningId ? { running: true, disposed: false } : undefined),
-      dispose,
+      get: () => undefined,
+      dispose: disposeSpy,
     } as unknown as SessionRunnerRegistry;
 
     await markMergedAndPruneExcess(
@@ -390,9 +242,33 @@ describe("markMergedAndPruneExcess — activity-aware ranking", () => {
       triggerId,
     );
 
-    // Running session is left alive despite being an archive candidate.
-    expect(sessionManager.get(runningId)?.archived).toBeFalsy();
-    // The idle candidate is archived in its place.
-    expect(sessionManager.get(idleId)?.archived).toBe(true);
+    // Nothing got archived; no runner was disposed.
+    for (const s of seeded) {
+      expect(sessionManager.get(s.id)?.archived).toBeFalsy();
+      expect(sessionManager.get(s.id)?.diskTier).toBe("hot");
+    }
+    expect(sessionManager.get(triggerId)?.archived).toBeFalsy();
+    expect(disposeSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke pruneVolumes for excess merged sessions", async () => {
+    for (let i = 0; i < 5; i++) {
+      const id = trackMergedSession({});
+      dbManager.db
+        .prepare("UPDATE sessions SET merged_at = ? WHERE id = ?")
+        .run(`2024-01-01 09:0${i}:00`, id);
+    }
+    const triggerId = trackMergedSession({});
+
+    const pruneVolumes = vi.fn().mockResolvedValue(undefined);
+    await markMergedAndPruneExcess(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      triggerId,
+      pruneVolumes,
+    );
+
+    expect(pruneVolumes).not.toHaveBeenCalled();
   });
 });

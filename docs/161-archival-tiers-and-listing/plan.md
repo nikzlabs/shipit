@@ -1,10 +1,20 @@
 ---
-status: planned
+status: in-progress
 priority: high
 description: Decouple session *visibility* in the sidebar from *disk reclamation*, replace the single destructive archive with graduated cleanup tiers, and guarantee a restored session is based on fresh origin/main instead of a stale bare-cache snapshot.
 ---
 
 # 161 — Archival tiers and activity-based session listing
+
+> **Status note (first slice shipped):** Part 1 (listing decoupled from disk)
+> and Part 3's evicted fetch-fresh fix are implemented. `diskTier` exists but
+> only `hot`/`evicted` are wired — the `light` tier and the disk-idle escalation
+> ladder (Part 2) are still pending. `markMergedAndPruneExcess` is now
+> listing-only (no `fs.rm`, no auto-archive); demotion out of the sidebar is the
+> `filterVisibleInSidebar` predicate's job. In this slice every `evicted` session
+> is also `userArchived` (archive sets both), so the existing archived UI is
+> still correct; a distinct evicted-but-not-hidden state only appears once Part 2
+> lands. See `checklist.md` for the per-item status.
 
 ## Problem
 

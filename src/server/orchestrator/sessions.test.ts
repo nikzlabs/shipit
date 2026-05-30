@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
-import { SessionManager } from "./sessions.js";
+import {
+  SessionManager,
+  filterVisibleInSidebar,
+  reopenedAfterMerge,
+  MAX_MERGED_SESSIONS_PER_REPO,
+} from "./sessions.js";
+import type { SessionInfo } from "../shared/types.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
 import { deleteSession } from "./services/session.js";
@@ -313,6 +319,155 @@ describe("SessionManager", () => {
       // Other session data untouched
       expect(chat.load("sess-2")).toHaveLength(1);
       expect(usage.getSessionUsage("sess-2")).toBeDefined();
+    });
+  });
+
+  describe("docs/161: disk tier + archival columns", () => {
+    it("defaults a fresh session to hot tier and not user-archived", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Fresh");
+      const s = mgr.get("sess-1")!;
+      expect(s.diskTier).toBe("hot");
+      expect(s.userArchived).toBeUndefined();
+      expect(s.archived).toBeUndefined();
+    });
+
+    it("archive() sets user_archived and evicts the disk tier", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Hide me");
+      mgr.archive("sess-1");
+      const s = mgr.get("sess-1")!;
+      expect(s.userArchived).toBe(true);
+      expect(s.archived).toBe(true); // back-compat alias
+      expect(s.diskTier).toBe("evicted");
+      expect(mgr.list()).toHaveLength(0);
+    });
+
+    it("unarchive() clears user_archived and restores the disk tier to hot", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Restore me");
+      mgr.archive("sess-1");
+      const restored = mgr.unarchive("sess-1");
+      expect(restored).toBe(true);
+      const s = mgr.get("sess-1")!;
+      expect(s.userArchived).toBeUndefined();
+      expect(s.diskTier).toBe("hot");
+      expect(mgr.list()).toHaveLength(1);
+    });
+
+    it("listArchived() returns evicted sessions; listAll() includes them", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("active", "Active");
+      mgr.track("hidden", "Hidden");
+      mgr.archive("hidden");
+
+      expect(mgr.listArchived().map((s) => s.id)).toEqual(["hidden"]);
+      expect(mgr.listAll().map((s) => s.id).sort()).toEqual(["active", "hidden"]);
+      expect(mgr.list().map((s) => s.id)).toEqual(["active"]);
+    });
+  });
+
+  describe("docs/161: reopenedAfterMerge predicate", () => {
+    function make(overrides: Partial<SessionInfo>): SessionInfo {
+      return {
+        id: "x",
+        title: "t",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        lastUsedAt: "2024-01-01T00:00:00.000Z",
+        remoteUrl: "https://github.com/o/r.git",
+        ...overrides,
+      };
+    }
+
+    it("is false for a never-merged session", () => {
+      expect(reopenedAfterMerge(make({}))).toBe(false);
+    });
+
+    it("is false when last activity predates the merge", () => {
+      // merged_at uses SQLite datetime() format; last_used_at uses ISO. The
+      // predicate parses both via Date.parse rather than comparing lexically.
+      expect(reopenedAfterMerge(make({
+        mergedAt: "2024-06-01 12:00:00",
+        lastUsedAt: "2024-05-01T00:00:00.000Z",
+      }))).toBe(false);
+    });
+
+    it("is true when worked in after the merge despite mixed timestamp formats", () => {
+      expect(reopenedAfterMerge(make({
+        mergedAt: "2024-06-01 12:00:00",
+        lastUsedAt: "2024-06-02T00:00:00.000Z",
+      }))).toBe(true);
+    });
+  });
+
+  describe("docs/161: filterVisibleInSidebar predicate", () => {
+    function merged(id: string, mergedAt: string, lastUsedAt = mergedAt, remoteUrl = "https://github.com/o/r.git"): SessionInfo {
+      return {
+        id,
+        title: id,
+        createdAt: "2024-01-01T00:00:00.000Z",
+        lastUsedAt,
+        remoteUrl,
+        mergedAt,
+      };
+    }
+    function active(id: string, remoteUrl = "https://github.com/o/r.git"): SessionInfo {
+      return {
+        id,
+        title: id,
+        createdAt: "2024-01-01T00:00:00.000Z",
+        lastUsedAt: "2024-01-01T00:00:00.000Z",
+        remoteUrl,
+      };
+    }
+
+    it("always keeps active (never-merged) sessions", () => {
+      const sessions = [active("a"), active("b")];
+      expect(filterVisibleInSidebar(sessions).map((s) => s.id)).toEqual(["a", "b"]);
+    });
+
+    it("keeps only the top-N most-recently-merged per repo", () => {
+      const sessions = [
+        merged("m1", "2024-01-01 09:00:00"),
+        merged("m2", "2024-01-02 09:00:00"),
+        merged("m3", "2024-01-03 09:00:00"),
+        merged("m4", "2024-01-04 09:00:00"),
+      ];
+      const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id).sort();
+      // The three newest merges survive; the oldest (m1) drops off.
+      expect(visible).toEqual(["m2", "m3", "m4"]);
+    });
+
+    it("applies the cap per-repo independently", () => {
+      const repoA = "https://github.com/o/a.git";
+      const repoB = "https://github.com/o/b.git";
+      const sessions = [
+        merged("a1", "2024-01-01 09:00:00", "2024-01-01 09:00:00", repoA),
+        merged("a2", "2024-01-02 09:00:00", "2024-01-02 09:00:00", repoA),
+        merged("b1", "2024-01-01 09:00:00", "2024-01-01 09:00:00", repoB),
+        merged("b2", "2024-01-02 09:00:00", "2024-01-02 09:00:00", repoB),
+      ];
+      // Cap of 1 per repo keeps the newest in each.
+      expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort()).toEqual(["a2", "b2"]);
+    });
+
+    it("keeps a merged session that was reopened even when it is beyond the cap", () => {
+      const sessions = [
+        merged("reopened", "2024-01-01 09:00:00", "2024-12-01T00:00:00.000Z"),
+        merged("m2", "2024-01-02 09:00:00"),
+        merged("m3", "2024-01-03 09:00:00"),
+        merged("m4", "2024-01-04 09:00:00"),
+      ];
+      const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id);
+      // `reopened` has the oldest merge time but recent activity → never pruned.
+      expect(visible).toContain("reopened");
+    });
+
+    it("defaults the cap to MAX_MERGED_SESSIONS_PER_REPO", () => {
+      const sessions = Array.from({ length: MAX_MERGED_SESSIONS_PER_REPO + 2 }, (_, i) =>
+        merged(`m${i}`, `2024-01-0${i + 1} 09:00:00`),
+      );
+      expect(filterVisibleInSidebar(sessions)).toHaveLength(MAX_MERGED_SESSIONS_PER_REPO);
     });
   });
 });
