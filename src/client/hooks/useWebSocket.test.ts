@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, cleanup } from "@testing-library/react";
 import { useWebSocket } from "./useWebSocket.js";
 
 // --- Minimal WebSocket stub ---
@@ -7,10 +7,13 @@ import { useWebSocket } from "./useWebSocket.js";
 type WsHandler = ((ev: { data: string }) => void) | null;
 
 class FakeWebSocket {
+  static CONNECTING = 0;
   static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
   static instances: FakeWebSocket[] = [];
 
-  readyState = 0; // CONNECTING
+  readyState = FakeWebSocket.CONNECTING;
   onopen: (() => void) | null = null;
   onclose: (() => void) | null = null;
   onmessage: WsHandler = null;
@@ -26,6 +29,7 @@ class FakeWebSocket {
 
   close() {
     this.closed = true;
+    this.readyState = FakeWebSocket.CLOSED;
   }
 
   // Helpers for tests
@@ -35,7 +39,7 @@ class FakeWebSocket {
   }
 
   simulateClose() {
-    this.readyState = 3; // CLOSED
+    this.readyState = FakeWebSocket.CLOSED;
     this.onclose?.();
   }
 
@@ -48,9 +52,14 @@ beforeEach(() => {
   FakeWebSocket.instances = [];
   vi.stubGlobal("WebSocket", FakeWebSocket);
   vi.useFakeTimers();
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    get: () => false,
+  });
 });
 
 afterEach(() => {
+  cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -241,5 +250,41 @@ describe("useWebSocket", () => {
     const countAfterAll = FakeWebSocket.instances.length;
     void act(() => vi.advanceTimersByTime(5000));
     expect(FakeWebSocket.instances.length).toBe(countAfterAll);
+  });
+
+  it("foreground visibility forces a fresh socket even when the current socket is still connecting", () => {
+    renderHook(() => useWebSocket("ws://test"));
+
+    const connectingSocket = latestWs();
+    expect(connectingSocket.readyState).toBe(FakeWebSocket.CONNECTING);
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    expect(connectingSocket.closed).toBe(true);
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+  });
+
+  it("foreground reconnect retries quickly before normal backoff if the socket is not open", () => {
+    renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+
+    const countBefore = FakeWebSocket.instances.length;
+    act(() => {
+      window.dispatchEvent(new Event("pageshow"));
+    });
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+
+    void act(() => vi.advanceTimersByTime(299));
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 1);
+
+    void act(() => vi.advanceTimersByTime(1));
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 2);
+
+    act(() => latestWs().simulateOpen());
+    void act(() => vi.advanceTimersByTime(3000));
+    expect(FakeWebSocket.instances.length).toBe(countBefore + 2);
   });
 });
