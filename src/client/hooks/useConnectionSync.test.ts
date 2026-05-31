@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { renderHook, waitFor, act, cleanup } from "@testing-library/react";
 
 // Stub out the HTTP data loaders so the hook doesn't hit the network.
 vi.mock("../utils/session-data.js", () => ({
@@ -10,6 +10,10 @@ vi.mock("../utils/session-data.js", () => ({
 import { useConnectionSync } from "./useConnectionSync.js";
 import { useSessionStore } from "../stores/session-store.js";
 
+afterEach(() => {
+  cleanup();
+});
+
 /**
  * docs/144 fix #2 — the delivery half of the silent-message-drop fix.
  *
@@ -19,12 +23,22 @@ import { useSessionStore } from "../stores/session-store.js";
  * message is silently dropped.
  */
 describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => {
+  let hiddenValue = false;
+
   beforeEach(() => {
+    hiddenValue = false;
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: () => hiddenValue,
+    });
     // Reset the slice of session state the hook reads.
     useSessionStore.setState({
       sessionId: undefined,
       pendingWsMessage: undefined,
       sessions: [],
+      messages: [],
+      isLoading: false,
+      activity: undefined,
     });
   });
 
@@ -73,5 +87,69 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
     // Give the history-load microtask a chance to run; still nothing to send.
     await Promise.resolve();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not inject a connection-lost agent error while the page is hidden", () => {
+    useSessionStore.setState({
+      sessionId: "s1",
+      isLoading: true,
+      messages: [{ role: "user", text: "keep going" }],
+    });
+
+    hiddenValue = true;
+    const { rerender } = renderHook(
+      ({ status }) => useConnectionSync({ status, send: vi.fn() }),
+      { initialProps: { status: "open" } },
+    );
+
+    rerender({ status: "closed" });
+
+    expect(useSessionStore.getState().isLoading).toBe(true);
+    expect(useSessionStore.getState().messages).toEqual([{ role: "user", text: "keep going" }]);
+  });
+
+  it("does not inject a connection-lost agent error immediately after mobile foregrounding", () => {
+    useSessionStore.setState({
+      sessionId: "s1",
+      isLoading: true,
+      messages: [{ role: "user", text: "keep going" }],
+    });
+
+    const { rerender } = renderHook(
+      ({ status }) => useConnectionSync({ status, send: vi.fn() }),
+      { initialProps: { status: "open" } },
+    );
+
+    hiddenValue = false;
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    rerender({ status: "closed" });
+
+    expect(useSessionStore.getState().isLoading).toBe(true);
+    expect(useSessionStore.getState().messages).toEqual([{ role: "user", text: "keep going" }]);
+  });
+
+  it("still injects a connection-lost agent error for a visible non-foreground disconnect", () => {
+    useSessionStore.setState({
+      sessionId: "s1",
+      isLoading: true,
+      messages: [{ role: "user", text: "keep going" }],
+    });
+
+    const { rerender } = renderHook(
+      ({ status }) => useConnectionSync({ status, send: vi.fn() }),
+      { initialProps: { status: "open" } },
+    );
+
+    rerender({ status: "closed" });
+
+    expect(useSessionStore.getState().isLoading).toBe(false);
+    expect(useSessionStore.getState().messages.at(-1)).toMatchObject({
+      role: "assistant",
+      isError: true,
+      text: "Error: Connection lost while the agent was responding. Your message may be incomplete.",
+    });
   });
 });
