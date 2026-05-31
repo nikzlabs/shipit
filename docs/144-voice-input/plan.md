@@ -554,6 +554,30 @@ cognitive cost of that split:
   not supported — the gesture is fiddly and the toggle path is clearer.
 - **Mobile:** tap the mic to start, tap again to stop. No hotkey path.
 
+**Mobile recording UX (`MobileRecordingOverlay`).** The plain inline mic is a
+~28px target — acceptable on desktop where PTT is the real gesture, but on
+mobile the button *is* the entire interface, so a tiny tap target is the actual
+pain (both to start and to stop). The two ends get different treatments because
+they have different lifetimes:
+
+- **Start** can't be a full-screen takeover — it has to coexist permanently
+  with the composer (you might type instead of dictate). So on mobile the
+  inline `MicButton` keeps its position but grows its tap target via the
+  `large` prop (`p-3` instead of `p-1.5`; the icon stays `SM`).
+- **Stop / Cancel** only exist *while recording*, so they're free to take over
+  the screen. `MobileRecordingOverlay` (gated on `useIsMobile()`) renders a
+  full-screen scrim with a large centered Stop button, a live timer, a
+  "Listening…" label, and a Cancel control. After Stop it shows a transcribing
+  spinner until the transcript splices into the composer underneath, then
+  auto-dismisses. Cancel calls `voice.cancelRecording()` (the newly-exposed
+  `abortRecording`) to discard the audio without hitting the STT API; it's only
+  offered while `recording` (once `transcribing`, the audio is already
+  captured and in flight, so cancel is a no-op and the control is hidden).
+  Escape also cancels (harmless on mobile, handy for desktop testing of the
+  view). The error state is *not* shown in the overlay — it falls back to the
+  inline button — since errors are a rare edge and the overlay's job is the
+  stop affordance. Desktop is untouched: the overlay never mounts there.
+
 **Insertion semantics:**
 
 - Transcript inserted at the current cursor position, or end of text if the
@@ -876,13 +900,15 @@ Captured here so future readers know they were considered, not forgotten:
 - `src/client/voice/use-voice-playback.ts` — hook (single-`Audio`-element owner, play/pause/stop, error state)
 - `src/client/voice/extract-turn-prose.ts` — pure helper that turns a chat turn's events into a single string of prose to read aloud
 - `src/client/voice/playback-store.ts` — Zustand store backing the playback hook
-- `src/client/components/MicButton.tsx` — presentational mic UI
+- `src/client/components/MicButton.tsx` — presentational mic UI (`large` prop enlarges the mobile tap target)
+- `src/client/components/MobileRecordingOverlay.tsx` — full-screen mobile recording surface (big Stop button + Cancel + timer); mounted only on mobile
 - `src/client/components/PlayTurnButton.tsx` — presentational Play/Pause UI for a single turn, with progress indicator and speed dropdown
 - `src/client/voice/*.test.ts` / `src/client/voice/*.test.tsx` — unit tests
+- `src/client/components/MicButton.test.tsx`, `src/client/components/MobileRecordingOverlay.test.tsx` — component tests for the mic states and the mobile overlay (stop / cancel / Escape / transcribing)
 
 ### Client (modified)
 
-- `src/client/components/MessageInput.tsx` — embed MicButton, wire the Mode-A hook instance, route transcript to `setText`
+- `src/client/components/MessageInput.tsx` — embed MicButton (pass `large={isMobile}`), mount `MobileRecordingOverlay` on mobile, wire the Mode-A hook instance, route transcript to `setText`
 - `src/client/components/QuickCaptureOverlay.tsx` (from doc 145) — embed MicButton, wire a Mode-B hook instance, route transcript to the overlay's own `setText`. Auto-start capture when opened via the Mode-B hotkey.
 - `src/client/hooks/useQuickCaptureHotkey.ts` (from doc 145) — add a sibling Mode-B variant that opens the overlay *and* signals the overlay to auto-start mic capture
 - `src/client/components/MessageList.tsx` (or the existing turn-footer component, exact name verified during build) — render `PlayTurnButton` for each completed assistant turn; pass the turn's id and extracted prose

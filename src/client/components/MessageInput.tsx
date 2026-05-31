@@ -17,6 +17,7 @@ import { FileUploadChips } from "./FileUploadChips.js";
 import { Popover, PopoverAnchor } from "./ui/popover.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { MicButton } from "./MicButton.js";
+import { MobileRecordingOverlay } from "./MobileRecordingOverlay.js";
 import { useVoiceInput } from "../voice/use-voice-input.js";
 import { spliceTranscript } from "../voice/insert-transcript.js";
 import { useSettingsStore } from "../stores/settings-store.js";
@@ -732,6 +733,7 @@ export function MessageInput({
             {voiceInputEnabled && (
               <MicButton
                 voice={voice}
+                large={isMobile}
                 hotkeyLabel={formatHotkeyLabel(isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA)}
                 onOpenSettings={() => {
                   const ui = useUiStore.getState();
@@ -740,6 +742,11 @@ export function MessageInput({
                 }}
               />
             )}
+
+            {/* Mobile-only full-screen recording surface (docs/144): a big
+                central Stop button + Cancel, shown while recording. Desktop
+                keeps the inline icon + push-to-talk hotkey. */}
+            {voiceInputEnabled && isMobile && <MobileRecordingOverlay voice={voice} />}
 
             {/* Permission mode selector (3-state, agent-aware — docs/138) */}
             {onPermissionModeChange && (

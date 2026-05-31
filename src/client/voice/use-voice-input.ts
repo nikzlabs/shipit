@@ -79,6 +79,12 @@ export interface VoiceInputApi {
   cleanupWarning: string | null;
   startRecording: () => void;
   stopRecording: () => void;
+  /**
+   * Discard the in-flight recording without transcribing (the "Cancel"
+   * gesture). No-op once transcription has begun — the audio is already
+   * captured and on its way to the server.
+   */
+  cancelRecording: () => void;
   /** Subscribe to cleaned transcripts. Returns an unsubscribe fn. Text-only by design. */
   onTranscript: (cb: (text: string) => void) => () => void;
   dismissError: () => void;
@@ -293,6 +299,7 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     cleanupWarning,
     startRecording,
     stopRecording,
+    cancelRecording: abortRecording,
     onTranscript,
     dismissError,
   };

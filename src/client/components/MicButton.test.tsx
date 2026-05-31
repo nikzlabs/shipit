@@ -15,6 +15,7 @@ function makeVoice(overrides: Partial<VoiceInputApi> = {}): VoiceInputApi {
     cleanupWarning: null,
     startRecording: vi.fn(),
     stopRecording: vi.fn(),
+    cancelRecording: vi.fn(),
     onTranscript: vi.fn(() => () => {}),
     dismissError: vi.fn(),
     ...overrides,
@@ -86,5 +87,14 @@ describe("MicButton", () => {
     // aria-label stays stable; the hotkey lands in the tooltip label.
     render(<MicButton voice={makeVoice()} hotkeyLabel="Ctrl+Shift+Space" />);
     expect(screen.getByRole("button", { name: "Dictate a message" })).toBeInTheDocument();
+  });
+
+  it("enlarges the idle tap target when `large` is set (mobile)", () => {
+    const { rerender } = render(<MicButton voice={makeVoice()} />);
+    expect(screen.getByRole("button", { name: "Dictate a message" }).className).toContain("p-1.5");
+    rerender(<MicButton voice={makeVoice()} large />);
+    const btn = screen.getByRole("button", { name: "Dictate a message" });
+    expect(btn.className).toContain("p-3");
+    expect(btn.className).not.toContain("p-1.5");
   });
 });
