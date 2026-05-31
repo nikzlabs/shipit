@@ -1,4 +1,4 @@
-import { ChatCircleIcon, ListIcon, MicrophoneIcon, PlusIcon, SquaresFourIcon } from "@phosphor-icons/react";
+import { ChatCircleIcon, LightningIcon, ListIcon, MicrophoneIcon, PlusIcon, SquaresFourIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { WithTooltip } from "./ui/tooltip.js";
 
@@ -24,6 +24,7 @@ export function MobileTabBar({
   onChangePanel,
   onOpenSessions,
   onNewSession,
+  onQuickSession,
   onVoiceSession,
   newSessionDisabled = false,
 }: {
@@ -31,6 +32,7 @@ export function MobileTabBar({
   onChangePanel: (panel: MobilePanel) => void;
   onOpenSessions: () => void;
   onNewSession: () => void;
+  onQuickSession: () => void;
   onVoiceSession: () => void;
   newSessionDisabled?: boolean;
 }) {
@@ -67,12 +69,12 @@ export function MobileTabBar({
         </button>
       </div>
 
-      <div className="flex items-center justify-center gap-1.5 border-l border-(--color-border-primary) pl-3">
+      <div className="flex items-center justify-center gap-1 border-l border-(--color-border-primary) pl-3">
         <WithTooltip label="Sessions" side="top">
           <button
             type="button"
             onClick={onOpenSessions}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-md text-(--color-text-secondary) transition-colors active:bg-(--color-bg-hover) active:text-(--color-text-primary)"
+            className="inline-flex h-10 w-9 items-center justify-center rounded-md text-(--color-text-secondary) transition-colors active:bg-(--color-bg-hover) active:text-(--color-text-primary)"
             aria-label="Sessions"
           >
             <ListIcon size={ICON_SIZE.MD} />
@@ -83,10 +85,21 @@ export function MobileTabBar({
             type="button"
             onClick={onNewSession}
             disabled={newSessionDisabled}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-(--color-bg-tertiary) text-(--color-text-primary) ring-1 ring-(--color-border-secondary) transition-colors active:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-10 w-9 items-center justify-center rounded-md text-(--color-text-secondary) transition-colors active:bg-(--color-bg-hover) active:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="New Session"
           >
             <PlusIcon size={ICON_SIZE.MD} weight="bold" />
+          </button>
+        </WithTooltip>
+        <WithTooltip label="Quick session" side="top">
+          <button
+            type="button"
+            onClick={onQuickSession}
+            disabled={newSessionDisabled}
+            className="inline-flex h-10 w-9 items-center justify-center rounded-md text-(--color-text-secondary) transition-colors active:bg-(--color-bg-hover) active:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="Quick session"
+          >
+            <LightningIcon size={ICON_SIZE.MD} />
           </button>
         </WithTooltip>
         <WithTooltip label="Voice quick session" side="top">
@@ -94,10 +107,17 @@ export function MobileTabBar({
             type="button"
             onClick={onVoiceSession}
             disabled={newSessionDisabled}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-md text-(--color-text-secondary) transition-colors active:bg-(--color-bg-hover) active:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-10 w-9 items-center justify-center rounded-md text-(--color-text-secondary) transition-colors active:bg-(--color-bg-hover) active:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Voice quick session"
           >
-            <MicrophoneIcon size={ICON_SIZE.MD} />
+            <span className="relative inline-flex h-5 w-5 items-center justify-center">
+              <LightningIcon size={ICON_SIZE.MD} />
+              <MicrophoneIcon
+                size={ICON_SIZE.XS}
+                weight="fill"
+                className="absolute -bottom-0.5 -right-1 rounded-full bg-(--color-bg-primary)"
+              />
+            </span>
           </button>
         </WithTooltip>
       </div>
