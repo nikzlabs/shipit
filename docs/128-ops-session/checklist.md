@@ -27,7 +27,9 @@
 
 - [x] `src/server/shipit-docs/ops-session.md` — agent-facing read-only contract.
 - [x] `docker/ops-session/docker-compose.proxy.yml` — canonical hardened proxy reference.
-- [x] Embedded prompts: investigate-loop, diagnose-stuck-session, daily-health.
+- [x] Embedded prompts: investigate-loop, diagnose-stuck-session, daily-health,
+      verify-ops-access (live PASS/FAIL self-check covering Docker proxy, journal
+      mounts, read-only enforcement, and the negative boundaries).
 
 ## Tests
 
@@ -42,5 +44,10 @@
 ## Remaining
 
 - [ ] Manual smoke on a real ops-enabled host (Docker proxy reachability, journal mount presence).
+      Run the embedded `prompts/verify-ops-access.md` recipe from the ops session — it
+      produces a PASS/FAIL table covering every design-doc claim. (Provisioning bugs —
+      journal-namespace existence check + `isOpsSession` compose plumbing + proxy auto-start
+      — were fixed in "Fix ops session privileged host access"; this item is now just the
+      live confirmation.)
 - [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (the gate is unit-tested; live verification pending).
