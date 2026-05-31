@@ -93,6 +93,11 @@ import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { RepoGit } from "./repo-git.js";
+import type { SessionInfo } from "../shared/types.js";
+import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { ServiceManager } from "./service-manager.js";
+import type { GitManager } from "../shared/git.js";
+import { IDLE_LIGHT_MS, IDLE_EVICT_MS } from "./sessions.js";
 import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
 import { sessionCredentialsRoot } from "./session-credentials.js";
 
@@ -1238,10 +1243,10 @@ async function applyDiskPressure(
   result: TierEscalationResult,
 ): Promise<void> {
   const { diskFreeLow, diskFreeHigh, getFreeDiskBytes } = deps;
-  if (diskFreeLow == null || diskFreeHigh == null || !getFreeDiskBytes) return;
+  if (diskFreeLow === undefined || diskFreeHigh === undefined || !getFreeDiskBytes) return;
 
   let free = await getFreeDiskBytes();
-  if (free == null || free >= diskFreeLow) return;
+  if (free === null || free >= diskFreeLow) return;
 
   // LRU order: oldest idle first. Re-read from the DB so already-escalated
   // sessions reflect their new tier.
@@ -1254,7 +1259,7 @@ async function applyDiskPressure(
       (x) => x.id !== excludeSessionId && (x.diskTier ?? "hot") === "hot",
     ),
   )) {
-    if (free != null && free >= diskFreeHigh) break;
+    if (free !== null && free >= diskFreeHigh) break;
     if (!canAutoDescend(s, deps.runnerRegistry)) continue;
     try {
       if (await reclaimToLight(s, deps)) result.toLight += 1;
@@ -1264,7 +1269,7 @@ async function applyDiskPressure(
     free = await getFreeDiskBytes();
   }
 
-  if (free != null && free >= diskFreeHigh) return;
+  if (free !== null && free >= diskFreeHigh) return;
 
   // Pass 2: light → evicted (destructive) only if still under the high mark.
   for (const s of lru(
@@ -1272,7 +1277,7 @@ async function applyDiskPressure(
       (x) => x.id !== excludeSessionId && (x.diskTier ?? "hot") === "light",
     ),
   )) {
-    if (free != null && free >= diskFreeHigh) break;
+    if (free !== null && free >= diskFreeHigh) break;
     if (!canAutoDescend(s, deps.runnerRegistry)) continue;
     try {
       const outcome = await reclaimToEvicted(s, deps);

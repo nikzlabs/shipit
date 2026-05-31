@@ -31,6 +31,7 @@ describe("escalateDiskTiers", () => {
 
   const NOW = Date.parse("2026-05-31T00:00:00.000Z");
   const daysAgo = (n: number) => new Date(NOW - n * 86_400_000).toISOString();
+  const hoursAgo = (n: number) => new Date(NOW - n * 3_600_000).toISOString();
 
   function insertSession(row: {
     id: string;
@@ -125,7 +126,7 @@ describe("escalateDiskTiers", () => {
   it("does NOT escalate a hot session younger than IDLE_LIGHT", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
-    insertSession({ id: "fresh", lastUsedAt: daysAgo(1), diskTier: "hot" });
+    insertSession({ id: "fresh", lastUsedAt: hoursAgo(2), diskTier: "hot" });
 
     const { registry } = fakeRegistry();
     const result = await escalateDiskTiers(baseDeps(sm, registry));
@@ -140,7 +141,7 @@ describe("escalateDiskTiers", () => {
     insertSession({
       id: "viewed",
       lastUsedAt: daysAgo(30), // turn activity is ancient…
-      lastViewedAt: daysAgo(1), // …but it was opened yesterday
+      lastViewedAt: hoursAgo(2), // …but it was opened 2h ago
       diskTier: "hot",
     });
 
@@ -246,8 +247,8 @@ describe("escalateDiskTiers", () => {
     const wsB = path.join(tmpDir, "ws-b");
     fs.mkdirSync(wsA, { recursive: true });
     fs.mkdirSync(wsB, { recursive: true });
-    insertSession({ id: "lru-old", lastUsedAt: daysAgo(3), diskTier: "hot", workspaceDir: wsA });
-    insertSession({ id: "lru-new", lastUsedAt: daysAgo(1), diskTier: "hot", workspaceDir: wsB });
+    insertSession({ id: "lru-old", lastUsedAt: hoursAgo(3), diskTier: "hot", workspaceDir: wsA });
+    insertSession({ id: "lru-new", lastUsedAt: hoursAgo(1), diskTier: "hot", workspaceDir: wsB });
 
     // Free disk starts below low; after one escalation it crosses high.
     let free = 100;
@@ -272,7 +273,7 @@ describe("escalateDiskTiers", () => {
   it("disk-pressure no-ops when free space is above the low-water mark", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
-    insertSession({ id: "fresh", lastUsedAt: daysAgo(1), diskTier: "hot" });
+    insertSession({ id: "fresh", lastUsedAt: hoursAgo(2), diskTier: "hot" });
 
     const { registry } = fakeRegistry();
     const result = await escalateDiskTiers({

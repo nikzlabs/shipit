@@ -61,7 +61,7 @@ import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
-import { runDiskJanitor, pruneSessionVolumes } from "./disk-janitor.js";
+import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes } from "./disk-janitor.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import { resolveBuildId } from "./build-id.js";
