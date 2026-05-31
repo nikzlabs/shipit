@@ -66,6 +66,7 @@
 
 ## Remaining
 
+<<<<<<< HEAD
 - [ ] Redeploy a host from this branch via `deploy.sh` (NOT the no-rebuild
       `restart.sh` — the new `shipit-session-worker:docker` image must be built),
       then re-run `prompts/verify-ops-access.md` and confirm all-PASS (B: full host
@@ -86,5 +87,13 @@
       `services/templates.ts` "host-scoped, not repo-backed: no remoteUrl"). So the
       docker-capable image fix above is sufficient; there is no base-image-standby
       bypass to close.
+=======
+- [ ] Manual smoke on a real ops-enabled host (Docker proxy reachability, journal mount presence).
+      Run the embedded `prompts/verify-ops-access.md` recipe from the ops session — it
+      produces a PASS/FAIL table covering every design-doc claim. (Provisioning bugs —
+      journal-namespace existence check + `isOpsSession` compose plumbing + proxy auto-start
+      — were fixed in "Fix ops session privileged host access"; this item is now just the
+      live confirmation.)
+>>>>>>> 4ae236d85 (The throttling caused noise and my edits to `templates-ops.ts` were rejected ("file modified since read"). Good news: th)
 - [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (the gate is unit-tested; live verification pending).
