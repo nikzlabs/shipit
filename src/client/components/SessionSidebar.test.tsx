@@ -115,6 +115,27 @@ describe("SessionSidebar", () => {
     expect(onResume).not.toHaveBeenCalled();
   });
 
+  it("closes the mobile sidebar when the current session is clicked", () => {
+    const onResume = vi.fn();
+    const onClose = vi.fn();
+    const sessions = [baseSession({ id: "s1", title: "Current", remoteUrl: repoA.url })];
+    render(
+      <SessionSidebar
+        {...defaultProps}
+        sessions={sessions}
+        currentSessionId="s1"
+        onResume={onResume}
+        mobile
+        onClose={onClose}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Current"));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onResume).not.toHaveBeenCalled();
+  });
+
   it("invokes onArchive when the row's overflow Archive item is selected", async () => {
     const user = userEvent.setup();
     const onArchive = vi.fn();
