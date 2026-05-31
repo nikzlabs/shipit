@@ -8,8 +8,8 @@
 - [x] Flip `SessionManager.list()` off `archived` onto the `filterVisibleInSidebar` predicate
 - [x] Implement `reopenedAfterMerge` as `Date.parse(lastUsedAt) > Date.parse(mergedAt)` **in JS, not SQL** (format-incompatible columns); plus top-N merged view cap in `filterVisibleInSidebar`
 - [x] Make `markMergedAndPruneExcess` a *listing* prune (no `fs.rm`, no archive, no runner disposal)
-- [ ] Sidebar grouping: Active vs Recently merged (deferred — sidebar content unchanged this slice; restore-on-select handled in `AllSessionsDialog`, extended to cover `diskTier === 'evicted'`)
-- [ ] Reflect `diskTier` in `AllSessionsDialog` (deferred — in this slice every `evicted` session is also `userArchived`, so the existing archived UI is equivalent)
+- [x] Sidebar grouping: Active vs Recently merged — `RepoGroup` splits top-level broods into an Active group and a demoted "Recently merged" subheader (`isRecentlyMerged` = `mergedAt && !reopenedAfterMerge`, client mirror of the server predicate). A reopened merged session (lastUsedAt > mergedAt) rejoins Active and the sort no longer sinks it.
+- [x] Reflect `diskTier` in `AllSessionsDialog` — shared `SessionItem` now renders a `DiskTierBadge` (`light` → "deps cleared", `evicted` → "workspace stored, restores on open"), suppressed on user-archived rows where the archive icon already conveys it. Now meaningful because Part 2's disk-idle ladder can evict without `userArchived`.
 
 ## Part 2 — Disk cleanup tiers (no new cron)
 - [x] Bump a **separate `lastViewedAt`** on viewer attach (`SessionManager.setLastViewedAt`, called from `attachToRunner` in `index.ts`) — NOT `lastUsedAt`; disk-idle age = `max(lastUsedAt, lastViewedAt)` (`diskIdleAgeMs`)
@@ -38,7 +38,7 @@
 - [x] Unit: `archive`/`unarchive` set `userArchived` + `diskTier`; `listArchived`/`listAll`/`list` semantics
 - [x] Unit: `markMergedAndPruneExcess` no longer archives/disposes excess (`session-merge.test.ts`)
 - [x] Unit: disk-janitor preserves a hot merged session's branch when it fell out of `list()` (`disk-janitor.test.ts`)
-- [ ] Integration: merged session reopened (new turn) reappears in `list()` (deferred)
+- [x] Integration: merged session reopened (new turn) reappears in `list()` — `sessions.test.ts` drives the full `SessionManager.list()` path (SQL `user_archived=0 AND warm=0` filter + `fromRow` + `filterVisibleInSidebar`): an old merged session beyond the cap is excluded, then bumping `last_used_at` past `merged_at` re-includes it
 - [x] Unit: escalation ladder + guards block destructive descent for running/open/recent sessions; dirty-tree push failure keeps a session at `light`; disk-pressure LRU sweep (`disk-tier-escalation.test.ts`)
-- [ ] Integration: `evicted` restore branch tip equals current `origin/main` tip (deferred)
+- [x] Integration: `evicted` restore branch tip equals current `origin/main` tip — `session-restore-freshness.test.ts` runs `unarchiveSession` end-to-end against a real file:// remote + bare cache: the remote advances after the cache is built, and the restored workspace's branch tip and `origin/main` both equal the advanced head (proves `fetchCache(0)` ran before clone and the branch is cut from fresh main)
 - [x] Migration semantics covered by archive/unarchive unit tests; disk-janitor tests insert `disk_tier='evicted'` rows directly

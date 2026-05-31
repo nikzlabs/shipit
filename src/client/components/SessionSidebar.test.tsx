@@ -291,6 +291,97 @@ describe("SessionSidebar", () => {
     expect(newerNode2.compareDocumentPosition(olderNode2) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  describe("docs/161: Active vs Recently merged grouping", () => {
+    it("renders a 'Recently merged' subheader with merged-not-reopened sessions below it", () => {
+      const sessions = [
+        baseSession({
+          id: "s-active",
+          title: "Active work",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-02T00:00:00.000Z",
+          lastUsedAt: "2024-01-02T00:00:00.000Z",
+        }),
+        baseSession({
+          id: "s-merged",
+          title: "Merged work",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          lastUsedAt: "2024-01-01T00:00:00.000Z",
+          mergedAt: "2024-01-01T00:00:00.000Z",
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+
+      const header = screen.getByText("Recently merged");
+      const merged = screen.getByText("Merged work");
+      const active = screen.getByText("Active work");
+      // Active sits above the header; the merged session sits below it.
+      expect(active.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(header.compareDocumentPosition(merged) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("does not render a 'Recently merged' subheader when there are no merged sessions", () => {
+      const sessions = [baseSession({ id: "s1", title: "Just active", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.queryByText("Recently merged")).toBeNull();
+    });
+
+    it("keeps a reopened merged session (lastUsedAt > mergedAt) in the Active group", () => {
+      // A merged session worked in since the merge rejoins Active — it must NOT
+      // sink under the 'Recently merged' header.
+      const sessions = [
+        baseSession({
+          id: "s-reopened",
+          title: "Reopened merged",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          lastUsedAt: "2024-02-01T00:00:00.000Z", // after mergedAt → reopened
+          mergedAt: "2024-01-15T00:00:00.000Z",
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      // The only session is reopened → it's Active, so no merged header appears.
+      expect(screen.queryByText("Recently merged")).toBeNull();
+      expect(screen.getByText("Reopened merged")).toBeTruthy();
+    });
+  });
+
+  describe("docs/161: disk-tier badge", () => {
+    it("shows a 'stored' indicator on an evicted (not user-archived) session", () => {
+      const sessions = [
+        baseSession({ id: "s1", title: "Evicted", remoteUrl: repoA.url, diskTier: "evicted" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.getByTitle(/Workspace stored to save disk/)).toBeTruthy();
+    });
+
+    it("shows a 'dependencies cleared' indicator on a light session", () => {
+      const sessions = [
+        baseSession({ id: "s1", title: "Light", remoteUrl: repoA.url, diskTier: "light" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.getByTitle(/Dependencies cleared to save disk/)).toBeTruthy();
+    });
+
+    it("shows no disk-tier indicator on a hot session", () => {
+      const sessions = [
+        baseSession({ id: "s1", title: "Hot", remoteUrl: repoA.url, diskTier: "hot" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.queryByTitle(/save disk/)).toBeNull();
+    });
+
+    it("suppresses the disk-tier badge for a user-archived session (archive icon covers it)", () => {
+      // A user-archived session is also evicted, but the archive affordance is
+      // the relevant signal — don't double up with the disk badge.
+      const sessions = [
+        baseSession({ id: "s1", title: "Hidden", remoteUrl: repoA.url, archived: true, userArchived: true, diskTier: "evicted" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.queryByTitle(/save disk/)).toBeNull();
+    });
+  });
+
   describe("SessionStatusDot priority", () => {
     const failingChecks: PrCardState = {
       cardId: "card-1",

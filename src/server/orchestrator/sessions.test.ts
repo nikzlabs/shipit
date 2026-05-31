@@ -470,4 +470,45 @@ describe("SessionManager", () => {
       expect(filterVisibleInSidebar(sessions)).toHaveLength(MAX_MERGED_SESSIONS_PER_REPO);
     });
   });
+
+  // docs/161 — exercises the full visibility path through SessionManager.list()
+  // (the SQL `user_archived = 0 AND warm = 0` filter + fromRow + the
+  // filterVisibleInSidebar derivation), not just the predicate in isolation.
+  describe("docs/161: a reopened merged session reappears in list()", () => {
+    const repo = "https://github.com/o/r.git";
+
+    /** Insert a merged session beyond the view cap via direct DB writes so the
+     *  merged_at / last_used_at timestamps are deterministic (no same-second
+     *  flakiness from datetime('now') vs toISOString()). */
+    function seedMerged(mgr: SessionManager, id: string, mergedAt: string, lastUsedAt: string) {
+      mgr.track(id, id);
+      mgr.setRemoteUrl(id, repo);
+      // merged_at is stored in SQLite datetime() format; last_used_at in ISO —
+      // exactly the format mismatch reopenedAfterMerge normalizes with Date.parse.
+      dbManager.db
+        .prepare("UPDATE sessions SET merged_at = ?, last_used_at = ? WHERE id = ?")
+        .run(mergedAt, lastUsedAt, id);
+    }
+
+    it("excludes an old merged session beyond the cap, then includes it once reopened", () => {
+      const mgr = new SessionManager(dbManager);
+      // 4 merged sessions in one repo, cap is 3. `target` has the oldest merge.
+      seedMerged(mgr, "target", "2024-01-01 09:00:00", "2024-01-01 09:00:00");
+      seedMerged(mgr, "m2", "2024-01-02 09:00:00", "2024-01-02 09:00:00");
+      seedMerged(mgr, "m3", "2024-01-03 09:00:00", "2024-01-03 09:00:00");
+      seedMerged(mgr, "m4", "2024-01-04 09:00:00", "2024-01-04 09:00:00");
+
+      // Before reopening: target is beyond the top-N merged cap → not listed.
+      expect(mgr.list().map((s) => s.id)).not.toContain("target");
+
+      // Simulate a new turn in the merged session — track() bumps last_used_at
+      // to a time after merged_at, making reopenedAfterMerge true.
+      dbManager.db
+        .prepare("UPDATE sessions SET last_used_at = ? WHERE id = ?")
+        .run("2024-06-01T00:00:00.000Z", "target");
+
+      // After reopening: target rejoins the active listing regardless of the cap.
+      expect(mgr.list().map((s) => s.id)).toContain("target");
+    });
+  });
 });
