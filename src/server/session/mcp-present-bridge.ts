@@ -120,15 +120,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         isError: true,
       };
     }
-    const title = args.title ? ` "${args.title}"` : "";
-    const replaced = args.replaceId ? " (replaced previous)" : "";
     return {
       content: [
         {
           type: "text" as const,
-          text:
-            `Presented${title} as ${body.presentId ?? "(no id)"}${replaced}. ` +
-            "The user can see it in the Present tab.",
+          text: JSON.stringify({
+            status: body.status ?? "presented",
+            presentId: body.presentId,
+            ...(args.title !== undefined ? { title: args.title } : {}),
+            ...(args.replaceId !== undefined ? { replaceId: args.replaceId } : {}),
+          }),
         },
       ],
     };

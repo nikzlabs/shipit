@@ -1,9 +1,110 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
+  PresentPane,
   mimeTypeToExtension,
   suggestDownloadName,
   presentationToBlob,
 } from "./PresentPane.js";
+import { usePresentStore } from "../stores/present-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+
+function seedPresentations() {
+  usePresentStore.getState().hydrate([
+    {
+      presentId: "pres_one",
+      content: "<h1>One</h1>",
+      mimeType: "text/html",
+      title: "One",
+      createdAt: "2026-05-31T00:00:00.000Z",
+    },
+    {
+      presentId: "pres_two",
+      content: "<h1>Two</h1>",
+      mimeType: "text/html",
+      title: "Two",
+      createdAt: "2026-05-31T00:00:01.000Z",
+    },
+  ]);
+}
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  usePresentStore.getState().reset();
+  useSessionStore.getState().setSessionId(undefined);
+});
+
+describe("PresentPane", () => {
+  it("renders the empty state when there are no presentations", () => {
+    render(<PresentPane isActiveTab />);
+    expect(screen.getByText(/Nothing to present yet/)).toBeInTheDocument();
+  });
+
+  it("hides carousel controls for a single presentation and sandboxes HTML", () => {
+    usePresentStore.getState().hydrate([
+      {
+        presentId: "pres_one",
+        content: "<h1>One</h1>",
+        mimeType: "text/html",
+        title: "One",
+        createdAt: "2026-05-31T00:00:00.000Z",
+      },
+    ]);
+
+    render(<PresentPane isActiveTab />);
+
+    expect(screen.getByText("One")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Previous presentation")).toBeNull();
+    const iframe = screen.getByTitle("Presentation");
+    expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
+  });
+
+  it("navigates presentations with buttons and arrow keys", () => {
+    seedPresentations();
+    render(<PresentPane isActiveTab />);
+
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Next presentation"));
+    expect(screen.getByText("2/2")).toBeInTheDocument();
+    expect(usePresentStore.getState().activePresentIndex).toBe(1);
+
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+    expect(usePresentStore.getState().activePresentIndex).toBe(0);
+  });
+
+  it("posts the selected presentation id and workspace path when saving", async () => {
+    seedPresentations();
+    useSessionStore.getState().setSessionId("sess_123");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    } as Response);
+
+    render(<PresentPane isActiveTab />);
+    fireEvent.click(screen.getByLabelText("Save presentation to project"));
+    fireEvent.change(screen.getByLabelText("Workspace path"), {
+      target: { value: "docs/chart.html" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/api/sessions/sess_123/present/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ presentId: "pres_one", destPath: "docs/chart.html" }),
+      });
+    });
+  });
+
+  it("dismisses the active presentation", () => {
+    seedPresentations();
+    render(<PresentPane isActiveTab />);
+    fireEvent.click(screen.getByLabelText("Dismiss presentation"));
+    expect(usePresentStore.getState().presentations.map((p) => p.presentId)).toEqual(["pres_two"]);
+  });
+});
 
 describe("mimeTypeToExtension", () => {
   it("maps known presentation mime types", () => {
