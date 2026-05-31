@@ -1,9 +1,11 @@
 import type { ReactNode, RefObject } from "react";
-import { GaugeIcon, GearSixIcon, LightningIcon, ListIcon, QuestionIcon } from "@phosphor-icons/react";
-import { useUiStore } from "./stores/ui-store.js";
+import { GaugeIcon, GearSixIcon, GithubLogoIcon, ListIcon, QuestionIcon } from "@phosphor-icons/react";
+import { useRepoStore } from "./stores/repo-store.js";
 import { ICON_SIZE } from "./design-tokens.js";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover.js";
 import { WithTooltip } from "./components/ui/tooltip.js";
+import { Button } from "./components/ui/button.js";
+import { RepoSwitcher } from "./components/RepoSwitcher.js";
 import { ThemePicker } from "./components/ThemePicker.js";
 import { SessionSidebar } from "./components/SessionSidebar.js";
 import { ResizeHandle } from "./components/ResizeHandle.js";
@@ -139,23 +141,34 @@ export function AppLayout({
       <header className="relative flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
           {isMobile && (
-            <>
-              <WithTooltip label="Sessions">
-              <button onClick={onOpenSessions} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Sessions">
-                <ListIcon size={ICON_SIZE.MD} />
-              </button>
-              </WithTooltip>
-              <WithTooltip label="Quick session">
-              <button onClick={() => useUiStore.getState().setQuickCaptureOpen(true)} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Quick session">
-                <LightningIcon size={ICON_SIZE.MD} />
-              </button>
-              </WithTooltip>
-            </>
+            <WithTooltip label="Sessions">
+            <button onClick={onOpenSessions} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Sessions">
+              <ListIcon size={ICON_SIZE.MD} />
+            </button>
+            </WithTooltip>
           )}
           <h1 className="text-base sm:text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity" onClick={onNavigateHome} role="link">
             <img src="/favicon.svg" alt="" className="w-5 h-5" />
             ShipIt
           </h1>
+          {isMobile && (
+            <RepoSwitcher
+              repos={repos}
+              activeRepoUrl={useRepoStore.getState().activeRepoUrl}
+              onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
+              onAddRepo={onAddRepo}
+              onCreateNew={onCreateNewRepo}
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                className="p-0! w-7 h-7 text-(--color-text-secondary) hover:text-(--color-text-primary)"
+                aria-label="Repository"
+              >
+                <GithubLogoIcon size={ICON_SIZE.MD} weight="fill" className="shrink-0" />
+              </Button>
+            </RepoSwitcher>
+          )}
         </div>
         {showConnectionBanner && (
           isMobile ? (
@@ -235,9 +248,9 @@ export function AppLayout({
                   onClick={onCloseMobileSidebar}
                   className="absolute inset-0 bg-(--color-bg-overlay)"
                 />
-                {/* Drawer — full width on mobile; the close (X) button is the
-                    primary dismiss affordance, so we don't reserve a backdrop
-                    gutter on the right. */}
+                {/* Drawer — full width on mobile. Dismissed by re-tapping the
+                    header's Sessions toggle or by selecting a session; the
+                    drawer covers the full width, so there's no backdrop gutter. */}
                 <div className="relative flex h-full w-full bg-(--color-bg-primary) shadow-xl animate-in slide-in-from-left">
                   <SessionSidebar
                     sessions={sessions}

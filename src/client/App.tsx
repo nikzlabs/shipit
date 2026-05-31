@@ -1262,7 +1262,7 @@ export default function App() {
         processStartedAt={processStartedAt}
         subscriptionLimits={subscriptionLimits}
         onNavigateHome={() => navigate("/")}
-        onOpenSessions={() => useUiStore.getState().setMobileSidebarOpen(true)}
+        onOpenSessions={() => useUiStore.getState().setMobileSidebarOpen(!useUiStore.getState().mobileSidebarOpen)}
         showConnectionBanner={!showNewSessionView && !!wsSessionId}
         connectionStatus={status}
         reconnectAttempt={reconnectAttempt}
