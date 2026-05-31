@@ -108,7 +108,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
     }
   });
 
-  it("writes enabled HTTP MCP servers for Codex using env-backed headers", () => {
+  it("writes enabled HTTP MCP bearer auth using Codex bearer_token_env_var", () => {
     process.env.MCP_PLATFORM_NOTION_OAUTH = "notion_token";
     try {
       const runtimeEnv = write([{
@@ -122,13 +122,38 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
       const cfg = configText();
       expect(cfg).toContain("[mcp_servers.notion]");
       expect(cfg).toContain('url = "https://mcp.notion.com/mcp"');
-      expect(cfg).toContain('env_http_headers = { "Authorization" = "SHIPIT_MCP_NOTION_HTTP_HEADER_0" }');
+      expect(cfg).toContain('bearer_token_env_var = "SHIPIT_MCP_NOTION_BEARER_TOKEN"');
+      expect(cfg).not.toContain("env_http_headers");
       expect(cfg).not.toContain("notion_token");
       expect(runtimeEnv).toMatchObject({
-        SHIPIT_MCP_NOTION_HTTP_HEADER_0: "Bearer notion_token",
+        SHIPIT_MCP_NOTION_BEARER_TOKEN: "notion_token",
       });
     } finally {
       delete process.env.MCP_PLATFORM_NOTION_OAUTH;
+    }
+  });
+
+  it("keeps non-Bearer HTTP MCP headers env-backed", () => {
+    process.env.mcp__custom__API_KEY = "custom_secret";
+    try {
+      const runtimeEnv = write([{
+        name: "custom",
+        type: "http",
+        url: "https://custom.example/mcp",
+        headers: { "X-Api-Key": "$secret:mcp__custom__API_KEY" },
+        enabled: true,
+      }]);
+
+      const cfg = configText();
+      expect(cfg).toContain("[mcp_servers.custom]");
+      expect(cfg).toContain('url = "https://custom.example/mcp"');
+      expect(cfg).toContain('env_http_headers = { "X-Api-Key" = "SHIPIT_MCP_CUSTOM_HTTP_HEADER_0" }');
+      expect(cfg).not.toContain("custom_secret");
+      expect(runtimeEnv).toMatchObject({
+        SHIPIT_MCP_CUSTOM_HTTP_HEADER_0: "custom_secret",
+      });
+    } finally {
+      delete process.env.mcp__custom__API_KEY;
     }
   });
 
