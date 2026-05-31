@@ -21,7 +21,6 @@ import { startCapture, MicPermissionError, type ActiveCapture } from "./capture.
 export type VoiceInputState = "idle" | "recording" | "transcribing" | "error";
 
 const MIN_RECORDING_MS = 250;
-const MAX_RECORDING_MS = 60_000;
 
 const PTT_MODIFIERS = ["mod", "ctrl", "cmd", "meta", "alt", "opt", "shift"];
 
@@ -128,7 +127,6 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
   const captureRef = useRef<ActiveCapture | null>(null);
   const subscribersRef = useRef<Set<(text: string) => void>>(new Set());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const capTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startedAtRef = useRef(0);
   // Latest config for use inside event listeners without re-binding them.
   const cfgRef = useRef({ cleanup, language, sttProvider });
@@ -141,7 +139,6 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
 
   const clearTimers = useCallback(() => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    if (capTimeoutRef.current) { clearTimeout(capTimeoutRef.current); capTimeoutRef.current = null; }
   }, []);
 
   const emitTranscript = useCallback((text: string) => {
@@ -244,14 +241,13 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
         timerRef.current = setInterval(() => {
           setElapsedMs(Date.now() - startedAtRef.current);
         }, 200);
-        capTimeoutRef.current = setTimeout(() => { void finishRecording(); }, MAX_RECORDING_MS);
       } catch (err) {
         const msg = err instanceof MicPermissionError ? err.message : "Could not start recording";
         setErrorMessage(msg);
         setState("error");
       }
     })();
-  }, [enabled, state, finishRecording]);
+  }, [enabled, state]);
 
   const stopRecording = useCallback(() => {
     if (!captureRef.current) return;

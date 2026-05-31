@@ -24,7 +24,7 @@
 
 - [x] Implement `voice/capture.ts` MediaRecorder wrapper.
 - [x] Implement `voice/insert-transcript.ts` with cursor splice, selection replacement, leading-space heuristic; unit tests.
-- [x] Implement `voice/use-voice-input.ts` state machine: keydown/keyup, autorepeat suppression, blur/visibilitychange handling, 250 ms minimum, 60 s cap, session-switch abort, `transcribing → cleaning` substates; unit tests.
+- [x] Implement `voice/use-voice-input.ts` state machine: keydown/keyup, autorepeat suppression, blur/visibilitychange handling, 250 ms minimum (no max-duration cap), session-switch abort, `transcribing → cleaning` substates; unit tests.
 - [x] Implement `voice/providers/whisper.ts` STT adapter against a fake fetch; unit tests.
 - [x] Wire `POST /api/voice/transcribe` (multipart audio + language + `cleanup` flag) through `services/voice.ts` to the Whisper adapter; integration tests for success and error paths.
 - [x] Build `MicButton` component with idle / recording / transcribing / cleaning / error states + cleanup-fall-through warning; render tests.
