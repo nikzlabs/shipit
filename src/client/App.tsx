@@ -1262,7 +1262,7 @@ export default function App() {
         processStartedAt={processStartedAt}
         subscriptionLimits={subscriptionLimits}
         onNavigateHome={() => navigate("/")}
-        onOpenSessions={() => useUiStore.getState().setMobileSidebarOpen(!useUiStore.getState().mobileSidebarOpen)}
+        onOpenSessions={() => useUiStore.getState().setMobileSidebarOpen(true)}
         showConnectionBanner={!showNewSessionView && !!wsSessionId}
         connectionStatus={status}
         reconnectAttempt={reconnectAttempt}
@@ -1271,7 +1271,12 @@ export default function App() {
         showHomeScreen={showHomeScreen}
         showNewSessionView={showNewSessionView}
         mobilePanel={mobilePanel}
-        onMobilePanelChange={(p) => useUiStore.getState().setMobilePanel(p)}
+        onMobilePanelChange={(p) => {
+          // Selecting a content tab also dismisses the session drawer — the
+          // three form one mutually-exclusive segmented control.
+          useUiStore.getState().setMobilePanel(p);
+          useUiStore.getState().setMobileSidebarOpen(false);
+        }}
         onMobileNewSession={handleNewSessionShortcut}
         onMobileQuickSession={() => useUiStore.getState().setQuickCaptureOpen(true)}
         onMobileVoiceSession={() => useUiStore.getState().setQuickCaptureOpen(true, true)}

@@ -275,6 +275,7 @@ export function AppLayout({
           {(!showHomeScreen || showNewSessionView) && (
             <MobileTabBar
               activePanel={mobilePanel}
+              sidebarOpen={mobileSidebarOpen}
               onChangePanel={onMobilePanelChange}
               onOpenSessions={onOpenSessions}
               onNewSession={onMobileNewSession}
