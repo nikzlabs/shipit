@@ -16,6 +16,8 @@
 import { MicrophoneIcon, SpinnerGapIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { WithTooltip } from "./ui/tooltip.js";
+import { Popover, PopoverAnchor, PopoverContent } from "./ui/popover.js";
+import { VoiceErrorPanel } from "./VoiceErrorPanel.js";
 import type { VoiceInputApi } from "../voice/use-voice-input.js";
 
 function formatElapsed(ms: number): string {
@@ -95,27 +97,33 @@ export function MicButton({
   }
 
   if (state === "error") {
+    const errorButton = (
+      <button
+        onClick={handleClick}
+        className={`flex items-center justify-center shrink-0 rounded-lg ${pad} text-(--color-error) hover:bg-(--color-error)/15 transition-colors`}
+        aria-label={errorMessage ?? "Voice error"}
+        data-testid="mic-button"
+        data-state="error"
+      >
+        <WarningCircleIcon size={ICON_SIZE.SM} weight="fill" />
+      </button>
+    );
+
+    // Mobile (`large`): the full-screen MobileRecordingOverlay owns the error
+    // UI (message + Resend/Re-record/Dismiss); this inline button sits behind
+    // it, so a plain dismiss-on-click is enough. Desktop: anchor a popover that
+    // surfaces the message and the recovery actions inline.
+    if (large) {
+      return <WithTooltip label={errorMessage ?? "Voice error"}>{errorButton}</WithTooltip>;
+    }
+
     return (
-      <WithTooltip label={errorMessage ?? "Voice error"}>
-        <button
-          onClick={(e) => {
-            // Shift-click (or when settings handler present) jumps to settings;
-            // a plain click just dismisses the error and returns to idle.
-            if (onOpenSettings && e.shiftKey) {
-              onOpenSettings();
-              voice.dismissError();
-            } else {
-              handleClick();
-            }
-          }}
-          className={`flex items-center justify-center shrink-0 rounded-lg ${pad} text-(--color-error) hover:bg-(--color-error)/15 transition-colors`}
-          aria-label={errorMessage ?? "Voice error"}
-          data-testid="mic-button"
-          data-state="error"
-        >
-          <WarningCircleIcon size={ICON_SIZE.SM} weight="fill" />
-        </button>
-      </WithTooltip>
+      <Popover open onOpenChange={(open) => { if (!open) voice.dismissError(); }}>
+        <PopoverAnchor asChild>{errorButton}</PopoverAnchor>
+        <PopoverContent side="top" align="end" className="w-72">
+          <VoiceErrorPanel voice={voice} onOpenSettings={onOpenSettings} />
+        </PopoverContent>
+      </Popover>
     );
   }
 
