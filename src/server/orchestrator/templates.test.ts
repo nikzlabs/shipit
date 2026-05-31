@@ -80,6 +80,7 @@ describe("getTemplate", () => {
     expect(ops.files["docker-compose.yml"]).toContain("/var/run/docker.sock:/var/run/docker.sock:ro");
     expect(ops.files["docker-compose.yml"]).toContain("POST: 0");
     // Only the journal paths are declared as host mounts — never the socket.
+    expect(ops.files["shipit.yaml"]).toContain("docker-socket: true");
     expect(ops.files["shipit.yaml"]).toContain("x-shipit-host-mounts");
     expect(ops.files["shipit.yaml"]).toContain("/var/log/journal");
     expect(ops.files["shipit.yaml"]).not.toContain("docker.sock");

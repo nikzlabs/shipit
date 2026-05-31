@@ -129,7 +129,8 @@ The ops session's workspace is bootstrapped with:
 ```
 ops/
   README.md            — short doc of what the agent can do here
-  shipit.yaml          — declares the docker-socket-proxy compose service
+  shipit.yaml          — declares the docker-socket-proxy compose service and
+                         `compose.docker-socket: true`
   docker-compose.yml   — defines the proxy + agent-side env wiring
   prompts/
     investigate-loop.md      — the LOOP DETECTED post-hoc grep recipe
@@ -290,10 +291,12 @@ independently.)
 
 4a. **Ops proxy service starts automatically** — the hidden ops template marks
     `docker-socket-proxy` with `x-shipit-preview: auto` and
-    `x-shipit-depends-on-install: false`. The ServiceManager allows the proxy's
-    `/var/run/docker.sock:ro` mount only when the server-authoritative session
-    kind is `ops`, so copying the workspace files into an ordinary session does
-    not grant Docker access. Starting the proxy through compose creates the
+    `x-shipit-depends-on-install: false`, and its `shipit.yaml` declares
+    `compose.docker-socket: true` because the proxy is a compose service that
+    intentionally mounts the host socket. The server-authoritative session kind
+    still gates the agent-side ops privileges: the journal host mounts and the
+    automatic `DOCKER_HOST=tcp://docker-socket-proxy:2375` environment. Starting
+    the proxy through compose creates the
     `shipit-session-{id}` network; the existing network join hook then attaches
     the agent container so `DOCKER_HOST=tcp://docker-socket-proxy:2375` resolves
     by compose DNS.
