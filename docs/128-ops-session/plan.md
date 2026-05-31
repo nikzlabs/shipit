@@ -316,6 +316,7 @@ independently.)
       `buildEnv` checks the ops gate first as a structural backstop. The
       `compose.docker-socket` flag now only governs the proxy *service*, never
       the *agent*.
+<<<<<<< HEAD
     - **`journalctl` + docker CLI were missing in prod (audit FAIL #4/#5/#14/#15).**
       This had two layers. (a) `journalctl` wasn't installed in the docker-capable
       image; fixed by installing `systemd` in `docker/Dockerfile.session-worker.docker`
@@ -344,6 +345,19 @@ independently.)
       are minted fresh with `kind="ops"` and **no `remoteUrl`**, so they never enter
       the warm pool and always take the fresh-create path with the ops gate set. No
       code change needed; the invariant is load-bearing and noted in the code.
+=======
+    - **`journalctl` was not installed** in the docker-capable image, so every
+      `journalctl …` recipe failed even though the journal mounts were present
+      and read-only. Fix: `docker/container-build/Dockerfile` installs `systemd`
+      (the binary reads the mounted journal dirs directly; it is not PID 1).
+    - **Missing docker CLI when the image is misconfigured.** If
+      `SESSION_DOCKER_IMAGE` is unset, an ops session silently boots on the base
+      image with no `docker`/`journalctl`. `createContainer` now logs a loud
+      warning in that case. Deployments MUST set `SESSION_DOCKER_IMAGE` to the
+      docker-capable image (`deployment/vps/docker-compose.yml` already does;
+      a host that predates that, or serves the ops session from a base-image
+      warm standby, will hit this — see the open follow-up below).
+>>>>>>> e43ce7934 (You're right on the lock file, and the audit report is genuinely valuable — it proves my earlier "everything should work)
 
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is

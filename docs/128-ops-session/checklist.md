@@ -43,6 +43,7 @@
 
 ## Provisioning fixes from the live audit (host `shipit-16gb`)
 
+<<<<<<< HEAD
 - [x] **`DOCKER_HOST` precedence (audit FAIL #1/#11).** The ops `shipit.yaml`
       declares `compose.docker-socket: true` (so the proxy *sibling* may mount the
       socket), and `resolveAgentDockerLimits` derives the *agent's* `dockerAccess`
@@ -95,5 +96,28 @@
       — were fixed in "Fix ops session privileged host access"; this item is now just the
       live confirmation.)
 >>>>>>> 4ae236d85 (The throttling caused noise and my edits to `templates-ops.ts` were rejected ("file modified since read"). Good news: th)
+=======
+- [x] `DOCKER_HOST` precedence: ops agent must use the read-only proxy, never the
+      read-write session proxy. `buildContainerConfig` forces `dockerAccess: false`
+      for ops; `buildEnv` checks the ops gate before `dockerAccess`. Regression
+      tests in `container-lifecycle.test.ts` (both layers). Fixes audit FAIL #1/#11.
+- [x] `journalctl` installed in the docker-capable image (`docker/container-build/Dockerfile`
+      installs `systemd`) so the journal recipes run. Fixes audit FAIL #14/#15.
+- [x] Loud warning when an ops session boots without `SESSION_DOCKER_IMAGE` (base
+      image → no `docker`/`journalctl`), instead of silently half-provisioning.
+
+## Remaining
+
+- [ ] Re-run `prompts/verify-ops-access.md` on a host deployed from this branch and
+      confirm the PASS/FAIL table is all-PASS (B returns full host container list via
+      `docker-socket-proxy:2375`, C mutations rejected, D journal readable via `journalctl`).
+- [ ] Verify host `shipit-16gb` is redeployed with `SESSION_DOCKER_IMAGE` set to the
+      docker-capable image — the audit showed `docker`/`journalctl` absent, which means
+      it was running the base image (stale deploy or base-image warm standby).
+- [ ] Follow-up: confirm an ops session is never served from a base-image **warm
+      standby** (`warm-pool-manager.ts` creates standbys with the generic image and has
+      no ops/image awareness). If it can be, ops sessions must force a fresh
+      docker-capable container instead of claiming a base-image standby.
+>>>>>>> e43ce7934 (You're right on the lock file, and the audit report is genuinely valuable — it proves my earlier "everything should work)
 - [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (the gate is unit-tested; live verification pending).

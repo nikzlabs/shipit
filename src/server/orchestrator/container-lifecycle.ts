@@ -328,6 +328,7 @@ export async function createContainer(
   // Expose orchestrator API so the agent can query service status/logs
   env.push(...await buildOrchestratorCallbackEnv(config.sessionId));
 
+<<<<<<< HEAD
   // Use the docker-capable image when Docker access is requested, or for ops
   // sessions (docs/128) — the agent runs `docker ps/logs/inspect` against a proxy
   // (and, for ops, `journalctl` over the journal mounts), so it needs the docker
@@ -336,9 +337,29 @@ export async function createContainer(
   // (deps.dockerImageName, threaded from app-lifecycle.ts → setDockerProxy). If
   // the env is unset, deps.dockerImageName is undefined and we fall back to the
   // base image — see the deployment wiring in deployment/vps/.
+=======
+  // Use Docker-capable image when Docker access is requested, or for ops
+  // sessions (docs/128) — the ops agent runs `docker ps/logs/inspect` against
+  // the read-only proxy (and `journalctl` over the journal mounts), so it needs
+  // the docker CLI + journalctl baked into that image (docker/container-build).
+>>>>>>> e43ce7934 (You're right on the lock file, and the audit report is genuinely valuable — it proves my earlier "everything should work)
   const imageName = ((config.dockerAccess || config.opsSession) && deps.dockerImageName)
     ? deps.dockerImageName
     : config.imageName;
+
+  // docs/128 — fail loudly rather than silently hand an ops session a base image
+  // with no `docker`/`journalctl`. This is the half-provisioned state the audit
+  // hit (FAIL #4/#14): the agent boots, DOCKER_HOST is set, but the documented
+  // recipes can't run. The deployment must set SESSION_DOCKER_IMAGE to the
+  // docker-capable image (see deployment/vps/docker-compose.yml).
+  if (config.opsSession && !deps.dockerImageName) {
+    console.warn(
+      `[containers] OPS SESSION ${config.sessionId} is starting on the base image ` +
+      `because SESSION_DOCKER_IMAGE is not configured — the agent will lack the ` +
+      `docker CLI and journalctl, so the ops investigation recipes will not run. ` +
+      `Set SESSION_DOCKER_IMAGE to the docker-capable image (docker/container-build).`,
+    );
+  }
 
   // Create session-specific bridge network for Docker-enabled sessions.
   // Child containers created through the proxy join this network so they
