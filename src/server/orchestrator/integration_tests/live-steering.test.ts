@@ -392,6 +392,141 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("interrupts the agent when it emits an ExitPlanMode tool_use under live steering", async () => {
+    // Regression (this fix): in live-steering (streaming) mode the persistent
+    // CLI auto-resolves ExitPlanMode — there's no human to approve the plan
+    // exit — and the model continues in the SAME turn while still in plan mode,
+    // so its edits are blocked and it complains it "can't exit plan mode."
+    // The orchestrator must interrupt on the ExitPlanMode tool_use (the
+    // PlanApproval card is already emitted) so the model stops at the plan
+    // boundary and the user can click "Accept & Execute" to leave plan mode.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
+    const claude = await waitForClaude(() => lastClaude);
+    expect(claude.lastUseStreaming).toBe(true);
+    claude.initSession("plan-interrupt-session");
+    expect(claude.interrupted).toBe(false);
+
+    claude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "exit-1",
+          name: "ExitPlanMode",
+          input: { plan: "Step 1: do the thing" },
+        }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(claude.interrupted).toBe(true);
+
+    client.close();
+  });
+
+  it("suppresses the CLI's auto-resolved tool_result for an interrupted ExitPlanMode", async () => {
+    // The streaming CLI auto-resolves ExitPlanMode before the orchestrator's
+    // `control_request` interrupt lands, so the synthetic tool_result reaches
+    // the orchestrator. If forwarded, the client sets `questionDisabled =
+    // !!result` and PlanApproval renders "Plan resolved" with its buttons
+    // disabled — the user can never click "Accept & Execute" to leave plan
+    // mode. The orchestrator tracks the interrupted ExitPlanMode id and drops
+    // the matching tool_result before broadcasting (mirrors AskUserQuestion).
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("plan-suppress-session");
+
+    claude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "exit-suppress-1",
+          name: "ExitPlanMode",
+          input: { plan: "Step 1: do the thing" },
+        }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(claude.interrupted).toBe(true);
+
+    // The CLI's auto-resolved tool_result arrives as a `user` event.
+    claude.emit("event", {
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: "exit-suppress-1",
+          content: "Plan mode exit not approved — auto-resolved by CLI",
+          is_error: true,
+        }],
+      },
+    });
+
+    let sawSuppressedResult = false;
+    const deadline = Date.now() + 200;
+    while (Date.now() < deadline) {
+      let msg: AnyMsg;
+      try {
+        msg = await client.receive(80);
+      } catch {
+        break;
+      }
+      if (msg.type === "agent_event") {
+        const event = (msg as { event: { type: string; content?: unknown[] } }).event;
+        if (event.type === "agent_tool_result") {
+          const hasId = (event.content ?? []).some((b) => {
+            const id = (b as { tool_use_id?: string }).tool_use_id;
+            return id === "exit-suppress-1";
+          });
+          if (hasId) sawSuppressedResult = true;
+        }
+      }
+    }
+    expect(sawSuppressedResult).toBe(false);
+
+    client.close();
+  });
+
+  it("does NOT interrupt on ExitPlanMode when liveSteering is off (one-shot path renders the card naturally)", async () => {
+    // In the one-shot `-p --permission-mode plan` path the CLI ends the turn at
+    // ExitPlanMode on its own, so the PlanApproval card renders with working
+    // buttons and no auto-resolved tool_result. Interrupting there would set
+    // `wasInterrupted` and drop legitimately queued messages. Gate the
+    // ExitPlanMode interrupt strictly to streaming.
+    credentialStore.setLiveSteering(false);
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
+    const claude = await waitForClaude(() => lastClaude);
+    expect(claude.lastUseStreaming).toBeFalsy();
+
+    claude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "exit-oneshot-1",
+          name: "ExitPlanMode",
+          input: { plan: "Step 1: do the thing" },
+        }],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(claude.interrupted).toBe(false);
+
+    client.close();
+  });
+
   it("falls back to the queue path when liveSteering is off, even if the agent supports steering", async () => {
     // Flip the setting off for this test only.
     credentialStore.setLiveSteering(false);
