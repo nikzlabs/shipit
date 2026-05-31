@@ -1,7 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: xterm auto-scroll for tool group
 import { useEffect, useRef, useState } from "react";
 import { useMemo } from "react";
-import { EyeIcon, XIcon } from "@phosphor-icons/react";
+import { EyeIcon, PresentationChartIcon, XIcon } from "@phosphor-icons/react";
 import hljs from "highlight.js";
 import { DiffBlock } from "./DiffBlock.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
@@ -10,6 +10,8 @@ import { PlanApproval } from "./PlanApproval.js";
 import { ToolResult } from "./ToolResult.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
 import { sessionRelativePath } from "../path-utils.js";
+import { usePresentStore } from "../stores/present-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import type { ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
 /** Scrollable container for consecutive tool calls. Max 5 lines, auto-scrolls during streaming. */
@@ -143,6 +145,17 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     return null; // latest is rendered outside the bubble; older ones are hidden
   }
 
+  const presentResult = parsePresentToolResult(tool, result);
+  if (presentResult) {
+    return (
+      <PresentToolChip
+        presentId={presentResult.presentId}
+        title={presentResult.title}
+        inProgress={inProgress}
+      />
+    );
+  }
+
   // Fallback: compact one-liner for non-file tools, with optional tool result
   // (showModal state is hoisted to the top of the component — see comment there)
 
@@ -248,6 +261,70 @@ function FormattedToolName({ name, highlight }: { name: string; highlight: boole
       <span className="border border-current rounded px-1 py-px text-[10px] leading-tight opacity-70">{parsed.server}</span>
       <span>{parsed.tool}</span>
     </span>
+  );
+}
+
+interface PresentToolResult {
+  presentId: string;
+  title?: string;
+}
+
+function parsePresentToolResult(tool: ToolUseBlock, result: ToolResultBlock | undefined): PresentToolResult | null {
+  if (!isPresentTool(tool.name)) return null;
+  if (!result) return null;
+
+  const fallbackTitle = typeof tool.input.title === "string" ? tool.input.title : undefined;
+  try {
+    const parsed = JSON.parse(result.content) as { presentId?: unknown; title?: unknown };
+    if (typeof parsed.presentId !== "string" || parsed.presentId.length === 0) return null;
+    return {
+      presentId: parsed.presentId,
+      title: typeof parsed.title === "string" ? parsed.title : fallbackTitle,
+    };
+  } catch {
+    const match = /\bpres_[A-Za-z0-9_-]+\b/.exec(result.content);
+    if (!match) return null;
+    return { presentId: match[0], title: fallbackTitle };
+  }
+}
+
+function isPresentTool(name: string): boolean {
+  if (name === "present") return true;
+  const parsed = parseMcpToolName(name);
+  return parsed?.server === "shipit-present" && parsed.tool === "present";
+}
+
+function PresentToolChip({
+  presentId,
+  title,
+  inProgress,
+}: {
+  presentId: string;
+  title: string | undefined;
+  inProgress: boolean;
+}) {
+  const focus = () => {
+    usePresentStore.getState().focusById(presentId);
+    useUiStore.getState().setRightTab("present");
+  };
+
+  return (
+    <div className="min-w-0 overflow-hidden">
+      <div className="inline-flex max-w-full items-center gap-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2.5 py-1.5 text-xs text-(--color-text-secondary)">
+        {inProgress ? <ToolSpinner /> : <PresentationChartIcon size={14} className="shrink-0 text-(--color-accent)" />}
+        <span className="truncate text-(--color-text-primary)">
+          {title ?? "Presentation"}
+        </span>
+        <button
+          type="button"
+          onClick={focus}
+          className="shrink-0 rounded px-1.5 py-0.5 text-(--color-text-link) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) transition-colors"
+          aria-label="View presentation"
+        >
+          View
+        </button>
+      </div>
+    </div>
   );
 }
 

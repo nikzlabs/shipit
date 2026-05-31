@@ -1,13 +1,19 @@
 import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import { MessageList, parseMessageSegments, type ChatMessage, type ChatMessageImage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
+import { usePresentStore } from "../stores/present-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 
 // jsdom doesn't implement scrollIntoView
 beforeAll(() => {
   Element.prototype.scrollIntoView = () => {};
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  usePresentStore.getState().reset();
+  useUiStore.getState().setRightTab("preview");
+});
 
 function msg(role: "user" | "assistant", text: string, opts?: { toolUse?: ToolUseBlock[]; streaming?: boolean }): ChatMessage {
   return { role, text, ...opts };
@@ -881,6 +887,49 @@ describe("MessageList", () => {
         />
       );
       // No match — no button should appear
+      expect(screen.queryByLabelText("Show output")).toBeNull();
+    });
+
+    it("renders a view chip for present tool results", () => {
+      usePresentStore.getState().hydrate([
+        {
+          presentId: "pres_chart",
+          content: "<h1>chart</h1>",
+          mimeType: "text/html",
+          title: "Sales Chart",
+          createdAt: "2026-05-31T00:00:00.000Z",
+        },
+        {
+          presentId: "pres_other",
+          content: "<h1>other</h1>",
+          mimeType: "text/html",
+          title: "Other",
+          createdAt: "2026-05-31T00:00:01.000Z",
+        },
+      ]);
+      const tools: ToolUseBlock[] = [
+        {
+          type: "tool_use",
+          id: "t1",
+          name: "mcp__shipit-present__present",
+          input: { title: "Sales Chart" },
+        },
+      ];
+      const results: ToolResultBlock[] = [
+        { toolUseId: "t1", content: JSON.stringify({ status: "presented", presentId: "pres_chart", title: "Sales Chart" }) },
+      ];
+
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Presented", toolUse: tools, toolResults: results }]}
+          isLoading={false}
+        />
+      );
+
+      expect(screen.getByText("Sales Chart")).toBeInTheDocument();
+      fireEvent.click(screen.getByLabelText("View presentation"));
+      expect(usePresentStore.getState().activePresentIndex).toBe(0);
+      expect(useUiStore.getState().rightTab).toBe("present");
       expect(screen.queryByLabelText("Show output")).toBeNull();
     });
   });

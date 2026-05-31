@@ -109,6 +109,21 @@ describe("present-store", () => {
     expect(usePresentStore.getState().activePresentIndex).toBe(0);
   });
 
+  it("focusById activates a matching presentation and clears unseen count", () => {
+    usePresentStore.getState().addOrReplace(makePresent());
+    usePresentStore.getState().addOrReplace(makePresent({ presentId: "p2" }));
+    expect(usePresentStore.getState().focusById("p1")).toBe(true);
+    const { activePresentIndex, unseenCount } = usePresentStore.getState();
+    expect(activePresentIndex).toBe(0);
+    expect(unseenCount).toBe(0);
+  });
+
+  it("focusById returns false when the presentation is not loaded", () => {
+    usePresentStore.getState().addOrReplace(makePresent());
+    expect(usePresentStore.getState().focusById("missing")).toBe(false);
+    expect(usePresentStore.getState().activePresentIndex).toBe(0);
+  });
+
   it("markSeen clears the unseen count", () => {
     usePresentStore.getState().addOrReplace(makePresent());
     usePresentStore.getState().addOrReplace(makePresent({ presentId: "p2" }));
