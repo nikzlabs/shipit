@@ -45,6 +45,8 @@ interface PresentState {
   clear: (presentId?: string) => void;
   /** Switch the visible entry (carousel navigation, click handler). */
   setActiveIndex: (index: number) => void;
+  /** Focus a specific presentation by id. Returns false when it is not loaded. */
+  focusById: (presentId: string) => boolean;
   /** Mark the user as having seen current presentations (clears the badge). */
   markSeen: () => void;
   /** Drop everything — used on session switch by `resetSessionState`. */
@@ -152,6 +154,13 @@ export const usePresentStore = create<PresentState>((set) => ({
       const clamped = Math.max(0, Math.min(index, s.presentations.length - 1));
       return { activePresentIndex: clamped };
     }),
+
+  focusById: (presentId) => {
+    const idx = usePresentStore.getState().presentations.findIndex((p) => p.presentId === presentId);
+    if (idx < 0) return false;
+    set({ activePresentIndex: idx, unseenCount: 0 });
+    return true;
+  },
 
   markSeen: () => set({ unseenCount: 0 }),
 

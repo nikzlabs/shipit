@@ -45,10 +45,10 @@ Tracking Tier 1 (inline artifacts). Tier 2 (scratch dir) is deferred.
 - [x] Presentation header: `◀ N/M ▶` carousel nav, title, "Save to project" button, `✕` dismiss
 - [x] "Save to project" dialog → `POST /api/sessions/:id/present/save` with `{ presentId, destPath }`
 - [x] Add "Present" tab to `AppLayout.tsx` right panel; conditionally visible (`presentations.length > 0`), badge with count, auto-switch on first `present_content`
-- [ ] **Inline chat chip — deferred.** See "Deferred follow-ups" below.
+- [x] Inline chat chip for `present` tool results focuses the matching artifact in the Present tab
 - [x] Keyboard shortcuts (←/→) when the Present pane is focused
 - [x] Component tests for the store reducer
-- [ ] **PresentPane component test — deferred.** See "Deferred follow-ups" below.
+- [x] PresentPane component tests for empty state, carousel navigation, sandboxing, save, and dismiss
 
 ## Docs
 
@@ -86,54 +86,24 @@ to re-derive the context.
 
 ### Inline chat chip for `present` tool results
 
+Status: done.
+
 Importance: medium. Implementation cost: small/medium.
 
-**What's missing.** The plan (§"Chat integration (lightweight)") calls for a
-small clickable chip rendered next to the agent's prose at the chat position
-where the `present` tool call landed, with a [View] action that focuses the
-Present tab on the matching `presentId`. Today the bridge returns plain prose
-(*"Presented \"X\" as pres_abc... The user can see it in the Present tab."*)
-which renders as a normal tool-result line — informative, but not clickable.
-
-**Why deferred.** Adding the chip is orthogonal to the storage + display path
-this PR builds. It requires the bridge to return a structured `{ presentId,
-title }` payload (today it returns prose so the agent has the id to reference
-on a follow-up `replaceId` call); a chat-side renderer that recognizes
-`present` tool calls by name; a "focus this presentId" action on the store; and
-a click handler that flips `useUiStore.setRightTab("present")`. Discoverability
-isn't broken without it — the tab auto-switches on the first presentation per
-session — so the chip is polish, not a correctness fix.
-
-**Pickup.** Change the bridge to return structured JSON (`{ presentId,
-title }`), update Claude/Codex tool-result rendering to detect the
-`shipit-present` server name + `present` tool name and render a new
-`PresentChip` component. Add `usePresentStore.focusById(presentId)` that sets
-the active index by id. Click handler calls that plus `setRightTab("present")`.
+Implemented: the bridge returns structured JSON (`status`, `presentId`,
+optional `title` / `replaceId`), the chat tool renderer detects
+`mcp__shipit-present__present`, and the inline chip's View action calls
+`usePresentStore.focusById(presentId)` plus `useUiStore.setRightTab("present")`.
 
 ### `PresentPane` component test
 
+Status: done.
+
 Importance: low/medium. Implementation cost: small.
 
-**What's missing.** No React Testing Library coverage for the pane itself.
-The reducer below it (`present-store`) and the buffer above it
-(`PresentBuffer`) are covered; the pane is the un-tested glue.
-
-**Why deferred.** The pane is largely declarative — a few conditionals around
-the carousel arrows, the MIME-type switch in `PresentationContent`, and the
-Save dialog flow. The data-layer tests catch most regressions: active-index
-clamping lives in the store, buffer eviction in the buffer test, the
-`sandbox="allow-scripts"` attribute is one literal in source that wouldn't
-silently flip. Worth having for the carousel arithmetic and Save dialog UX,
-but not load-bearing for correctness.
-
-**Pickup.** Follow `AgentReviewCard.test.tsx` as the template. Mock
-`usePresentStore` to seed presentations, mock `fetch` for `POST
-/api/sessions/:id/present/save`. Cases worth covering: empty-state copy when
-the list is empty, no carousel arrows with a single entry, ◀ N/M ▶ arithmetic
-+ disabled-state at the bounds, ←/→ keyboard nav, Save dialog opens / posts
-the right body / surfaces server errors, dismiss `✕` calls `clear(presentId)`,
-**the iframe `sandbox` attribute is exactly `allow-scripts`** (a regression
-here would be a real security hole, so this one earns its own assertion).
+Implemented React Testing Library coverage for the empty state, single-entry
+carousel hiding, iframe sandbox attribute, button + keyboard navigation, Save
+POST body, and dismiss behavior.
 
 ### `mcp-present-bridge.test.ts`
 
