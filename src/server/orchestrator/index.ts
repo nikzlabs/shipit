@@ -1010,30 +1010,51 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // Per-connection state — initialized from URL params
       let activeAppSessionId: string | undefined = sessionId;
       let activeSessionDir: string | null = session.workspaceDir ?? null;
-      const requestedAgent = request.query.agent as AgentId | undefined;
-      const requestedModel = request.query.model;
-      // Prefer the session's own persisted choices over the URL params (which
-      // come from the client's global localStorage and would otherwise let a
-      // model/agent pick in one session leak into others on reconnect).
-      let perConnectionAgentId: AgentId = session.agentId ?? requestedAgent ?? defaultAgentId;
-      let selectedModel: string | undefined = session.model ?? requestedModel;
-      // Reconcile agent ↔ model. They come from INDEPENDENT sources (agent:
-      // session/default/param; model: session or the localStorage-derived
-      // query param), so they can diverge — most often a stale `agent=codex`
-      // riding in alongside the user's real `model=opus` pick. The product
-      // rule (docs/142 C): the model is the user's only real control, so for a
-      // session that is NOT yet pinned to an agent the **model is
-      // authoritative** — derive the agent that owns it. This is the
-      // server-side guard against the Opus→gpt-5.5 switch: the model wins and
-      // the session runs Claude. Once the session is pinned (its agent's creds
-      // were provisioned on the first turn) the agent is locked, so we flip to
-      // agent-authoritative and conform the model to it instead.
-      {
+      // Prefer the session's own persisted choices over the URL params. The
+      // query params come from the client's GLOBAL localStorage (the viewer's
+      // last-used model, plus the agent derived from it), so they describe
+      // "what this browser last ran", NOT "what this session is". They are only
+      // a legitimate source of a *new* choice for a session that has not been
+      // pinned to an agent yet — i.e. a warm session whose first turn (this very
+      // WS connect) graduates it.
+      //
+      // Once a session is pinned (quick/child/fork pin at creation; any session
+      // pins after its first turn) its agent is immutable and its model is owned
+      // by the session row. Consulting the global params for a pinned session is
+      // exactly what let a freshly-created quick session silently adopt the
+      // viewer's *previously used* model/agent instead of the one it was created
+      // with: a quick session is pinned at creation but its model row is only
+      // written when an explicit model was sent, so a missing row let the global
+      // `requestedModel` leak in and (because pinned) get conformed to the
+      // agent's first model. So for a pinned session we ignore the params
+      // entirely and fall back to the pinned agent's default model when the row
+      // carries none (docs/142 Problem C; quick-session regression).
+      let perConnectionAgentId: AgentId;
+      let selectedModel: string | undefined;
+      if (session.agentPinned) {
+        perConnectionAgentId = session.agentId ?? defaultAgentId;
+        const agentInfo = agentRegistry.get(perConnectionAgentId);
+        selectedModel = session.model ?? agentInfo?.capabilities.models[0];
+        // Self-heal an incoherent legacy row whose model the pinned agent can't run.
+        if (selectedModel && agentInfo && !agentInfo.capabilities.models.includes(selectedModel)) {
+          selectedModel = agentInfo.capabilities.models[0];
+        }
+      } else {
+        const requestedAgent = request.query.agent as AgentId | undefined;
+        const requestedModel = request.query.model;
+        perConnectionAgentId = session.agentId ?? requestedAgent ?? defaultAgentId;
+        selectedModel = session.model ?? requestedModel;
+        // Reconcile agent ↔ model for an as-yet-unpinned (warm) session. They
+        // come from INDEPENDENT sources, so they can diverge — most often a
+        // stale `agent=codex` riding in alongside the user's real `model=opus`
+        // pick. The product rule (docs/142 C): the model is the user's only real
+        // control, so the **model is authoritative** — derive the agent that
+        // owns it. This is the server-side guard against the Opus→gpt-5.5 switch.
         const model = selectedModel;
         const modelOwner = model
           ? agentRegistry.list().find((a) => a.capabilities.models.includes(model))
           : undefined;
-        if (!session.agentPinned && modelOwner) {
+        if (modelOwner) {
           perConnectionAgentId = modelOwner.id;
         } else {
           const agentInfo = agentRegistry.get(perConnectionAgentId);
