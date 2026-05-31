@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyMultipart from "@fastify/multipart";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
@@ -37,6 +38,32 @@ function makeAuthManager(token: string | null = null) {
   return {
     getAccessToken: vi.fn(async () => ({ token })),
   };
+}
+
+function buildMultipartBody(parts: {
+  name: string;
+  value: string | Buffer;
+  filename?: string;
+  contentType?: string;
+}[]): { payload: Buffer; boundary: string } {
+  const boundary = `----VoiceFormBoundary${crypto.randomUUID().replace(/-/g, "")}`;
+  const buffers: Buffer[] = [];
+
+  for (const part of parts) {
+    const disposition = `Content-Disposition: form-data; name="${part.name}"${
+      part.filename ? `; filename="${part.filename}"` : ""
+    }\r\n`;
+    buffers.push(Buffer.from(`--${boundary}\r\n${disposition}`));
+    if (part.contentType) {
+      buffers.push(Buffer.from(`Content-Type: ${part.contentType}\r\n`));
+    }
+    buffers.push(Buffer.from("\r\n"));
+    buffers.push(typeof part.value === "string" ? Buffer.from(part.value) : part.value);
+    buffers.push(Buffer.from("\r\n"));
+  }
+
+  buffers.push(Buffer.from(`--${boundary}--\r\n`));
+  return { payload: Buffer.concat(buffers), boundary };
 }
 
 let tmpDir: string;
@@ -272,6 +299,38 @@ describe("POST /api/voice/speak", () => {
     expect(res.rawPayload.length).toBeGreaterThan(0);
     await app.close();
   });
+
+  it("does not send the configured key back to the browser when synthesizing speech", async () => {
+    const secret = "sk-route-speak-secret";
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("openai", secret);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([9, 8, 7]));
+            controller.close();
+          },
+        }),
+      })),
+    );
+
+    const { app } = await buildApp({ credentialStore });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/speak",
+      payload: { text: "Hello world", voice: "alloy", speed: 1, provider: "openai" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.payload).not.toContain(secret);
+    expect(JSON.stringify(res.headers)).not.toContain(secret);
+    await app.close();
+  });
 });
 
 describe("POST /api/voice/transcribe", () => {
@@ -284,6 +343,41 @@ describe("POST /api/voice/transcribe", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toMatch(/Expected multipart/i);
+    await app.close();
+  });
+
+  it("does not send the configured key back to the browser when transcribing audio", async () => {
+    const secret = "sk-route-transcribe-secret";
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("openai", secret);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ text: "  recognized text  " }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const { payload, boundary } = buildMultipartBody([
+      { name: "audio", filename: "audio.webm", contentType: "audio/webm", value: Buffer.from("audio-bytes") },
+      { name: "cleanup", value: "false" },
+      { name: "sttProvider", value: "openai" },
+    ]);
+    const { app } = await buildApp({ credentialStore });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/transcribe",
+      payload,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ text: "recognized text", rawText: "recognized text" });
+    expect(res.payload).not.toContain(secret);
+    expect(JSON.stringify(res.headers)).not.toContain(secret);
     await app.close();
   });
 });

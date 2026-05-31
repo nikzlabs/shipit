@@ -87,6 +87,13 @@ describe("useVoicePlayback", () => {
     await flushMicrotasks();
 
     expect(fetchMock).toHaveBeenCalledWith("/api/voice/speak", expect.objectContaining({ method: "POST" }));
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(typeof request.body).toBe("string");
+    const body = JSON.parse(request.body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({ text: "hello world", voice: "alloy", speed: 1, provider: "openai" });
+    expect(body.apiKey).toBeUndefined();
+    expect(body.key).toBeUndefined();
+    expect(body.authorization).toBeUndefined();
     expect(playSpy).toHaveBeenCalledTimes(1);
     expect(result.current.state).toBe("playing");
     expect(result.current.playingTurnId).toBe("t-play");

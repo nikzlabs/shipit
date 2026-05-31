@@ -153,6 +153,13 @@ describe("useVoiceInput", () => {
     expect(result.current.state).toBe("idle");
     expect(lastCapture?.stop).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith("/api/voice/transcribe", expect.objectContaining({ method: "POST" }));
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(request.headers).toBeUndefined();
+    const form = request.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect(form.has("apiKey")).toBe(false);
+    expect(form.has("key")).toBe(false);
+    expect(form.has("authorization")).toBe(false);
     expect(received).toEqual(["hello"]);
   });
 
