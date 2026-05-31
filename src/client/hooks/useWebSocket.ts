@@ -41,6 +41,14 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
   const reconnectAttemptRef = useRef(0);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const foregroundRetryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const clearForegroundRetryTimers = useCallback(() => {
+    for (const timer of foregroundRetryTimersRef.current) {
+      clearTimeout(timer);
+    }
+    foregroundRetryTimersRef.current = [];
+  }, []);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -66,6 +74,7 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
       setStatus("open");
       reconnectAttemptRef.current = 0;
       setReconnectAttempt(0);
+      clearForegroundRetryTimers();
     };
 
     ws.onclose = () => {
@@ -93,14 +102,17 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
-      // Only close if already open — if still CONNECTING, the onopen handler
-      // will see intentionalClose and close it, avoiding the
-      // "WebSocket is closed before the connection is established" warning.
-      if (ws.readyState === WebSocket.OPEN) {
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
+      ws.onopen = null;
+      ws.onclose = null;
+      ws.onmessage = null;
+      if (ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
         ws.close();
       }
     };
-  }, [url, connectAttempt]);
+  }, [url, connectAttempt, clearForegroundRetryTimers]);
 
   const send = useCallback((data: unknown) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -108,7 +120,7 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     }
   }, []);
 
-  const reconnect = useCallback(() => {
+  const openFreshSocket = useCallback(() => {
     // Clear any pending backoff timer and trigger an immediate reconnect
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -120,26 +132,52 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     setConnectAttempt((n) => n + 1);
   }, []);
 
+  const reconnect = useCallback(() => {
+    clearForegroundRetryTimers();
+    openFreshSocket();
+  }, [clearForegroundRetryTimers, openFreshSocket]);
+
+  const reconnectForForeground = useCallback(() => {
+    clearForegroundRetryTimers();
+    openFreshSocket();
+    for (const delay of [300, 1200, 3000]) {
+      const timer = setTimeout(() => {
+        if (document.hidden) return;
+        if (wsRef.current?.readyState === WebSocket.OPEN) return;
+        openFreshSocket();
+      }, delay);
+      foregroundRetryTimersRef.current.push(timer);
+    }
+  }, [clearForegroundRetryTimers, openFreshSocket]);
+
   // Force a fresh WebSocket when the tab returns from the background. Mobile
-  // OSes silently kill backgrounded TCP sockets without notifying the JS layer;
-  // the WebSocket's onclose may not fire promptly, so we proactively tear down
-  // and reconnect on visibilitychange → visible. See useServerEvents for the
-  // SSE counterpart of this fix.
+  // OSes silently kill or stall backgrounded TCP sockets without notifying the
+  // JS layer; the WebSocket's readyState can remain OPEN or CONNECTING even
+  // though a reload would immediately recover. Foreground lifecycle events use
+  // an aggressive short retry burst before falling back to normal backoff.
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (!url) return;
-    function handleVisibilityChange() {
-      if (!document.hidden && wsRef.current?.readyState !== WebSocket.CONNECTING) {
-        // Reuses the same path as a manual reconnect: close + retry, resetting
-        // the backoff so the user doesn't wait through an exponential delay.
-        reconnect();
+    function handleForeground() {
+      if (!document.hidden) {
+        reconnectForForeground();
       }
     }
+    function handleVisibilityChange() {
+      handleForeground();
+    }
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pageshow", handleForeground);
+    window.addEventListener("focus", handleForeground);
+    window.addEventListener("online", handleForeground);
     return () => {
+      clearForegroundRetryTimers();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pageshow", handleForeground);
+      window.removeEventListener("focus", handleForeground);
+      window.removeEventListener("online", handleForeground);
     };
-  }, [url, reconnect]);
+  }, [url, reconnectForForeground, clearForegroundRetryTimers]);
 
   const drainMessages = useCallback((): MessageEvent[] => {
     const msgs = messageQueueRef.current;

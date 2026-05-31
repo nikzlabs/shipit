@@ -14,6 +14,38 @@ export function useConnectionSync(params: {
 
   const historyLoadedRef = useRef(false);
   const bootstrapFetchedRef = useRef(false);
+  const recentlyForegroundedRef = useRef(false);
+  const foregroundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Mobile app switches commonly produce transient WS closes. Give the
+  // reconnect/replay path a short window before treating a streaming close as
+  // a real agent error.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  useEffect(() => {
+    function markRecentlyForegrounded() {
+      if (document.hidden) return;
+      recentlyForegroundedRef.current = true;
+      if (foregroundTimerRef.current) clearTimeout(foregroundTimerRef.current);
+      foregroundTimerRef.current = setTimeout(() => {
+        recentlyForegroundedRef.current = false;
+        foregroundTimerRef.current = null;
+      }, 8000);
+    }
+
+    function handleVisibilityChange() {
+      markRecentlyForegrounded();
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pageshow", markRecentlyForegrounded);
+    window.addEventListener("focus", markRecentlyForegrounded);
+    return () => {
+      if (foregroundTimerRef.current) clearTimeout(foregroundTimerRef.current);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pageshow", markRecentlyForegrounded);
+      window.removeEventListener("focus", markRecentlyForegrounded);
+    };
+  }, []);
 
   // Fetch bootstrap data via HTTP — fires once on mount
   // eslint-disable-next-line no-restricted-syntax -- existing usage
@@ -79,6 +111,9 @@ export function useConnectionSync(params: {
     prevStatusRef.current = status;
 
     if (wasOpen && status === "closed" && useSessionStore.getState().isLoading) {
+      if (document.hidden || recentlyForegroundedRef.current) {
+        return;
+      }
       // Don't inject "connection lost" when switching sessions — the stores
       // are reset and the new session will load its own state via HTTP.
       // Only show the error for genuine disconnects (messages still present).
