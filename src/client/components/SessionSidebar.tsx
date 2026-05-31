@@ -127,6 +127,7 @@ interface SessionItemProps {
   session: SessionInfo;
   isCurrent: boolean;
   onResume: (id: string) => void;
+  onSelectCurrent?: () => void;
   onArchive?: (id: string) => void;
   onRestore?: (id: string) => void;
   repoLabel?: string;
@@ -238,7 +239,7 @@ function DiskTierBadge({ session }: { session: SessionInfo }) {
   return null;
 }
 
-export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch }: SessionItemProps) {
+export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch }: SessionItemProps) {
   const isArchived = session.archived === true;
 
   const attentionReason = useAttentionInfo(session.id);
@@ -337,7 +338,13 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
         </form>
       ) : (
         <button
-          onClick={() => { if (!isCurrent) onResume(session.id); }}
+          onClick={() => {
+            if (isCurrent) {
+              onSelectCurrent?.();
+              return;
+            }
+            onResume(session.id);
+          }}
           disabled={disabled}
           className="flex-1 min-w-0 text-left"
         >
@@ -408,12 +415,14 @@ function OpsSessionGroup({
   sessions,
   currentSessionId,
   onResume,
+  onSelectCurrent,
   onArchive,
   isTouch,
 }: {
   sessions: SessionInfo[];
   currentSessionId?: string;
   onResume: (sessionId: string) => void;
+  onSelectCurrent?: () => void;
   onArchive: (sessionId: string) => void;
   isTouch: boolean;
 }) {
@@ -434,6 +443,7 @@ function OpsSessionGroup({
           session={session}
           isCurrent={session.id === currentSessionId}
           onResume={onResume}
+          onSelectCurrent={onSelectCurrent}
           onArchive={onArchive}
           isTouch={isTouch}
         />
@@ -450,6 +460,7 @@ function OrphanSessionGroup({
   sessions,
   currentSessionId,
   onResume,
+  onSelectCurrent,
   onArchive,
   isTouch,
 }: {
@@ -457,6 +468,7 @@ function OrphanSessionGroup({
   sessions: SessionInfo[];
   currentSessionId?: string;
   onResume: (sessionId: string) => void;
+  onSelectCurrent?: () => void;
   onArchive: (sessionId: string) => void;
   isTouch: boolean;
 }) {
@@ -475,6 +487,7 @@ function OrphanSessionGroup({
           session={session}
           isCurrent={session.id === currentSessionId}
           onResume={onResume}
+          onSelectCurrent={onSelectCurrent}
           onArchive={onArchive}
           isTouch={isTouch}
         />
@@ -494,6 +507,7 @@ function RepoGroup({
   collapsedParents,
   onToggleParentCollapsed,
   onResume,
+  onSelectCurrent,
   onArchive,
   onNewSession,
   onViewAll,
@@ -519,6 +533,7 @@ function RepoGroup({
   collapsedParents: Set<string>;
   onToggleParentCollapsed: (parentId: string) => void;
   onResume: (id: string) => void;
+  onSelectCurrent?: () => void;
   onArchive: (id: string) => void;
   onNewSession: () => void;
   onViewAll: () => void;
@@ -705,6 +720,7 @@ function RepoGroup({
                     session={s}
                     isCurrent={s.id === currentSessionId}
                     onResume={onResume}
+                    onSelectCurrent={onSelectCurrent}
                     onArchive={onArchive}
                     isTouch={isTouch}
                     childCount={childCount}
@@ -720,6 +736,7 @@ function RepoGroup({
                       session={child}
                       isCurrent={child.id === currentSessionId}
                       onResume={onResume}
+                      onSelectCurrent={onSelectCurrent}
                       onArchive={onArchive}
                       isTouch={isTouch}
                       indented
@@ -899,6 +916,7 @@ export function SessionSidebar({
 
   // Single repo mode: check if we only have one repo
   const isSingleRepo = repos.length === 1;
+  const handleSelectCurrent = mobile ? onClose : undefined;
 
   // Reordering is only meaningful when there's more than one repo to swap.
   const reorderEnabled = repos.length > 1;
@@ -1132,6 +1150,7 @@ export function SessionSidebar({
               sessions={group.sessions}
               currentSessionId={currentSessionId}
               onResume={onResume}
+              onSelectCurrent={handleSelectCurrent}
               onArchive={onArchive}
               isTouch={isTouch}
             />
@@ -1147,6 +1166,7 @@ export function SessionSidebar({
               collapsedParents={collapsedParents}
               onToggleParentCollapsed={toggleParentCollapsed}
               onResume={onResume}
+              onSelectCurrent={handleSelectCurrent}
               onArchive={onArchive}
               onNewSession={() => onNewSessionForRepo(group.repo.url)}
               onViewAll={() => handleViewAll(group.repo.url)}
@@ -1169,6 +1189,7 @@ export function SessionSidebar({
               sessions={group.sessions}
               currentSessionId={currentSessionId}
               onResume={onResume}
+              onSelectCurrent={handleSelectCurrent}
               onArchive={onArchive}
               isTouch={isTouch}
             />
