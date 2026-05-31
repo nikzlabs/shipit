@@ -282,6 +282,22 @@ independently.)
    `x-shipit-host-mounts` on a non-ops session has its mounts silently
    dropped.
 
+   Follow-up from field diagnostics: journal mounts must be passed to Docker
+   as daemon-validated bind mounts with `CreateMountpoint: false`, not
+   preflighted with `fs.existsSync()` in the orchestrator container. In
+   production the orchestrator filesystem is not the Docker host filesystem, so
+   container-local preflight can silently drop valid host journal paths.
+
+4a. **Ops proxy service starts automatically** — the hidden ops template marks
+    `docker-socket-proxy` with `x-shipit-preview: auto` and
+    `x-shipit-depends-on-install: false`. The ServiceManager allows the proxy's
+    `/var/run/docker.sock:ro` mount only when the server-authoritative session
+    kind is `ops`, so copying the workspace files into an ordinary session does
+    not grant Docker access. Starting the proxy through compose creates the
+    `shipit-session-{id}` network; the existing network join hook then attaches
+    the agent container so `DOCKER_HOST=tcp://docker-socket-proxy:2375` resolves
+    by compose DNS.
+
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is
    no `kind` field today, session types are distinguished by ad-hoc
