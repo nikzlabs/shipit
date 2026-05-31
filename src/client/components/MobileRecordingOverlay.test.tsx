@@ -13,9 +13,11 @@ function makeVoice(overrides: Partial<VoiceInputApi> = {}): VoiceInputApi {
     elapsedMs: 0,
     errorMessage: null,
     cleanupWarning: null,
+    canRetryTranscription: false,
     startRecording: vi.fn(),
     stopRecording: vi.fn(),
     cancelRecording: vi.fn(),
+    retryTranscription: vi.fn(),
     onTranscript: vi.fn(() => () => {}),
     dismissError: vi.fn(),
     ...overrides,
@@ -28,11 +30,64 @@ describe("MobileRecordingOverlay", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("renders nothing in the error state (error falls back to the inline button)", () => {
-    const { container } = render(
-      <MobileRecordingOverlay voice={makeVoice({ state: "error", errorMessage: "nope" })} />,
+  it("shows the error message with retry + dismiss controls in the error state", () => {
+    render(
+      <MobileRecordingOverlay
+        voice={makeVoice({ state: "error", errorMessage: "Couldn't transcribe — try again" })}
+      />,
     );
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByTestId("mobile-recording-overlay")).toHaveAttribute("data-state", "error");
+    expect(screen.getByText("Couldn't transcribe — try again")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
+    // No recording controls while showing an error.
+    expect(screen.queryByRole("button", { name: "Stop recording" })).not.toBeInTheDocument();
+  });
+
+  it("offers Resend (verbatim) + Re-record when the audio can be retried", () => {
+    const voice = makeVoice({
+      state: "error",
+      errorMessage: "Couldn't transcribe — try again",
+      canRetryTranscription: true,
+    });
+    render(<MobileRecordingOverlay voice={voice} />);
+    // The big primary button resends the same audio — no re-speaking.
+    fireEvent.click(screen.getByRole("button", { name: "Resend" }));
+    expect(voice.retryTranscription).toHaveBeenCalledTimes(1);
+    expect(voice.startRecording).not.toHaveBeenCalled();
+    // Re-record is the fallback.
+    fireEvent.click(screen.getByRole("button", { name: "Re-record" }));
+    expect(voice.startRecording).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+  });
+
+  it("re-records when Try again is tapped in the error state", () => {
+    const voice = makeVoice({ state: "error", errorMessage: "nope" });
+    render(<MobileRecordingOverlay voice={voice} />);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(voice.startRecording).toHaveBeenCalledTimes(1);
+    expect(voice.dismissError).not.toHaveBeenCalled();
+  });
+
+  it("dismisses the error without re-recording when Dismiss is tapped", () => {
+    const voice = makeVoice({ state: "error", errorMessage: "nope" });
+    render(<MobileRecordingOverlay voice={voice} />);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(voice.dismissError).toHaveBeenCalledTimes(1);
+    expect(voice.startRecording).not.toHaveBeenCalled();
+  });
+
+  it("dismisses the error on Escape", () => {
+    const voice = makeVoice({ state: "error", errorMessage: "nope" });
+    render(<MobileRecordingOverlay voice={voice} />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(voice.dismissError).toHaveBeenCalledTimes(1);
+    expect(voice.cancelRecording).not.toHaveBeenCalled();
+  });
+
+  it("falls back to generic copy when the error has no message", () => {
+    render(<MobileRecordingOverlay voice={makeVoice({ state: "error", errorMessage: null })} />);
+    expect(screen.getByText("Something went wrong")).toBeInTheDocument();
   });
 
   it("shows a big stop button and live timer while recording", () => {

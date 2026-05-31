@@ -77,6 +77,14 @@ export interface VoiceInputApi {
   errorMessage: string | null;
   /** Non-fatal warning surfaced when cleanup fell through to the raw transcript. */
   cleanupWarning: string | null;
+  /**
+   * True only in the error state, when the failure happened *after* the audio
+   * was captured (a transcription failure) so the same recording can be resent
+   * via `retryTranscription` without the user re-speaking. False for failures
+   * with no usable audio (mic permission denied, capture never started), where
+   * the only recovery is to record again.
+   */
+  canRetryTranscription: boolean;
   startRecording: () => void;
   stopRecording: () => void;
   /**
@@ -85,6 +93,13 @@ export interface VoiceInputApi {
    * captured and on its way to the server.
    */
   cancelRecording: () => void;
+  /**
+   * Re-send the last captured audio to the STT endpoint without re-recording.
+   * The robust retry for a transient transcription failure (network blip,
+   * provider hiccup) — the user doesn't repeat themselves. No-op when there is
+   * no retained audio (see `canRetryTranscription`).
+   */
+  retryTranscription: () => void;
   /** Subscribe to cleaned transcripts. Returns an unsubscribe fn. Text-only by design. */
   onTranscript: (cb: (text: string) => void) => () => void;
   dismissError: () => void;
@@ -104,7 +119,12 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cleanupWarning, setCleanupWarning] = useState<string | null>(null);
+  const [canRetryTranscription, setCanRetryTranscription] = useState(false);
 
+  // The last captured audio, retained when a transcription fails so it can be
+  // resent without re-recording. Cleared on success, on a fresh recording, and
+  // on dismiss/abort so we never resend stale audio into the wrong session.
+  const pendingAudioRef = useRef<{ blob: Blob; mimeType: string } | null>(null);
   const captureRef = useRef<ActiveCapture | null>(null);
   const subscribersRef = useRef<Set<(text: string) => void>>(new Set());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -130,6 +150,9 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
 
   const transcribe = useCallback(async (blob: Blob, mimeType: string) => {
     setState("transcribing");
+    // Retain the audio for the duration of the round-trip so a failure can be
+    // resent verbatim. Cleared again on success below.
+    pendingAudioRef.current = { blob, mimeType };
     try {
       const form = new FormData();
       form.append("audio", blob, "audio");
@@ -145,6 +168,7 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
         try { detail = ((await res.json()) as { error?: string }).error ?? ""; } catch { /* ignore */ }
         console.error(`Voice transcribe failed (${res.status})`, detail);
         setErrorMessage("Couldn't transcribe — try again");
+        setCanRetryTranscription(true);
         setState("error");
         return;
       }
@@ -156,13 +180,23 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
       }
       const text = (data.text ?? "").trim();
       if (text) emitTranscript(text);
+      pendingAudioRef.current = null;
+      setCanRetryTranscription(false);
       setState("idle");
     } catch (err) {
       console.error("Voice transcribe error", err);
       setErrorMessage("Couldn't transcribe — try again");
+      setCanRetryTranscription(true);
       setState("error");
     }
   }, [emitTranscript]);
+
+  const retryTranscription = useCallback(() => {
+    const pending = pendingAudioRef.current;
+    if (!pending) return;
+    setErrorMessage(null);
+    void transcribe(pending.blob, pending.mimeType);
+  }, [transcribe]);
 
   const finishRecording = useCallback(async () => {
     const capture = captureRef.current;
@@ -193,6 +227,9 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     if (state === "transcribing") return;
     setErrorMessage(null);
     setCleanupWarning(null);
+    // Starting fresh: drop any audio retained from a previous failed attempt.
+    pendingAudioRef.current = null;
+    setCanRetryTranscription(false);
     // Mark intent synchronously so a fast keyup still finds an active recording.
     startedAtRef.current = Date.now();
     const startedSessionId = sessionIdRef.current;
@@ -226,6 +263,8 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     captureRef.current = null;
     clearTimers();
     if (capture) capture.abort();
+    pendingAudioRef.current = null;
+    setCanRetryTranscription(false);
     setElapsedMs(0);
     setState((s) => (s === "recording" ? "idle" : s));
   }, [clearTimers]);
@@ -237,6 +276,8 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
 
   const dismissError = useCallback(() => {
     setErrorMessage(null);
+    pendingAudioRef.current = null;
+    setCanRetryTranscription(false);
     setState((s) => (s === "error" ? "idle" : s));
   }, []);
 
@@ -297,9 +338,11 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     elapsedMs,
     errorMessage,
     cleanupWarning,
+    canRetryTranscription,
     startRecording,
     stopRecording,
     cancelRecording: abortRecording,
+    retryTranscription,
     onTranscript,
     dismissError,
   };
