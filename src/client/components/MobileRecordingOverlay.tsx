@@ -42,14 +42,21 @@ function formatElapsed(ms: number): string {
 }
 
 export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
+<<<<<<< HEAD
   const { state, elapsedMs, errorMessage, canRetryTranscription } = voice;
+=======
+  const { state, elapsedMs, errorMessage } = voice;
+>>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
   const recording = state === "recording";
   const transcribing = state === "transcribing";
   const error = state === "error";
   const active = recording || transcribing || error;
+<<<<<<< HEAD
   // After a transcription failure the audio is retained, so the primary
   // recovery is to resend it verbatim rather than make the user re-speak.
   const canResend = error && canRetryTranscription;
+=======
+>>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
 
   // Escape cancels an active recording or dismisses an error (no-op once
   // transcribing — the audio is already in flight). Harmless on mobile where
@@ -115,13 +122,22 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
       )}
       {error && (
         <button
+<<<<<<< HEAD
           onClick={() => (canResend ? voice.retryTranscription() : voice.startRecording())}
           aria-label={canResend ? "Resend" : "Try again"}
+=======
+          onClick={() => voice.startRecording()}
+          aria-label="Try again"
+>>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
           data-testid="mobile-recording-retry"
           className="relative flex h-32 w-32 flex-col items-center justify-center gap-1 rounded-full bg-(--color-error)/15 text-(--color-error) transition-transform active:scale-95"
         >
           <ArrowClockwiseIcon size={ICON_SIZE.LG} weight="bold" />
+<<<<<<< HEAD
           <span className="text-xs font-medium">{canResend ? "Resend" : "Try again"}</span>
+=======
+          <span className="text-xs font-medium">Try again</span>
+>>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
         </button>
       )}
 
@@ -140,6 +156,7 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
         </>
       )}
       {error && (
+<<<<<<< HEAD
         <div className="mt-2 flex items-center gap-3">
           {canResend && (
             <button
@@ -161,6 +178,17 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
             Dismiss
           </button>
         </div>
+=======
+        <button
+          onClick={() => voice.dismissError()}
+          aria-label="Dismiss"
+          data-testid="mobile-recording-dismiss"
+          className="mt-2 inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+        >
+          <XIcon size={ICON_SIZE.SM} />
+          Dismiss
+        </button>
+>>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
       )}
     </div>
   );
