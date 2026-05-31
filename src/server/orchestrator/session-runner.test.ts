@@ -196,6 +196,53 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  it("dispatch runs prepareAgentEnv right before buildRunParams (fresh token at spawn)", async () => {
+    // Regression for the quick-session "Not logged in" bug: env prep (OAuth
+    // token sync-in) must run at spawn time, immediately before run-params are
+    // built — the same late moment the WS path uses — not early in the service
+    // fn where a sibling session can rotate the single-use refresh token first.
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const fakeAgent = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
+    const callOrder: string[] = [];
+    runner.setSystemTurnDeps({
+      agentFactory: () => fakeAgent,
+      autoCommit: vi.fn().mockResolvedValue({
+        commitHash: null,
+        parentHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+      }),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: {
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn() } as any,
+        chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
+        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
+        authManager: { startOAuthFlow: vi.fn() } as any,
+        sseBroadcast: vi.fn(),
+        broadcastLog: vi.fn(),
+        getSelectedModel: () => undefined,
+      },
+      prepareAgentEnv: vi.fn().mockImplementation(async () => {
+        callOrder.push("prepareAgentEnv");
+      }),
+      buildRunParams: vi.fn().mockImplementation(async () => {
+        callOrder.push("buildRunParams");
+        return { prompt: "fix ci", cwd: "/tmp/s1" };
+      }),
+    });
+
+    runner.dispatch({ text: "fix ci" });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(callOrder).toEqual(["prepareAgentEnv", "buildRunParams"]);
+    expect(fakeAgent.run).toHaveBeenCalled();
+    runner.dispose({ force: true });
+  });
+
   it("dispatch clears running state and broadcasts finished when startup preparation fails", async () => {
     const runner = new SessionRunner({
       sessionId: "s1",
