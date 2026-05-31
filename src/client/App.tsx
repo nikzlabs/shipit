@@ -1272,6 +1272,8 @@ export default function App() {
         showNewSessionView={showNewSessionView}
         mobilePanel={mobilePanel}
         onMobilePanelChange={(p) => useUiStore.getState().setMobilePanel(p)}
+        onMobileNewSession={handleNewSessionShortcut}
+        onMobileVoiceSession={() => useUiStore.getState().setQuickCaptureOpen(true, true)}
         chatPanel={chatPanel}
         rightPanel={rightPanel}
         fraction={fraction}
