@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon background: the favicon's red tile as a full-bleed gradient.
+  The launcher masks this to the device's icon shape (circle, squircle, etc.),
+  so it fills the entire 108x108 canvas. Gradient mirrors favicon.svg
+  (#f0506e top-left -> #b8294b bottom-right).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M0,0 H108 V108 H0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:startColor="#F0506E"
+                android:endColor="#B8294B" />
+        </aapt:attr>
+    </path>
+</vector>
