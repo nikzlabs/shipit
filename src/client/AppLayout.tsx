@@ -50,6 +50,8 @@ interface AppLayoutProps {
   showNewSessionView: boolean;
   mobilePanel: "chat" | "preview";
   onMobilePanelChange: (panel: "chat" | "preview") => void;
+  onMobileNewSession: () => void;
+  onMobileVoiceSession: () => void;
   chatPanel: ReactNode;
   rightPanel: ReactNode;
 
@@ -103,6 +105,8 @@ export function AppLayout({
   showNewSessionView,
   mobilePanel,
   onMobilePanelChange,
+  onMobileNewSession,
+  onMobileVoiceSession,
   chatPanel,
   rightPanel,
   fraction,
@@ -216,7 +220,16 @@ export function AppLayout({
           <div className="flex flex-col flex-1 min-h-0">
             {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-(--color-bg-secondary)">{rightPanel}</div>}
           </div>
-          {(!showHomeScreen || showNewSessionView) && <MobileTabBar activePanel={mobilePanel} onChangePanel={onMobilePanelChange} />}
+          {(!showHomeScreen || showNewSessionView) && (
+            <MobileTabBar
+              activePanel={mobilePanel}
+              onChangePanel={onMobilePanelChange}
+              onOpenSessions={onOpenSessions}
+              onNewSession={onMobileNewSession}
+              onVoiceSession={onMobileVoiceSession}
+              newSessionDisabled={repos.length === 0}
+            />
+          )}
           {mobileSidebarOpen && (
             <div className="fixed inset-0 z-40 flex" role="dialog" aria-label="Sessions">
               {/* Backdrop — tap to close */}

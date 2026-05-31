@@ -1,5 +1,6 @@
-import { ChatCircleIcon, SquaresFourIcon } from "@phosphor-icons/react";
+import { ChatCircleIcon, ListIcon, MicrophoneIcon, PlusIcon, SquaresFourIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
+import { WithTooltip } from "./ui/tooltip.js";
 
 /**
  * MobileTabBar — bottom navigation bar shown only on mobile viewports.
@@ -21,42 +22,85 @@ export type MobilePanel = "chat" | "preview";
 export function MobileTabBar({
   activePanel,
   onChangePanel,
+  onOpenSessions,
+  onNewSession,
+  onVoiceSession,
+  newSessionDisabled = false,
 }: {
   activePanel: MobilePanel;
   onChangePanel: (panel: MobilePanel) => void;
+  onOpenSessions: () => void;
+  onNewSession: () => void;
+  onVoiceSession: () => void;
+  newSessionDisabled?: boolean;
 }) {
   return (
     <nav
-      className="flex border-t border-(--color-border-primary) bg-(--color-bg-primary)"
+      className="grid grid-cols-[minmax(8rem,1fr)_auto] items-center gap-3 border-t border-(--color-border-primary) bg-(--color-bg-primary) px-3 py-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]"
       aria-label="Mobile navigation"
     >
-      <button
-        onClick={() => onChangePanel("chat")}
-        className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs font-medium transition-colors ${
-          activePanel === "chat"
-            ? "text-(--color-text-link)"
-            : "text-(--color-text-secondary) active:text-(--color-text-primary)"
-        }`}
-        aria-current={activePanel === "chat" ? "page" : undefined}
-      >
-        {/* Chat icon (speech bubble) */}
-        <ChatCircleIcon size={ICON_SIZE.MD} />
-        Chat
-      </button>
+      <div className="grid min-w-0 grid-cols-2 gap-1">
+        <button
+          onClick={() => onChangePanel("chat")}
+          className={`flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-md text-xs font-medium transition-colors ${
+            activePanel === "chat"
+              ? "text-(--color-text-link)"
+              : "text-(--color-text-secondary) active:bg-(--color-bg-hover) active:text-(--color-text-primary)"
+          }`}
+          aria-current={activePanel === "chat" ? "page" : undefined}
+        >
+          <ChatCircleIcon size={ICON_SIZE.MD} />
+          Chat
+        </button>
 
-      <button
-        onClick={() => onChangePanel("preview")}
-        className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs font-medium transition-colors ${
-          activePanel === "preview"
-            ? "text-(--color-text-link)"
-            : "text-(--color-text-secondary) active:text-(--color-text-primary)"
-        }`}
-        aria-current={activePanel === "preview" ? "page" : undefined}
-      >
-        {/* Workspace icon (four squares — represents the multi-tab panel) */}
-        <SquaresFourIcon size={ICON_SIZE.MD} />
-        Workspace
-      </button>
+        <button
+          onClick={() => onChangePanel("preview")}
+          className={`flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-md text-xs font-medium transition-colors ${
+            activePanel === "preview"
+              ? "text-(--color-text-link)"
+              : "text-(--color-text-secondary) active:bg-(--color-bg-hover) active:text-(--color-text-primary)"
+          }`}
+          aria-current={activePanel === "preview" ? "page" : undefined}
+        >
+          <SquaresFourIcon size={ICON_SIZE.MD} />
+          Workspace
+        </button>
+      </div>
+
+      <div className="flex items-center justify-center gap-1.5 border-l border-(--color-border-primary) pl-3">
+        <WithTooltip label="Sessions" side="top">
+          <button
+            type="button"
+            onClick={onOpenSessions}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-md text-(--color-text-secondary) transition-colors active:bg-(--color-bg-hover) active:text-(--color-text-primary)"
+            aria-label="Sessions"
+          >
+            <ListIcon size={ICON_SIZE.MD} />
+          </button>
+        </WithTooltip>
+        <WithTooltip label="New Session" side="top">
+          <button
+            type="button"
+            onClick={onNewSession}
+            disabled={newSessionDisabled}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-(--color-bg-tertiary) text-(--color-text-primary) ring-1 ring-(--color-border-secondary) transition-colors active:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="New Session"
+          >
+            <PlusIcon size={ICON_SIZE.MD} weight="bold" />
+          </button>
+        </WithTooltip>
+        <WithTooltip label="Voice quick session" side="top">
+          <button
+            type="button"
+            onClick={onVoiceSession}
+            disabled={newSessionDisabled}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-md text-(--color-text-secondary) transition-colors active:bg-(--color-bg-hover) active:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="Voice quick session"
+          >
+            <MicrophoneIcon size={ICON_SIZE.MD} />
+          </button>
+        </WithTooltip>
+      </div>
     </nav>
   );
 }
