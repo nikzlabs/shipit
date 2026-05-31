@@ -418,7 +418,7 @@ present({
   - SVG → iframe via `srcdoc` (wrapped in minimal HTML) or `<img src="data:image/svg+xml,...">`
   - Markdown → existing markdown renderer in a styled container
   - Images → `<img>` with data URI
-- **Presentation header**: `◀ 2/3 ▶` carousel nav, title, "Save to project" button, dismiss `✕` button.
+- **Presentation header**: `◀ 2/3 ▶` carousel nav, title, "Save" button, "Download" button, dismiss `✕` button.
 - **Present store** (`src/client/stores/present-store.ts`): new Zustand store, separate from preview-store:
   ```typescript
   presentations: Array<{ presentId: string; content: string; mimeType: string; title?: string }>;
@@ -427,6 +427,7 @@ present({
   On `present_content`: if `replaceId` matches an existing entry, replace it; otherwise append and set as active. On `present_cleared`: if `presentId` is set, drop just that entry (server-side LRU eviction); otherwise wipe the array (session switch, full clear).
 - **Right panel tabs** (`AppLayout.tsx`): add "Present" tab. Conditionally visible — only rendered when `presentations.length > 0`. Shows badge with count when not focused. Auto-switches to Present tab on first `present_content`.
 - **"Save to project" action**: **Client-driven, not agent-mediated.** The button POSTs `{ presentId, destPath }` to a new `/api/sessions/:id/present/save` orchestrator route, which forwards to a worker endpoint that copies the buffered bytes (see "Server-side buffer") to the workspace path and lets the normal file watcher + auto-commit pipeline take it from there. Agent-mediated save was rejected because after context compaction, several turns, or a fresh agent run the model may no longer have the exact content in its context window — it would have to regenerate, potentially producing a different chart/diagram than the one the user saw and approved. Save must be byte-exact with what was displayed.
+- **"Download" action**: **Pure client-side, no server round-trip.** The button sits beside "Save" and pulls the artifact onto the user's *local machine* rather than into the workspace. The artifact content already lives in the browser (`present-store` holds the exact displayed bytes), so download is a `Blob` + transient `<a download>` click. Image artifacts (`data:` URIs) are decoded back to their binary bytes; text artifacts (HTML/SVG/markdown) become a typed text Blob. The filename is the slugified title plus a mime-derived extension, with no directory prefix (the browser's download UI owns placement). This is the complement to Save, not a duplicate: Save's destination is the project (committed, container-side); Download's destination is somewhere ShipIt can't reach (a slide deck, an email, a design tool). It is *not* a link-out (§1/§3) and *not* a shell-shaped affordance (§5) — a browser download to the user's disk is something only the client can do; the agent cannot trigger it. Helpers (`presentationToBlob`, `suggestDownloadName`, `mimeTypeToExtension`) are exported from `PresentPane.tsx` and unit-tested in `PresentPane.test.tsx`.
 
 ### Sandboxing
 

@@ -3,9 +3,13 @@
  *
  * Renders agent-emitted artifacts (HTML, SVG, markdown, images) from the
  * `present` MCP tool. Single visible entry at a time, with a `◀ N/M ▶`
- * carousel header when there's more than one. "Save to project" copies the
- * byte-exact content from the worker's buffer to a user-picked workspace
- * path; the file watcher and auto-commit pipeline take it from there.
+ * carousel header when there's more than one. "Save" copies the byte-exact
+ * content from the worker's buffer to a user-picked workspace path; the file
+ * watcher and auto-commit pipeline take it from there. "Download" is the
+ * complementary escape hatch — a purely client-side `Blob` + `<a download>`
+ * that pulls the artifact onto the user's local machine (for a slide deck,
+ * email, design tool, etc.), a destination ShipIt can't reach since the
+ * workspace lives inside a container.
  *
  * Sandboxing: HTML/SVG content renders in an iframe with `sandbox="allow-scripts"`.
  * That lets charts and interactive markup run JS but prevents same-origin
@@ -17,11 +21,12 @@ import { useEffect, useState } from "react";
 import {
   CaretLeftIcon,
   CaretRightIcon,
+  DownloadSimpleIcon,
   FloppyDiskIcon,
   XIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { usePresentStore } from "../stores/present-store.js";
+import { usePresentStore, type Presentation } from "../stores/present-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { MarkdownContent } from "./message-markdown.js";
 import { Button } from "./ui/button.js";
@@ -122,6 +127,16 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
         >
           <FloppyDiskIcon size={ICON_SIZE.XS} />
           Save
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => downloadPresentation(active)}
+          className="shrink-0"
+          aria-label="Download presentation"
+        >
+          <DownloadSimpleIcon size={ICON_SIZE.XS} />
+          Download
         </Button>
         <button
           onClick={() => dropOne(active.presentId)}
@@ -320,19 +335,78 @@ function SaveDialog({
 }
 
 /**
+ * Trigger a client-side download of the active presentation. The artifact
+ * content already lives in the browser (the present-store holds the exact
+ * bytes the user saw), so this is a pure `Blob` + temporary `<a download>` —
+ * no server round-trip. Unlike "Save", the destination is the user's local
+ * machine, not the workspace.
+ */
+function downloadPresentation(p: Presentation): void {
+  const blob = presentationToBlob(p.content, p.mimeType);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = suggestDownloadName(p.title, p.mimeType);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Defer revocation so the browser has committed the download; revoking
+  // synchronously can cancel it in some engines.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/**
+ * Build a Blob for download from raw presentation content. Image artifacts
+ * arrive as `data:` URIs (base64 or URL-encoded) and are decoded back to their
+ * binary bytes; text artifacts (HTML/SVG/markdown) become a typed text Blob.
+ */
+export function presentationToBlob(content: string, mimeType: string): Blob {
+  if (content.startsWith("data:")) {
+    return dataUriToBlob(content);
+  }
+  return new Blob([content], { type: mimeType || "text/plain" });
+}
+
+/** Decode a `data:` URI into a Blob, handling both base64 and URL-encoded payloads. */
+function dataUriToBlob(dataUri: string): Blob {
+  const comma = dataUri.indexOf(",");
+  // Malformed (no comma) — fall back to an opaque text blob rather than throw.
+  if (comma < 0) return new Blob([dataUri], { type: "text/plain" });
+  const meta = dataUri.slice("data:".length, comma); // e.g. "image/png;base64"
+  const data = dataUri.slice(comma + 1);
+  const mime = meta.split(";")[0] || "application/octet-stream";
+  if (/;base64/i.test(meta)) {
+    const binary = atob(data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  }
+  return new Blob([decodeURIComponent(data)], { type: mime });
+}
+
+/**
  * Pick a sensible default filename for the save dialog. Title-based when
  * available; otherwise mime-type-driven. Slugifies the title so the user
- * doesn't have to.
+ * doesn't have to. Prefixed with `presentations/` so saves land in a tidy
+ * subdirectory of the workspace.
  */
 function suggestFilename(title: string | undefined, mimeType: string): string {
+  return `presentations/${suggestDownloadName(title, mimeType)}`;
+}
+
+/**
+ * Bare `<basename>.<ext>` for a local download — no directory prefix, since
+ * the browser's download UI decides where the file lands.
+ */
+export function suggestDownloadName(title: string | undefined, mimeType: string): string {
   const ext = mimeTypeToExtension(mimeType);
   const base = title
     ? title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
     : "presentation";
-  return `presentations/${base || "presentation"}.${ext}`;
+  return `${base || "presentation"}.${ext}`;
 }
 
-function mimeTypeToExtension(mimeType: string): string {
+export function mimeTypeToExtension(mimeType: string): string {
   const lower = mimeType.toLowerCase();
   switch (lower) {
     case "text/html":
