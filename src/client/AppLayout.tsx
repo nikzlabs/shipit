@@ -251,8 +251,10 @@ export function AppLayout({
                 />
                 {/* Drawer — full width on mobile. Toggled shut by re-tapping the
                     bottom tab bar's Sessions button or by selecting a session;
-                    the drawer covers the full width, so there's no backdrop gutter. */}
-                <div className="relative flex h-full w-full bg-(--color-bg-primary) shadow-xl animate-in slide-in-from-left">
+                    the drawer covers the full width, so there's no backdrop gutter.
+                    No slide-in animation: a full-width panel sliding from the left
+                    reads as the whole screen lurching, so the drawer just appears. */}
+                <div className="relative flex h-full w-full bg-(--color-bg-primary) shadow-xl">
                   <SessionSidebar
                     sessions={sessions}
                     currentSessionId={currentSessionId}
