@@ -12,3 +12,5 @@ export const ICON_SIZE = {
   XL: 48,
 } as const;
 
+/** Auto-merge is informational, not a status. Keep it neutral across surfaces. */
+export const AUTO_MERGE_ICON_CLASS = "text-(--color-text-secondary)";
