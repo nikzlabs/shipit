@@ -43,6 +43,17 @@ interface SessionRow {
 export const MAX_MERGED_SESSIONS_PER_REPO = 3;
 
 /**
+ * docs/161 — disk-idle ladder thresholds. "Idle age" for the ladder is
+ * `now - max(Date.parse(lastUsedAt), Date.parse(lastViewedAt))` — turn activity
+ * OR a recent viewer attach keeps a session warm. These are the defaults; the
+ * orchestrator may override them from env (see `index.ts`). The disk-pressure
+ * pass can escalate before these elapse when free space crosses the low-water
+ * mark (LRU), so they're deliberately generous.
+ */
+export const IDLE_LIGHT_MS = 24 * 60 * 60 * 1000; // 24h: hot → light (drop deps)
+export const IDLE_EVICT_MS = 14 * 24 * 60 * 60 * 1000; // 14d: light → evicted (wipe checkout)
+
+/**
  * docs/161 — true when a merged session has been *worked in* since its merge,
  * i.e. the user returned to it to start a follow-up PR. Keys on `lastUsedAt`
  * (bumped only by turn activity, never by merely opening the session), so it
@@ -375,6 +386,27 @@ export class SessionManager {
     this.db.prepare(
       "UPDATE sessions SET branch = ? WHERE id = ?",
     ).run(branch, id);
+  }
+
+  /**
+   * docs/161 — set the on-disk tier without touching visibility. Used by the
+   * disk-idle ladder (`hot → light → evicted`) and by restore (`light/evicted →
+   * hot`). Orthogonal to `user_archived`: changing disk tier never hides or
+   * un-hides a session.
+   */
+  setDiskTier(id: string, tier: "hot" | "light" | "evicted"): void {
+    this.db.prepare("UPDATE sessions SET disk_tier = ? WHERE id = ?").run(tier, id);
+  }
+
+  /**
+   * docs/161 — bump the viewer clock. Read ONLY by the disk-idle ladder
+   * (`max(lastUsedAt, lastViewedAt)`), never by the listing predicate — so
+   * merely opening a merged session keeps its disk warm without promoting it to
+   * Active (which keys off `last_used_at`, bumped only by turn activity).
+   */
+  setLastViewedAt(id: string, iso?: string): void {
+    this.db.prepare("UPDATE sessions SET last_viewed_at = ? WHERE id = ?")
+      .run(iso ?? new Date().toISOString(), id);
   }
 
   /**

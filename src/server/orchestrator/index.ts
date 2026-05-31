@@ -61,7 +61,7 @@ import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
-import { runDiskJanitor, pruneSessionVolumes } from "./disk-janitor.js";
+import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes } from "./disk-janitor.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import { resolveBuildId } from "./build-id.js";
@@ -778,6 +778,41 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
   }
 
+  // docs/161 Part 2 — disk-tier escalation. Fired async after each session
+  // activation (never on the start critical path). This is the PRIMARY
+  // steady-state reclaim of the idle node_modules tail: prod deploys manually,
+  // so the startup janitor above runs rarely, but session starts are frequent
+  // and are exactly when disk gets consumed. Guarded + fire-and-forget;
+  // `escalateDiskTiers` swallows its own errors.
+  const idleLightMs = parseFloat(process.env.DISK_IDLE_LIGHT_MS ?? "") || undefined;
+  const idleEvictMs = parseFloat(process.env.DISK_IDLE_EVICT_MS ?? "") || undefined;
+  const diskFreeLow = parseFloat(process.env.DISK_FREE_LOW_BYTES ?? "") || undefined;
+  const diskFreeHigh = parseFloat(process.env.DISK_FREE_HIGH_BYTES ?? "") || undefined;
+  const kickDiskEscalation = (excludeSessionId?: string): void => {
+    if (isTestMode || !containerManager) return;
+    void escalateDiskTiers(
+      {
+        sessionManager,
+        runnerRegistry,
+        serviceManagers,
+        containerManager,
+        pruneVolumes: (sid) => pruneSessionVolumes(sid),
+        createGitManager,
+        idleLightMs,
+        idleEvictMs,
+        diskFreeLow,
+        diskFreeHigh,
+        getFreeDiskBytes: () => statfsFreeBytes(stateDir),
+      },
+      excludeSessionId,
+    );
+  };
+  // Startup safety net: run one pass now so a long-idle tail left by a
+  // manually-deployed (rarely-restarted) prod box gets reclaimed even before
+  // the first session activation. The per-activation kicks above are the
+  // primary steady-state reclaim.
+  kickDiskEscalation();
+
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
     sessionManager,
@@ -1038,6 +1073,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         runnerMessageListener = (msg: WsServerMessage) => { send(msg); };
         runner.on("message", runnerMessageListener);
         runner.attachViewer();
+        // docs/161 — bump the viewer clock so the disk-idle ladder treats a
+        // recently-opened session as warm. Read ONLY by the ladder (via
+        // `max(lastUsedAt, lastViewedAt)`); deliberately NOT `last_used_at`,
+        // which the listing predicate keys off — bumping that here would
+        // promote a merely-opened merged session to Active forever.
+        sessionManager.setLastViewedAt(runner.sessionId);
         // Reopen the PR-status poller's gate. The supervisor was paused if
         // the user closed every tab; a viewer is now back. activateSession
         // will follow with a forceRefreshSession so the freshness is
@@ -1246,6 +1287,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           }
           attachToRunner(existingRunner);
         } else if (dir) {
+          // docs/161 — a `light` session kept its checkout but had its deps
+          // dropped; booting the runner re-materializes node_modules via the
+          // normal `agent.install` / dep-cache path, so selecting it IS the
+          // restore. Flip the tier back to `hot` now that we're bringing it up.
+          // (`evicted` is restored separately by `unarchiveSession`, which
+          // re-clones — it never reaches this branch with a live workspace.)
+          if (s?.diskTier === "light") {
+            sessionManager.setDiskTier(sid, "hot");
+          }
           const runner = runnerRegistry.getOrCreate(sid, dir, sessionAgentId);
           attachToRunner(runner);
         } else {
@@ -1261,6 +1311,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           });
         }
         if (dir) void checkGitIdentity(dir);
+        // docs/161 — after the session is up and the user has control, kick a
+        // background disk-tier escalation pass over the OTHER idle sessions
+        // (this one is excluded + guarded anyway). Never awaited — adds no
+        // latency to activation.
+        kickDiskEscalation(sid);
       };
 
       const checkGitIdentity = async (_sessionDir: string) => {

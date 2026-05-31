@@ -6,15 +6,20 @@ description: Decouple session *visibility* in the sidebar from *disk reclamation
 
 # 161 — Archival tiers and activity-based session listing
 
-> **Status note (first slice shipped):** Part 1 (listing decoupled from disk)
-> and Part 3's evicted fetch-fresh fix are implemented. `diskTier` exists but
-> only `hot`/`evicted` are wired — the `light` tier and the disk-idle escalation
-> ladder (Part 2) are still pending. `markMergedAndPruneExcess` is now
-> listing-only (no `fs.rm`, no auto-archive); demotion out of the sidebar is the
-> `filterVisibleInSidebar` predicate's job. In this slice every `evicted` session
-> is also `userArchived` (archive sets both), so the existing archived UI is
-> still correct; a distinct evicted-but-not-hidden state only appears once Part 2
-> lands. See `checklist.md` for the per-item status.
+> **Status note (Parts 1–3 shipped):** Part 1 (listing decoupled from disk),
+> Part 2 (the disk-idle escalation ladder), and Part 3 (fresh-fetch restore) are
+> implemented. `markMergedAndPruneExcess` is listing-only (no `fs.rm`, no
+> auto-archive); demotion out of the sidebar is the `filterVisibleInSidebar`
+> predicate's job. The full `hot → light → evicted` ladder now exists
+> (`escalateDiskTiers` in `disk-janitor.ts`): `hot → light` drops the
+> per-session `node_modules`/build volumes while keeping the checkout, and
+> `light → evicted` wipes the workspace (after auto-commit + push remediation of
+> a dirty tree). The pass is fired async after each session activation
+> (`kickDiskEscalation` in `index.ts`), never on the start path, and folds in a
+> disk-pressure LRU sweep. A `light` session restores by simply being selected
+> (`activateSession` flips it back to `hot`; the normal `agent.install` /
+> dep-cache path re-materializes deps). The remaining open items are
+> sidebar-grouping / `AllSessionsDialog` UI polish — see `checklist.md`.
 
 ## Problem
 
