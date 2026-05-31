@@ -8,6 +8,7 @@ interface AuthOverlayContainerProps {
   showOnboarding: boolean;
   onPasteCode: (code: string) => void;
   onApiKey: (key: string) => void;
+  onDismissAuth: () => void;
   // Onboarding props
   gitIdentityNeeded: boolean;
   agentList: AgentOption[];
@@ -31,6 +32,7 @@ export function AuthOverlayContainer({
   showOnboarding,
   onPasteCode,
   onApiKey,
+  onDismissAuth,
   gitIdentityNeeded,
   agentList,
   onGitIdentitySubmit,
@@ -53,6 +55,7 @@ export function AuthOverlayContainer({
           url={authUrl}
           onPasteCode={onPasteCode}
           onApiKey={onApiKey}
+          onDismiss={onDismissAuth}
         />
       )}
       {showOnboarding && (
