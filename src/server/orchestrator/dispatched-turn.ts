@@ -22,8 +22,20 @@ import type {
   SessionRunnerInterface,
   SystemTurnDeps,
   AgentDispatchOptions,
+  QueuedMessage,
 } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
+
+function queuedMessageToDispatchOptions(next: QueuedMessage): AgentDispatchOptions {
+  const nextOpts: AgentDispatchOptions = { text: next.text };
+  if (next.activity !== undefined) nextOpts.activity = next.activity;
+  if (next.images !== undefined) nextOpts.images = next.images;
+  if (next.files !== undefined) nextOpts.files = next.files;
+  if (next.uploads !== undefined) nextOpts.uploads = next.uploads;
+  if (next.permissionMode !== undefined) nextOpts.permissionMode = next.permissionMode;
+  if (next.reviewFilePath !== undefined) nextOpts.reviewFilePath = next.reviewFilePath;
+  return nextOpts;
+}
 
 /**
  * Run a single dispatched agent turn against the given runner.
@@ -43,6 +55,14 @@ export async function runDispatchedTurn(
   const agent = createAgent(agentId);
   runner.running = true;
   resetRunnerTurnState(runner, { reviewFilePath: opts.reviewFilePath ?? null });
+
+  const drainNextQueuedTurn = async (): Promise<void> => {
+    if (runner.queueLength === 0) return;
+    const next = runner.dequeue();
+    if (!next) return;
+    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    await runDispatchedTurn(runner, deps, agentId, queuedMessageToDispatchOptions(next), createAgent);
+  };
 
   // System-initiated user message: surface it as a user bubble in chat. The
   // WS path emits this via `system_user_message` (when the orchestrator
@@ -67,6 +87,7 @@ export async function runDispatchedTurn(
     fallbackTitle: text.slice(0, 80) || "Agent",
     capturedSessionId: runner.sessionId,
     ...(opts.permissionMode !== undefined ? { requestedPermissionMode: opts.permissionMode } : {}),
+    onError: drainNextQueuedTurn,
   });
 
   // Post-turn: auto-commit + auto-push + PR card + queue drain. The listener
@@ -161,26 +182,19 @@ export async function runDispatchedTurn(
     // drain branch below can run.
     runner.running = false;
     if (runner.queueLength > 0) {
-      const next = runner.dequeue();
-      if (next) {
-        runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-        // docs/150 — thread every QueuedMessage field through, not just `text`.
-        const nextOpts: AgentDispatchOptions = { text: next.text };
-        if (next.activity !== undefined) nextOpts.activity = next.activity;
-        if (next.images !== undefined) nextOpts.images = next.images;
-        if (next.files !== undefined) nextOpts.files = next.files;
-        if (next.uploads !== undefined) nextOpts.uploads = next.uploads;
-        if (next.permissionMode !== undefined) nextOpts.permissionMode = next.permissionMode;
-        if (next.reviewFilePath !== undefined) nextOpts.reviewFilePath = next.reviewFilePath;
-        void runDispatchedTurn(runner, deps, agentId, nextOpts, createAgent);
-        return;
-      }
+      void drainNextQueuedTurn();
+      return;
     }
 
     deps.listenerDeps.sseBroadcast("session_agent_finished", { sessionId: runner.sessionId });
     runner.onAgentFinished();
   });
 
-  const runParams = await deps.buildRunParams(runner.sessionId, agentId, text);
-  agent.run(runParams);
+  try {
+    const runParams = await deps.buildRunParams(runner.sessionId, agentId, text);
+    agent.run(runParams);
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    agent.emit("error", error);
+  }
 }

@@ -1066,6 +1066,9 @@ export function wireAgentListeners(
         });
       }
     }
+    if (turnSessionId) {
+      deps.sseBroadcast("session_agent_finished", { sessionId: turnSessionId });
+    }
   });
 
   agent.on("error", async (err: Error) => {
@@ -1124,6 +1127,9 @@ export function wireAgentListeners(
         });
       }
       runner.onAgentFinished();
+    }
+    if (turnSessionId) {
+      deps.sseBroadcast("session_agent_finished", { sessionId: turnSessionId });
     }
 
     // Drain the next queued message so a transient /agent/start failure
