@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 360" font-family="sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+  <rect width="600" height="360" fill="url(#bg)" rx="12"/>
+  <text x="300" y="40" fill="#e2e8f0" font-size="20" font-weight="bold" text-anchor="middle">ShipIt — Three-Layer Architecture</text>
+
+  <!-- Browser -->
+  <rect x="60" y="90" width="140" height="70" rx="10" fill="#1d4ed8" opacity="0.85"/>
+  <text x="130" y="120" fill="#fff" font-size="15" font-weight="bold" text-anchor="middle">Browser</text>
+  <text x="130" y="140" fill="#bfdbfe" font-size="11" text-anchor="middle">React SPA</text>
+
+  <!-- Orchestrator -->
+  <rect x="230" y="90" width="140" height="70" rx="10" fill="#7c3aed" opacity="0.85"/>
+  <text x="300" y="120" fill="#fff" font-size="15" font-weight="bold" text-anchor="middle">Orchestrator</text>
+  <text x="300" y="140" fill="#ddd6fe" font-size="11" text-anchor="middle">Fastify</text>
+
+  <!-- Session worker -->
+  <rect x="400" y="90" width="140" height="70" rx="10" fill="#059669" opacity="0.85"/>
+  <text x="470" y="116" fill="#fff" font-size="15" font-weight="bold" text-anchor="middle">Session</text>
+  <text x="470" y="134" fill="#fff" font-size="15" font-weight="bold" text-anchor="middle">Worker</text>
+  <text x="470" y="151" fill="#a7f3d0" font-size="11" text-anchor="middle">Docker container</text>
+
+  <!-- Arrows -->
+  <line x1="200" y1="125" x2="228" y2="125" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="370" y1="125" x2="398" y2="125" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <text x="214" y="116" fill="#94a3b8" font-size="9" text-anchor="middle">WS</text>
+  <text x="384" y="116" fill="#94a3b8" font-size="9" text-anchor="middle">HTTP/SSE</text>
+
+  <!-- Footer note -->
+  <rect x="60" y="220" width="480" height="90" rx="10" fill="rgba(148,163,184,0.1)" stroke="rgba(148,163,184,0.25)"/>
+  <text x="80" y="248" fill="#cbd5e1" font-size="12">• Commands flow orchestrator → container over HTTP</text>
+  <text x="80" y="270" fill="#cbd5e1" font-size="12">• Events stream container → orchestrator over SSE</text>
+  <text x="80" y="292" fill="#cbd5e1" font-size="12">• Browser dual-channel: per-session WS + global SSE</text>
+</svg>
