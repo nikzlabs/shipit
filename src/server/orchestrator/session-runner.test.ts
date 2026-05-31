@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { EventEmitter } from "node:events";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
 import type { AgentId } from "../shared/types.js";
 
@@ -193,6 +194,60 @@ describe("SessionRunner", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(fakeAgent.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "fix ci" }));
     runner.dispose({ force: true });
+  });
+
+  it("dispatch clears running state and broadcasts finished when startup preparation fails", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const fakeAgent = new EventEmitter() as any;
+    fakeAgent.run = vi.fn();
+    fakeAgent.kill = vi.fn();
+    const sseBroadcast = vi.fn();
+    const chatHistoryAppend = vi.fn();
+    const received: any[] = [];
+    runner.on("message", (msg) => received.push(msg));
+    runner.setSystemTurnDeps({
+      agentFactory: () => fakeAgent,
+      autoCommit: vi.fn(),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: {
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn() } as any,
+        chatHistoryManager: {
+          replaceInProgress: vi.fn(),
+          finalizeInProgress: vi.fn(),
+          append: chatHistoryAppend,
+        } as any,
+        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
+        authManager: { startOAuthFlow: vi.fn() } as any,
+        sseBroadcast,
+        broadcastLog: vi.fn(),
+        getSelectedModel: () => undefined,
+      },
+      buildRunParams: vi.fn().mockRejectedValue(new Error("run params failed")),
+    });
+
+    runner.dispatch({ text: "fix ci" });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fakeAgent.run).not.toHaveBeenCalled();
+    expect(runner.running).toBe(false);
+    expect(sseBroadcast).toHaveBeenCalledWith("session_agent_finished", { sessionId: "s1" });
+    expect(received).toContainEqual(expect.objectContaining({
+      type: "session_status",
+      sessionId: "s1",
+      running: false,
+      error: "Agent process error: run params failed",
+    }));
+    expect(chatHistoryAppend).toHaveBeenCalledWith("s1", expect.objectContaining({
+      role: "assistant",
+      text: "Error: run params failed",
+      isError: true,
+    }));
+    runner.dispose();
   });
 
   it("dispatch falls back to enqueue when idle with no deps", () => {

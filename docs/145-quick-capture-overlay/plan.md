@@ -249,6 +249,17 @@ sibling sessions from inside an agent turn. It is the proven shape of
    The overlay closes; the user stays where they were. The new session
    appears in the sidebar with the existing "running" indicator.
 
+Startup failure hardening: the headless route necessarily dispatches the
+first turn without a WebSocket viewer attached, so the server-dispatched
+turn path must treat startup preparation and worker launch failures as
+terminal turn failures, not background promise rejections. If run-parameter
+assembly or launch throws after `runner.dispatch()` has synchronously marked
+the runner running, the listener path now appends an assistant error row,
+emits `session_status { running: false }`, broadcasts
+`session_agent_finished`, and drains any queued turn. This prevents the
+quick session from being created with the prompt recorded but no agent work
+starting and no visible recovery signal.
+
 What is **new** server-side:
 
 - A new HTTP route or service entry point — name TBD, "headless session"
