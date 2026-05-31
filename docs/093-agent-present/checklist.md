@@ -54,7 +54,7 @@ Tracking Tier 1 (inline artifacts). Tier 2 (scratch dir) is deferred.
 
 - [x] Add `src/server/shipit-docs/present.md` describing the `present` tool, when to use it vs `Write`, and size limits
 - [x] Update `plan.md` status to `in-progress` when work starts
-- [ ] Update `plan.md` status to `done` when shipping
+- [x] Update `plan.md` status to `done` when shipping
 - [x] Check off items above as they land
 
 ## Verification
