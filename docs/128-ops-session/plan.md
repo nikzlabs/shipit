@@ -301,6 +301,50 @@ independently.)
     the agent container so `DOCKER_HOST=tcp://docker-socket-proxy:2375` resolves
     by compose DNS.
 
+4b. **Provisioning bugs found by the live audit (host `shipit-16gb`).** Running
+    the embedded `prompts/verify-ops-access.md` recipe on a real host surfaced
+    three regressions that the unit tests had missed:
+
+    - **`DOCKER_HOST` pointed at the read-write session proxy.** Because the ops
+      `shipit.yaml` declares `compose.docker-socket: true` (step 4a),
+      `resolveAgentDockerLimits` derived agent `dockerAccess: true`, and
+      `buildEnv` checked `dockerAccess` *before* `opsSession` — so the agent got
+      the write-capable, session-scoping proxy (host-blind for reads, write-
+      forwarding) instead of the hardened read-only `docker-socket-proxy:2375`.
+      Fix: `buildContainerConfig` now forces `dockerAccess: false` for ops
+      sessions (so the read-write proxy + its network are never created), and
+      `buildEnv` checks the ops gate first as a structural backstop. The
+      `compose.docker-socket` flag now only governs the proxy *service*, never
+      the *agent*.
+    - **`journalctl` + docker CLI were missing in prod (audit FAIL #4/#5/#14/#15).**
+      This had two layers. (a) `journalctl` wasn't installed in the docker-capable
+      image; fixed by installing `systemd` in `docker/Dockerfile.session-worker.docker`
+      (the binary reads the mounted journal dirs directly; not PID 1). (b) More
+      fundamentally, the docker-capable image **wasn't built or wired in prod at
+      all**: `dockerImageName` comes from `SESSION_WORKER_DOCKER_IMAGE`
+      (app-lifecycle.ts → `setDockerProxy`), which was unset, and `deploy.sh` built
+      only the base `shipit-session-worker:prod`. So docker/ops sessions fell back
+      to the base image (no `docker`/`journalctl`). Fixed by treating it like every
+      other image we build ourselves: a `session-worker-docker` build-only service
+      (`deployment/vps/docker-compose.yml`) layers the Docker CLI + journalctl on
+      `shipit-session-worker:prod` → `shipit-session-worker:docker`; `deploy.sh`
+      builds it right after the base image (a separate build step, no `--pull`,
+      since the base is local-only); and the orchestrator env sets
+      `SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker`. This also fixes
+      ordinary `capabilities.docker` sessions, which shared the same gap. A redeploy
+      must run `deploy.sh` (not the no-rebuild `restart.sh`) to build the new image.
+
+    - **Warm-standby bypass — checked, does not exist.** A natural worry is that an
+      ops session could be handed a pre-booted *warm standby*, which is built from
+      the base image (the warm pool calls `buildConfigForWorkspace` without
+      `opsSession`). It can't: `createStandby` is only called by the warm pool, which
+      runs per **repo URL**; a standby is keyed by the warm session's own id and is
+      claimed only when a session activates under that same id; a session inherits a
+      warm id only via the `repoUrl` claim path in `services/session.ts`. Ops sessions
+      are minted fresh with `kind="ops"` and **no `remoteUrl`**, so they never enter
+      the warm pool and always take the fresh-create path with the ops gate set. No
+      code change needed; the invariant is load-bearing and noted in the code.
+
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is
    no `kind` field today, session types are distinguished by ad-hoc

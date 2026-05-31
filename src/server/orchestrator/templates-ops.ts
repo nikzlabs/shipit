@@ -119,6 +119,9 @@ Paste one of these into chat instead of reconstructing the commands from memory:
   diagnose a single misbehaving session container.
 - [\`prompts/daily-health.md\`](prompts/daily-health.md) — a daily host-health
   snapshot.
+- [\`prompts/verify-ops-access.md\`](prompts/verify-ops-access.md) — verify that
+  every privilege in the design doc actually works on this host (run this first
+  on a freshly-provisioned ops host).
 
 ## How to act
 
@@ -202,6 +205,83 @@ Give me a quick read-only health snapshot of this ShipIt host.
 Report: overall verdict (healthy / degraded), and anything worth watching.
 `;
 
+const PROMPT_VERIFY_OPS_ACCESS = `# Verify ops session privileged access
+
+You are running inside a ShipIt **ops session** (docs/128). Verify that every
+privilege the design doc promises actually works on this live host, and that the
+boundaries it promises hold. Run the checks read-only, then give me a PASS/FAIL
+table with the evidence for each row. Do NOT attempt any destructive action
+beyond the explicitly-labeled "should be rejected" probes below.
+
+## A. Environment wiring
+1. \`printenv DOCKER_HOST\` — confirm it is exactly \`tcp://docker-socket-proxy:2375\`.
+2. \`getent hosts docker-socket-proxy\` — confirm the proxy resolves on the compose
+   network (non-empty, exit 0).
+3. Confirm the real socket is NOT mounted into THIS container:
+   \`ls -la /var/run/docker.sock 2>&1\` should be "No such file or directory".
+
+## B. Read-only Docker through the proxy (these must SUCCEED)
+4. \`docker info\` and \`docker version\` — daemon reachable through the proxy.
+5. \`docker ps -a --format 'table {{.Names}}\\t{{.Status}}'\` — list containers.
+6. Pick any running container and run \`docker inspect <name> --format '{{.State.Status}}'\`
+   and \`docker logs --tail 5 <name>\`.
+7. \`docker events --since 1m --until 1m\` (bounded so it returns) — events readable.
+8. \`docker stats --no-stream --format 'table {{.Name}}\\t{{.MemUsage}}'\` — stats readable.
+
+## C. Mutations through the proxy (these must be REJECTED)
+For each, report the exact error. They MUST fail (the proxy denies POST/exec):
+9.  \`docker stop <some-running-container-name>\` — expect denied (403/forbidden), NOT actually stopped.
+10. \`docker exec <some-running-container-name> echo hi\` — expect denied.
+11. \`docker run --rm hello-world\` — expect denied (image create/run is a POST).
+After running 9, re-check that the target container is still "Up" (proving it
+was a true no-op, not a real stop).
+
+## D. Journal host mounts (read-only)
+12. \`ls -ld /var/log/journal /run/log/journal 2>&1\` — at least one should exist
+    (persistent vs volatile depends on this host's journald Storage setting; if
+    only one exists that's expected, note which).
+13. From a mounted journal path, confirm it is READ-ONLY: try
+    \`touch /var/log/journal/__shipit_probe 2>&1\` (and the /run path) — expect
+    "Read-only file system". Do not leave any file behind.
+14. Read actual logs: \`journalctl --since "1 hour ago" --no-pager | tail -20\`.
+    If journalctl can't see the mounted dir, try
+    \`journalctl -D /var/log/journal --since "1 hour ago" --no-pager | tail -20\`
+    (or the /run path). Confirm you get real host log lines.
+15. Run one real investigation recipe end-to-end:
+    \`journalctl --since "24 hours ago" --no-pager | grep -E "LOOP DETECTED|SIGTERM|OOM|Killed" | tail -20\`
+    (empty output is fine — the point is the pipeline runs against host logs).
+
+## E. Negative boundaries (these must NOT be accessible)
+16. Confirm no extra host filesystem leaked in: there should be NO host bind of
+    \`/var/lib/docker\`, \`/root\`, \`/home\`, or the host \`/etc\`. Spot-check
+    \`mount | grep -E "/var/lib/docker|/root|/home"\` returns nothing host-related.
+
+## F. Service visibility
+17. Hit the ShipIt service API for this session and confirm \`docker-socket-proxy\`
+    shows up as a running service (it should auto-start):
+    \`curl -s http://\${SHIPIT_HOST}:\${SHIPIT_PORT}/api/sessions/\${SHIPIT_SESSION_ID}/services\`
+    and, if listed,
+    \`curl -s ".../services/docker-socket-proxy/logs?lines=30"\`.
+
+## Output
+Produce a markdown table: | Check | Expected | Observed | PASS/FAIL |.
+Then a one-line overall verdict. For any FAIL, quote the exact command + error so
+it can be fixed. Do not summarize as "working" unless B+D actually returned real
+host data and C was actually rejected.
+
+## Reading the result
+- **B** (real Docker data) and **D** (real host journal lines) are the core
+  capabilities — they must pass.
+- **C failing is success**: the proxy is supposed to reject mutations. If
+  \`docker stop\` actually works, the proxy hardening has regressed — flag it.
+- **D may legitimately half-pass**: on a \`Storage=volatile\` host only
+  \`/run/log/journal\` exists; on a host with no systemd journal, neither does
+  (fall back to \`docker logs\`). Confirm the host has a journal before assuming
+  a code bug.
+- If **F** shows the proxy missing while **B** works, that's a reporting gap,
+  not a functional break.
+`;
+
 export const OPS_TEMPLATE: ProjectTemplate = {
   id: OPS_TEMPLATE_ID,
   name: "Ops session",
@@ -215,5 +295,6 @@ export const OPS_TEMPLATE: ProjectTemplate = {
     "prompts/investigate-loop.md": PROMPT_INVESTIGATE_LOOP,
     "prompts/diagnose-stuck-session.md": PROMPT_DIAGNOSE_STUCK_SESSION,
     "prompts/daily-health.md": PROMPT_DAILY_HEALTH,
+    "prompts/verify-ops-access.md": PROMPT_VERIFY_OPS_ACCESS,
   },
 };

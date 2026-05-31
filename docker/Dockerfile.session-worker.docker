@@ -1,14 +1,23 @@
 # Docker-capable session worker image.
-# Extends the dev session worker image with Docker CLI (client only, no daemon).
-# Used when a session has `capabilities.docker: true` in shipit.yaml.
-# The Docker CLI talks to the host daemon via DOCKER_HOST env var pointing
-# to the orchestrator's Docker API proxy.
+# Extends a base session worker image with the Docker CLI (client only, no
+# daemon) and `journalctl`. Used for two cases:
+#   - sessions with `capabilities.docker: true` in shipit.yaml, and
+#   - docs/128 ops sessions (read-only Docker via proxy + host journal mounts).
+# The Docker CLI talks to a daemon via the DOCKER_HOST env var pointing at the
+# orchestrator's Docker API proxy (read-write for docker sessions, the hardened
+# read-only docker-socket-proxy for ops sessions).
+#
+# BASE_IMAGE selects what we layer on top of:
+#   - dev:  shipit-session-worker:dev   (default — local builds)
+#   - prod: shipit-session-worker:prod  (deployment/vps/docker-compose.yml passes
+#           this; the `session-worker-docker` build-only service tags the result
+#           shipit-session-worker:docker, which the orchestrator selects via
+#           SESSION_WORKER_DOCKER_IMAGE). Build it AFTER the base image exists.
 #
 # Build with:
-#   docker build -f docker/Dockerfile.session-worker.docker .
-#
-# Requires the dev image to be built first (or use --build-arg to override):
-#   docker build -f docker/Dockerfile.session-worker.dev -t shipit-session-worker:dev .
+#   docker build -f docker/Dockerfile.session-worker.docker \
+#     --build-arg BASE_IMAGE=shipit-session-worker:prod \
+#     -t shipit-session-worker:docker .
 
 ARG BASE_IMAGE=shipit-session-worker:dev
 FROM ${BASE_IMAGE}
@@ -23,3 +32,13 @@ RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
     curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-${ARCH}" \
     -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# docs/128 — `journalctl` for ops sessions. The ops agent reads the host's
+# read-only journal mounts (/var/log/journal, /run/log/journal) that the
+# investigation prompts rely on. The binary ships in the `systemd` package;
+# installing it does NOT make systemd PID 1 — `journalctl` reads the mounted
+# journal directories directly (e.g. `journalctl -D /var/log/journal`), which is
+# all an ops session needs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    systemd \
+    && rm -rf /var/lib/apt/lists/*

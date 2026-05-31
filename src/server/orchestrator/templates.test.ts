@@ -71,6 +71,7 @@ describe("getTemplate", () => {
         "prompts/investigate-loop.md",
         "prompts/diagnose-stuck-session.md",
         "prompts/daily-health.md",
+        "prompts/verify-ops-access.md",
       ]),
     );
     // The proxy mounts the real socket read-only; nothing else gets it.

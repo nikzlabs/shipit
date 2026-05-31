@@ -3,7 +3,10 @@
 #
 # Usage:
 #   docker compose build session-worker shipit
+#   docker compose build session-worker-docker   # after session-worker (layers on :prod)
 #   docker compose up -d
+#
+# (deploy.sh runs these in the right order.)
 
 name: shipit
 
@@ -29,6 +32,12 @@ services:
       - CREDENTIALS_VOLUME=shipit_credentials
       - DOCKER_NETWORK=shipit
       - SESSION_WORKER_IMAGE=shipit-session-worker:prod
+      # docs/128 — docker-capable session image (Docker CLI + journalctl) used
+      # for `capabilities.docker` sessions and ops sessions. Without this the
+      # orchestrator falls back to the base image, so `docker`/`journalctl` are
+      # missing and docker/ops sessions can't run their tooling. Built by the
+      # `session-worker-docker` service below.
+      - SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker
       - DOCKER_STACK=shipit
       # Session containers call back into the orchestrator for agent-owned
       # operations such as review comments and PR creation. Use the stable
@@ -64,6 +73,21 @@ services:
       context: ../..
       dockerfile: docker/Dockerfile.session-worker.prod
     image: shipit-session-worker:prod
+    profiles:
+      - build-only
+
+  # docs/128 — docker-capable session image: the prod session worker plus the
+  # Docker CLI and journalctl. Layers on shipit-session-worker:prod (BASE_IMAGE),
+  # so it MUST be built after `session-worker` and WITHOUT --pull (the base is
+  # local-only). deploy.sh handles the ordering. Selected at runtime via
+  # SESSION_WORKER_DOCKER_IMAGE for `capabilities.docker` and ops sessions.
+  session-worker-docker:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.session-worker.docker
+      args:
+        BASE_IMAGE: shipit-session-worker:prod
+    image: shipit-session-worker:docker
     profiles:
       - build-only
 

@@ -27,7 +27,9 @@
 
 - [x] `src/server/shipit-docs/ops-session.md` — agent-facing read-only contract.
 - [x] `docker/ops-session/docker-compose.proxy.yml` — canonical hardened proxy reference.
-- [x] Embedded prompts: investigate-loop, diagnose-stuck-session, daily-health.
+- [x] Embedded prompts: investigate-loop, diagnose-stuck-session, daily-health,
+      verify-ops-access (live PASS/FAIL self-check covering Docker proxy, journal
+      mounts, read-only enforcement, and the negative boundaries).
 
 ## Tests
 
@@ -39,8 +41,50 @@
 - [x] `services/templates.test.ts` — `applyTemplate` stamps kind, rejects existing sessionId.
 - [x] `SessionSidebar.test.tsx` — ops session renders in Host/Ops group, not a repo group.
 
+## Provisioning fixes from the live audit (host `shipit-16gb`)
+
+- [x] **`DOCKER_HOST` precedence (audit FAIL #1/#11).** The ops `shipit.yaml`
+      declares `compose.docker-socket: true` (so the proxy *sibling* may mount the
+      socket), and `resolveAgentDockerLimits` derives the *agent's* `dockerAccess`
+      from that same flag — so an ops session reached `buildEnv` with both flags and
+      got the **read-write** session proxy (host-blind for reads, write-forwarding).
+      Fix: `buildContainerConfig` forces `dockerAccess: false` for ops sessions, and
+      `buildEnv` checks the ops gate *before* `dockerAccess` as a structural backstop.
+      Regression tests at both layers in `container-lifecycle.test.ts`.
+- [x] **`journalctl` in the docker-capable image (audit FAIL #14/#15).**
+      `docker/Dockerfile.session-worker.docker` now installs `systemd` (the binary
+      reads the mounted journal dirs directly; not PID 1).
+- [x] **Docker-capable image built + wired in prod (audit FAIL #4/#5/#14/#15 root
+      cause).** Prod previously left `SESSION_WORKER_DOCKER_IMAGE` unset and never
+      built the docker image, so docker/ops sessions fell back to the base image
+      (no `docker`/`journalctl`). Now: a `session-worker-docker` build-only service
+      (`deployment/vps/docker-compose.yml`) layers Docker CLI + journalctl on
+      `shipit-session-worker:prod` → `shipit-session-worker:docker`; `deploy.sh`
+      builds it after the base (separate step, no `--pull`, local base); the
+      orchestrator env sets `SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker`.
+      This also fixes ordinary `capabilities.docker` sessions, which had the same gap.
+
 ## Remaining
 
-- [ ] Manual smoke on a real ops-enabled host (Docker proxy reachability, journal mount presence).
+- [ ] Redeploy a host from this branch via `deploy.sh` (NOT the no-rebuild
+      `restart.sh` — the new `shipit-session-worker:docker` image must be built),
+      then re-run `prompts/verify-ops-access.md` and confirm all-PASS (B: full host
+      container list via `docker-socket-proxy:2375`; C: mutations rejected; D:
+      journal readable via `journalctl`).
+- [x] **Warm standby cannot serve an ops session (verified — no code change needed).**
+      Traced the full path: `createStandby` has a single caller, the warm pool
+      (`warm-pool-manager.ts`), which only runs per **repo URL**. A standby is keyed
+      by `config.sessionId` (the warm session's own minted id) and is only matched
+      when a session activates under that *same id*; a session inherits a warm id
+      only via the claim path in `services/session.ts`, which **requires `repoUrl`**.
+      Ops sessions are minted by `applyTemplate` with a fresh id, `kind="ops"`, and
+      **no `remoteUrl`** (`services/templates.ts`), so they never enter the warm pool
+      and never match a standby. On activation the runner factory finds no container
+      for the ops id → fresh-create with `opsSession: kind === "ops"` → docker-capable
+      image + ops wiring. The invariant is asserted in code comments
+      (`services/session.ts` "Ops sessions never come through here";
+      `services/templates.ts` "host-scoped, not repo-backed: no remoteUrl"). So the
+      docker-capable image fix above is sufficient; there is no base-image-standby
+      bypass to close.
 - [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (the gate is unit-tested; live verification pending).
