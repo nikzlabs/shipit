@@ -90,6 +90,76 @@ services:
     expect(worker?.preview).toBe("manual");
   });
 
+  it("allows the ops session proxy socket mount and starts it automatically", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    x-shipit-preview: auto
+    x-shipit-depends-on-install: false
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+`);
+
+    const composeCalls: string[][] = [];
+    const composeRunner: ComposeRunner = (args) => {
+      composeCalls.push(args);
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      if (args[0] === "inspect") {
+        return Promise.resolve(JSON.stringify([{
+          NetworkSettings: { Networks: { "shipit-session-test-session": { IPAddress: "172.20.0.9" } } },
+        }]));
+      }
+      return Promise.resolve(JSON.stringify({
+        Service: "docker-socket-proxy",
+        ID: "proxy-container",
+        State: "running",
+        ExitCode: 0,
+      }));
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      opsSession: true,
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+
+    expect(mgr.getService("docker-socket-proxy")).toMatchObject({
+      preview: "auto",
+      status: "running",
+      dependsOnInstall: false,
+    });
+    expect(composeCalls.some((args) =>
+      args.includes("up") && args.includes("docker-socket-proxy"),
+    )).toBe(true);
+  });
+
+  it("rejects the ops proxy socket mount for ordinary sessions", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    x-shipit-preview: auto
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+`);
+
+    const mgr = createManager(dir);
+
+    await expect(mgr.start()).rejects.toThrow("Docker socket");
+    expect(mgr.getServices()).toEqual([]);
+  });
+
   it("extracts host port from port mapping", async () => {
     const dir = setup();
     writeCompose(dir, `

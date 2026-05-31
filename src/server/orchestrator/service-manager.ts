@@ -115,6 +115,12 @@ export interface ServiceManagerOptions {
   workspaceSubpath?: string;
   /** Docker stack name (e.g. "shipit-dev") — propagated to compose labels for cleanup filtering. */
   stackName?: string;
+  /**
+   * docs/128 — server-authoritative ops session flag. Allows the hidden ops
+   * template's docker-socket-proxy service to mount the host Docker socket even
+   * though ordinary sessions cannot enable that by copying workspace files.
+   */
+  opsSession?: boolean;
   /** Called during start() to join the agent container to the compose network. */
   networkJoinFn?: (networkName: string) => Promise<void>;
   /**
@@ -206,6 +212,7 @@ export class ServiceManager extends EventEmitter {
   private readonly workspaceVolume?: string;
   private readonly workspaceSubpath?: string;
   private readonly stackName?: string;
+  private readonly opsSession: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
 
   // Collaborators — see the module docstring.
@@ -260,6 +267,7 @@ export class ServiceManager extends EventEmitter {
     this.workspaceVolume = opts.workspaceVolume;
     this.workspaceSubpath = opts.workspaceSubpath;
     this.stackName = opts.stackName;
+    this.opsSession = opts.opsSession ?? false;
     this.networkJoinFn = opts.networkJoinFn;
 
     this.secrets = new ServiceSecretsResolver({
@@ -496,7 +504,7 @@ export class ServiceManager extends EventEmitter {
 
     // Parse and validate
     const parsedServices = parseComposeFile(composePath, {
-      dockerSocket: this.composeConfig.dockerSocket,
+      dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
     });
 
     // Build service map
@@ -801,7 +809,7 @@ export class ServiceManager extends EventEmitter {
     try {
       const composePath = path.join(this.workspaceDir, this.composeConfig.file);
       parsedServices = parseComposeFile(composePath, {
-        dockerSocket: this.composeConfig.dockerSocket,
+        dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
       });
     } catch {
       // Compose file missing or invalid — there's nothing to apply secrets to.

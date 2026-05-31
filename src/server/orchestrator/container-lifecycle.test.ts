@@ -95,9 +95,6 @@ describe("buildMounts", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildMounts — ops session host mounts (docs/128)", () => {
-  // `/tmp` exists on every test host; the bogus path does not. The gate only
-  // binds sources that actually exist, so these two stand in for "journal
-  // present" vs "journal absent".
   const presentMount: HostMount = { source: "/tmp", target: "/var/log/journal", readOnly: true };
   const absentMount: HostMount = {
     source: "/nonexistent-shipit-ops-test-path-xyz",
@@ -105,10 +102,16 @@ describe("buildMounts — ops session host mounts (docs/128)", () => {
     readOnly: true,
   };
 
-  it("binds existing host paths read-only when opsSession is true", () => {
+  it("adds daemon-validated read-only bind mounts when opsSession is true", () => {
     const config = baseConfig({ opsSession: true, hostMounts: [presentMount] });
     const result = buildMounts(config, undefined, undefined);
-    expect(result.hostBinds).toContain("/tmp:/var/log/journal:ro");
+    expect(result.mounts).toContainEqual({
+      Type: "bind",
+      Source: "/tmp",
+      Target: "/var/log/journal",
+      ReadOnly: true,
+      BindOptions: { CreateMountpoint: false },
+    });
   });
 
   it("SECURITY: drops host mounts when opsSession is false even if hostMounts is forged", () => {
@@ -117,26 +120,42 @@ describe("buildMounts — ops session host mounts (docs/128)", () => {
     // `opsSession` is falsy here and nothing is bound.
     const config = baseConfig({ opsSession: false, hostMounts: [presentMount] });
     const result = buildMounts(config, undefined, undefined);
-    expect(result.hostBinds).toHaveLength(0);
+    expect(result.mounts.some((m) => m.Type === "bind")).toBe(false);
   });
 
   it("SECURITY: drops host mounts when opsSession is undefined", () => {
     const config = baseConfig({ hostMounts: [presentMount] });
     const result = buildMounts(config, undefined, undefined);
-    expect(result.hostBinds).toHaveLength(0);
+    expect(result.mounts.some((m) => m.Type === "bind")).toBe(false);
   });
 
-  it("skips a declared host mount whose source path does not exist", () => {
+  it("passes all declared ops host mounts to the Docker daemon without container-local fs preflight", () => {
     const config = baseConfig({ opsSession: true, hostMounts: [presentMount, absentMount] });
     const result = buildMounts(config, undefined, undefined);
-    expect(result.hostBinds).toContain("/tmp:/var/log/journal:ro");
-    expect(result.hostBinds.some((b) => b.includes("nonexistent"))).toBe(false);
+    expect(result.mounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Type: "bind",
+          Source: "/tmp",
+          Target: "/var/log/journal",
+          ReadOnly: true,
+          BindOptions: { CreateMountpoint: false },
+        }),
+        expect.objectContaining({
+          Type: "bind",
+          Source: "/nonexistent-shipit-ops-test-path-xyz",
+          Target: "/run/log/journal",
+          ReadOnly: true,
+          BindOptions: { CreateMountpoint: false },
+        }),
+      ]),
+    );
   });
 
   it("produces no host binds for an ops session with no declared mounts", () => {
     const config = baseConfig({ opsSession: true });
     const result = buildMounts(config, undefined, undefined);
-    expect(result.hostBinds).toHaveLength(0);
+    expect(result.mounts.some((m) => m.Type === "bind")).toBe(false);
   });
 });
 

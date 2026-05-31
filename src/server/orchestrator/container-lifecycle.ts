@@ -71,10 +71,9 @@ export interface LifecycleDeps {
 
 interface MountSpec {
   binds: string[];
-  /** docs/128 — read-only host bind mounts (journal paths), ops sessions only. */
-  hostBinds: string[];
   mounts: {
-    Type: "volume"; Source: string; Target: string; ReadOnly?: boolean;
+    Type: "bind" | "volume"; Source: string; Target: string; ReadOnly?: boolean;
+    BindOptions?: { Propagation?: string; CreateMountpoint?: boolean };
     VolumeOptions?: { Subpath?: string };
   }[];
   workspaceDir: string;
@@ -89,7 +88,6 @@ export function buildMounts(
   credentialsVolume: string | undefined,
 ): MountSpec {
   const binds: string[] = [];
-  const hostBinds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
   const workspaceDir = CONTAINER_WORKSPACE_DIR;
   // config.workspaceDir is the git repo directory (session.workspaceDir).
@@ -166,18 +164,22 @@ export function buildMounts(
   // `opsSession` set, so its mounts are silently dropped.
   if (config.opsSession && config.hostMounts) {
     for (const m of config.hostMounts) {
-      // Only bind a host path that actually exists — journald storage is
-      // platform-specific (/var/log/journal vs /run/log/journal), so the
-      // template declares both and we mount whichever is present. Docker would
-      // otherwise auto-create a missing source as an empty dir, masking the
-      // real journal and confusing the agent's investigation prompts.
-      if (fs.existsSync(m.source)) {
-        hostBinds.push(`${m.source}:${m.target}:ro`);
-      }
+      // Do not preflight with fs.existsSync(): in production the orchestrator
+      // runs in a container, so that would check the orchestrator filesystem
+      // rather than the Docker host. Let the Docker daemon validate the host
+      // source, but forbid creating a missing journal directory that would
+      // mask a misconfigured host as an empty mount.
+      mounts.push({
+        Type: "bind",
+        Source: m.source,
+        Target: m.target,
+        ReadOnly: true,
+        BindOptions: { CreateMountpoint: false },
+      });
     }
   }
 
-  return { binds, hostBinds, mounts, workspaceDir };
+  return { binds, mounts, workspaceDir };
 }
 
 export function buildEnv(
@@ -303,14 +305,11 @@ export async function createContainer(
     );
   }
 
-  const { binds, hostBinds, mounts, workspaceDir } = buildMounts(
+  const { binds, mounts, workspaceDir } = buildMounts(
     config,
     deps.workspaceVolume,
     deps.credentialsVolume,
   );
-  // docs/128 — privileged read-only host binds (ops sessions only) are appended
-  // to the regular workspace/credential binds.
-  const allBinds = [...binds, ...hostBinds];
 
   const env = buildEnv(
     config,
@@ -397,7 +396,7 @@ export async function createContainer(
         ...config.extraLabels,
       },
       HostConfig: {
-        Binds: allBinds.length > 0 ? allBinds : undefined,
+        Binds: binds.length > 0 ? binds : undefined,
         Mounts: mounts.length > 0 ? mounts as Parameters<typeof deps.docker.createContainer>[0]["HostConfig"] extends { Mounts?: infer M } ? M : never : undefined,
         Memory: config.memoryLimit,
         CpuQuota: config.cpuQuota,

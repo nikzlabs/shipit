@@ -34,6 +34,8 @@ const DOCKER_COMPOSE_YML = `# docs/128 — read-only Docker access for the ops s
 services:
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0
+    x-shipit-preview: auto
+    x-shipit-depends-on-install: false
     restart: unless-stopped
     environment:
       # --- allowed (read-only) ---

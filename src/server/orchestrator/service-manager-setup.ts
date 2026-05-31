@@ -397,6 +397,7 @@ export function setupServiceManager(
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
     stackName: process.env.DOCKER_STACK,
+    opsSession: session?.kind === "ops",
     secretsLoader,
     mcpAgentEnvLoader,
     platformCredentials,
