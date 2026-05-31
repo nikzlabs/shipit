@@ -461,14 +461,16 @@ export class StreamingClaudeProcess extends EventEmitter {
     };
     this.writeToStdin(`${JSON.stringify(msg)}\n`);
 
-    const forceKillTimer = setTimeout(() => {
-      if (this.proc) {
-        console.warn("[streaming-claude] Force killing after interrupt timeout");
-        this.kill();
-      }
-    }, 5000);
-
-    this.proc?.on("close", () => clearTimeout(forceKillTimer));
+    // docs/140 — DO NOT force-kill the process on a streaming interrupt. Unlike
+    // the PTY one-shot path (where Ctrl+C genuinely exits the CLI), a streaming
+    // `control_request` interrupt is graceful by design: the CLI ends the
+    // current turn with a `result` (subtype `error_during_execution`) and keeps
+    // the persistent process alive for the next message. A 5s force-kill timer
+    // here always fired — the process never closes, so the timer SIGTERMs the
+    // still-alive process (exit 143), tearing down the persistent session and
+    // any turn the user steered into it after interrupting. The watchdog (armed
+    // on send, cleared on `result`) and idle eviction own teardown of a
+    // genuinely stuck process; interrupt must not.
   }
 
   /**
