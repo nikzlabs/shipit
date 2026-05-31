@@ -350,6 +350,7 @@ independently.)
       `journalctl …` recipe failed even though the journal mounts were present
       and read-only. Fix: `docker/container-build/Dockerfile` installs `systemd`
       (the binary reads the mounted journal dirs directly; it is not PID 1).
+<<<<<<< HEAD
     - **Missing docker CLI when the image is misconfigured.** If
       `SESSION_DOCKER_IMAGE` is unset, an ops session silently boots on the base
       image with no `docker`/`journalctl`. `createContainer` now logs a loud
@@ -358,6 +359,22 @@ independently.)
       a host that predates that, or serves the ops session from a base-image
       warm standby, will hit this — see the open follow-up below).
 >>>>>>> e43ce7934 (You're right on the lock file, and the audit report is genuinely valuable — it proves my earlier "everything should work)
+=======
+    - **Missing docker CLI + journalctl in prod (deployment gap, not yet
+      closed).** `dockerImageName` comes from the `SESSION_WORKER_DOCKER_IMAGE`
+      env (app-lifecycle.ts → `setDockerProxy`). In prod that env is **unset**
+      (`deployment/vps/docker-compose.yml` only sets `SESSION_WORKER_IMAGE`), and
+      the deploy builds only the base `shipit-session-worker:prod` image — which
+      has neither the docker CLI nor `journalctl`. So ops sessions fall back to
+      the base image and the recipes can't run (audit FAIL #4/#5/#14/#15). The
+      `journalctl` install added here lives in `Dockerfile.session-worker.docker`
+      (extends `:dev`), which prod does not build or reference. Closing this needs
+      a docker-capable **prod** image (docker CLI + journalctl on top of
+      `:prod`), built in `deploy.sh`, with `SESSION_WORKER_DOCKER_IMAGE` set to
+      it. `createContainer` now logs a loud warning when an ops session boots
+      without that env so the half-provisioned state is visible. See the
+      deployment follow-up in `checklist.md`.
+>>>>>>> 6b7020338 (Everything's clean now. Final state:)
 
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is

@@ -44,6 +44,9 @@
 ## Provisioning fixes from the live audit (host `shipit-16gb`)
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 6b7020338 (Everything's clean now. Final state:)
 - [x] **`DOCKER_HOST` precedence (audit FAIL #1/#11).** The ops `shipit.yaml`
       declares `compose.docker-socket: true` (so the proxy *sibling* may mount the
       socket), and `resolveAgentDockerLimits` derives the *agent's* `dockerAccess`
@@ -55,6 +58,7 @@
 - [x] **`journalctl` in the docker-capable image (audit FAIL #14/#15).**
       `docker/Dockerfile.session-worker.docker` now installs `systemd` (the binary
       reads the mounted journal dirs directly; not PID 1).
+<<<<<<< HEAD
 - [x] **Docker-capable image built + wired in prod (audit FAIL #4/#5/#14/#15 root
       cause).** Prod previously left `SESSION_WORKER_DOCKER_IMAGE` unset and never
       built the docker image, so docker/ops sessions fell back to the base image
@@ -105,18 +109,35 @@
       installs `systemd`) so the journal recipes run. Fixes audit FAIL #14/#15.
 - [x] Loud warning when an ops session boots without `SESSION_DOCKER_IMAGE` (base
       image → no `docker`/`journalctl`), instead of silently half-provisioning.
+=======
+- [x] **Loud startup warning** when an ops session boots without
+      `SESSION_WORKER_DOCKER_IMAGE` set (→ base image, no `docker`/`journalctl`),
+      instead of silently half-provisioning. (`createContainer`.)
+>>>>>>> 6b7020338 (Everything's clean now. Final state:)
 
-## Remaining
+## Remaining — deployment gap (this is why the audit saw no `docker`/`journalctl`)
 
+**Root cause found:** in prod, `SESSION_WORKER_DOCKER_IMAGE` is **not set** in
+`deployment/vps/docker-compose.yml`, and the deploy only builds the base
+`shipit-session-worker:prod` image (`deploy.sh … build session-worker shipit`).
+That base image has neither the docker CLI nor `journalctl`. So `dockerImageName`
+is `undefined` at runtime and ops sessions fall back to the base image — exactly
+the audit's FAIL #4/#5/#14/#15. The `journalctl` fix above lands in
+`Dockerfile.session-worker.docker`, which extends `:dev` and is **not built or
+referenced in prod** — so prod needs the wiring below before any of this helps.
+
+- [ ] **Build a docker-capable PROD session image** (docker CLI + `journalctl` on
+      top of `shipit-session-worker:prod`) and build it in `deploy.sh`.
+- [ ] **Set `SESSION_WORKER_DOCKER_IMAGE`** to that image in the prod orchestrator
+      env (`deployment/vps/docker-compose.yml`), so `setDockerProxy` passes it to
+      `dockerImageName` and ops/docker sessions boot the capable image. Until then
+      the new startup warning will fire on every ops session.
 - [ ] Re-run `prompts/verify-ops-access.md` on a host deployed from this branch and
-      confirm the PASS/FAIL table is all-PASS (B returns full host container list via
-      `docker-socket-proxy:2375`, C mutations rejected, D journal readable via `journalctl`).
-- [ ] Verify host `shipit-16gb` is redeployed with `SESSION_DOCKER_IMAGE` set to the
-      docker-capable image — the audit showed `docker`/`journalctl` absent, which means
-      it was running the base image (stale deploy or base-image warm standby).
-- [ ] Follow-up: confirm an ops session is never served from a base-image **warm
-      standby** (`warm-pool-manager.ts` creates standbys with the generic image and has
-      no ops/image awareness). If it can be, ops sessions must force a fresh
+      confirm all-PASS (B: full host container list via `docker-socket-proxy:2375`;
+      C: mutations rejected; D: journal readable via `journalctl`).
+- [ ] Confirm an ops session is never served from a base-image **warm standby**
+      (`warm-pool-manager.ts` creates standbys with the generic image and has no
+      ops/image awareness). If it can be, ops sessions must force a fresh
       docker-capable container instead of claiming a base-image standby.
 >>>>>>> e43ce7934 (You're right on the lock file, and the audit report is genuinely valuable — it proves my earlier "everything should work)
 - [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end

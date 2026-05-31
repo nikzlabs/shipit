@@ -341,23 +341,31 @@ export async function createContainer(
   // Use Docker-capable image when Docker access is requested, or for ops
   // sessions (docs/128) — the ops agent runs `docker ps/logs/inspect` against
   // the read-only proxy (and `journalctl` over the journal mounts), so it needs
+<<<<<<< HEAD
   // the docker CLI + journalctl baked into that image (docker/container-build).
 >>>>>>> e43ce7934 (You're right on the lock file, and the audit report is genuinely valuable — it proves my earlier "everything should work)
+=======
+  // the docker CLI + journalctl baked into that image
+  // (docker/Dockerfile.session-worker.docker, selected via SESSION_WORKER_DOCKER_IMAGE).
+>>>>>>> 6b7020338 (Everything's clean now. Final state:)
   const imageName = ((config.dockerAccess || config.opsSession) && deps.dockerImageName)
     ? deps.dockerImageName
     : config.imageName;
 
   // docs/128 — fail loudly rather than silently hand an ops session a base image
-  // with no `docker`/`journalctl`. This is the half-provisioned state the audit
-  // hit (FAIL #4/#14): the agent boots, DOCKER_HOST is set, but the documented
-  // recipes can't run. The deployment must set SESSION_DOCKER_IMAGE to the
-  // docker-capable image (see deployment/vps/docker-compose.yml).
+  // with no `docker`/`journalctl`. This is the half-provisioned state the live
+  // audit hit (FAIL #4/#14): the agent boots, DOCKER_HOST is set, but the
+  // documented recipes can't run. `deps.dockerImageName` comes from the
+  // SESSION_WORKER_DOCKER_IMAGE env (app-lifecycle.ts → setDockerProxy); when it
+  // is unset the ops agent falls back to the base session image. The deployment
+  // must set SESSION_WORKER_DOCKER_IMAGE to a docker-capable image (see the
+  // deployment follow-up in docs/128-ops-session/checklist.md).
   if (config.opsSession && !deps.dockerImageName) {
     console.warn(
       `[containers] OPS SESSION ${config.sessionId} is starting on the base image ` +
-      `because SESSION_DOCKER_IMAGE is not configured — the agent will lack the ` +
-      `docker CLI and journalctl, so the ops investigation recipes will not run. ` +
-      `Set SESSION_DOCKER_IMAGE to the docker-capable image (docker/container-build).`,
+      `because SESSION_WORKER_DOCKER_IMAGE is not configured — the agent will lack ` +
+      `the docker CLI and journalctl, so the ops investigation recipes will not run. ` +
+      `Set SESSION_WORKER_DOCKER_IMAGE to a docker-capable image.`,
     );
   }
 
