@@ -181,6 +181,36 @@ describe("auto-resolve-conflicts integration", () => {
     expect(result).toMatchObject({ type: "auto_resolve_result", outcome: "success", attempt: 1 });
   });
 
+  it("1b. user message queued during auto-resolve drains only after rebase completes", { timeout: 20_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    credentialStore.setAutoResolveConflicts(true);
+    const { sessionId, sessionDir } = await createSession();
+    setupConflictingDivergence(sessionDir);
+
+    const manager = app.prStatusPoller?.autoConflictResolveManager;
+    await manager!.handleTransition(sessionId, makeConflictingSummary(sessionId), "main", "sha-1");
+
+    await waitForMessage("auto_resolve_started");
+    await waitForMessage("rebase_started");
+    await waitForMessage("rebase_conflicts");
+
+    const conflictAgent = await waitForClaude(() => latestClaude);
+    client.send({ type: "send_message", text: "queued during auto-resolve", sessionId });
+    await waitForMessage("message_queued");
+
+    fs.writeFileSync(path.join(sessionDir, "shared.txt"), "merged\n");
+    conflictAgent.finish("test-session-1");
+
+    await waitForMessage("rebase_complete", 10_000);
+    await waitForMessage("auto_resolve_result", 5_000);
+
+    const queuedAgent = await waitForClaude(() => latestClaude, conflictAgent);
+    expect(queuedAgent.lastPrompt).toContain("queued during auto-resolve");
+    queuedAgent.finish("test-session-2");
+    const status = await waitForMessage("session_status", 5_000);
+    expect(status).toMatchObject({ type: "session_status", running: false, queueLength: 0 });
+  });
+
   it("2. setting off → no rebase invocation", { timeout: 10_000 }, async () => {
     await githubAuth.setToken("test-token");
     credentialStore.setAutoResolveConflicts(false);

@@ -370,6 +370,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
   repoPrefetcher?.start();
 
+  const drainQueueForSession = (sessionId: string): void => {
+    const runner = runnerRegistry.get(sessionId);
+    if (!runner || runner.running || runner.queueLength === 0) return;
+    const next = runner.dequeue();
+    if (!next) return;
+    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    runner.dispatch({
+      text: next.text,
+      ...(next.activity !== undefined ? { activity: next.activity } : {}),
+      ...(next.images !== undefined ? { images: next.images } : {}),
+      ...(next.files !== undefined ? { files: next.files } : {}),
+      ...(next.uploads !== undefined ? { uploads: next.uploads } : {}),
+      ...(next.permissionMode !== undefined ? { permissionMode: next.permissionMode } : {}),
+      ...(next.reviewFilePath !== undefined ? { reviewFilePath: next.reviewFilePath } : {}),
+    });
+  };
+
   // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({
     deps, githubAuthManager, sessionManager, sseBroadcast,
@@ -391,6 +408,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     usageManager,
     authManager,
     credentialStore,
+    drainQueueForSession,
     ...(agentFactory ? { agentFactory } : {}),
   });
   // docs/149 — fill in the lazy reference that the system-turn PR-lifecycle
