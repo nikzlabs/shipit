@@ -71,11 +71,20 @@
       then re-run `prompts/verify-ops-access.md` and confirm all-PASS (B: full host
       container list via `docker-socket-proxy:2375`; C: mutations rejected; D:
       journal readable via `journalctl`).
-- [ ] Confirm an ops session is never served from a base-image **warm standby**
-      (`warm-pool-manager.ts` creates standbys with the generic image and has no
-      ops/image awareness). If it can be, ops sessions must force a fresh
-      docker-capable container instead of claiming a base-image standby.
-- [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
-      in a live environment (the gate is unit-tested; live verification pending).
+- [x] **Warm standby cannot serve an ops session (verified — no code change needed).**
+      Traced the full path: `createStandby` has a single caller, the warm pool
+      (`warm-pool-manager.ts`), which only runs per **repo URL**. A standby is keyed
+      by `config.sessionId` (the warm session's own minted id) and is only matched
+      when a session activates under that *same id*; a session inherits a warm id
+      only via the claim path in `services/session.ts`, which **requires `repoUrl`**.
+      Ops sessions are minted by `applyTemplate` with a fresh id, `kind="ops"`, and
+      **no `remoteUrl`** (`services/templates.ts`), so they never enter the warm pool
+      and never match a standby. On activation the runner factory finds no container
+      for the ops id → fresh-create with `opsSession: kind === "ops"` → docker-capable
+      image + ops wiring. The invariant is asserted in code comments
+      (`services/session.ts` "Ops sessions never come through here";
+      `services/templates.ts` "host-scoped, not repo-backed: no remoteUrl"). So the
+      docker-capable image fix above is sufficient; there is no base-image-standby
+      bypass to close.
 - [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (the gate is unit-tested; live verification pending).
