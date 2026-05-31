@@ -58,6 +58,9 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("gh pr edit");
     expect(out).toContain("stable rationale section");
     expect(out).toContain("raw logs");
+    expect(out).toContain("--body-file -");
+    expect(out).toContain("single-quoted heredoc");
+    expect(out).toContain("Shells evaluate backticks");
   });
 
   it("tells the agent not to use git state to decide whether to open a PR", () => {
