@@ -12,26 +12,26 @@
 - [ ] Reflect `diskTier` in `AllSessionsDialog` (deferred — in this slice every `evicted` session is also `userArchived`, so the existing archived UI is equivalent)
 
 ## Part 2 — Disk cleanup tiers (no new cron)
-- [ ] Bump a **separate `lastViewedAt`** on viewer attach (NOT `lastUsedAt` — that would corrupt `reopenedAfterMerge`); disk-idle age = `max(lastUsedAt, lastViewedAt)`
-- [ ] `container stop`: keep on existing idle-container enforcer (`docs/063`, cap-driven, event-driven) — no change to its trigger
-- [ ] Add tier-escalation logic to `disk-janitor.ts`: `hot → light` after `IDLE_LIGHT`, `light → evicted` after `IDLE_EVICT`, by `lastUsedAt` age
-- [ ] Invoke the escalation pass **async, after each session start** (never on the start path — no added start latency); this is the primary steady-state reclaim since prod deploys manually
-- [ ] Correct the `disk-janitor.ts` docstring's stale "auto-deploys on push / startup is frequent" claim — prod is manually deployed, so startup-only is insufficient; tier escalation is the one steadily-accumulating item
-- [ ] `hot → light` effect: drop `node_modules`/build via compose volume removal; keep checkout
-- [ ] `light → evicted` effect: existing workspace `fs.rm` path
-- [ ] Disk-pressure pass: LRU escalation between low/high water marks, checked on-demand (no timer), guards still apply
-- [ ] Remove disk reclamation from the merge path — merge becomes listing-only (no `fs.rm`)
-- [ ] Define constants (`IDLE_LIGHT`, `IDLE_EVICT`, `DISK_FREE_LOW/HIGH`) next to `MAX_MERGED_SESSIONS_PER_REPO`
-- [ ] Guards: not-running, no-attached-viewer, clean-tree before `evicted`
-- [ ] `light → evicted` dirty-tree remediation runs git on the **on-disk checkout** via `simpleGit(workspaceDir)` (container is stopped); skip eviction if `git push origin` fails (keep local commit at `light`)
-- [ ] Preserve parent/child breadcrumb guards
-- [ ] User-archive action: `userArchived = true` + `evicted` cleanup, cascade to children
+- [x] Bump a **separate `lastViewedAt`** on viewer attach (`SessionManager.setLastViewedAt`, called from `attachToRunner` in `index.ts`) — NOT `lastUsedAt`; disk-idle age = `max(lastUsedAt, lastViewedAt)` (`diskIdleAgeMs`)
+- [x] `container stop`: kept on existing idle-container enforcer (`docs/063`, cap-driven, event-driven) — no change to its trigger
+- [x] Add tier-escalation logic to `disk-janitor.ts` (`escalateDiskTiers`): `hot → light` after `IDLE_LIGHT_MS`, `light → evicted` after `IDLE_EVICT_MS`, by `max(lastUsedAt, lastViewedAt)` age
+- [x] Invoke the escalation pass **async, after each session start** (`kickDiskEscalation(sid)` at the tail of `activateSession`; never on the start path) — the primary steady-state reclaim since prod deploys manually
+- [x] Correct the `disk-janitor.ts` docstring's stale "auto-deploys on push / startup is frequent" claim — now states prod is manually deployed and that tier escalation lives in `escalateDiskTiers`, not the startup janitor
+- [x] `hot → light` effect (`reclaimToLight`): drop `node_modules`/build via compose volume removal (`removeVolumesOnDispose` / `ServiceManager.stop({ removeVolumes: true })` fallback); keep checkout
+- [x] `light → evicted` effect (`reclaimToEvicted`): workspace `fs.rm` + container destroy
+- [x] Disk-pressure pass (`applyDiskPressure`): LRU escalation between low/high water marks, checked on-demand via `statfsFreeBytes` (no timer), guards still apply
+- [x] Remove disk reclamation from the merge path — merge becomes listing-only (no `fs.rm`) — done in Part 1's `markMergedAndPruneExcess`
+- [x] Define constants (`IDLE_LIGHT_MS`, `IDLE_EVICT_MS` in `sessions.ts`; `DISK_FREE_LOW/HIGH` via env, threaded through `kickDiskEscalation`) — co-located near `MAX_MERGED_SESSIONS_PER_REPO`
+- [x] Guards (`canAutoDescend`): not-running, no-attached-viewer; clean-tree enforced inline before `evicted`
+- [x] `light → evicted` dirty-tree remediation runs git on the **on-disk checkout** via `createGitManager(workspaceDir)` (container is stopped); skips eviction if `git push origin` fails (keeps local commit at `light`, reported as `evictBlockedByPush`)
+- [x] Parent/child breadcrumbs preserved — the `evicted` rung keeps the session row + `parent_session_id`/metadata and restores via clone, so demotion never orphans a child (no destructive cascade like the old auto-archive)
+- [x] User-archive action: `userArchived = true` + `evicted` cleanup, cascade to children — `archiveSession` + `SessionManager.archive` (unchanged, already correct)
 
 ## Part 3 — Restore freshness
 - [x] `evicted` restore forces a fresh fetch (`fetchCache(ttlMs = 0)`); contract is "fetch ran + didn't error", NOT "HEAD advanced" (unchanged HEAD is normal)
 - [x] Separate fetch from clone in the retry loop: failed fetch → fall through to clone-from-cache + staleness warning (don't abort restore); clone errors keep their 3× retry
 - [x] Base restored branch on freshly-fetched `origin/<defaultBranch>` (already in place)
-- [ ] `light` restore reinstalls deps, preserves branch + checkout + uncommitted work (Part 2)
+- [x] `light` restore reinstalls deps, preserves branch + checkout + uncommitted work — selecting a `light` session flips it back to `hot` in `activateSession`; the normal container boot + `agent.install` / dep-cache path re-materializes `node_modules`
 
 ## Tests
 - [x] Unit: `filterVisibleInSidebar` / `reopenedAfterMerge` predicate cases (`sessions.test.ts`)
@@ -39,6 +39,6 @@
 - [x] Unit: `markMergedAndPruneExcess` no longer archives/disposes excess (`session-merge.test.ts`)
 - [x] Unit: disk-janitor preserves a hot merged session's branch when it fell out of `list()` (`disk-janitor.test.ts`)
 - [ ] Integration: merged session reopened (new turn) reappears in `list()` (deferred)
-- [ ] Integration: guards block destructive descent for running/open/dirty sessions (Part 2)
+- [x] Unit: escalation ladder + guards block destructive descent for running/open/recent sessions; dirty-tree push failure keeps a session at `light`; disk-pressure LRU sweep (`disk-tier-escalation.test.ts`)
 - [ ] Integration: `evicted` restore branch tip equals current `origin/main` tip (deferred)
 - [x] Migration semantics covered by archive/unarchive unit tests; disk-janitor tests insert `disk_tier='evicted'` rows directly
