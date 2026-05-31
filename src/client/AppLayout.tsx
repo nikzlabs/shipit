@@ -152,11 +152,23 @@ export function AppLayout({
           </h1>
         </div>
         {showConnectionBanner && (
-          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-[60vw] pointer-events-none flex justify-center">
-            <div className="pointer-events-auto">
-              <ConnectionBanner status={connectionStatus} reconnectAttempt={reconnectAttempt} onReconnect={onReconnect} />
+          isMobile ? (
+            // Mobile: float the pill just BELOW the header so it never overlaps
+            // (and blocks taps on) the title or the action buttons. Positioned
+            // with top-full so it overlays the content area without shifting
+            // layout when the connection blips.
+            <div className="absolute left-0 right-0 top-full z-30 flex justify-center px-3 pt-1.5 pointer-events-none">
+              <div className="pointer-events-auto max-w-full">
+                <ConnectionBanner status={connectionStatus} reconnectAttempt={reconnectAttempt} onReconnect={onReconnect} compact />
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-[60vw] pointer-events-none flex justify-center">
+              <div className="pointer-events-auto">
+                <ConnectionBanner status={connectionStatus} reconnectAttempt={reconnectAttempt} onReconnect={onReconnect} />
+              </div>
+            </div>
+          )
         )}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           <div className="hidden sm:contents">

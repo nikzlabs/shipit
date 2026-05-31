@@ -25,10 +25,16 @@ export function ConnectionBanner({
   status,
   reconnectAttempt = 0,
   onReconnect,
+  compact = false,
 }: {
   status: WsStatus;
   reconnectAttempt?: number;
   onReconnect?: () => void;
+  /**
+   * Compact layout for narrow (mobile) screens: shorter copy and a smaller
+   * "Reconnect" label so the whole pill fits on one line without overflowing.
+   */
+  compact?: boolean;
 }) {
   const prevStatusRef = useRef(status);
   const [showReconnected, setShowReconnected] = useState(false);
@@ -94,15 +100,19 @@ export function ConnectionBanner({
       )}
       <span>
         {isConnecting
-          ? "Reconnecting to server..."
-          : `Connection lost — waiting to reconnect${reconnectAttempt > 1 ? ` (attempt ${reconnectAttempt})` : ""}...`}
+          ? compact
+            ? "Reconnecting…"
+            : "Reconnecting to server..."
+          : compact
+            ? `Connection lost${reconnectAttempt > 1 ? ` (${reconnectAttempt})` : ""}`
+            : `Connection lost — waiting to reconnect${reconnectAttempt > 1 ? ` (attempt ${reconnectAttempt})` : ""}...`}
       </span>
       {!isConnecting && onReconnect && (
         <button
           onClick={onReconnect}
           className="ml-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-(--color-error)/20 hover:bg-(--color-error)/30 text-(--color-error) transition-colors"
         >
-          Reconnect now
+          {compact ? "Reconnect" : "Reconnect now"}
         </button>
       )}
     </div>
