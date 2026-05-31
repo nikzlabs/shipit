@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, LightningIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -118,7 +118,7 @@ interface SessionSidebarProps {
   onAddRepo: () => void;
   onCreateNewRepo: () => void;
   // Mobile drawer mode: full-width, no resize handle, no collapsed variant,
-  // and no top bar (dismissed via the header's Sessions toggle).
+  // and no top bar (toggled open/closed via the bottom tab bar's Sessions button).
   mobile?: boolean;
   // Called to dismiss the mobile drawer — e.g. after selecting a session.
   onClose?: () => void;
@@ -1024,17 +1024,6 @@ export function SessionSidebar({
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
         </Button>
         </WithTooltip>
-        <WithTooltip label="Quick session" side="right">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => useUiStore.getState().setQuickCaptureOpen(true)}
-          className="p-0! w-6 h-6 text-(--color-text-secondary) hover:text-(--color-text-primary)"
-          aria-label="Quick session"
-        >
-          <LightningIcon size={ICON_SIZE.SM} />
-        </Button>
-        </WithTooltip>
         <RepoSwitcher repos={repos} activeRepoUrl={useRepoStore.getState().activeRepoUrl} onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)} onAddRepo={onAddRepo} onCreateNew={onCreateNewRepo}>
         <Button
           variant="ghost"
@@ -1077,10 +1066,10 @@ export function SessionSidebar({
       className={`flex flex-col h-full bg-(--color-bg-primary) ${mobile ? "min-w-0 flex-1" : "border-r border-(--color-border-primary)"} min-h-0`}
       style={mobile ? undefined : { width }}
     >
-      {/* Top bar — desktop only. On mobile the drawer is dismissed via the
-          header's Sessions toggle, and the quick-session and repo-switcher
-          actions live in the header / bottom tab bar, so this strip would be
-          redundant. */}
+      {/* Top bar — desktop only. On mobile the drawer is toggled open/closed
+          via the bottom tab bar's Sessions button, and the repo switcher lives
+          in the header, so this strip would be redundant. Quick session lives
+          in the header on desktop and the bottom tab bar on mobile. */}
       {!mobile && (
         <div className="flex items-center gap-2 px-3 h-10.25 border-b border-(--color-border-primary) shrink-0">
           <WithTooltip label="Collapse sidebar">
@@ -1095,17 +1084,6 @@ export function SessionSidebar({
           </Button>
           </WithTooltip>
           <span className="flex-1" />
-          <WithTooltip label="Quick session">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => useUiStore.getState().setQuickCaptureOpen(true)}
-              className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
-              aria-label="Quick session"
-            >
-              <LightningIcon size={ICON_SIZE.SM} />
-            </Button>
-          </WithTooltip>
           <RepoSwitcher
             repos={repos}
             activeRepoUrl={useRepoStore.getState().activeRepoUrl}
