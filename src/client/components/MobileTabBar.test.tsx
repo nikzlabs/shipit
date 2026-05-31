@@ -14,6 +14,7 @@ function renderMobileTabBar(
       onChangePanel={() => {}}
       onOpenSessions={() => {}}
       onNewSession={() => {}}
+      onQuickSession={() => {}}
       onVoiceSession={() => {}}
       {...props}
     />,
@@ -31,6 +32,7 @@ describe("MobileTabBar", () => {
     renderMobileTabBar();
     expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New Session" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Quick session" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Voice quick session" })).toBeInTheDocument();
   });
 
@@ -72,15 +74,18 @@ describe("MobileTabBar", () => {
   it("calls action handlers from the center dock", () => {
     const onOpenSessions = vi.fn();
     const onNewSession = vi.fn();
+    const onQuickSession = vi.fn();
     const onVoiceSession = vi.fn();
-    renderMobileTabBar({ onOpenSessions, onNewSession, onVoiceSession });
+    renderMobileTabBar({ onOpenSessions, onNewSession, onQuickSession, onVoiceSession });
 
     fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
     fireEvent.click(screen.getByRole("button", { name: "New Session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Quick session" }));
     fireEvent.click(screen.getByRole("button", { name: "Voice quick session" }));
 
     expect(onOpenSessions).toHaveBeenCalledTimes(1);
     expect(onNewSession).toHaveBeenCalledTimes(1);
+    expect(onQuickSession).toHaveBeenCalledTimes(1);
     expect(onVoiceSession).toHaveBeenCalledTimes(1);
   });
 
@@ -88,6 +93,7 @@ describe("MobileTabBar", () => {
     renderMobileTabBar({ newSessionDisabled: true });
 
     expect(screen.getByRole("button", { name: "New Session" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Quick session" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Voice quick session" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Sessions" })).not.toBeDisabled();
   });
@@ -101,6 +107,6 @@ describe("MobileTabBar", () => {
   it("renders SVG icons inside buttons", () => {
     const { container } = renderMobileTabBar();
     const svgs = container.querySelectorAll("svg");
-    expect(svgs.length).toBe(5);
+    expect(svgs.length).toBe(7);
   });
 });

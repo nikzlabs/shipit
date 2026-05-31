@@ -51,6 +51,7 @@ interface AppLayoutProps {
   mobilePanel: "chat" | "preview";
   onMobilePanelChange: (panel: "chat" | "preview") => void;
   onMobileNewSession: () => void;
+  onMobileQuickSession: () => void;
   onMobileVoiceSession: () => void;
   chatPanel: ReactNode;
   rightPanel: ReactNode;
@@ -106,6 +107,7 @@ export function AppLayout({
   mobilePanel,
   onMobilePanelChange,
   onMobileNewSession,
+  onMobileQuickSession,
   onMobileVoiceSession,
   chatPanel,
   rightPanel,
@@ -226,6 +228,7 @@ export function AppLayout({
               onChangePanel={onMobilePanelChange}
               onOpenSessions={onOpenSessions}
               onNewSession={onMobileNewSession}
+              onQuickSession={onMobileQuickSession}
               onVoiceSession={onMobileVoiceSession}
               newSessionDisabled={repos.length === 0}
             />

@@ -1273,6 +1273,7 @@ export default function App() {
         mobilePanel={mobilePanel}
         onMobilePanelChange={(p) => useUiStore.getState().setMobilePanel(p)}
         onMobileNewSession={handleNewSessionShortcut}
+        onMobileQuickSession={() => useUiStore.getState().setQuickCaptureOpen(true)}
         onMobileVoiceSession={() => useUiStore.getState().setQuickCaptureOpen(true, true)}
         chatPanel={chatPanel}
         rightPanel={rightPanel}
