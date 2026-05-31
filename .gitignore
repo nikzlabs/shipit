@@ -12,6 +12,9 @@ dist/
 # Playwright MCP browser-driven debugging output (snapshots, console logs)
 .playwright-mcp/
 
+# Claude Code local runtime state (scheduled-task locks, etc.)
+.claude/scheduled_tasks.lock
+
 # ShipIt-in-ShipIt (feature 118 — dogfooding mode).
 # When the orchestrator runs with RUNTIME_MODE=local inside a ShipIt session,
 # inner-session clones land under `sessions/` and the inner orch's state

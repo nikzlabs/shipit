@@ -43,26 +43,44 @@
 
 ## Provisioning fixes from the live audit (host `shipit-16gb`)
 
-- [x] `DOCKER_HOST` precedence: ops agent must use the read-only proxy, never the
-      read-write session proxy. `buildContainerConfig` forces `dockerAccess: false`
-      for ops; `buildEnv` checks the ops gate before `dockerAccess`. Regression
-      tests in `container-lifecycle.test.ts` (both layers). Fixes audit FAIL #1/#11.
-- [x] `journalctl` installed in the docker-capable image (`docker/container-build/Dockerfile`
-      installs `systemd`) so the journal recipes run. Fixes audit FAIL #14/#15.
-- [x] Loud warning when an ops session boots without `SESSION_DOCKER_IMAGE` (base
-      image → no `docker`/`journalctl`), instead of silently half-provisioning.
+- [x] **`DOCKER_HOST` precedence (audit FAIL #1/#11).** The ops `shipit.yaml`
+      declares `compose.docker-socket: true` (so the proxy *sibling* may mount the
+      socket), and `resolveAgentDockerLimits` derives the *agent's* `dockerAccess`
+      from that same flag — so an ops session reached `buildEnv` with both flags and
+      got the **read-write** session proxy (host-blind for reads, write-forwarding).
+      Fix: `buildContainerConfig` forces `dockerAccess: false` for ops sessions, and
+      `buildEnv` checks the ops gate *before* `dockerAccess` as a structural backstop.
+      Regression tests at both layers in `container-lifecycle.test.ts`.
+- [x] **`journalctl` in the docker-capable image (audit FAIL #14/#15).**
+      `docker/Dockerfile.session-worker.docker` now installs `systemd` (the binary
+      reads the mounted journal dirs directly; not PID 1).
+- [x] **Loud startup warning** when an ops session boots without
+      `SESSION_WORKER_DOCKER_IMAGE` set (→ base image, no `docker`/`journalctl`),
+      instead of silently half-provisioning. (`createContainer`.)
 
-## Remaining
+## Remaining — deployment gap (this is why the audit saw no `docker`/`journalctl`)
 
+**Root cause found:** in prod, `SESSION_WORKER_DOCKER_IMAGE` is **not set** in
+`deployment/vps/docker-compose.yml`, and the deploy only builds the base
+`shipit-session-worker:prod` image (`deploy.sh … build session-worker shipit`).
+That base image has neither the docker CLI nor `journalctl`. So `dockerImageName`
+is `undefined` at runtime and ops sessions fall back to the base image — exactly
+the audit's FAIL #4/#5/#14/#15. The `journalctl` fix above lands in
+`Dockerfile.session-worker.docker`, which extends `:dev` and is **not built or
+referenced in prod** — so prod needs the wiring below before any of this helps.
+
+- [ ] **Build a docker-capable PROD session image** (docker CLI + `journalctl` on
+      top of `shipit-session-worker:prod`) and build it in `deploy.sh`.
+- [ ] **Set `SESSION_WORKER_DOCKER_IMAGE`** to that image in the prod orchestrator
+      env (`deployment/vps/docker-compose.yml`), so `setDockerProxy` passes it to
+      `dockerImageName` and ops/docker sessions boot the capable image. Until then
+      the new startup warning will fire on every ops session.
 - [ ] Re-run `prompts/verify-ops-access.md` on a host deployed from this branch and
-      confirm the PASS/FAIL table is all-PASS (B returns full host container list via
-      `docker-socket-proxy:2375`, C mutations rejected, D journal readable via `journalctl`).
-- [ ] Verify host `shipit-16gb` is redeployed with `SESSION_DOCKER_IMAGE` set to the
-      docker-capable image — the audit showed `docker`/`journalctl` absent, which means
-      it was running the base image (stale deploy or base-image warm standby).
-- [ ] Follow-up: confirm an ops session is never served from a base-image **warm
-      standby** (`warm-pool-manager.ts` creates standbys with the generic image and has
-      no ops/image awareness). If it can be, ops sessions must force a fresh
+      confirm all-PASS (B: full host container list via `docker-socket-proxy:2375`;
+      C: mutations rejected; D: journal readable via `journalctl`).
+- [ ] Confirm an ops session is never served from a base-image **warm standby**
+      (`warm-pool-manager.ts` creates standbys with the generic image and has no
+      ops/image awareness). If it can be, ops sessions must force a fresh
       docker-capable container instead of claiming a base-image standby.
 - [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (the gate is unit-tested; live verification pending).

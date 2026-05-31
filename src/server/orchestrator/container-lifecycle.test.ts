@@ -205,13 +205,21 @@ describe("buildEnv", () => {
     expect(env.some((e) => e.startsWith("DOCKER_HOST="))).toBe(false);
   });
 
-  it("docs/128: dockerAccess (read-write proxy) takes precedence over the ops branch", () => {
-    // A session can't be both, but if both flags were set the read-write proxy
-    // path wins and the ops read-only host must not be applied.
+  // docs/128 regression (live audit FAIL #1/#11) — an ops session can arrive
+  // with BOTH flags set, because its shipit.yaml declares
+  // `compose.docker-socket: true` (so the proxy *sibling* may mount the socket)
+  // and `resolveAgentDockerLimits` derives agent `dockerAccess` from that same
+  // flag. The ops gate MUST win: the agent reaches Docker only through the
+  // read-only proxy, never the write-capable session proxy. (`buildContainerConfig`
+  // also forces `dockerAccess: false` for ops; this asserts buildEnv is correct
+  // even if a caller passes both.)
+  it("docs/128: the ops branch takes precedence over dockerAccess (read-only proxy wins)", () => {
     const config = baseConfig({ dockerAccess: true, opsSession: true });
     const env = buildEnv(config, "/workspace", 9100, "docker-proxy", 2375);
-    expect(env).toContain("DOCKER_HOST=tcp://docker-proxy:2375");
-    expect(env).not.toContain(`DOCKER_HOST=${OPS_DOCKER_HOST}`);
+    expect(env).toContain(`DOCKER_HOST=${OPS_DOCKER_HOST}`);
+    // The read-write session proxy host + compose project name must NOT leak in.
+    expect(env).not.toContain("DOCKER_HOST=tcp://docker-proxy:2375");
+    expect(env.some((e) => e.startsWith("COMPOSE_PROJECT_NAME="))).toBe(false);
   });
 
   it("passes through a stable orchestrator host override for worker callbacks", async () => {
@@ -267,5 +275,33 @@ describe("buildContainerConfig", () => {
       credentialsDir: "/credentials",
     });
     expect(config.depCacheDir).toBeUndefined();
+  });
+
+  // docs/128 regression (live audit FAIL #1/#11) — the ops template's
+  // shipit.yaml sets `compose.docker-socket: true`, which
+  // `resolveAgentDockerLimits` turns into `dockerAccess: true`. That must not
+  // elevate the *agent*: an ops session's container config must have
+  // `dockerAccess: false` so the read-write session proxy + its network are
+  // never created and buildEnv routes DOCKER_HOST to the read-only proxy.
+  it("forces dockerAccess off for an ops session even when the caller passes dockerAccess: true", () => {
+    const config = buildContainerConfig(deps, {
+      sessionId: "s1",
+      sessionDir: "/workspace/sessions/s1",
+      credentialsDir: "/credentials",
+      dockerAccess: true,
+      opsSession: true,
+    });
+    expect(config.dockerAccess).toBe(false);
+    expect(config.opsSession).toBe(true);
+  });
+
+  it("preserves dockerAccess for an ordinary (non-ops) docker-socket session", () => {
+    const config = buildContainerConfig(deps, {
+      sessionId: "s1",
+      sessionDir: "/workspace/sessions/s1",
+      credentialsDir: "/credentials",
+      dockerAccess: true,
+    });
+    expect(config.dockerAccess).toBe(true);
   });
 });
