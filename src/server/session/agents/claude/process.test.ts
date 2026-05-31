@@ -713,6 +713,76 @@ describe("StreamingClaudeProcess", () => {
     vi.useRealTimers();
   });
 
+  describe("interrupt", () => {
+    it("writes an interrupt control_request NDJSON line to stdin", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first" });
+      // Discard the initial user message write.
+      mockProc.stdinWrites.length = 0;
+
+      streaming.interrupt();
+
+      expect(mockProc.stdinWrites).toHaveLength(1);
+      const line = mockProc.stdinWrites[0];
+      expect(line.endsWith("\n")).toBe(true);
+      const parsed = JSON.parse(line) as {
+        type: string;
+        request_id: string;
+        request: { subtype: string };
+      };
+      expect(parsed.type).toBe("control_request");
+      expect(parsed.request).toEqual({ subtype: "interrupt" });
+      expect(parsed.request_id).toMatch(/^ctrl-/);
+    });
+
+    it("does NOT force-kill the persistent process after an interrupt (docs/140 — exit 143 regression)", () => {
+      // A streaming interrupt is a graceful control_request: the CLI ends the
+      // turn with a `result` but keeps the process alive. The old force-kill
+      // timer SIGTERMed the still-alive process ~5s later (exit 143), tearing
+      // down any turn the user steered in after interrupting.
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first" });
+
+      streaming.interrupt();
+
+      // Advance well past the old 5s force-kill window — the process must
+      // remain alive so the next steered message can reach it.
+      vi.advanceTimersByTime(10_000);
+
+      expect(mockProc.kill).not.toHaveBeenCalled();
+    });
+
+    it("lets a steered message reach the process after an interrupt", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first" });
+
+      streaming.interrupt();
+      vi.advanceTimersByTime(10_000);
+      mockProc.stdinWrites.length = 0;
+
+      // The user sends a new message after interrupting.
+      streaming.sendUserMessage("go this way instead");
+
+      expect(mockProc.kill).not.toHaveBeenCalled();
+      expect(mockProc.stdinWrites).toHaveLength(1);
+      const parsed = JSON.parse(mockProc.stdinWrites[0]) as {
+        type: string;
+        message: { content: { type: string; text: string }[] };
+      };
+      expect(parsed.type).toBe("user");
+      expect(parsed.message.content[0].text).toBe("go this way instead");
+    });
+  });
+
   describe("setPermissionMode", () => {
     it("writes a set_permission_mode control_request NDJSON line to stdin (docs/138)", () => {
       const mockProc = createMockChildProcess();

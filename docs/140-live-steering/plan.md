@@ -346,6 +346,20 @@ the UI's "Thinking…" indicator follows the agent state correctly. A
 `[answer-question]` diagnostic log pins gate state at handler entry,
 matching the `[steer-send]` shape from Phase 6.5.
 
+**Phase 6.7 — streaming interrupt must not force-kill (exit 143).**
+`StreamingClaudeProcess.interrupt()` was a near-copy of the PTY
+`ClaudeProcess.interrupt()`, including its 5s force-kill fallback. In the PTY
+path Ctrl+C genuinely exits the CLI, so the timer is cleared on `close`. But a
+streaming `control_request` interrupt is graceful by design (spike: the turn
+ends with a `result subtype=error_during_execution` and the process **stays
+alive**), so the process never closes, the timer is never cleared, and ~5s
+after every interrupt it SIGTERMed the persistent process → exit code 143.
+Symptom: interrupt the agent, send a new message, and the steered turn dies a
+few seconds later with 143. Fix: the streaming interrupt now only writes the
+`control_request` and returns — no force-kill. Teardown of a genuinely stuck
+process is owned by the turn-scoped watchdog and idle eviction, not interrupt.
+Regression coverage in `process.test.ts` (`StreamingClaudeProcess > interrupt`).
+
 ## Open questions to resolve during build
 
 - Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.
