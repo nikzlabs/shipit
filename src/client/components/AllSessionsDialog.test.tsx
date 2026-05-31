@@ -126,6 +126,22 @@ describe("AllSessionsDialog", () => {
     });
   });
 
+  it("reflects an evicted (not user-archived) session's disk tier and restores it on resume", async () => {
+    // docs/161 — the disk-idle ladder can evict a session without hiding it, so
+    // an `evicted` session stays listed but must re-clone from cache on select.
+    const props = defaultProps();
+    props.sessions = [
+      baseSession({ id: "s1", title: "Cold session", diskTier: "evicted" }),
+    ];
+    render(<AllSessionsDialog {...props} />);
+    expect(screen.getByTitle(/Workspace stored to save disk/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Cold session"));
+    await waitFor(() => {
+      expect(props.onUnarchive).toHaveBeenCalledWith("s1");
+      expect(props.onResume).toHaveBeenCalledWith("s1");
+    });
+  });
+
   it("does not render when closed", () => {
     const props = defaultProps();
     props.open = false;
