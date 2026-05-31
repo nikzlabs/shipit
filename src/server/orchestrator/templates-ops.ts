@@ -75,6 +75,10 @@ version: 1
 # Brings up the read-only docker-socket-proxy sibling (see docker-compose.yml).
 compose:
   file: docker-compose.yml
+  # The proxy compose service mounts the host Docker socket. The agent still
+  # reaches Docker only through the read-only proxy, and only sessions marked
+  # server-side as kind="ops" get DOCKER_HOST wired to it.
+  docker-socket: true
 
 # Privileged read-only host mounts for the AGENT container. Strictly
 # allow-listed by the orchestrator (src/server/shared/shipit-config.ts) — only

@@ -185,6 +185,19 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Docker socket");
   });
 
+  it("explains when the ops proxy is missing the server-side ops flag", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false }))
+      .toThrow("server-created ops sessions");
+  });
+
   it("allows Docker socket mount when docker-socket is true", () => {
     const dir = setup();
     const p = writeCompose(dir, `
