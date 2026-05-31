@@ -390,6 +390,13 @@ function validateServiceSecurity(
 
       // Docker socket check
       if (source.includes("/var/run/docker.sock") && !dockerSocket) {
+        if (name === "docker-socket-proxy") {
+          throw new ComposeValidationError(
+            `Service \`${name}\`: Docker socket mount is only allowed for ` +
+            `server-created ops sessions. Recreate the ops session from Settings ` +
+            `so it is marked as kind="ops".`,
+          );
+        }
         throw new ComposeValidationError(
           `Service \`${name}\`: Docker socket mount is not allowed. ` +
           `Set \`compose.docker-socket: true\` in shipit.yaml to enable it.`,

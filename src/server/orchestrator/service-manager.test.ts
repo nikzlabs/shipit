@@ -156,7 +156,7 @@ services:
 
     const mgr = createManager(dir);
 
-    await expect(mgr.start()).rejects.toThrow("Docker socket");
+    await expect(mgr.start()).rejects.toThrow("server-created ops sessions");
     expect(mgr.getServices()).toEqual([]);
   });
 
