@@ -136,9 +136,11 @@ const PROMPT_INVESTIGATE_LOOP = `# Investigate a container restart loop
 A session container looks like it's stuck in a SIGTERM → recreate loop. Find it
 and explain why.
 
-1. Grep the journal for the loop detector and recent container churn:
+1. Grep the journal for the loop detector and recent container churn. Use
+   \`-D /var/log/journal\` — a bare \`journalctl\` reads the agent container's own
+   (empty) journal, not the host's mounted one:
    \`\`\`
-   journalctl --since "1 hour ago" --no-pager | grep -E "LOOP DETECTED|SIGTERM|recreat|OOM|Killed"
+   journalctl -D /var/log/journal --since "1 hour ago" --no-pager | grep -E "LOOP DETECTED|SIGTERM|recreat|OOM|Killed"
    \`\`\`
 2. List containers and spot any with a high restart count or short uptime:
    \`\`\`
@@ -172,7 +174,7 @@ behaving oddly. Figure out what's wrong — read-only.
    session id:
    \`\`\`
    docker logs --tail 200 <name>
-   journalctl --since "30 min ago" --no-pager | grep <session-id>
+   journalctl -D /var/log/journal --since "30 min ago" --no-pager | grep <session-id>
    \`\`\`
 4. Check its compose siblings (if any) on the same network are healthy.
 
@@ -197,9 +199,10 @@ Give me a quick read-only health snapshot of this ShipIt host.
    \`\`\`
    docker stats --no-stream --format 'table {{.Name}}\\t{{.MemUsage}}\\t{{.CPUPerc}}' | head -15
    \`\`\`
-4. Journal errors in the last 24h:
+4. Journal errors in the last 24h (\`-D /var/log/journal\` so journalctl reads the
+   host's mounted journal, not the agent container's empty default):
    \`\`\`
-   journalctl --since "24 hours ago" -p err --no-pager | tail -40
+   journalctl -D /var/log/journal --since "24 hours ago" -p err --no-pager | tail -40
    \`\`\`
 
 Report: overall verdict (healthy / degraded), and anything worth watching.
@@ -243,12 +246,14 @@ was a true no-op, not a real stop).
 13. From a mounted journal path, confirm it is READ-ONLY: try
     \`touch /var/log/journal/__shipit_probe 2>&1\` (and the /run path) — expect
     "Read-only file system". Do not leave any file behind.
-14. Read actual logs: \`journalctl --since "1 hour ago" --no-pager | tail -20\`.
-    If journalctl can't see the mounted dir, try
+14. Read actual logs. Pass the journal dir explicitly with \`-D\` — a bare
+    \`journalctl\` reads THIS container's journal (machine-id mismatch → "No
+    journal files were found"), not the host's mounted one:
     \`journalctl -D /var/log/journal --since "1 hour ago" --no-pager | tail -20\`
-    (or the /run path). Confirm you get real host log lines.
+    (use \`-D /run/log/journal\` if that's the populated path). Confirm you get
+    real host log lines.
 15. Run one real investigation recipe end-to-end:
-    \`journalctl --since "24 hours ago" --no-pager | grep -E "LOOP DETECTED|SIGTERM|OOM|Killed" | tail -20\`
+    \`journalctl -D /var/log/journal --since "24 hours ago" --no-pager | grep -E "LOOP DETECTED|SIGTERM|OOM|Killed" | tail -20\`
     (empty output is fine — the point is the pipeline runs against host logs).
 
 ## E. Negative boundaries (these must NOT be accessible)

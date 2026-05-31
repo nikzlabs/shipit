@@ -76,11 +76,27 @@
 ## Remaining
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 - [ ] Redeploy a host from this branch via `deploy.sh` (NOT the no-rebuild
       `restart.sh` — the new `shipit-session-worker:docker` image must be built),
       then re-run `prompts/verify-ops-access.md` and confirm all-PASS (B: full host
       container list via `docker-socket-proxy:2375`; C: mutations rejected; D:
       journal readable via `journalctl`).
+=======
+- [x] **Live re-audit PASSED** (host deployed from this branch). `DOCKER_HOST` now
+      points at the hardened read-only `docker-socket-proxy:2375`; `docker` and
+      `journalctl` are installed; read-only Docker returns the full host container
+      list; mutations are rejected; the journal is readable.
+- [x] **journalctl recipes use `-D /var/log/journal`.** The live run surfaced that a
+      bare `journalctl` reads the agent container's own (empty) journal — the
+      container's machine-id doesn't match the host's, so the default lookup returns
+      "No journal files were found". `-D /var/log/journal` points it at the host's
+      mounted journal (~30k lines/24h on the test host). Updated all three embedded
+      prompts (investigate-loop, diagnose-stuck-session, daily-health), the
+      `verify-ops-access` recipe, and `shipit-docs/ops-session.md`; noted that this
+      host uses persistent storage (`/var/log/journal` populated; `/run/log/journal`
+      empty).
+>>>>>>> 5dd7e2eba (All edits are done and verified (typecheck/test/lint green). Now addressing your message: PR #867 was merged, so I need)
 - [x] **Warm standby cannot serve an ops session (verified — no code change needed).**
       Traced the full path: `createStandby` has a single caller, the warm pool
       (`warm-pool-manager.ts`), which only runs per **repo URL**. A standby is keyed
