@@ -34,11 +34,6 @@ export interface ThemeOption {
 
 export const THEME_OPTIONS: ThemeOption[] = [...THEME_DEFS];
 
-/** Themes that use a light background (need light favicon, etc.). */
-export const LIGHT_THEMES = new Set<string>(
-  THEME_DEFS.filter((t) => t.light).map((t) => t.id),
-);
-
 /** All theme class names that may be applied to <html>. */
 const KNOWN_THEMES = THEME_DEFS.filter((t) => t.id !== "light").map((t) => t.id);
 
