@@ -382,6 +382,17 @@ independently.)
 =======
 >>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
 
+    - **Warm-standby bypass — checked, does not exist.** A natural worry is that an
+      ops session could be handed a pre-booted *warm standby*, which is built from
+      the base image (the warm pool calls `buildConfigForWorkspace` without
+      `opsSession`). It can't: `createStandby` is only called by the warm pool, which
+      runs per **repo URL**; a standby is keyed by the warm session's own id and is
+      claimed only when a session activates under that same id; a session inherits a
+      warm id only via the `repoUrl` claim path in `services/session.ts`. Ops sessions
+      are minted fresh with `kind="ops"` and **no `remoteUrl`**, so they never enter
+      the warm pool and always take the fresh-create path with the ops gate set. No
+      code change needed; the invariant is load-bearing and noted in the code.
+
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is
    no `kind` field today, session types are distinguished by ad-hoc
