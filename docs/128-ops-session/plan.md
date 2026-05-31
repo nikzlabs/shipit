@@ -316,10 +316,6 @@ independently.)
       `buildEnv` checks the ops gate first as a structural backstop. The
       `compose.docker-socket` flag now only governs the proxy *service*, never
       the *agent*.
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
     - **`journalctl` + docker CLI were missing in prod (audit FAIL #4/#5/#14/#15).**
       This had two layers. (a) `journalctl` wasn't installed in the docker-capable
       image; fixed by installing `systemd` in `docker/Dockerfile.session-worker.docker`
@@ -337,50 +333,6 @@ independently.)
       `SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker`. This also fixes
       ordinary `capabilities.docker` sessions, which shared the same gap. A redeploy
       must run `deploy.sh` (not the no-rebuild `restart.sh`) to build the new image.
-<<<<<<< HEAD
-
-    - **Warm-standby bypass — checked, does not exist.** A natural worry is that an
-      ops session could be handed a pre-booted *warm standby*, which is built from
-      the base image (the warm pool calls `buildConfigForWorkspace` without
-      `opsSession`). It can't: `createStandby` is only called by the warm pool, which
-      runs per **repo URL**; a standby is keyed by the warm session's own id and is
-      claimed only when a session activates under that same id; a session inherits a
-      warm id only via the `repoUrl` claim path in `services/session.ts`. Ops sessions
-      are minted fresh with `kind="ops"` and **no `remoteUrl`**, so they never enter
-      the warm pool and always take the fresh-create path with the ops gate set. No
-      code change needed; the invariant is load-bearing and noted in the code.
-=======
-    - **`journalctl` was not installed** in the docker-capable image, so every
-      `journalctl …` recipe failed even though the journal mounts were present
-      and read-only. Fix: `docker/container-build/Dockerfile` installs `systemd`
-      (the binary reads the mounted journal dirs directly; it is not PID 1).
-<<<<<<< HEAD
-    - **Missing docker CLI when the image is misconfigured.** If
-      `SESSION_DOCKER_IMAGE` is unset, an ops session silently boots on the base
-      image with no `docker`/`journalctl`. `createContainer` now logs a loud
-      warning in that case. Deployments MUST set `SESSION_DOCKER_IMAGE` to the
-      docker-capable image (`deployment/vps/docker-compose.yml` already does;
-      a host that predates that, or serves the ops session from a base-image
-      warm standby, will hit this — see the open follow-up below).
->>>>>>> e43ce7934 (You're right on the lock file, and the audit report is genuinely valuable — it proves my earlier "everything should work)
-=======
-    - **Missing docker CLI + journalctl in prod (deployment gap, not yet
-      closed).** `dockerImageName` comes from the `SESSION_WORKER_DOCKER_IMAGE`
-      env (app-lifecycle.ts → `setDockerProxy`). In prod that env is **unset**
-      (`deployment/vps/docker-compose.yml` only sets `SESSION_WORKER_IMAGE`), and
-      the deploy builds only the base `shipit-session-worker:prod` image — which
-      has neither the docker CLI nor `journalctl`. So ops sessions fall back to
-      the base image and the recipes can't run (audit FAIL #4/#5/#14/#15). The
-      `journalctl` install added here lives in `Dockerfile.session-worker.docker`
-      (extends `:dev`), which prod does not build or reference. Closing this needs
-      a docker-capable **prod** image (docker CLI + journalctl on top of
-      `:prod`), built in `deploy.sh`, with `SESSION_WORKER_DOCKER_IMAGE` set to
-      it. `createContainer` now logs a loud warning when an ops session boots
-      without that env so the half-provisioned state is visible. See the
-      deployment follow-up in `checklist.md`.
->>>>>>> 6b7020338 (Everything's clean now. Final state:)
-=======
->>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
 
     - **Warm-standby bypass — checked, does not exist.** A natural worry is that an
       ops session could be handed a pre-booted *warm standby*, which is built from

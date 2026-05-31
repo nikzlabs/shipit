@@ -43,10 +43,6 @@
 
 ## Provisioning fixes from the live audit (host `shipit-16gb`)
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 6b7020338 (Everything's clean now. Final state:)
 - [x] **`DOCKER_HOST` precedence (audit FAIL #1/#11).** The ops `shipit.yaml`
       declares `compose.docker-socket: true` (so the proxy *sibling* may mount the
       socket), and `resolveAgentDockerLimits` derives the *agent's* `dockerAccess`
@@ -58,10 +54,6 @@
 - [x] **`journalctl` in the docker-capable image (audit FAIL #14/#15).**
       `docker/Dockerfile.session-worker.docker` now installs `systemd` (the binary
       reads the mounted journal dirs directly; not PID 1).
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
 - [x] **Docker-capable image built + wired in prod (audit FAIL #4/#5/#14/#15 root
       cause).** Prod previously left `SESSION_WORKER_DOCKER_IMAGE` unset and never
       built the docker image, so docker/ops sessions fell back to the base image
@@ -71,22 +63,25 @@
       builds it after the base (separate step, no `--pull`, local base); the
       orchestrator env sets `SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker`.
       This also fixes ordinary `capabilities.docker` sessions, which had the same gap.
-<<<<<<< HEAD
+- [x] **Warm standby cannot serve an ops session (verified — no code change needed).**
+      Traced the full path: `createStandby` has a single caller, the warm pool
+      (`warm-pool-manager.ts`), which only runs per **repo URL**. A standby is keyed
+      by `config.sessionId` (the warm session's own minted id) and is only matched
+      when a session activates under that *same id*; a session inherits a warm id
+      only via the claim path in `services/session.ts`, which **requires `repoUrl`**.
+      Ops sessions are minted by `applyTemplate` with a fresh id, `kind="ops"`, and
+      **no `remoteUrl`** (`services/templates.ts`), so they never enter the warm pool
+      and never match a standby. On activation the runner factory finds no container
+      for the ops id → fresh-create with `opsSession: kind === "ops"` → docker-capable
+      image + ops wiring. So the docker-capable image fix above is sufficient; there
+      is no base-image-standby bypass to close.
 
-## Remaining
+## Live re-audit (host deployed from this branch)
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-- [ ] Redeploy a host from this branch via `deploy.sh` (NOT the no-rebuild
-      `restart.sh` — the new `shipit-session-worker:docker` image must be built),
-      then re-run `prompts/verify-ops-access.md` and confirm all-PASS (B: full host
-      container list via `docker-socket-proxy:2375`; C: mutations rejected; D:
-      journal readable via `journalctl`).
-=======
-- [x] **Live re-audit PASSED** (host deployed from this branch). `DOCKER_HOST` now
-      points at the hardened read-only `docker-socket-proxy:2375`; `docker` and
-      `journalctl` are installed; read-only Docker returns the full host container
-      list; mutations are rejected; the journal is readable.
+- [x] **Live re-audit PASSED.** `DOCKER_HOST` points at the hardened read-only
+      `docker-socket-proxy:2375`; `docker` and `journalctl` are installed; read-only
+      Docker returns the full host container list; mutations are rejected; the journal
+      is readable.
 - [x] **journalctl recipes use `-D /var/log/journal`.** The live run surfaced that a
       bare `journalctl` reads the agent container's own (empty) journal — the
       container's machine-id doesn't match the host's, so the default lookup returns
@@ -96,78 +91,8 @@
       `verify-ops-access` recipe, and `shipit-docs/ops-session.md`; noted that this
       host uses persistent storage (`/var/log/journal` populated; `/run/log/journal`
       empty).
->>>>>>> 5dd7e2eba (All edits are done and verified (typecheck/test/lint green). Now addressing your message: PR #867 was merged, so I need)
-- [x] **Warm standby cannot serve an ops session (verified — no code change needed).**
-      Traced the full path: `createStandby` has a single caller, the warm pool
-      (`warm-pool-manager.ts`), which only runs per **repo URL**. A standby is keyed
-      by `config.sessionId` (the warm session's own minted id) and is only matched
-      when a session activates under that *same id*; a session inherits a warm id
-      only via the claim path in `services/session.ts`, which **requires `repoUrl`**.
-      Ops sessions are minted by `applyTemplate` with a fresh id, `kind="ops"`, and
-      **no `remoteUrl`** (`services/templates.ts`), so they never enter the warm pool
-      and never match a standby. On activation the runner factory finds no container
-      for the ops id → fresh-create with `opsSession: kind === "ops"` → docker-capable
-      image + ops wiring. The invariant is asserted in code comments
-      (`services/session.ts` "Ops sessions never come through here";
-      `services/templates.ts` "host-scoped, not repo-backed: no remoteUrl"). So the
-      docker-capable image fix above is sufficient; there is no base-image-standby
-      bypass to close.
-=======
-- [ ] Manual smoke on a real ops-enabled host (Docker proxy reachability, journal mount presence).
-      Run the embedded `prompts/verify-ops-access.md` recipe from the ops session — it
-      produces a PASS/FAIL table covering every design-doc claim. (Provisioning bugs —
-      journal-namespace existence check + `isOpsSession` compose plumbing + proxy auto-start
-      — were fixed in "Fix ops session privileged host access"; this item is now just the
-      live confirmation.)
->>>>>>> 4ae236d85 (The throttling caused noise and my edits to `templates-ops.ts` were rejected ("file modified since read"). Good news: th)
-=======
-- [x] `DOCKER_HOST` precedence: ops agent must use the read-only proxy, never the
-      read-write session proxy. `buildContainerConfig` forces `dockerAccess: false`
-      for ops; `buildEnv` checks the ops gate before `dockerAccess`. Regression
-      tests in `container-lifecycle.test.ts` (both layers). Fixes audit FAIL #1/#11.
-- [x] `journalctl` installed in the docker-capable image (`docker/container-build/Dockerfile`
-      installs `systemd`) so the journal recipes run. Fixes audit FAIL #14/#15.
-- [x] Loud warning when an ops session boots without `SESSION_DOCKER_IMAGE` (base
-      image → no `docker`/`journalctl`), instead of silently half-provisioning.
-=======
-- [x] **Loud startup warning** when an ops session boots without
-      `SESSION_WORKER_DOCKER_IMAGE` set (→ base image, no `docker`/`journalctl`),
-      instead of silently half-provisioning. (`createContainer`.)
->>>>>>> 6b7020338 (Everything's clean now. Final state:)
-=======
->>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
 
 ## Remaining
 
-- [ ] Redeploy a host from this branch via `deploy.sh` (NOT the no-rebuild
-      `restart.sh` — the new `shipit-session-worker:docker` image must be built),
-      then re-run `prompts/verify-ops-access.md` and confirm all-PASS (B: full host
-      container list via `docker-socket-proxy:2375`; C: mutations rejected; D:
-      journal readable via `journalctl`).
-<<<<<<< HEAD
-- [ ] Confirm an ops session is never served from a base-image **warm standby**
-      (`warm-pool-manager.ts` creates standbys with the generic image and has no
-      ops/image awareness). If it can be, ops sessions must force a fresh
-      docker-capable container instead of claiming a base-image standby.
->>>>>>> e43ce7934 (You're right on the lock file, and the audit report is genuinely valuable — it proves my earlier "everything should work)
-- [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
-      in a live environment (the gate is unit-tested; live verification pending).
-=======
-- [x] **Warm standby cannot serve an ops session (verified — no code change needed).**
-      Traced the full path: `createStandby` has a single caller, the warm pool
-      (`warm-pool-manager.ts`), which only runs per **repo URL**. A standby is keyed
-      by `config.sessionId` (the warm session's own minted id) and is only matched
-      when a session activates under that *same id*; a session inherits a warm id
-      only via the claim path in `services/session.ts`, which **requires `repoUrl`**.
-      Ops sessions are minted by `applyTemplate` with a fresh id, `kind="ops"`, and
-      **no `remoteUrl`** (`services/templates.ts`), so they never enter the warm pool
-      and never match a standby. On activation the runner factory finds no container
-      for the ops id → fresh-create with `opsSession: kind === "ops"` → docker-capable
-      image + ops wiring. The invariant is asserted in code comments
-      (`services/session.ts` "Ops sessions never come through here";
-      `services/templates.ts` "host-scoped, not repo-backed: no remoteUrl"). So the
-      docker-capable image fix above is sufficient; there is no base-image-standby
-      bypass to close.
->>>>>>> 2b2215c97 (Done. I traced the warm-standby path end-to-end and **the bypass cannot happen — no code change needed.** Here's the rea)
 - [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (the gate is unit-tested; live verification pending).

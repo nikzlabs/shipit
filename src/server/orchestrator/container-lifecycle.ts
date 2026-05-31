@@ -328,10 +328,6 @@ export async function createContainer(
   // Expose orchestrator API so the agent can query service status/logs
   env.push(...await buildOrchestratorCallbackEnv(config.sessionId));
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
   // Use the docker-capable image when Docker access is requested, or for ops
   // sessions (docs/128) — the agent runs `docker ps/logs/inspect` against a proxy
   // (and, for ops, `journalctl` over the journal mounts), so it needs the docker
@@ -340,20 +336,6 @@ export async function createContainer(
   // (deps.dockerImageName, threaded from app-lifecycle.ts → setDockerProxy). If
   // the env is unset, deps.dockerImageName is undefined and we fall back to the
   // base image — see the deployment wiring in deployment/vps/.
-<<<<<<< HEAD
-=======
-  // Use Docker-capable image when Docker access is requested, or for ops
-  // sessions (docs/128) — the ops agent runs `docker ps/logs/inspect` against
-  // the read-only proxy (and `journalctl` over the journal mounts), so it needs
-<<<<<<< HEAD
-  // the docker CLI + journalctl baked into that image (docker/container-build).
->>>>>>> e43ce7934 (You're right on the lock file, and the audit report is genuinely valuable — it proves my earlier "everything should work)
-=======
-  // the docker CLI + journalctl baked into that image
-  // (docker/Dockerfile.session-worker.docker, selected via SESSION_WORKER_DOCKER_IMAGE).
->>>>>>> 6b7020338 (Everything's clean now. Final state:)
-=======
->>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
   const imageName = ((config.dockerAccess || config.opsSession) && deps.dockerImageName)
     ? deps.dockerImageName
     : config.imageName;
