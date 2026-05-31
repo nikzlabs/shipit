@@ -317,6 +317,9 @@ independently.)
       `compose.docker-socket` flag now only governs the proxy *service*, never
       the *agent*.
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
     - **`journalctl` + docker CLI were missing in prod (audit FAIL #4/#5/#14/#15).**
       This had two layers. (a) `journalctl` wasn't installed in the docker-capable
       image; fixed by installing `systemd` in `docker/Dockerfile.session-worker.docker`
@@ -334,6 +337,7 @@ independently.)
       `SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker`. This also fixes
       ordinary `capabilities.docker` sessions, which shared the same gap. A redeploy
       must run `deploy.sh` (not the no-rebuild `restart.sh`) to build the new image.
+<<<<<<< HEAD
 
     - **Warm-standby bypass — checked, does not exist.** A natural worry is that an
       ops session could be handed a pre-booted *warm standby*, which is built from
@@ -375,6 +379,8 @@ independently.)
       without that env so the half-provisioned state is visible. See the
       deployment follow-up in `checklist.md`.
 >>>>>>> 6b7020338 (Everything's clean now. Final state:)
+=======
+>>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
 
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is

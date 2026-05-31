@@ -329,6 +329,9 @@ export async function createContainer(
   env.push(...await buildOrchestratorCallbackEnv(config.sessionId));
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
   // Use the docker-capable image when Docker access is requested, or for ops
   // sessions (docs/128) — the agent runs `docker ps/logs/inspect` against a proxy
   // (and, for ops, `journalctl` over the journal mounts), so it needs the docker
@@ -337,6 +340,7 @@ export async function createContainer(
   // (deps.dockerImageName, threaded from app-lifecycle.ts → setDockerProxy). If
   // the env is unset, deps.dockerImageName is undefined and we fall back to the
   // base image — see the deployment wiring in deployment/vps/.
+<<<<<<< HEAD
 =======
   // Use Docker-capable image when Docker access is requested, or for ops
   // sessions (docs/128) — the ops agent runs `docker ps/logs/inspect` against
@@ -348,26 +352,11 @@ export async function createContainer(
   // the docker CLI + journalctl baked into that image
   // (docker/Dockerfile.session-worker.docker, selected via SESSION_WORKER_DOCKER_IMAGE).
 >>>>>>> 6b7020338 (Everything's clean now. Final state:)
+=======
+>>>>>>> 373eddb57 (Done. Both your points were right, and they led to a better fix than the one I'd defended.)
   const imageName = ((config.dockerAccess || config.opsSession) && deps.dockerImageName)
     ? deps.dockerImageName
     : config.imageName;
-
-  // docs/128 — fail loudly rather than silently hand an ops session a base image
-  // with no `docker`/`journalctl`. This is the half-provisioned state the live
-  // audit hit (FAIL #4/#14): the agent boots, DOCKER_HOST is set, but the
-  // documented recipes can't run. `deps.dockerImageName` comes from the
-  // SESSION_WORKER_DOCKER_IMAGE env (app-lifecycle.ts → setDockerProxy); when it
-  // is unset the ops agent falls back to the base session image. The deployment
-  // must set SESSION_WORKER_DOCKER_IMAGE to a docker-capable image (see the
-  // deployment follow-up in docs/128-ops-session/checklist.md).
-  if (config.opsSession && !deps.dockerImageName) {
-    console.warn(
-      `[containers] OPS SESSION ${config.sessionId} is starting on the base image ` +
-      `because SESSION_WORKER_DOCKER_IMAGE is not configured — the agent will lack ` +
-      `the docker CLI and journalctl, so the ops investigation recipes will not run. ` +
-      `Set SESSION_WORKER_DOCKER_IMAGE to a docker-capable image.`,
-    );
-  }
 
   // Create session-specific bridge network for Docker-enabled sessions.
   // Child containers created through the proxy join this network so they
