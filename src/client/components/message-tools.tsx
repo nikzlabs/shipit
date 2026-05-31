@@ -166,7 +166,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   return (
     <div className="min-w-0 overflow-hidden">
       <div
-        className={`group/tool text-xs text-(--color-text-secondary) pl-[1em] py-1 font-mono flex items-center gap-2 opacity-70 border-l-2 border-(--color-text-tertiary)/40${hasResult ? " [@media(pointer:coarse)]:cursor-pointer [@media(pointer:coarse)]:active:opacity-50" : ""}`}
+        className={`group/tool text-xs text-(--color-text-secondary) pl-[1em] py-1 font-mono flex items-center gap-2 opacity-70 border-l-2 border-(--color-text-tertiary)/40${hasResult ? " [@media(pointer:coarse)]:active:opacity-50" : ""}`}
         onClick={hasResult ? () => setShowModal(true) : undefined}
       >
         {inProgress && <ToolSpinner />}
