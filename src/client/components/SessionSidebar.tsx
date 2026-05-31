@@ -978,7 +978,7 @@ export function SessionSidebar({
       style={mobile ? undefined : { width }}
     >
       {/* Top bar */}
-      <div className="flex items-center gap-2 px-3 h-10 border-b border-(--color-border-primary) shrink-0">
+      <div className="flex items-center gap-2 px-3 h-10.25 border-b border-(--color-border-primary) shrink-0">
         {mobile ? (
           <WithTooltip label="Close">
           <Button

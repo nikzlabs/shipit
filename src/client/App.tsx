@@ -981,7 +981,7 @@ export default function App() {
   // ── Right panel ──
   const rightPanel = (
     <>
-      <div className="flex h-10 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
+      <div className="flex h-10.25 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
         {!isLocalMode && !isOpsSession && (
           <button onClick={() => handleTabChange("preview")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "preview" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Preview</button>
         )}
