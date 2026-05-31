@@ -47,8 +47,6 @@ export function SubscriptionLimitsBadge({ limits }: SubscriptionLimitsBadgeProps
   }
   if (pills.length === 0) return null;
 
-  const claude = limits.claude;
-
   return (
     <>
       {pills.map(({ agentId, snapshot }) => (
@@ -56,9 +54,10 @@ export function SubscriptionLimitsBadge({ limits }: SubscriptionLimitsBadgeProps
           key={agentId}
           label={AGENT_LABEL[agentId]}
           snapshot={snapshot}
+          // eslint-disable-next-line no-restricted-syntax -- Claude is the only agent with an on-demand /api/oauth/usage refresh endpoint
+          showRefresh={agentId === "claude"}
         />
       ))}
-      {claude && <LimitsRefreshButton snapshot={claude} />}
     </>
   );
 }
@@ -66,15 +65,16 @@ export function SubscriptionLimitsBadge({ limits }: SubscriptionLimitsBadgeProps
 interface SubscriptionLimitPillProps {
   label: string;
   snapshot: SubscriptionLimits;
+  showRefresh?: boolean;
 }
 
-export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPillProps) {
+export function SubscriptionLimitPill({ label, snapshot, showRefresh }: SubscriptionLimitPillProps) {
   const now = Date.now();
   const hasData = snapshot.session !== null || snapshot.weekly !== null;
 
   return (
     <span
-      className="inline-flex items-center gap-2 text-xs px-2 py-0.5 rounded-full bg-(--color-bg-hover) font-medium tabular-nums text-(--color-text-secondary)"
+      className={`inline-flex items-center gap-2 text-xs pl-2 ${showRefresh ? "pr-1" : "pr-2"} pb-0.5 rounded-full bg-(--color-bg-hover) font-medium tabular-nums text-(--color-text-secondary)`}
       title={buildTooltip(label, snapshot, now)}
     >
       <span>{label}</span>
@@ -85,6 +85,7 @@ export function SubscriptionLimitPill({ label, snapshot }: SubscriptionLimitPill
         <Meter shortLabel="7d" window={snapshot.weekly} fetchedAt={snapshot.fetchedAt} now={now} />
       )}
       {!hasData && <span>—</span>}
+      {showRefresh && <LimitsRefreshButton snapshot={snapshot} />}
     </span>
   );
 }
@@ -160,7 +161,7 @@ function Meter({ shortLabel, window, fetchedAt, now }: MeterProps) {
   const countdown = pct > 90 ? formatResetCountdown(window.resetAt, now) : null;
   return (
     <span
-      className={`relative inline-flex items-center whitespace-nowrap pb-0.75${display.stale ? " opacity-50" : ""}`}
+      className={`relative inline-flex items-center whitespace-nowrap pb-0.5${display.stale ? " opacity-50" : ""}`}
       data-meter-pct={Math.round(pct)}
       style={{ color }}
     >
@@ -214,7 +215,7 @@ function LimitsRefreshButton({ snapshot }: { snapshot: SubscriptionLimits }) {
       type="button"
       onClick={onClick}
       disabled={refreshing || locked}
-      className="inline-flex items-center justify-center rounded-full p-1 text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-40"
+      className="inline-flex items-center justify-center rounded-full -ml-1 p-1 translate-y-px text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) disabled:cursor-not-allowed disabled:opacity-40"
       title={title}
       aria-label="Refresh subscription usage"
     >
