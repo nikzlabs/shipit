@@ -11,6 +11,9 @@
  */
 
 import { describe, it, expect } from "vitest";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { runShim, parseFlags, type ShimIO } from "./gh.js";
 
 interface RecordedCall {
@@ -246,6 +249,29 @@ describe("gh pr create", () => {
     expect(out.calls[0].body).toMatchObject({ base: "develop" });
   });
 
+  it("reads markdown body from --body-file without shell-interpreting backticks", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "shipit-gh-"));
+    const bodyPath = path.join(tmpDir, "pr-body.md");
+    const body = "## Summary\nPreserve markdown like `code` and $(literal).\n";
+    await fsp.writeFile(bodyPath, body, "utf8");
+
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "--body-file", bodyPath],
+      { "POST /agent-ops/pr/create": { status: 200, body: { url: "u" } } },
+    );
+
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ body });
+  });
+
+  it("rejects using both --body and --body-file", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "create", "-t", "T", "-b", "Body", "--body-file", "body.md"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("use either -b/--body or --body-file");
+  });
+
   it("notes 'existing PR' on stderr when alreadyExisted is true", async () => {
     const { run } = makeRunner();
     const out = await run(
@@ -343,6 +369,20 @@ describe("gh pr comment", () => {
       { "POST /agent-ops/pr/9/comment": { status: 200, body: { commentUrl: "c" } } },
     );
     expect(out.calls[0].body).toEqual({ body: "Hello" });
+    expect(out.exitCode).toBe(0);
+  });
+
+  it("reads update body from --body-file", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "shipit-gh-"));
+    const bodyPath = path.join(tmpDir, "pr-body.md");
+    await fsp.writeFile(bodyPath, "Updated `body`\n", "utf8");
+
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "edit", "5", "--body-file", bodyPath],
+      { "PATCH /agent-ops/pr/5": { status: 200, body: { url: "u", number: 5 } } },
+    );
+    expect(out.calls[0].body).toMatchObject({ body: "Updated `body`\n" });
     expect(out.exitCode).toBe(0);
   });
 });
@@ -528,4 +568,3 @@ describe("gh pr status", () => {
     expect(out.stdout).toContain("https://github.com/x/y/pull/4");
   });
 });
-
