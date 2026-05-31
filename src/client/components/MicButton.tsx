@@ -29,14 +29,23 @@ export function MicButton({
   voice,
   hotkeyLabel,
   onOpenSettings,
+  large = false,
 }: {
   voice: VoiceInputApi;
   /** Human-readable hotkey shown in the idle tooltip, e.g. "Ctrl+Shift+Space". */
   hotkeyLabel?: string;
   /** Opens the Voice settings tab — wired to the error state's "Fix in settings". */
   onOpenSettings?: () => void;
+  /**
+   * Enlarge the touch target. Set on mobile, where this button — not the
+   * push-to-talk hotkey — is the only way to start dictation, so a tiny
+   * icon is a usability problem (docs/144).
+   */
+  large?: boolean;
 }) {
   const { state, elapsedMs, errorMessage } = voice;
+  // The icon itself stays SM; only the tappable padding grows on mobile.
+  const pad = large ? "p-3" : "p-1.5";
 
   const handleClick = () => {
     if (state === "recording") {
@@ -74,7 +83,7 @@ export function MicButton({
       <WithTooltip label="Transcribing…">
         <button
           disabled
-          className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-text-tertiary) cursor-default"
+          className={`flex items-center justify-center shrink-0 rounded-lg ${pad} text-(--color-text-tertiary) cursor-default`}
           aria-label="Transcribing"
           data-testid="mic-button"
           data-state="transcribing"
@@ -99,7 +108,7 @@ export function MicButton({
               handleClick();
             }
           }}
-          className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-error) hover:bg-(--color-error)/15 transition-colors"
+          className={`flex items-center justify-center shrink-0 rounded-lg ${pad} text-(--color-error) hover:bg-(--color-error)/15 transition-colors`}
           aria-label={errorMessage ?? "Voice error"}
           data-testid="mic-button"
           data-state="error"
@@ -114,7 +123,7 @@ export function MicButton({
     <WithTooltip label={hotkeyLabel ? `Dictate (${hotkeyLabel})` : "Dictate"}>
       <button
         onClick={handleClick}
-        className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
+        className={`flex items-center justify-center shrink-0 rounded-lg ${pad} text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors`}
         aria-label="Dictate a message"
         data-testid="mic-button"
         data-state="idle"

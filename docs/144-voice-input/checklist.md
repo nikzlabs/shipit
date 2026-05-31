@@ -1,3 +1,12 @@
+## Phase 8 — Mobile recording UX
+
+- [x] Expose `cancelRecording` (the existing `abortRecording`) on `VoiceInputApi` so a Cancel gesture can discard audio without transcribing.
+- [x] `MicButton`: add a `large` prop that enlarges the mobile tap target (`p-3` vs `p-1.5`); icon size unchanged.
+- [x] New `MobileRecordingOverlay` — full-screen scrim with a big centered Stop button, live timer, "Listening…" label, Cancel control, and a transcribing spinner; Escape cancels while recording.
+- [x] Wire into `MessageInput`: `large={isMobile}` on the mic, mount the overlay only when `voiceInputEnabled && isMobile`.
+- [x] Tests: `MobileRecordingOverlay.test.tsx` (stop / cancel / Escape / transcribing / idle+error render nothing) and a `large`-padding case in `MicButton.test.tsx`.
+- [ ] Manual QA on a real phone: tap the enlarged mic, confirm the overlay covers the screen, Stop transcribes into the composer, Cancel discards, and the desktop inline path is unchanged.
+
 ## Phase 1 — Shared foundation
 
 - [x] Add `voiceProviderApiKey` and `voiceProvider` to `CredentialData` in `credential-store.ts`.
