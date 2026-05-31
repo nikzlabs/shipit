@@ -570,7 +570,12 @@ they have different lifetimes:
 - **Stop / Cancel** only exist *while recording*, so they're free to take over
   the screen. `MobileRecordingOverlay` (gated on `useIsMobile()`) renders a
   full-screen scrim with a large centered Stop button, a live timer, a
-  "Listening…" label, and a Cancel control. After Stop it shows a transcribing
+  "Listening…" label, and a Cancel control. The overlay is **theme-independent**:
+  a fixed dark scrim (`bg-black/75`) with explicit light text (`text-white`,
+  `text-white/60–80`) and bright error reds (`text-red-400`), *not* the themeable
+  `--color-text-*` tokens — those flip to dark in light themes and were blending
+  into the scrim (reported on the "live" light theme). A recording surface is
+  conventionally dark-with-light-text in every app, so we pin it. After Stop it shows a transcribing
   spinner until the transcript splices into the composer underneath, then
   auto-dismisses. Cancel calls `voice.cancelRecording()` (the newly-exposed
   `abortRecording`) to discard the audio without hitting the STT API; it's only
