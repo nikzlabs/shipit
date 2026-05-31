@@ -219,8 +219,44 @@ export function AppLayout({
 
       {isMobile ? (
         <>
-          <div className="flex flex-col flex-1 min-h-0">
-            {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-(--color-bg-secondary)">{rightPanel}</div>}
+          {/* Relative wrapper so the sessions drawer overlays only the content
+              region (above the tab bar), not the whole viewport. This keeps the
+              MobileTabBar visible and interactive while the session list is open. */}
+          <div className="relative flex flex-col flex-1 min-h-0">
+            <div className="flex flex-col flex-1 min-h-0">
+              {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-(--color-bg-secondary)">{rightPanel}</div>}
+            </div>
+            {mobileSidebarOpen && (
+              <div className="absolute inset-0 z-40 flex" role="dialog" aria-label="Sessions">
+                {/* Backdrop — tap to close */}
+                <button
+                  type="button"
+                  aria-label="Close sessions"
+                  onClick={onCloseMobileSidebar}
+                  className="absolute inset-0 bg-(--color-bg-overlay)"
+                />
+                {/* Drawer — full width on mobile; the close (X) button is the
+                    primary dismiss affordance, so we don't reserve a backdrop
+                    gutter on the right. */}
+                <div className="relative flex h-full w-full bg-(--color-bg-primary) shadow-xl animate-in slide-in-from-left">
+                  <SessionSidebar
+                    sessions={sessions}
+                    currentSessionId={currentSessionId}
+                    activeNewSessionRepoUrl={activeNewSessionRepoUrl}
+                    onResume={(sid) => { onResumeSession(sid); onCloseMobileSidebar(); }}
+                    onArchive={onArchiveSession}
+                    onNewSessionForRepo={(url) => { onNewSessionForRepo(url); onCloseMobileSidebar(); }}
+                    collapsed={false}
+                    onToggleCollapse={onCloseMobileSidebar}
+                    repos={repos}
+                    onAddRepo={() => { onAddRepo(); onCloseMobileSidebar(); }}
+                    onCreateNewRepo={() => { onCreateNewRepo(); onCloseMobileSidebar(); }}
+                    mobile
+                    onClose={onCloseMobileSidebar}
+                  />
+                </div>
+              </div>
+            )}
           </div>
           {(!showHomeScreen || showNewSessionView) && (
             <MobileTabBar
@@ -232,37 +268,6 @@ export function AppLayout({
               onVoiceSession={onMobileVoiceSession}
               newSessionDisabled={repos.length === 0}
             />
-          )}
-          {mobileSidebarOpen && (
-            <div className="fixed inset-0 z-40 flex" role="dialog" aria-label="Sessions">
-              {/* Backdrop — tap to close */}
-              <button
-                type="button"
-                aria-label="Close sessions"
-                onClick={onCloseMobileSidebar}
-                className="absolute inset-0 bg-(--color-bg-overlay)"
-              />
-              {/* Drawer — full width on mobile; the close (X) button is the
-                  primary dismiss affordance, so we don't reserve a backdrop
-                  gutter on the right. */}
-              <div className="relative flex h-full w-full bg-(--color-bg-primary) shadow-xl animate-in slide-in-from-left">
-                <SessionSidebar
-                  sessions={sessions}
-                  currentSessionId={currentSessionId}
-                  activeNewSessionRepoUrl={activeNewSessionRepoUrl}
-                  onResume={(sid) => { onResumeSession(sid); onCloseMobileSidebar(); }}
-                  onArchive={onArchiveSession}
-                  onNewSessionForRepo={(url) => { onNewSessionForRepo(url); onCloseMobileSidebar(); }}
-                  collapsed={false}
-                  onToggleCollapse={onCloseMobileSidebar}
-                  repos={repos}
-                  onAddRepo={() => { onAddRepo(); onCloseMobileSidebar(); }}
-                  onCreateNewRepo={() => { onCreateNewRepo(); onCloseMobileSidebar(); }}
-                  mobile
-                  onClose={onCloseMobileSidebar}
-                />
-              </div>
-            </div>
           )}
         </>
       ) : (
