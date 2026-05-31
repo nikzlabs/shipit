@@ -202,6 +202,49 @@ describe("useVoiceInput", () => {
     expect(received).toEqual([]);
   });
 
+  it("retains the audio after a transcribe failure and resends it verbatim on retry", async () => {
+    // First transcribe call fails; the audio must be retained for a resend.
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "boom" }, { ok: false, status: 500 }));
+    const { result } = renderHook(() => useVoiceInput({ enabled: true }));
+    const received: string[] = [];
+    act(() => { result.current.onTranscript((t) => received.push(t)); });
+
+    act(() => { result.current.startRecording(); });
+    await flushMicrotasks();
+    await act(async () => { vi.advanceTimersByTime(300); });
+    act(() => { result.current.stopRecording(); });
+    await flushMicrotasks();
+
+    expect(result.current.state).toBe("error");
+    expect(result.current.canRetryTranscription).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Retry resends without re-recording — capture.stop() is NOT called again.
+    act(() => { result.current.retryTranscription(); });
+    await flushMicrotasks();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(lastCapture?.stop).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toBe("idle");
+    expect(result.current.canRetryTranscription).toBe(false);
+    expect(received).toEqual(["hello"]);
+  });
+
+  it("does not offer a transcription retry when capture never started (mic permission)", async () => {
+    startCaptureImpl = () => Promise.reject(new MicPermissionError("denied"));
+    const { result } = renderHook(() => useVoiceInput({ enabled: true }));
+
+    act(() => { result.current.startRecording(); });
+    await flushMicrotasks();
+
+    expect(result.current.state).toBe("error");
+    expect(result.current.canRetryTranscription).toBe(false);
+    // No retained audio → retryTranscription is a no-op (no network call).
+    act(() => { result.current.retryTranscription(); });
+    await flushMicrotasks();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("surfaces a cleanupWarning when cleanupErrorCode is present and cleanup was requested", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({ text: "hi", rawText: "hi", cleanupErrorCode: "rate_limited" }),

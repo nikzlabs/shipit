@@ -574,14 +574,35 @@ they have different lifetimes:
   offered while `recording` (once `transcribing`, the audio is already
   captured and in flight, so cancel is a no-op and the control is hidden).
   The **error** state is shown in the overlay too (a tiny inline error icon is
-  illegible on a phone): a warning icon, the error message, a big **Try again**
-  button, and a **Dismiss** control. Try again calls `voice.startRecording()` —
-  it *re-records* rather than retrying the failed audio, because the hook
-  discards the blob on failure, so re-dictating is the only actionable retry.
-  Dismiss calls `voice.dismissError()` back to idle. Escape cancels while
-  recording and dismisses while erroring (harmless on mobile, handy for desktop
-  testing of the view). Desktop is untouched: the overlay never mounts there,
-  so the inline MicButton still owns the desktop error UI.
+  illegible on a phone): a warning icon, the error message, a big primary
+  recovery button, and a **Dismiss** control. Dismiss calls
+  `voice.dismissError()` back to idle. Escape cancels while recording and
+  dismisses while erroring (harmless on mobile, handy for desktop testing).
+
+**Robust retry — resend the same audio (`canRetryTranscription`).** A
+transcription failure is usually transient (network blip, provider hiccup), so
+forcing the user to re-speak is the wrong recovery. The hook now **retains the
+captured audio** (`pendingAudioRef`) for the duration of the transcribe
+round-trip and keeps it on failure, exposing `canRetryTranscription` (true only
+when the failure happened *after* capture) and `retryTranscription()` (re-POSTs
+the same blob — no re-recording). The audio is cleared on success, on a fresh
+`startRecording`, and on `dismissError`/abort so stale audio never leaks into
+the wrong session. Recovery actions branch on `canRetryTranscription`:
+
+- **Transcription failure** (audio retained) → primary **Resend** (verbatim,
+  via `retryTranscription`), with **Re-record** as the fallback.
+- **No usable audio** (mic permission denied, capture never started) → only
+  **Try again** (record afresh, via `startRecording`).
+
+**Desktop error UI (`VoiceErrorPanel`).** Desktop previously had only the
+inline mic warning glyph + tooltip — too thin to recover from. The error state
+now anchors a Radix popover (`Popover`/`PopoverAnchor`/`PopoverContent`) to the
+mic button containing `VoiceErrorPanel`: the message plus the same
+Resend/Re-record/Try again/Dismiss actions (and a Settings shortcut when
+`onOpenSettings` is wired). The panel is shared decision logic with the mobile
+overlay — both read `canRetryTranscription` — but rendered compact for the
+toolbar. On mobile (`large`) the inline MicButton stays minimal and defers the
+error UI to `MobileRecordingOverlay`, which sits on top of it.
 
 **Insertion semantics:**
 
@@ -906,7 +927,8 @@ Captured here so future readers know they were considered, not forgotten:
 - `src/client/voice/extract-turn-prose.ts` — pure helper that turns a chat turn's events into a single string of prose to read aloud
 - `src/client/voice/playback-store.ts` — Zustand store backing the playback hook
 - `src/client/components/MicButton.tsx` — presentational mic UI (`large` prop enlarges the mobile tap target)
-- `src/client/components/MobileRecordingOverlay.tsx` — full-screen mobile recording surface (big Stop button + Cancel + timer); mounted only on mobile
+- `src/client/components/MobileRecordingOverlay.tsx` — full-screen mobile recording surface (big Stop button + Cancel + timer + error/Resend); mounted only on mobile
+- `src/client/components/VoiceErrorPanel.tsx` — desktop error popover content (message + Resend/Re-record/Try again/Dismiss/Settings), shared decision logic with the mobile overlay
 - `src/client/components/PlayTurnButton.tsx` — presentational Play/Pause UI for a single turn, with progress indicator and speed dropdown
 - `src/client/voice/*.test.ts` / `src/client/voice/*.test.tsx` — unit tests
 - `src/client/components/MicButton.test.tsx`, `src/client/components/MobileRecordingOverlay.test.tsx` — component tests for the mic states and the mobile overlay (stop / cancel / Escape / transcribing)

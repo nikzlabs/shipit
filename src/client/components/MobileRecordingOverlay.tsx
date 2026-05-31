@@ -42,11 +42,14 @@ function formatElapsed(ms: number): string {
 }
 
 export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
-  const { state, elapsedMs, errorMessage } = voice;
+  const { state, elapsedMs, errorMessage, canRetryTranscription } = voice;
   const recording = state === "recording";
   const transcribing = state === "transcribing";
   const error = state === "error";
   const active = recording || transcribing || error;
+  // After a transcription failure the audio is retained, so the primary
+  // recovery is to resend it verbatim rather than make the user re-speak.
+  const canResend = error && canRetryTranscription;
 
   // Escape cancels an active recording or dismisses an error (no-op once
   // transcribing — the audio is already in flight). Harmless on mobile where
@@ -112,13 +115,13 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
       )}
       {error && (
         <button
-          onClick={() => voice.startRecording()}
-          aria-label="Try again"
+          onClick={() => (canResend ? voice.retryTranscription() : voice.startRecording())}
+          aria-label={canResend ? "Resend" : "Try again"}
           data-testid="mobile-recording-retry"
           className="relative flex h-32 w-32 flex-col items-center justify-center gap-1 rounded-full bg-(--color-error)/15 text-(--color-error) transition-transform active:scale-95"
         >
           <ArrowClockwiseIcon size={ICON_SIZE.LG} weight="bold" />
-          <span className="text-xs font-medium">Try again</span>
+          <span className="text-xs font-medium">{canResend ? "Resend" : "Try again"}</span>
         </button>
       )}
 
@@ -137,15 +140,27 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
         </>
       )}
       {error && (
-        <button
-          onClick={() => voice.dismissError()}
-          aria-label="Dismiss"
-          data-testid="mobile-recording-dismiss"
-          className="mt-2 inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
-        >
-          <XIcon size={ICON_SIZE.SM} />
-          Dismiss
-        </button>
+        <div className="mt-2 flex items-center gap-3">
+          {canResend && (
+            <button
+              onClick={() => voice.startRecording()}
+              aria-label="Re-record"
+              data-testid="mobile-recording-rerecord"
+              className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+            >
+              Re-record
+            </button>
+          )}
+          <button
+            onClick={() => voice.dismissError()}
+            aria-label="Dismiss"
+            data-testid="mobile-recording-dismiss"
+            className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+          >
+            <XIcon size={ICON_SIZE.SM} />
+            Dismiss
+          </button>
+        </div>
       )}
     </div>
   );

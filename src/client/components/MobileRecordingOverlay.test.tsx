@@ -13,9 +13,11 @@ function makeVoice(overrides: Partial<VoiceInputApi> = {}): VoiceInputApi {
     elapsedMs: 0,
     errorMessage: null,
     cleanupWarning: null,
+    canRetryTranscription: false,
     startRecording: vi.fn(),
     stopRecording: vi.fn(),
     cancelRecording: vi.fn(),
+    retryTranscription: vi.fn(),
     onTranscript: vi.fn(() => () => {}),
     dismissError: vi.fn(),
     ...overrides,
@@ -40,6 +42,23 @@ describe("MobileRecordingOverlay", () => {
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
     // No recording controls while showing an error.
     expect(screen.queryByRole("button", { name: "Stop recording" })).not.toBeInTheDocument();
+  });
+
+  it("offers Resend (verbatim) + Re-record when the audio can be retried", () => {
+    const voice = makeVoice({
+      state: "error",
+      errorMessage: "Couldn't transcribe — try again",
+      canRetryTranscription: true,
+    });
+    render(<MobileRecordingOverlay voice={voice} />);
+    // The big primary button resends the same audio — no re-speaking.
+    fireEvent.click(screen.getByRole("button", { name: "Resend" }));
+    expect(voice.retryTranscription).toHaveBeenCalledTimes(1);
+    expect(voice.startRecording).not.toHaveBeenCalled();
+    // Re-record is the fallback.
+    fireEvent.click(screen.getByRole("button", { name: "Re-record" }));
+    expect(voice.startRecording).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
   });
 
   it("re-records when Try again is tapped in the error state", () => {

@@ -13,9 +13,11 @@ function makeVoice(overrides: Partial<VoiceInputApi> = {}): VoiceInputApi {
     elapsedMs: 0,
     errorMessage: null,
     cleanupWarning: null,
+    canRetryTranscription: false,
     startRecording: vi.fn(),
     stopRecording: vi.fn(),
     cancelRecording: vi.fn(),
+    retryTranscription: vi.fn(),
     onTranscript: vi.fn(() => () => {}),
     dismissError: vi.fn(),
     ...overrides,
@@ -63,24 +65,49 @@ describe("MicButton", () => {
     expect(btn).toHaveAttribute("data-state", "transcribing");
   });
 
-  it("surfaces the error message in the error state and dismisses on click", () => {
+  it("surfaces the error message and recovery actions in a desktop popover", () => {
     const voice = makeVoice({ state: "error", errorMessage: "Mic permission denied" });
     render(<MicButton voice={voice} />);
-    const btn = screen.getByRole("button", { name: "Mic permission denied" });
-    expect(btn).toHaveAttribute("data-state", "error");
-    fireEvent.click(btn);
+    expect(screen.getByRole("button", { name: "Mic permission denied" })).toHaveAttribute(
+      "data-state",
+      "error",
+    );
+    // No retainable audio → only re-record ("Try again"), no Resend.
+    expect(screen.getByTestId("voice-error-panel")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resend" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(voice.dismissError).toHaveBeenCalledTimes(1);
   });
 
-  it("shift-click in error state opens settings and dismisses the error", () => {
-    const voice = makeVoice({ state: "error", errorMessage: "Mic permission denied" });
+  it("offers Resend (verbatim) and Re-record when the audio can be retried", () => {
+    const voice = makeVoice({
+      state: "error",
+      errorMessage: "Couldn't transcribe — try again",
+      canRetryTranscription: true,
+    });
+    render(<MicButton voice={voice} />);
+    fireEvent.click(screen.getByRole("button", { name: "Resend" }));
+    expect(voice.retryTranscription).toHaveBeenCalledTimes(1);
+    expect(voice.startRecording).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Re-record" }));
+    expect(voice.startRecording).toHaveBeenCalledTimes(1);
+  });
+
+  it("Settings action in the error popover opens settings and dismisses", () => {
+    const voice = makeVoice({ state: "error", errorMessage: "Provider key invalid" });
     const onOpenSettings = vi.fn();
     render(<MicButton voice={voice} onOpenSettings={onOpenSettings} />);
-    fireEvent.click(screen.getByRole("button", { name: "Mic permission denied" }), {
-      shiftKey: true,
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
     expect(voice.dismissError).toHaveBeenCalledTimes(1);
+  });
+
+  it("on mobile (large) defers the error UI to the overlay — no inline panel", () => {
+    const voice = makeVoice({ state: "error", errorMessage: "Mic permission denied" });
+    render(<MicButton voice={voice} large />);
+    expect(screen.getByRole("button", { name: "Mic permission denied" })).toBeInTheDocument();
+    expect(screen.queryByTestId("voice-error-panel")).not.toBeInTheDocument();
   });
 
   it("includes the hotkey label in the idle button accessible name when provided", () => {
