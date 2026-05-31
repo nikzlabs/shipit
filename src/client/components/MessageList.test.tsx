@@ -73,6 +73,28 @@ describe("MessageList", () => {
 
       expect(scrollContainer.scrollTop).toBe(100);
     });
+
+    it("scrolls a newly sent user message into view even after the user scrolled up", () => {
+      const { container, rerender } = render(
+        <MessageList messages={[msg("assistant", "one")]} isLoading={false} />,
+      );
+      const scrollContainer = container.firstElementChild!;
+      setScrollMetrics(scrollContainer, { scrollTop: 100, scrollHeight: 300, clientHeight: 100 });
+      fireEvent.scroll(scrollContainer);
+
+      setScrollMetrics(scrollContainer, { scrollTop: 100, scrollHeight: 520, clientHeight: 100 });
+      rerender(
+        <MessageList
+          messages={[
+            msg("assistant", "one"),
+            msg("user", "This is a long user message that should be visible immediately after sending."),
+          ]}
+          isLoading={true}
+        />,
+      );
+
+      expect(scrollContainer.scrollTop).toBe(520);
+    });
   });
 
   describe("message rendering", () => {

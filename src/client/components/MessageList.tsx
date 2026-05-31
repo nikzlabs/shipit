@@ -228,6 +228,30 @@ function scrollToBottom(container: HTMLElement): void {
   container.scrollTop = container.scrollHeight;
 }
 
+function scheduleScrollToBottom(container: HTMLElement, shouldContinue: () => boolean): () => void {
+  let frame = 0;
+  let cancelled = false;
+
+  const tick = () => {
+    if (cancelled || !shouldContinue()) return;
+    scrollToBottom(container);
+    frame += 1;
+    if (frame < 3) {
+      window.requestAnimationFrame(tick);
+    }
+  };
+
+  window.requestAnimationFrame(tick);
+  const timeout = window.setTimeout(() => {
+    if (!cancelled && shouldContinue()) scrollToBottom(container);
+  }, 100);
+
+  return () => {
+    cancelled = true;
+    window.clearTimeout(timeout);
+  };
+}
+
 function defaultSessionNameFor(value: string): string {
   const cleaned = value.trim().replace(/\s+/g, " ").slice(0, 80);
   return cleaned || "Fork from here";
@@ -258,6 +282,7 @@ export function MessageList({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
+  const previousMessageCountRef = useRef(0);
   const currentMatchRef = useRef<HTMLElement | null>(null);
   const hasRewindControls = !!onRewindAtGap;
 
@@ -341,15 +366,34 @@ export function MessageList({
 
     handleScroll();
     container.addEventListener("scroll", handleScroll);
-    return () => container.removeEventListener("scroll", handleScroll);
+
+    const observer = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => {
+          if (autoScrollRef.current) scrollToBottom(container);
+        })
+      : null;
+    observer?.observe(container);
+
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      observer?.disconnect();
+    };
   }, []);
 
   // Auto-scroll to bottom only if user hasn't scrolled up.
+  // A newly appended user message is an explicit send action, so it anchors the
+  // conversation even if layout/keyboard/input-height changes briefly made the
+  // old bottom look stale.
   // Skip while the user has an active selection inside the message list —
   // otherwise streaming tokens trigger scrollIntoView on every render and
   // continuously cancel the in-progress text selection.
   useLayoutEffect(() => {
-    if (!autoScrollRef.current) return;
+    const previousMessageCount = previousMessageCountRef.current;
+    previousMessageCountRef.current = messages.length;
+    const latestMessage = messages[messages.length - 1];
+    const appendedUserMessage = messages.length > previousMessageCount && latestMessage?.role === "user";
+
+    if (!autoScrollRef.current && !appendedUserMessage) return;
     const sel = typeof window !== "undefined" ? window.getSelection() : null;
     if (
       sel &&
@@ -366,12 +410,10 @@ export function MessageList({
     scrollToBottom(container);
     autoScrollRef.current = true;
 
-    const frame = window.requestAnimationFrame(() => {
+    return scheduleScrollToBottom(container, () => {
       const latestContainer = containerRef.current;
-      if (!latestContainer || !autoScrollRef.current) return;
-      scrollToBottom(latestContainer);
+      return latestContainer === container && autoScrollRef.current;
     });
-    return () => window.cancelAnimationFrame(frame);
   }, [messages, isLoading]);
 
   // Scroll to the current search match when it changes
