@@ -1,6 +1,5 @@
 ---
-status: in-progress
-priority: high
+status: done
 description: Decouple session *visibility* in the sidebar from *disk reclamation*, replace the single destructive archive with graduated cleanup tiers, and guarantee a restored session is based on fresh origin/main instead of a stale bare-cache snapshot.
 ---
 
@@ -18,8 +17,14 @@ description: Decouple session *visibility* in the sidebar from *disk reclamation
 > (`kickDiskEscalation` in `index.ts`), never on the start path, and folds in a
 > disk-pressure LRU sweep. A `light` session restores by simply being selected
 > (`activateSession` flips it back to `hot`; the normal `agent.install` /
-> dep-cache path re-materializes deps). The remaining open items are
-> sidebar-grouping / `AllSessionsDialog` UI polish — see `checklist.md`.
+> dep-cache path re-materializes deps). The sidebar-grouping /
+> `AllSessionsDialog` UI polish has now landed too: `RepoGroup` splits each
+> repo's sessions into an **Active** group and a demoted **Recently merged**
+> subheader (a reopened merged session rejoins Active), and `SessionItem`
+> surfaces a `DiskTierBadge` for non-`hot` tiers so an `evicted`-but-listed
+> session reads as "restores on open." The two previously-deferred integration
+> tests (reopened-reappears-in-`list()`, and `evicted`-restore-cut-from-fresh-
+> `origin/main`) are now in place too — see `checklist.md`.
 
 ## Problem
 

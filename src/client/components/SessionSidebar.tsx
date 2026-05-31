@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, LightningIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, LightningIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -18,6 +18,32 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useAttentionInfo } from "../hooks/useAttentionInfo.js";
 import { useMediaQuery } from "../hooks/useMediaQuery.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
+
+/**
+ * docs/161 — client mirror of the server's `reopenedAfterMerge` predicate
+ * (`sessions.ts`). True when a merged session has been *worked in* since its
+ * merge — the user returned to start a follow-up PR. Keys on `lastUsedAt`
+ * (bumped only by turn activity), so it flips true the instant the user sends a
+ * message in a merged session. Parsed with `Date.parse` because `mergedAt`
+ * (`datetime('now')`) and `lastUsedAt` (`toISOString()`) are stored in
+ * format-incompatible strings that a lexical compare would order wrongly.
+ */
+function reopenedAfterMerge(s: SessionInfo): boolean {
+  if (!s.mergedAt) return false;
+  const merged = Date.parse(s.mergedAt);
+  const used = Date.parse(s.lastUsedAt);
+  if (Number.isNaN(merged) || Number.isNaN(used)) return false;
+  return used > merged;
+}
+
+/**
+ * docs/161 — a session that belongs in the sidebar's demoted "Recently merged"
+ * group: merged and not reopened since. A reopened merged session rejoins the
+ * Active group automatically.
+ */
+function isRecentlyMerged(s: SessionInfo): boolean {
+  return !!s.mergedAt && !reopenedAfterMerge(s);
+}
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 400;
@@ -186,6 +212,32 @@ function AutoMergeBadge({ sessionId }: { sessionId: string }) {
   );
 }
 
+/**
+ * docs/161 — surfaces a session's *disk tier* when it isn't fully `hot`, so the
+ * user knows selecting it triggers a restore. Listing is orthogonal to disk: an
+ * `evicted` session can still be in the sidebar (it re-clones from cache on
+ * select) and a `light` one keeps its checkout but reinstalls deps on open. The
+ * badge is suppressed for user-archived rows, where the archive icon already
+ * conveys the (also-evicted) state.
+ */
+function DiskTierBadge({ session }: { session: SessionInfo }) {
+  if (session.diskTier === "light") {
+    return (
+      <span className="shrink-0 flex text-(--color-text-tertiary)" title="Dependencies cleared to save disk — reinstalled when you open it">
+        <HardDrivesIcon size={ICON_SIZE.XS} />
+      </span>
+    );
+  }
+  if (session.diskTier === "evicted") {
+    return (
+      <span className="shrink-0 flex text-(--color-text-tertiary)" title="Workspace stored to save disk — restored from the cache when you open it">
+        <CloudArrowDownIcon size={ICON_SIZE.XS} />
+      </span>
+    );
+  }
+  return null;
+}
+
 export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch }: SessionItemProps) {
   const isArchived = session.archived === true;
 
@@ -301,6 +353,7 @@ export function SessionItem({ session, isCurrent, onResume, onArchive, onRestore
               <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
             )}
             {isArchived && <PhArchiveIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary) shrink-0" />}
+            {!isArchived && <DiskTierBadge session={session} />}
             <span className="text-(--color-text-tertiary) text-[10px]">{formatRelativeDate(session.lastUsedAt)}</span>
             <AutoMergeBadge sessionId={session.id} />
           </div>
@@ -636,14 +689,17 @@ function RepoGroup({
                 list.push(s);
                 childrenByParent.set(s.parentSessionId, list);
               }
-              const rendered: React.ReactElement[] = [];
-              for (const s of sessions) {
-                // Skip children that we'll render beneath their parent below.
-                if (s.parentSessionId && !orphanedChildren.has(s.id)) continue;
+              // Render a top-level session followed by its (non-collapsed) children
+              // into `target`. The brood stays together and is grouped by the
+              // PARENT's status, so a parent's merge state — not each child's —
+              // decides which group (Active vs Recently merged) the whole brood
+              // lands in. This preserves the existing "children follow parent"
+              // invariant.
+              const pushTree = (s: SessionInfo, target: React.ReactElement[]) => {
                 const children = childrenByParent.get(s.id);
                 const childCount = children?.length ?? 0;
                 const childrenCollapsed = collapsedParents.has(s.id);
-                rendered.push(
+                target.push(
                   <SessionItem
                     key={s.id}
                     session={s}
@@ -656,9 +712,9 @@ function RepoGroup({
                     onToggleChildren={childCount > 0 ? () => onToggleParentCollapsed(s.id) : undefined}
                   />,
                 );
-                if (!children || childrenCollapsed) continue;
+                if (!children || childrenCollapsed) return;
                 for (const child of children) {
-                  rendered.push(
+                  target.push(
                     <SessionItem
                       key={child.id}
                       session={child}
@@ -670,8 +726,31 @@ function RepoGroup({
                     />,
                   );
                 }
+              };
+              // docs/161 — split into Active and a demoted "Recently merged" group.
+              // The session list is already sorted (active first, then merged by
+              // mergedAt desc), so iterating in order keeps each group sorted.
+              const active: React.ReactElement[] = [];
+              const merged: React.ReactElement[] = [];
+              for (const s of sessions) {
+                // Skip children that we render beneath their parent.
+                if (s.parentSessionId && !orphanedChildren.has(s.id)) continue;
+                pushTree(s, isRecentlyMerged(s) ? merged : active);
               }
-              return rendered;
+              return (
+                <>
+                  {active}
+                  {merged.length > 0 && (
+                    <div className="flex items-center gap-1.5 px-2 pt-2 pb-0.5 mx-1" aria-hidden>
+                      <GitMergeIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
+                        Recently merged
+                      </span>
+                    </div>
+                  )}
+                  {merged}
+                </>
+              );
             })()
           )}
         </div>
@@ -743,12 +822,14 @@ export function SessionSidebar({
       grouped.get(key)!.push(s);
     }
 
-    // Sort sessions within each group: non-merged first (by createdAt desc), then merged
-    // (by mergedAt desc, falling back to createdAt desc if mergedAt is missing).
+    // Sort sessions within each group: active first (by createdAt desc), then
+    // recently-merged (by mergedAt desc, falling back to createdAt desc). docs/161 —
+    // "active" includes a *reopened* merged session (worked in since the merge), so
+    // it bubbles back up out of the merged tail; only `isRecentlyMerged` sinks.
     for (const [, group] of grouped) {
       group.sort((a, b) => {
-        const aMerged = a.mergedAt ? 1 : 0;
-        const bMerged = b.mergedAt ? 1 : 0;
+        const aMerged = isRecentlyMerged(a) ? 1 : 0;
+        const bMerged = isRecentlyMerged(b) ? 1 : 0;
         if (aMerged !== bMerged) return aMerged - bMerged;
         if (aMerged === 1) {
           const aKey = a.mergedAt ?? a.createdAt ?? "";
