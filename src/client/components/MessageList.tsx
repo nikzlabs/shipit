@@ -1,5 +1,5 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: DOM scroll sync (scrollIntoView), window keydown listener, xterm auto-scroll
-import { Fragment, useMemo, useEffect, useRef } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect/useLayoutEffect: DOM scroll sync, window keydown listener, xterm auto-scroll
+import { Fragment, useMemo, useEffect, useLayoutEffect, useRef } from "react";
 import {
   TypingDots,
 } from "./StreamingIndicator.js";
@@ -217,6 +217,17 @@ export { MessageFileAttachments, MessageImages } from "./message-media.js";
 
 export { buildVisualElements, STANDALONE_TOOLS, SUBAGENT_TOOLS, type VisualElement } from "./visual-elements.js";
 
+const BOTTOM_THRESHOLD_PX = 40;
+
+function isNearBottom(container: HTMLElement): boolean {
+  const { scrollTop, scrollHeight, clientHeight } = container;
+  return scrollHeight - scrollTop - clientHeight < BOTTOM_THRESHOLD_PX;
+}
+
+function scrollToBottom(container: HTMLElement): void {
+  container.scrollTop = container.scrollHeight;
+}
+
 function defaultSessionNameFor(value: string): string {
   const cleaned = value.trim().replace(/\s+/g, " ").slice(0, 80);
   return cleaned || "Fork from here";
@@ -245,7 +256,6 @@ export function MessageList({
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
   onRewindAtGap?: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
 }) {
-  const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const currentMatchRef = useRef<HTMLElement | null>(null);
@@ -326,11 +336,10 @@ export function MessageList({
     if (!container) return;
 
     const handleScroll = () => {
-      const { scrollTop, scrollHeight, clientHeight } = container;
-      // Consider "at bottom" if within 40px of the end
-      autoScrollRef.current = scrollHeight - scrollTop - clientHeight < 40;
+      autoScrollRef.current = isNearBottom(container);
     };
 
+    handleScroll();
     container.addEventListener("scroll", handleScroll);
     return () => container.removeEventListener("scroll", handleScroll);
   }, []);
@@ -339,8 +348,7 @@ export function MessageList({
   // Skip while the user has an active selection inside the message list —
   // otherwise streaming tokens trigger scrollIntoView on every render and
   // continuously cancel the in-progress text selection.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!autoScrollRef.current) return;
     const sel = typeof window !== "undefined" ? window.getSelection() : null;
     if (
@@ -352,7 +360,18 @@ export function MessageList({
     ) {
       return;
     }
-    bottomRef.current?.scrollIntoView({ behavior: "instant" });
+    const container = containerRef.current;
+    if (!container) return;
+
+    scrollToBottom(container);
+    autoScrollRef.current = true;
+
+    const frame = window.requestAnimationFrame(() => {
+      const latestContainer = containerRef.current;
+      if (!latestContainer || !autoScrollRef.current) return;
+      scrollToBottom(latestContainer);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [messages, isLoading]);
 
   // Scroll to the current search match when it changes
@@ -767,7 +786,6 @@ export function MessageList({
       })}
 
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
-      <div ref={bottomRef} />
     </div>
   );
 }
