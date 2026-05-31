@@ -36,23 +36,38 @@ export function MobileTabBar({
 }) {
   return (
     <nav
-      className="grid grid-cols-[minmax(4.5rem,1fr)_auto_minmax(4.5rem,1fr)] items-center gap-2 border-t border-(--color-border-primary) bg-(--color-bg-primary) px-3 py-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]"
+      className="grid grid-cols-[minmax(8rem,1fr)_auto] items-center gap-3 border-t border-(--color-border-primary) bg-(--color-bg-primary) px-3 py-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]"
       aria-label="Mobile navigation"
     >
-      <button
-        onClick={() => onChangePanel("chat")}
-        className={`flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-md text-xs font-medium transition-colors ${
-          activePanel === "chat"
-            ? "text-(--color-text-link)"
-            : "text-(--color-text-secondary) active:bg-(--color-bg-hover) active:text-(--color-text-primary)"
-        }`}
-        aria-current={activePanel === "chat" ? "page" : undefined}
-      >
-        <ChatCircleIcon size={ICON_SIZE.MD} />
-        Chat
-      </button>
+      <div className="grid min-w-0 grid-cols-2 gap-1">
+        <button
+          onClick={() => onChangePanel("chat")}
+          className={`flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-md text-xs font-medium transition-colors ${
+            activePanel === "chat"
+              ? "text-(--color-text-link)"
+              : "text-(--color-text-secondary) active:bg-(--color-bg-hover) active:text-(--color-text-primary)"
+          }`}
+          aria-current={activePanel === "chat" ? "page" : undefined}
+        >
+          <ChatCircleIcon size={ICON_SIZE.MD} />
+          Chat
+        </button>
 
-      <div className="flex items-center justify-center gap-1.5">
+        <button
+          onClick={() => onChangePanel("preview")}
+          className={`flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-md text-xs font-medium transition-colors ${
+            activePanel === "preview"
+              ? "text-(--color-text-link)"
+              : "text-(--color-text-secondary) active:bg-(--color-bg-hover) active:text-(--color-text-primary)"
+          }`}
+          aria-current={activePanel === "preview" ? "page" : undefined}
+        >
+          <SquaresFourIcon size={ICON_SIZE.MD} />
+          Workspace
+        </button>
+      </div>
+
+      <div className="flex items-center justify-center gap-1.5 border-l border-(--color-border-primary) pl-3">
         <WithTooltip label="Sessions" side="top">
           <button
             type="button"
@@ -86,19 +101,6 @@ export function MobileTabBar({
           </button>
         </WithTooltip>
       </div>
-
-      <button
-        onClick={() => onChangePanel("preview")}
-        className={`flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-md text-xs font-medium transition-colors ${
-          activePanel === "preview"
-            ? "text-(--color-text-link)"
-            : "text-(--color-text-secondary) active:bg-(--color-bg-hover) active:text-(--color-text-primary)"
-        }`}
-        aria-current={activePanel === "preview" ? "page" : undefined}
-      >
-        <SquaresFourIcon size={ICON_SIZE.MD} />
-        Workspace
-      </button>
     </nav>
   );
 }

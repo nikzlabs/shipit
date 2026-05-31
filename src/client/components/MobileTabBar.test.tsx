@@ -27,7 +27,7 @@ describe("MobileTabBar", () => {
     expect(screen.getByText("Workspace")).toBeInTheDocument();
   });
 
-  it("renders thumb actions between the primary tabs", () => {
+  it("renders thumb actions alongside the primary tabs", () => {
     renderMobileTabBar();
     expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New Session" })).toBeInTheDocument();
