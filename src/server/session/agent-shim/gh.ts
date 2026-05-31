@@ -25,6 +25,8 @@
  * For documentation: see /shipit-docs/github.md inside the container.
  */
 
+import fsp from "node:fs/promises";
+
 const SHIM_NAME = "gh (ShipIt)";
 
 const REJECTED_HELP = `${SHIM_NAME} only supports a subset of pull-request operations.
@@ -33,12 +35,12 @@ See /shipit-docs/github.md for the full list.`;
 const HELP = `${SHIM_NAME} — pull-request operations brokered through the ShipIt orchestrator.
 
 Supported subcommands:
-  gh pr create   [-t TITLE] [-b BODY] [-B BASE] [-d|--draft] [--fill]
-  gh pr edit     [<number>] [-t TITLE] [-b BODY]
+  gh pr create   [-t TITLE] [-b BODY|--body-file FILE] [-B BASE] [-d|--draft] [--fill]
+  gh pr edit     [<number>] [-t TITLE] [-b BODY|--body-file FILE]
   gh pr view     [<number>] [--json FIELDS] [-w|--web]
   gh pr list     [--state STATE] [--json FIELDS]
   gh pr status
-  gh pr comment  [<number>] -b BODY
+  gh pr comment  [<number>] (-b BODY|--body-file FILE)
   gh pr ready    [<number>]
   gh pr close    [<number>]
   gh pr reopen   <number>
@@ -257,6 +259,7 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
     values: {
       "-t": "title", "--title": "title",
       "-b": "body", "--body": "body",
+      "--body-file": "bodyFile", "-F": "bodyFile",
       "-B": "base", "--base": "base",
       "--repo": "repo", "-R": "repo",
     },
@@ -276,10 +279,11 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
   if (parsed.booleans.has("web")) {
     fail(deps.io, "ShipIt's gh shim does not support --web. The PR URL is printed on stdout.");
   }
+  const body = await resolveBody(parsed.values.body, parsed.values.bodyFile, deps, "gh pr create");
 
   const payload = {
     title: parsed.values.title,
-    body: parsed.values.body,
+    body,
     base: parsed.values.base,
     draft: parsed.booleans.has("draft"),
     fill: parsed.booleans.has("fill"),
@@ -303,6 +307,7 @@ async function handlePrEdit(args: string[], deps: RunDeps): Promise<void> {
     values: {
       "-t": "title", "--title": "title",
       "-b": "body", "--body": "body",
+      "--body-file": "bodyFile", "-F": "bodyFile",
       "--repo": "repo", "-R": "repo",
     },
   });
@@ -313,10 +318,11 @@ async function handlePrEdit(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, `Unsupported flag for gh pr edit: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
   const num = await resolvePrNumber(parsed.positional, deps);
+  const body = await resolveBody(parsed.values.body, parsed.values.bodyFile, deps, "gh pr edit");
 
   const payload = {
     title: parsed.values.title,
-    body: parsed.values.body,
+    body,
   };
   if (payload.title === undefined && payload.body === undefined) {
     fail(deps.io, "gh pr edit: provide a title (-t) or body (-b) to update.");
@@ -450,6 +456,7 @@ async function handlePrComment(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: {
       "-b": "body", "--body": "body",
+      "--body-file": "bodyFile", "-F": "bodyFile",
       "--repo": "repo", "-R": "repo",
     },
   });
@@ -459,7 +466,7 @@ async function handlePrComment(args: string[], deps: RunDeps): Promise<void> {
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh pr comment: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const body = parsed.values.body;
+  const body = await resolveBody(parsed.values.body, parsed.values.bodyFile, deps, "gh pr comment");
   if (!body) fail(deps.io, "gh pr comment: -b/--body is required.");
   const num = await resolvePrNumber(parsed.positional, deps);
   const res = await deps.call("POST", `/agent-ops/pr/${num}/comment`, { body }, deps.env);
@@ -488,6 +495,33 @@ async function handlePrSimple(args: string[], deps: RunDeps, op: "ready" | "clos
     return;
   }
   fail(deps.io, formatError(res, `Failed to ${op} PR`), 1);
+}
+
+async function resolveBody(
+  body: string | undefined,
+  bodyFile: string | undefined,
+  deps: RunDeps,
+  command: string,
+): Promise<string | undefined> {
+  if (body !== undefined && bodyFile !== undefined) {
+    fail(deps.io, `${command}: use either -b/--body or --body-file, not both.`);
+  }
+  if (bodyFile === undefined) return body;
+  try {
+    return bodyFile === "-" ? await readStdin() : await fsp.readFile(bodyFile, "utf8");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(deps.io, `${command}: could not read body file ${bodyFile}: ${message}`);
+  }
+}
+
+async function readStdin(): Promise<string> {
+  let out = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) {
+    out += typeof chunk === "string" ? chunk : String(chunk);
+  }
+  return out;
 }
 
 /**

@@ -198,8 +198,9 @@ Phase 1 coverage shipped:
 - **[done] Shim unit tests** — `src/server/session/agent-shim/gh.test.ts` covers
   argument parsing (positional/value/boolean/`--flag=value`), allowlist
   enforcement, every supported subcommand's happy path, JSON-field filtering,
-  PR-number fallback to current branch, error formatting (auth/validation),
-  and exit codes. 47 cases.
+  `--body-file` markdown body handling (including backticks preserved outside
+  shell argument evaluation), PR-number fallback to current branch, error
+  formatting (auth/validation), and exit codes. 50 cases.
 - **[done] Worker broker tests** — `src/server/session/agent-ops-routes.test.ts`
   covers every `/agent-ops/*` route, body+query forwarding, status
   pass-through, and the misconfigured-orchestrator-client failure mode.

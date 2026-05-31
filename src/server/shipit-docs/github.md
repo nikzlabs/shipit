@@ -35,7 +35,7 @@ create or switch branches first, you are already on the session branch and
 `gh pr create` pushes it for you:
 
 ```sh
-gh pr create -t "Short clear title" -b "$(cat <<'EOF'
+gh pr create -t "Short clear title" --body-file - <<'EOF'
 ## Summary
 The user goal and why this change exists.
 
@@ -50,8 +50,11 @@ The user goal and why this change exists.
 ## Test plan
 - How to verify the change.
 EOF
-)"
 ```
+
+The `EOF` delimiter must be single-quoted. Do not put markdown containing
+backticks in `-b "..."`: the shell evaluates backticks and `$(...)` inside
+double quotes before the ShipIt `gh` shim receives the body.
 
 Do not only describe what changed. Explain why the change was made, what user
 request or bug it traces back to, and any tradeoff made. After creating a PR,
@@ -71,12 +74,12 @@ The shim:
 
 | Subcommand | Notes |
 |---|---|
-| `gh pr create [-t TITLE] [-b BODY] [-B BASE] [-d/--draft] [--fill]` | Push current branch and open a PR. With `--fill`, an empty body is filled from recent commits. |
-| `gh pr edit [<n>] [-t TITLE] [-b BODY]` | Update title/body. `<n>` defaults to the current branch's PR. |
+| `gh pr create [-t TITLE] [-b BODY\|--body-file FILE] [-B BASE] [-d/--draft] [--fill]` | Push current branch and open a PR. Use `--body-file -` with a quoted heredoc for markdown bodies. With `--fill`, an empty body is filled from recent commits. |
+| `gh pr edit [<n>] [-t TITLE] [-b BODY\|--body-file FILE]` | Update title/body. `<n>` defaults to the current branch's PR. |
 | `gh pr view [<n>] [--json FIELDS]` | Read a PR. With `--json title,body,state,…` returns just those fields. |
 | `gh pr list [--state open\|closed\|all] [--json …]` | List PRs in the session's repo. |
 | `gh pr status` | Print the current branch's PR (or "No PR"). |
-| `gh pr comment [<n>] -b BODY` | Leave an issue-style comment on a PR. |
+| `gh pr comment [<n>] (-b BODY\|--body-file FILE)` | Leave an issue-style comment on a PR. |
 | `gh pr ready [<n>]` | Mark a draft PR as ready for review. |
 | `gh pr close [<n>]` | Close a PR. |
 | `gh pr reopen <n>` | Reopen a closed PR. (PR number is required.) |

@@ -119,7 +119,7 @@ If you get a connection error, the dev server may still be starting — wait a m
 
 This falls under action-oriented: do, don't ask.
 
-When you finish a turn in which you edited any file in the repo and there isn't already an open PR for this branch, open one. Do not ask first. Run \`gh pr create -t "<title>" -b "<body>"\` as the next action after the work is done. Do NOT create or switch branches first — you are already on the session branch, and \`gh pr create\` pushes it for you.
+When you finish a turn in which you edited any file in the repo and there isn't already an open PR for this branch, open one. Do not ask first. Run \`gh pr create -t "<title>" --body-file - <<'EOF'\` with the markdown body in a single-quoted heredoc as the next action after the work is done. Do NOT create or switch branches first — you are already on the session branch, and \`gh pr create\` pushes it for you.
 
 Base the decision on your own Edit/Write/MultiEdit calls during the turn — NOT on \`git status\`, \`git diff\`, or \`git log\`. ShipIt auto-commits after the turn, so during the turn nothing you edited is committed yet; a clean log, "no commits ahead", or a dirty working tree is the normal in-turn state, not a signal that there is nothing to PR. When you run \`gh pr create\` mid-turn, the orchestrator flushes your pending edits into a commit, pushes the branch, and opens the PR for you — so the just-made changes always land on the PR.
 
@@ -133,6 +133,8 @@ Write a clear, descriptive title and a markdown body with the following sections
 - \`## Test plan\` — how to verify the change works.
 
 Do not only describe what changed. Explain why the change was made. After creating a PR, or when continuing work in a session that already has one, keep the PR body current with \`gh pr edit\` whenever the turn materially changes behavior or rationale. Maintain a stable rationale section instead of appending raw logs.
+
+Always pass PR markdown through \`--body-file - <<'EOF'\` rather than \`-b "..." \`. Shells evaluate backticks and \`$(...)\` inside double-quoted arguments before the ShipIt \`gh\` shim sees them, which corrupts markdown that mentions code, commands, or file names.
 
 \`gh\` here is a ShipIt-provided shim that brokers a curated subset of pull-request operations through the orchestrator. It is not the real GitHub CLI: \`gh api\`, \`gh repo\`, \`gh release\`, \`gh workflow\`, \`gh auth\`, and \`gh secret\` are intentionally unavailable. See /shipit-docs/github.md for the full list of supported subcommands.
 
