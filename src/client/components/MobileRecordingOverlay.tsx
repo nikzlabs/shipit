@@ -43,20 +43,30 @@ function formatElapsed(ms: number): string {
 
 export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
 <<<<<<< HEAD
+<<<<<<< HEAD
   const { state, elapsedMs, errorMessage, canRetryTranscription } = voice;
 =======
   const { state, elapsedMs, errorMessage } = voice;
 >>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
+=======
+  const { state, elapsedMs, errorMessage, canRetryTranscription } = voice;
+>>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
   const recording = state === "recording";
   const transcribing = state === "transcribing";
   const error = state === "error";
   const active = recording || transcribing || error;
+<<<<<<< HEAD
 <<<<<<< HEAD
   // After a transcription failure the audio is retained, so the primary
   // recovery is to resend it verbatim rather than make the user re-speak.
   const canResend = error && canRetryTranscription;
 =======
 >>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
+=======
+  // After a transcription failure the audio is retained, so the primary
+  // recovery is to resend it verbatim rather than make the user re-speak.
+  const canResend = error && canRetryTranscription;
+>>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
 
   // Escape cancels an active recording or dismisses an error (no-op once
   // transcribing — the audio is already in flight). Harmless on mobile where
@@ -123,21 +133,30 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
       {error && (
         <button
 <<<<<<< HEAD
+<<<<<<< HEAD
           onClick={() => (canResend ? voice.retryTranscription() : voice.startRecording())}
           aria-label={canResend ? "Resend" : "Try again"}
 =======
           onClick={() => voice.startRecording()}
           aria-label="Try again"
 >>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
+=======
+          onClick={() => (canResend ? voice.retryTranscription() : voice.startRecording())}
+          aria-label={canResend ? "Resend" : "Try again"}
+>>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
           data-testid="mobile-recording-retry"
           className="relative flex h-32 w-32 flex-col items-center justify-center gap-1 rounded-full bg-(--color-error)/15 text-(--color-error) transition-transform active:scale-95"
         >
           <ArrowClockwiseIcon size={ICON_SIZE.LG} weight="bold" />
 <<<<<<< HEAD
+<<<<<<< HEAD
           <span className="text-xs font-medium">{canResend ? "Resend" : "Try again"}</span>
 =======
           <span className="text-xs font-medium">Try again</span>
 >>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
+=======
+          <span className="text-xs font-medium">{canResend ? "Resend" : "Try again"}</span>
+>>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
         </button>
       )}
 
@@ -157,6 +176,9 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
       )}
       {error && (
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
         <div className="mt-2 flex items-center gap-3">
           {canResend && (
             <button
@@ -178,6 +200,7 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
             Dismiss
           </button>
         </div>
+<<<<<<< HEAD
 =======
         <button
           onClick={() => voice.dismissError()}
@@ -189,6 +212,8 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
           Dismiss
         </button>
 >>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
+=======
+>>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
       )}
     </div>
   );

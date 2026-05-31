@@ -5,12 +5,18 @@
 - [x] New `MobileRecordingOverlay` — full-screen scrim with a big centered Stop button, live timer, "Listening…" label, Cancel control, and a transcribing spinner; Escape cancels while recording.
 - [x] Error state shown in the overlay too: warning icon + message + big "Try again" (re-records) + Dismiss; Escape dismisses while erroring.
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
 - [x] Robust retry: hook retains the captured audio (`pendingAudioRef`), exposes `canRetryTranscription` + `retryTranscription()` (resend the same blob, no re-speaking); cleared on success/new recording/dismiss/abort. Unit-tested at the hook level.
 - [x] Recovery actions branch on `canRetryTranscription`: transcription failure → Resend (verbatim) + Re-record; no-audio failure (mic permission) → Try again only.
 - [x] Desktop error UI: `VoiceErrorPanel` in a popover anchored to the mic button (message + Resend/Re-record/Try again/Dismiss/Settings); mobile defers to the overlay.
 - [ ] Manual QA: force a transient transcribe failure on desktop and mobile, confirm Resend reuses the same recording and succeeds without re-speaking; confirm mic-permission errors show only Try again.
+<<<<<<< HEAD
 =======
 >>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
+=======
+>>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
 - [x] Wire into `MessageInput`: `large={isMobile}` on the mic, mount the overlay only when `voiceInputEnabled && isMobile`.
 - [x] Tests: `MobileRecordingOverlay.test.tsx` (stop / cancel / Escape / transcribing / idle+error render nothing) and a `large`-padding case in `MicButton.test.tsx`.
 - [ ] Manual QA on a real phone: tap the enlarged mic, confirm the overlay covers the screen, Stop transcribes into the composer, Cancel discards, and the desktop inline path is unchanged.

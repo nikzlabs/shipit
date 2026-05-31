@@ -578,6 +578,9 @@ they have different lifetimes:
   captured and in flight, so cancel is a no-op and the control is hidden).
   The **error** state is shown in the overlay too (a tiny inline error icon is
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
   illegible on a phone): a warning icon, the error message, a big primary
   recovery button, and a **Dismiss** control. Dismiss calls
   `voice.dismissError()` back to idle. Escape cancels while recording and
@@ -607,6 +610,7 @@ Resend/Re-record/Try again/Dismiss actions (and a Settings shortcut when
 overlay — both read `canRetryTranscription` — but rendered compact for the
 toolbar. On mobile (`large`) the inline MicButton stays minimal and defers the
 error UI to `MobileRecordingOverlay`, which sits on top of it.
+<<<<<<< HEAD
 =======
   illegible on a phone): a warning icon, the error message, a big **Try again**
   button, and a **Dismiss** control. Try again calls `voice.startRecording()` —
@@ -617,6 +621,8 @@ error UI to `MobileRecordingOverlay`, which sits on top of it.
   testing of the view). Desktop is untouched: the overlay never mounts there,
   so the inline MicButton still owns the desktop error UI.
 >>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
+=======
+>>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
 
 **Insertion semantics:**
 
