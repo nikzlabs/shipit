@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
+import { AUTO_MERGE_ICON_CLASS } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -352,7 +353,7 @@ describe("SessionSidebar", () => {
 
       // CI status and the auto-merge attribute are independent indicators.
       expect(screen.getByTitle("CI passed 3/3")).toBeTruthy();
-      expect(screen.getByTitle("Auto-merge enabled")).toBeTruthy();
+      expect(screen.getByTitle("Auto-merge enabled")).toHaveClass(AUTO_MERGE_ICON_CLASS);
     });
 
     it("shows the auto-merge indicator even with no CI/PR yet (preference is session-level)", () => {

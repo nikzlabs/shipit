@@ -7,7 +7,8 @@ import {
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { Button } from "./ui/button.js";
-import { ICON_SIZE } from "../design-tokens.js";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip.js";
+import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { useGitStore } from "../stores/git-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -37,13 +38,26 @@ function ToggleSwitch({
 
 /** Hover tooltip explaining ShipIt-managed auto-merge with a link to GitHub settings. */
 function ManagedMergeInfo({ settingsUrl }: { settingsUrl?: string }) {
-  const [visible, setVisible] = useState(false);
   return (
-    <span className="relative" onMouseEnter={() => setVisible(true)} onMouseLeave={() => setVisible(false)}>
-      <InfoIcon size={ICON_SIZE.XS} className="text-(--color-text-secondary) cursor-help" />
-      {visible && (
-        <div className="absolute left-0 bottom-full z-50 pb-1">
-          <div className="w-64 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-elevated) shadow-xl p-2.5 text-xs text-(--color-text-secondary)">
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-(--color-text-secondary) hover:text-(--color-text-primary) focus:outline-none focus:ring-2 focus:ring-(--color-border-focus)"
+            aria-label="Auto-merge requirements"
+            onClick={(event) => event.preventDefault()}
+          >
+            <InfoIcon size={ICON_SIZE.XS} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="bottom"
+          align="end"
+          collisionPadding={12}
+          className="z-[60] w-[min(calc(100vw-2rem),16rem)] whitespace-normal p-2.5 text-(--color-text-secondary)"
+        >
+          <div>
             GitHub auto-merge requires branch protection rules. ShipIt will merge this PR when CI passes.
             {settingsUrl && (
               <a href={settingsUrl} target="_blank" rel="noopener noreferrer"
@@ -52,9 +66,9 @@ function ManagedMergeInfo({ settingsUrl }: { settingsUrl?: string }) {
               </a>
             )}
           </div>
-        </div>
-      )}
-    </span>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
@@ -79,7 +93,7 @@ export function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; a
   return (
     <span className="flex items-center gap-1">
       <ToggleSwitch
-        label={<span className="inline-flex items-center gap-1"><GitMergeIcon size={ICON_SIZE.XS} className="text-(--color-accent)" />Auto-merge</span>}
+        label={<span className="inline-flex items-center gap-1"><GitMergeIcon size={ICON_SIZE.XS} className={AUTO_MERGE_ICON_CLASS} />Auto-merge</span>}
         enabled={enabled}
         onToggle={() => toggleAutoMerge(sessionId, !enabled)}
         title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
