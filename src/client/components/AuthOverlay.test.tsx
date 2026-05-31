@@ -98,4 +98,33 @@ describe("AuthOverlay", () => {
     fireEvent.click(screen.getByRole("button", { name: "Authenticate" }));
     expect(onApiKey).toHaveBeenCalledWith("sk-ant-test123");
   });
+
+  it("does not render a dismiss button when onDismiss is not provided", () => {
+    render(<AuthOverlay url="https://example.com/auth" />);
+    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
+  });
+
+  it("calls onDismiss when the close button is clicked", () => {
+    const onDismiss = vi.fn();
+    render(<AuthOverlay url="https://example.com/auth" onDismiss={onDismiss} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls onDismiss when Escape is pressed", () => {
+    const onDismiss = vi.fn();
+    render(<AuthOverlay url="https://example.com/auth" onDismiss={onDismiss} />);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls onDismiss when the backdrop is clicked", () => {
+    const onDismiss = vi.fn();
+    render(<AuthOverlay url="https://example.com/auth" onDismiss={onDismiss} />);
+
+    fireEvent.click(screen.getByRole("dialog"));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
 });
