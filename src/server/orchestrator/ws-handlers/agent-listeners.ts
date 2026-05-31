@@ -545,7 +545,11 @@ export function wireAgentListeners(
       }
     }
 
-    emitToViewers({ type: "agent_event", event });
+    const isInternalStreamCompletion =
+      event.type === "agent_assistant" && event.isStreamCompletion;
+    if (!isInternalStreamCompletion) {
+      emitToViewers({ type: "agent_event", event });
+    }
 
     if (event.type === "agent_init") {
       // Use the session ID captured at turn start — immune to session switches.
