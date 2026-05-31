@@ -14,6 +14,67 @@ function msg(role: "user" | "assistant", text: string, opts?: { toolUse?: ToolUs
 }
 
 describe("MessageList", () => {
+  describe("scroll behavior", () => {
+    function setScrollMetrics(
+      element: Element,
+      metrics: { scrollTop: number; scrollHeight: number; clientHeight: number },
+    ) {
+      Object.defineProperties(element, {
+        scrollTop: {
+          configurable: true,
+          writable: true,
+          value: metrics.scrollTop,
+        },
+        scrollHeight: {
+          configurable: true,
+          value: metrics.scrollHeight,
+        },
+        clientHeight: {
+          configurable: true,
+          value: metrics.clientHeight,
+        },
+      });
+    }
+
+    it("keeps the conversation pinned to the bottom when new messages arrive from the bottom", () => {
+      const { container, rerender } = render(
+        <MessageList messages={[msg("assistant", "one")]} isLoading={false} />,
+      );
+      const scrollContainer = container.firstElementChild!;
+      setScrollMetrics(scrollContainer, { scrollTop: 0, scrollHeight: 100, clientHeight: 100 });
+      fireEvent.scroll(scrollContainer);
+
+      setScrollMetrics(scrollContainer, { scrollTop: 0, scrollHeight: 180, clientHeight: 100 });
+      rerender(
+        <MessageList
+          messages={[msg("assistant", "one"), msg("user", "two")]}
+          isLoading={false}
+        />,
+      );
+
+      expect(scrollContainer.scrollTop).toBe(180);
+    });
+
+    it("does not force-scroll when new messages arrive after the user scrolled up", () => {
+      const { container, rerender } = render(
+        <MessageList messages={[msg("assistant", "one")]} isLoading={false} />,
+      );
+      const scrollContainer = container.firstElementChild!;
+      setScrollMetrics(scrollContainer, { scrollTop: 100, scrollHeight: 300, clientHeight: 100 });
+      fireEvent.scroll(scrollContainer);
+
+      setScrollMetrics(scrollContainer, { scrollTop: 100, scrollHeight: 380, clientHeight: 100 });
+      rerender(
+        <MessageList
+          messages={[msg("assistant", "one"), msg("assistant", "two")]}
+          isLoading={false}
+        />,
+      );
+
+      expect(scrollContainer.scrollTop).toBe(100);
+    });
+  });
+
   describe("message rendering", () => {
     it("renders user messages", () => {
       render(
