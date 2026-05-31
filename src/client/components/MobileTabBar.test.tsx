@@ -1,18 +1,41 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { MobileTabBar } from "./MobileTabBar.js";
 
 afterEach(cleanup);
 
+function renderMobileTabBar(
+  props: Partial<ComponentProps<typeof MobileTabBar>> = {},
+) {
+  return render(
+    <MobileTabBar
+      activePanel="chat"
+      onChangePanel={() => {}}
+      onOpenSessions={() => {}}
+      onNewSession={() => {}}
+      onVoiceSession={() => {}}
+      {...props}
+    />,
+  );
+}
+
 describe("MobileTabBar", () => {
   it("renders Chat and Workspace tabs", () => {
-    render(<MobileTabBar activePanel="chat" onChangePanel={() => {}} />);
+    renderMobileTabBar();
     expect(screen.getByText("Chat")).toBeInTheDocument();
     expect(screen.getByText("Workspace")).toBeInTheDocument();
   });
 
+  it("renders thumb actions between the primary tabs", () => {
+    renderMobileTabBar();
+    expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New Session" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Voice quick session" })).toBeInTheDocument();
+  });
+
   it("highlights the active Chat tab", () => {
-    render(<MobileTabBar activePanel="chat" onChangePanel={() => {}} />);
+    renderMobileTabBar({ activePanel: "chat" });
     const chatButton = screen.getByText("Chat").closest("button")!;
     expect(chatButton.className).toContain("text-(--color-text-link)");
     expect(chatButton).toHaveAttribute("aria-current", "page");
@@ -23,7 +46,7 @@ describe("MobileTabBar", () => {
   });
 
   it("highlights the active Workspace tab", () => {
-    render(<MobileTabBar activePanel="preview" onChangePanel={() => {}} />);
+    renderMobileTabBar({ activePanel: "preview" });
     const workspaceButton = screen.getByText("Workspace").closest("button")!;
     expect(workspaceButton.className).toContain("text-(--color-text-link)");
     expect(workspaceButton).toHaveAttribute("aria-current", "page");
@@ -34,29 +57,50 @@ describe("MobileTabBar", () => {
 
   it("calls onChangePanel with 'chat' when Chat is clicked", () => {
     const onChange = vi.fn();
-    render(<MobileTabBar activePanel="preview" onChangePanel={onChange} />);
+    renderMobileTabBar({ activePanel: "preview", onChangePanel: onChange });
     fireEvent.click(screen.getByText("Chat"));
     expect(onChange).toHaveBeenCalledWith("chat");
   });
 
   it("calls onChangePanel with 'preview' when Workspace is clicked", () => {
     const onChange = vi.fn();
-    render(<MobileTabBar activePanel="chat" onChangePanel={onChange} />);
+    renderMobileTabBar({ activePanel: "chat", onChangePanel: onChange });
     fireEvent.click(screen.getByText("Workspace"));
     expect(onChange).toHaveBeenCalledWith("preview");
   });
 
+  it("calls action handlers from the center dock", () => {
+    const onOpenSessions = vi.fn();
+    const onNewSession = vi.fn();
+    const onVoiceSession = vi.fn();
+    renderMobileTabBar({ onOpenSessions, onNewSession, onVoiceSession });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
+    fireEvent.click(screen.getByRole("button", { name: "New Session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Voice quick session" }));
+
+    expect(onOpenSessions).toHaveBeenCalledTimes(1);
+    expect(onNewSession).toHaveBeenCalledTimes(1);
+    expect(onVoiceSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables new-session actions when there are no repos", () => {
+    renderMobileTabBar({ newSessionDisabled: true });
+
+    expect(screen.getByRole("button", { name: "New Session" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Voice quick session" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Sessions" })).not.toBeDisabled();
+  });
+
   it("has an accessible nav landmark", () => {
-    render(<MobileTabBar activePanel="chat" onChangePanel={() => {}} />);
+    renderMobileTabBar();
     expect(screen.getByRole("navigation")).toBeInTheDocument();
     expect(screen.getByLabelText("Mobile navigation")).toBeInTheDocument();
   });
 
   it("renders SVG icons inside buttons", () => {
-    const { container } = render(
-      <MobileTabBar activePanel="chat" onChangePanel={() => {}} />
-    );
+    const { container } = renderMobileTabBar();
     const svgs = container.querySelectorAll("svg");
-    expect(svgs.length).toBe(2);
+    expect(svgs.length).toBe(5);
   });
 });
