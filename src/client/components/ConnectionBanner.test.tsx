@@ -196,4 +196,28 @@ describe("ConnectionBanner", () => {
     const banner = screen.getByRole("status");
     expect(banner.className).toContain("success");
   });
+
+  // --- Compact mode (mobile) ---
+
+  it("uses short copy and label in compact mode", () => {
+    vi.useFakeTimers();
+    renderAfterConnect({ status: "closed", reconnectAttempt: 3, onReconnect: vi.fn(), compact: true });
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    // Short message without the "waiting to reconnect" verbiage.
+    expect(screen.getByText("Connection lost (3)")).toBeInTheDocument();
+    // Short button label so it fits a narrow screen.
+    expect(screen.getByText("Reconnect")).toBeInTheDocument();
+    expect(screen.queryByText("Reconnect now")).not.toBeInTheDocument();
+  });
+
+  it("shows compact connecting copy", () => {
+    vi.useFakeTimers();
+    renderAfterConnect({ status: "connecting", compact: true });
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
+  });
 });
