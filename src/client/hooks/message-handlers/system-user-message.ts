@@ -17,11 +17,14 @@ export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data
   const session = useSessionStore.getState();
   session.setMessages((prev) => {
     const tail = prev[prev.length - 1];
-    if (tail?.role === "user" && tail.text === data.text && tail.pendingDispatch) {
+    if (tail?.role === "user" && tail.text === data.text) {
       const next = prev.slice();
       // Replace the tail bubble with a copy that drops `pendingDispatch` so a
       // later identical-text dispatch can still be deduped against its own
-      // optimistic append, not this one.
+      // optimistic append, not this one. The broader same-tail dedupe also
+      // covers queued/replayed system turns where HTTP history or
+      // queue_updated already restored the user bubble before the replayed
+      // system_user_message arrives.
       const replaced = { ...tail };
       delete replaced.pendingDispatch;
       next[next.length - 1] = replaced;
