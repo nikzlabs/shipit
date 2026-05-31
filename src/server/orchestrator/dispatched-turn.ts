@@ -56,6 +56,7 @@ export async function runDispatchedTurn(
 
   await executeAgentTurn(runner, deps, agent, {
     agentId,
+    sessionId: runner.sessionId,
     prompt: text,
     userText: text,
     ...(activity !== undefined ? { activity } : {}),
@@ -63,11 +64,12 @@ export async function runDispatchedTurn(
     ...(opts.reviewFilePath !== undefined ? { reviewFilePath: opts.reviewFilePath } : {}),
     // Server-initiated message → emit a bubble (no client-side optimistic one).
     emitUserEcho: true,
-    persistUserMessage: (sessionId) =>
-      deps.listenerDeps.chatHistoryManager.append(sessionId, { role: "user", text }),
+    persistUserMessage: (sid) =>
+      deps.listenerDeps.chatHistoryManager.append(sid, { role: "user", text }),
     isNewSession: false,
     fallbackTitle: text.slice(0, 80) || "Agent",
     turnStartHeadHash: null,
     drainNext,
+    emit: (m) => runner.emitMessage(m),
   });
 }
