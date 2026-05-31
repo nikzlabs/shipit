@@ -23,14 +23,18 @@ dropped unless the session was created as an ops session.
   docker events --since 10m
   ```
 - **Read-only systemd journal.** `/var/log/journal` (persistent) and/or
-  `/run/log/journal` (volatile) are mounted read-only:
+  `/run/log/journal` (volatile) are mounted read-only. Pass the directory
+  explicitly with `-D` — a bare `journalctl` reads *this container's* journal
+  (whose machine-id doesn't match the host's, so it returns "No journal files
+  were found"); `-D /var/log/journal` points it at the host's mounted journal:
   ```bash
-  journalctl --since "1 hour ago" --no-pager
-  journalctl --since "1 hour ago" --no-pager | grep "LOOP DETECTED"
+  journalctl -D /var/log/journal --since "1 hour ago" --no-pager
+  journalctl -D /var/log/journal --since "1 hour ago" --no-pager | grep "LOOP DETECTED"
   ```
-  If neither path exists (journald is `Storage=volatile` with no `/run`
-  journal, or the host ships logs elsewhere), fall back to `docker logs` on the
-  orchestrator container.
+  This host uses **persistent** journal storage, so `/var/log/journal` is the
+  populated path; `/run/log/journal` exists but is empty here. If neither path is
+  populated (journald is `Storage=volatile` with no `/run` journal, or the host
+  ships logs elsewhere), fall back to `docker logs` on the orchestrator container.
 
 ## What you CANNOT do (by design)
 

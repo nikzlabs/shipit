@@ -63,14 +63,6 @@
       builds it after the base (separate step, no `--pull`, local base); the
       orchestrator env sets `SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker`.
       This also fixes ordinary `capabilities.docker` sessions, which had the same gap.
-
-## Remaining
-
-- [ ] Redeploy a host from this branch via `deploy.sh` (NOT the no-rebuild
-      `restart.sh` — the new `shipit-session-worker:docker` image must be built),
-      then re-run `prompts/verify-ops-access.md` and confirm all-PASS (B: full host
-      container list via `docker-socket-proxy:2375`; C: mutations rejected; D:
-      journal readable via `journalctl`).
 - [x] **Warm standby cannot serve an ops session (verified — no code change needed).**
       Traced the full path: `createStandby` has a single caller, the warm pool
       (`warm-pool-manager.ts`), which only runs per **repo URL**. A standby is keyed
@@ -81,10 +73,26 @@
       **no `remoteUrl`** (`services/templates.ts`), so they never enter the warm pool
       and never match a standby. On activation the runner factory finds no container
       for the ops id → fresh-create with `opsSession: kind === "ops"` → docker-capable
-      image + ops wiring. The invariant is asserted in code comments
-      (`services/session.ts` "Ops sessions never come through here";
-      `services/templates.ts` "host-scoped, not repo-backed: no remoteUrl"). So the
-      docker-capable image fix above is sufficient; there is no base-image-standby
-      bypass to close.
+      image + ops wiring. So the docker-capable image fix above is sufficient; there
+      is no base-image-standby bypass to close.
+
+## Live re-audit (host deployed from this branch)
+
+- [x] **Live re-audit PASSED.** `DOCKER_HOST` points at the hardened read-only
+      `docker-socket-proxy:2375`; `docker` and `journalctl` are installed; read-only
+      Docker returns the full host container list; mutations are rejected; the journal
+      is readable.
+- [x] **journalctl recipes use `-D /var/log/journal`.** The live run surfaced that a
+      bare `journalctl` reads the agent container's own (empty) journal — the
+      container's machine-id doesn't match the host's, so the default lookup returns
+      "No journal files were found". `-D /var/log/journal` points it at the host's
+      mounted journal (~30k lines/24h on the test host). Updated all three embedded
+      prompts (investigate-loop, diagnose-stuck-session, daily-health), the
+      `verify-ops-access` recipe, and `shipit-docs/ops-session.md`; noted that this
+      host uses persistent storage (`/var/log/journal` populated; `/run/log/journal`
+      empty).
+
+## Remaining
+
 - [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (the gate is unit-tested; live verification pending).
