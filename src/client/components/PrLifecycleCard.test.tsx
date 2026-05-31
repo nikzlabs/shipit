@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { PrLifecycleCard, PrStateBadge } from "./PrLifecycleCard.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
+import { AUTO_MERGE_ICON_CLASS } from "../design-tokens.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
@@ -608,6 +609,21 @@ describe("PrLifecycleCard", () => {
 
     await user.click(screen.getByLabelText("Session actions"));
     expect(await screen.findByText("Auto-merge")).toBeInTheDocument();
+  });
+
+  it("uses the shared neutral auto-merge icon color in the top-bar overflow", async () => {
+    const user = userEvent.setup();
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+
+    await user.click(screen.getByLabelText("Session actions"));
+    const label = await screen.findByText("Auto-merge");
+    const icon = label.closest("span")?.querySelector("svg");
+    expect(icon).toHaveClass(AUTO_MERGE_ICON_CLASS);
   });
 
   it("resets the 'Merging...' state when the sessionId prop changes", async () => {

@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, LightningIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
-import { ICON_SIZE } from "../design-tokens.js";
+import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import { parseRepoName } from "../utils/repo-label.js";
 import { Button } from "./ui/button.js";
@@ -180,7 +180,7 @@ function AutoMergeBadge({ sessionId }: { sessionId: string }) {
   const autoMerge = usePrStore((s) => s.autoMergeBySession[sessionId] ?? s.cardBySession[sessionId]?.autoMerge);
   if (!(autoMerge?.enabled ?? false)) return null;
   return (
-    <span className="shrink-0 flex ml-auto text-(--color-text-secondary)" title="Auto-merge enabled">
+    <span className={`shrink-0 flex ml-auto ${AUTO_MERGE_ICON_CLASS}`} title="Auto-merge enabled">
       <GitMergeIcon size={ICON_SIZE.XS} weight="bold" />
     </span>
   );
