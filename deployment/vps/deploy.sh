@@ -40,6 +40,21 @@ case "${FORCE_REBUILD:-0}" in
 esac
 docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit
 
+# docs/128 — build the docker-capable session image (Docker CLI + journalctl) on
+# top of the :prod image we just built. It does `FROM shipit-session-worker:prod`,
+# which now exists LOCALLY — so this is a SEPARATE build that must NOT pass
+# --pull (that would try to fetch the local-only base from a registry and fail).
+# It also must run AFTER session-worker so the base tag exists. FORCE_REBUILD
+# still applies. The orchestrator selects this image (shipit-session-worker:docker)
+# for `capabilities.docker` and ops sessions via SESSION_WORKER_DOCKER_IMAGE.
+DOCKER_IMG_BUILD_ARGS=()
+case "${FORCE_REBUILD:-0}" in
+  1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+    DOCKER_IMG_BUILD_ARGS+=("--no-cache")
+    ;;
+esac
+docker compose -f "$COMPOSE_FILE" build "${DOCKER_IMG_BUILD_ARGS[@]}" session-worker-docker
+
 # Start orchestrator (session-worker containers are spawned on demand)
 docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
 

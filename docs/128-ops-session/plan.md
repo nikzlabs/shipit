@@ -316,24 +316,23 @@ independently.)
       `buildEnv` checks the ops gate first as a structural backstop. The
       `compose.docker-socket` flag now only governs the proxy *service*, never
       the *agent*.
-    - **`journalctl` was not installed** in the docker-capable image, so every
-      `journalctl …` recipe failed even though the journal mounts were present
-      and read-only. Fix: `docker/container-build/Dockerfile` installs `systemd`
-      (the binary reads the mounted journal dirs directly; it is not PID 1).
-    - **Missing docker CLI + journalctl in prod (deployment gap, not yet
-      closed).** `dockerImageName` comes from the `SESSION_WORKER_DOCKER_IMAGE`
-      env (app-lifecycle.ts → `setDockerProxy`). In prod that env is **unset**
-      (`deployment/vps/docker-compose.yml` only sets `SESSION_WORKER_IMAGE`), and
-      the deploy builds only the base `shipit-session-worker:prod` image — which
-      has neither the docker CLI nor `journalctl`. So ops sessions fall back to
-      the base image and the recipes can't run (audit FAIL #4/#5/#14/#15). The
-      `journalctl` install added here lives in `Dockerfile.session-worker.docker`
-      (extends `:dev`), which prod does not build or reference. Closing this needs
-      a docker-capable **prod** image (docker CLI + journalctl on top of
-      `:prod`), built in `deploy.sh`, with `SESSION_WORKER_DOCKER_IMAGE` set to
-      it. `createContainer` now logs a loud warning when an ops session boots
-      without that env so the half-provisioned state is visible. See the
-      deployment follow-up in `checklist.md`.
+    - **`journalctl` + docker CLI were missing in prod (audit FAIL #4/#5/#14/#15).**
+      This had two layers. (a) `journalctl` wasn't installed in the docker-capable
+      image; fixed by installing `systemd` in `docker/Dockerfile.session-worker.docker`
+      (the binary reads the mounted journal dirs directly; not PID 1). (b) More
+      fundamentally, the docker-capable image **wasn't built or wired in prod at
+      all**: `dockerImageName` comes from `SESSION_WORKER_DOCKER_IMAGE`
+      (app-lifecycle.ts → `setDockerProxy`), which was unset, and `deploy.sh` built
+      only the base `shipit-session-worker:prod`. So docker/ops sessions fell back
+      to the base image (no `docker`/`journalctl`). Fixed by treating it like every
+      other image we build ourselves: a `session-worker-docker` build-only service
+      (`deployment/vps/docker-compose.yml`) layers the Docker CLI + journalctl on
+      `shipit-session-worker:prod` → `shipit-session-worker:docker`; `deploy.sh`
+      builds it right after the base image (a separate build step, no `--pull`,
+      since the base is local-only); and the orchestrator env sets
+      `SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker`. This also fixes
+      ordinary `capabilities.docker` sessions, which shared the same gap. A redeploy
+      must run `deploy.sh` (not the no-rebuild `restart.sh`) to build the new image.
 
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is
