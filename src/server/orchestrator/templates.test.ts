@@ -75,6 +75,8 @@ describe("getTemplate", () => {
     );
     // The proxy mounts the real socket read-only; nothing else gets it.
     expect(ops.files["docker-compose.yml"]).toContain("docker-socket-proxy");
+    expect(ops.files["docker-compose.yml"]).toContain("x-shipit-preview: auto");
+    expect(ops.files["docker-compose.yml"]).toContain("x-shipit-depends-on-install: false");
     expect(ops.files["docker-compose.yml"]).toContain("/var/run/docker.sock:/var/run/docker.sock:ro");
     expect(ops.files["docker-compose.yml"]).toContain("POST: 0");
     // Only the journal paths are declared as host mounts — never the socket.
