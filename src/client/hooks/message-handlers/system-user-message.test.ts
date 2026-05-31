@@ -57,18 +57,18 @@ describe("handleSystemUserMessage (docs/150 dedupe)", () => {
     expect(messages[1]).toMatchObject({ role: "user", text: "Auto-fixing CI…" });
   });
 
-  it("does NOT dedupe a regular optimistic bubble without pendingDispatch", () => {
-    // WS `send_message` optimistic bubbles do NOT carry pendingDispatch; their
-    // dedupe path is `message_queued` (when queued) and the chat-history
-    // replay (when not queued). The dispatch dedupe must not steal those.
+  it("dedupes when the same user bubble is already at the tail", () => {
+    // Queue drains and reconnect replay can restore the user bubble before
+    // the buffered system_user_message echo arrives.
     useSessionStore.setState({
-      messages: [{ role: "user", text: "Manual user input" }],
+      messages: [{ role: "user", text: "Queued user input" }],
     });
     handleSystemUserMessage(ctx, {
       type: "system_user_message",
-      text: "Manual user input",
+      text: "Queued user input",
     });
     const messages = useSessionStore.getState().messages;
-    expect(messages).toHaveLength(2);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ role: "user", text: "Queued user input" });
   });
 });

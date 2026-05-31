@@ -70,12 +70,10 @@ export interface RebaseDriverDeps {
    */
   onAgentSpawned?: () => void;
   /**
-   * docs/146 — drain callback fired from the rebase-resolution turn's `done`
-   * handler so a user message queued during the auto-resolve attempt drains
-   * automatically when the resolve completes. The driver doesn't know about
-   * WS handlers, so the callback is supplied by the caller. Optional —
-   * tests / user-driven rebases (where the post-turn WS path drains itself)
-   * can leave it unset.
+   * docs/146 — drain callback fired after an auto-resolve attempt fully
+   * settles, so a user message queued during the attempt drains only after
+   * the rebase is continued/aborted and the repo is out of the conflict
+   * state. Optional — tests / user-driven rebases can leave it unset.
    */
   drainQueue?: () => Promise<void> | void;
 }
@@ -336,17 +334,6 @@ function runRebaseResolutionTurn(
       // running on the synchronous "idle" emit sees the correct state.
       runner.systemTurnInProgress = false;
       sseBroadcast("session_agent_finished", { sessionId: runner.sessionId });
-      // docs/146 — drain a user message that landed in the queue during the
-      // resolution turn. Without this, the queued message would sit
-      // stranded until the next WS send_message arrives. Fire-and-forget;
-      // the drain is its own promise chain and any failure should not block
-      // the rebase loop from continuing or the outer Promise from resolving.
-      const drainPromise = deps.drainQueue?.();
-      if (drainPromise && typeof drainPromise.then === "function") {
-        drainPromise.catch((err: unknown) => {
-          console.error("[rebase] drainQueue failed:", err);
-        });
-      }
       runner.onAgentFinished();
       resolve();
     });
@@ -527,5 +514,10 @@ export async function runAutoResolveAttempt(
   const winner = await Promise.race([flowPromise, timeoutPromise]);
   settled = true;
   if (timeoutHandle) clearTimeout(timeoutHandle);
+  try {
+    await deps.drainQueue?.();
+  } catch (err) {
+    console.error("[auto-resolve] drainQueue failed:", err);
+  }
   return winner;
 }
