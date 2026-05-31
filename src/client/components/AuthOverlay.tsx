@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { CircleNotchIcon } from "@phosphor-icons/react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: window keydown listener for Escape with cleanup (browser API subscription)
+import { useEffect, useRef, useState } from "react";
+import { CircleNotchIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 
@@ -7,9 +8,10 @@ interface AuthOverlayProps {
   url: string;
   onPasteCode?: (code: string) => void;
   onApiKey?: (key: string) => void;
+  onDismiss?: () => void;
 }
 
-export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
+export function AuthOverlay({ url, onPasteCode, onApiKey, onDismiss }: AuthOverlayProps) {
   const hasUrl = url.length > 0;
   const [authCode, setAuthCode] = useState("");
   const [codeError, setCodeError] = useState("");
@@ -17,6 +19,26 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
   const [showApiKey, setShowApiKey] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [apiKeyError, setApiKeyError] = useState("");
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  // eslint-disable-next-line no-restricted-syntax -- window keydown listener for Escape with cleanup
+  useEffect(() => {
+    if (!onDismiss) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onDismiss();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onDismiss]);
+
+  const handleBackdropClick = (e: React.MouseEvent) => {
+    if (onDismiss && e.target === overlayRef.current) {
+      onDismiss();
+    }
+  };
 
   const handleCodeSubmit = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -46,8 +68,25 @@ export function AuthOverlay({ url, onPasteCode, onApiKey }: AuthOverlayProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm">
-      <div className="max-w-md w-full mx-4 rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) p-8 text-center space-y-6">
+    <div
+      ref={overlayRef}
+      role="dialog"
+      aria-label="Authentication required"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm"
+      onClick={handleBackdropClick}
+    >
+      <div className="relative max-w-md w-full mx-4 rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) p-8 text-center space-y-6">
+        {onDismiss && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onDismiss}
+            aria-label="Dismiss"
+            className="absolute right-2 top-2 h-7 w-7 p-0 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+          >
+            <XIcon size={ICON_SIZE.SM} />
+          </Button>
+        )}
         <div className="space-y-2">
           <div className="text-3xl">&#128274;</div>
           <h2 className="text-xl font-semibold text-(--color-text-primary)">
