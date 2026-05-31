@@ -149,6 +149,7 @@ Common gotchas:
 | No tool call in transcript | Instructions block isn't being applied — check Settings → Instructions is saved, and the "ShipIt Agent Instructions" toggle is on. |
 | Tool call happens, no notification | Receiver-side issue — check its logs. |
 | Tool call returns auth error | Bearer token in ShipIt Settings doesn't match the receiver's expected token. |
+| Settings → MCP Servers → Test succeeds, but Codex logs `MCP client ... failed to start` | Make sure ShipIt is on the Codex writer that emits `bearer_token_env_var` for `Authorization: Bearer ...` HTTP servers. Older builds wrote the header only as `env_http_headers`, which could pass ShipIt's standalone test client while failing Codex app-server startup. |
 | Notification arrives but with the branch slug instead of PR title | Agent isn't including `prTitle` in `context`. Most often happens on the first turn after PR creation if it forgets — usually self-corrects on the next turn. |
 
 ## Receiver bootstrap prompt

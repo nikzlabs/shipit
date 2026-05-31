@@ -89,10 +89,13 @@ description: Connect user MCP servers (Linear, Notion, Sentry, etc.) to the inne
 > `[mcp_servers.*]` block into Codex's `config.toml` before `codex app-server`
 > starts, while preserving user-owned config outside that block and replacing
 > the managed block each turn so removed servers do not linger. For stdio
-> server env and HTTP headers, resolved secret values are supplied through the
-> Codex child process environment (`env_vars` / `env_http_headers`) instead of
-> being persisted in `config.toml`; secrets embedded in command arguments are
-> the one unavoidable literal case because Codex has no argv indirection.
+> server env, resolved secret values are supplied through the Codex child
+> process environment (`env_vars`) instead of being persisted in `config.toml`.
+> For HTTP Bearer auth, ShipIt emits Codex's canonical
+> `bearer_token_env_var` and stores only the token in the per-run environment;
+> non-Bearer/custom HTTP headers still use `env_http_headers`. Secrets embedded
+> in command arguments are the one unavoidable literal case because Codex has
+> no argv env indirection.
 
 > **OAuth 401 recovery landed.** The Settings "Test" action treats a hosted
 > MCP `401` / `invalid_token` response as an access-token rejection, not as a

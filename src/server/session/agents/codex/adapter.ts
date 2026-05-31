@@ -489,7 +489,10 @@ export class CodexAdapter
    *    through `runtimeEnv` to the spawned child, so the `.toml` itself
    *    never has resolved secrets in it).
    * For HTTP servers:
-   *  - `headers` entries become Codex `env_http_headers`, backed by
+   *  - `Authorization: Bearer <token>` becomes Codex `bearer_token_env_var`,
+   *    matching `codex mcp add --bearer-token-env-var`. The env var stores
+   *    only the token, not the literal `Bearer ` prefix.
+   *  - Other `headers` entries become Codex `env_http_headers`, backed by
    *    synthetic per-run environment variables.
    *
    * Resolved secrets embedded in `args` still have to be written literally
@@ -566,6 +569,15 @@ export class CodexAdapter
           let i = 0;
           for (const [header, value] of Object.entries(headers)) {
             if (typeof value !== "string") continue;
+            if (header.toLowerCase() === "authorization") {
+              const bearerToken = parseBearerToken(value);
+              if (bearerToken) {
+                const envKey = `SHIPIT_MCP_${server.name.toUpperCase()}_BEARER_TOKEN`;
+                runtimeEnv[envKey] = bearerToken;
+                lines.push(`bearer_token_env_var = ${tomlString(envKey)}`);
+                continue;
+              }
+            }
             const envKey = `SHIPIT_MCP_${server.name.toUpperCase()}_HTTP_HEADER_${i++}`;
             runtimeEnv[envKey] = value;
             envHeaders[header] = envKey;
@@ -1226,6 +1238,12 @@ function tomlInlineStringMap(values: Record<string, string>): string {
     ([key, value]) => `${tomlString(key)} = ${tomlString(value)}`,
   );
   return `{ ${entries.join(", ")} }`;
+}
+
+function parseBearerToken(value: string): string | null {
+  const match = /^Bearer\s+(.+)$/i.exec(value.trim());
+  const token = match?.[1]?.trim();
+  return token ? token : null;
 }
 
 const CODEX_MCP_BEGIN = "# <shipit-managed-mcp>";
