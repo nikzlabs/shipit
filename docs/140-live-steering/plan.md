@@ -360,6 +360,27 @@ few seconds later with 143. Fix: the streaming interrupt now only writes the
 process is owned by the turn-scoped watchdog and idle eviction, not interrupt.
 Regression coverage in `process.test.ts` (`StreamingClaudeProcess > interrupt`).
 
+**Phase 6.8 — ExitPlanMode auto-resolves under streaming (plan-mode trap).**
+Same class of bug as the AskUserQuestion auto-resolve, on the plan-approval
+flow. In the one-shot `-p --permission-mode plan` path the CLI ends the turn at
+`ExitPlanMode` (the model has presented its plan; the headless process exits),
+so the `PlanApproval` card renders with working Accept/Suggest buttons and no
+tool_result. The persistent streaming process instead auto-resolves
+`ExitPlanMode` (emits an `is_error` tool_result because there's no human to
+approve the plan exit) and the model continues in the **same** turn — still in
+plan mode, so its Write/Edit/Bash calls are blocked and it complains it "can't
+exit plan mode." The auto-resolved tool_result also flips the card to "Plan
+resolved" and disables the buttons, so the user can never click
+"Accept & Execute" (the action that actually switches the session out of plan
+mode). Fix mirrors the AskUserQuestion handling in `agent-listeners.ts`, gated
+to `opts.useStreaming`: on an `ExitPlanMode` tool_use, interrupt the agent
+(`control_request`, ends the turn without killing the process) and add the
+tool_use id to `suppressedToolResultIds` so the auto-resolved result is dropped
+from both the broadcast and the persisted message group. The one-shot path is
+left untouched (interrupting there would set `wasInterrupted` and drop queued
+messages). Coverage in `live-steering.test.ts` (interrupt fires, tool_result
+suppressed, and the off-toggle one-shot path does NOT interrupt).
+
 ## Open questions to resolve during build
 
 - Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.

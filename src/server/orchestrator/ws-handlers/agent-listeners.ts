@@ -432,7 +432,11 @@ export function wireAgentListeners(
   //
   // Track the well-formed AskUserQuestion tool_use_ids we interrupt and drop any
   // subsequent tool_result blocks that match them, both from the broadcast event
-  // and from the persisted message group.
+  // and from the persisted message group. The same set also tracks ExitPlanMode
+  // ids under live steering — the streaming CLI auto-resolves that tool the same
+  // way, which would otherwise flip the PlanApproval card to "Plan resolved" and
+  // strip its Accept/Suggest buttons before the user could act (see the
+  // ExitPlanMode block in the agent_assistant branch below).
   const suppressedToolResultIds = new Set<string>();
 
   // ---- MCP mid-turn crash detection (docs/088) ----
@@ -760,6 +764,35 @@ export function wireAgentListeners(
         }
         agent.interrupt();
         deps.broadcastLog("server", "Agent interrupted: waiting for AskUserQuestion answer");
+      }
+
+      // ExitPlanMode blocking (live steering only). In the one-shot `-p
+      // --permission-mode plan` path the CLI ends the turn at ExitPlanMode (the
+      // model has presented its plan and the headless process exits), so the
+      // PlanApproval card renders with its Accept/Suggest buttons intact and
+      // there is nothing to fix. The persistent streaming process behaves
+      // differently: ExitPlanMode auto-resolves the same way AskUserQuestion
+      // does (the CLI emits an `is_error` tool_result because there's no human
+      // to approve the plan exit) and the model charges ahead in the SAME turn
+      // — still in plan mode, so its Write/Edit/Bash calls are blocked and it
+      // complains it "can't exit plan mode." Meanwhile the auto-resolved
+      // tool_result flips the PlanApproval card to "Plan resolved" and disables
+      // the buttons, so the user can never click "Accept & Execute" (which is
+      // what actually switches the session out of plan mode).
+      //
+      // Fix: mirror the AskUserQuestion treatment under streaming. Interrupt so
+      // the model stops at the plan boundary, and suppress the auto-resolved
+      // tool_result so the card stays interactive. The user then clicks
+      // "Accept & Execute" (switches the session to auto + sends a fresh
+      // "Execute the plan" message) or "Suggest Changes" — both fresh turns,
+      // consistent with every other turn boundary.
+      if (opts.useStreaming && runner && toolBlocks.some((t) => t.name === "ExitPlanMode")) {
+        runner.wasInterrupted = true;
+        for (const t of toolBlocks) {
+          if (t.name === "ExitPlanMode") suppressedToolResultIds.add(t.id);
+        }
+        agent.interrupt();
+        deps.broadcastLog("server", "Agent interrupted: waiting for plan approval");
       }
     }
 
