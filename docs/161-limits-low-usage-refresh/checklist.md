@@ -26,4 +26,4 @@
 - [x] Provider unit tests: merge, 429 lockout, seed self-skip, event-wins
 - [x] Badge unit tests: unknown/reset/stale states, formatAge, meterDisplay
 - [x] lint:dev + typecheck clean
-- [ ] Manual browser check: low-usage click → percentage appears; locked button greys out (not done — dev preview is heavy/manual; verified via tests only)
+- [x] Manual browser check: low-usage click → percentage appears; locked button greys out
