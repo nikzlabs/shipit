@@ -196,6 +196,35 @@ export interface SystemTurnDeps {
    * paths participate in the same rotating-token discipline as the WS path.
    */
   finalizeAgentEnv?: (sessionId: string, agentId: AgentId) => void;
+  /**
+   * Run env prep (first-turn cred provision + agent pin, then the per-turn
+   * OAuth token sync-in + agent-env push) immediately before building run
+   * params — exactly as the WS path does inside `runAgentWithMessage`. Wired to
+   * `prepareSessionAgentEnvironment`. Without this, the dispatch path syncs the
+   * token early (in the service fn, before claim/graduate/worker-ready) and can
+   * spawn with a token a sibling Claude session has since rotated — the
+   * single-use refresh token is then dead and the CLI reports
+   * `Not logged in · Please run /login` even though the source stays valid.
+   * Calling it again here is idempotent (provision/pin self-skip once pinned;
+   * only the token re-syncs). Optional so minimal test setups can omit it.
+   */
+  prepareAgentEnv?: (sessionId: string, agentId: AgentId) => Promise<void>;
+  /**
+   * Single shared post-turn commit helper — the same `postTurnCommit` the WS
+   * path uses (auto-commit + conflict notice + workspace-locked `git add` +
+   * auto-push + commit→message link). Wiring both transports to one helper is
+   * the first convergence step toward a single shared turn executor. When
+   * omitted, `runDispatchedTurn` falls back to its inline `autoCommit` path so
+   * extreme-minimal test setups keep working. Returns the commit hash or null.
+   */
+  commitTurn?: (args: {
+    sessionDir: string;
+    sessionId: string;
+    summary: string;
+    turnStartHeadHash: string | null;
+    runner: SessionRunnerInterface | null;
+    emit: (msg: WsServerMessage) => void;
+  }) => Promise<string | null>;
 }
 
 /**

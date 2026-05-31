@@ -108,56 +108,64 @@ export async function runDispatchedTurn(
     deps.finalizeAgentEnv?.(runner.sessionId, agentId);
 
     let commitHash: string | null = null;
+    // docs/150 — fallback chain: prefer the assistant-derived summary (the
+    // first line of the agent's text output), then the dispatch's activity
+    // label, then a generic "agent turn" so the commit message is always
+    // meaningful instead of the legacy literal "CI fix".
+    const summary =
+      runner.turnSummary.split("\n")[0]?.slice(0, 120) || activity || "agent turn";
     try {
-      // docs/150 — fallback chain: prefer the assistant-derived summary (the
-      // first line of the agent's text output), then the dispatch's activity
-      // label, then a generic "agent turn" so the commit message is always
-      // meaningful instead of the legacy literal "CI fix".
-      const summary =
-        runner.turnSummary.split("\n")[0]?.slice(0, 120) || activity || "agent turn";
-      const result = await deps.autoCommit(runner.sessionDir, summary);
-      if (result.conflictedFiles.length > 0 || result.rebaseInProgress) {
-        runner.emitMessage({
-          type: "system_notice",
+      if (deps.commitTurn) {
+        // Shared path — the same `postTurnCommit` the WS path uses (workspace
+        // lock + conflict notice + auto-push + commit→message link). Both
+        // transports now commit through one helper.
+        commitHash = await deps.commitTurn({
+          sessionDir: runner.sessionDir,
           sessionId: runner.sessionId,
-          level: "warn",
-          message: formatUnresolvedConflictNotice({
-            conflictedFiles: result.conflictedFiles,
-            rebaseInProgress: result.rebaseInProgress,
-          }),
+          summary,
+          turnStartHeadHash: null,
+          runner,
+          emit: (m) => runner.emitMessage(m),
         });
-      }
-      if (result.commitHash) {
-        commitHash = result.commitHash;
-        runner.emitMessage({ type: "git_committed", hash: result.commitHash, message: summary });
-        deps.scheduleAutoPush(runner.sessionDir);
-        // Link the commit to the last persisted assistant message so the
-        // rewind preview can compute `fileCount` (without this, every
-        // dispatched-turn session shows "0 files" in the Rewind dropdown
-        // because `findCommitBeforeGap` finds no `commitHash` or
-        // `parentCommitHash` to anchor the diff). Matches `postTurnCommit`
-        // on the WS path.
-        if (result.parentHash) {
-          // Stash for the agent_result handler's fallback link, in case the
-          // rows aren't persisted yet (codex double-`turn/completed` race).
-          runner.pendingCommitLink = {
-            commitHash: result.commitHash,
-            parentCommitHash: result.parentHash,
-          };
-          const updatedId = deps.listenerDeps.chatHistoryManager.updateLastMessage(runner.sessionId, {
-            commitHash: result.commitHash,
-            parentCommitHash: result.parentHash,
+      } else {
+        // Fallback for minimal test setups that wire `autoCommit` but not
+        // `commitTurn`.
+        const result = await deps.autoCommit(runner.sessionDir, summary);
+        if (result.conflictedFiles.length > 0 || result.rebaseInProgress) {
+          runner.emitMessage({
+            type: "system_notice",
+            sessionId: runner.sessionId,
+            level: "warn",
+            message: formatUnresolvedConflictNotice({
+              conflictedFiles: result.conflictedFiles,
+              rebaseInProgress: result.rebaseInProgress,
+            }),
           });
-          if (updatedId !== null) {
-            runner.pendingCommitLink = null;
-            const messageIndex = deps.listenerDeps.chatHistoryManager.indexOfMessageId(runner.sessionId, updatedId);
-            if (messageIndex >= 0) {
-              runner.emitMessage({
-                type: "commit_linked",
-                messageIndex,
-                commitHash: result.commitHash,
-                parentCommitHash: result.parentHash,
-              });
+        }
+        if (result.commitHash) {
+          commitHash = result.commitHash;
+          runner.emitMessage({ type: "git_committed", hash: result.commitHash, message: summary });
+          deps.scheduleAutoPush(runner.sessionDir);
+          if (result.parentHash) {
+            runner.pendingCommitLink = {
+              commitHash: result.commitHash,
+              parentCommitHash: result.parentHash,
+            };
+            const updatedId = deps.listenerDeps.chatHistoryManager.updateLastMessage(runner.sessionId, {
+              commitHash: result.commitHash,
+              parentCommitHash: result.parentHash,
+            });
+            if (updatedId !== null) {
+              runner.pendingCommitLink = null;
+              const messageIndex = deps.listenerDeps.chatHistoryManager.indexOfMessageId(runner.sessionId, updatedId);
+              if (messageIndex >= 0) {
+                runner.emitMessage({
+                  type: "commit_linked",
+                  messageIndex,
+                  commitHash: result.commitHash,
+                  parentCommitHash: result.parentHash,
+                });
+              }
             }
           }
         }
@@ -191,6 +199,17 @@ export async function runDispatchedTurn(
   });
 
   try {
+    // Sync the freshest OAuth token (and provision/pin on the first turn)
+    // immediately before spawn — the same late moment the WS path runs env prep
+    // inside `runAgentWithMessage`. This is what closes the staleness window
+    // that let a quick/child/CI-fix turn spawn with a sibling-rotated (dead)
+    // refresh token and fail with "Not logged in · Please run /login". The
+    // service fn's earlier call already pinned the agent (so the model/agent
+    // stays authoritative for the WS connect); this call is idempotent and just
+    // re-syncs the token. buildRunParams reads `agentSessionId` from the DB,
+    // which env-prep's docs/153 leak repair updates as a side-effect, so resume
+    // recovery is honored automatically.
+    await deps.prepareAgentEnv?.(runner.sessionId, agentId);
     const runParams = await deps.buildRunParams(runner.sessionId, agentId, text);
     agent.run(runParams);
   } catch (err) {
