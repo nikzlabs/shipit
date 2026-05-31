@@ -532,9 +532,9 @@ state), only rendered when voice input is enabled in settings:
 
 - Next to the send/stop buttons in **MessageInput** — Mode A entry point.
 - Inside the **QuickCaptureOverlay** (doc 145) — Mode B entry point.
-  On mobile, Mode B is also reachable from the bottom tab bar's center
-  dock via the Voice Quick Session action, which opens the overlay with
-  auto-mic requested.
+  On mobile, Mode B is also reachable from the bottom tab bar's action
+  cluster via the Voice Quick Session action, which uses a quick-session
+  icon plus a mic badge and opens the overlay with auto-mic requested.
 
 States (shared across both mic instances):
 

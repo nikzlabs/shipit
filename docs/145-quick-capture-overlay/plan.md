@@ -456,8 +456,8 @@ Client-heavy, but with real server work for the headless-start primitive.
 - `src/client/AppLayout.tsx` — mount the overlay; wire the hotkey hook.
   On mobile, `AppLayout` also passes quick-capture actions into the
   bottom `MobileTabBar`: Chat/Workspace stay grouped as active-session
-  panel tabs, while Sessions, New Session, and Voice Quick Session live
-  in a separated action cluster.
+  panel tabs, while Sessions, New Session, Quick Session, and Voice
+  Quick Session live in a separated action cluster.
 - `src/client/stores/ui-store.ts` — add `quickCaptureOpen: boolean` and
   setters.
 - `src/client/stores/actions/session-actions.ts` — new action
@@ -604,7 +604,8 @@ as the registry evolves.
 - `src/client/AppLayout.tsx` — mount overlay, wire hotkey
 - `src/client/components/MobileTabBar.tsx` — mobile bottom dock with
   grouped Chat/Workspace tabs plus a separated thumb-reachable cluster
-  for Sessions, New Session, and Voice Quick Session actions.
+  for Sessions, New Session, Quick Session, and Voice Quick Session
+  actions.
 - `src/client/stores/ui-store.ts` — `quickCaptureOpen` + setters
 - `src/client/stores/actions/session-actions.ts` — new `createHeadlessSession` action; existing claim-session+navigate action untouched
 - `src/client/components/MessageInput.tsx` — new `surface` prop (gates `prefillText` subscription, `focusKey` auto-focus, `ContextDialMount`)
