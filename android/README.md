@@ -95,7 +95,9 @@ Optional: upload the same APK as an AAB to Play Console for the regular
 - No OAuth deep-link interception: when the OAuth flow returns, the user
   back-gestures into the app manually. Adding a custom-tabs intercept would
   smooth this out.
-- Launcher icon foreground is a flat-color simplification of the favicon.
-  Replace with a designed asset before Play Store publish.
+- Launcher icon mirrors the web favicon: a red gradient background
+  (`ic_launcher_background.xml`) with a white rocket foreground
+  (`ic_launcher_foreground.xml`), sharing the favicon's path geometry and
+  colors. Refresh both if the favicon design changes.
 - No push notifications, no native settings beyond the URL. Both intentional
   for v1.

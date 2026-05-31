@@ -3,9 +3,15 @@
   Adaptive-icon foreground. Drawn on a 108x108dp canvas; the inner 72x72dp
   is the safe zone (corners get masked by the launcher).
 
-  This is a simplified "rocket" silhouette inspired by the favicon — flat
-  colors only, no gradients (Android vector drawables don't support all SVG
-  features). Replace with a polished asset before publishing to Play Store.
+  White rocket matching the web favicon (src/client/public/favicon.svg). The
+  rocket is authored in the favicon's 512 grid and placed into the 108 canvas
+  by the <group> transform below, sized so the whole rocket (nose -> flame)
+  sits inside the 72dp safe zone. The red gradient lives in the adaptive-icon
+  background (ic_launcher_background.xml), so this layer is just the rocket.
+
+  The same drawable is reused as the monochrome layer: Android uses only its
+  alpha to build the themed silhouette, so the fill colors below are ignored
+  in that mode.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -13,39 +19,39 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Body of the rocket, centered in the 72dp safe zone -->
-    <path
-        android:fillColor="#E94560"
-        android:pathData="M54 30
-            C54 30 46 42 45 56
-            L45 76
-            Q45 80 49 81
-            L51 82
-            L51 86
-            L57 86
-            L57 82
-            L59 81
-            Q63 80 63 76
-            L63 56
-            C62 42 54 30 54 30 Z" />
+    <!-- favicon 512-grid -> 108 canvas: scale 0.1748, centered (rocket center 256,266 -> 54,54) -->
+    <group
+        android:scaleX="0.1748"
+        android:scaleY="0.1748"
+        android:translateX="9.25"
+        android:translateY="7.51">
 
-    <!-- Left fin -->
-    <path
-        android:fillColor="#C23152"
-        android:pathData="M45 72 L37 84 L37 86 Q39 85 45 80 Z" />
+        <!-- Flame -->
+        <path
+            android:fillColor="#FFD27A"
+            android:pathData="M214 394 L256 472 L298 394 Z" />
+        <path
+            android:fillColor="#FFF6DF"
+            android:pathData="M236 394 L256 440 L276 394 Z" />
 
-    <!-- Right fin -->
-    <path
-        android:fillColor="#C23152"
-        android:pathData="M63 72 L71 84 L71 86 Q69 85 63 80 Z" />
+        <!-- Rocket body -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M256 60 C300 110 326 182 326 262 L326 352 Q326 382 296 394 L216 394 Q186 382 186 352 L186 262 C186 182 212 110 256 60 Z" />
 
-    <!-- Window -->
-    <path
-        android:fillColor="#A8D8EA"
-        android:pathData="M54 54 m-6 0 a6 6 0 1 0 12 0 a6 6 0 1 0 -12 0" />
+        <!-- Left fin -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M186 300 L118 398 L186 374 Z" />
 
-    <!-- Flame -->
-    <path
-        android:fillColor="#F7C948"
-        android:pathData="M54 86 L50 92 Q54 96 54 96 Q54 96 58 92 Z" />
+        <!-- Right fin -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M326 300 L394 398 L326 374 Z" />
+
+        <!-- Window (red, reads as a hole in the white rocket) -->
+        <path
+            android:fillColor="#B8294B"
+            android:pathData="M256 212 m-46 0 a46 46 0 1 0 92 0 a46 46 0 1 0 -92 0" />
+    </group>
 </vector>

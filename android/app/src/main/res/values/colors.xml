@@ -6,7 +6,4 @@
     <color name="shipit_text">#F3F4F6</color>
     <color name="shipit_text_muted">#9CA3AF</color>
     <color name="shipit_accent">#E94560</color>
-
-    <!-- Adaptive icon background — same as the favicon's gradient base. -->
-    <color name="ic_launcher_background">#1A1A2E</color>
 </resources>
