@@ -44,10 +44,6 @@ describe("MobileRecordingOverlay", () => {
     expect(screen.queryByRole("button", { name: "Stop recording" })).not.toBeInTheDocument();
   });
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
   it("offers Resend (verbatim) + Re-record when the audio can be retried", () => {
     const voice = makeVoice({
       state: "error",
@@ -65,11 +61,6 @@ describe("MobileRecordingOverlay", () => {
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
   });
 
-<<<<<<< HEAD
-=======
->>>>>>> e5028ef99 (Now let me open a PR for this follow-up:)
-=======
->>>>>>> 0e97a4864 (Done. Retry is now genuinely robust — the user never repeats themselves on a transient failure — and desktop gets a real)
   it("re-records when Try again is tapped in the error state", () => {
     const voice = makeVoice({ state: "error", errorMessage: "nope" });
     render(<MobileRecordingOverlay voice={voice} />);
