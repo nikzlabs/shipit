@@ -2,14 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode } from "../../shared/types.js";
-import type { AgentEvent } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
-import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
-import { resetRunnerTurnState } from "../session-runner.js";
-import type { SessionRunnerInterface } from "../session-runner.js";
+import type { SessionRunnerInterface, SystemTurnDeps } from "../session-runner.js";
 import {
   prepareSessionAgentEnvironment,
   finalizeSessionAgentEnvironment,
@@ -17,6 +15,7 @@ import {
 } from "../session-agent-env.js";
 import { buildAgentRunParams } from "../session-agent-run-params.js";
 import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
+import { executeAgentTurn } from "../turn-executor.js";
 
 // docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
 // tests, secret-resolver coverage) keep their import path working while the
@@ -92,16 +91,6 @@ export function assembleAgentPrompt(input: {
 
 /** Full handler context — send-message handlers need all three sub-contexts. */
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;
-
-/**
- * Mark the captured runner as stopped. Centralizes the `if (runner) runner.running = false`
- * pattern so adding a new error/exit path doesn't drift from the existing
- * ones. Always safe to call — no-op when the runner reference is null
- * (which can happen if the registry entry was disposed mid-turn).
- */
-function stopRunner(runner: { running: boolean } | null): void {
-  if (runner) runner.running = false;
-}
 
 /**
  * Flip the in-progress rows of an interrupted turn to `in_progress=0` so the
@@ -223,9 +212,19 @@ export async function drainNextQueuedMessage(
 }
 
 /**
- * Core agent execution logic. Shared between send_message and
+ * Core WS agent execution — now a thin transport adapter over the shared
+ * `executeAgentTurn` (turn-executor.ts). Shared between send_message and
  * home_send_with_repo handlers. Session state (activeAppSessionId,
  * activeSessionDir) must already be set before calling this.
+ *
+ * The adapter's job is the genuinely WS-specific work: capture per-connection
+ * session state at turn start (immune to mid-turn session switches), resolve
+ * the registry-backed runner, apply the guarded-mode downgrade, decide live
+ * streaming + acquire/reuse the agent process, resolve attachments and assemble
+ * the slash-aware prompt, and build the `SystemTurnDeps`/`TurnInput` the
+ * executor consumes. Everything from there — reset, env-prep, spawn, listener
+ * wiring, and post-turn commit/push/PR/drain — runs in the shared executor, so
+ * the WS turn and the dispatched turn can't drift apart.
  */
 export async function runAgentWithMessage(ctx: FullCtx, opts: {
   userText: string;
@@ -244,105 +243,56 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    */
   reviewFilePath?: string;
 }): Promise<void> {
-  const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths, agentSessionId } = opts;
+  const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths } = opts;
 
   // Capture the session context at turn start. These values must NOT be read
-  // from ctx later because the user may switch sessions while the agent runs,
-  // which would change ctx.getActiveAppSessionId() / ctx.getActiveSessionDir().
+  // from ctx later because the user may switch sessions while the agent runs.
   const capturedSessionId = ctx.getActiveAppSessionId();
   const capturedSessionDir = ctx.getActiveSessionDir();
   const turnStartHeadHash = capturedSessionDir
     ? await ctx.createGitManager(capturedSessionDir).getHeadHash()
     : null;
 
-  // Bump `last_used_at` at turn *start*, not just turn end (agent-listeners
-  // tracks it on `agent_result`). Starting a turn is the user interacting with
-  // the session — and the post-merge auto-archive prune ranks merged sessions
-  // by most-recent activity. Without this, going back to a previously-merged
-  // session to open a follow-up PR wouldn't refresh its activity time until the
-  // turn finished, leaving a window where a concurrent merge elsewhere could
-  // pick this session as "oldest" and archive it mid-turn.
+  // Bump `last_used_at` at turn *start* (the post-merge auto-archive prune ranks
+  // merged sessions by most-recent activity).
   if (capturedSessionId) ctx.sessionManager.track(capturedSessionId);
 
-  // Resolve the runner via the registry (by session ID) when possible. This
-  // makes the runner reference survive WebSocket disconnects — critical for
-  // queue-drained turns that may finish after the originating WS is gone.
+  // Resolve the runner via the registry (by session ID) so it survives WS
+  // disconnects — critical for queue-drained turns that finish after the
+  // originating socket is gone.
   const runner = resolveRunner(ctx, capturedSessionId);
 
-  // docs/138 — if a previous turn this session found guarded mode unavailable,
-  // silently downgrade `guarded` → `auto` (omit the field) so we don't keep
-  // re-requesting a mode the account/model can't use and re-notifying the user.
-  // The flag is volatile (clears on restart / reload), so a later admin enable
-  // is rediscovered on the next fresh attempt. The downgraded mode is what we
-  // both pass to the CLI and report to the listeners as "requested", so the
-  // availability check only fires when guarded was genuinely attempted.
+  const agentId = ctx.getActiveAgentId();
+
+  // docs/138 — if a previous turn found guarded mode unavailable, silently
+  // downgrade `guarded` → `auto` (omit) so we don't keep re-requesting it.
   const effectivePermissionMode: PermissionMode | undefined =
-    permissionMode === "guarded" && runner?.guardedUnavailable
-      ? undefined
-      : permissionMode;
+    permissionMode === "guarded" && (runner?.guardedUnavailable ?? false) ? undefined : permissionMode;
 
-  // Reset turn-scoped state directly on the runner — shared with the system-
-  // dispatched and rebase flows so all three paths start from a clean slate
-  // (no stale chatMessageGroups bleeding across turns).
-  //
-  // docs/125 — `reviewFilePath` authorizes the chat-native review tool for
-  // exactly this turn's file (or clears the allow-list for a normal turn).
-  // Setting it at turn start — the same point sessionId is captured — means
-  // a queued review message is authorized only when it actually starts
-  // running. Subagent tool calls happen inline within the parent's turn, so
-  // the value is still set when `submit_review_comments` lands.
-  if (runner) resetRunnerTurnState(runner, { reviewFilePath: opts.reviewFilePath ?? null });
-  // Live steering: use streaming mode when enabled and the active agent supports it.
-  // For streaming agents, reuse the existing agent process (it persists across turns)
-  // rather than creating a new one via the factory. (docs/140)
-  const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
+  // Live steering (docs/140): use streaming when enabled and the agent supports
+  // it, reusing the resident streaming process across turns rather than spawning
+  // a new one.
+  const agentInfo = ctx.agentRegistry.get(agentId);
   const useStreaming = ctx.credentialStore.getLiveSteering() && (agentInfo?.capabilities.supportsSteering ?? false);
-
-  let receivedResult = false;
   const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
-  const currentAgent = existingAgent ?? ctx.agentFactory(ctx.getActiveAgentId());
+  const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
   if (!existingAgent && runner) runner.setAgent(currentAgent);
 
-  // docs/140 — record whether the *currently resident* agent process is in
-  // streaming mode. The send-message handler reads this when deciding whether
-  // a mid-turn message can be steered or must be queued, separately from the
-  // adapter's static `supportsSteering` capability. Without this distinction,
-  // a setting-flip from off→on mid-turn (or any other path that leaves a
-  // one-shot PTY process running under a steering-capable adapter) would route
-  // `sendUserMessage` to a `ClaudeProcess` whose adapter silently no-ops, and
-  // the user's message would disappear.
-  //
-  // For existingAgent (reuse): useStreaming was true at gate time AND the
-  // previous turn left a streaming process resident → still streaming.
-  // For a fresh spawn: the flag mirrors what we just passed to `run()`.
-  if (runner) runner.isStreamingActive = useStreaming;
+  // Broadcast to all viewers via the runner; fall back to the per-connection
+  // socket when there's no registry-backed runner (workspace-less session).
+  const emit = (m: WsServerMessage): void => {
+    if (runner) runner.emitMessage(m);
+    else ctx.send(m);
+  };
+  // Session id the executor uses for run-params / persistence / SSE.
+  const sessionId = capturedSessionId ?? runner?.sessionId ?? "";
+  // docs/140 — drop the previous turn's per-turn listeners off a reused process
+  // before the executor re-wires its own, else they fire N times after N turns.
+  if (existingAgent) existingAgent.removeAllListeners();
 
-  // docs/140 — when reusing a persistent streaming agent, the previous turn
-  // attached listeners that close over per-turn state (capturedSessionId,
-  // persistUserMessage, the `streamingPostTurnFired` flag, etc.). Drop them
-  // before this turn re-wires its own, otherwise every `agent_result` /
-  // `agent_init` fires N times after N turns — the symptom that prompted this
-  // fix (multiple "Agent process started" entries in the log panel). The
-  // orchestrator-side `AgentProcess` EventEmitter has no other subscribers —
-  // events flow in from the worker SSE relay (proxy) or the local adapter and
-  // out to wireAgentListeners + the per-turn handlers in this function — so a
-  // blanket removeAllListeners is safe.
-  if (existingAgent) {
-    existingAgent.removeAllListeners();
-  }
-
-  // Notify via SSE for sidebar activity dots
-  if (capturedSessionId) {
-    ctx.sseBroadcast("session_agent_started", { sessionId: capturedSessionId });
-  }
-
-  // Build images metadata for chat history persistence (inline base64)
-  const historyImages = images?.map((img) => ({
-    data: img.data,
-    mediaType: img.mediaType,
-  }));
-
-  // Build file metadata for chat history persistence (path + preview only)
+  // Chat-history metadata for the persisted user row (inline base64 images +
+  // path/preview for files).
+  const historyImages = images?.map((img) => ({ data: img.data, mediaType: img.mediaType }));
   const historyFiles = validatedFiles.length > 0
     ? validatedFiles.map((f) => ({
         path: f.path,
@@ -351,14 +301,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         endLine: f.endLine,
       }))
     : undefined;
-
-  const persistUserMessage = (sessionId: string) => {
-    // docs/140 diag — tag persist sites so a double-bubble repro shows which
-    // call paths fired. Pair this with the `[steered]` and `[sse-drop]` logs
-    // in agent-listeners.ts / container-session-runner.ts.
-    console.log(
-      `[persist-user] runAgentWithMessage session=${sessionId} isNewSession=${isNewSession} text=${JSON.stringify(userText.slice(0, 60))}`,
-    );
+  const persistUserMessage = (sessionId: string): void => {
     ctx.chatHistoryManager.append(sessionId, {
       role: "user",
       text: userText,
@@ -368,67 +311,16 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     });
   };
 
-  // Helper: emit to all viewers via runner, or fall back to ctx.send
-  const emitDone = (msg: WsServerMessage) => {
-    if (runner) {
-      runner.emitMessage(msg);
-    } else {
-      ctx.send(msg);
-    }
-  };
+  // Assemble the prompt from user text plus optional file/image context. Images
+  // are saved to the host uploads dir and referenced by path (avoids large
+  // base64 payloads over HTTP to the worker).
+  const activeDir = ctx.getActiveDir();
+  const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
+  const imageContext =
+    images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
+  const prompt = assembleAgentPrompt({ userText, fileContext, imageContext });
 
-  // docs/142 A / docs/149 — after the turn, write the CLI's refreshed OAuth
-  // token back to the orchestrator source if it advanced (expiry-guarded), so
-  // the source and future sessions stay fresh. Safe to call on every post-turn
-  // path; no-op outside container mode or when nothing rotated.
-  const syncTokenBackAfterTurn = () => {
-    if (!runner || !capturedSessionId) return;
-    finalizeSessionAgentEnvironment(runner, {
-      sessionId: capturedSessionId,
-      agentId: currentAgent.agentId,
-      deps: {
-        credentialsDir: ctx.credentialsDir,
-        credentialStore: ctx.credentialStore,
-        sessionManager: ctx.sessionManager,
-        providerAccountManager: ctx.providerAccountManager,
-      },
-    });
-  };
-
-  // Sync-back has the same lost-signal hazard as the queue drain: `agent_done`
-  // can be missed (SSE drop in the narrow window between `agent_result` and
-  // process-exit, worker clearing its agent ref via a race) and was the
-  // exclusive trigger for the token write-back. When it was missed, a token
-  // the CLI just rotated stayed stranded in the per-session dir; the source
-  // never advanced and within an OAuth refresh cycle every fresh session
-  // bootstrapped with a dead refresh token → 401. So we fire on `agent_result`
-  // (the canonical turn-end signal) too, guarded so the first signal wins and
-  // the other becomes a no-op. Mirrors the `postTurnDrainFired` pattern below.
-  // Non-streaming only — the streaming block below has its own `syncTokenBackAfterTurn`
-  // call alongside `streamingPostTurnFired`.
-  let postTurnTokenSyncFired = false;
-  const trySyncTokenBack = (): void => {
-    if (postTurnTokenSyncFired) return;
-    postTurnTokenSyncFired = true;
-    syncTokenBackAfterTurn();
-  };
-
-  // Guard the post-turn drain so whichever signal arrives first — `agent_result`
-  // (the canonical turn-ended event) or `agent_done` (process exit) — advances
-  // the queue, and the other becomes a no-op. Previously the drain only hung
-  // off `done`, so a missed `agent_done` (SSE drop between agent_result and
-  // process-exit, worker clearing its agent ref via a race, etc.) stranded the
-  // queue at "1 message queued" forever. Non-streaming only — the streaming
-  // post-turn block below has its own `streamingPostTurnFired` guard and
-  // performs commit/PR work alongside the drain, so it stays self-contained.
-  let postTurnDrainFired = false;
-  const tryPostTurnDrain = async (): Promise<void> => {
-    if (postTurnDrainFired) return;
-    postTurnDrainFired = true;
-    stopRunner(runner);
-    await drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone);
-  };
-
+  // Listener deps — same shape the runner-registry builds for system turns.
   const listenerDeps: AgentListenerDeps = {
     sessionManager: ctx.sessionManager,
     chatHistoryManager: ctx.chatHistoryManager,
@@ -443,219 +335,76 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     nudgeClaudeOAuthRefresh: ctx.nudgeClaudeOAuthRefresh,
     onAgentAuthRequired: ctx.onAgentAuthRequired,
   };
-  wireAgentListeners(currentAgent, runner, listenerDeps, {
-    isNewSession,
-    persistUserMessage,
-    fallbackTitle: userText.slice(0, 80) || "New session",
-    capturedSessionId,
-    requestedPermissionMode: effectivePermissionMode,
-    onError: () => drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone),
-    useStreaming,
-  });
 
-  // Track whether we got a result event, and (for non-streaming) sync the
-  // token + drain the queue immediately — don't wait for `agent_done`, which
-  // can be lost. Sync-back must run BEFORE the next queued turn starts so the
-  // next turn's sync-in pulls the just-rotated token instead of the stale
-  // source.
-  currentAgent.on("event", async (event: AgentEvent) => {
-    if (event.type !== "agent_result") return;
-    receivedResult = true;
-    if (!useStreaming) {
-      trySyncTokenBack();
-      await tryPostTurnDrain();
-    }
-  });
-
-  // For resumed sessions (sessionId already known), persist user message immediately
-  if (!isNewSession && capturedSessionId) {
-    persistUserMessage(capturedSessionId);
-  }
-
-  // For streaming agents: wire post-turn actions on agent_result instead of done.
-  // done fires only on process exit (dispose/crash), not on turn end. (docs/140)
-  if (useStreaming) {
-    let streamingPostTurnFired = false;
-    currentAgent.on("event", async (event: AgentEvent) => {
-      if (event.type !== "agent_result") return;
-      if (streamingPostTurnFired) return; // guard against multiple result events per turn
-      streamingPostTurnFired = true;
-
-      // Capture any OAuth token the CLI refreshed during this turn.
-      syncTokenBackAfterTurn();
-
-      // agent-listeners already set runner.running=false on agent_result.
-      // DO NOT clear the agent reference here: the streaming CLI process
-      // stays alive across turns, and the next top-level turn reuses it via
-      // the `existingAgent` branch at the top of `runAgentWithMessage`
-      // (which then carries the user message in via `sendUserMessage`).
-      // Clearing the ref here was the bug: the next turn would call
-      // `/agent/start` against the still-running worker agent, get a 409,
-      // fall back to `/agent/kill` + restart (SIGTERM, exit 143), and spam
-      // the log panel with a fresh "Agent process started" every turn.
-      // Crash / error / dispose paths still clear the ref (agent.on("error"),
-      // agent.on("auth_required"), agent.on("done"), runner.dispose).
-      stopRunner(runner);
-
-      // Drain queue (may start next turn immediately via the existingAgent path)
-      await drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emitDone);
-
-      // Auto-commit
-      let commitHash: string | null = null;
-      try {
-        if (capturedSessionDir) {
-          commitHash = await postTurnCommit(ctx, {
-            sessionDir: capturedSessionDir,
-            sessionId: capturedSessionId,
-            emit: emitDone,
-            turnSummary: runner?.turnSummary ?? "",
-            turnStartHeadHash,
-            runner,
-          });
-        }
-      } catch (err) {
-        console.error("[git] streaming auto-commit failed:", getErrorMessage(err));
-      }
-
-      // PR lifecycle card (docs/149 — shared helper, identical to done branch).
-      if (commitHash && capturedSessionId && capturedSessionDir) {
-        await emitPrLifecycleAfterCommit({
-          deps: {
-            sessionManager: ctx.sessionManager,
-            prStatusPoller: ctx.prStatusPoller,
-            githubAuthManager: ctx.githubAuthManager,
-            credentialStore: ctx.credentialStore,
-            chatHistoryManager: ctx.chatHistoryManager,
-            generateText: ctx.generateText,
-            createGitManager: ctx.createGitManager,
-          },
-          sessionId: capturedSessionId,
-          sessionDir: capturedSessionDir,
-          commitHash,
-          emit: emitDone,
-        });
-      }
-
-      if (capturedSessionId && !(runner?.running ?? false)) {
-        ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
-        if (runner) runner.onAgentFinished();
-      }
-    });
-  }
-
-  currentAgent.on("done", async (code: number | null) => {
-    console.log("[agent] process exited with code", code);
-    ctx.broadcastLog("server", `Agent process exited with code ${code}`);
-    // Only clear the runner's agent ref if it still points to us. The
-    // agent_result-triggered drain above may have already started a new turn
-    // and called `runner.setAgent(NEW)`; clobbering it back to null here
-    // would strand the new agent and the next event from it would log
-    // `[sse-drop] ... dropped (no _agent)`.
-    if (runner?.getAgent() === currentAgent) {
-      runner.setAgent(null);
-      // docs/140 — the persistent streaming process has actually exited; the
-      // next mid-turn send must NOT be routed through `sendUserMessage` (the
-      // adapter would write to a closed stdin). Reset so the steering gate
-      // falls through to the queue / fresh-spawn path.
-      runner.isStreamingActive = false;
-    }
-
-    // Capture any OAuth token the CLI refreshed during this turn (non-streaming
-    // path; the streaming path does this in the agent_result handler above).
-    // Idempotent via `trySyncTokenBack` — if `agent_result` arrived first, the
-    // sync already ran and this is a no-op; if `agent_done` arrived alone
-    // (SSE-drop scenario where `agent_result` was lost too, plus the
-    // process-exit-only crash path), this fires it for the first time.
-    if (!useStreaming) trySyncTokenBack();
-
-    // For streaming agents, post-turn flow (commit, PR card, queue drain) already
-    // ran in the agent_result listener above. done fires only on process exit
-    // (dispose/crash), not on turn end. Just handle the error/cleanup path. (docs/140)
-    if (useStreaming) {
-      if (!receivedResult && !(runner?.wasInterrupted ?? false)) {
-        const reason = code !== 0
-          ? `Agent process exited with code ${code}`
-          : "Agent process ended without a response";
-        emitDone({ type: "error", message: reason });
-      }
-      // Preserve the partial turn when an interrupt (user-typed Stop, or the
-      // AskUserQuestion auto-interrupt in agent-listeners) ends the agent
-      // without an `agent_result`. The listener's replaceInProgress writes
-      // accumulated rows with in_progress=1, and the NEXT turn's first
-      // replaceInProgress would wipe them — that's the "first turn erased
-      // from history" bug. Flip them to in_progress=0 here so they persist.
-      if (capturedSessionId && !receivedResult && runner?.wasInterrupted) {
-        const partial = buildTurnMessages(
-          runner.chatMessageGroups,
-          runner.steeredMessages ?? [],
-          { inProgress: false },
-        );
-        persistInterruptedTurn(ctx, capturedSessionId, partial);
-      }
-      stopRunner(runner);
-      if (capturedSessionId && !(runner?.running ?? false)) {
-        ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
-        if (runner) runner.onAgentFinished();
-      }
-      return;
-    }
-
-    // Non-streaming: original post-turn flow below.
-
-    // If the process exited without producing a result event, notify the
-    // client so it can clear the loading state instead of hanging forever.
-    if (!receivedResult && !(runner?.wasInterrupted ?? false)) {
-      const reason = code !== 0
-        ? `Agent process exited with code ${code}`
-        : "Agent process ended without a response";
-      emitDone({ type: "error", message: reason });
-    }
-
-    // Mirror the streaming branch: preserve in-progress rows when an interrupt
-    // ends the agent without `agent_result`. Without this, the next turn's
-    // replaceInProgress wipes the interrupted turn's accumulated work.
-    if (capturedSessionId && !receivedResult && runner?.wasInterrupted) {
-      const partial = buildTurnMessages(
-        runner.chatMessageGroups,
-        runner.steeredMessages ?? [],
-        { inProgress: false },
-      );
-      persistInterruptedTurn(ctx, capturedSessionId, partial);
-    }
-
-    // Process the message queue FIRST so the client clears queued visual state
-    // immediately, before the (potentially slow) post-turn git commit work.
-    // Idempotent — `agent_result` above may already have triggered the drain,
-    // in which case this is a no-op (and `runner.running` may have been re-set
-    // to true by the new turn, which `tryPostTurnDrain` deliberately leaves
-    // alone via its early-return).
-    await tryPostTurnDrain();
-
-    // Auto-commit after agent turn using the session dir captured at turn start.
-    // Do NOT use ctx.getActiveGitManager() — the user may have switched sessions.
-    let commitHash: string | null = null;
-    try {
-      if (capturedSessionDir) {
-        commitHash = await postTurnCommit(ctx, {
-          sessionDir: capturedSessionDir,
-          sessionId: capturedSessionId,
-          emit: emitDone,
-          // Pass the captured runner's summary explicitly — ctx.getTurnSummary()
-          // returns "" after WS disconnect because it routes through the
-          // per-connection attachedRunner. Use the captured (registry-backed)
-          // runner so commit messages are correct even for queue-drained turns.
-          turnSummary: runner?.turnSummary ?? "",
-          turnStartHeadHash,
-          runner,
-        });
-      }
-    } catch (err) {
-      console.error("[git] auto-commit failed:", getErrorMessage(err));
-    }
-
-    // Emit PR lifecycle card after commit (docs/149 — shared helper, identical
-    // to the streaming branch above).
-    if (commitHash && capturedSessionId && capturedSessionDir) {
+  // Build the shared executor deps from ctx — mirrors runner-registry-factory's
+  // system-turn wiring so the WS turn and the dispatched turn consume one shape.
+  const deps: SystemTurnDeps = {
+    agentFactory: (id) => ctx.agentFactory(id),
+    autoCommit: async (sessionDir, summary) => {
+      const git = ctx.createGitManager(sessionDir);
+      const parentHash = await git.getHeadHash();
+      const { commitHash, conflictedFiles, rebaseInProgress } = await git.autoCommit(summary);
+      return { commitHash, parentHash, conflictedFiles, rebaseInProgress };
+    },
+    // Only used by the fallback commit path; the WS path always uses commitTurn
+    // (which drives its own push via postTurnCommit → ctx.scheduleAutoPush).
+    scheduleAutoPush: (sessionDir) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir)),
+    listenerDeps,
+    buildRunParams: async (sessionId, id, p) => {
+      // Read agentSessionId fresh from the DB — env-prep's docs/153 leak repair
+      // (run by the executor immediately before this) updates it there.
+      const session = ctx.sessionManager.get(sessionId);
+      return buildAgentRunParams({
+        deps: {
+          credentialStore: ctx.credentialStore,
+          githubAuthManager: ctx.githubAuthManager,
+          sessionManager: ctx.sessionManager,
+          readSystemPrompt: ctx.readSystemPrompt,
+          getSelectedModel: ctx.getSelectedModel,
+          ...(ctx.runParamsPreps ? { runParamsPreps: ctx.runParamsPreps } : {}),
+        },
+        sessionId,
+        agentId: id,
+        prompt: p,
+        sessionDir: activeDir,
+        ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
+        ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
+      });
+    },
+    prepareAgentEnv: async (sessionId, id) => {
+      await prepareSessionAgentEnvironment(runner, {
+        sessionId,
+        agentId: id,
+        deps: {
+          credentialsDir: ctx.credentialsDir,
+          credentialStore: ctx.credentialStore,
+          sessionManager: ctx.sessionManager,
+          providerAccountManager: ctx.providerAccountManager,
+        },
+      });
+    },
+    finalizeAgentEnv: (sessionId, id) => {
+      finalizeSessionAgentEnvironment(runner, {
+        sessionId,
+        agentId: id,
+        deps: {
+          credentialsDir: ctx.credentialsDir,
+          credentialStore: ctx.credentialStore,
+          sessionManager: ctx.sessionManager,
+          providerAccountManager: ctx.providerAccountManager,
+        },
+      });
+    },
+    commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash: tsh, runner: r, emit }) =>
+      postTurnCommit(ctx, {
+        sessionDir,
+        sessionId,
+        emit,
+        turnSummary: summary,
+        turnStartHeadHash: tsh,
+        runner: r,
+      }),
+    postTurnPrFlow: async (sessionId, sessionDir, commitHash, emit) => {
       await emitPrLifecycleAfterCommit({
         deps: {
           sessionManager: ctx.sessionManager,
@@ -666,124 +415,45 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           generateText: ctx.generateText,
           createGitManager: ctx.createGitManager,
         },
-        sessionId: capturedSessionId,
-        sessionDir: capturedSessionDir,
+        sessionId,
+        sessionDir,
         commitHash,
-        emit: emitDone,
+        emit,
       });
-    }
+    },
+  };
 
-    // Notify via SSE for sidebar activity dots
-    if (capturedSessionId && !(runner?.running ?? false)) {
-      ctx.sseBroadcast("session_agent_finished", { sessionId: capturedSessionId });
-      if (runner) runner.onAgentFinished();
-      // docs/125 — clear the review allow-list now the turn is fully done and
-      // no queued turn took over. (A queued turn that started already reset the
-      // field for itself in runAgentWithMessage's turn-start block above.)
-      if (runner) runner.activeReviewFilePath = null;
-    }
+  // Preserve a partial interrupted turn (flip in-progress rows to persisted).
+  const onInterruptedTurn = (): void => {
+    if (!runner || !capturedSessionId) return;
+    const partial = buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages ?? [], { inProgress: false });
+    persistInterruptedTurn(ctx, capturedSessionId, partial);
+  };
+
+  // Queue-drain re-entry — resolves the next message's attachments and recurses
+  // into this adapter, so the executor's post-turn drain funnels back through
+  // the WS path's attachment handling.
+  const drainNext = (): Promise<void> =>
+    drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit);
+
+  await executeAgentTurn(runner, deps, currentAgent, {
+    agentId,
+    sessionId,
+    prompt,
+    userText,
+    ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
+    ...(opts.reviewFilePath !== undefined ? { reviewFilePath: opts.reviewFilePath } : {}),
+    // The client already rendered an optimistic bubble — don't echo.
+    emitUserEcho: false,
+    persistUserMessage,
+    isNewSession,
+    fallbackTitle: userText.slice(0, 80) || "New session",
+    turnStartHeadHash,
+    drainNext,
+    emit,
+    useStreaming,
+    reuseExistingAgent: existingAgent !== null,
+    emitErrorOnNoResult: true,
+    onInterruptedTurn,
   });
-
-  // Assemble the prompt from the user text plus optional file/image context.
-  // The slash-command-aware ordering lives in `assembleAgentPrompt`.
-  const activeDir = ctx.getActiveDir();
-  const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
-  // Save images to the host uploads directory and reference them in the prompt.
-  // This avoids sending large base64 payloads over HTTP to the session worker.
-  const imageContext =
-    images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
-
-  const prompt = assembleAgentPrompt({ userText, fileContext, imageContext });
-
-  // docs/149 — env prep (cred provisioning, OAuth sync-in, MCP refresh,
-  // agent-env push) is now factored into a single idempotent helper. The
-  // helper subsumes the previous inline blocks at lines 798–833 and the
-  // first-turn `agentPinned` flip.
-  //
-  // docs/153 — if the env prep's docs/153 leak repair recovered an
-  // agent_session_id from the orphan jsonl tree, the captured-at-turn-start
-  // `agentSessionId` is now stale (it's whatever the DB held before the
-  // recovery rewrote it). The CLI must be spawned with the recovered id so
-  // `--resume <recovered>` finds the merged conversation jsonl — otherwise
-  // `--resume <stale>` produces "No conversation found", the CLI emits a
-  // fresh init UUID, and the listener (line below in agent-listeners.ts)
-  // poisons the DB with it on the way to the failure exit. See PR #758/#763
-  // background.
-  let effectiveAgentSessionId: string | undefined = agentSessionId;
-  if (capturedSessionId) {
-    const envResult = await prepareSessionAgentEnvironment(runner, {
-      sessionId: capturedSessionId,
-      agentId: currentAgent.agentId,
-      deps: {
-        credentialsDir: ctx.credentialsDir,
-        credentialStore: ctx.credentialStore,
-        sessionManager: ctx.sessionManager,
-        providerAccountManager: ctx.providerAccountManager,
-      },
-    });
-    // docs/153 — tri-state override. Distinguishing `undefined` (no leak
-    // repair, keep captured id) from explicit `null` (repair fired and
-    // no resumable jsonl was found, MUST drop --resume) requires the
-    // `in` check; a `?? undefined` here would conflate them and pass a
-    // known-bad id back into the CLI, re-triggering the loop.
-    if ("overrideAgentSessionId" in envResult) {
-      effectiveAgentSessionId = envResult.overrideAgentSessionId ?? undefined;
-    }
-  }
-
-  if (existingAgent) {
-    // docs/140 — persistent streaming agent reuse. The CLI is already alive
-    // and was configured with this session's system prompt / model /
-    // permission mode / MCP servers on its initial spawn. Carry the next
-    // user message in via `sendUserMessage` (NDJSON on the existing stdin
-    // for Claude streaming, `turn/steer`-style JSON-RPC for Codex) instead
-    // of issuing another `/agent/start` — the worker would 409 against the
-    // still-running process and the orchestrator would fall back to a
-    // `/agent/kill` + `/agent/start` cycle (SIGTERM, exit 143).
-    //
-    // docs/138 — the persistent CLI keeps its spawn-time `--permission-mode`
-    // for life unless we explicitly tell it otherwise. If the user toggled
-    // the mode chip between turns, push a `set_permission_mode`
-    // control_request before the user message so the next turn actually
-    // runs in the requested mode. Without this, plan → auto (or auto →
-    // plan, guarded → anything) updates the UI but leaves the CLI stuck.
-    if (
-      runner &&
-      runner.appliedPermissionMode !== effectivePermissionMode &&
-      existingAgent.setPermissionMode
-    ) {
-      existingAgent.setPermissionMode(effectivePermissionMode);
-      runner.appliedPermissionMode = effectivePermissionMode;
-    }
-    existingAgent.sendUserMessage(prompt);
-  } else {
-    // docs/149 — assemble the full AgentRunParams via the shared helper so
-    // the WS path and the system-turn path produce identical shapes (system
-    // prompt, managed-settings, model, MCP, autoCreatePr).
-    const runParams = await buildAgentRunParams({
-      deps: {
-        credentialStore: ctx.credentialStore,
-        githubAuthManager: ctx.githubAuthManager,
-        sessionManager: ctx.sessionManager,
-        readSystemPrompt: ctx.readSystemPrompt,
-        getSelectedModel: ctx.getSelectedModel,
-        ...(ctx.runParamsPreps ? { runParamsPreps: ctx.runParamsPreps } : {}),
-      },
-      sessionId: capturedSessionId ?? "",
-      agentId: currentAgent.agentId,
-      prompt,
-      sessionDir: activeDir,
-      ...(effectiveAgentSessionId !== undefined ? { agentSessionId: effectiveAgentSessionId } : {}),
-      ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
-    });
-    currentAgent.run({ ...runParams, useStreaming });
-    // Track what the just-spawned CLI was given so the next turn can detect a
-    // mode toggle and push a control_request instead of respawning.
-    if (runner) runner.appliedPermissionMode = effectivePermissionMode;
-  }
-  // "Agent process started" is now emitted from agent-listeners.ts
-  // when the agent_init event arrives, so the log reflects an actual
-  // successful start (worker accepted /agent/start) rather than every
-  // attempt — duplicates rejected by the worker no longer pollute the
-  // per-session log ring.
 }

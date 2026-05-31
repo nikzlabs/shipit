@@ -22,8 +22,9 @@ import { isNonFastForwardError } from "./services/git.js";
 import { getErrorMessage } from "./validation.js";
 import { setupServiceManager } from "./service-manager-setup.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
-import { finalizeSessionAgentEnvironment } from "./session-agent-env.js";
+import { finalizeSessionAgentEnvironment, prepareSessionAgentEnvironment } from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
+import { postTurnCommit } from "./ws-handlers/post-turn.js";
 
 // ---- Runner registry setup ----
 
@@ -260,6 +261,32 @@ export function createRunnerRegistry(
         ...(nudgeClaudeOAuthRefresh ? { nudgeClaudeOAuthRefresh } : {}),
         ...(onAgentAuthRequired ? { onAgentAuthRequired } : {}),
       };
+      // Shared debounced auto-push for a resolved GitManager. Used by both the
+      // `scheduleAutoPush(sessionDir)` dep and the `commitTurn` helper below, so
+      // the dispatch path and the shared `postTurnCommit` push identically.
+      const schedulePushGit = (git: GitManager): void => {
+        if (!githubAuthManager.authenticated) return;
+        runner.clearPushTimer();
+        runner.setPushTimer(setTimeout(async () => {
+          runner.setPushTimer(null);
+          try {
+            const branch = await pushToOrigin(git);
+            if (branch) {
+              runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
+            }
+          } catch (err) {
+            if (isNonFastForwardError(err)) {
+              runner.emitMessage({
+                type: "git_push_rejected",
+                reason: "non_fast_forward",
+                message: "Branch has diverged from remote. Rebase needed to update.",
+              });
+            } else {
+              console.error("[system-turn] auto-push failed:", getErrorMessage(err));
+            }
+          }
+        }, autoPushDebounceMs));
+      };
       runner.setSystemTurnDeps({
         agentFactory: (agentId) => {
           if (runner.createAgent) return runner.createAgent(agentId);
@@ -272,30 +299,7 @@ export function createRunnerRegistry(
           const { commitHash, conflictedFiles, rebaseInProgress } = await git.autoCommit(summary);
           return { commitHash, parentHash, conflictedFiles, rebaseInProgress };
         },
-        scheduleAutoPush: (sessionDir) => {
-          if (!githubAuthManager.authenticated) return;
-          runner.clearPushTimer();
-          runner.setPushTimer(setTimeout(async () => {
-            runner.setPushTimer(null);
-            try {
-              const git = createGitManager(sessionDir);
-              const branch = await pushToOrigin(git);
-              if (branch) {
-                runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
-              }
-            } catch (err) {
-              if (isNonFastForwardError(err)) {
-                runner.emitMessage({
-                  type: "git_push_rejected",
-                  reason: "non_fast_forward",
-                  message: "Branch has diverged from remote. Rebase needed to update.",
-                });
-              } else {
-                console.error("[system-turn] auto-push failed:", getErrorMessage(err));
-              }
-            }
-          }, autoPushDebounceMs));
-        },
+        scheduleAutoPush: (sessionDir) => schedulePushGit(createGitManager(sessionDir)),
         listenerDeps,
         // docs/149 — assemble full AgentRunParams for system turns. Without
         // this, spawned-session / CI-auto-fix turns ran with only
@@ -338,7 +342,31 @@ export function createRunnerRegistry(
               deps: { credentialsDir, credentialStore, sessionManager },
             });
           },
+          // Re-sync the freshest OAuth token immediately before spawn, the same
+          // late moment the WS path does. Closes the staleness window that let a
+          // quick/child/CI-fix turn spawn with a sibling-rotated (dead) token →
+          // "Not logged in". Idempotent with the service fn's earlier call.
+          prepareAgentEnv: async (sessionId, agentId) => {
+            await prepareSessionAgentEnvironment(runner, {
+              sessionId,
+              agentId,
+              deps: { credentialsDir, credentialStore, sessionManager },
+            });
+          },
         } : {}),
+        // Single shared commit helper — same `postTurnCommit` the WS path uses
+        // (workspace-locked auto-commit + conflict notice + auto-push + commit
+        // link). The dispatch path routes through this instead of its inline
+        // commit block so both transports commit identically.
+        commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit }) =>
+          postTurnCommit(
+            {
+              createGitManager,
+              chatHistoryManager,
+              scheduleAutoPush: (git) => schedulePushGit(git),
+            },
+            { sessionDir, sessionId, emit, turnSummary: summary, turnStartHeadHash, runner: turnRunner },
+          ),
         // docs/149 — emit the PR lifecycle card after a system-turn commit.
         // Lazy poller resolution because the poller is constructed AFTER the
         // runner registry; the closure fires post-turn, by which time it's set.
