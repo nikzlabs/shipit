@@ -573,10 +573,15 @@ they have different lifetimes:
   `abortRecording`) to discard the audio without hitting the STT API; it's only
   offered while `recording` (once `transcribing`, the audio is already
   captured and in flight, so cancel is a no-op and the control is hidden).
-  Escape also cancels (harmless on mobile, handy for desktop testing of the
-  view). The error state is *not* shown in the overlay — it falls back to the
-  inline button — since errors are a rare edge and the overlay's job is the
-  stop affordance. Desktop is untouched: the overlay never mounts there.
+  The **error** state is shown in the overlay too (a tiny inline error icon is
+  illegible on a phone): a warning icon, the error message, a big **Try again**
+  button, and a **Dismiss** control. Try again calls `voice.startRecording()` —
+  it *re-records* rather than retrying the failed audio, because the hook
+  discards the blob on failure, so re-dictating is the only actionable retry.
+  Dismiss calls `voice.dismissError()` back to idle. Escape cancels while
+  recording and dismisses while erroring (harmless on mobile, handy for desktop
+  testing of the view). Desktop is untouched: the overlay never mounts there,
+  so the inline MicButton still owns the desktop error UI.
 
 **Insertion semantics:**
 
