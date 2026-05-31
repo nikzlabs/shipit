@@ -10,7 +10,7 @@ description: Recipe for connecting ShipIt agents to a personal external MCP serv
 
 At the end of every ShipIt agent turn, the agent calls one tool on an external MCP server you host. That server decides how to notify you — voice message, push, Slack, anything. The notification reads naturally because the agent shapes the summary specifically for spoken delivery, not as a status dump.
 
-This doc uses `notify` as a placeholder name for the receiver. Substitute whatever lowercase alphanumeric name you choose for your MCP server — Claude Code's MCP convention is `<server-name>__<tool-name>`, so a server named `notify` exposes the tool as `notify__notify_turn_end`.
+This doc uses `notify` as a placeholder name for the receiver. Substitute whatever lowercase alphanumeric name you choose for your MCP server. ShipIt exposes MCP tools through the standard `mcp__<server-name>__<tool-name>` namespace, so a server named `notify` exposes the tool as `mcp__notify__notify_turn_end`.
 
 ## What you'll do
 
@@ -82,7 +82,7 @@ Settings → MCP Servers → **"+ Add MCP Server"**:
 
 | Field | Value |
 |---|---|
-| Name | `notify` — lowercase alphanumeric (any name; the agent will see the tool as `<name>__notify_turn_end`). |
+| Name | `notify` — lowercase alphanumeric (any name; the agent will see the tool as `mcp__<name>__notify_turn_end`). |
 | Type | `http (remote endpoint)` |
 | URL | `https://notify.<your-tailnet>.ts.net/mcp` (whatever URL the receiver exposes) |
 | Headers (click "+ Add header") | Key: `Authorization` &nbsp;&nbsp; Value: `Bearer <token>` |
@@ -98,7 +98,7 @@ Settings → Instructions → **"Your Instructions"**. Append the block below. R
 ```text
 ## End-of-turn notification
 
-Call `notify__notify_turn_end` exactly once at the end of every turn, before
+Call `mcp__notify__notify_turn_end` exactly once at the end of every turn, before
 you stop producing output. This is how the user gets notified you've
 finished — don't skip it. If the tool fails, try once and mention it in your
 final reply.
@@ -122,7 +122,7 @@ Args:
   once. Leave `sessionName` unset (reserved).
 
 Example:
-  notify__notify_turn_end({
+  mcp__notify__notify_turn_end({
     voiceSummary: "Done — added the webhook and pushed it up.",
     needsAttention: false,
     context: {
@@ -133,7 +133,7 @@ Example:
   })
 ```
 
-The tool name follows Claude Code's MCP convention: `<server-name>__<tool-name>`. The prefix must match the Name from Step 2.
+The tool name follows the MCP namespace convention used by ShipIt agents: `mcp__<server-name>__<tool-name>`. The middle segment must match the Name from Step 2. For example, if the server is named `hermes`, the turn-end tool is `mcp__hermes__notify_turn_end`.
 
 ## Step 4 — verify
 
