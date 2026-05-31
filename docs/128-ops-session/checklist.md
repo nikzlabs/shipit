@@ -41,13 +41,28 @@
 - [x] `services/templates.test.ts` — `applyTemplate` stamps kind, rejects existing sessionId.
 - [x] `SessionSidebar.test.tsx` — ops session renders in Host/Ops group, not a repo group.
 
+## Provisioning fixes from the live audit (host `shipit-16gb`)
+
+- [x] `DOCKER_HOST` precedence: ops agent must use the read-only proxy, never the
+      read-write session proxy. `buildContainerConfig` forces `dockerAccess: false`
+      for ops; `buildEnv` checks the ops gate before `dockerAccess`. Regression
+      tests in `container-lifecycle.test.ts` (both layers). Fixes audit FAIL #1/#11.
+- [x] `journalctl` installed in the docker-capable image (`docker/container-build/Dockerfile`
+      installs `systemd`) so the journal recipes run. Fixes audit FAIL #14/#15.
+- [x] Loud warning when an ops session boots without `SESSION_DOCKER_IMAGE` (base
+      image → no `docker`/`journalctl`), instead of silently half-provisioning.
+
 ## Remaining
 
-- [ ] Manual smoke on a real ops-enabled host (Docker proxy reachability, journal mount presence).
-      Run the embedded `prompts/verify-ops-access.md` recipe from the ops session — it
-      produces a PASS/FAIL table covering every design-doc claim. (Provisioning bugs —
-      journal-namespace existence check + `isOpsSession` compose plumbing + proxy auto-start
-      — were fixed in "Fix ops session privileged host access"; this item is now just the
-      live confirmation.)
+- [ ] Re-run `prompts/verify-ops-access.md` on a host deployed from this branch and
+      confirm the PASS/FAIL table is all-PASS (B returns full host container list via
+      `docker-socket-proxy:2375`, C mutations rejected, D journal readable via `journalctl`).
+- [ ] Verify host `shipit-16gb` is redeployed with `SESSION_DOCKER_IMAGE` set to the
+      docker-capable image — the audit showed `docker`/`journalctl` absent, which means
+      it was running the base image (stale deploy or base-image warm standby).
+- [ ] Follow-up: confirm an ops session is never served from a base-image **warm
+      standby** (`warm-pool-manager.ts` creates standbys with the generic image and has
+      no ops/image awareness). If it can be, ops sessions must force a fresh
+      docker-capable container instead of claiming a base-image standby.
 - [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
       in a live environment (the gate is unit-tested; live verification pending).

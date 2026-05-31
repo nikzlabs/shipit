@@ -210,18 +210,24 @@ export function buildEnv(
     env.push(`YARN_CACHE_FOLDER=${DEP_CACHE_CONTAINER_PATH}/yarn`);
     env.push(`PNPM_STORE_DIR=${DEP_CACHE_CONTAINER_PATH}/pnpm`);
   }
-  if (config.dockerAccess) {
+  // docs/128 — ops gate MUST be checked before `dockerAccess`. An ops session's
+  // shipit.yaml declares `compose.docker-socket: true` (so the proxy *sibling*
+  // may mount the socket), and `resolveAgentDockerLimits` derives the agent's
+  // `dockerAccess` from that same flag — so an ops session can arrive here with
+  // both `opsSession` and `dockerAccess` set. The agent must NEVER get the
+  // read-write session docker-proxy; it reaches Docker only through the
+  // read-only docker-socket-proxy. `buildContainerConfig` already forces
+  // `dockerAccess: false` for ops sessions, but we order the check ops-first
+  // here too so the invariant is structural, not dependent on the caller.
+  if (config.opsSession) {
+    env.push(`DOCKER_HOST=${OPS_DOCKER_HOST}`);
+  } else if (config.dockerAccess) {
     if (!dockerProxyHost || !dockerProxyPort) {
       throw new Error(`Docker access requested but proxy not configured for session ${config.sessionId}`);
     }
     env.push(`DOCKER_HOST=tcp://${dockerProxyHost}:${dockerProxyPort}`);
     const sessionPrefix = config.sessionId.slice(0, 12);
     env.push(`COMPOSE_PROJECT_NAME=shipit-${sessionPrefix}`);
-  } else if (config.opsSession) {
-    // docs/128 — ops sessions do NOT get the read-write session docker-proxy.
-    // Instead the agent reaches Docker read-only through the docker-socket-proxy
-    // compose sibling, joined over the session compose network by DNS name.
-    env.push(`DOCKER_HOST=${OPS_DOCKER_HOST}`);
   }
   if (config.env) {
     for (const [key, value] of Object.entries(config.env)) {
@@ -324,10 +330,25 @@ export async function createContainer(
 
   // Use Docker-capable image when Docker access is requested, or for ops
   // sessions (docs/128) — the ops agent runs `docker ps/logs/inspect` against
-  // the read-only proxy, so it needs the docker CLI baked into that image.
+  // the read-only proxy (and `journalctl` over the journal mounts), so it needs
+  // the docker CLI + journalctl baked into that image (docker/container-build).
   const imageName = ((config.dockerAccess || config.opsSession) && deps.dockerImageName)
     ? deps.dockerImageName
     : config.imageName;
+
+  // docs/128 — fail loudly rather than silently hand an ops session a base image
+  // with no `docker`/`journalctl`. This is the half-provisioned state the audit
+  // hit (FAIL #4/#14): the agent boots, DOCKER_HOST is set, but the documented
+  // recipes can't run. The deployment must set SESSION_DOCKER_IMAGE to the
+  // docker-capable image (see deployment/vps/docker-compose.yml).
+  if (config.opsSession && !deps.dockerImageName) {
+    console.warn(
+      `[containers] OPS SESSION ${config.sessionId} is starting on the base image ` +
+      `because SESSION_DOCKER_IMAGE is not configured — the agent will lack the ` +
+      `docker CLI and journalctl, so the ops investigation recipes will not run. ` +
+      `Set SESSION_DOCKER_IMAGE to the docker-capable image (docker/container-build).`,
+    );
+  }
 
   // Create session-specific bridge network for Docker-enabled sessions.
   // Child containers created through the proxy join this network so they
@@ -637,7 +658,15 @@ export function buildContainerConfig(
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,
     pidsLimit: opts.pidsLimit ?? deps.defaultPidsLimit,
     env: opts.env,
-    dockerAccess: opts.dockerAccess,
+    // docs/128 — an ops session must NEVER get the read-write session
+    // docker-proxy (it reaches Docker only through the read-only
+    // docker-socket-proxy sibling). The agent's `dockerAccess` is derived from
+    // `compose.docker-socket: true`, which the ops template sets so the proxy
+    // *service* can mount the socket — but that flag must not also elevate the
+    // *agent*. Force it off here so the read-write proxy and its session
+    // network are never created, and `buildEnv` routes DOCKER_HOST to the
+    // read-only proxy.
+    dockerAccess: opts.opsSession ? false : opts.dockerAccess,
     opsSession: opts.opsSession,
     hostMounts: opts.opsSession ? opts.hostMounts : undefined,
   };

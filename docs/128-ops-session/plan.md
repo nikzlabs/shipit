@@ -301,6 +301,33 @@ independently.)
     the agent container so `DOCKER_HOST=tcp://docker-socket-proxy:2375` resolves
     by compose DNS.
 
+4b. **Provisioning bugs found by the live audit (host `shipit-16gb`).** Running
+    the embedded `prompts/verify-ops-access.md` recipe on a real host surfaced
+    three regressions that the unit tests had missed:
+
+    - **`DOCKER_HOST` pointed at the read-write session proxy.** Because the ops
+      `shipit.yaml` declares `compose.docker-socket: true` (step 4a),
+      `resolveAgentDockerLimits` derived agent `dockerAccess: true`, and
+      `buildEnv` checked `dockerAccess` *before* `opsSession` — so the agent got
+      the write-capable, session-scoping proxy (host-blind for reads, write-
+      forwarding) instead of the hardened read-only `docker-socket-proxy:2375`.
+      Fix: `buildContainerConfig` now forces `dockerAccess: false` for ops
+      sessions (so the read-write proxy + its network are never created), and
+      `buildEnv` checks the ops gate first as a structural backstop. The
+      `compose.docker-socket` flag now only governs the proxy *service*, never
+      the *agent*.
+    - **`journalctl` was not installed** in the docker-capable image, so every
+      `journalctl …` recipe failed even though the journal mounts were present
+      and read-only. Fix: `docker/container-build/Dockerfile` installs `systemd`
+      (the binary reads the mounted journal dirs directly; it is not PID 1).
+    - **Missing docker CLI when the image is misconfigured.** If
+      `SESSION_DOCKER_IMAGE` is unset, an ops session silently boots on the base
+      image with no `docker`/`journalctl`. `createContainer` now logs a loud
+      warning in that case. Deployments MUST set `SESSION_DOCKER_IMAGE` to the
+      docker-capable image (`deployment/vps/docker-compose.yml` already does;
+      a host that predates that, or serves the ops session from a base-image
+      warm standby, will hit this — see the open follow-up below).
+
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is
    no `kind` field today, session types are distinguished by ad-hoc
