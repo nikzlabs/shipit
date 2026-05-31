@@ -518,7 +518,7 @@ hook must handle:
 | Recording started, **focus moves to an iframe or other window** | Stop recording, transcribe |
 | Recording started, **session switch** | Abort recording, discard captured audio, do not insert anything |
 | Recording duration < 250 ms | Discard, do not call the STT API (accidental tap) |
-| Recording duration > 60 s | Cap at 60 s, stop, transcribe (defensive — prevents runaway capture if keyup is lost permanently) |
+| Long recordings | No client-side duration cap. Recording runs until the user releases the key / taps Stop, or one of the lifecycle stops above (blur/visibility/session switch) fires. The only ceiling is the 50 MB multipart upload limit (~50 min of Opus), well beyond any realistic dictation. |
 | STT call fails | Set hook state to `error`, surface inline error on the mic button, do not insert anything |
 
 `onkeyup` is unreliable when focus moves away mid-press, which is why
@@ -981,7 +981,7 @@ Vitest (unit / integration):
 Dictation:
 
 - **`insert-transcript.test.ts`** — pure logic, cursor splicing, selection replacement, leading-space heuristic.
-- **`use-voice-input.test.ts`** — state machine transitions with `MediaRecorder` mocked, hotkey hold/release behaviour, autorepeat suppression, blur/visibilitychange handling, 250 ms minimum and 60 s cap, session-switch abort.
+- **`use-voice-input.test.ts`** — state machine transitions with `MediaRecorder` mocked, hotkey hold/release behaviour, autorepeat suppression, blur/visibilitychange handling, 250 ms minimum (no max-duration cap), session-switch abort.
 - **`whisper.test.ts`** — STT provider adapter against a fake fetch, error mapping.
 - **`claude-cleanup.test.ts`** / **`openai-cleanup.test.ts`** — cleanup adapters against a fake fetch / fake Anthropic client; assert the locked prompt is used, the output is returned verbatim, and the timeout fires at 3 s.
 - **`cleanup.test.ts`** — `pickCleanupProvider()` selection order under each combination of (Claude OAuth present? OpenAI key present?); `cleanTranscript()` sanity checks: empty cleanup output → fall through to raw; cleanup output >2× input length → fall through; cleanup output starts with "Here is" → fall through; question-shaped input ("how do I add a button") is returned as the same question, not as an answer.
