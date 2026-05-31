@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: medium
 description: Show Claude subscription limits at low usage (where the CLI stream reports nothing) via a budget-aware manual refresh of /api/oauth/usage, without reintroducing the 429 lockout.
 ---
