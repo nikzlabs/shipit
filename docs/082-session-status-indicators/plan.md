@@ -111,6 +111,34 @@ SessionStore.activeRunnerSessions → agent running
 
 The `needsAttention(sessionId)` derivation is a pure function of these stores — no new server messages or API calls required. No separate "seen/unseen" tracking is needed.
 
+### Staleness across SSE reconnects (mobile foreground)
+
+Because the derivation reads only client store snapshots, the sidebar is only as
+correct as those snapshots. On mobile the SSE socket dies silently when the tab
+is backgrounded (`readyState` stays OPEN over a dead connection), so the client
+misses `session_agent_finished` / incremental `pr_status` events. When the tab
+returns to the foreground `useServerEvents` forces a fresh `/api/events`
+connection — so the **initial-connect snapshot must be authoritative**, not a
+delta:
+
+- `active_runners` is **always** sent on connect, even when empty. The client
+  replaces its `activeRunnerSessions` set wholesale, so a session that finished
+  while hidden gets its stale "running" flag cleared. This matters doubly
+  because `computeAttentionReason` short-circuits to `null` while a session is
+  running — a stale running flag also *masks* that session's CI-failed / PR
+  attention reason.
+- `pr_status` is sent with `isSnapshot: true` carrying the complete
+  poller-derived set. `applyPrStatusUpdates` then prunes poller state
+  (`statusBySession`, and `cardBySession` entries in poller phases
+  open/merged/closed) for any session absent from the snapshot, so a PR that
+  merged/closed while hidden no longer leaves a stale card. In-flight,
+  WS-driven cards (creating/ready/error) are preserved.
+
+Key files: `src/server/orchestrator/index.ts` (`/api/events` snapshot),
+`src/client/hooks/useServerEvents.ts` (`pr_status` listener),
+`src/client/stores/pr-store.ts` (`applyPrStatusUpdates` snapshot reconcile),
+`src/server/orchestrator/integration_tests/sse-snapshot.test.ts`.
+
 ## Key files
 
 | File | Change |

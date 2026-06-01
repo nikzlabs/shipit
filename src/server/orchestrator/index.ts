@@ -589,22 +589,37 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
     // Active runner sessions so sidebar dots and the "agent running" branch
     // of useAttentionInfo are correct on first paint.
+    //
+    // This snapshot is AUTHORITATIVE and must always be sent — even when no
+    // runner is active (empty array). The client replaces its active-runner
+    // set wholesale from this event, so suppressing it when empty would leave
+    // a stale "running" flag in place after a reconnect. That matters on
+    // mobile: when the tab is backgrounded the SSE socket dies silently and
+    // the client never sees `session_agent_finished`, so a session that
+    // finished while hidden stays marked running. On foreground we force a
+    // fresh connection (see useServerEvents) and rely on this snapshot to
+    // clear it. A stale running flag is doubly bad because
+    // `computeAttentionReason` short-circuits to null while a session is
+    // "running", which also masks that session's CI-failed / PR attention.
     const activeRunnerSessions: string[] = [];
     for (const session of sessions) {
       const runner = runnerRegistry.get(session.id);
       if (runner?.running) activeRunnerSessions.push(session.id);
     }
-    if (activeRunnerSessions.length > 0) {
-      client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
-    }
+    client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
 
     // Current PR statuses so inline cards and sidebar icons are correct on
     // connect — must precede session_list to avoid a one-frame flash of the
     // attention indicator on sessions whose CI is still running.
+    //
+    // Sent with `isSnapshot: true` so the client reconciles authoritatively:
+    // it replaces its poller-derived PR state with exactly this set and drops
+    // any stale entries it still holds for sessions absent here (e.g. a PR
+    // that merged/closed while the tab was backgrounded, whose incremental
+    // removal the dead socket missed). Always sent — even when empty — so a
+    // reconnect can clear everything if the server now knows of no PRs.
     const prStatuses = prStatusPoller.getAllStatuses();
-    if (prStatuses.length > 0) {
-      client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses })}\n\n`);
-    }
+    client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses, isSnapshot: true })}\n\n`);
 
     // GitHub rate-limit state — emit the banner immediately so a refreshed
     // tab knows polling is paused. The poller's normal transition broadcast
