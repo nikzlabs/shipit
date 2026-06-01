@@ -52,7 +52,7 @@ export function isAutoplayUnlocked(): boolean {
 export function armAutoplay(): void {
   unlocked = true;
   const ctx = getAudioCtx();
-  if (ctx && ctx.state === "suspended") {
+  if (ctx?.state === "suspended") {
     void ctx.resume().catch(() => {
       /* best-effort; play() rejection later falls back to tap-to-play */
     });

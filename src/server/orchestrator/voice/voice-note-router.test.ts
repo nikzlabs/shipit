@@ -74,8 +74,8 @@ describe("routeVoiceNote", () => {
       webhook: { url: "https://hook.example/notes", token: "secret-token" },
     });
     let captured: { url: string; init: RequestInit } | null = null;
-    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-      captured = { url: String(url), init: init ?? {} };
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      captured = { url, init: init ?? {} };
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }) as unknown as typeof fetch;
 
