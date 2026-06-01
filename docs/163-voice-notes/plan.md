@@ -102,13 +102,18 @@ the feature — and it's already true.
    occasional mid-task heads-up. ShipIt owns the schema (stable) and observes the
    call (guaranteed render). Works with zero external setup.
 
-2. **Observed CLI interrupts** (derived). `AskUserQuestion` and `ExitPlanMode`
-   are **built-in Claude CLI tools — their schemas are owned by the CLI, so
-   ShipIt cannot add a `voiceSummary` field to them.** Instead ShipIt observes
-   the call server-side and *derives* a headline from the observable `input`
-   (e.g. the first question's `header`, the plan's title/first line). The agent
-   may also precede the interrupt with a richer voice-tool call; if it did in the
-   same turn, prefer that and suppress the derived nudge.
+2. **Observed CLI interrupts** (authored-first, derived as fallback).
+   `AskUserQuestion` and `ExitPlanMode` are **built-in Claude CLI tools — their
+   schemas are owned by the CLI, so ShipIt cannot add a `voiceSummary` field to
+   them.** The agent is therefore **instructed to author the headline via the
+   built-in voice tool immediately before the interrupt** (in the same turn), so
+   the spoken note is a real one-sentence script rather than a terse chip. When an
+   authored voice-tool call is present in the turn, ShipIt uses it and suppresses
+   any derived nudge. **Derivation is the fallback only:** if the agent reaches
+   the interrupt without an authored call, ShipIt derives a headline from the
+   observable `input` (the first question's `header`, the plan's title/first line)
+   so the user is never left silent — but the floor is a fallback, not the
+   intended path. (Decided: require authored, derive as fallback.)
 
 All sources produce the same payload and feed the same router.
 
@@ -132,17 +137,21 @@ Under this model the external receiver stops being **a tool the agent calls** an
 becomes **a delivery backend ShipIt forwards to**. We do this as a **webhook**,
 not by having ShipIt act as an MCP client:
 
-- ShipIt POSTs `{ summary, needsAttention, context }` as JSON to a user-supplied
-  URL with an `Authorization: Bearer <token>` header (constant-time compared by
-  the receiver, 401 on mismatch). Token + URL stored in the credential store,
-  never echoed to the UI — same handling as the existing MCP server config.
+- ShipIt POSTs `{ v: 1, summary, needsAttention, context }` as JSON to a
+  user-supplied URL with an `Authorization: Bearer <token>` header (constant-time
+  compared by the receiver, 401 on mismatch). Token + URL stored in the credential
+  store, never echoed to the UI — same handling as the existing MCP server config.
+  The `v` field is the body version (decided: add it now); receivers branch on it
+  and may reject unknown majors. Everything else is the verbatim docs/159 payload.
 - The receiver decides the channel exactly as docs/159 describes (route by
   `needsAttention`; speak `summary` verbatim on voice channels; render
   `context.prTitle`+`prUrl` as one link on text channels; never speak `prUrl`).
 - **Migration:** the docs/159 MCP receivers already speak this payload. A webhook
   is a thinner contract than full Streamable-HTTP MCP, so existing receivers need
-  a small plain-HTTP endpoint added (or a tiny shim) — but the body and the
-  bearer-auth pattern are unchanged. docs/159 is not invalidated; it becomes "the
+  a small plain-HTTP endpoint added (or a tiny shim). The body gains the `v: 1`
+  envelope field but is otherwise unchanged, as is the bearer-auth pattern;
+  receivers that ignore unknown fields keep working, and new receivers should
+  read `v` and reject unknown majors. docs/159 is not invalidated; it becomes "the
   External backend, MCP flavor," with webhook now the recommended flavor.
 
 Why webhook over MCP-client forwarding: ShipIt POSTing JSON is far simpler than
@@ -181,8 +190,30 @@ so the no-surprise-audio promise holds for users who don't enable it.
 - **Hands-free OFF** (default) → no autoplay; a prominent tap-to-play prompt.
 
 Mode is a client toggle; the server always produces the note, the client decides
-whether to autoplay. (Browser autoplay policy may require a one-time user gesture
-to unlock audio — an implementation constraint to handle.)
+whether to autoplay.
+
+### Autoplay edge UX (foreground, hands-free ON) — decided
+
+These were open; pinning them down now since they govern how the native sink
+feels. All three live client-side, layered on the existing `playback-store`.
+
+- **Chime debounce.** The attention chime plays at most once per **quiet window of
+  20s** — if notes arrive in a burst, only the first re-grabs attention with a
+  chime; subsequent notes within the window autoplay their speech without
+  re-chiming. The window resets after 20s of no notes. (The chime exists to
+  re-orient an eyes-off user after silence, not to punctuate every sentence.)
+- **Mid-playback arrival.** Reuse `playback-store`'s single-audio-element
+  invariant: a newly arriving note **stops the current audio and starts the new
+  one** (latest-wins), rather than queueing. A voice note is a fresh "you're
+  needed now" headline; a stale one finishing first would mislead. The
+  superseded note remains tap-to-replay in its chat bubble.
+- **Autoplay-unlock gesture.** Browser policy blocks fresh audio from a page that
+  has had no user gesture. On enabling hands-free mode the client performs a
+  **one-time unlock** — the toggle interaction itself is the gesture; we prime the
+  shared audio element (play a near-silent/zero-duration buffer) on that click so
+  later server-driven autoplay is permitted. If the element ever loses the unlock
+  (page reload), the next note falls back to the prominent tap-to-play prompt and
+  re-arms unlock on that tap. Mode stays on; only autoplay is gated until re-armed.
 
 ## Resolved design decisions
 
@@ -198,6 +229,18 @@ Leans settled in discussion; recorded so they aren't re-litigated:
   us override 144's default at all.
 - **De-dup:** dissolved by the single-router model. "Both" is a deliberate
   user choice, not an accident.
+- **Failed turns:** a give-up or error that leaves no decision for the user still
+  needs to reach a hands-free user. **"Failed" folds into `needsAttention: true`
+  by instruction** — the agent marks a failed/abandoned turn as attention-needed
+  rather than going silent. No third state and no schema change; the existing
+  gate carries it.
+- **CLI-interrupt headlines:** authored-first — the agent authors the headline via
+  the voice tool before `AskUserQuestion`/`ExitPlanMode`; derivation from observed
+  `input` is the fallback floor only (see Sources §2).
+- **Webhook body version:** the body carries `v: 1` from day one (see "External
+  delivery is a webhook").
+- **Autoplay edge UX:** chime debounce, mid-playback latest-wins, and the
+  one-time unlock gesture are specified above ("Autoplay edge UX").
 
 ## Principles check
 
@@ -267,21 +310,19 @@ router, not new audio infrastructure.
 
 ## Open questions
 
-1. **Derived headline quality for questions/plans.** A derived
-   "the agent has a question about *<first header>*" is hostage to a terse 12-char
-   chip. Acceptable as the floor, with a preceding voice-tool call preferred when
-   present — or should we require the agent to author these via the tool and treat
-   derivation purely as a fallback? Leaning: derive by default, prefer authored,
-   never block.
-2. **`needsAttention: false` but the turn *failed*.** A give-up with no decision
-   for the user still goes silent under the gate, yet a hands-free user wants to
-   hear it. Fold "failed" into `needsAttention: true` by instruction, or add a
-   third state? Leaning: failed implies attention-needed.
-3. **Webhook payload versioning.** docs/159 receivers expect the MCP tool shape;
-   the webhook body is the same JSON but arrives over plain HTTP. Do we version
-   the body (`{ v: 1, ... }`) now to leave room, and what's the exact migration
-   note for existing receivers?
-4. **Autoplay edge UX (foreground)** — chime debounce window; behavior when a
-   note arrives mid-playback (reuse playback-store's one-at-a-time
-   stop-and-start?); the one-time browser autoplay-unlock gesture. Backgrounded /
-   screen-locked behavior is out of scope here — see `docs/164`.
+All previously open questions are resolved (recorded in "Resolved design
+decisions" and the relevant sections):
+
+1. **Derived headline quality** → require the agent to author the headline via the
+   voice tool; derive from observed `input` only as a fallback floor (Sources §2).
+2. **Failed turn with `needsAttention: false`** → "failed" folds into
+   `needsAttention: true` by instruction; no third state.
+3. **Webhook payload versioning** → ship `{ v: 1, ... }` now; receivers branch on
+   `v` and may reject unknown majors.
+4. **Autoplay edge UX (foreground)** → chime debounced to one per 20s quiet
+   window; mid-playback arrival is latest-wins (stop-and-start via playback-store);
+   one-time unlock primed on the hands-free toggle gesture, re-armed via
+   tap-to-play after a reload. Backgrounded / screen-locked is out of scope — see
+   `docs/164`.
+
+No blocking questions remain; the feature is ready to move to implementation.
