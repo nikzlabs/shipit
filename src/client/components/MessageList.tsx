@@ -24,11 +24,8 @@ import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { PlayTurnButton } from "./PlayTurnButton.js";
-<<<<<<< HEAD
 import { ChatQuoteReply } from "./ChatQuoteReply.js";
-=======
 import { VoiceNoteCard } from "./VoiceNoteCard.js";
->>>>>>> c34f959fe (All green — typecheck clean, lint clean, 479 tests pass. Let me mark the final task done and open the PR.)
 import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
