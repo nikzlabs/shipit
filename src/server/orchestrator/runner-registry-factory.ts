@@ -25,6 +25,7 @@ import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { finalizeSessionAgentEnvironment, prepareSessionAgentEnvironment } from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
+import { getAgentCapabilities } from "../shared/agent-registry.js";
 
 // ---- Runner registry setup ----
 
@@ -367,6 +368,17 @@ export function createRunnerRegistry(
             },
             { sessionDir, sessionId, emit, turnSummary: summary, turnStartHeadHash, runner: turnRunner },
           ),
+        // docs/163 — resolve the live steer-or-queue gate for the dispatch
+        // path so a programmatic message arriving mid-turn (`shipit session
+        // message`, CI-fix, quick session) is injected into a steerable
+        // streaming turn instead of always being queued. `liveSteering` is the
+        // live user setting; `steeringCapable` is the runner's pinned agent's
+        // static `supportsSteering` capability (read fresh because `agentId`
+        // can change). Mirrors the WS handler's gate.
+        steerInputs: () => ({
+          liveSteering: credentialStore?.getLiveSteering() ?? false,
+          steeringCapable: getAgentCapabilities(runner.agentId)?.supportsSteering ?? false,
+        }),
         // docs/149 — emit the PR lifecycle card after a system-turn commit.
         // Lazy poller resolution because the poller is constructed AFTER the
         // runner registry; the closure fires post-turn, by which time it's set.

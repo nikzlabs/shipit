@@ -157,6 +157,137 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  // -------------------------------------------------------------------------
+  // docs/163 — the dispatch path (programmatic / child / CI-fix messages)
+  // honors live steering, sharing the WS handler's `shouldSteerMessage`
+  // decision. A mid-turn message on a steerable+streaming turn is injected via
+  // `sendUserMessage` instead of being queued.
+  // -------------------------------------------------------------------------
+
+  /** Minimal SystemTurnDeps for the steer-on-dispatch tests. */
+  function steerDeps(opts: { liveSteering: boolean; steeringCapable?: boolean; replaceInProgress?: () => void }) {
+    return {
+      agentFactory: vi.fn(),
+      autoCommit: vi.fn(),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: {
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn() } as any,
+        chatHistoryManager: { replaceInProgress: opts.replaceInProgress ?? vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
+        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
+        authManager: { startOAuthFlow: vi.fn() } as any,
+        sseBroadcast: vi.fn(),
+        broadcastLog: vi.fn(),
+        getSelectedModel: () => undefined,
+      },
+      buildRunParams: vi.fn(),
+      steerInputs: () => ({ liveSteering: opts.liveSteering, steeringCapable: opts.steeringCapable ?? true }),
+    } as any;
+  }
+
+  it("dispatch steers a mid-turn message via sendUserMessage when live steering + streaming are active (docs/163)", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const persisted: any[] = [];
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true, replaceInProgress: (...a: any[]) => persisted.push(a) }));
+
+    const sent: string[] = [];
+    const fakeAgent = { sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any;
+    runner.setAgent(fakeAgent);
+    runner.running = true;
+    runner.isStreamingActive = true;
+
+    const received: any[] = [];
+    runner.on("message", (msg) => received.push(msg));
+
+    runner.dispatch({ text: "actually use a worktree" });
+
+    // Injected into the running turn — NOT queued.
+    expect(sent).toEqual(["actually use a worktree"]);
+    expect(runner.queueLength).toBe(0);
+    const steered = received.find((m) => m.type === "message_steered");
+    expect(steered).toMatchObject({ type: "message_steered", text: "actually use a worktree", sessionId: "s1" });
+    expect(received.find((m) => m.type === "message_queued")).toBeUndefined();
+    // Persisted at its true transcript position so it survives a reload.
+    expect(persisted.length).toBe(1);
+
+    runner.dispose({ force: true });
+  });
+
+  it("dispatch enqueues (does not steer) when live steering is off, even on a streaming turn (docs/163)", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: false }));
+
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+
+    const received: any[] = [];
+    runner.on("message", (msg) => received.push(msg));
+
+    runner.dispatch({ text: "queue me" });
+
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+    expect(received.find((m) => m.type === "message_queued")).toMatchObject({ type: "message_queued", text: "queue me" });
+    expect(received.find((m) => m.type === "message_steered")).toBeUndefined();
+
+    runner.dispose({ force: true });
+  });
+
+  it("dispatch enqueues when the turn is not streaming (no resident streaming process to steer) (docs/163)", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = false; // turn started non-streaming (e.g. a dispatched system turn)
+
+    const received: any[] = [];
+    runner.on("message", (msg) => received.push(msg));
+
+    runner.dispatch({ text: "queue me" });
+
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+    expect(received.find((m) => m.type === "message_queued")).toBeTruthy();
+
+    runner.dispose({ force: true });
+  });
+
+  it("dispatch does NOT steer a review turn even when streaming is active (docs/163 + docs/125)", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+
+    runner.dispatch({ text: "review note", reviewFilePath: "src/foo.ts" });
+
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(1);
+
+    runner.dispose({ force: true });
+  });
+
   it("dispatch starts agent turn when idle with deps set", async () => {
     const runner = new SessionRunner({
       sessionId: "s1",
