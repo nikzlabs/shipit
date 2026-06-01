@@ -2,12 +2,39 @@ import { describe, it, expect } from "vitest";
 import {
   buildAgentSystemInstructions,
   AGENT_SYSTEM_INSTRUCTIONS,
+  type AgentSystemInstructionOptions,
 } from "./agent-instructions.js";
 
 describe("buildAgentSystemInstructions", () => {
   it("is static — every call returns the same string as AGENT_SYSTEM_INSTRUCTIONS", () => {
     expect(buildAgentSystemInstructions()).toBe(AGENT_SYSTEM_INSTRUCTIONS);
     expect(buildAgentSystemInstructions()).toBe(buildAgentSystemInstructions());
+  });
+
+  it("every variant is a precomputed constant — same reference each call (cache stability)", () => {
+    // Reference equality (toBe on a string returned by two separate calls)
+    // proves the per-turn path is a pure lookup of a frozen constant, not a
+    // re-assembly. Re-assembly would produce an equal-but-distinct string and
+    // still pass `toEqual`; only `toBe` on the precomputed instance catches a
+    // regression back to per-call composition. Cover all axes.
+    const variants: AgentSystemInstructionOptions[] = [
+      {},
+      { agentId: "claude" },
+      { agentId: "codex" },
+      { isOps: true },
+      { agentId: "claude", isOps: true },
+      { agentId: "codex", isOps: true },
+      { isOps: false },
+    ];
+    for (const opts of variants) {
+      expect(buildAgentSystemInstructions(opts)).toBe(
+        buildAgentSystemInstructions(opts),
+      );
+    }
+    // `isOps: false` must be the exact same instance as the no-options default.
+    expect(buildAgentSystemInstructions({ isOps: false })).toBe(
+      buildAgentSystemInstructions(),
+    );
   });
 
   it("describes the browser tools unconditionally", () => {
