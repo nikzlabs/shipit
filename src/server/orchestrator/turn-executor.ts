@@ -88,6 +88,25 @@ export interface TurnInput {
    * WS supplies it; dispatch omits it.
    */
   onInterruptedTurn?: () => void;
+  /**
+   * Dispatch-only hook fired when the process exits WITHOUT ever producing an
+   * `agent_result` (and the turn wasn't user-interrupted or auth-blocked).
+   *
+   * This is the "quick-session first turn silently never ran" bug
+   * (docs/163): on the warm-reconnect dispatch path the worker can accept
+   * `/agent/start` yet the CLI exits with code 0 having done no work — no
+   * edits, no commit, no error. The WS path surfaces this via
+   * `emitErrorOnNoResult`, but dispatch left it unset, so the `done` handler
+   * fell straight through to the normal drain/commit/finished teardown and
+   * reported a *completed* turn. That silent success is the masking bug.
+   *
+   * Returning `true` means the hook took over the turn's completion (it
+   * dispatched a retry that now owns drain/commit/finished, or surfaced an
+   * error via the agent's error path) — the executor must NOT finalize this
+   * turn as completed. Returning `false`/omitting it leaves the legacy
+   * teardown in place.
+   */
+  onNoResultExit?: (code: number | null) => Promise<boolean>;
 }
 
 /**
@@ -140,6 +159,13 @@ export async function executeAgentTurn(
   // --- post-turn plumbing (first-wins guards so whichever of agent_result /
   // done arrives first advances state and the other becomes a no-op) ---
   let receivedResult = false;
+
+  // An auth-required turn legitimately ends without an `agent_result` — the
+  // listener already wrote a visible row and kicked off the OAuth flow, so it
+  // must NOT trip the no-result retry/surface path below (which would re-run a
+  // turn that can only fail auth again).
+  let sawAuthRequired = false;
+  agent.on("auth_required", () => { sawAuthRequired = true; });
 
   let tokenSyncFired = false;
   const trySyncToken = (): void => {
@@ -299,6 +325,22 @@ export async function executeAgentTurn(
       if (runner) runner.running = false;
       emitFinishedIfIdle();
       return;
+    }
+
+    // Process exited without ever producing a turn result (the dispatched
+    // "first turn never ran" bug). Hand off to the dispatch retry/surface hook
+    // BEFORE the normal teardown — otherwise we'd report a completed turn for a
+    // turn that did nothing. If the hook claims the turn (retry dispatched or
+    // error surfaced) we stop here; the new turn / error path owns drain +
+    // commit + finished. WS leaves `onNoResultExit` unset and is unaffected.
+    if (
+      input.onNoResultExit &&
+      !receivedResult &&
+      !sawAuthRequired &&
+      !(runner?.wasInterrupted ?? false)
+    ) {
+      const handled = await input.onNoResultExit(code);
+      if (handled) return;
     }
 
     // Non-streaming: drain first (clears queued visual state before the slow
