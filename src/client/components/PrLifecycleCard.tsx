@@ -475,7 +475,7 @@ function OpenPhase({
             <CiIndicator checks={card.checks} />
             {canAutoMerge && (
               <span className="md:hidden shrink-0">
-                <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} compact />
+                <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
               </span>
             )}
             {showConflictUi && <MergeConflictIndicator />}
