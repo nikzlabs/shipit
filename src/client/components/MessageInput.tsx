@@ -359,6 +359,39 @@ export function MessageInput({
     });
   }, [surface]);
 
+  // SHI-10 — consume a quote-reply blockquote from the store and *append* it to
+  // the current draft (unlike prefill, which replaces). This lets the user
+  // quote a passage from a chat bubble without losing what they've already
+  // typed. We focus the textarea and drop the cursor on the trailing blank line
+  // below the quote so they can start typing their reply immediately.
+  // eslint-disable-next-line no-restricted-syntax -- consume quote-reply text from external store
+  useEffect(() => {
+    if (surface === "overlay") return undefined;
+    const consume = (quote: string | undefined) => {
+      if (!quote) return;
+      useSessionStore.getState().setQuoteReplyText(undefined);
+      setText((prev) => {
+        // Separate from existing draft with a blank line; the blockquote needs
+        // a trailing blank line of its own so markdown closes the quote and the
+        // reply lands as a normal paragraph.
+        const lead = prev.trim() === "" ? "" : prev.endsWith("\n") ? "\n" : "\n\n";
+        const next = `${prev}${lead}${quote}\n\n`;
+        requestAnimationFrame(() => {
+          const ta = textareaRef.current;
+          if (ta) {
+            ta.focus();
+            ta.setSelectionRange(next.length, next.length);
+          }
+        });
+        return next;
+      });
+    };
+    consume(useSessionStore.getState().quoteReplyText);
+    return useSessionStore.subscribe((state) => {
+      consume(state.quoteReplyText);
+    });
+  }, [surface]);
+
   // Auto-focus textarea on mount and on session change (e.g. "New Session" click,
   // session switch). The ref is intentionally seeded with `undefined` (not `focusKey`)
   // so the very first render with a defined focusKey triggers focus — otherwise focus

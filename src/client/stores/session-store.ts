@@ -51,6 +51,15 @@ interface SessionState {
   pendingWsMessage: Record<string, unknown> | undefined;
   /** Text to prefill into the message input (consumed and cleared by MessageInput). */
   prefillText: string | undefined;
+  /**
+   * SHI-10 — a pre-formatted markdown blockquote to *append* into the chat
+   * composer when the user clicks the floating "Reply" button on a selection
+   * inside a chat message bubble. Distinct from `prefillText` (which replaces
+   * the whole draft): this is consumed by MessageInput by appending to the
+   * existing draft so the user can quote a passage without losing what they've
+   * already typed. Consumed and cleared by MessageInput.
+   */
+  quoteReplyText: string | undefined;
   /** True once session history has been loaded from the server (prevents rocket flash on session switch). */
   historyLoaded: boolean;
   /** Live Rescue session phase, or null when no rescue is in flight. */
@@ -143,6 +152,8 @@ interface SessionState {
    * into a two-click dance for what should be a one-click action.
    */
   setPrefillText: (text: string | undefined) => void;
+  /** SHI-10 — set the blockquote to append into the composer (see `quoteReplyText`). */
+  setQuoteReplyText: (text: string | undefined) => void;
   /** Append a per-turn usage record for the given session. */
   appendTurnUsage: (sessionId: string, turn: TurnUsage) => void;
   /** Replace the per-turn usage history for a session (e.g. on chat_history hydrate). */
@@ -194,6 +205,7 @@ const initialResettableState = {
   rewindPreviews: {} as Record<string, WsRewindPreview>,
   pendingWsMessage: undefined as Record<string, unknown> | undefined,
   prefillText: undefined as string | undefined,
+  quoteReplyText: undefined as string | undefined,
   historyLoaded: false,
   rescueState: null as RescueState | null,
   recoveryActionError: null as string | null,
@@ -305,6 +317,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setPendingWsMessage: (pendingWsMessage) => set({ pendingWsMessage }),
 
   setPrefillText: (prefillText) => set({ prefillText }),
+
+  setQuoteReplyText: (quoteReplyText) => set({ quoteReplyText }),
 
   appendTurnUsage: (sessionId, turn) =>
     set((state) => ({
