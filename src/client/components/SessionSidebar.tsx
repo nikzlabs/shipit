@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, LightningIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon, XIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -117,9 +117,10 @@ interface SessionSidebarProps {
   repos: RepoInfo[];
   onAddRepo: () => void;
   onCreateNewRepo: () => void;
-  // Mobile drawer mode: full-width, no resize handle, no collapsed variant.
-  // Top-bar collapse button is replaced with a close (X) button that calls onClose.
+  // Mobile drawer mode: full-width, no resize handle, no collapsed variant,
+  // and no top bar (toggled open/closed via the bottom tab bar's Sessions button).
   mobile?: boolean;
+  // Called to dismiss the mobile drawer — e.g. after selecting a session.
   onClose?: () => void;
 }
 
@@ -1023,17 +1024,6 @@ export function SessionSidebar({
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
         </Button>
         </WithTooltip>
-        <WithTooltip label="Quick session" side="right">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => useUiStore.getState().setQuickCaptureOpen(true)}
-          className="p-0! w-6 h-6 text-(--color-text-secondary) hover:text-(--color-text-primary)"
-          aria-label="Quick session"
-        >
-          <LightningIcon size={ICON_SIZE.SM} />
-        </Button>
-        </WithTooltip>
         <RepoSwitcher repos={repos} activeRepoUrl={useRepoStore.getState().activeRepoUrl} onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)} onAddRepo={onAddRepo} onCreateNew={onCreateNewRepo}>
         <Button
           variant="ghost"
@@ -1076,21 +1066,12 @@ export function SessionSidebar({
       className={`flex flex-col h-full bg-(--color-bg-primary) ${mobile ? "min-w-0 flex-1" : "border-r border-(--color-border-primary)"} min-h-0`}
       style={mobile ? undefined : { width }}
     >
-      {/* Top bar */}
-      <div className="flex items-center gap-2 px-3 h-10.25 border-b border-(--color-border-primary) shrink-0">
-        {mobile ? (
-          <WithTooltip label="Close">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="p-0! w-6 h-6 text-(--color-text-tertiary)"
-            aria-label="Close sidebar"
-          >
-            <XIcon size={ICON_SIZE.SM} />
-          </Button>
-          </WithTooltip>
-        ) : (
+      {/* Top bar — desktop only. On mobile the drawer is toggled open/closed
+          via the bottom tab bar's Sessions button, and the repo switcher lives
+          in the header, so this strip would be redundant. Quick session lives
+          in the header on desktop and the bottom tab bar on mobile. */}
+      {!mobile && (
+        <div className="flex items-center gap-2 px-3 h-10.25 border-b border-(--color-border-primary) shrink-0">
           <WithTooltip label="Collapse sidebar">
           <Button
             variant="ghost"
@@ -1102,36 +1083,25 @@ export function SessionSidebar({
             <SidebarSimpleIcon size={ICON_SIZE.SM} />
           </Button>
           </WithTooltip>
-        )}
-        <span className="flex-1" />
-        <WithTooltip label="Quick session">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => useUiStore.getState().setQuickCaptureOpen(true)}
-            className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
-            aria-label="Quick session"
+          <span className="flex-1" />
+          <RepoSwitcher
+            repos={repos}
+            activeRepoUrl={useRepoStore.getState().activeRepoUrl}
+            onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
+            onAddRepo={onAddRepo}
+            onCreateNew={onCreateNewRepo}
           >
-            <LightningIcon size={ICON_SIZE.SM} />
-          </Button>
-        </WithTooltip>
-        <RepoSwitcher
-          repos={repos}
-          activeRepoUrl={useRepoStore.getState().activeRepoUrl}
-          onSelectRepo={(url) => useRepoStore.getState().setActiveRepoUrl(url)}
-          onAddRepo={onAddRepo}
-          onCreateNew={onCreateNewRepo}
-        >
-          <Button
-            variant="ghost"
-            size="sm"
-            className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
-            aria-label="Repository"
-          >
-            <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
-          </Button>
-        </RepoSwitcher>
-      </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+              aria-label="Repository"
+            >
+              <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
+            </Button>
+          </RepoSwitcher>
+        </div>
+      )}
 
       {/* Scrollable grouped repo sections */}
       <div className="flex-1 overflow-y-auto min-h-0 flex flex-col py-1">
