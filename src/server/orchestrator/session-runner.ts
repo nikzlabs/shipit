@@ -26,6 +26,7 @@ export { runDispatchedTurn };
 // helpers (recordSteeredMessage / persistTurnInProgress) at runtime, so it
 // lives outside this file to keep the import graph acyclic.
 import { trySteerDispatch } from "./dispatch-steering.js";
+import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -264,6 +265,8 @@ export function resetRunnerTurnState(
   runner.wasInterrupted = false;
   runner.activeReviewFilePath = opts?.reviewFilePath ?? null;
   runner.pendingCommitLink = null;
+  // docs/163 — clear per-turn voice-note state (authored flag + attention cap).
+  resetVoiceNoteTurnState(runner);
 }
 
 // ---------------------------------------------------------------------------

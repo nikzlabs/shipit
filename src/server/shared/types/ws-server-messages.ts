@@ -13,6 +13,7 @@ import type {
 import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogEntry, WsClearLogs } from "./terminal-types.js";
 import type { WsUsageStats, WsUsageUpdate, WsTurnUsageUpdate } from "./usage-types.js";
 import type { SubscriptionLimitsMap } from "./usage-limits-types.js";
+import type { VoiceNoteSource } from "./voice-note-types.js";
 
 export interface WsAgentEvent {
   type: "agent_event";
@@ -1046,8 +1047,26 @@ export interface WsAgentReviewAdded {
   createdAt: string;
 }
 
+/**
+ * docs/163 — the Native sink of a voice note. Emitted via `runner.emitMessage`
+ * so it buffers into the turn-event log and survives reconnects. Carries only
+ * the ear-shaped `headline` (never the full body); the client decides whether
+ * to autoplay based on `needsAttention` + hands-free mode. `id` is synthetic
+ * (not a turnId) so the playback-store can cache its audio independently.
+ */
+export interface WsVoiceNote {
+  type: "voice_note";
+  sessionId: string;
+  id: string;
+  headline: string;
+  needsAttention: boolean;
+  kind: VoiceNoteSource;
+  createdAt: string;
+}
+
 export type WsServerMessage =
   | WsAgentEvent
+  | WsVoiceNote
   | WsError
   | WsPreviewStatus
   | WsGitLog

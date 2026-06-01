@@ -62,6 +62,7 @@ import { handleTerminalOutput } from "./terminal-output.js";
 import { handleTurnDiff } from "./turn-diff.js";
 import { handleTurnUsageUpdate } from "./turn-usage-update.js";
 import { handleUsageUpdate } from "./usage-update.js";
+import { handleVoiceNote } from "./voice-note.js";
 
 export type { HandlerContext, Handler } from "./types.js";
 
@@ -152,6 +153,7 @@ export const messageHandlers: MessageHandlerMap = {
   turn_diff: handleTurnDiff,
   turn_usage_update: handleTurnUsageUpdate,
   usage_update: handleUsageUpdate,
+  voice_note: handleVoiceNote,
 };
 
 /**

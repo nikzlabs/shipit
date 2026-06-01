@@ -277,6 +277,16 @@ export interface AgentMcpPresentBridge {
 }
 
 /**
+ * Resolved paths to the internal voice-note MCP bridge (docs/163). Same shape
+ * and lifecycle as the review/present bridges — the agent calls the built-in
+ * `voice_note` tool and the bridge forwards the payload to the worker.
+ */
+export interface AgentMcpVoiceBridge {
+  tsxBin: string;
+  bridgePath: string;
+}
+
+/**
  * Per-spawn context the worker passes into `AgentProcess.writeMcpConfig()`.
  *
  * The adapter owns the CLI-specific wire format (Claude: `--mcp-config` JSON
@@ -304,6 +314,12 @@ export interface AgentMcpWriteContext {
    * agent CLI can call the `present` tool.
    */
   presentBridge: AgentMcpPresentBridge | null;
+  /**
+   * The internal voice-note bridge (docs/163), or `null` when the worker can't
+   * locate the bridge files. Adapters add it as another MCP entry so the agent
+   * CLI can call the built-in `voice_note` tool.
+   */
+  voiceBridge: AgentMcpVoiceBridge | null;
   /**
    * Surface a server-level failure to the worker so it can broadcast an
    * `mcp_server_status` SSE event. Called when an entry has to be dropped

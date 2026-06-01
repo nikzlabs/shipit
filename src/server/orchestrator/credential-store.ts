@@ -7,6 +7,8 @@ import type {
   McpOAuthRegisteredClient,
 } from "../shared/types/mcp-types.js";
 import type { AgentId, ProviderAccount } from "../shared/types.js";
+import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
+import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 
 interface CredentialData {
   agentEnv?: Record<string, string>;
@@ -57,6 +59,18 @@ interface CredentialData {
    * Server-side only — never returned to the browser (see plan threat model).
    */
   voiceProviderKeys?: Record<string, string>;
+  /**
+   * docs/163 — voice-note delivery mode: "native" (inline note + TTS),
+   * "external" (webhook only), or "both". Server-side so the router can read
+   * it without a client round-trip. Defaults to "native".
+   */
+  voiceDeliveryMode?: VoiceDeliveryMode;
+  /**
+   * docs/163 — external webhook sink config. The token is bearer auth sent to
+   * the user's endpoint; like the voice provider keys it is server-side only
+   * and never echoed to the browser (status reports configured-or-not).
+   */
+  voiceWebhook?: { url: string; token: string };
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -357,6 +371,42 @@ export class CredentialStore {
     return Object.entries(this.data.voiceProviderKeys ?? {})
       .filter(([, v]) => typeof v === "string" && v.trim())
       .map(([id]) => id);
+  }
+
+  // ---- Voice-note delivery (docs/163) ----
+
+  /** The user's voice-note delivery mode. Defaults to "native". */
+  getVoiceDeliveryMode(): VoiceDeliveryMode {
+    const mode = this.data.voiceDeliveryMode;
+    return mode === "native" || mode === "external" || mode === "both"
+      ? mode
+      : DEFAULT_VOICE_DELIVERY_MODE;
+  }
+
+  setVoiceDeliveryMode(mode: VoiceDeliveryMode): void {
+    this.data.voiceDeliveryMode = mode;
+    this.save();
+  }
+
+  /** The configured external webhook (url + bearer token), or null. */
+  getVoiceWebhook(): { url: string; token: string } | null {
+    const wh = this.data.voiceWebhook;
+    if (wh && typeof wh.url === "string" && wh.url.trim()) {
+      return { url: wh.url, token: typeof wh.token === "string" ? wh.token : "" };
+    }
+    return null;
+  }
+
+  setVoiceWebhook(url: string, token: string): void {
+    this.data.voiceWebhook = { url, token };
+    this.save();
+  }
+
+  clearVoiceWebhook(): void {
+    if (this.data.voiceWebhook) {
+      delete this.data.voiceWebhook;
+      this.save();
+    }
   }
 
   // ---- Max idle containers ----

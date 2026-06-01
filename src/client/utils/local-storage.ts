@@ -165,6 +165,7 @@ const VOICE_HOTKEY_MODE_A_KEY = "shipit-voice-hotkey-mode-a";
 const VOICE_HOTKEY_MODE_B_KEY = "shipit-voice-hotkey-mode-b";
 const VOICE_LANGUAGE_KEY = "shipit-voice-language";
 const VOICE_PLAYBACK_ENABLED_KEY = "shipit-voice-playback-enabled";
+const VOICE_HANDS_FREE_KEY = "shipit-voice-hands-free";
 const TTS_PROVIDER_KEY = "shipit-tts-provider";
 const TTS_VOICE_KEY = "shipit-tts-voice";
 const TTS_SPEED_KEY = "shipit-tts-speed";
@@ -221,6 +222,11 @@ export const getSavedVoiceLanguage = (): string => getSavedString(VOICE_LANGUAGE
 export const saveVoiceLanguage = (v: string): void => saveString(VOICE_LANGUAGE_KEY, v);
 export const getSavedVoicePlaybackEnabled = (): boolean => getSavedBool(VOICE_PLAYBACK_ENABLED_KEY, false);
 export const saveVoicePlaybackEnabled = (v: boolean): void => saveBool(VOICE_PLAYBACK_ENABLED_KEY, v);
+
+// docs/163 — hands-free voice notes. OFF by default so the no-surprise-audio
+// promise holds for users who don't opt in.
+export const getSavedVoiceHandsFree = (): boolean => getSavedBool(VOICE_HANDS_FREE_KEY, false);
+export const saveVoiceHandsFree = (v: boolean): void => saveBool(VOICE_HANDS_FREE_KEY, v);
 export const getSavedTtsProvider = (): string => getSavedString(TTS_PROVIDER_KEY, "openai");
 export const saveTtsProvider = (v: string): void => saveString(TTS_PROVIDER_KEY, v);
 export const getSavedTtsVoice = (): string => getSavedString(TTS_VOICE_KEY, TTS_VOICE_DEFAULT);

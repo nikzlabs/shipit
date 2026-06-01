@@ -65,6 +65,8 @@ export async function registerBootstrapRoutes(
     liveSteering?: boolean;
     /** docs/146 — global gate for the auto-resolve-conflicts loop. */
     autoResolveConflicts?: boolean;
+    /** docs/163 — voice-note delivery mode (native / external / both). */
+    voiceDeliveryMode?: "native" | "external" | "both";
   } }>(
     "/api/settings",
     async (request, reply) => {
@@ -88,6 +90,7 @@ export async function registerBootstrapRoutes(
           ...(request.body.autoCreatePr !== undefined ? { autoCreatePr: request.body.autoCreatePr } : {}),
           ...(request.body.liveSteering !== undefined ? { liveSteering: request.body.liveSteering } : {}),
           ...(request.body.autoResolveConflicts !== undefined ? { autoResolveConflicts: request.body.autoResolveConflicts } : {}),
+          ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
         });
       } catch (err) {
         if (err instanceof ServiceError) {

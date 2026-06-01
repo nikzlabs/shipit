@@ -1,10 +1,41 @@
 ---
-status: planned
+status: done
 priority: medium
 description: One voice-summary primitive the agent emits when it needs the user, with a ShipIt delivery setting (native inline / external webhook / both) — not two separate tools.
 ---
 
 # Voice notes — one spoken-summary primitive, user-chosen delivery
+
+## Implementation status (done)
+
+Built end-to-end on the existing voice stack. Key files added/changed:
+
+- **Built-in tool:** `src/server/session/mcp-voice-bridge.ts` — stdio MCP bridge
+  exposing `voice_note` (`shipit-voice`), wired through
+  `AgentMcpVoiceBridge` (`shared/types/agent-types.ts`),
+  `session-worker.ts#voiceBridgePaths`, and both adapters' `writeMcpConfig`.
+  It POSTs to the worker `/agent-ops/voice/note` broker, which relays to the
+  orchestrator's session-scoped `POST /api/sessions/:id/voice-note`.
+- **Router:** `src/server/orchestrator/voice/voice-note-router.ts` —
+  `routeVoiceNote(payload, deps)` fans out to the native sink
+  (`runner.emitMessage` of a `voice_note` WS message) and the webhook sink
+  (`POST { v: 1, summary, needsAttention, context }` with bearer auth).
+  Per-turn attention cap (`MAX_ATTENTION_NOTES_PER_TURN = 3`) and the
+  authored-this-turn flag live in a runner-keyed `WeakMap`, reset from
+  `resetRunnerTurnState`.
+- **Source observation:** `agent-listeners.ts` derives an `ask` / `plan`
+  headline from a top-level `AskUserQuestion` / `ExitPlanMode` and routes it via
+  the new `deliverVoiceNote` listener dep — suppressed when the agent authored a
+  headline first (`hasAuthoredVoiceNoteThisTurn`).
+- **Native sink + client:** `WsVoiceNote` (`ws-server-messages.ts`),
+  `message-handlers/voice-note.ts`, `components/VoiceNoteCard.tsx`,
+  `voice/voice-notes.ts` (hands-free autoplay, 20s chime debounce, latest-wins
+  via `playback-store`, one-time unlock on the toggle gesture).
+- **Settings:** delivery mode (server, `CredentialStore` + global settings) +
+  webhook config (`POST/DELETE/GET /api/voice/webhook`, token never echoed) +
+  hands-free toggle (client `localStorage`). UI in `Settings.tsx` Voice tab.
+- **Agent instructions + docs:** `agent-instructions.ts` "Voice notes" section
+  and `shipit-docs/voice-notes.md`.
 
 ## Problem
 
