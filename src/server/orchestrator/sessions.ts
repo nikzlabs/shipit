@@ -91,6 +91,17 @@ export function reopenedAfterMerge(s: SessionInfo): boolean {
  * the visible count to N-1 instead of promoting an older, previously-demoted
  * session into the freed slot. The slot self-heals as newer PRs merge and push
  * the archived session past rank N.
+ *
+ * Parent/child exemption (docs/117): the merged view cap is a form of *automatic*
+ * archiving, and spawned parent/child clusters are exempt from it — they only
+ * leave the sidebar via an explicit user archive (which `archiveSession`
+ * cascades from parent to children). Concretely, the cap never demotes:
+ *   - a session that still has a live (non-user-archived) child — a parent with
+ *     children is only ever archived manually, and
+ *   - a child whose parent is still live — a child is only archived together
+ *     with its parent, never on its own.
+ * Both exemptions only rescue a session that the cap would otherwise drop;
+ * user-archived sessions are still excluded, so the manual cascade is unaffected.
  */
 export function filterVisibleInSidebar(
   sessions: SessionInfo[],
@@ -115,8 +126,25 @@ export function filterVisibleInSidebar(
     group.sort((a, b) => (Date.parse(b.mergedAt ?? "") || 0) - (Date.parse(a.mergedAt ?? "") || 0));
     for (const s of group.slice(0, maxMerged)) topMergedIds.add(s.id);
   }
+  // Parent/child relationships are derived from the (non-archived) sessions in
+  // this same list: a live child both proves its parent has children and marks
+  // its parent as live. User-archived sessions don't count — an archived child
+  // shouldn't pin its parent open, and an archived parent shouldn't pin its
+  // children open (the cascade has its own path).
+  const liveIds = new Set<string>();
+  const parentsWithLiveChildren = new Set<string>();
+  for (const s of sessions) {
+    if (s.userArchived) continue;
+    liveIds.add(s.id);
+    if (s.parentSessionId) parentsWithLiveChildren.add(s.parentSessionId);
+  }
+  const exemptFromCap = (s: SessionInfo): boolean =>
+    parentsWithLiveChildren.has(s.id) ||
+    (s.parentSessionId !== undefined && liveIds.has(s.parentSessionId));
   return sessions.filter(
-    (s) => !s.userArchived && (!s.mergedAt || reopenedAfterMerge(s) || topMergedIds.has(s.id)),
+    (s) =>
+      !s.userArchived &&
+      (!s.mergedAt || reopenedAfterMerge(s) || topMergedIds.has(s.id) || exemptFromCap(s)),
   );
 }
 

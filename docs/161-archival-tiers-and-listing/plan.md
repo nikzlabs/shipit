@@ -161,6 +161,18 @@ The user explicitly **hiding** a session (`userArchived = true`) is the only
 thing that force-removes it from the sidebar regardless of activity — that's the
 manual "archive" button, and it's reversible from All Sessions.
 
+**Parent/child clusters are exempt from the merged cap** (docs/117 invariant,
+preserved here). The cap is a form of automatic archiving, and a spawned
+parent/child cluster must only leave the sidebar via an explicit user archive —
+which `archiveSession` cascades from parent to children. So
+`filterVisibleInSidebar` never lets the cap demote (a) a session that still has a
+live, non-user-archived child, or (b) a child whose parent is still live. The
+relationships are derived from `parentSessionId` over the same input list; the
+exemption only rescues a session the cap would otherwise drop, so user-archiving
+(and its cascade) is unaffected. This restores behavior that originally lived as
+explicit guards in `markMergedAndPruneExcess` and was dropped when listing moved
+to this predicate.
+
 ---
 
 ## Part 2 — Disk cleanup tiers
