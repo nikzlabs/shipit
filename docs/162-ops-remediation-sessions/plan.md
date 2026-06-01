@@ -347,7 +347,12 @@ Source ref resolution (`services/shipit-source.ts`):
   present in the checkout. Otherwise it falls back to the checkout's HEAD and is
   reported as **approximate** (`refSource: "checkout-head"`, `exact: false`).
 - The fix-repo URL is the checkout's `origin` remote, overridable with
-  `SHIPIT_SOURCE_REPO_URL`.
+  `SHIPIT_SOURCE_REPO_URL`. The host `origin` carries an embedded GitHub PAT
+  (`https://x:<pat>@github.com/o/r.git`); `getShipitSourceStatus` strips it via
+  `stripUrlCredentials` (git-utils.ts) so the URL that's displayed, used as a
+  repo-store key, and persisted into the child's session config is always
+  credential-free. Auth is injected at git-operation time by the credential
+  helper, never via the URL.
 - All reads (`tree`/`search`/`cat`) run `git` plumbing against the resolved ref,
   never the working tree, so they always match `status`. Redaction
   (`isRedactedSourcePath`) blocks `.env`, key material, ssh keys, `.netrc`/
@@ -363,6 +368,15 @@ Write path:
   (`buildShipitFixPrompt`), and spawns a normal child via `spawnChildSession`
   with `repoUrlOverride` + `base = <exact ref>`. The child opens its own PR
   through the existing pipeline.
+- Repo identity is canonical (`canonicalRepoKey`): `ensureShipitSourceRepoReady`
+  reuses the entry the user already added through the home screen instead of
+  registering a credentialed near-duplicate (a credentialed origin URL,
+  different host casing, or a `.git` suffix all collapse to the same key), and
+  returns the credential-free store key the spawn uses as `repoUrlOverride`.
+  Because the override is credential-free, the child clones/pushes with the
+  connected GitHub account credential injected by `configureGitCredentials` —
+  the *same* token `checkRepoWriteAccess` validates in the pre-flight — rather
+  than a PAT baked into the source checkout's origin.
 
 ### Key files added/changed
 

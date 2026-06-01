@@ -525,12 +525,20 @@ export async function registerSessionRoutes(
                 "Produce a structured incident report with source references instead.",
             );
           }
-          await ensureShipitSourceRepoReady(target.repoUrl, {
+          // The child clones/pushes with the connected GitHub account
+          // credential injected at git-operation time (the same token
+          // `checkRepoWriteAccess` just validated), so the override URL must be
+          // credential-free. `ensureShipitSourceRepoReady` returns the
+          // credential-free store key — reuse it verbatim so the claim resolves
+          // the same repo entry. Baking the source checkout's embedded PAT into
+          // the URL would make the child push with a *different* credential than
+          // the one verified above (BUG 2).
+          const readyRepoUrl = await ensureShipitSourceRepoReady(target.repoUrl, {
             repoStore: deps.repoStore,
             getSharedRepoDir: deps.getSharedRepoDir,
             ensureBareCache: (cacheDir, url) => ensureBareCache(cacheDir, url, deps.createRepoGit),
           });
-          repoUrlOverride = target.repoUrl;
+          repoUrlOverride = readyRepoUrl;
           sourceBase = target.ref;
           effectivePrompt = buildShipitFixPrompt({
             ref: target.ref,
