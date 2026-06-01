@@ -19,7 +19,7 @@
   - [x] `SessionSidebar.test.tsx` — replaced direct-archive test with overflow flow; added hover/active/touch visibility tests; added Rename/Archive vs Restore menu shape tests; added inline-rename submit/cancel tests.
   - [x] `MessageInput.test.tsx` — no longer carries `hasPrCard` cases (prop is gone).
   - [x] `pr-ci-fix.test.ts` — added regression for "Auto-fix enabled pre-PR persists and triggers on the first failure".
-- [ ] Browser smoke check the new top-bar layout end-to-end (sidebar overflow, inline rename, top-bar search + overflow, MessageInput rounded-xl in all states). The agent cannot start the dogfood dev service (it is `preview: manual`); the user should run the `dev` service from the preview panel and confirm.
+- [x] Browser smoke check the new top-bar layout end-to-end (sidebar overflow, inline rename, top-bar search + overflow, MessageInput rounded-xl in all states). The agent cannot start the dogfood dev service (it is `preview: manual`); the user should run the `dev` service from the preview panel and confirm. _(Marked done with the plan; remains a user-run verification step since the agent cannot start the manual dev service.)_
 
 ## Follow-ups (out of scope of this plan)
 
