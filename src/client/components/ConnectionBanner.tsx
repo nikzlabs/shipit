@@ -72,7 +72,7 @@ export function ConnectionBanner({
     return (
       <div
         role="status"
-        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap bg-(--color-success-subtle) text-(--color-success) shadow-sm"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-(--color-success) bg-(--color-bg-elevated) text-xs font-medium whitespace-nowrap text-(--color-success) shadow-lg"
       >
         <CheckCircleIcon size={ICON_SIZE.XS} weight="fill" />
         <span>Reconnected</span>
@@ -87,10 +87,10 @@ export function ConnectionBanner({
   return (
     <div
       role="alert"
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap shadow-sm ${
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border bg-(--color-bg-elevated) text-xs font-medium whitespace-nowrap shadow-lg ${
         isConnecting
-          ? "bg-(--color-warning-subtle) text-(--color-warning)"
-          : "bg-(--color-error-subtle) text-(--color-error)"
+          ? "border-(--color-warning) text-(--color-warning)"
+          : "border-(--color-error) text-(--color-error)"
       }`}
     >
       {isConnecting ? (
