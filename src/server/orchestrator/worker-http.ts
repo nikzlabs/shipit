@@ -105,9 +105,22 @@ export async function workerPost(baseUrl: string, path: string, body?: unknown, 
   });
 }
 
-/** POST install commands to the session worker. Returns immediately; progress streams via SSE. */
-export async function workerInstall(baseUrl: string, commands: string[]): Promise<unknown> {
-  return workerPost(baseUrl, "/install", { commands });
+/**
+ * POST install commands to the session worker.
+ *
+ * On a fast-install cache MISS (or a non-cacheable command set) the worker
+ * returns immediately (`{ started: true }`) and progress streams via SSE. On a
+ * cache HIT the worker holds the response open while it materializes
+ * `node_modules` from the store, then returns `{ completed: true, ok }` — so
+ * callers should pass a generous `timeoutMs` (materializing a large tree can
+ * take several seconds). The default 10s bound is too tight for that.
+ */
+export async function workerInstall(
+  baseUrl: string,
+  commands: string[],
+  opts?: WorkerHttpOpts,
+): Promise<unknown> {
+  return workerPost(baseUrl, "/install", { commands }, opts);
 }
 
 /**
