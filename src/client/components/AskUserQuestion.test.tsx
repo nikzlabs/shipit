@@ -1,8 +1,28 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Reset the opt-in voice toggle so it never leaks between tests.
+  useSettingsStore.setState({ voiceInputEnabled: false });
+});
+
+// The "Other" free-text field hosts a voice mic (docs/144), which pulls in
+// `useIsMobile()` → `window.matchMedia`. jsdom doesn't implement it, so stub
+// it to a desktop viewport for these tests.
+beforeEach(() => {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  });
+});
 
 const singleQuestion: AskQuestionItem[] = [
   {
@@ -258,6 +278,24 @@ describe("AskUserQuestion", () => {
       const input = screen.getByTestId("other-input");
       fireEvent.keyDown(input, { key: "Enter" });
       expect(onAnswer).not.toHaveBeenCalled();
+    });
+
+    it("hides the voice mic when voice input is disabled", () => {
+      useSettingsStore.setState({ voiceInputEnabled: false });
+      render(
+        <AskUserQuestion toolUseId="t1" questions={singleQuestion} onAnswer={vi.fn()} disabled={false} />
+      );
+      fireEvent.click(screen.getByTestId("option-other"));
+      expect(screen.queryByTestId("mic-button")).not.toBeInTheDocument();
+    });
+
+    it("shows the voice mic in the Other field when voice input is enabled", () => {
+      useSettingsStore.setState({ voiceInputEnabled: true });
+      render(
+        <AskUserQuestion toolUseId="t1" questions={singleQuestion} onAnswer={vi.fn()} disabled={false} />
+      );
+      fireEvent.click(screen.getByTestId("option-other"));
+      expect(screen.getByTestId("mic-button")).toBeInTheDocument();
     });
   });
 
