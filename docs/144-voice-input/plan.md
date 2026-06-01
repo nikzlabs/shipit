@@ -607,6 +607,13 @@ they have different lifetimes:
   recovery button, and a **Dismiss** control. Dismiss calls
   `voice.dismissError()` back to idle. Escape cancels while recording and
   dismisses while erroring (harmless on mobile, handy for desktop testing).
+  The overlay is **portalled to `document.body`** so its `fixed inset-0 z-[60]`
+  always covers the full viewport. When mounted from the AskUserQuestion "Other"
+  field it would otherwise be trapped inside the chat panel's `isolate` stacking
+  context (`App.tsx`), letting the main `MessageInput` composer — a later sibling
+  of that isolated container — paint over the overlay's bottom edge, so the chat
+  input bled through during recording. The portal lifts it out of any ancestor
+  stacking context.
 
 **Robust retry — resend the same audio (`canRetryTranscription`).** A
 transcription failure is usually transient (network blip, provider hiccup), so
