@@ -428,6 +428,14 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     if (!runner || !capturedSessionId) return;
     const partial = buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages ?? [], { inProgress: false });
     persistInterruptedTurn(ctx, capturedSessionId, partial);
+    // docs/163 — the interrupted turn is now finalized into chat history, so
+    // clear the turn-event replay buffer. Otherwise the buffer stays dirty
+    // (lastPersistedBufferIndex only advances on tool-result / agent_result
+    // boundaries, neither of which fires on an interrupt without a result) and
+    // a later WS reconnect re-emits the turn on top of the persisted copy,
+    // duplicating it on reload. Mirrors the clean-completion (`agent_result`)
+    // and error paths.
+    runner.clearTurnEventBuffer();
   };
 
   // Queue-drain re-entry — resolves the next message's attachments and recurses

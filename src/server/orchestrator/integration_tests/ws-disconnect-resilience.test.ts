@@ -401,6 +401,127 @@ describe("Integration: WebSocket disconnect resilience", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Invariant: a turn that ends via the ERROR path must NOT be replayed to a
+  // reconnecting viewer (docs/163 — duplicate-turn-on-reconnect regression).
+  //
+  // Production trigger: a deploy/restart kills the agent container mid- or
+  // just-post-turn. The proxy emits `error`; the error handler finalizes the
+  // partial turn into chat history. Before the fix, the turn-event replay
+  // buffer was left populated (lastPersistedBufferIndex only advances on
+  // tool-result / agent_result boundaries, never on the error path), so every
+  // subsequent WS reconnect — including a browser reload — replayed the
+  // already-persisted turn a second time, producing a duplicate that survives
+  // reload. The fix clears the buffer on the error path, mirroring
+  // agent_result.
+  // -------------------------------------------------------------------------
+
+  it("an errored turn is not replayed on reconnect (no duplicate)", async () => {
+    const client1 = await TestClient.connect(port);
+    await client1.receive();
+    const sessionId = client1.sessionId;
+
+    client1.send({ type: "send_message", text: "go" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "dup-err-1" });
+    await drainUntil(client1, (m) => m.type === "session_started");
+
+    // The agent streams an assistant message (no tool_result, so
+    // lastPersistedBufferIndex never advances), then the process errors —
+    // exactly the deploy/container-kill shape.
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "REPLAY_CANARY answer" }] },
+    });
+    await settle(50);
+    (claude as unknown as { emit: (n: string, e: Error) => void }).emit(
+      "error",
+      new Error("container killed mid-turn"),
+    );
+    await settle(150);
+
+    // Server-side proof: the replay buffer must not retain the turn's agent
+    // content after the terminal error. The buffer holds at most the trailing
+    // `session_status` (running=false) emitted after the clear — the same
+    // harmless tail the clean `agent_result` path leaves. Before the fix the
+    // buffer still carried the assistant `agent_event`, so the count was
+    // higher and that content got re-emitted on reconnect.
+    const state = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+    expect(state.statusCode).toBe(200);
+    expect(state.json().turnEventBufferSize).toBeLessThanOrEqual(1);
+
+    // Drop the WS and reconnect (the browser-reload path). The reconnecting
+    // client must NOT receive the assistant event a second time — it already
+    // has the finalized turn from HTTP history.
+    client1.close();
+    await settle();
+    const client2 = await TestClient.connect(port, sessionId);
+    const replayed = (await client2.drain({ quietMs: 200, maxMs: 1500 })).filter(
+      (m: AnyMsg) =>
+        m.type === "agent_event"
+        && m.event?.type === "agent_assistant"
+        && m.event.content?.some((b: AnyMsg) => b.type === "text" && b.text === "REPLAY_CANARY answer"),
+    );
+    expect(replayed).toHaveLength(0);
+
+    // And the turn appears exactly once in stored history.
+    const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const occurrences = historyRes.json().messages.filter(
+      (m: AnyMsg) => (m.text ?? "").includes("REPLAY_CANARY answer"),
+    );
+    expect(occurrences).toHaveLength(1);
+
+    client2.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant: a turn ended via user INTERRUPT must NOT be replayed on
+  // reconnect either (docs/163). Same root cause as the error path: the
+  // interrupt finalizes the partial turn into history but the older code left
+  // the replay buffer dirty.
+  // -------------------------------------------------------------------------
+
+  it("an interrupted turn is not replayed on reconnect (no duplicate)", async () => {
+    const client1 = await TestClient.connect(port);
+    await client1.receive();
+    const sessionId = client1.sessionId;
+
+    client1.send({ type: "send_message", text: "go" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "dup-int-1" });
+    await drainUntil(client1, (m) => m.type === "session_started");
+
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "INTERRUPT_CANARY partial" }] },
+    });
+    await settle(50);
+
+    // User interrupts — FakeClaudeProcess.interrupt() emits `done` (code 1)
+    // with no `result` event, driving the onInterruptedTurn path.
+    client1.send({ type: "interrupt_agent" });
+    await settle(150);
+
+    const state = await app.inject({ method: "GET", url: `/api/_test/runner/${sessionId}` });
+    expect(state.statusCode).toBe(200);
+    // Buffer retains at most the trailing post-turn status, never the
+    // interrupted turn's assistant content (see the error-path test above).
+    expect(state.json().turnEventBufferSize).toBeLessThanOrEqual(1);
+
+    client1.close();
+    await settle();
+    const client2 = await TestClient.connect(port, sessionId);
+    const replayed = (await client2.drain({ quietMs: 200, maxMs: 1500 })).filter(
+      (m: AnyMsg) =>
+        m.type === "agent_event"
+        && m.event?.type === "agent_assistant"
+        && m.event.content?.some((b: AnyMsg) => b.type === "text" && b.text === "INTERRUPT_CANARY partial"),
+    );
+    expect(replayed).toHaveLength(0);
+
+    client2.close();
+  });
+
+  // -------------------------------------------------------------------------
   // Invariant: a WS reconnect AFTER the runner was disposed (idle cleanup
   // window expired) must spawn a fresh runner. Pins the registry-recreation
   // path that fires when getOrCreate() finds the session ID gone.
