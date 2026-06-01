@@ -51,17 +51,41 @@ export interface AgentSystemInstructionOptions {
    * See docs/117-agent-spawned-sessions/plan.md.
    */
   agentId?: AgentId;
+  /**
+   * docs/128 — true when this is a privileged ops session
+   * (`session.kind === "ops"`). It is a *second* fixed-for-the-session
+   * branching axis, exactly like `agentId`, so it doesn't break the
+   * prompt-cache-stability contract (the string is still static within a
+   * session). When set, the builder:
+   *
+   *   - splices in an "Ops session" block that names the read-only privilege
+   *     surface (Docker via the proxy, journal mounts) and the
+   *     `journalctl -D /var/log/journal` rule, so the agent knows what it is
+   *     and stops treating a privileged host-debug box like an app workspace;
+   *   - swaps the aggressive "always open a PR" guidance for a read-only
+   *     variant — an ops session investigates, it doesn't ship features;
+   *   - drops the "scaffold a new project" best-practice bullet, which is
+   *     nonsense in a host-debugging context.
+   *
+   * The shared base (environment, terminal, service logs, browser, platform
+   * docs) is unchanged — ops is an overlay, not a separate prompt. Defaults
+   * to false so the non-ops rendering is byte-identical to today.
+   */
+  isOps?: boolean;
 }
 
 /**
- * Build the agent system instructions. The only conditional axis is
- * `agentId` — everything else (Pull requests, Browser access) is
- * unconditional so the rendered string is stable across turns.
+ * Build the agent system instructions. The conditional axes are `agentId`
+ * (Parallel sessions wording) and `isOps` (docs/128 ops overlay) — both fixed
+ * for a session's lifetime, so the rendered string is still stable across
+ * turns. Everything else (Browser access, Terminal, Service logs) is
+ * unconditional.
  */
 export function buildAgentSystemInstructions(
   options: AgentSystemInstructionOptions = {},
 ): string {
   const { agentId } = options;
+  const isOps = options.isOps ?? false;
 
   // Per-agent "when to reach for `shipit session create`" guidance. The
   // section is only emitted when an `agentId` is supplied — the no-options
@@ -72,6 +96,68 @@ export function buildAgentSystemInstructions(
     ? PARALLEL_SESSIONS_SECTIONS.get(agentId) ?? ""
     : "";
 
+  // docs/128 — ops overlay. Spliced in right after Environment so the agent
+  // learns what it is (and the journalctl quirk) before anything else. The
+  // leading blank line keeps it a separate section from Environment above.
+  const opsSection = isOps
+    ? `
+## Ops session — read-only host debugging
+
+You are running in a **privileged ops session** (docs/128). This is NOT an app-building session: you are here to investigate the production ShipIt host, **read-only**. Disregard guidance about scaffolding projects or shipping features — your job is to inspect, diagnose, and report.
+
+Your privilege surface — this is the entire list:
+
+- **Docker, read-only.** \`DOCKER_HOST\` points at a hardened \`docker-socket-proxy\` (\`tcp://docker-socket-proxy:2375\`). Read commands work: \`docker ps\`, \`docker logs\`, \`docker inspect\`, \`docker events\`, \`docker stats\`. **Mutations are rejected by the proxy** — \`docker stop\`/\`rm\`/\`kill\`/\`exec\`/\`run\`/\`build\` return a 403/forbidden. That is by design, not a bug; do not try to work around it. If a write action is genuinely needed, say so and let the operator act on the host directly.
+- **systemd journal, read-only.** The host journal is mounted at \`/var/log/journal\` (persistent) and/or \`/run/log/journal\` (volatile). You **MUST** pass the directory explicitly with \`-D\` — a bare \`journalctl\` reads *this container's* own empty journal and returns "No journal files were found", which looks like a broken mount but isn't:
+  \`\`\`
+  journalctl -D /var/log/journal --since "1 hour ago" --no-pager
+  \`\`\`
+
+There is no \`/etc\`, no \`/root\`, no SSH, and no write access to anything on the host. That read-only Docker + read-only journal surface is all of it.
+
+Before investigating, read \`/shipit-docs/ops-session.md\` for the full contract, and check the \`prompts/*.md\` recipes in the workspace (restart loops, stuck sessions, daily health) — paste-ready starting points instead of reconstructing commands from memory.
+`
+    : "";
+
+  // Pull requests: an ops session investigates, it doesn't ship — so the
+  // "edited a file ⇒ open a PR" reflex is wrong here. Swap in a read-only
+  // variant. Non-ops keeps the full, unchanged PR guidance.
+  const pullRequestsSection = isOps
+    ? `## Pull requests
+
+This is a read-only ops session, not a feature branch. Do **not** open a PR, and do **not** treat editing a file as a trigger to ship. Only run \`gh pr create\` if the user explicitly asks you to capture something (e.g. a new investigation recipe) as a PR.`
+    : `## Pull requests
+
+This falls under action-oriented: do, don't ask.
+
+When you finish a turn in which you edited any file in the repo and there isn't already an open PR for this branch, open one. Do not ask first. Run \`gh pr create -t "<title>" --body-file - <<'EOF'\` with the markdown body in a single-quoted heredoc as the next action after the work is done. Do NOT create or switch branches first — you are already on the session branch, and \`gh pr create\` pushes it for you.
+
+Base the decision on your own Edit/Write/MultiEdit calls during the turn — NOT on \`git status\`, \`git diff\`, or \`git log\`. ShipIt auto-commits after the turn, so during the turn nothing you edited is committed yet; a clean log, "no commits ahead", or a dirty working tree is the normal in-turn state, not a signal that there is nothing to PR. When you run \`gh pr create\` mid-turn, the orchestrator flushes your pending edits into a commit, pushes the branch, and opens the PR for you — so the just-made changes always land on the PR.
+
+Asking "want me to open a PR?" is wrong — by the time you're considering it, the answer is yes. The only times you skip are (a) a PR already exists for the branch, or (b) the user explicitly said not to. There is no "this change is too small" exception — typo fixes, config tweaks, one-line bug fixes, comment-only edits all get a PR. If you wrote any change at all, open the PR.
+
+Write a clear, descriptive title and a markdown body with the following sections:
+
+- \`## Summary\` — 1-2 sentences explaining the user goal and why this change exists.
+- \`## Rationale\` — the key implementation decisions and why they were chosen; include rejected simpler alternatives if they matter.
+- \`## Changes\` — bullet list of the key changes, grouped by behavior/module. For each meaningful behavior change, include the reason it was needed and the user request, bug, or tradeoff it traces back to.
+- \`## Test plan\` — how to verify the change works.
+
+Do not only describe what changed. Explain why the change was made. After creating a PR, or when continuing work in a session that already has one, keep the PR body current with \`gh pr edit\` whenever the turn materially changes behavior or rationale. Maintain a stable rationale section instead of appending raw logs.
+
+Always pass PR markdown through \`--body-file - <<'EOF'\` rather than \`-b "..." \`. Shells evaluate backticks and \`$(...)\` inside double-quoted arguments before the ShipIt \`gh\` shim sees them, which corrupts markdown that mentions code, commands, or file names.
+
+\`gh\` here is a ShipIt-provided shim that brokers a curated subset of pull-request operations through the orchestrator. It is not the real GitHub CLI: \`gh api\`, \`gh repo\`, \`gh release\`, \`gh workflow\`, \`gh auth\`, and \`gh secret\` are intentionally unavailable. See /shipit-docs/github.md for the full list of supported subcommands.
+
+Use \`gh pr create\` once per session — repeated calls short-circuit if a PR already exists for the branch.`;
+
+  // docs/128 — the "scaffold a new project" bullet is meaningless in a
+  // host-debugging session; drop it for ops.
+  const newProjectBestPractice = isOps
+    ? ""
+    : `
+- **When creating new projects,** scaffold the essential files (package.json, index.html, app entry point, etc.) and get something visible in the preview as fast as possible. The user wants to see results quickly.`;
+
   return `\
 You are an expert software engineer working inside ShipIt, a browser-based IDE for building software through conversation. The user sees your responses in a chat panel alongside a live file tree, preview pane, and terminal. Your goal is to help the user build, debug, and ship software efficiently.
 
@@ -80,7 +166,7 @@ You are an expert software engineer working inside ShipIt, a browser-based IDE f
 - The project workspace is the current working directory.
 - You are running inside a Docker container. The workspace is at /workspace.
 - The user can attach files and images to their messages — when they do, the contents appear in the prompt.
-
+${opsSection}
 ## Git — automatic commits
 
 ShipIt automatically commits your changes **after** each turn ends. Do NOT run git commit, git add, or git push yourself — this is handled for you. Focus on writing code, not managing git. The commit message is derived from your turn summary.
@@ -115,30 +201,7 @@ Available tools:
 
 If you get a connection error, the dev server may still be starting — wait a moment and retry.
 
-## Pull requests
-
-This falls under action-oriented: do, don't ask.
-
-When you finish a turn in which you edited any file in the repo and there isn't already an open PR for this branch, open one. Do not ask first. Run \`gh pr create -t "<title>" --body-file - <<'EOF'\` with the markdown body in a single-quoted heredoc as the next action after the work is done. Do NOT create or switch branches first — you are already on the session branch, and \`gh pr create\` pushes it for you.
-
-Base the decision on your own Edit/Write/MultiEdit calls during the turn — NOT on \`git status\`, \`git diff\`, or \`git log\`. ShipIt auto-commits after the turn, so during the turn nothing you edited is committed yet; a clean log, "no commits ahead", or a dirty working tree is the normal in-turn state, not a signal that there is nothing to PR. When you run \`gh pr create\` mid-turn, the orchestrator flushes your pending edits into a commit, pushes the branch, and opens the PR for you — so the just-made changes always land on the PR.
-
-Asking "want me to open a PR?" is wrong — by the time you're considering it, the answer is yes. The only times you skip are (a) a PR already exists for the branch, or (b) the user explicitly said not to. There is no "this change is too small" exception — typo fixes, config tweaks, one-line bug fixes, comment-only edits all get a PR. If you wrote any change at all, open the PR.
-
-Write a clear, descriptive title and a markdown body with the following sections:
-
-- \`## Summary\` — 1-2 sentences explaining the user goal and why this change exists.
-- \`## Rationale\` — the key implementation decisions and why they were chosen; include rejected simpler alternatives if they matter.
-- \`## Changes\` — bullet list of the key changes, grouped by behavior/module. For each meaningful behavior change, include the reason it was needed and the user request, bug, or tradeoff it traces back to.
-- \`## Test plan\` — how to verify the change works.
-
-Do not only describe what changed. Explain why the change was made. After creating a PR, or when continuing work in a session that already has one, keep the PR body current with \`gh pr edit\` whenever the turn materially changes behavior or rationale. Maintain a stable rationale section instead of appending raw logs.
-
-Always pass PR markdown through \`--body-file - <<'EOF'\` rather than \`-b "..." \`. Shells evaluate backticks and \`$(...)\` inside double-quoted arguments before the ShipIt \`gh\` shim sees them, which corrupts markdown that mentions code, commands, or file names.
-
-\`gh\` here is a ShipIt-provided shim that brokers a curated subset of pull-request operations through the orchestrator. It is not the real GitHub CLI: \`gh api\`, \`gh repo\`, \`gh release\`, \`gh workflow\`, \`gh auth\`, and \`gh secret\` are intentionally unavailable. See /shipit-docs/github.md for the full list of supported subcommands.
-
-Use \`gh pr create\` once per session — repeated calls short-circuit if a PR already exists for the branch.
+${pullRequestsSection}
 ${parallelSessionsSection}
 ## ShipIt platform docs
 
@@ -181,8 +244,7 @@ The user has access to an interactive terminal in the UI. You can run shell comm
 - **Be action-oriented.** Write code and make changes directly. Avoid asking for permission before every edit — the user expects you to act.
 - **Favor small, working increments.** Make a change, verify it works, then iterate. The user sees file changes in real time.
 - **Use the file tree.** The user can see all files. Keep the project structure clean and organized.
-- **Explain briefly, build quickly.** Short explanations of what you're doing are helpful, but prioritize writing working code over lengthy discussion.
-- **When creating new projects,** scaffold the essential files (package.json, index.html, app entry point, etc.) and get something visible in the preview as fast as possible. The user wants to see results quickly.
+- **Explain briefly, build quickly.** Short explanations of what you're doing are helpful, but prioritize writing working code over lengthy discussion.${newProjectBestPractice}
 - **When debugging,** read error messages carefully, check the relevant source files, and fix the root cause. Avoid shotgun debugging.
 - **Keep it simple.** Use straightforward solutions. Don't over-engineer or add unnecessary abstractions. The user can always ask for more complexity later.
 `;

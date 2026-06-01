@@ -94,11 +94,15 @@ export async function buildAgentRunParams(
     && deps.githubAuthManager.authenticated;
   const replay = deps.sessionManager.consumeConversationReplay(sessionId);
   const selectedModel = deps.getSelectedModel();
+  // docs/128 — read the server-authoritative session kind synchronously, in
+  // the pre-`await` DB block (same ordering rule as the reads above), so the
+  // ops overlay in the system prompt can't be lost to a mid-build DB close.
+  const isOps = deps.sessionManager.get(sessionId)?.kind === "ops";
 
   const userSystemPrompt = await deps.readSystemPrompt();
 
   const agentInstructions = agentInstructionsEnabled
-    ? buildAgentSystemInstructions({ agentId })
+    ? buildAgentSystemInstructions({ agentId, isOps })
     : undefined;
   let systemPrompt: string | undefined =
     [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;

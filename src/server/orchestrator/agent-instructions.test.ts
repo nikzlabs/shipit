@@ -175,4 +175,54 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("## Pull requests");
     expect(out).toContain("## Parallel sessions");
   });
+
+  // docs/128 — ops overlay.
+
+  it("omits the ops overlay by default and renders byte-identically", () => {
+    // The non-ops rendering must be unchanged, so the prompt cache and the
+    // existing static contract are preserved.
+    expect(buildAgentSystemInstructions({ isOps: false })).toBe(
+      buildAgentSystemInstructions(),
+    );
+    const out = buildAgentSystemInstructions();
+    expect(out).not.toContain("## Ops session");
+    expect(out).not.toContain("docker-socket-proxy");
+  });
+
+  it("ops overlay names the read-only privilege surface and the journalctl -D rule", () => {
+    const out = buildAgentSystemInstructions({ isOps: true });
+    expect(out).toContain("## Ops session");
+    // It must tell the agent what it is — a read-only privileged session.
+    expect(out).toContain("privileged ops session");
+    expect(out).toContain("read-only");
+    // Docker is reachable only through the proxy, and mutations are rejected.
+    expect(out).toContain("tcp://docker-socket-proxy:2375");
+    expect(out).toMatch(/Mutations are rejected/i);
+    // The journalctl quirk that makes agents think the mount is broken.
+    expect(out).toContain("journalctl -D /var/log/journal");
+    expect(out).toContain("No journal files were found");
+    // Pointers to the contract doc and the in-workspace recipes.
+    expect(out).toContain("/shipit-docs/ops-session.md");
+    expect(out).toContain("prompts/");
+  });
+
+  it("ops overlay swaps the aggressive PR nudge for a read-only variant", () => {
+    const out = buildAgentSystemInstructions({ isOps: true });
+    // The section header still exists...
+    expect(out).toContain("## Pull requests");
+    // ...but the "edited a file ⇒ open a PR" reflex is gone.
+    expect(out).not.toContain("Do not ask first");
+    expect(out).not.toContain("no \"this change is too small\" exception");
+    expect(out).toMatch(/Do \*\*not\*\* open a PR/);
+    // And the "scaffold a new project" best practice is dropped.
+    expect(out).not.toContain("scaffold the essential files");
+  });
+
+  it("ops overlay composes with the per-agent Parallel sessions section", () => {
+    const out = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
+    expect(out).toContain("## Ops session");
+    expect(out).toContain("## Parallel sessions");
+    // Shared base still present.
+    expect(out).toContain("## Browser access");
+  });
 });
