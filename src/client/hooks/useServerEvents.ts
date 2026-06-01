@@ -300,6 +300,7 @@ export function useServerEvents(): void {
         return;
       }
       useUiStore.getState().setProcessStartedAt(data.processStartedAt);
+      if (data.version) useUiStore.getState().setVersion(data.version);
     });
 
     /**

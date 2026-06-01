@@ -64,7 +64,8 @@ import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes } from "./disk-janitor.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
-import { resolveBuildId } from "./build-id.js";
+import { resolveBuildId, resolveVersion } from "./build-id.js";
+import { readChannel } from "./release-channel.js";
 import { MarketplaceStore } from "./marketplace-store.js";
 import { ensureCatalogCloned, getCatalogCacheRoot } from "./services/marketplace.js";
 
@@ -123,6 +124,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // takes < 5s is invisible.
   const processStartedAt = Date.now();
   const buildId = resolveBuildId();
+  // Channel-aware human-facing version of the running instance (feature 162).
+  // Computed once at startup: it describes what is actually running, not what
+  // channel is selected for the *next* update. A channel switch + Update Now
+  // restarts the orchestrator, which recomputes this.
+  const version = resolveVersion(await readChannel());
   const clientDir = path.resolve(process.cwd(), "dist/client");
   // ---- DI: instantiate all managers ----
   const mgrs = await initializeManagers(deps);
@@ -644,7 +650,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // live-ticking uptime badge next to the Docker memory badge so the
     // user can confirm that a restart actually happened. Sent once per
     // connect since the value is static for the process lifetime.
-    client.write(`event: system_info\ndata: ${JSON.stringify({ processStartedAt, buildId })}\n\n`);
+    client.write(`event: system_info\ndata: ${JSON.stringify({ processStartedAt, buildId, version })}\n\n`);
 
     // Send current Docker memory stats on connect
     if (dockerForStats) {

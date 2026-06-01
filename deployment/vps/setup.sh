@@ -82,15 +82,45 @@ ZERO_TRUST_DONE="${ZERO_TRUST_DONE:-}"
 EOC
 chmod 600 "$CONFIG_FILE"
 
-# --- Clone or update repo ---
+# --- Clone or update repo (channel-aware, feature 162) ---
+# The release channel lives in an untracked file so it survives git resets and
+# rebuilds. Default to edge when absent so existing installs keep tracking main;
+# fresh installs are pinned to stable below.
+CHANNEL_FILE="/opt/shipit/.release-channel"
+
+channel_ref() {
+  # Echo the remote ref for a channel, falling back to main when the stable
+  # branch does not yet exist on the remote (first-release bootstrap).
+  local ch="$1"
+  if [ "$ch" = "stable" ] && git -C /opt/shipit ls-remote --exit-code --heads origin stable >/dev/null 2>&1; then
+    echo "origin/stable"
+  else
+    echo "origin/main"
+  fi
+}
+
 if [ -d /opt/shipit/.git ]; then
-  echo "==> Repo already cloned, pulling latest..."
-  git -C /opt/shipit pull
+  echo "==> Repo already cloned, syncing to its release channel..."
+  CHANNEL="$(cat "$CHANNEL_FILE" 2>/dev/null || echo edge)"
+  REF="$(channel_ref "$CHANNEL")"
+  echo "    channel=$CHANNEL ref=$REF"
+  # Mirror update.sh: never `git pull` (that would advance a stable box to the
+  # upstream tip and silently un-pin it). Fetch + hard-reset to the channel ref.
+  git -C /opt/shipit fetch origin --tags --prune
+  git -C /opt/shipit fetch origin "${REF#origin/}"
+  git -C /opt/shipit reset --hard "$REF"
 else
   echo "==> Cloning repo..."
   apt-get update -qq
   apt-get install -y -qq git
   git clone "$REPO_URL" /opt/shipit
+  # Fresh installs default to the stable channel and boot on the latest release
+  # rather than the tip of main (falls back to main until the first stable cut).
+  echo "stable" > "$CHANNEL_FILE"
+  git -C /opt/shipit fetch origin --tags --prune
+  REF="$(channel_ref stable)"
+  echo "==> Pinning new install to stable channel (ref $REF)"
+  git -C /opt/shipit reset --hard "$REF"
 fi
 
 # --- Install Docker ---

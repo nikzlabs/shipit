@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 description: Add stable/edge release channels so self-hosters can pin to vetted, low-frequency releases instead of always tracking main.
 ---
@@ -283,7 +283,8 @@ alone). Add a separate human-facing version resolver:
 
 | File | Change |
 |------|--------|
-| `src/server/orchestrator/services/updates.ts` | Channel-aware `checkForUpdates()`; new `setChannel()`; extend `UpdateStatus` with channel/version fields |
+| `src/server/orchestrator/release-channel.ts` | **New** shared module: `.release-channel` read/write, `ReleaseChannel` type, `channelRef()`/`channelBranch()`, `DEFAULT_CHANNEL = "edge"`. Imported by `updates.ts` and `build-id.ts` to avoid coupling those modules to each other |
+| `src/server/orchestrator/services/updates.ts` | Channel-aware `checkForUpdates()`; new `setChannel()` + `getVersion()`; extend `UpdateStatus` with channel/version/`isDowngrade` fields |
 | `src/server/orchestrator/api-routes-updates.ts` | New `POST /api/updates/channel`; channel in check response |
 | `src/server/orchestrator/build-id.ts` | Add `resolveVersion()` — `git describe` against `/opt/shipit` (NOT the container cwd / `SHIPIT_BUILD_ID` env), with a short-SHA/`edge` fallback when the host repo is absent; keep `resolveBuildId()`'s SHA contract untouched |
 | `src/server/shared/types/domain-types.ts` | Version/channel types surfaced to client |
