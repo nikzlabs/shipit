@@ -261,12 +261,12 @@ export class SessionWorker extends EventEmitter {
   private registerSessionEndpoints(app: FastifyInstance): void {
     // --- Agent endpoints ---
 
-    app.post<{ Body: { agentId: AgentId; params: AgentRunParams } }>("/agent/start", async (request, reply) => {
+    app.post<{ Body: { agentId: AgentId; params: AgentRunParams; runToken?: string } }>("/agent/start", async (request, reply) => {
       if (this.agent) {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
-      const { agentId, params } = request.body;
+      const { agentId, params, runToken } = request.body;
       if (!agentId || !params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
@@ -279,7 +279,7 @@ export class SessionWorker extends EventEmitter {
         // failure channel) and consumes a uniform { mcpConfigPath?,
         // runtimeEnv?, cleanup? } result.
         this.agent = this.agentFactory(agentId);
-        this.wireAgentEvents(this.agent);
+        this.wireAgentEvents(this.agent, runToken);
         const mcpWrite = this.invokeAgentMcpWriter(this.agent, params);
 
         this.withTemporaryEnv(mcpWrite.runtimeEnv ?? {}, () => {
@@ -1266,8 +1266,18 @@ export class SessionWorker extends EventEmitter {
 
   // --- Event wiring ---
 
-  /** Wire agent events to the SSE stream. */
-  private wireAgentEvents(agent: AgentProcess): void {
+  /**
+   * Wire agent events to the SSE stream.
+   *
+   * `runToken` is the orchestrator's per-SPAWN correlation token (see
+   * `ProxyAgentProcess.runToken`). It is captured in the done/error/
+   * auth_required closures and stamped onto those SSE events so the
+   * orchestrator can tell a stale exit from a previous spawn apart from the
+   * current one and refuse to null the live `_agent` slot. Undefined for
+   * callers that don't supply one (legacy / direct test starts) — the
+   * orchestrator then falls back to its object-identity guards.
+   */
+  private wireAgentEvents(agent: AgentProcess, runToken?: string): void {
     agent.on("event", (event: AgentEvent) => {
       this.broadcastSSE({ type: "agent_event", data: event });
     });
@@ -1278,22 +1288,27 @@ export class SessionWorker extends EventEmitter {
     // 409-retry dance in container-session-runner.ts) would null out the
     // freshly-spawned NEW agent that already replaced `this.agent`, stranding
     // the worker with no agent reference while the new CLI keeps running.
+    //
+    // The captured `runToken` is the orchestrator-side correlation for the SAME
+    // purpose across the SSE boundary: the orchestrator can't compare process
+    // identity, so it compares this token (see container-session-runner.ts
+    // `isStaleSpawnEvent`).
     agent.on("done", (exitCode: number) => {
-      this.broadcastSSE({ type: "agent_done", data: { exitCode } });
+      this.broadcastSSE({ type: "agent_done", data: { exitCode, runToken } });
       if (this.agent === agent) {
         this.agent = null;
       }
     });
 
     agent.on("error", (err: Error) => {
-      this.broadcastSSE({ type: "agent_error", data: { message: err.message } });
+      this.broadcastSSE({ type: "agent_error", data: { message: err.message, runToken } });
       if (this.agent === agent) {
         this.agent = null;
       }
     });
 
     agent.on("auth_required", () => {
-      this.broadcastSSE({ type: "agent_auth_required", data: {} });
+      this.broadcastSSE({ type: "agent_auth_required", data: { runToken } });
     });
 
     agent.on("log", (source: string, text: string) => {

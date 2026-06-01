@@ -669,7 +669,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * if the worker is genuinely dead, the SSE stream fails and the
    * Rescue-session UI surfaces it. (Refines doc 124 §1.3.)
    */
-  async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
+  async _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string): Promise<void> {
     // Serialize start sequences per runner. The B2 recovery path below can
     // kill the worker's agent and start a fresh one; if a second caller is
     // mid-kill+restart at the same moment, the two sequences tear down each
@@ -681,13 +681,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._startInFlight = new Promise<void>((r) => { release = r; });
     try {
       await prev.catch(() => {});
-      await this._doStartAgentViaProxy(agentId, params);
+      await this._doStartAgentViaProxy(agentId, params, runToken);
     } finally {
       release();
     }
   }
 
-  private async _doStartAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void> {
+  private async _doStartAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string): Promise<void> {
     await this._workerReady;
 
     // Kick off SSE setup BEFORE waiting on the install gate. The install
@@ -704,7 +704,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await this._waitForInstallBeforeAgent();
 
     try {
-      await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
+      await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
     } catch (err) {
       // Narrow race: the previous turn's `agent_done` SSE event reaches the
       // orchestrator and triggers the queue drain → new POST /agent/start —
@@ -724,11 +724,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       if (err instanceof Error && err.message === "Agent already running") {
         await new Promise((r) => setTimeout(r, 150));
         try {
-          await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
+          await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
         } catch (retryErr) {
           if (retryErr instanceof Error && retryErr.message === "Agent already running") {
             await workerPost(this.workerUrl, "/agent/kill").catch(() => { /* may already be gone */ });
-            await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
+            await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken }, { timeoutMs: 0 });
           } else {
             throw retryErr;
           }
@@ -773,7 +773,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const proxy = new ProxyAgentProcess(agentId, this);
     this._agent = proxy;
 
-    await workerPost(this.workerUrl, "/agent/start", { agentId, params }, { timeoutMs: 0 });
+    await workerPost(this.workerUrl, "/agent/start", { agentId, params, runToken: proxy.runToken }, { timeoutMs: 0 });
 
     return proxy;
   }
@@ -1223,6 +1223,35 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return true;
   }
 
+  /**
+   * Decide whether a slot-ending worker event (`agent_done` / `agent_error` /
+   * `agent_auth_required`) belongs to a PREVIOUS spawn that no longer owns the
+   * runner's `_agent` slot — i.e. a stale exit that must be ignored.
+   *
+   * The worker stamps the spawning proxy's `runToken` (a per-spawn epoch) onto
+   * these events. We compare it against the token of the proxy CURRENTLY in the
+   * slot. A mismatch means the slot was reused (the rebase / Fix-CI flow killed
+   * the resident process and spawned a fresh one) and this event is the old
+   * process's late exit. Emitting it would run the live agent's done handler
+   * and null `_agent`, stranding the new turn's whole event stream — the prod
+   * bug this guard fixes.
+   *
+   * Backward/forward compatible: if the event carries no `runToken` (legacy
+   * worker) or the slot proxy has none, we DON'T treat it as stale — the
+   * existing object-identity guards and `verifyRunningState` safety net still
+   * apply, and the "missed agent_done" SSE-drop resilience path is preserved.
+   */
+  private isStaleSpawnEvent(eventType: string, data: Record<string, unknown>): boolean {
+    const incoming = data.runToken;
+    const current = this._agent?.runToken;
+    if (typeof incoming !== "string" || typeof current !== "string") return false;
+    if (incoming === current) return false;
+    console.warn(
+      `[sse-drop:${this.sessionId}] ${eventType} runToken=${incoming} != current ${current} — stale spawn exit ignored (slot reused)`,
+    );
+    return true;
+  }
+
   private handleSSEEvent(event: SSEEvent): void {
     try {
       const data = JSON.parse(event.data) as Record<string, unknown>;
@@ -1246,19 +1275,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
 
         case "agent_done":
-          if (this._agent) {
+          if (this._agent && !this.isStaleSpawnEvent("agent_done", data)) {
             this._agent.emit("done", (data.exitCode as number) ?? 0);
           }
           break;
 
         case "agent_error":
-          if (this._agent) {
+          if (this._agent && !this.isStaleSpawnEvent("agent_error", data)) {
             this._agent.emit("error", new Error((data.message as string) ?? "Unknown worker error"));
           }
           break;
 
         case "agent_auth_required":
-          if (this._agent) {
+          if (this._agent && !this.isStaleSpawnEvent("agent_auth_required", data)) {
             this._agent.emit("auth_required");
           }
           break;

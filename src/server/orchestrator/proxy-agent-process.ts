@@ -4,6 +4,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import type { AgentProcess, AgentId, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentRunParams, PermissionMode } from "../shared/types.js";
 import { WorkerTimeoutError } from "./worker-http.js";
 
@@ -37,7 +38,7 @@ function describeWorkerError(err: unknown, op: "start" | "stdin" | "interrupt"):
  * ProxyAgentProcess needs. Avoids a circular import dependency.
  */
 export interface ProxyAgentRunner {
-  _startAgentViaProxy(agentId: AgentId, params: AgentRunParams): Promise<void>;
+  _startAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string): Promise<void>;
   writeAgentStdin(data: string): Promise<void>;
   sendAgentMessage(text: string): Promise<void>;
   interruptAgentOnWorker(): Promise<void>;
@@ -59,6 +60,24 @@ export class ProxyAgentProcess extends EventEmitter<{
   log: [source: string, text: string];
 }> implements AgentProcess {
   readonly agentId: AgentId;
+  /**
+   * Per-SPAWN correlation token (a "run epoch"), distinct from `agentId`
+   * (which is the agent *type* — "claude"/"codex" — and is reused across
+   * turns). Generated once per proxy instance. The orchestrator sends this
+   * to the worker on `/agent/start`; the worker stamps it on every
+   * `agent_done`/`agent_error`/`agent_auth_required` it broadcasts for the
+   * spawn it belongs to. The SSE relay (`container-session-runner.ts`
+   * `handleSSEEvent`) compares the incoming token against the proxy that
+   * currently occupies the runner's `_agent` slot and IGNORES a slot-ending
+   * event whose token doesn't match — i.e. a STALE exit from a previous
+   * spawn that the rebase / Fix-CI flow killed when it reused the slot.
+   *
+   * Without this, the prior resident process's late `agent_done` (e.g. a
+   * SIGTERM `143`) was emitted onto the freshly-spawned agent, whose own
+   * object-identity-guarded done handler then nulled `_agent`, stranding
+   * the entire resolution turn's event stream. See docs/146 follow-up.
+   */
+  readonly runToken: string = randomUUID();
   readonly capabilities = {
     supportsResume: true,
     supportsImages: true,
@@ -86,7 +105,7 @@ export class ProxyAgentProcess extends EventEmitter<{
 
   /** Fire-and-forget POST to worker /agent/start. Errors emitted as events. */
   run(params: AgentRunParams): void {
-    this.runner._startAgentViaProxy(this.agentId, params).catch((err: unknown) => {
+    this.runner._startAgentViaProxy(this.agentId, params, this.runToken).catch((err: unknown) => {
       this.emit("error", describeWorkerError(err, "start"));
     });
   }
