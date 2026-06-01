@@ -228,10 +228,18 @@ router, not new audio infrastructure.
 ## Relationship to existing features
 
 - **`docs/144-voice-input`** (`in-progress`) — owns the manual Play button and the
-  whole TTS stack the native sink reuses. **Hard dependency: 163 cannot ship
-  until 144's playback infrastructure has landed.** 163 also resolves 144's
-  deferred hands-free/auto-play question and overrides its no-auto-play default
-  behind an opt-in mode.
+  whole TTS stack the native sink reuses. **This dependency is effectively
+  already satisfied:** an audit of the code confirms the entire playback
+  pipeline — `playback-store`, `use-voice-playback`, `extract-turn-prose`,
+  `PlayTurnButton` + MessageList integration, `POST /api/voice/speak`,
+  `services/voice`, `strip-for-tts`, `tts-cache`, the OpenAI/ElevenLabs provider
+  registry, `voice-catalog`, and the TTS settings — is built, tested, and wired
+  end-to-end. 144 remains `in-progress` only for manual QA / cross-browser items
+  (Android device testing, Safari/Firefox, hotkey conflict matrix), not
+  implementation. So 163 can build directly on the existing stack now and need
+  not wait for 144 to flip to `done`. 163 also resolves 144's deferred
+  hands-free/auto-play question and overrides its no-auto-play default behind an
+  opt-in mode.
 - **`docs/159-turn-end-notification-mcp`** (`done`) — its `voiceSummary` /
   `needsAttention` / `context` contract is adopted verbatim as the payload. Its
   receiver is **re-scoped from "an agent tool" to "the External webhook
