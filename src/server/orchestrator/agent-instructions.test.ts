@@ -218,6 +218,20 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).not.toContain("scaffold the essential files");
   });
 
+  it("ops overlay replaces Live preview with an infra clarification", () => {
+    const out = buildAgentSystemInstructions({ isOps: true });
+    // The build-oriented preview guidance must be gone — there's no app here.
+    expect(out).not.toContain("## Live preview");
+    expect(out).not.toContain("If the project needs a preview");
+    // ...and replaced by a note that the compose service is host infra, not a
+    // frontend preview, so the agent doesn't misread the proxy.
+    expect(out).toContain("## Compose services");
+    expect(out).toContain("docker-socket-proxy");
+    expect(out).toMatch(/not an app preview/i);
+    // The default (non-ops) prompt still has the real Live preview section.
+    expect(buildAgentSystemInstructions()).toContain("## Live preview");
+  });
+
   it("ops overlay composes with the per-agent Parallel sessions section", () => {
     const out = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
     expect(out).toContain("## Ops session");

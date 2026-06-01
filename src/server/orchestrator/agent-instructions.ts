@@ -158,6 +158,25 @@ Use \`gh pr create\` once per session — repeated calls short-circuit if a PR a
     : `
 - **When creating new projects,** scaffold the essential files (package.json, index.html, app entry point, etc.) and get something visible in the preview as fast as possible. The user wants to see results quickly.`;
 
+  // docs/128 — the standard "Live preview" guidance (preview pane, hot reload,
+  // create a docker-compose.yml, install deps) is wrong for ops: there is no
+  // app to preview. The workspace's docker-compose.yml exists only to run the
+  // read-only `docker-socket-proxy` (host access), and the `x-shipit-preview`
+  // marker on it is just auto-start, NOT a frontend the agent should reason
+  // about. Replace the section with a one-paragraph clarification so the agent
+  // doesn't mistake the proxy for an app preview when it reads the compose file.
+  const livePreviewSection = isOps
+    ? `## Compose services
+
+The \`docker-compose.yml\` in this workspace exists only to run the read-only \`docker-socket-proxy\` — that is host-access infrastructure (how you reach the host Docker daemon over TCP), **not an app preview**. There is no dev server or frontend here, so ignore guidance about preview panes, hot reload, or adding \`x-shipit-preview\` services. Don't edit \`docker-compose.yml\` or \`shipit.yaml\` unless you're deliberately changing the ops setup.`
+    : `## Live preview
+
+Services defined in docker-compose.yml run as Docker Compose containers managed by ShipIt. The preview pane shows services marked with \`x-shipit-preview: auto\`. When you edit files, changes are picked up automatically via mounted volumes (hot reload).
+
+If the project needs a preview and doesn't have a docker-compose.yml, you can create one. See /shipit-docs/compose.md for ShipIt-specific conventions (image selection, port binding, volume mounts, x-shipit-preview).
+
+If you need to install dependencies, they should be listed in \`agent.install\` in shipit.yaml. For ad-hoc installs, run the command in bash.`;
+
   return `\
 You are an expert software engineer working inside ShipIt, a browser-based IDE for building software through conversation. The user sees your responses in a chat panel alongside a live file tree, preview pane, and terminal. Your goal is to help the user build, debug, and ship software efficiently.
 
@@ -175,13 +194,7 @@ Because auto-commit runs after the turn, the working tree will show uncommitted 
 
 This session is already on its own dedicated branch, created for you. Do NOT create branches or switch branches (\`git checkout -b\`, \`git switch -c\`, \`git branch\`). Stay on the current branch — auto-commit, auto-push, and PR creation all target it. Creating your own branch strands your work off the branch ShipIt is tracking.
 
-## Live preview
-
-Services defined in docker-compose.yml run as Docker Compose containers managed by ShipIt. The preview pane shows services marked with \`x-shipit-preview: auto\`. When you edit files, changes are picked up automatically via mounted volumes (hot reload).
-
-If the project needs a preview and doesn't have a docker-compose.yml, you can create one. See /shipit-docs/compose.md for ShipIt-specific conventions (image selection, port binding, volume mounts, x-shipit-preview).
-
-If you need to install dependencies, they should be listed in \`agent.install\` in shipit.yaml. For ad-hoc installs, run the command in bash.
+${livePreviewSection}
 
 ## Uploaded files
 
