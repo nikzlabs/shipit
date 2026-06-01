@@ -608,7 +608,31 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
     await user.click(screen.getByLabelText("Session actions"));
-    expect(await screen.findByText("Auto-merge")).toBeInTheDocument();
+    expect(await screen.findAllByText("Auto-merge")).toHaveLength(2);
+  });
+
+  it("renders a mobile-only auto-merge toggle beside the CI indicator", async () => {
+    const user = userEvent.setup();
+    const toggleAutoMerge = vi.fn();
+    usePrStore.setState({ toggleAutoMerge });
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "pending", total: 3, passed: 1, failed: 0, pending: 2 },
+      autoMerge: { enabled: false, mergeMethod: "squash" },
+    });
+
+    const { container } = render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+
+    const inlineToggle = screen.getByRole("button", { name: /Auto-merge/ });
+    const mobileOnlyWrapper = inlineToggle.closest(".md\\:hidden");
+    expect(mobileOnlyWrapper).toBeInTheDocument();
+    expect(mobileOnlyWrapper?.previousElementSibling).toHaveTextContent("CI 1/3");
+    expect(inlineToggle).toHaveTextContent("Auto-merge");
+
+    await user.click(inlineToggle);
+    expect(toggleAutoMerge).toHaveBeenCalledWith("s1", true);
+
+    expect(container.querySelector(".md\\:hidden")).toBe(mobileOnlyWrapper);
   });
 
   it("uses the shared neutral auto-merge icon color in the top-bar overflow", async () => {
@@ -621,7 +645,7 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
     await user.click(screen.getByLabelText("Session actions"));
-    const label = await screen.findByText("Auto-merge");
+    const label = (await screen.findAllByText("Auto-merge"))[1];
     const icon = label.closest("span")?.querySelector("svg");
     expect(icon).toHaveClass(AUTO_MERGE_ICON_CLASS);
   });
