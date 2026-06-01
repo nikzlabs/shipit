@@ -1150,6 +1150,16 @@ export function wireAgentListeners(
         runner.isStreamingActive = false;
       }
       runner.running = false;
+      // docs/163 — the errored turn has just been finalized into chat history
+      // (replaceInProgress + finalize + the error row above). Clear the
+      // turn-event replay buffer so a subsequent WS reconnect doesn't re-emit
+      // those same events on top of the already-persisted turn. Without this,
+      // the buffer stays dirty (lastPersistedBufferIndex only advances on
+      // tool-result / agent_result boundaries, never on the error path), and
+      // every reconnect — including a browser reload — replays the completed
+      // turn a second time, producing a duplicate that survives reload. This
+      // mirrors the clean-completion path in the `agent_result` handler.
+      runner.clearTurnEventBuffer();
       if (turnSessionId) {
         emitToViewers({
           type: "session_status",

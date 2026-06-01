@@ -986,6 +986,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           lastViewerDetachAt: runner.lastViewerDetachAt,
           disposed: runner.disposed,
           queueLength: runner.queueLength,
+          // Size of the post-turn replay buffer. A terminal turn (result,
+          // error, interrupt) must leave this at 0 so a reconnect doesn't
+          // re-emit a completed turn (docs/163).
+          turnEventBufferSize: runner.getTurnEventBuffer().length,
         };
       },
     );
