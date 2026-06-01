@@ -24,6 +24,7 @@ import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { PlayTurnButton } from "./PlayTurnButton.js";
+import { ChatQuoteReply } from "./ChatQuoteReply.js";
 import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
@@ -477,6 +478,11 @@ export function MessageList({
 
   return (
     <div ref={containerRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-2">
+      {/* SHI-10 — floating "Reply" button shown when the user highlights text
+          inside a message bubble; quotes the passage into the composer. Scoped
+          to this scroll container via the ref so it never fires on the composer
+          or other panels. */}
+      <ChatQuoteReply containerRef={containerRef} />
       {buildVisualElements(messages).map((el, elIdx, allElements) => {
         // ── Tool-group: grouped tool calls from consecutive assistant messages ──
         if (el.kind === "tool-group") {
