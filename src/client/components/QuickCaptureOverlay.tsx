@@ -8,6 +8,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { createHeadlessSession } from "../stores/actions/session-actions.js";
 import { getSavedAgentId, getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
+import { agentIdForModel } from "../utils/agent-for-model.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
 import { Button } from "./ui/button.js";
@@ -25,12 +26,25 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
   const permissionMode = useSettingsStore((s) => s.permissionMode);
   const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | undefined>(undefined);
   const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState(getSavedAgentId());
   const [selectedModel, setSelectedModel] = useState<string | undefined>(getSavedModelId());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const restoreFocusRef = useRef<{ element: HTMLTextAreaElement; start: number | null; end: number | null } | null>(null);
   const wasOpenRef = useRef(false);
+
+  // The model is the single source of truth; derive the agent from it rather
+  // than tracking a separate `vibe-agent-id`, which can go stale (it's only
+  // re-persisted when the picker switches agents in an *unpinned* session, so a
+  // user who picks Claude models inside already-pinned sessions keeps a stale
+  // `codex` agent key). Sending that stale key would pin the brand-new quick
+  // session to the wrong agent even though the overlay shows Claude. Mirror
+  // useSessionWebSocket.ts and fall back to the saved agent only when the model
+  // is unknown or the agent list hasn't loaded yet. See docs/142 (Problem C)
+  // and docs/166-quick-capture-agent-pin.
+  const selectedAgentId = useMemo(
+    () => agentIdForModel(selectedModel, agentList) ?? getSavedAgentId(),
+    [selectedModel, agentList],
+  );
 
   const activeSessionRepo = useMemo(
     () => sessions.find((s) => s.id === sessionId)?.remoteUrl,
@@ -54,7 +68,6 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
       setSelectedRepoUrl(defaultRepoUrl);
     }
     wasOpenRef.current = true;
-    setSelectedAgentId(getSavedAgentId());
     setSelectedModel(getSavedModelId());
   }, [defaultRepoUrl, open]);
 
@@ -193,8 +206,11 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
                 agents={agentList}
                 activeAgentId={selectedAgentId}
                 onAgentChange={(agentId) => {
+                  // The agent shown/sent is derived from the model (see
+                  // `selectedAgentId`); we still persist the picked agent so the
+                  // global `vibe-agent-id` preference and ui-store stay in sync,
+                  // but the overlay never reads it back as an independent source.
                   saveAgentId(agentId);
-                  setSelectedAgentId(agentId);
                   useUiStore.getState().setActiveAgentId(agentId);
                 }}
                 onModelChange={(model) => {
