@@ -385,6 +385,30 @@ independently.)
    the agent inside the ops session knows what it can and can't do
    (read-only Docker, read-only journal, where to look, examples).
 
+7a. **System-prompt ops overlay** — `shipit-docs/ops-session.md` and the
+    `prompts/*.md` recipes are *workspace/reference* files: the agent only
+    benefits from them if it (or the operator) reads/pastes them. So a fresh
+    ops session whose operator just asks a free-form question
+    ("is anything looping?") got the **generic, build-oriented** system prompt
+    and had no idea it was a privileged read-only host-debug box — it would try
+    Docker mutations (rejected, 403, confusing) and trip over the bare
+    `journalctl` "No journal files were found" trap. Fix: `isOps` is now a
+    second branching axis on `buildAgentSystemInstructions` (alongside
+    `agentId`; both fixed for a session's lifetime, so prompt-cache stability
+    holds). When set it (a) splices in an "Ops session" block naming the
+    read-only privilege surface + the `journalctl -D /var/log/journal` rule and
+    pointing at `ops-session.md` / `prompts/`, (b) swaps the aggressive
+    "edited a file ⇒ open a PR" guidance for a read-only variant, (c) drops
+    the "scaffold a new project" best practice, and (d) replaces the
+    "Live preview" section with a "Compose services" note — the workspace
+    `docker-compose.yml` runs only the host-access `docker-socket-proxy`, so
+    preview-pane / hot-reload / `x-shipit-preview` guidance is irrelevant and
+    would otherwise have the agent treat the proxy like an app frontend.
+    Threaded through
+    `session-agent-run-params.ts`, which reads `session.kind === "ops"` in the
+    pre-`await` DB block (same ordering rule as the other synchronous reads).
+    Key files: `agent-instructions.ts`, `session-agent-run-params.ts`.
+
 8. **Tests**:
    - Integration: ops template produces the expected workspace shape;
      gating works (non-operator can't create it).
