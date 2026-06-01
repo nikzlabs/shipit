@@ -423,6 +423,13 @@ A spawned session is just a regular session — it gets its own container with t
 
 The existing idle-container cleanup (doc 063) applies normally — spawned sessions that go idle for the configured period get their containers stopped, just like any other session.
 
+**Resume on follow-up message.** The idle-enforcer broadcasts "Send a message to resume" when it reaps a container, and `shipit session message` must honor that contract for agent-driven messages — not just for a browser viewer reopening the tab. `sendChildMessage` (`services/child-sessions.ts`) therefore:
+
+- Detects a *stale* runner — one still in the registry whose container has been reaped (idle-eviction race, missed Docker `die`, external `docker rm`) — via the `containerManager` and disposes it, so `getOrCreate` builds a fresh runner and the registry factory boots a new container. (When the idle-enforcer disposed the runner too, `getOrCreate` already builds fresh; this covers the case where only the container went away.)
+- Waits (bounded) for the resumed container's worker to be ready, then only reports `enqueued`/`queuePosition` (the shim's `starting turn` / `queued` line) once a live worker holds the turn. If the container fails to boot, the route returns `503` and the shim fails loudly — instead of the previous false `delivered: starting turn` for a turn that never ran.
+
+Regression coverage: `integration_tests/child-message-resume.test.ts` (fake-Docker harness).
+
 ## Phasing
 
 | Phase | Scope | Status |

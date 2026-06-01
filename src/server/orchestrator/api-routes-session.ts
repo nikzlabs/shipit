@@ -749,6 +749,7 @@ export async function registerSessionRoutes(
           deps.credentialsDir,
           deps.credentialStore,
           deps.providerAccountManager,
+          deps.containerManager,
         );
         return { queuePosition: result.queuePosition, enqueued: result.enqueued };
       } catch (err) {

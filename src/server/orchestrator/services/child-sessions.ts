@@ -13,6 +13,8 @@ import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-r
 import type { SessionInfo, AgentId } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
+import type { SessionContainerManager } from "../session-container.js";
+import { ContainerSessionRunner } from "../container-session-runner.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
@@ -456,6 +458,36 @@ export interface SendChildMessageResult {
 }
 
 /**
+ * How long `sendChildMessage` waits for a freshly-booted container's worker to
+ * become ready before it gives up and reports the truthful outcome. The wait
+ * is a backstop only — `prepareSessionAgentEnvironment` already awaits worker
+ * readiness on the credentialed path — so it's generous but finite. On timeout
+ * we still dispatch (the dispatched turn's own `_startAgentViaProxy` awaits
+ * readiness too), so a slow-but-eventual boot is not a false failure; the wait
+ * exists so a boot *failure* (which disposes the runner) is observed before we
+ * ack, not after.
+ */
+const CHILD_MESSAGE_WORKER_READY_TIMEOUT_MS = 30_000;
+
+/**
+ * True when `containerManager` is tracking a live (running or starting)
+ * container for the session. A runner can outlive its container in the
+ * registry — an idle-eviction race, a missed Docker `die` event, a daemon
+ * restart, or an external `docker rm` all leave the runner pointed at a dead
+ * worker URL. `getOrCreate` would then hand that stale runner straight back,
+ * and `dispatch()` would fire a turn into the void. Used to detect that case
+ * so the stale runner can be torn down and re-created (booting a fresh
+ * container via the registry factory).
+ */
+function hasLiveContainer(
+  containerManager: SessionContainerManager,
+  sessionId: string,
+): boolean {
+  const sc = containerManager.get(sessionId);
+  return !!sc && (sc.status === "running" || sc.status === "starting");
+}
+
+/**
  * Phase 3 — send a follow-up prompt to a child session the parent itself
  * spawned. Returns the child's queue position so the shim can surface a
  * "queued behind N turns" hint to the agent.
@@ -463,6 +495,18 @@ export interface SendChildMessageResult {
  * Validates the parent → child linkage (cross-tenancy 404) and the prompt
  * shape (non-empty, ≤ 50,000 chars) before reaching for the runner registry,
  * so a malformed call doesn't even create a runner.
+ *
+ * Container resume: an agent-driven follow-up must honor the idle-enforcer's
+ * "Send a message to resume" contract just like a browser viewer reopening the
+ * tab does. When the child's container has been idle-reaped, two states are
+ * possible: (a) the runner was disposed too (the common idle-enforcer path) —
+ * `getOrCreate` then builds a fresh runner and the registry factory boots a new
+ * container; or (b) the runner survives in the registry while its container is
+ * gone (eviction race / missed `die` event / external `docker rm`) — here
+ * `getOrCreate` returns the stale, container-less runner, so we dispose it
+ * first to force a fresh boot. Either way the turn is only acked as
+ * started/queued once a live worker holds it; if the container fails to boot we
+ * fail loudly rather than reporting a phantom "starting turn".
  */
 export async function sendChildMessage(
   sessionManager: SessionManager,
@@ -474,6 +518,7 @@ export async function sendChildMessage(
   credentialsDir: string | undefined,
   credentialStore: CredentialStore | undefined,
   providerAccountManager?: ProviderAccountManager,
+  containerManager?: SessionContainerManager | null,
 ): Promise<SendChildMessageResult> {
   const trimmed = text?.trim();
   if (!trimmed) throw new ServiceError(400, "Message text is required");
@@ -488,13 +533,29 @@ export async function sendChildMessage(
     throw new ServiceError(400, "Child session is archived");
   }
 
-  // Resolve or create the runner. `getOrCreate` matches the spawn path —
-  // creating a runner here is fine: it just primes the registry and the
-  // runner picks the message up on its next start. Prefer the child's
-  // pinned `agentId` (set by `spawnChildSession` / first-turn provisioning)
-  // so a Codex child stays on Codex even if the orchestrator's
-  // `defaultAgentId` points elsewhere. Only newly-created, never-run children
-  // are missing `agentId`, in which case the default is the right fallback.
+  // If a runner is lingering in the registry but its container has already
+  // been reaped, it points at a dead worker — dispatching into it silently
+  // fails (the symptom: `delivered: starting turn` with no agent reaction).
+  // Tear it down so the `getOrCreate` below builds a fresh runner and the
+  // registry factory boots a new container. `force` because a stale runner may
+  // still believe a turn is `running` even though the worker that ran it is
+  // gone. Only meaningful in container mode (a `containerManager` is wired).
+  if (containerManager) {
+    const stale = runnerRegistry.get(childSessionId);
+    if (stale && !hasLiveContainer(containerManager, childSessionId)) {
+      runnerRegistry.dispose(childSessionId, { force: true });
+    }
+  }
+
+  // Resolve or create the runner. `getOrCreate` matches the spawn path:
+  // creating a runner here primes the registry, and — in container mode — the
+  // registry factory boots a container for a brand-new runner (so an
+  // idle-reaped or never-started session is resumed, not silently dropped).
+  // Prefer the child's pinned `agentId` (set by `spawnChildSession` /
+  // first-turn provisioning) so a Codex child stays on Codex even if the
+  // orchestrator's `defaultAgentId` points elsewhere. Only newly-created,
+  // never-run children are missing `agentId`, in which case the default is the
+  // right fallback.
   const runner = runnerRegistry.getOrCreate(childSessionId, child.workspaceDir, child.agentId ?? defaultAgentId);
 
   // docs/149 — refresh per-session credentials + OAuth + MCP env before the
@@ -516,6 +577,29 @@ export async function sendChildMessage(
       },
     });
   }
+  // Truthful ack: in container mode, only report a started/queued turn once a
+  // live worker actually exists to run it. For a fresh runner the registry
+  // factory boots the container asynchronously and resolves `whenWorkerReady`
+  // on success — or disposes the runner on boot failure. Wait (bounded) for
+  // that to settle. The credentialed env-prep above already awaits readiness,
+  // so on the common path this resolves immediately; the explicit wait covers
+  // the no-credentials path and makes the boot-failure case observable here.
+  if (runner instanceof ContainerSessionRunner) {
+    await Promise.race([
+      runner.whenWorkerReady(),
+      new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, CHILD_MESSAGE_WORKER_READY_TIMEOUT_MS);
+        t.unref?.();
+      }),
+    ]);
+  }
+  if (runner.disposed) {
+    // The container failed to boot (the factory disposed the runner). Fail
+    // loudly instead of returning a phantom "starting turn" the agent will
+    // wait on forever.
+    throw new ServiceError(503, "Could not resume the session container; the message was not delivered.");
+  }
+
   runner.dispatch({ text: trimmed });
   return {
     queuePosition: wasRunning ? runner.queueLength : 0,
