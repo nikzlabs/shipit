@@ -2,38 +2,41 @@
 
 ## Design
 
-- [x] Document the split between read-only Ops investigation and writable child-session remediation.
-- [x] Define the read-only source access model for Ops sessions.
-- [x] Define the Ops-only cross-repo remediation spawn flow.
-- [x] Capture ShipIt repo vs ORC/customer repo permission behavior.
+- [x] Document that current Ops source access appears indirect through production Docker/container topology, not a narrow first-class contract.
+- [x] Define the split between read-only ShipIt source diagnosis and writable child-session remediation.
+- [x] Define the read-only ShipIt source access model for Ops sessions.
+- [x] Define the Ops-only ShipIt fix-session spawn flow.
+- [x] Capture behavior for users who can inspect ShipIt but cannot write to the upstream repository.
 
 ## Server
 
-- [ ] Add read-only repo context service for Ops sessions.
-- [ ] Add `shipit repo list/attach/search/cat/summary` shim commands.
-- [ ] Broker read-only repo commands through `/agent-ops/*`.
-- [ ] Add repo read permission checks for source context.
-- [ ] Extend child session spawn with Ops-only `--repo` target support.
-- [ ] Add repo write permission checks before remediation child creation.
-- [ ] Build and redact incident packets for spawned remediation sessions.
-- [ ] Enforce clear failure modes when no writable target repo exists.
+- [ ] Add a service that resolves the running ShipIt source ref.
+- [ ] Add read-only ShipIt source snapshot/search access for Ops sessions.
+- [ ] Add `shipit source status/tree/search/cat` shim commands.
+- [ ] Broker read-only source commands through `/agent-ops/*`.
+- [ ] Redact credentials, `.env` files, and `.git` internals from source access.
+- [ ] Extend child session spawn with Ops-only `--shipit-source` target support.
+- [ ] Add ShipIt source repo write permission checks before fix-session creation.
+- [ ] Build and redact incident packets for spawned ShipIt fix sessions.
+- [ ] Enforce a clear failure mode when the operator lacks write access to the ShipIt repo.
 
 ## Client
 
-- [ ] Render read-only repo attachments/source references in Ops context.
-- [ ] Render an Ops remediation spawned-session card with target repo and diagnosis summary.
-- [ ] Surface permission failures inline in the Ops transcript.
+- [ ] Render ShipIt source ref/status in Ops context.
+- [ ] Render an Ops remediation spawned-session card with source ref and diagnosis summary.
+- [ ] Surface source/write-permission failures inline in the Ops transcript.
 
 ## Docs
 
 - [ ] Update `src/server/shipit-docs/ops-session.md`.
 - [ ] Update `src/server/shipit-docs/sessions.md`.
-- [ ] Add prompts for source-aided diagnosis and targeted remediation spawn.
+- [ ] Add prompts for source-aided ShipIt diagnosis and targeted fix-session spawn.
 
 ## Tests
 
-- [ ] Shim tests for `shipit repo *` and rejected write commands.
-- [ ] Worker broker tests for read-only repo context routes.
-- [ ] Service tests for read/write permission gates.
-- [ ] Integration test: Ops attaches read-only source, spawns writable remediation child, child opens PR.
-- [ ] Integration test: read-only `ship-it` access with no write permission refuses ShipIt remediation and allows a writable ORC repo target.
+- [ ] Shim tests for `shipit source *` and rejected write commands.
+- [ ] Worker broker tests for read-only source context routes.
+- [ ] Service tests for source redaction and source-ref resolution.
+- [ ] Service tests for ShipIt repo write permission gates.
+- [ ] Integration test: Ops reads ShipIt source, spawns writable ShipIt fix child, child opens PR.
+- [ ] Integration test: read-only ShipIt source access with no write permission refuses fix-session creation and produces a clear error.

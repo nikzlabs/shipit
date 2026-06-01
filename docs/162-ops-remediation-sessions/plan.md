@@ -1,7 +1,7 @@
 ---
 status: planned
 priority: high
-description: Let Ops sessions inspect relevant source code read-only, then spawn targeted repo-backed remediation sessions that can open normal PRs.
+description: Give Ops sessions read-only ShipIt source access for diagnosis, then spawn targeted repo-backed fix sessions that can open normal PRs.
 ---
 
 # 162 — Ops remediation sessions
@@ -11,144 +11,181 @@ description: Let Ops sessions inspect relevant source code read-only, then spawn
 Ops sessions can diagnose production host issues from inside ShipIt: Docker
 state, session containers, service logs, and host journals are visible without
 giving the agent a mutating Docker socket. That boundary is correct, but it
-creates a follow-on gap. When the Ops agent identifies a product bug, deployment
-bug, or repo-specific failure mode, it often cannot inspect enough source code
-to produce a precise fix plan, and it cannot create the fix itself.
+still leaves the Ops agent under-informed when the incident is likely caused by
+a ShipIt bug.
 
-There are two tempting fixes:
+The common failure mode is:
 
-1. Give the Ops session direct write access to the ShipIt source checkout and
-   let it create PRs from the Ops workspace.
-2. Keep Ops read-only and let it spawn a normal repo-backed session that owns
-   the write path.
+1. Ops sees a broken container, lifecycle loop, stale runner, preview failure,
+   GitHub polling issue, or deployment bug.
+2. The useful clues are in production logs and in the ShipIt source code.
+3. The Ops session can inspect the logs but cannot inspect the ShipIt source
+   tree directly.
+4. The Ops agent can describe the symptom, but cannot create a targeted fix
+   session with the right files and root-cause hypothesis.
 
-Pick option 2, with one addition: the Ops session gets **read-only source
-access** to the relevant code so diagnosis can be specific before it delegates a
-fix. Ops remains the incident investigator; remediation happens in an ordinary
-ShipIt session with a normal workspace, branch, auto-commit flow, and PR card.
+The missing capability is not broad access to customer repositories. It is
+read-only access to the **ShipIt source code that is running this host**, plus a
+safe way to delegate the fix to a normal repo-backed ShipIt session.
+
+## Current State
+
+The current implementation does not give Ops sessions a documented, narrow
+ShipIt source surface in the Ops workspace, but production topology likely
+allows source inspection indirectly.
+
+Evidence:
+
+- `src/server/orchestrator/templates-ops.ts` bootstraps only the Ops workspace:
+  `README.md`, `shipit.yaml`, `docker-compose.yml`, and investigation prompts.
+- `src/server/shared/shipit-config.ts` only allow-lists these host mounts for
+  Ops: `/var/run/docker.sock`, `/var/log/journal`, and `/run/log/journal`.
+- `src/server/orchestrator/container-lifecycle.ts` applies those host mounts
+  read-only only when `config.opsSession` is true. There is no mount for the
+  ShipIt source checkout.
+- `src/server/shipit-docs/ops-session.md` documents read-only Docker and
+  journal access, and explicitly says there are no other host paths.
+- `deployment/vps/docker-compose.yml` mounts the host checkout into the
+  orchestrator container as `/opt/shipit:/opt/shipit`, and the prod image also
+  contains runtime source under `/app/src`.
+
+So when an Ops agent can read ShipIt source today, the likely path is the
+read-only Docker API: inspect the `shipit` orchestrator container, then read
+files from its mounted `/opt/shipit` checkout or baked `/app/src` tree. That is
+useful, but it is an emergent capability of Docker container-read access, not a
+first-class Ops contract. It is also broader than the actual product need,
+because generic container filesystem reads can expose runtime files that are
+not source code.
+
+This feature should keep the useful behavior but make it explicit, narrow, and
+testable: Ops should have a supported read-only ShipIt source surface without
+depending on ad hoc `docker cp` / container-filesystem reads.
 
 ## Goals
 
-- Let an Ops session inspect relevant source code read-only while investigating
-  a host issue.
-- Let the Ops agent create a targeted child session in the right repository,
+- Let an Ops session inspect the ShipIt source code read-only while
+  investigating host issues.
+- Make the source snapshot match the code deployed on the host as closely as
+  possible.
+- Let the Ops agent create a targeted child session in the ShipIt repository,
   seeded with the diagnosis, logs, suspected files, and reproduction steps.
-- Preserve the current Ops safety contract: no Docker writes, no host filesystem
-  writes, no direct commits from the Ops workspace.
-- Work for the ShipIt repository when the user has write access, and for ORC or
-  customer repositories when the user does not.
-- Keep all status inline in ShipIt: the diagnosis, spawned remediation session,
-  child PR, CI, and follow-up should all remain visible without making GitHub the
-  primary UI.
+- Preserve the current Ops safety contract: no Docker writes, no host
+  filesystem writes, and no direct commits from the Ops workspace.
+- Work when the operator has write access to the ShipIt repository, and degrade
+  clearly when the operator has only read access.
+- Keep the diagnosis, spawned fix session, PR, CI, and follow-up inline in
+  ShipIt.
 
 ## Non-goals
 
-- Do not turn the Ops session into a writable checkout of `ship-it`.
+- Do not give Ops writable access to the ShipIt source checkout.
+- Do not turn the Ops workspace itself into a branch of `ship-it`.
 - Do not grant the Ops container arbitrary GitHub API access.
-- Do not let the Ops agent push branches, open PRs, or mutate repo files
-  directly.
+- Do not add generic customer-repo browsing to Ops as part of this feature.
 - Do not add host mutation controls to the Host tab.
-- Do not require the user to leave ShipIt to create the remediation session.
 
 ## Design
 
 ### Two separate capabilities
 
-This feature deliberately separates **read access for investigation** from
-**write access for remediation**.
+This feature deliberately separates **read access for diagnosis** from **write
+access for remediation**.
 
-1. **Read-only source context in Ops**
-   The Ops session can request read-only access to one or more repositories that
-   are relevant to the incident. Source is exposed as an inspectable snapshot,
-   not as a writable Git working tree. The agent can search files, read docs,
-   inspect package manifests, and correlate logs to code paths.
+1. **Read-only ShipIt source context in Ops**
+   The Ops session can search and read the ShipIt source tree that corresponds
+   to the running host. This gives the Ops agent enough context to connect logs
+   to code paths and identify candidate fixes.
 
-2. **Repo-backed remediation child session**
-   When the Ops agent has a fix hypothesis, it calls a brokered session-spawn
-   command that creates a normal ShipIt session in the chosen repository. The
-   child session gets the write-capable workspace and the normal Git/PR
-   lifecycle. The parent Ops session only receives a spawned-session card and
-   status snapshots.
+2. **Repo-backed ShipIt fix session**
+   When the Ops agent has a fix hypothesis, it spawns a normal ShipIt session
+   targeting the ShipIt repository. The child owns edits, tests, commits, push,
+   and PR creation. The Ops parent only receives status snapshots and can send
+   follow-up prompts through the existing spawned-session controls.
 
-The existing agent-spawned sessions system (doc 117) is the right foundation
-for the second half. The missing pieces are cross-repo spawn support and a
-read-only repo-context surface that Ops can use before spawning.
+This preserves the security boundary: Ops can inspect production and source
+read-only; normal repo sessions perform code mutation through the existing Git
+and PR machinery.
 
-### Read-only source access
+### Source Snapshot
 
-Ops sessions need enough source visibility to make targeted remediation
-prompts. The safest shape is an orchestrator-owned read-only repo context
-service:
+The source context should be orchestrator-owned, not a writable bind mount from
+the host into the Ops workspace.
 
-- The orchestrator resolves the repositories the current user can read through
-  the existing GitHub installation/auth path.
-- The orchestrator maintains or reuses bare repo caches for those repositories.
-- The Ops session requests a read-only source context by repo and ref, for
-  example `shipit repo attach --repo owner/name --ref main`.
-- The session worker brokers that request through `/agent-ops/*`; the agent
-  cannot call arbitrary repo APIs.
-- The orchestrator exposes the snapshot to the Ops container read-only, either
-  as a mounted directory under a reserved path such as
-  `/workspace/.shipit/read-only-repos/owner__name`, or through a small CLI that
-  supports `list`, `search`, and `cat`.
+Recommended source selection order:
 
-Recommendation: start with a CLI-backed virtual surface rather than mounting a
-full checkout. A CLI is narrower and easier to authorize:
+1. **Exact deployed commit**, if the orchestrator can determine it from build
+   metadata, image labels, environment, or a persisted deployment record.
+2. **Current server checkout**, if production runs from a mounted checkout and
+   the orchestrator can safely expose a read-only snapshot of it.
+3. **Default branch head**, if no deployed commit metadata exists. This is less
+   precise and should be labeled as such in the Ops transcript.
+
+The snapshot should be exposed through a narrow CLI surface first:
 
 ```bash
-shipit repo list
-shipit repo attach --repo owner/name --ref main
-shipit repo search --repo owner/name "ContainerSessionRunner"
-shipit repo cat --repo owner/name src/server/orchestrator/session-container.ts
+shipit source status
+shipit source search "ContainerSessionRunner"
+shipit source cat src/server/orchestrator/session-container.ts
+shipit source tree src/server/orchestrator
 ```
 
-The CLI should support plain text and `--json`, like the existing `shipit
-session` shim. It should never expose credentials, `.git/config`, credential
-helpers, or write-capable checkout metadata. If we later need filesystem
-mounting for better local tooling, the mount must be read-only and generated
-from a detached snapshot directory, not from the shared writable repo cache.
+Why CLI-first:
 
-### Selecting the remediation target
+- It can be brokered through the existing `/agent-ops/*` trust boundary.
+- It avoids mounting `.git`, credentials, writable worktrees, runtime
+  directories, or arbitrary host paths into the Ops container.
+- It avoids relying on broad Docker container filesystem reads as the source
+  access mechanism.
+- It gives us a small testable allow-list: status, tree, search, cat.
 
-The target repository can be explicit or inferred, but it must always be
-validated before a child session is created.
+If local tools become important later, add a read-only generated snapshot mount
+under a reserved path such as `/workspace/.shipit/shipit-source`. That mount
+must be detached from the writable repo cache and must not expose Git
+credentials or write-capable checkout metadata.
 
-Explicit examples:
+### What Source Access Allows
+
+Allowed:
+
+- Search file contents.
+- Read specific files.
+- List directories.
+- Report the source ref and whether it is exact or approximate.
+- Include file references in a remediation prompt.
+
+Rejected:
+
+- Editing files.
+- Creating commits.
+- Running arbitrary Git commands against the source snapshot.
+- Reading credential files, `.env` files, private runtime state, or `.git`
+  internals.
+- Using source access as a general host filesystem mount.
+- Using `docker cp` or equivalent container archive APIs as the blessed source
+  browsing mechanism.
+
+### Spawned Fix Session
+
+The write path should use the existing agent-spawned session system from doc
+117, with an Ops-specific target:
 
 ```bash
-shipit session create --repo shipit/shipit -p "Fix the container restart loop..."
-shipit session create --repo acme/orc-platform -p "Fix the ORC deploy failure..."
+shipit session create --shipit-source -p "PROMPT" [--title T] [--agent A] [--model M] [--json]
 ```
 
-Inference can use host/deployment metadata when available:
+Equivalent naming could be `--repo shipit`, but the important behavior is that
+this is a first-class "fix ShipIt itself" target, not a generic cross-repo
+spawn.
 
-- A session container label can point back to its repo URL.
-- Deployment records can map a failing service to a GitHub repository.
-- A stack name can map to a repo imported in ShipIt.
-- If multiple candidates exist, the Ops agent should ask the user to choose.
+Behavior:
 
-The orchestrator must check two permissions:
-
-- **Read permission** for Ops source context.
-- **Write permission** for remediation session creation and PR push.
-
-If the user can read `ship-it` but cannot write it, Ops can still inspect it
-read-only, but remediation must target a writable repo such as an ORC repo,
-customer app repo, fork, or deployment repo. If no writable target exists, the
-Ops session produces a structured incident report with the suspected files and
-recommended patch rather than creating a child session.
-
-### Spawned remediation session
-
-Extend `shipit session create` with an Ops-allowed `--repo` flag. This is not a
-generic fan-out feature for every session. It is a remediation path with a
-specific trust model:
-
-- Only Ops sessions can request cross-repo spawns.
-- The worker injects the parent Ops session ID; the agent cannot spoof a parent.
-- The orchestrator validates the repo against the current user account.
-- The child session is created through the same repo claim path as a normal new
-  ShipIt session.
+- Only Ops sessions can use this target.
+- The orchestrator validates that the current user can write to the configured
+  ShipIt source repository before creating the child session.
+- If the user lacks write access, the command fails with a clear inline error
+  and leaves the Ops diagnosis intact.
+- The child session is created through the same repo claim path as a normal
+  ShipIt repository session.
 - The child prompt is seeded with a structured incident packet from the Ops
   parent.
 
@@ -157,128 +194,147 @@ The incident packet should include:
 - Incident summary and observed symptoms.
 - Host/session/service identifiers that are safe to expose.
 - Relevant log excerpts, trimmed and redacted.
-- Read-only code references inspected by Ops.
+- Source ref inspected by Ops.
+- Source files and symbols inspected by Ops.
 - Suspected root cause and candidate files.
 - Constraints: tests to run, behavior to preserve, and what not to touch.
 - Linkage back to the Ops parent session.
 
 The child owns all file edits, tests, commits, pushes, and PR creation. The Ops
-parent can `view`, `wait`, and `message` the child using the existing spawned
+parent can `view`, `wait`, and `message` the child using existing spawned
 session controls, but it cannot read the child's filesystem directly or push its
 branch.
 
+### Read-Only Access Without Write Access
+
+Some operators may be able to run or inspect ShipIt in an ORC-style deployment
+without write access to the upstream ShipIt repository.
+
+In that case:
+
+- `shipit source *` should still work if the user is authorized to operate the
+  host.
+- `shipit session create --shipit-source` should fail before creating a child,
+  because the user cannot push a fix branch or open a PR against the source
+  repo.
+- The Ops agent should produce a structured incident report with source
+  references and a recommended patch outline.
+
+Future work can add an explicit fork or downstream repo target, but v1 should
+not silently choose a fork. The user should see where code will be changed.
+
 ### Inline UX
 
-The Ops chat should render a remediation card when a child session is spawned.
-It should be similar to the existing `SpawnedSessionCard`, with Ops-specific
-context:
+The Ops chat should render a remediation card when a ShipIt fix session is
+spawned. It should be similar to the existing `SpawnedSessionCard`, with
+Ops-specific context:
 
+- Source ref inspected by Ops.
 - Target repository and branch.
 - Diagnosis summary.
 - Child status: starting, running, idle, PR opened, CI failing, CI passing.
 - Latest child assistant summary.
 - PR lifecycle summary when the child opens a PR.
 
-The Host tab can surface read-only source attachments as context, but it should
-not add buttons that run commands or mutate state. The user can ask the Ops
-agent in chat to attach a repo, inspect a file, or spawn a remediation session.
+The Host tab can surface the source-ref status and recent source references,
+but it should not add buttons that run commands or mutate state. The user can
+ask the Ops agent in chat to inspect source or spawn a fix session.
 
-### Trust boundaries
+### Trust Boundaries
 
 | Risk | Mitigation |
 |---|---|
 | Ops mutates production Docker state | Existing read-only Docker proxy remains unchanged. |
-| Ops mutates source directly | Source context is read-only; no Git writes from Ops. |
-| Ops opens PRs against `ship-it` for users without write access | Orchestrator checks write permission before child creation. |
-| Ops leaks private repo contents across users | Repo attach and search are scoped to the current user's GitHub auth. |
-| Ops targets the wrong repo | Require explicit `--repo` when inference is ambiguous; show target repo in the remediation card. |
-| Agent creates many remediation sessions | Reuse spawned-session quotas, with a lower Ops-specific per-turn default if needed. |
+| Ops mutates ShipIt source directly | Source context is read-only; no Git writes from Ops. |
+| Ops sees host paths outside the contract | Source is brokered or snapshotted; no arbitrary host bind mount. |
+| Ops opens PRs without write access | Orchestrator checks write permission before child creation. |
+| Source snapshot does not match production | Surface exact vs approximate source status in `shipit source status` and in the remediation packet. |
 | Logs include secrets | Redact incident packets before passing them to the child session; keep raw logs in the Ops transcript only when already visible there. |
+| Agent creates many fix sessions | Reuse spawned-session quotas, with a lower Ops-specific per-turn default if needed. |
 
-## API and CLI shape
+## API and CLI Shape
 
-### Read-only repo context
+### Read-only ShipIt source
 
 New shim commands, brokered through `agent-ops-routes.ts`:
 
 ```bash
-shipit repo list [--json]
-shipit repo attach --repo owner/name [--ref REF] [--json]
-shipit repo search --repo owner/name "query" [--ref REF] [--json]
-shipit repo cat --repo owner/name path/to/file [--ref REF]
-shipit repo summary --repo owner/name [--ref REF] [--json]
+shipit source status [--json]
+shipit source tree [path] [--json]
+shipit source search "query" [--path PATH] [--json]
+shipit source cat path/to/file
 ```
 
 Rejected:
 
-- `shipit repo clone`
-- `shipit repo edit`
-- `shipit repo commit`
-- `shipit repo push`
-- `shipit repo checkout`
+- `shipit source edit`
+- `shipit source commit`
+- `shipit source push`
+- `shipit source checkout`
+- `shipit source git`
 - Any command that exposes credentials or raw Git config.
 
-### Cross-repo remediation spawn
+### ShipIt fix-session spawn
 
 Extend the existing session shim:
 
 ```bash
-shipit session create --repo owner/name -p "PROMPT" [--title T] [--agent A] [--model M] [--json]
+shipit session create --shipit-source -p "PROMPT" [--title T] [--agent A] [--model M] [--json]
 ```
 
 Behavior:
 
-- Without `--repo`, existing same-repo spawn behavior stays unchanged.
-- With `--repo`, the parent must be an Ops session.
-- The target repo must be imported or importable through the user's GitHub
-  installation.
-- The target repo must be writable for remediation. Read-only repos are valid
-  for `shipit repo *`, not for `shipit session create --repo`.
+- Without `--shipit-source`, existing same-repo spawn behavior stays unchanged.
+- With `--shipit-source`, the parent must be an Ops session.
+- The configured ShipIt source repo must be readable for source context.
+- The configured ShipIt source repo must be writable for remediation spawn.
 
-## Implementation plan
+## Implementation Plan
 
-1. Add a read-only repo context service in the orchestrator, backed by existing
-   GitHub auth and repo cache primitives.
-2. Extend the `shipit` shim with `repo` read commands and worker allowlist
+1. Add an orchestrator service that resolves the running ShipIt source ref and
+   exposes a read-only source snapshot.
+2. Extend the `shipit` shim with `source` read commands and worker allowlist
    routes.
-3. Add orchestrator routes for repo list/search/cat/summary scoped to the
-   calling session and current user.
-4. Extend `spawnChildSession()` to accept an optional target repo URL when the
-   parent session is `kind: "ops"`.
-5. Add permission checks: read for repo context, write for remediation spawn.
-6. Add an incident-packet builder used by Ops prompts and the spawn route.
-7. Add an Ops remediation card in parent chat, reusing the spawned-session
+3. Add orchestrator routes for source status/tree/search/cat scoped to Ops
+   sessions.
+4. Add source snapshot redaction rules so credentials, `.env` files, and `.git`
+   internals are never exposed through the CLI.
+5. Extend `spawnChildSession()` or add a wrapper to create an Ops-only ShipIt
+   fix child session.
+6. Add read/write permission checks for the configured ShipIt source repo.
+7. Add an incident-packet builder used by Ops prompts and the spawn route.
+8. Add an Ops remediation card in parent chat, reusing the spawned-session
    status pipeline where possible.
-8. Update agent-facing docs so Ops agents know the sequence: inspect host,
-   inspect code read-only, spawn remediation session, wait/view/message child.
+9. Update agent-facing docs so Ops agents know the sequence: inspect host,
+   inspect ShipIt source read-only, spawn fix session, wait/view/message child.
 
-## Key files
+## Key Files
 
 | File | Expected change |
 |---|---|
-| `src/server/session/agent-shim/shipit.ts` | Add `shipit repo *` commands and `shipit session create --repo` parsing. |
-| `src/server/session/agent-ops-routes.ts` | Broker read-only repo routes and cross-repo spawn requests. |
-| `src/server/orchestrator/services/child-sessions.ts` | Allow Ops-only target repo selection for spawned children. |
-| `src/server/orchestrator/services/repos.ts` | Reuse repo import/cache status for read-only context and target validation. |
-| `src/server/orchestrator/github-auth-repos.ts` | Add or reuse read/write permission checks for candidate repos. |
-| `src/server/orchestrator/api-routes-session.ts` | Thread optional target repo into spawn route with Ops-only validation. |
-| `src/server/orchestrator/api-routes-github.ts` or repo routes | Add read-only repo context endpoints. |
+| `src/server/session/agent-shim/shipit.ts` | Add `shipit source *` commands and `shipit session create --shipit-source` parsing. |
+| `src/server/session/agent-ops-routes.ts` | Broker read-only source routes and ShipIt fix-session spawn requests. |
+| `src/server/orchestrator/services/shipit-source.ts` | New service for source ref resolution, snapshot access, search, and redaction. |
+| `src/server/orchestrator/services/child-sessions.ts` | Allow Ops-only ShipIt fix-session creation through the existing spawned-session pipeline. |
+| `src/server/orchestrator/github-auth-repos.ts` | Add or reuse read/write permission checks for the configured ShipIt source repo. |
+| `src/server/orchestrator/api-routes-session.ts` | Thread the Ops-only ShipIt fix target into spawn route handling. |
+| `src/server/orchestrator/api-routes-source.ts` | New read-only source context endpoints, or equivalent route module. |
 | `src/server/shared/types/domain-types.ts` | Add any remediation-card or source-context metadata types. |
 | `src/client/components/SpawnedSessionCard.tsx` | Either extend for remediation context or compose a new Ops-specific card. |
-| `src/server/shipit-docs/ops-session.md` | Update the agent-facing Ops contract with read-only code investigation and child-session remediation flow. |
-| `src/server/shipit-docs/sessions.md` | Document the Ops-only `--repo` remediation spawn behavior. |
+| `src/server/shipit-docs/ops-session.md` | Update the agent-facing Ops contract with read-only ShipIt source investigation and child-session remediation flow. |
+| `src/server/shipit-docs/sessions.md` | Document the Ops-only ShipIt fix-session spawn behavior. |
 
-## Open questions
+## Open Questions
 
-1. Should read-only source context be filesystem-mounted snapshots or CLI-only
-   access? Recommendation: CLI-only first; add read-only mounts later if the
-   agent clearly needs local tooling across attached repos.
-2. Should Ops be allowed to spawn into forks automatically when the user lacks
-   write access to `ship-it`? Recommendation: not in v1. Require an explicit
-   writable repo target so ownership and PR destination are visible.
-3. How much raw log context should be copied into the child prompt?
+1. What is the most reliable source of the deployed ShipIt commit in production?
+   Recommendation: record commit metadata during deploy and expose it through
+   `shipit source status`.
+2. Should the source context be CLI-only or also mounted read-only?
+   Recommendation: CLI-only first; add read-only generated snapshots later if
+   the agent needs local tooling.
+3. Should users without upstream write access be able to target a fork?
+   Recommendation: not in v1. Produce a structured incident report until the
+   fork/downstream repo target is explicit.
+4. How much raw log context should be copied into the child prompt?
    Recommendation: aggressively trim and redact; link the child back to the Ops
    transcript for full context visible inside ShipIt.
-4. Should non-Ops sessions ever get cross-repo spawn? Recommendation: keep it
-   Ops-only until there is a separate product need. Cross-repo spawn has a much
-   wider trust surface than same-repo fan-out.
