@@ -120,6 +120,21 @@ export function agentIdForModel(model: string | undefined): AgentId | undefined 
 }
 
 /**
+ * Static capability lookup keyed by agent id, independent of runtime detection.
+ *
+ * `AgentRegistry.get(id)` only returns an entry after `detect()` has probed
+ * the host, and it requires a live registry instance. The steer-or-queue
+ * decision on the orchestrator's dispatch path (docs/163) runs deep inside
+ * `SessionRunner.dispatch` / `ContainerSessionRunner.dispatch`, which have no
+ * registry handle — they only know the runner's `agentId`. `supportsSteering`
+ * is a compile-time fact about the adapter (see `AGENT_DEFS`), so expose it
+ * directly from the static definitions. Returns `undefined` for an unknown id.
+ */
+export function getAgentCapabilities(id: AgentId): AgentCapabilities | undefined {
+  return AGENT_DEFS.find((d) => d.id === id)?.capabilities;
+}
+
+/**
  * Env var required for each agent's auth (Claude uses OAuth, not an env var).
  * Consumers should go through {@link getAuthEnvKey} rather than reading this
  * map directly so a new backend's key (e.g. `CURSOR_API_KEY`) is one edit

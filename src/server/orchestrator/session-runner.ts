@@ -21,6 +21,12 @@ import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import { runDispatchedTurn } from "./dispatched-turn.js";
 export { runDispatchedTurn };
 
+// docs/163 — shared steer-or-queue helper for the dispatch path. Same module
+// boundary rationale as `runDispatchedTurn`: it reaches `wireAgentListeners`
+// helpers (recordSteeredMessage / persistTurnInProgress) at runtime, so it
+// lives outside this file to keep the import graph acyclic.
+import { trySteerDispatch } from "./dispatch-steering.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -225,6 +231,16 @@ export interface SystemTurnDeps {
     runner: SessionRunnerInterface | null;
     emit: (msg: WsServerMessage) => void;
   }) => Promise<string | null>;
+  /**
+   * docs/163 — resolve the live steer-or-queue gate for the dispatch path.
+   * Returns the user's current `liveSteering` setting and whether the runner's
+   * pinned agent advertises `supportsSteering`. `dispatch` consults this (via
+   * `trySteerDispatch`) so a programmatic message arriving mid-turn is injected
+   * into the running turn through the SAME decision the WS handler uses, rather
+   * than always being queued. Optional: when absent (minimal test setups), the
+   * dispatch path always enqueues a mid-turn message (legacy behavior).
+   */
+  steerInputs?: () => { liveSteering: boolean; steeringCapable: boolean };
 }
 
 /**
@@ -679,6 +695,12 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
 
   dispatch(opts: AgentDispatchOptions): void {
     if (this._isRunning) {
+      // docs/163 — honor live steering on the dispatch path too: when the
+      // running turn is steerable+streaming and live steering is on, inject
+      // the message via `sendUserMessage` instead of queuing it. Shares the
+      // `shouldSteerMessage` predicate with the WS handler so the two paths
+      // can't diverge.
+      if (this._systemTurnDeps && trySteerDispatch(this, opts, this._systemTurnDeps)) return;
       // docs/150 — enqueue branch broadcasts message_queued via emitMessage
       // so every attached viewer (and any other HTTP-originated caller in
       // this session) sees the update. Previously the WS handler did this
