@@ -22,10 +22,18 @@
  *
  * Rendered only on mobile (gated by the caller via `useIsMobile()`); desktop
  * keeps the inline icon + hotkey.
+ *
+ * The surface is portalled to `document.body` so its `fixed inset-0 z-[60]`
+ * always covers the whole viewport. Without the portal, mounting it inside the
+ * AskUserQuestion "Other" field traps it in the chat panel's `isolate` stacking
+ * context (App.tsx), and the main MessageInput composer — a later sibling of
+ * that isolated container — paints on top of the overlay's bottom edge, so the
+ * chat input bleeds through during recording (docs/144).
  */
 
 // eslint-disable-next-line no-restricted-imports -- Escape listener while the overlay is open
 import { useEffect } from "react";
+import { createPortal } from "react-dom";
 import {
   StopIcon,
   SpinnerGapIcon,
@@ -75,7 +83,7 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
   // in every app (Voice Memos, WhatsApp), and the themeable text tokens flip to
   // dark in light themes, blending into the scrim. A fixed dark scrim + explicit
   // light text keeps contrast high in every theme.
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-label="Voice recording"
@@ -168,6 +176,7 @@ export function MobileRecordingOverlay({ voice }: { voice: VoiceInputApi }) {
           </button>
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }
