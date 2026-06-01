@@ -86,3 +86,58 @@ Make fast-path completion **deterministic** — independent of the SSE event:
 Reverting either the orchestrator `{ completed }` branch or the first-connect
 resync makes the corresponding gate-resolution test hang (5s timeout),
 confirming the tests bite.
+
+## Follow-up: warm-pool turn hangs PAST the gate (un-timed env-prep await)
+
+After the gate fix above, fresh sessions were fine but **warm-standby** quick
+sessions still stalled on their first turn: the install gate resolved
+(`{ completed:true }`, two `[install] fast-path hit` lines), yet the worker
+still never received `/agent/start` — no `[claude] spawning`, no error.
+
+### Root cause
+
+The hang moved one layer down — into the dispatched-turn **pre-spawn env-prep**,
+not the install gate. `executeAgentTurn` (`turn-executor.ts`) awaits
+`deps.prepareAgentEnv(...)` → `prepareSessionAgentEnvironment`
+(`session-agent-env.ts`) **before** the fire-and-forget `agent.run(...)`. Step 3
+of that function, `refreshExpiredMcpOAuthTokens` → `refreshOAuthTokens`, did
+`await fetch(provider.tokenEndpoint, …)` with **no timeout**. A slow/hung MCP
+OAuth token endpoint (Linear/Notion) therefore stalled the turn indefinitely,
+before the agent could spawn. The module's own docstring says "env prep must
+not block a turn" — an un-timed awaited network call violated that. The WS /
+interactive path didn't reproduce because ops sessions have no MCP OAuth tokens
+to refresh. (Step 4's `tryPushAgentSecrets` was already 10s-bounded by the
+worker HTTP client, but its `await _workerReady` could still hang, so it's
+bounded here too.)
+
+### Fix (fail-open timeouts on every pre-spawn network/worker await)
+
+- `session-agent-env.ts` — new `withFailOpenTimeout()` wraps step 3 (MCP-OAuth
+  refresh, `MCP_OAUTH_REFRESH_TIMEOUT_MS = 8s`) and step 4 (worker secrets push,
+  `PUSH_AGENT_SECRETS_TIMEOUT_MS = 12s`). On timeout it logs and **continues to
+  the spawn** — a stale MCP token at worst fails the first MCP call (the worker
+  surfaces `mcp_server_status`); a skipped secrets push is retried by the next
+  compose reconcile. Both strictly better than a dead turn.
+- `services/mcp-oauth.ts` — every outbound OAuth fetch (token exchange, refresh,
+  dynamic client registration) now carries `AbortSignal.timeout(7s)`
+  (`OAUTH_FETCH_TIMEOUT_MS`) so the underlying socket is actually aborted, not
+  just abandoned by the caller's fail-open.
+- `turn-executor.ts` — timing logs around `prepareAgentEnv` and `buildRunParams`
+  (`[turn] env-prep … took Nms`, `[turn] build-run-params … took Nms; spawning
+  agent`) so any future pre-spawn stall is immediately localizable.
+
+`_systemTurnDeps` being unset was ruled out: `onRunnerCreated` (which calls
+`setSystemTurnDeps`) fires synchronously inside `SessionRunnerRegistry.getOrCreate`,
+so a freshly-created warm-reconnect runner always has deps before `dispatch()`.
+
+### Follow-up key files
+
+- `src/server/orchestrator/session-agent-env.ts` — `withFailOpenTimeout`,
+  exported `MCP_OAUTH_REFRESH_TIMEOUT_MS` / `PUSH_AGENT_SECRETS_TIMEOUT_MS`.
+- `src/server/orchestrator/services/mcp-oauth.ts` — `OAUTH_FETCH_TIMEOUT_MS`,
+  `oauthFetchSignal()` on all three OAuth fetches.
+- `src/server/orchestrator/turn-executor.ts` — pre-spawn timing logs.
+- `src/server/orchestrator/session-agent-env.test.ts` — fails-open when the
+  worker secrets push hangs forever (fake timers).
+- `src/server/orchestrator/session-runner.test.ts` — dispatch still spawns the
+  agent (`agent.run` fires) when env prep's network step hangs.

@@ -315,7 +315,14 @@ export async function executeAgentTurn(
     // `buildRunParams` reads `agentSessionId` from the DB, which env-prep's
     // docs/153 leak repair updates as a side-effect, so resume recovery is
     // honored automatically.
+    //
+    // Both steps are timed: this is the pre-spawn gap where an un-timed
+    // network await once stalled the whole turn before `agent.run()` fired
+    // (the worker never saw `/agent/start`). prepareAgentEnv is internally
+    // fail-open + time-bounded; the logs make any residual slowness visible.
+    const envBegan = Date.now();
     await deps.prepareAgentEnv?.(sessionId, agentId);
+    console.log(`[turn] env-prep for ${sessionId} took ${Date.now() - envBegan}ms`);
 
     if (input.reuseExistingAgent) {
       // docs/140 — carry the message into the resident streaming process. Push
@@ -328,7 +335,9 @@ export async function executeAgentTurn(
       }
       agent.sendUserMessage(prompt);
     } else {
+      const paramsBegan = Date.now();
       const runParams = await deps.buildRunParams(sessionId, agentId, prompt);
+      console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       // WS always carries `useStreaming` (true or false); dispatch leaves it
       // undefined so the run params are unchanged from the system-turn shape.
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);

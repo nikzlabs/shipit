@@ -22,6 +22,7 @@ import {
   prepareSessionAgentEnvironment,
   finalizeSessionAgentEnvironment,
   selectAgentEnvForPush,
+  PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
 
 /**
@@ -340,6 +341,55 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(result.overrideAgentSessionId).toBeNull();
     expect(state.clearAgentSessionIdCalls).toEqual(["s1"]);
     expect(state.agentSessionId).toBeUndefined();
+  });
+
+  // Warm-pool quick-session hang (docs/162 follow-up): the install gate
+  // resolved, but a pre-spawn env-prep await never settled, so `agent.run()`
+  // never fired and the worker never saw `/agent/start`. The fix bounds every
+  // network/worker await in env-prep with a fail-open timeout. This proves the
+  // load-bearing guarantee: a wedged worker secrets push CANNOT block the
+  // function from returning — it resolves once the timeout fires.
+  it("fails open (resolves) when the worker secrets push hangs forever", async () => {
+    fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".claude.json"), "{}");
+    fs.writeFileSync(
+      path.join(tmpDir, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 60_000 } }),
+    );
+
+    const runner = new FakeContainerRunner();
+    // Step 4's worker POST never settles — the exact hang the bug exhibited.
+    runner.tryPushAgentSecrets = () => new Promise<void>(() => { /* never resolves */ });
+    const credentialStore = makeFakeCredentialStore();
+    // agentPinned skips step 1 provisioning; empty MCP tokens make step 3 a
+    // no-op, isolating the step-4 hang.
+    const { sm } = makeFakeSessionManager({ agentPinned: true, agentSessionId: "sid" });
+
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      const p = (async () => {
+        const r = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+          sessionId: "s1",
+          agentId: "claude",
+          deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+        });
+        settled = true;
+        return r;
+      })();
+
+      // Before the timeout elapses the call is still pending (it really is
+      // awaiting the hung push, not short-circuiting).
+      await vi.advanceTimersByTimeAsync(PUSH_AGENT_SECRETS_TIMEOUT_MS - 1_000);
+      expect(settled).toBe(false);
+
+      // Once the fail-open timeout fires, the function resolves regardless.
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(p).resolves.toBeDefined();
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("pushes the merged agent env to the worker via the runner's tryPushAgentSecrets", async () => {

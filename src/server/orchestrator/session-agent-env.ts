@@ -37,6 +37,66 @@ import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
 
+/**
+ * Hard ceilings for the two network/worker awaits in the pre-spawn env-prep
+ * path. The whole point of this module is that env prep MUST NOT block a turn
+ * (see the file docstring) — but an un-timed awaited network call violates
+ * that contract: a hung MCP-OAuth token endpoint or a wedged worker socket
+ * would stall `executeAgentTurn` forever, BEFORE `agent.run()` ever fires, so
+ * the worker never receives `/agent/start` and the turn silently stalls. This
+ * was the warm-pool quick-session hang (docs/162 follow-up): the install gate
+ * resolved, but step 3's network OAuth refresh never settled.
+ *
+ * These bounds FAIL OPEN — on timeout we log and continue to the spawn. A
+ * stale MCP token at worst makes the first MCP call fail (the worker surfaces
+ * a `mcp_server_status` failure); a skipped secrets push is retried by the
+ * next compose reconcile. Both are strictly better than a dead turn.
+ */
+export const MCP_OAUTH_REFRESH_TIMEOUT_MS = 8_000;
+export const PUSH_AGENT_SECRETS_TIMEOUT_MS = 12_000;
+
+/**
+ * Race a promise against a timeout that FAILS OPEN: on timeout (or rejection)
+ * we log and resolve instead of throwing, so a hung dependency can never
+ * block the caller. Logs elapsed time on success too, so a slow-but-eventual
+ * settle is visible in the logs without being fatal.
+ */
+const TIMEOUT = Symbol("env-prep-timeout");
+
+async function withFailOpenTimeout(
+  label: string,
+  start: () => Promise<unknown>,
+  ms: number,
+): Promise<void> {
+  const began = Date.now();
+  let timer: NodeJS.Timeout | undefined;
+  // The work arm catches its own rejection so the race never rejects — the
+  // whole helper resolves on either the work settling or the timeout firing.
+  const work = (async (): Promise<unknown> => {
+    try {
+      await start();
+      return undefined;
+    } catch (err) {
+      return err instanceof Error ? err : new Error(getErrorMessage(err));
+    }
+  })();
+  const timeout = new Promise<typeof TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMEOUT), ms);
+  });
+  try {
+    const result = await Promise.race([work, timeout]);
+    if (result === TIMEOUT) {
+      console.warn(`[env-prep] ${label} timed out after ${ms}ms — continuing without it (fail-open)`);
+    } else if (result instanceof Error) {
+      console.warn(`[env-prep] ${label} failed after ${Date.now() - began}ms:`, getErrorMessage(result));
+    } else {
+      console.log(`[env-prep] ${label} completed in ${Date.now() - began}ms`);
+    }
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export interface SessionAgentEnvDeps {
   /** Source-of-truth credentials root (e.g. `/credentials`). */
   credentialsDir: string;
@@ -210,21 +270,33 @@ export async function prepareSessionAgentEnvironment(
 
   // Step 3: pre-emptively refresh any MCP OAuth tokens within the safety
   // margin of expiry, so the env we're about to push doesn't carry a token
-  // that's about to die on the first MCP call. Fault-tolerant.
-  await refreshExpiredMcpOAuthTokens({ credentialStore: deps.credentialStore }).catch(
-    (err: unknown) => {
-      console.warn("[mcp-oauth] background refresh failed:", getErrorMessage(err));
-    },
+  // that's about to die on the first MCP call. Fault-tolerant AND time-bounded
+  // — this is a NETWORK call to the provider's token endpoint; an un-timed
+  // await here was the warm-pool turn hang. Fails open: a stale token at worst
+  // fails the first MCP call, which is far better than a dead turn.
+  await withFailOpenTimeout(
+    "mcp-oauth-refresh",
+    () => refreshExpiredMcpOAuthTokens({ credentialStore: deps.credentialStore }),
+    MCP_OAUTH_REFRESH_TIMEOUT_MS,
   );
 
   // Step 4: push the merged agent-env to the worker's `process.env` ahead
   // of `/agent/start`. Compose vs. compose-less selection in `selectAgentEnvForPush`.
+  // Time-bounded too: `tryPushAgentSecrets` awaits `_workerReady` (which can
+  // hang if the worker never comes up) before its own 10s-bounded POST, so we
+  // cap the whole step and fail open — the next compose reconcile retries.
   if (runner instanceof ContainerSessionRunner) {
-    await runner.tryPushAgentSecrets(
-      selectAgentEnvForPush({
-        serviceManager: runner.serviceManager,
-        credentialStore: deps.credentialStore,
-      }),
+    const containerRunner = runner;
+    await withFailOpenTimeout(
+      "push-agent-secrets",
+      () =>
+        containerRunner.tryPushAgentSecrets(
+          selectAgentEnvForPush({
+            serviceManager: containerRunner.serviceManager,
+            credentialStore: deps.credentialStore,
+          }),
+        ),
+      PUSH_AGENT_SECRETS_TIMEOUT_MS,
     );
   }
 
