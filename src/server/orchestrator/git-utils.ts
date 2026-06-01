@@ -20,6 +20,55 @@ export function repoUrlToHash(repoUrl: string): string {
 }
 
 /**
+ * Remove any embedded userinfo (`user:password@`) from an HTTP(S) URL so a
+ * credentialed remote like `https://x-access-token:<pat>@github.com/o/r.git`
+ * is never logged, displayed, persisted, or used as a repo-store key. Auth is
+ * injected at git-operation time via the credential helper
+ * (`configureGitCredentials`), so the URL itself must stay credential-free.
+ *
+ * Only strips for `http:`/`https:` — an scp-style SSH remote
+ * (`git@github.com:o/r.git`) carries its login in a position `new URL` can't
+ * parse anyway, and `ssh://git@host/...`'s `git@` is the SSH user, not a
+ * secret. Non-URL inputs are returned trimmed and unchanged.
+ */
+export function stripUrlCredentials(url: string): string {
+  const trimmed = (url ?? "").trim();
+  try {
+    const u = new URL(trimmed);
+    if ((u.protocol === "http:" || u.protocol === "https:") && (u.username || u.password)) {
+      u.username = "";
+      u.password = "";
+      return u.toString();
+    }
+    return trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+/**
+ * Canonicalize a repo URL for *identity* comparison (a comparison key, NOT a
+ * value to persist or clone from): strip credentials, lowercase the scheme and
+ * host, and drop a trailing slash and a trailing `.git`. Two URLs that point at
+ * the same repo — regardless of embedded credentials, host casing, or `.git`
+ * suffix — collapse to the same key. Used to reuse an already-registered repo
+ * store entry instead of adding a near-duplicate. Non-URL inputs degrade to a
+ * lowercased, trimmed best-effort form.
+ */
+export function canonicalRepoKey(url: string): string {
+  const trimmed = (url ?? "").trim();
+  try {
+    const u = new URL(trimmed);
+    const scheme = u.protocol.toLowerCase();
+    const host = u.host.toLowerCase();
+    const path = u.pathname.replace(/\/+$/, "").replace(/\.git$/i, "");
+    return `${scheme}//${host}${path}`;
+  } catch {
+    return trimmed.toLowerCase().replace(/\/+$/, "").replace(/\.git$/i, "");
+  }
+}
+
+/**
  * Push the current branch to origin. Returns the branch name on success, or null
  * if there is no origin remote or no current branch.
  */
