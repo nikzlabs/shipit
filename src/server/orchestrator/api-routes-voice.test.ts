@@ -19,6 +19,8 @@ import type { ApiDeps } from "./api-routes.js";
 /** Minimal in-memory credential store covering just the voice methods. */
 function makeCredentialStore() {
   const keys = new Map<string, string>();
+  let deliveryMode: "native" | "external" | "both" = "native";
+  let webhook: { url: string; token: string } | null = null;
   return {
     getVoiceProviderKey: vi.fn((id: string): string | null => keys.get(id) ?? null),
     setVoiceProviderKey: vi.fn((id: string, k: string) => {
@@ -30,6 +32,28 @@ function makeCredentialStore() {
     getConfiguredVoiceProviders: vi.fn((): string[] =>
       [...keys.entries()].filter(([, v]) => v.trim()).map(([id]) => id),
     ),
+    // docs/163
+    getVoiceDeliveryMode: vi.fn(() => deliveryMode),
+    setVoiceDeliveryMode: vi.fn((m: "native" | "external" | "both") => {
+      deliveryMode = m;
+    }),
+    getVoiceWebhook: vi.fn(() => webhook),
+    setVoiceWebhook: vi.fn((url: string, token: string) => {
+      webhook = { url, token };
+    }),
+    clearVoiceWebhook: vi.fn(() => {
+      webhook = null;
+    }),
+  };
+}
+
+/** Fake runner registry capturing emitted WS messages for one session. */
+function makeRunnerRegistry(sessionId: string) {
+  const emitted: { type: string; [k: string]: unknown }[] = [];
+  const runner = { emitMessage: (m: { type: string }) => emitted.push(m) };
+  return {
+    emitted,
+    registry: { get: (id: string) => (id === sessionId ? runner : undefined) },
   };
 }
 
@@ -71,6 +95,7 @@ let tmpDir: string;
 async function buildApp(overrides?: {
   credentialStore?: ReturnType<typeof makeCredentialStore>;
   authManager?: ReturnType<typeof makeAuthManager>;
+  runnerRegistry?: { get: (id: string) => unknown };
 }): Promise<{
   app: FastifyInstance;
   credentialStore: ReturnType<typeof makeCredentialStore>;
@@ -85,6 +110,7 @@ async function buildApp(overrides?: {
     authManager,
     workspaceDir: tmpDir,
     stateDir: tmpDir,
+    runnerRegistry: overrides?.runnerRegistry ?? { get: () => undefined },
   } as unknown as ApiDeps);
   await app.ready();
   return { app, credentialStore, authManager };
@@ -411,6 +437,96 @@ describe("POST /api/voice/transcribe", () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toContain("Couldn't transcribe: Whisper returned 400");
     expect(res.json().error).toContain("audio format is unsupported");
+    await app.close();
+  });
+});
+
+describe("Voice-note webhook config (docs/163)", () => {
+  it("stores the webhook on POST and reports configured status without the token", async () => {
+    const { app, credentialStore } = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/webhook",
+      payload: { url: "https://hook.example/notes", token: "super-secret" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(credentialStore.setVoiceWebhook).toHaveBeenCalledWith("https://hook.example/notes", "super-secret");
+
+    const status = await app.inject({ method: "GET", url: "/api/voice/webhook/status" });
+    const body = status.json();
+    expect(body.configured).toBe(true);
+    expect(body.url).toBe("https://hook.example/notes");
+    // The token must never be returned.
+    expect(JSON.stringify(body)).not.toContain("super-secret");
+    await app.close();
+  });
+
+  it("rejects a non-http URL with 400", async () => {
+    const { app } = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/webhook",
+      payload: { url: "ftp://nope", token: "t" },
+    });
+    expect(res.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("clears the webhook on DELETE", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceWebhook("https://hook.example/notes", "t");
+    const { app } = await buildApp({ credentialStore });
+    const res = await app.inject({ method: "DELETE", url: "/api/voice/webhook" });
+    expect(res.statusCode).toBe(200);
+    expect(credentialStore.clearVoiceWebhook).toHaveBeenCalled();
+    expect(credentialStore.getVoiceWebhook()).toBeNull();
+    await app.close();
+  });
+});
+
+describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
+  it("routes an authored note to the native sink and emits voice_note", async () => {
+    const { emitted, registry } = makeRunnerRegistry("sess-1");
+    const { app } = await buildApp({ runnerRegistry: registry });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess-1/voice-note",
+      payload: { summary: "Done — want me to open a PR?", needsAttention: true, context: { repo: "shipit" } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ delivered: true });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      type: "voice_note",
+      sessionId: "sess-1",
+      headline: "Done — want me to open a PR?",
+      needsAttention: true,
+      kind: "authored",
+    });
+    await app.close();
+  });
+
+  it("returns 400 when summary is missing", async () => {
+    const { registry } = makeRunnerRegistry("sess-1");
+    const { app } = await buildApp({ runnerRegistry: registry });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess-1/voice-note",
+      payload: { needsAttention: true },
+    });
+    expect(res.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("acknowledges with delivered:false when no runner is active", async () => {
+    const { app } = await buildApp({ runnerRegistry: { get: () => undefined } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/gone/voice-note",
+      payload: { summary: "hi", needsAttention: true },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ delivered: false });
     await app.close();
   });
 });

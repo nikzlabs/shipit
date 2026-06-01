@@ -28,6 +28,8 @@ import {
   speakVoice,
 } from "./services/voice.js";
 import { TtsCache } from "./voice/index.js";
+import { routeVoiceNote } from "./voice/voice-note-router.js";
+import type { VoiceNoteContext } from "../shared/types/voice-note-types.js";
 
 export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const { credentialStore, authManager } = deps;
@@ -147,4 +149,88 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
       }
     },
   );
+
+  // ---- Voice-note delivery (docs/163) ----
+
+  // Webhook config: URL + bearer token (server-side only, never echoed back).
+  app.post<{ Body: { url?: string; token?: string } }>(
+    "/api/voice/webhook",
+    async (request, reply) => {
+      const url = (request.body?.url ?? "").trim();
+      const token = (request.body?.token ?? "").trim();
+      if (!url) {
+        reply.code(400).send({ error: "url is required" });
+        return;
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        reply.code(400).send({ error: "url must be an http(s) URL" });
+        return;
+      }
+      credentialStore.setVoiceWebhook(url, token);
+      return { ok: true };
+    },
+  );
+
+  app.delete("/api/voice/webhook", async () => {
+    credentialStore.clearVoiceWebhook();
+    return { ok: true };
+  });
+
+  app.get("/api/voice/webhook/status", async () => {
+    const wh = credentialStore.getVoiceWebhook();
+    // Never return the token; only whether it's configured and the URL host.
+    return { configured: !!wh, url: wh?.url ?? null };
+  });
+
+  // Built-in voice_note tool write-back. The mcp-voice-bridge → worker
+  // `/agent-ops/voice/note` relays here with the trusted session id. The
+  // router fans out to the native and/or webhook sinks per the user setting.
+  app.post<{
+    Params: { sessionId: string };
+    Body: { summary?: string; needsAttention?: boolean; context?: unknown };
+  }>(
+    "/api/sessions/:sessionId/voice-note",
+    async (request, reply) => {
+      const { sessionId } = request.params;
+      const summary = typeof request.body?.summary === "string" ? request.body.summary.trim() : "";
+      if (!summary) {
+        reply.code(400).send({ error: "summary is required" });
+        return;
+      }
+      const needsAttention = request.body?.needsAttention === true;
+      const context = sanitizeVoiceContext(request.body?.context);
+
+      const runner = deps.runnerRegistry.get(sessionId);
+      if (!runner) {
+        // No active runner (turn already torn down) — acknowledge so the agent
+        // isn't blocked; there is nothing to deliver to.
+        return { delivered: false };
+      }
+
+      try {
+        const result = await routeVoiceNote(
+          { summary, needsAttention, ...(context ? { context } : {}) },
+          { runner, sessionId, credentialStore, source: "authored" },
+        );
+        return { delivered: result.native || result.webhook };
+      } catch (err) {
+        handleError(reply, err, "Failed to deliver voice note");
+      }
+    },
+  );
+}
+
+/**
+ * Keep only the known display-only context fields, all strings. The agent
+ * supplies this; we don't trust arbitrary shapes onto the webhook / WS message.
+ */
+function sanitizeVoiceContext(input: unknown): VoiceNoteContext | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const src = input as Record<string, unknown>;
+  const out: VoiceNoteContext = {};
+  for (const key of ["repo", "prUrl", "prTitle", "sessionName"] as const) {
+    const v = src[key];
+    if (typeof v === "string" && v.trim()) out[key] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }

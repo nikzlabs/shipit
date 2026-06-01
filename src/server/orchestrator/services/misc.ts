@@ -73,6 +73,8 @@ export async function getBootstrapData(deps: {
         autoCreatePr: false,
         liveSteering: true,
         autoResolveConflicts: false,
+        voiceDeliveryMode: "native",
+        voiceWebhookConfigured: false,
         providerAccounts: [],
       } as Awaited<ReturnType<typeof getGlobalSettings>>;
     }),

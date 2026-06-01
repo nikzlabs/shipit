@@ -9,6 +9,7 @@ import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { getAuthEnvKey, isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AgentId, ProviderAccount } from "../../shared/types.js";
+import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import { getGitIdentity, setGitIdentity as writeGitIdentity } from "../git-config.js";
 import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { ServiceError } from "./types.js";
@@ -73,7 +74,9 @@ export async function getGlobalSettings(
     ? buildAgentSystemInstructions({ agentId: previewAgent.id })
     : "";
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
-  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, providerAccounts };
+  const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
+  const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
+  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -120,6 +123,8 @@ export interface SaveGlobalSettingsOptions {
    * CONFLICTING transitions while the agent is idle.
    */
   autoResolveConflicts?: boolean;
+  /** docs/163 — voice-note delivery mode (native / external / both). */
+  voiceDeliveryMode?: VoiceDeliveryMode;
 }
 
 export async function saveGlobalSettings(
@@ -130,7 +135,7 @@ export async function saveGlobalSettings(
     onAutoResolveConflictsEnabled,
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
-    autoResolveConflicts,
+    autoResolveConflicts, voiceDeliveryMode,
   } = opts;
 
   // Save git identity if provided
@@ -178,6 +183,11 @@ export async function saveGlobalSettings(
   // Save live steering toggle if provided
   if (liveSteering !== undefined) {
     credentialStore.setLiveSteering(liveSteering);
+  }
+
+  // docs/163 — save voice-note delivery mode if provided
+  if (voiceDeliveryMode !== undefined) {
+    credentialStore.setVoiceDeliveryMode(voiceDeliveryMode);
   }
 
   // docs/146 — save auto-resolve toggle. On a false → true edge, fire the

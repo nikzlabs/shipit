@@ -7,6 +7,7 @@ import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileC
 import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "../session-runner.js";
 import {
   prepareSessionAgentEnvironment,
@@ -334,6 +335,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     getSubscriptionLimitsSnapshot: ctx.getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh: ctx.nudgeClaudeOAuthRefresh,
     onAgentAuthRequired: ctx.onAgentAuthRequired,
+    deliverVoiceNote: (payload, runner, source) =>
+      void routeVoiceNote(payload, {
+        runner,
+        sessionId: runner.sessionId,
+        credentialStore: ctx.credentialStore,
+        source,
+      }),
   };
 
   // Build the shared executor deps from ctx — mirrors runner-registry-factory's

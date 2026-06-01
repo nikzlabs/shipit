@@ -6,6 +6,18 @@ description: Recipe for connecting ShipIt agents to a personal external MCP serv
 
 # Personal end-of-turn notification MCP
 
+> **Re-scoped by docs/163 (voice notes).** The agent no longer calls an external
+> MCP tool directly. ShipIt now owns one built-in `voice_note` primitive and a
+> delivery router; this receiver becomes **the External webhook backend** the
+> router forwards to. The payload is unchanged except for a `v: 1` envelope
+> field — ShipIt POSTs `{ v: 1, summary, needsAttention, context }` (the verbatim
+> contract below) to your endpoint with `Authorization: Bearer <token>`. To keep
+> using your receiver, add a thin plain-HTTP endpoint (or shim) that branches on
+> `v`, rejects unknown majors, and otherwise speaks the payload exactly as
+> described here. The MCP flavor still works for anyone who prefers it, but the
+> webhook is now the recommended flavor. Configure the URL + token in
+> Settings → Voice → Voice notes.
+
 ## What this gets you
 
 At the end of every ShipIt agent turn, the agent calls one tool on an external MCP server you host. That server decides how to notify you — voice message, push, Slack, anything. The notification reads naturally because the agent shapes the summary specifically for spoken delivery, not as a status dump.

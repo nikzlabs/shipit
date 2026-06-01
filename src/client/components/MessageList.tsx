@@ -25,6 +25,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { PlayTurnButton } from "./PlayTurnButton.js";
 import { ChatQuoteReply } from "./ChatQuoteReply.js";
+import { VoiceNoteCard } from "./VoiceNoteCard.js";
 import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
@@ -174,6 +175,19 @@ export interface ChatMessage {
     findingCount: number;
     snapshotHash: string;
     summary?: string;
+    createdAt: string;
+  };
+  /**
+   * docs/163 — when set, this message renders a `VoiceNoteCard` inline in the
+   * chat. Populated from `voice_note` WS events. Carries only the ear-shaped
+   * headline (never the turn body); the card plays it via the shared
+   * playback-store keyed by the synthetic `id`.
+   */
+  voiceNote?: {
+    id: string;
+    headline: string;
+    needsAttention: boolean;
+    kind: "authored" | "ask" | "plan";
     createdAt: string;
   };
   /**
@@ -636,6 +650,23 @@ export function MessageList({
                     if (!sid) return;
                     void useFileStore.getState().openAgentReview(sid, reviewId);
                   }}
+                />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/163 — voice note: ear-shaped headline with a play control.
+        // Carries no chat text of its own; render the inline card and skip the
+        // bubble path.
+        if (msg.voiceNote) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <VoiceNoteCard
+                  id={msg.voiceNote.id}
+                  headline={msg.voiceNote.headline}
+                  needsAttention={msg.voiceNote.needsAttention}
                 />
               </div>
             </div>

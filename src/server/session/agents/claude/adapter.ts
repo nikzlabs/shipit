@@ -387,6 +387,16 @@ export class ClaudeAdapter
       };
     }
 
+    // docs/163 — built-in `voice_note` tool. Same stdio→HTTP bridge pattern;
+    // the agent emits an ear-shaped summary and the orchestrator's router
+    // decides delivery (native note, external webhook, or both).
+    if (ctx.voiceBridge) {
+      mcpServers["shipit-voice"] = {
+        command: ctx.voiceBridge.tsxBin,
+        args: [ctx.voiceBridge.bridgePath],
+      };
+    }
+
     // docs/088: merge user-configured MCP servers. Configs arrive UNRESOLVED
     // — `$secret:` placeholders are substituted here against the worker's own
     // process.env (populated by 087's agent-env pipeline). A server that
