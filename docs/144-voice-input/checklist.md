@@ -1,7 +1,9 @@
 ## Phase 8 — Mobile recording UX
 
 - [x] Expose `cancelRecording` (the existing `abortRecording`) on `VoiceInputApi` so a Cancel gesture can discard audio without transcribing.
-- [x] `MicButton`: add a `large` prop that enlarges the mobile tap target (`p-3` vs `p-1.5`); icon size unchanged.
+- [x] `MicButton`: add a `large` prop that enlarges the mobile tap target. Originally `p-3` vs `p-1.5` with the icon unchanged; later strengthened to also bump the icon to `MD` and floor the hit area at 44px (`min-h-11 min-w-11`) to match the bottom bar.
+- [x] Mobile composer ergonomics: reorder the `MessageInput` toolbar via CSS `order` so mic + send pack right (mic left of Send) and add/mode/cost/model pack left, mobile-only; desktop layout unchanged. Apply the same 44px / `MD`-icon mobile treatment to the Send / Stop button.
+- [ ] Manual QA on a real phone: confirm the reordered toolbar (mic + send on the right) and the enlarged 44px mic/send targets feel right under the thumb; confirm desktop is visually unchanged.
 - [x] New `MobileRecordingOverlay` — full-screen scrim with a big centered Stop button, live timer, "Listening…" label, Cancel control, and a transcribing spinner; Escape cancels while recording.
 - [x] Error state shown in the overlay too: warning icon + message + big "Try again" (re-records) + Dismiss; Escape dismisses while erroring.
 - [x] Robust retry: hook retains the captured audio (`pendingAudioRef`), exposes `canRetryTranscription` + `retryTranscription()` (resend the same blob, no re-speaking); cleared on success/new recording/dismiss/abort. Unit-tested at the hook level.

@@ -46,8 +46,12 @@ export function MicButton({
   large?: boolean;
 }) {
   const { state, elapsedMs, errorMessage } = voice;
-  // The icon itself stays SM; only the tappable padding grows on mobile.
+  // On mobile (`large`) the mic is a primary thumb target sitting next to Send,
+  // so it grows to match the bottom-bar buttons: MD icon, larger padding, and a
+  // 44px floor on the hit area (Apple HIG minimum). Desktop stays compact.
   const pad = large ? "p-3" : "p-1.5";
+  const iconSize = large ? ICON_SIZE.MD : ICON_SIZE.SM;
+  const floor = large ? "min-h-11 min-w-11" : "";
 
   const handleClick = () => {
     if (state === "recording") {
@@ -65,13 +69,13 @@ export function MicButton({
       <WithTooltip label="Stop recording">
         <button
           onClick={handleClick}
-          className="flex items-center gap-1.5 shrink-0 rounded-lg px-2 py-1.5 bg-(--color-error)/15 text-(--color-error) hover:bg-(--color-error)/25 transition-colors"
+          className={`flex items-center gap-1.5 shrink-0 rounded-lg px-2 py-1.5 ${floor} bg-(--color-error)/15 text-(--color-error) hover:bg-(--color-error)/25 transition-colors`}
           aria-label="Stop recording"
           data-testid="mic-button"
           data-state="recording"
         >
           <span className="relative flex items-center justify-center">
-            <MicrophoneIcon size={ICON_SIZE.SM} weight="fill" />
+            <MicrophoneIcon size={iconSize} weight="fill" />
             <span className="absolute -top-0.5 -right-1 h-1.5 w-1.5 rounded-full bg-(--color-error) animate-pulse" />
           </span>
           <span className="text-xs tabular-nums">{formatElapsed(elapsedMs)}</span>
@@ -85,12 +89,12 @@ export function MicButton({
       <WithTooltip label="Transcribing…">
         <button
           disabled
-          className={`flex items-center justify-center shrink-0 rounded-lg ${pad} text-(--color-text-tertiary) cursor-default`}
+          className={`flex items-center justify-center shrink-0 rounded-lg ${pad} ${floor} text-(--color-text-tertiary) cursor-default`}
           aria-label="Transcribing"
           data-testid="mic-button"
           data-state="transcribing"
         >
-          <SpinnerGapIcon size={ICON_SIZE.SM} className="animate-spin" />
+          <SpinnerGapIcon size={iconSize} className="animate-spin" />
         </button>
       </WithTooltip>
     );
@@ -100,12 +104,12 @@ export function MicButton({
     const errorButton = (
       <button
         onClick={handleClick}
-        className={`flex items-center justify-center shrink-0 rounded-lg ${pad} text-(--color-error) hover:bg-(--color-error)/15 transition-colors`}
+        className={`flex items-center justify-center shrink-0 rounded-lg ${pad} ${floor} text-(--color-error) hover:bg-(--color-error)/15 transition-colors`}
         aria-label={errorMessage ?? "Voice error"}
         data-testid="mic-button"
         data-state="error"
       >
-        <WarningCircleIcon size={ICON_SIZE.SM} weight="fill" />
+        <WarningCircleIcon size={iconSize} weight="fill" />
       </button>
     );
 
@@ -131,12 +135,12 @@ export function MicButton({
     <WithTooltip label={hotkeyLabel ? `Dictate (${hotkeyLabel})` : "Dictate"}>
       <button
         onClick={handleClick}
-        className={`flex items-center justify-center shrink-0 rounded-lg ${pad} text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors`}
+        className={`flex items-center justify-center shrink-0 rounded-lg ${pad} ${floor} text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors`}
         aria-label="Dictate a message"
         data-testid="mic-button"
         data-state="idle"
       >
-        <MicrophoneIcon size={ICON_SIZE.SM} />
+        <MicrophoneIcon size={iconSize} />
       </button>
     </WithTooltip>
   );
