@@ -29,6 +29,7 @@ export * from "./health.js";
 export * from "./recovery.js";
 export * from "./diagnostics.js";
 export * from "./host.js";
+export * from "./shipit-source.js";
 export * from "./pr-lifecycle.js";
 export * from "./post-interrupt-commit.js";
 export * from "./agent.js";

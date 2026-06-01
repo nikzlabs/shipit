@@ -88,6 +88,14 @@ export interface SpawnChildSessionOptions {
    * {@link DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS}.
    */
   maxActiveSpawnedSessions?: number;
+  /**
+   * docs/162 — claim the child's workspace from this repo instead of the
+   * parent's `remoteUrl`. Used by the Ops "fix ShipIt itself" spawn, where the
+   * parent is an Ops session with no ShipIt remote of its own. The repo must
+   * already be registered + ready in the repo store (the caller ensures that).
+   * Combine with `base` to pin the child to the exact inspected source commit.
+   */
+  repoUrlOverride?: string;
 }
 
 export interface SpawnChildSessionResult {
@@ -189,7 +197,10 @@ export async function spawnChildSession(
   // the parent's WIP. There is no local-only fallback: in production every
   // session is created from a registered repo, and tests must register one
   // too (use `claimGraduatedParent` / the home-screen claim endpoint).
-  if (!parent.remoteUrl) {
+  // docs/162 — an Ops fix spawn claims the ShipIt source repo (the override)
+  // rather than the parent's own remote (an Ops session has none).
+  const claimUrl = opts.repoUrlOverride ?? parent.remoteUrl;
+  if (!claimUrl) {
     throw new ServiceError(
       400,
       "Cannot spawn a child session: the parent has no remote URL. Spawn requires the parent's repo to be registered.",
@@ -200,7 +211,7 @@ export async function spawnChildSession(
   // claim accepts up to ~6 minutes of bare-cache staleness for latency, but a
   // child spawned moments after a merge must see the merged commit on `main`,
   // not the pre-merge snapshot the cache happens to hold.
-  const claimed = await claimService.claim(parent.remoteUrl, { forceFetch: true });
+  const claimed = await claimService.claim(claimUrl, { forceFetch: true });
   const newSessionId = claimed.sessionId;
   const newWorkspaceDir = claimed.workspaceDir;
 

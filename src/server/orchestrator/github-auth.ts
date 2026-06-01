@@ -3,7 +3,7 @@ import { execSync } from "node:child_process";
 import type { CredentialStore } from "./credential-store.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper } from "./git-config.js";
 // Sub-module imports — delegated implementations
-import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl } from "./github-auth-repos.js";
+import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
 import { addReviewThreadReply as addReviewThreadReplyImpl, resolveReviewThread as resolveReviewThreadImpl, unresolveReviewThread as unresolveReviewThreadImpl, submitPullRequestReview as submitPullRequestReviewImpl } from "./github-auth-review-threads.js";
@@ -349,6 +349,18 @@ export class GitHubAuthManager extends EventEmitter {
   }[]> {
     if (!this._token) return [];
     return searchReposImpl(this._token, query);
+  }
+
+  /**
+   * docs/162 — whether the authenticated user can push to `owner/repo`.
+   * Returns `{ canWrite: false }` with a reason when unauthenticated or
+   * read-only, so the Ops fix-session spawn can fail clearly.
+   */
+  async checkRepoWriteAccess(owner: string, repo: string): Promise<{ canWrite: boolean; reason?: string }> {
+    if (!this._token) {
+      return { canWrite: false, reason: "GitHub is not connected — cannot verify write access." };
+    }
+    return checkRepoWriteAccessImpl(this._token, owner, repo);
   }
 
   /**

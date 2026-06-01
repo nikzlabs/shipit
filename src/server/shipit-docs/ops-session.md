@@ -36,6 +36,32 @@ dropped unless the session was created as an ops session.
   populated (journald is `Storage=volatile` with no `/run` journal, or the host
   ships logs elsewhere), fall back to `docker logs` on the orchestrator container.
 
+- **Read-only ShipIt source.** When the incident is likely a ShipIt bug, read
+  the source code that runs *this host* — the exact deployed commit, served by
+  the orchestrator (not a generic clone, not the repo's default branch):
+  ```bash
+  shipit source status                                   # which commit, exact or approximate
+  shipit source tree src/server/orchestrator              # list a directory
+  shipit source search "ContainerSessionRunner"           # git grep at that commit
+  shipit source cat src/server/orchestrator/session-container.ts
+  ```
+  This is strictly read-only. Credentials, `.env` files, and `.git` internals
+  are redacted. `shipit source status` tells you whether the snapshot is the
+  **exact** deployed build or only an **approximate** checkout HEAD — carry that
+  distinction into any fix you propose.
+- **Spawn a ShipIt fix session.** Once you have a root-cause hypothesis and the
+  suspect files, delegate the fix to a normal repo-backed session branched from
+  the exact commit you inspected:
+  ```bash
+  shipit session create --shipit-source -p "<diagnosis + suspected files + constraints>"
+  shipit session wait <child-id>      # follow it; view / message it like any spawned session
+  ```
+  The child owns all edits, tests, commits, push, and the PR — you only read its
+  status. It requires that the operator's GitHub account can push to the ShipIt
+  repo; if it cannot, the command fails and you should produce a written
+  incident report with source references instead. If the source ref was only
+  approximate, add `--approximate` to acknowledge it.
+
 ## What you CANNOT do (by design)
 
 - **No Docker writes.** `docker stop`, `docker rm`, `docker kill`,
@@ -45,6 +71,10 @@ dropped unless the session was created as an ops session.
 - **No other host paths.** No `/etc`, `/root`, `/home`, `/proc`, `/sys`. No SSH.
 - **The real `/var/run/docker.sock` is not mounted here** — only the proxy holds
   it. You reach Docker over TCP, never the socket.
+- **No writes to ShipIt source.** `shipit source` is read-only — there is no
+  `edit`, `commit`, `push`, `checkout`, or `git` subcommand. Change ShipIt only
+  through a spawned `--shipit-source` fix session, which goes through the normal
+  Git + PR machinery.
 
 ## Where to look first
 

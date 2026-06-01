@@ -42,7 +42,12 @@ import {
   ClaimAbortedError,
   recordSpawnInvocation,
   classifySpawnFailure,
+  resolveShipitFixTarget,
+  ensureShipitSourceRepoReady,
+  buildShipitFixPrompt,
 } from "./services/index.js";
+import { ensureBareCache } from "./repo-git.js";
+import { parseGitHubRemote } from "./git-utils.js";
 import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -473,6 +478,9 @@ export async function registerSessionRoutes(
       agent?: AgentId;
       model?: string;
       spawnedByTurn?: string;
+      // docs/162 — Ops-only "fix ShipIt itself" target.
+      shipitSource?: boolean;
+      approximateSource?: boolean;
     };
   }>(
     "/api/sessions/:parentId/spawn",
@@ -486,18 +494,64 @@ export async function registerSessionRoutes(
       const parentAgentId = sessionManager.get(request.params.parentId)?.agentId;
       const effectiveAgentId = body.agent ?? parentAgentId ?? deps.defaultAgentId;
       try {
+        // docs/162 — when `--shipit-source` is set, the child targets the
+        // ShipIt source repo (not the parent's repo) and is pinned to the
+        // exact commit the Ops agent inspected. Resolve the target, verify the
+        // user can push, register the repo, and seed an incident packet —
+        // all before spawnChildSession does any disk work.
+        let effectivePrompt = body.prompt ?? "";
+        let sourceBase = body.base;
+        let repoUrlOverride: string | undefined;
+        if (body.shipitSource) {
+          const parent = sessionManager.get(request.params.parentId);
+          if (!parent) throw new ServiceError(404, "Parent session not found");
+          if (parent.kind !== "ops") {
+            throw new ServiceError(403, "--shipit-source is only available in Ops sessions.");
+          }
+          if (!(effectivePrompt ?? "").trim()) {
+            throw new ServiceError(400, "A diagnosis prompt is required to spawn a ShipIt fix session.");
+          }
+          const target = await resolveShipitFixTarget(body.approximateSource === true);
+          const parsed = parseGitHubRemote(target.repoUrl);
+          if (!parsed) {
+            throw new ServiceError(400, `Could not parse the ShipIt source remote: ${target.repoUrl}`);
+          }
+          const access = await deps.githubAuthManager.checkRepoWriteAccess(parsed.owner, parsed.repo);
+          if (!access.canWrite) {
+            throw new ServiceError(
+              403,
+              `Cannot open a fix PR against ${parsed.owner}/${parsed.repo}: ${access.reason ?? "no write access"}. ` +
+                "Produce a structured incident report with source references instead.",
+            );
+          }
+          await ensureShipitSourceRepoReady(target.repoUrl, {
+            repoStore: deps.repoStore,
+            getSharedRepoDir: deps.getSharedRepoDir,
+            ensureBareCache: (cacheDir, url) => ensureBareCache(cacheDir, url, deps.createRepoGit),
+          });
+          repoUrlOverride = target.repoUrl;
+          sourceBase = target.ref;
+          effectivePrompt = buildShipitFixPrompt({
+            ref: target.ref,
+            exact: target.exact,
+            parentSessionId: request.params.parentId,
+            diagnosis: effectivePrompt,
+          });
+        }
+
         const result = await spawnChildSession(
           sessionManager,
           deps.runnerRegistry,
           claimSessionService,
           request.params.parentId,
           {
-            prompt: body.prompt ?? "",
+            prompt: effectivePrompt,
             ...(body.title !== undefined ? { title: body.title } : {}),
-            ...(body.base !== undefined ? { base: body.base } : {}),
+            ...(sourceBase !== undefined ? { base: sourceBase } : {}),
             ...(body.agent !== undefined ? { agent: body.agent } : {}),
             ...(body.model !== undefined ? { model: body.model } : {}),
             ...(body.spawnedByTurn !== undefined ? { spawnedByTurn: body.spawnedByTurn } : {}),
+            ...(repoUrlOverride !== undefined ? { repoUrlOverride } : {}),
           },
           deps.defaultAgentId,
           deps.credentialsDir,
