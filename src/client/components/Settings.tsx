@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- credential/cleanup status fetch on mount
 import { useState, useRef, useEffect } from "react";
-import { XIcon, WrenchIcon } from "@phosphor-icons/react";
+import { XIcon, WrenchIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
 import type { AgentOption } from "../agent-types.js";
 import type { AgentId, ProviderAccount } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -45,6 +45,7 @@ interface UpdateStatusResult {
   currentVersion: string;
   latestVersion: string;
   isDowngrade: boolean;
+  releaseUrl?: string;
 }
 
 const providerNames: Record<AgentId, string> = {
@@ -1607,9 +1608,37 @@ export function Settings({
                             <li>...and {updateStatus.commitMessages.length - 10} more</li>
                           )}
                         </ul>
+                        {/* Overflow-only escape hatch — the inline changelog above
+                            is the primary affordance (CLAUDE.md §2). */}
+                        {updateStatus.releaseUrl && (
+                          <a
+                            href={updateStatus.releaseUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-2 inline-flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
+                            data-testid="settings-release-link"
+                          >
+                            View release on GitHub
+                            <ArrowSquareOutIcon size={ICON_SIZE.XS} />
+                          </a>
+                        )}
                       </>
                     ) : (
-                      <p>ShipIt is up to date ({updateStatus.currentVersion})</p>
+                      <>
+                        <p>ShipIt is up to date ({updateStatus.currentVersion})</p>
+                        {updateStatus.releaseUrl && (
+                          <a
+                            href={updateStatus.releaseUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-1 inline-flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
+                            data-testid="settings-release-link"
+                          >
+                            View release on GitHub
+                            <ArrowSquareOutIcon size={ICON_SIZE.XS} />
+                          </a>
+                        )}
+                      </>
                     )}
                   </div>
                 )}

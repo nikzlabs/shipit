@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: medium
 description: Add stable/edge release channels so self-hosters can pin to vetted, low-frequency releases instead of always tracking main.
 ---

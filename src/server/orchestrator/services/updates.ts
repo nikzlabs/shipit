@@ -19,6 +19,7 @@ import {
 } from "../release-channel.js";
 import type { ReleaseChannel } from "../release-channel.js";
 import { resolveVersion } from "../build-id.js";
+import { parseGitHubRemote } from "../git-utils.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -49,6 +50,39 @@ export interface UpdateStatus {
    * potential downgrade). The UI warns before applying. See Risks in the plan.
    */
   isDowngrade: boolean;
+  /**
+   * URL of the GitHub Release for the channel's target version, when it is a
+   * stable release tag (`vX.Y.Z`) on a GitHub origin. The inline changelog is
+   * the primary affordance; this is an overflow-only "View release on GitHub"
+   * escape hatch (CLAUDE.md §2). Absent on edge (no release object) or when the
+   * origin isn't a GitHub remote.
+   */
+  releaseUrl?: string;
+}
+
+/**
+ * Build the GitHub Release URL for a release tag, from the host repo's origin
+ * remote. Returns undefined when the version isn't a release tag, the origin
+ * isn't resolvable, or it isn't a GitHub remote — callers simply omit the
+ * escape-hatch link in those cases.
+ */
+async function resolveReleaseUrl(
+  version: string,
+  channel: ReleaseChannel,
+  gitOpts: { cwd: string; timeout: number },
+): Promise<string | undefined> {
+  // Only stable releases have a tag/Release object; edge is `main @ <sha>`.
+  if (channel !== "stable" || !/^v\d+\.\d+\.\d+/.test(version)) return undefined;
+  try {
+    const { stdout } = await execFileAsync(
+      "git", ["remote", "get-url", "origin"], gitOpts,
+    );
+    const parsed = parseGitHubRemote(stdout.trim());
+    if (!parsed) return undefined;
+    return `https://github.com/${parsed.owner}/${parsed.repo}/releases/tag/${version}`;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Resolve the version label for a commit-ish in the host repo. */
@@ -113,6 +147,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
 
     const currentVersion = await describeRef("HEAD", channel, gitOpts);
     const latestVersion = await describeRef(targetRef, channel, gitOpts);
+    const releaseUrl = await resolveReleaseUrl(latestVersion, channel, gitOpts);
 
     if (current === latest) {
       return {
@@ -125,6 +160,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
         currentVersion,
         latestVersion,
         isDowngrade: false,
+        releaseUrl,
       };
     }
 
@@ -157,6 +193,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
       currentVersion,
       latestVersion,
       isDowngrade,
+      releaseUrl,
     };
   } catch (err) {
     if (err instanceof ServiceError) throw err;
