@@ -93,19 +93,29 @@ safety mechanism here.
 
 ### Redaction engine (fulfills part of `docs/023`)
 
-Build a shared `redact()` utility, generalizing what already works:
+Build a shared `redact(text)` utility. The dangerous field is the agent-composed
+**transcript excerpt** — free text that can quote a token, an email, or workspace
+file contents inline — so this must be genuine **content scrubbing**, not file-path
+matching:
 
-- Lift and generalize `REDACTED_PATTERNS` from
-  `src/server/orchestrator/services/shipit-source.ts` (`.env`, keys, `.git`, etc.).
-- Add the secret scan from `docs/023`: `sk-…`, `ghp_…`, `Bearer …`, generic
-  long-token heuristics → `[REDACTED]`.
-- Add scrubbers for **email addresses**, **git/remote URLs** (reuse
-  `stripUrlCredentials` from `git-utils.ts`, then drop the host/path), and absolute
-  paths under the user's workspace dir.
+- **Content scrubbers (the core).** Scan the text for secret/PII *substrings* and
+  replace with `[REDACTED]`: the patterns from `docs/023` (`sk-…`, `ghp_…`,
+  `Bearer …`, generic long-token heuristics), **email addresses**, and
+  **git/remote URLs** (reuse `stripUrlCredentials` from `git-utils.ts` to strip
+  embedded creds, then drop host/path). This is what makes the public, attributed
+  issue safe; it is the load-bearing part.
+- **Path exclusion (secondary, distinct mechanism).** `REDACTED_PATTERNS` /
+  `isRedactedSourcePath` in `shipit-source.ts` match file *paths* (`.env`, keys,
+  `.git`, …) — they decide whether a whole file may be referenced, and do **not**
+  scrub substrings. Reuse them only to *exclude* sensitive paths from the excerpt
+  and to redact absolute paths under the user's workspace dir; do **not** mistake
+  them for content redaction (lifting them alone yields a no-op redactor).
 
-New module: `src/server/orchestrator/services/redaction.ts` + `redaction.test.ts`.
-This is the reusable core `docs/023` will later consume for full session export; we
-build it now, scoped to the bug-report payload, and un-pause `docs/023` partially.
+New module: `src/server/orchestrator/services/redaction.ts` + `redaction.test.ts`,
+with a test that proves an inline `ghp_…` / email / workspace path in free text is
+scrubbed (not just that a sensitive *filename* is excluded). This is the reusable
+core `docs/023` will later consume for full session export; we build it now, scoped
+to the bug-report payload, and un-pause `docs/023` partially.
 
 ### Consent UI — inline bug-report review card
 
@@ -158,10 +168,14 @@ detection, issue locking, and the maintainers' ability to block an account.
 - **Destination is fixed:** the upstream ShipIt GitHub repo, hard-coded as the
   bug-report target (`UPSTREAM_REPO`). Not the user's project repo.
 - **Credential is the user's own GitHub auth** — the orchestrator already holds it
-  via `GitHubAuthManager` for PRs. Opening an issue on a *public* repo only needs
-  `public_repo` scope, which the user has even with no write access to ShipIt; the
-  feature degrades to a clear "connect GitHub to file a bug" prompt if the scope is
-  missing.
+  via `GitHubAuthManager` for PRs (a pasted PAT). The common case is a **classic
+  `repo`-scoped PAT**, which already includes `public_repo`, so creating an issue on
+  the upstream repo just works. **Do not pre-flight a scope check** — a *fine-grained*
+  PAT scoped only to the user's own repos has no Issues:write on the upstream repo
+  and will 403, and there is no reliable way to assume scope from the token. Instead,
+  attempt the create and treat the GitHub 403/scope error as the gate, surfacing it
+  as a clear "your GitHub token can't file issues on the ShipIt repo — reconnect with
+  a token that can" prompt.
 - **No central/service credential**, because a self-hosted deployment has no trusted
   central party to own one (see principle #1).
 - **No Linear, no pluggable backend.** Linear requires access the user doesn't have
@@ -210,8 +224,8 @@ detection, issue locking, and the maintainers' ability to block an account.
   stamp platform version, dispatch to `GitHubAuthManager`.
 - `src/server/orchestrator/github-auth.ts` (+ `github-auth-*.ts`) — new
   `createIssue(repo, { title, body })` method against the fixed upstream repo,
-  using the user's existing token; surfaces a clear error if `public_repo` scope is
-  missing.
+  using the user's existing token; no scope pre-check — surfaces the GitHub
+  403/scope error as a reconnect prompt.
 - `src/server/orchestrator/ws-handlers/` — `report_shipit_bug` (draft) and
   `submit_bug_report` (confirm) handlers.
 - `src/server/shared/types/ws-server-messages.ts` / `ws-client-messages.ts` —

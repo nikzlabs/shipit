@@ -1,12 +1,12 @@
 # User bug filing — checklist
 
 ## Shared infrastructure
-- [ ] `redaction.ts` — generalize `REDACTED_PATTERNS`, add secret/email/URL/path scrubbers
-- [ ] `redaction.test.ts` — secrets, emails, repo URLs, workspace paths all redacted; non-sensitive text preserved
+- [ ] `redaction.ts` — content scrubbers (`sk-`/`ghp_`/`Bearer`/long-token, emails, git URLs via `stripUrlCredentials`, workspace paths) replacing inline substrings with `[REDACTED]`; reuse `shipit-source.ts` path matchers only for path exclusion, not content
+- [ ] `redaction.test.ts` — prove an inline `ghp_…`/email/workspace path in *free text* is scrubbed (not just sensitive filenames excluded); non-sensitive text preserved
 
 ## GitHub issue filing (user's own identity)
 - [ ] `GitHubAuthManager.createIssue(repo, { title, body })` against the fixed upstream ShipIt repo, using the user's existing token
-- [ ] Missing-scope (`public_repo`) handling → surface a clear "connect GitHub to file a bug" prompt instead of failing opaquely
+- [ ] No scope pre-check — attempt create, surface a GitHub 403/scope error as a "reconnect with a token that can file issues on the ShipIt repo" prompt
 - [ ] No service credential, no Linear, no pluggable backend (single fixed destination)
 
 ## Server flow
@@ -33,4 +33,3 @@
 ## Open questions
 - [ ] How "ShipIt build/version" is exposed to the orchestrator in a non-dogfood deployment
 - [ ] Exact upstream repo + label convention for incoming user reports
-- [ ] Whether the existing GitHub OAuth scope already covers `public_repo` issue creation, or needs a scope bump
