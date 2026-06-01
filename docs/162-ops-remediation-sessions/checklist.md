@@ -12,10 +12,12 @@
 
 - [ ] Add a service that resolves the running ShipIt source ref.
 - [ ] Add read-only ShipIt source snapshot/search access for Ops sessions.
+- [ ] Refuse source tree/search/cat when no exact deployed ref or current server checkout is available, unless an explicit approximate mode is requested.
 - [ ] Add `shipit source status/tree/search/cat` shim commands.
 - [ ] Broker read-only source commands through `/agent-ops/*`.
 - [ ] Redact credentials, `.env` files, and `.git` internals from source access.
 - [ ] Extend child session spawn with Ops-only `--shipit-source` target support.
+- [ ] Base the spawned fix session on the exact inspected source ref, not default branch head.
 - [ ] Add ShipIt source repo write permission checks before fix-session creation.
 - [ ] Build and redact incident packets for spawned ShipIt fix sessions.
 - [ ] Enforce a clear failure mode when the operator lacks write access to the ShipIt repo.

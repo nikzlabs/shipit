@@ -117,8 +117,13 @@ Recommended source selection order:
    metadata, image labels, environment, or a persisted deployment record.
 2. **Current server checkout**, if production runs from a mounted checkout and
    the orchestrator can safely expose a read-only snapshot of it.
-3. **Default branch head**, if no deployed commit metadata exists. This is less
-   precise and should be labeled as such in the Ops transcript.
+
+If neither source is available, `shipit source status` should report that the
+running source is unavailable. `tree`, `search`, and `cat` should fail rather
+than silently serving the repository's default branch. An explicit approximate
+mode can be added for emergency investigation, but it must be opt-in on the
+command, clearly marked in the output, and carried into any incident packet so a
+child fix session does not look exact when it is not.
 
 The snapshot should be exposed through a narrow CLI surface first:
 
@@ -185,7 +190,13 @@ Behavior:
 - If the user lacks write access, the command fails with a clear inline error
   and leaves the Ops diagnosis intact.
 - The child session is created through the same repo claim path as a normal
-  ShipIt repository session.
+  ShipIt repository session, then reset or branched from the exact source ref
+  that Ops inspected. A diagnosis against deployed commit `abc123` must produce
+  a child branch whose starting point is `abc123`, not the repository's current
+  default branch.
+- If the inspected source is approximate, the spawn should either fail before
+  the child starts editing or create a visibly approximate remediation session
+  only when the user/agent explicitly requested approximate-source remediation.
 - The child prompt is seeded with a structured incident packet from the Ops
   parent.
 
@@ -195,6 +206,7 @@ The incident packet should include:
 - Host/session/service identifiers that are safe to expose.
 - Relevant log excerpts, trimmed and redacted.
 - Source ref inspected by Ops.
+- Whether the source ref was exact or approximate.
 - Source files and symbols inspected by Ops.
 - Suspected root cause and candidate files.
 - Constraints: tests to run, behavior to preserve, and what not to touch.
@@ -300,7 +312,7 @@ Behavior:
 4. Add source snapshot redaction rules so credentials, `.env` files, and `.git`
    internals are never exposed through the CLI.
 5. Extend `spawnChildSession()` or add a wrapper to create an Ops-only ShipIt
-   fix child session.
+   fix child session based on the exact inspected source ref.
 6. Add read/write permission checks for the configured ShipIt source repo.
 7. Add an incident-packet builder used by Ops prompts and the spawn route.
 8. Add an Ops remediation card in parent chat, reusing the spawned-session
