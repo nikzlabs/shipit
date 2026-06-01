@@ -560,6 +560,101 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
+  // ---- stale-spawn (run-token) guard ----
+
+  // Production repro (Fix-CI / Merge-Conflicts button): the rebase resolution
+  // turn rebased + force-pushed successfully, but the agent's reply never
+  // reached chat — every event of the resolution turn was sse-dropped with
+  // `agent_event ... dropped (no _agent)`.
+  //
+  // Root cause: the runner's single `_agent` slot is REUSED across spawns. The
+  // rebase flow killed the resident streaming process and spawned a fresh agent
+  // into the slot. The killed process's late `agent_done` (code 143, SIGTERM)
+  // arrived ~20s later — AFTER the new proxy occupied the slot — and the SSE
+  // relay blindly emitted it onto the live agent, whose object-identity-guarded
+  // done handler PASSED (it *was* the current agent) and nulled `_agent`,
+  // stranding the resolution turn's whole event stream.
+  //
+  // The fix: the worker stamps the spawning proxy's `runToken` onto
+  // agent_done/error/auth_required; the relay ignores a slot-ending event whose
+  // token doesn't match the proxy currently in the slot. Object identity can't
+  // span the SSE boundary or survive slot reuse — the per-spawn token can.
+  it("a stale agent_done from a reused (killed) spawn does NOT strand the new turn's events", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-stale-done-slot-reuse",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // 1. Resident turn (the original "Work on: …" streaming turn). proxy1
+    //    occupies the slot; the worker wires agent1 with proxy1.runToken.
+    const proxy1 = runner.createAgent("claude");
+    proxy1.run({ prompt: "resident turn", cwd: "/workspace" });
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent1.run()");
+    const agent1 = lastAgent;
+    expect(proxy1.runToken).toBeTruthy();
+
+    // 2. Fix-CI / rebase takes over the slot: a NEW proxy is created and the
+    //    worker's resident agent is killed + replaced (409 → kill → restart).
+    const proxy2 = runner.createAgent("claude");
+    expect(proxy2.runToken).not.toBe(proxy1.runToken);
+
+    // Mirror the rebase-driver / turn-executor done handler: object-identity-
+    // guarded setAgent(null). This is the handler that — fed a stale done —
+    // nulled the live slot in prod.
+    let proxy2Done = false;
+    proxy2.on("done", () => {
+      proxy2Done = true;
+      if (runner.getAgent() === proxy2) runner.setAgent(null);
+    });
+    const proxy2Events: string[] = [];
+    proxy2.on("event", (e: { type?: string }) => { if (e.type) proxy2Events.push(e.type); });
+
+    proxy2.run({ prompt: "rebase resolution turn", cwd: "/workspace" });
+    await waitFor(
+      () => lastAgent !== agent1 && lastAgent?.lastParams?.prompt === "rebase resolution turn",
+      3000,
+      "agent2.run() after slot reuse",
+    );
+    const agent2 = lastAgent;
+    expect(agent1.killed).toBe(true);
+
+    // 3. The PRIOR spawn's late exit arrives AFTER the slot was reused — the
+    //    code-143 SIGTERM `done` from the killed resident process. It carries
+    //    proxy1's runToken, not proxy2's.
+    agent1.emit("done", 143);
+
+    // 4. The stale done must be IGNORED: proxy2 keeps the slot, its done
+    //    handler never runs, `_agent` is not nulled.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(proxy2Done).toBe(false);
+    expect(runner.getAgent()).toBe(proxy2);
+
+    // 5. The resolution turn's real events now flow to proxy2 instead of being
+    //    sse-dropped (no _agent) — the user-visible fix.
+    agent2.emit("event", { type: "agent_init", agentId: "claude", sessionId: "s-rebase", model: "claude-sonnet-4-6", tools: ["Read"] });
+    agent2.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Resolved the conflict." }],
+    });
+    agent2.emit("event", { type: "agent_result", status: "success", sessionId: "s-rebase" });
+    await waitFor(() => proxy2Events.includes("agent_result"), 3000, "resolution events delivered");
+    expect(proxy2Events).toContain("agent_init");
+    expect(proxy2Events).toContain("agent_assistant");
+    expect(proxy2Events).toContain("agent_result");
+
+    // 6. proxy2's OWN done (matching token) still finalizes the turn normally —
+    //    the guard only blocks the MISMATCHED stale exit, not the real one.
+    agent2.emit("done", 0);
+    await waitFor(() => proxy2Done, 3000, "proxy2 own done");
+    expect(runner.getAgent()).toBeNull();
+
+    runner.dispose({ force: true });
+  });
+
   // ---- tryPushAgentSecrets (docs/088 compose-less agent-env path) ----
 
   describe("tryPushAgentSecrets()", () => {

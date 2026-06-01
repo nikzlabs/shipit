@@ -543,6 +543,37 @@ The existing `rebase_started` / `rebase_conflicts` / `rebase_complete` / `rebase
 | `src/server/orchestrator/auto-conflict-resolve-manager.test.ts` | Unit tests for the state machine |
 | `src/server/orchestrator/integration_tests/auto-resolve-conflicts.test.ts` | Integration tests (below) |
 
+### Follow-up fix: per-spawn run-token guards the resolution turn's event stream
+
+The rebase resolution turn reuses the runner's single `_agent` slot: the flow
+kills the resident streaming process and spawns a fresh resolution agent into
+the same slot. In prod this stranded the resolution turn's entire event stream
+— rebase + force-push succeeded, but the agent's reply never reached chat.
+
+Root cause: the killed resident process's late `agent_done` (code 143, SIGTERM)
+arrived over SSE *after* the new proxy occupied the slot. The SSE relay
+(`container-session-runner.ts` `handleSSEEvent`) blindly emitted that `done`
+onto the live agent, whose object-identity-guarded done handler PASSED (it *was*
+the current agent) and nulled `_agent` — so every subsequent event hit the
+`(no _agent)` sse-drop branch. Object identity can't disambiguate spawns across
+the SSE boundary, and `agentId` is the agent *type* (reused across turns), so
+neither could catch it.
+
+Fix — a per-SPAWN correlation token (`runToken`, a run epoch distinct from
+`agentId`):
+
+| File | Change |
+|---|---|
+| `src/server/orchestrator/proxy-agent-process.ts` | `ProxyAgentProcess.runToken` (a `randomUUID()` per spawn); passed to `_startAgentViaProxy` so the worker learns it on `/agent/start` |
+| `src/server/session/session-worker.ts` | `/agent/start` reads `runToken`; `wireAgentEvents(agent, runToken)` captures it and stamps it onto `agent_done` / `agent_error` / `agent_auth_required` broadcasts |
+| `src/server/orchestrator/container-session-runner.ts` | `isStaleSpawnEvent()` — the relay ignores a slot-ending event whose token ≠ the token of the proxy currently in the slot (logs the same `[sse-drop:…]` line). Threads `runToken` through `_startAgentViaProxy` / `_doStartAgentViaProxy` / `startAgentOnWorker` |
+| `src/server/orchestrator/integration_tests/container-agent-wiring.test.ts` | Regression test: a stale `agent_done` (code 143) from a reused/killed spawn arriving after the new proxy takes the slot is ignored; the new turn's `agent_init`/`agent_assistant`/`agent_result` are delivered, and the new agent's own matching-token `done` still finalizes the turn |
+
+Backward/forward compatible: a slot event with no `runToken` (legacy worker) or
+against a proxy without one falls back to the existing object-identity guards
+and the `verifyRunningState` safety net, preserving the "missed `agent_done`"
+SSE-drop resilience.
+
 ## Tests
 
 ### Unit tests (`auto-conflict-resolve-manager.test.ts`)
