@@ -160,6 +160,53 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
+  // Read-only ShipIt source surface (docs/162)
+  //
+  // These back the `shipit source status|tree|search|cat` shim subcommands.
+  // The worker injects the trusted SESSION_ID; the orchestrator gates every
+  // route on `session.kind === "ops"`. Read-only by construction — there are
+  // no source write routes.
+  // ---------------------------------------------------------------------------
+
+  // GET /agent-ops/source/status — running source ref + exactness
+  app.get(
+    "/agent-ops/source/status",
+    async (_request, reply) => relay("GET", "/source/status", undefined, reply),
+  );
+
+  // GET /agent-ops/source/tree[?path=...] — list a directory at the source ref
+  app.get<{ Querystring: { path?: string } }>(
+    "/agent-ops/source/tree",
+    async (request, reply) => {
+      const path = request.query.path;
+      const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+      return relay("GET", `/source/tree${qs}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/source/search?q=...[&path=...] — git grep at the source ref
+  app.get<{ Querystring: { q?: string; path?: string } }>(
+    "/agent-ops/source/search",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      if (request.query.q) params.set("q", request.query.q);
+      if (request.query.path) params.set("path", request.query.path);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/source/search${qs}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/source/cat?path=... — read a file at the source ref
+  app.get<{ Querystring: { path?: string } }>(
+    "/agent-ops/source/cat",
+    async (request, reply) => {
+      const path = request.query.path;
+      const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+      return relay("GET", `/source/cat${qs}`, undefined, reply);
+    },
+  );
+
+  // ---------------------------------------------------------------------------
   // Agent-spawned sibling sessions (docs/117)
   //
   // These routes back the `shipit session create|list|view` shim subcommands.

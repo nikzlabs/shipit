@@ -73,6 +73,16 @@ override the parent.
 | `shipit session archive <id> [--json]` | Archive a child this parent spawned. Refuses with a clear error when the child is still running — use `shipit session wait` first. |
 | `shipit session help` | Print the subcommand reference. |
 
+**Ops-only** (`kind: "ops"` sessions — see `ops-session.md`): pass
+`--shipit-source` to `shipit session create` to spawn a fix session that targets
+the **ShipIt repository itself**, branched from the exact deployed commit you
+inspected with `shipit source`. The orchestrator verifies the operator's GitHub
+account can push to the ShipIt repo before creating the child, seeds the child
+with an incident packet (source ref, exactness, your diagnosis, constraints),
+and otherwise behaves like a normal spawn — the child owns all edits, tests,
+commits, push, and the PR. Add `--approximate` to acknowledge a non-exact source
+ref. `--shipit-source` is rejected outside Ops sessions.
+
 ### Example
 
 ```sh

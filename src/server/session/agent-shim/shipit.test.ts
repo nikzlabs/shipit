@@ -742,3 +742,149 @@ describe("shipit session archive", () => {
     expect(out.stderr).toContain("not a descendant of this parent");
   });
 });
+
+// ---------------------------------------------------------------------------
+// shipit source (docs/162) — read-only ShipIt source surface, Ops-only
+// ---------------------------------------------------------------------------
+
+describe("shipit source", () => {
+  it("status prints the resolved ref and exactness", async () => {
+    const { run } = makeRunner();
+    const out = await run(["source", "status"], {
+      "GET /agent-ops/source/status": {
+        status: 200,
+        body: { available: true, ref: "abc123def456", exact: true, refSource: "build-id", remoteUrl: "https://github.com/acme/shipit.git" },
+      },
+    });
+    expect(out.calls[0]).toMatchObject({ method: "GET", path: "/agent-ops/source/status" });
+    expect(out.stdout).toContain("ref:        abc123def456");
+    expect(out.stdout).toContain("exact:      true");
+    expect(out.exitCode).toBe(0);
+  });
+
+  it("status warns and exits non-zero when unavailable", async () => {
+    const { run } = makeRunner();
+    const out = await run(["source", "status"], {
+      "GET /agent-ops/source/status": {
+        status: 200,
+        body: { available: false, exact: false, reason: "ShipIt source is unavailable: no git checkout at /opt/shipit." },
+      },
+    });
+    expect(out.stderr).toContain("unavailable");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("status flags an approximate ref", async () => {
+    const { run } = makeRunner();
+    const out = await run(["source", "status"], {
+      "GET /agent-ops/source/status": {
+        status: 200,
+        body: { available: true, ref: "deadbeef", exact: false, refSource: "checkout-head" },
+      },
+    });
+    expect(out.stdout).toContain("approximate");
+    expect(out.stdout).toContain("--approximate");
+  });
+
+  it("tree lists entries for a path", async () => {
+    const { run } = makeRunner();
+    const out = await run(["source", "tree", "src/server"], {
+      "GET /agent-ops/source/tree": {
+        status: 200,
+        body: { ref: "abc", path: "src/server", entries: [{ name: "orchestrator", type: "dir" }, { name: "index.ts", type: "file" }], truncated: false },
+      },
+    });
+    expect(out.calls[0].path).toBe("/agent-ops/source/tree?path=src%2Fserver");
+    expect(out.stdout).toContain("dir   orchestrator/");
+    expect(out.stdout).toContain("file  index.ts");
+  });
+
+  it("search requires a query", async () => {
+    const { run } = makeRunner();
+    const out = await run(["source", "search"]);
+    expect(out.stderr).toContain("a query is required");
+    expect(out.exitCode).not.toBe(0);
+  });
+
+  it("search passes q and --path through and renders matches", async () => {
+    const { run } = makeRunner();
+    const out = await run(["source", "search", "ContainerSessionRunner", "--path", "src"], {
+      "GET /agent-ops/source/search": {
+        status: 200,
+        body: { ref: "abc", query: "ContainerSessionRunner", matches: [{ path: "src/a.ts", line: 4, text: "class ContainerSessionRunner {" }], truncated: false },
+      },
+    });
+    const q = out.calls[0].path;
+    expect(q).toContain("q=ContainerSessionRunner");
+    expect(q).toContain("path=src");
+    expect(out.stdout).toContain("src/a.ts:4:class ContainerSessionRunner {");
+  });
+
+  it("cat prints file content", async () => {
+    const { run } = makeRunner();
+    const out = await run(["source", "cat", "src/index.ts"], {
+      "GET /agent-ops/source/cat": {
+        status: 200,
+        body: { ref: "abc", path: "src/index.ts", content: "export const x = 1;\n", truncated: false },
+      },
+    });
+    expect(out.calls[0].path).toBe("/agent-ops/source/cat?path=src%2Findex.ts");
+    expect(out.stdout).toBe("export const x = 1;\n");
+    expect(out.exitCode).toBe(0);
+  });
+
+  it("cat requires a path", async () => {
+    const { run } = makeRunner();
+    const out = await run(["source", "cat"]);
+    expect(out.stderr).toContain("a file path is required");
+    expect(out.exitCode).not.toBe(0);
+  });
+
+  it("rejects mutating source subcommands with a pointer to --shipit-source", async () => {
+    const { run } = makeRunner();
+    for (const sub of ["edit", "commit", "push", "checkout", "git"]) {
+      const out = await run(["source", sub]);
+      expect(out.stderr).toContain("read-only");
+      expect(out.stderr).toContain("--shipit-source");
+      expect(out.exitCode).not.toBe(0);
+    }
+  });
+
+  it("forwards a 403 from a non-ops session", async () => {
+    const { run } = makeRunner();
+    const out = await run(["source", "status"], {
+      "GET /agent-ops/source/status": {
+        status: 403, body: { error: "ShipIt source access is only available in Ops sessions." },
+      },
+    });
+    expect(out.stderr).toContain("only available in Ops sessions");
+    expect(out.exitCode).toBe(1);
+  });
+});
+
+describe("shipit session create --shipit-source (docs/162)", () => {
+  it("forwards shipitSource and approximateSource in the payload", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "create", "-p", "Fix the lifecycle loop", "--shipit-source", "--approximate"],
+      {
+        "POST /agent-ops/session/create": {
+          status: 200, body: { sessionId: "ses_fix", branch: "shipit/x", status: "running" },
+        },
+      },
+    );
+    expect(out.calls[0].body).toMatchObject({
+      prompt: "Fix the lifecycle loop",
+      shipitSource: true,
+      approximateSource: true,
+    });
+    expect(out.stdout).toContain("session-id: ses_fix");
+  });
+
+  it("rejects --approximate without --shipit-source", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "create", "-p", "x", "--approximate"]);
+    expect(out.stderr).toContain("--approximate only applies with --shipit-source");
+    expect(out.exitCode).not.toBe(0);
+  });
+});
