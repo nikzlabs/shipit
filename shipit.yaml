@@ -1,9 +1,10 @@
 agent:
-  # 4 GiB gives ~1 GiB of headroom over the peak RSS of `npm run lint`
-  # (~2.85 GiB on the full type-aware run across all 697 TS files). At 3 GiB
-  # the headroom was ~200 MiB, which the agent + dev server + tsc routinely
-  # consumed, OOM-killing lint mid-run.
-  memory: 4096
+  # 6 GiB absorbs spike load when lint/typecheck run alongside the agent and
+  # dev server. Peak RSS of `npm run lint` is ~2.85 GiB (full type-aware run
+  # across all 697 TS files); a concurrent `npm run typecheck` adds another
+  # whole-project TS program, and at 4 GiB the combined spike still risked
+  # OOM-killing one of them mid-run. The extra 2 GiB gives that headroom.
+  memory: 6144
   cpu: 2.0
   pids: 2048
   # Keep this as a bare package-manager command so the session worker's
