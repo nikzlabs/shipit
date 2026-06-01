@@ -527,6 +527,99 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("steers a programmatic dispatch (shipit session message / child message) mid-turn instead of queuing it (docs/163)", async () => {
+    // Regression: the agent-driven path (`shipit session message` → child-message
+    // → `runner.dispatch`) used to ALWAYS queue a message that arrived during an
+    // active turn, even with live steering on — only the WS handler honored
+    // steering. The dispatch path now shares the WS handler's `shouldSteerMessage`
+    // decision, so a programmatic message lands in the running turn via
+    // `sendUserMessage` and broadcasts `message_steered`, not `message_queued`.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // WS turn opens a streaming agent (liveSteering on + claude supports steering).
+    client.send({ type: "send_message", text: "First message", sessionId: client.sessionId });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("dispatch-steer-session");
+    expect(claude.lastUseStreaming).toBe(true);
+
+    // Simulate the programmatic entry point: resolve the registry runner and
+    // dispatch a message exactly as `sendChildMessage` does. Poll until the WS
+    // turn has marked the runner running + streaming so the steer gate is live.
+    const runner = (app as any).runnerRegistry.get(client.sessionId);
+    expect(runner).toBeTruthy();
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (runner.running && runner.isStreamingActive && runner.getAgent()) { resolve(); return; }
+        if (Date.now() - start > 2000) { reject(new Error("runner never became running+streaming")); return; }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+
+    runner.dispatch({ text: "Programmatic steer" });
+
+    const steered = await drainUntil(client, (m) => m.type === "message_steered");
+    expect(steered).toMatchObject({ type: "message_steered", text: "Programmatic steer" });
+    // Injected into the running agent — the fake records sendUserMessage under stdinData.
+    expect(claude.stdinData).toContain("Programmatic steer");
+    // And it was NOT queued.
+    expect(runner.queueLength).toBe(0);
+
+    client.close();
+  });
+
+  it("delivers a dispatch-queued message at turn end even when the streaming process exits WITHOUT an agent_result (never-delivered fix, docs/162)", async () => {
+    // Regression: in streaming mode the post-turn queue drain hung off
+    // `agent_result` only — the `done` handler returned early without draining.
+    // If a streaming turn ended abnormally (crash / failed-PR / hook-retry exit)
+    // it emitted `done` with no preceding `result`, so a message queued via the
+    // dispatch path was stranded forever ("queued, then never delivered"). The
+    // streaming `done` path now drains the queue (guarded so a clean
+    // agent_result drain isn't doubled).
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Streaming turn 1.
+    client.send({ type: "send_message", text: "First message", sessionId: client.sessionId });
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.initSession("drain-on-done-session");
+    expect(claude1.lastUseStreaming).toBe(true);
+
+    const runner = (app as any).runnerRegistry.get(client.sessionId);
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (runner.running && runner.isStreamingActive) { resolve(); return; }
+        if (Date.now() - start > 2000) { reject(new Error("runner never became running+streaming")); return; }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+
+    // Turn steering OFF so the dispatched message is QUEUED (not steered),
+    // reproducing the "message sits in the queue" precondition.
+    credentialStore.setLiveSteering(false);
+    runner.dispatch({ text: "Queued during turn" });
+    const queued = await drainUntil(client, (m) => m.type === "message_queued");
+    expect(queued).toMatchObject({ type: "message_queued", text: "Queued during turn" });
+
+    // The streaming process dies WITHOUT emitting a result event — the abnormal
+    // exit that used to strand the queue. (claude.finish() emits result+done; we
+    // deliberately emit only done here.)
+    claude1.emit("done", 1);
+
+    // With the fix, the queue drains at done. Steering is now off, so the drained
+    // turn spawns a FRESH non-streaming agent whose prompt carries the queued text.
+    const claude2 = await waitForClaude(() => lastClaude, claude1);
+    expect(claude2).not.toBe(claude1);
+    expect(claude2.runCalled).toBe(true);
+    expect(claude2.lastPrompt).toContain("Queued during turn");
+
+    client.close();
+  });
+
   it("falls back to the queue path when liveSteering is off, even if the agent supports steering", async () => {
     // Flip the setting off for this test only.
     credentialStore.setLiveSteering(false);

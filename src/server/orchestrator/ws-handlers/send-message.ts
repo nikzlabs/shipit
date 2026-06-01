@@ -6,6 +6,7 @@ import { graduateSession } from "../services/graduate-session.js";
 import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.js";
 import { runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { shouldSteerMessage } from "../dispatch-steering.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
@@ -131,7 +132,16 @@ export async function handleSendMessage(
       // when the system turn finishes (the rebase-driver's drain hook).
       const systemTurnInProgress = runnerForQueue.systemTurnInProgress;
 
-      if (steeringCapable && liveSteering && streamingActive && !reviewFilePath && !systemTurnInProgress) {
+      // docs/163 — single shared steer-or-queue predicate. The dispatch path
+      // (`runner.dispatch` → `trySteerDispatch`) consults the identical
+      // `shouldSteerMessage` so the WS and programmatic paths can't diverge.
+      if (shouldSteerMessage({
+        steeringCapable,
+        liveSteering,
+        streamingActive,
+        isReviewTurn: reviewFilePath !== undefined,
+        systemTurnInProgress,
+      })) {
         // Steer the running agent — inject message mid-turn
         const steeringAgent = runnerForQueue.getAgent();
         // docs/140 diag — pin the gate state at the moment of steer dispatch.

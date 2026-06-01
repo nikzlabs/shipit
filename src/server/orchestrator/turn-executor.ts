@@ -127,7 +127,11 @@ export async function executeAgentTurn(
     fallbackTitle: input.fallbackTitle,
     capturedSessionId: sessionId,
     ...(input.permissionMode !== undefined ? { requestedPermissionMode: input.permissionMode } : {}),
-    onError: input.drainNext,
+    // Route the error-path drain through the SAME guarded `tryDrain` the
+    // agent_result / done paths use, so a process that both errors AND exits
+    // can't drain the queue twice. (Defined below; the closure defers the
+    // reference until the error actually fires.)
+    onError: () => tryDrain(),
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
   });
 
@@ -248,8 +252,10 @@ export async function executeAgentTurn(
       trySyncToken();
       // agent-listeners already set running=false; the resident process is NOT
       // cleared (the next top-level turn reuses it via reuseExistingAgent).
-      if (runner) runner.running = false;
-      await input.drainNext();
+      // Drain through the guarded `tryDrain` (not `input.drainNext` directly)
+      // so the streaming `done` handler's drain — added for the abnormal-exit
+      // case below — can't double-drain after this normal end-of-turn drain.
+      await tryDrain();
       await runCommitAndPr();
       emitFinishedIfIdle();
     } else {
@@ -294,9 +300,18 @@ export async function executeAgentTurn(
     }
 
     if (useStreaming) {
-      // Streaming post-turn (commit/PR/drain) already ran on agent_result; done
-      // is process-exit cleanup only.
+      // Streaming post-turn (commit/PR) ran on agent_result when the turn ended
+      // cleanly; done is normally process-exit cleanup only. BUT a streaming
+      // process can exit WITHOUT an `agent_result` (crash, hook-induced abort,
+      // failed-PR/hook-retry state) — in which case agent_result never drained
+      // the queue and a message enqueued via the dispatch path would be
+      // stranded forever ("queued, then never delivered"). `tryDrain` is
+      // guarded by `drainFired`, so it's a no-op when agent_result already
+      // drained and only fires here on the abnormal-exit path. The done handler
+      // above already cleared the resident ref + `isStreamingActive`, so the
+      // drained turn spawns a fresh agent rather than writing to dead stdin.
       if (runner) runner.running = false;
+      await tryDrain();
       emitFinishedIfIdle();
       return;
     }

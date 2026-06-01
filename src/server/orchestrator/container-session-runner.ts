@@ -30,6 +30,7 @@ import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionM
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, AgentDispatchOptions } from "./session-runner.js";
 import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
+import { trySteerDispatch } from "./dispatch-steering.js";
 import type { SSEEvent } from "./sse-client.js";
 import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
@@ -1174,7 +1175,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    *
    * With an in-flight install we re-poll the worker so we don't hang forever
    * waiting for an `install_done` event that was lost — and we do this on the
-   * FIRST connect too, not just reconnects (docs/162). The fast-install path
+   * FIRST connect too, not just reconnects (docs/163). The fast-install path
    * can finish and broadcast `install_done` before our SSE consumer is even
    * attached; if that event raced our handshake, the buffered-replay/live
    * delivery could be consumed before the gate resolver is armed, leaving the
@@ -1500,6 +1501,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   dispatch(opts: AgentDispatchOptions): void {
     if (this._isRunning) {
+      // docs/163 — honor live steering on the dispatch path too: when the
+      // running turn is steerable+streaming and live steering is on, inject
+      // the message via `sendUserMessage` instead of queuing it. Shares the
+      // `shouldSteerMessage` predicate with the WS handler so the two paths
+      // can't diverge.
+      if (this._systemTurnDeps && trySteerDispatch(this, opts, this._systemTurnDeps)) return;
       // docs/150 — broadcast message_queued via emitMessage so every attached
       // viewer (and any other HTTP-originated caller in this session) sees the
       // update. Previously the WS handler emitted this on a single socket.
