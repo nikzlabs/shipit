@@ -117,8 +117,16 @@ interface PrState {
    * Bulk update from pr_status SSE event. `removals` contains session IDs
    * whose PR snapshot was cleared on the server (e.g., on unarchive — the
    * session starts a fresh branch, so the previous PR no longer applies).
+   *
+   * `isSnapshot` marks the authoritative initial-connect payload: `updates`
+   * is then the COMPLETE poller-derived PR set, so any session we still hold
+   * poller state for but that's absent from `updates` is dropped. This lets a
+   * reconnect (notably mobile foreground, where the dead SSE socket missed
+   * incremental removals) converge to the server's current truth instead of
+   * leaving stale CI/PR cards behind. In-flight cards the poller doesn't track
+   * yet (phases `creating`/`ready`/`error`) are preserved.
    */
-  applyPrStatusUpdates: (updates: PrStatusSummary[], removals?: string[]) => void;
+  applyPrStatusUpdates: (updates: PrStatusSummary[], removals?: string[], isSnapshot?: boolean) => void;
   /** Update inline card from pr_lifecycle_update WS message. */
   updateCard: (sessionId: string, card: PrCardState) => void;
 
@@ -195,11 +203,34 @@ export const usePrStore = create<PrState>((set, get) => ({
 
   // ---- SSE-driven actions ----
 
-  applyPrStatusUpdates: (updates, removals) => {
+  applyPrStatusUpdates: (updates, removals, isSnapshot) => {
     set((state) => {
       const nextStatus = { ...state.statusBySession };
       const nextCards = { ...state.cardBySession };
       const nextAutoMerge = { ...state.autoMergeBySession };
+
+      // Authoritative snapshot: drop poller state for any session not present
+      // in `updates`. statusBySession is purely poller-owned so it's pruned
+      // wholesale; for cardBySession we only prune poller-authoritative phases
+      // (open/merged/closed) so an in-flight, WS-driven card (creating/ready/
+      // error) isn't wiped by a snapshot that predates the poller learning of
+      // its PR.
+      if (isSnapshot) {
+        const present = new Set(updates.map((u) => u.sessionId));
+        for (const sessionId of Object.keys(nextStatus)) {
+          if (!present.has(sessionId)) {
+            // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+            delete nextStatus[sessionId];
+          }
+        }
+        for (const [sessionId, card] of Object.entries(nextCards)) {
+          const pollerPhase = card.phase === "open" || card.phase === "merged" || card.phase === "closed";
+          if (pollerPhase && !present.has(sessionId)) {
+            // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+            delete nextCards[sessionId];
+          }
+        }
+      }
 
       if (removals) {
         for (const sessionId of removals) {
