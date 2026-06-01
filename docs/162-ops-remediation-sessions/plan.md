@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: high
 description: Give Ops sessions read-only ShipIt source access for diagnosis, then spawn targeted repo-backed fix sessions that can open normal PRs.
 ---
@@ -335,6 +335,50 @@ Behavior:
 | `src/client/components/SpawnedSessionCard.tsx` | Either extend for remediation context or compose a new Ops-specific card. |
 | `src/server/shipit-docs/ops-session.md` | Update the agent-facing Ops contract with read-only ShipIt source investigation and child-session remediation flow. |
 | `src/server/shipit-docs/sessions.md` | Document the Ops-only ShipIt fix-session spawn behavior. |
+
+## Implementation notes (v1)
+
+Source ref resolution (`services/shipit-source.ts`):
+
+- The source checkout is the orchestrator's host bind mount, `/opt/shipit` by
+  default, overridable with `SHIPIT_SOURCE_DIR`.
+- The ref is the **exact** deployed commit when `SHIPIT_BUILD_ID` (baked at
+  image build from `git rev-parse HEAD`, see `build-id.ts`) resolves to a commit
+  present in the checkout. Otherwise it falls back to the checkout's HEAD and is
+  reported as **approximate** (`refSource: "checkout-head"`, `exact: false`).
+- The fix-repo URL is the checkout's `origin` remote, overridable with
+  `SHIPIT_SOURCE_REPO_URL`.
+- All reads (`tree`/`search`/`cat`) run `git` plumbing against the resolved ref,
+  never the working tree, so they always match `status`. Redaction
+  (`isRedactedSourcePath`) blocks `.env`, key material, ssh keys, `.netrc`/
+  `.npmrc`, and `.git/` internals at the tree/search/cat layer.
+
+Write path:
+
+- `shipit session create --shipit-source` → `/spawn` with `shipitSource: true`.
+- The spawn route validates `kind === "ops"`, resolves the fix target
+  (`resolveShipitFixTarget`), checks GitHub push access
+  (`GitHubAuthManager.checkRepoWriteAccess`), registers + readies the ShipIt
+  repo (`ensureShipitSourceRepoReady`), seeds the incident packet
+  (`buildShipitFixPrompt`), and spawns a normal child via `spawnChildSession`
+  with `repoUrlOverride` + `base = <exact ref>`. The child opens its own PR
+  through the existing pipeline.
+
+### Key files added/changed
+
+| File | Change |
+|---|---|
+| `src/server/orchestrator/services/shipit-source.ts` | New: ref resolution, status/tree/search/cat, redaction, fix-target + incident-packet helpers. |
+| `src/server/orchestrator/api-routes-source.ts` | New: Ops-gated `/api/sessions/:id/source/*` routes. |
+| `src/server/session/agent-ops-routes.ts` | Broker `/agent-ops/source/*`. |
+| `src/server/session/agent-shim/shipit.ts` | `shipit source *` commands; `--shipit-source` / `--approximate` on `session create`. |
+| `src/server/orchestrator/github-auth-repos.ts` + `github-auth.ts` | `checkRepoWriteAccess`. |
+| `src/server/orchestrator/services/child-sessions.ts` | `repoUrlOverride` spawn option. |
+| `src/server/orchestrator/api-routes-session.ts` | `/spawn` handles the Ops `--shipit-source` target. |
+| `src/server/shipit-docs/ops-session.md`, `sessions.md` | Agent-facing contract. |
+
+Remaining work is tracked in `checklist.md` (notably the Ops remediation chat
+card, which currently reuses the generic `session_spawned` card).
 
 ## Open Questions
 

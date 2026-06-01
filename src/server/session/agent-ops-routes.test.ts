@@ -352,4 +352,35 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toContain("SHIPIT_HOST not set");
     await errApp.close();
   });
+
+  // ---- docs/162 read-only source surface ----
+
+  it("GET /agent-ops/source/status forwards to /source/status", async () => {
+    client.setResponse("GET", "/source/status", { ok: true, status: 200, body: { available: true } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/source/status" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0]).toMatchObject({ method: "GET", path: "/source/status" });
+  });
+
+  it("GET /agent-ops/source/tree forwards the path query", async () => {
+    client.setResponse("GET", "/source/tree", { ok: true, status: 200, body: { entries: [] } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/source/tree?path=src/server" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/source/tree?path=src%2Fserver");
+  });
+
+  it("GET /agent-ops/source/search forwards q and path", async () => {
+    client.setResponse("GET", "/source/search", { ok: true, status: 200, body: { matches: [] } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/source/search?q=Runner&path=src" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toContain("q=Runner");
+    expect(client.calls[0].path).toContain("path=src");
+  });
+
+  it("GET /agent-ops/source/cat forwards the path query", async () => {
+    client.setResponse("GET", "/source/cat", { ok: true, status: 200, body: { content: "x" } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/source/cat?path=src/index.ts" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/source/cat?path=src%2Findex.ts");
+  });
 });

@@ -32,13 +32,19 @@ const HELP = `${SHIM_NAME} — agent-driven session management.
 Supported subcommands:
   shipit session create  -p "PROMPT" [--title T]
                           [--base REF] [--agent claude|codex] [--model M]
-                          [--turn ID] [--json]
+                          [--turn ID] [--shipit-source] [--approximate] [--json]
   shipit session list    [--turn ID] [--json]
   shipit session view    <id> [--json]
   shipit session message <id> -m "TEXT" [--json]
   shipit session wait    <id> [--timeout SECONDS] [--json]
   shipit session archive <id> [--json]
   shipit session help
+
+Ops-only (read-only ShipIt source, docs/162):
+  shipit source status   [--json]
+  shipit source tree     [PATH] [--json]
+  shipit source search   "QUERY" [--path PATH] [--json]
+  shipit source cat      PATH [--json]
 
 The shim brokers session operations through the ShipIt orchestrator. The
 parent session is always the session this container belongs to — the agent
@@ -49,9 +55,13 @@ Use \`shipit session create\` when the user explicitly asked for a separate
 session / parallel branch / independent workspace. For in-turn fan-out
 under Claude, prefer the built-in \`Task\` tool.
 
+In an Ops session, use \`shipit source *\` to read the ShipIt source code that
+runs this host, then \`shipit session create --shipit-source\` to spawn a
+repo-backed fix session branched from the exact inspected commit.
+
 See /shipit-docs/sessions.md for the full reference, including allowed
 flags and the list of intentionally-rejected operations
-(\`shipit session delete\`, cross-repo spawns, etc.).`;
+(\`shipit session delete\`, \`shipit source edit\`, cross-repo spawns, etc.).`;
 
 interface ParsedFlags {
   positional: string[];
@@ -272,17 +282,26 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
     },
     booleans: {
       "--json": "json",
+      // docs/162 — Ops-only: target the ShipIt source repo, branched off the
+      // exact deployed commit the Ops session inspected.
+      "--shipit-source": "shipitSource",
+      // docs/162 — allow spawning even when the inspected source ref is only
+      // approximate (checkout HEAD, not the exact build commit).
+      "--approximate": "approximate",
     },
   });
 
   if ("repo" in parsed.values || "owner" in parsed.values) {
     fail(
       deps.io,
-      "shipit session create does not support --repo/--owner. Spawned sessions inherit the parent's repo.",
+      "shipit session create does not support --repo/--owner. Spawned sessions inherit the parent's repo (or use --shipit-source in an Ops session).",
     );
   }
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit session create: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  if (parsed.booleans.has("approximate") && !parsed.booleans.has("shipitSource")) {
+    fail(deps.io, "shipit session create: --approximate only applies with --shipit-source.");
   }
 
   const prompt = parsed.values.prompt;
@@ -304,6 +323,8 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
   if (parsed.values.agent) payload.agent = parsed.values.agent;
   if (parsed.values.model) payload.model = parsed.values.model;
   if (parsed.values.turn) payload.spawnedByTurn = parsed.values.turn;
+  if (parsed.booleans.has("shipitSource")) payload.shipitSource = true;
+  if (parsed.booleans.has("approximate")) payload.approximateSource = true;
 
   const res = await deps.call("POST", "/agent-ops/session/create", payload, deps.env);
   if (res.status < 200 || res.status >= 300) {
@@ -565,6 +586,145 @@ async function handleSessionArchive(args: string[], deps: RunDeps): Promise<void
   success(deps.io, `session-id: ${id}\narchived:   true`);
 }
 
+// ---------------------------------------------------------------------------
+// Read-only ShipIt source subcommands (docs/162) — Ops sessions only.
+// ---------------------------------------------------------------------------
+
+/**
+ * Source subcommands the agent might reach for that the shim refuses to expose.
+ * Source access is strictly read-only — mutation happens through a spawned
+ * `--shipit-source` fix session, never against the source snapshot directly.
+ */
+const REJECTED_SOURCE_SUBCOMMANDS = new Set([
+  "edit",
+  "write",
+  "commit",
+  "push",
+  "checkout",
+  "git",
+  "apply",
+  "patch",
+]);
+
+async function handleSourceStatus(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { booleans: { "--json": "json" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit source status: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const res = await deps.call("GET", "/agent-ops/source/status", undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to read source status"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  if (res.body.available !== true) {
+    fail(deps.io, asString(res.body.reason) || "ShipIt source is unavailable.", 1);
+  }
+  const lines = [
+    `available:  true`,
+    `ref:        ${asString(res.body.ref)}`,
+    `exact:      ${res.body.exact === true}`,
+    `ref-source: ${asString(res.body.refSource) || "unknown"}`,
+  ];
+  if (res.body.remoteUrl) lines.push(`remote:     ${asString(res.body.remoteUrl)}`);
+  if (res.body.exact !== true) {
+    lines.push(
+      "",
+      "NOTE: this ref is approximate (the source checkout's HEAD, not the exact",
+      "deployed build). `shipit session create --shipit-source` needs --approximate.",
+    );
+  }
+  success(deps.io, lines.join("\n"));
+}
+
+async function handleSourceTree(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { booleans: { "--json": "json" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit source tree: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const path = parsed.positional[0] ?? "";
+  const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+  const res = await deps.call("GET", `/agent-ops/source/tree${qs}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to list source tree"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const entries = (res.body.entries as Record<string, unknown>[] | undefined) ?? [];
+  if (entries.length === 0) {
+    success(deps.io, `(empty: ${asString(res.body.path) || "."} @ ${asString(res.body.ref).slice(0, 12)})`);
+    return;
+  }
+  const lines = entries.map((e) =>
+    `${e.type === "dir" ? "dir " : "file"}  ${asString(e.name)}${e.type === "dir" ? "/" : ""}`,
+  );
+  if (res.body.truncated === true) lines.push("… (truncated)");
+  success(deps.io, lines.join("\n"));
+}
+
+async function handleSourceSearch(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--path": "path" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit source search: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const query = parsed.positional[0];
+  if (!query) {
+    fail(deps.io, 'shipit source search: a query is required, e.g. shipit source search "ContainerSessionRunner".');
+  }
+  const params = new URLSearchParams({ q: query });
+  if (parsed.values.path) params.set("path", parsed.values.path);
+  const res = await deps.call("GET", `/agent-ops/source/search?${params.toString()}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to search source"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const matches = (res.body.matches as Record<string, unknown>[] | undefined) ?? [];
+  if (matches.length === 0) {
+    success(deps.io, `No matches for "${query}".`);
+    return;
+  }
+  const lines = matches.map((m) => `${asString(m.path)}:${asString(m.line)}:${asString(m.text)}`);
+  if (res.body.truncated === true) lines.push("… (truncated; narrow with --path)");
+  success(deps.io, lines.join("\n"));
+}
+
+async function handleSourceCat(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { booleans: { "--json": "json" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit source cat: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const path = parsed.positional[0];
+  if (!path) {
+    fail(deps.io, "shipit source cat: a file path is required, e.g. shipit source cat src/server/orchestrator/index.ts.");
+  }
+  const res = await deps.call("GET", `/agent-ops/source/cat?path=${encodeURIComponent(path)}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to read source file"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const content = asString(res.body.content);
+  deps.io.stdout(content.endsWith("\n") ? content : `${content}\n`);
+  if (res.body.truncated === true) deps.io.stderr("… (truncated; file exceeds the source cat size cap)\n");
+  deps.io.exit(0);
+}
+
 /** Format a broker/orchestrator error response as a single-line message. */
 function formatError(
   res: { status: number; body: Record<string, unknown> },
@@ -597,6 +757,16 @@ const SESSION_HANDLERS: Record<
   archive: handleSessionArchive,
 };
 
+const SOURCE_HANDLERS: Record<
+  string,
+  (args: string[], deps: RunDeps) => Promise<void>
+> = {
+  status: handleSourceStatus,
+  tree: handleSourceTree,
+  search: handleSourceSearch,
+  cat: handleSourceCat,
+};
+
 /**
  * Top-level shim entry point. Tests call this directly with stubs so we can
  * verify behavior without spawning a subprocess.
@@ -622,6 +792,11 @@ export async function runShim(
 
   const command = args[0];
 
+  if (command === "source") {
+    await dispatchSource(args.slice(1), deps, io);
+    return;
+  }
+
   if (command !== "session") {
     fail(io, `Unknown shipit subcommand: ${command}\n${REJECTED_HELP}`);
   }
@@ -645,6 +820,32 @@ export async function runShim(
   }
 
   await handler(args.slice(2), deps);
+}
+
+/**
+ * Dispatch a `shipit source <sub>` invocation (docs/162). Read-only by
+ * construction: mutating subcommands are rejected with a pointer to the
+ * `--shipit-source` fix-session flow.
+ */
+async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, HELP);
+    return;
+  }
+  if (REJECTED_SOURCE_SUBCOMMANDS.has(sub)) {
+    fail(
+      io,
+      `${SHIM_NAME} does not support \`shipit source ${sub}\` — source access is read-only.\n` +
+        "To change ShipIt source, spawn a fix session: shipit session create --shipit-source -p \"...\".\n" +
+        "See /shipit-docs/sessions.md.",
+    );
+  }
+  const handler = SOURCE_HANDLERS[sub];
+  if (!handler) {
+    fail(io, `Unsupported shipit source subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  await handler(args.slice(1), deps);
 }
 
 /**

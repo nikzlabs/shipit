@@ -89,6 +89,43 @@ export async function listUserRepos(token: string): Promise<{
 }
 
 /**
+ * docs/162 — check whether the authenticated user can push to `owner/repo`.
+ *
+ * Uses `GET /repos/{owner}/{repo}`, whose `permissions` block reflects the
+ * *authenticated* user's effective access (push / maintain / admin all imply
+ * write). Returns `{ canWrite, reason }` — never throws, so the Ops fix-session
+ * spawn can degrade to a structured incident report instead of erroring.
+ */
+export async function checkRepoWriteAccess(
+  token: string,
+  owner: string,
+  repo: string,
+): Promise<{ canWrite: boolean; reason?: string }> {
+  try {
+    const res = await fetchGitHub(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+      token,
+    );
+    if (res.status === 404) {
+      return { canWrite: false, reason: `Repository ${owner}/${repo} is not visible to this account.` };
+    }
+    if (!res.ok) {
+      return { canWrite: false, reason: await parseGitHubError(res) };
+    }
+    const data = (await res.json()) as {
+      permissions?: { push?: boolean; maintain?: boolean; admin?: boolean };
+    };
+    const perms = data.permissions ?? {};
+    const canWrite = Boolean(perms.push || perms.maintain || perms.admin);
+    return canWrite
+      ? { canWrite: true }
+      : { canWrite: false, reason: `The authenticated account has read-only access to ${owner}/${repo}.` };
+  } catch (err) {
+    return { canWrite: false, reason: getErrorMessage(err) };
+  }
+}
+
+/**
  * Search the user's accessible repos by name.
  */
 export async function searchRepos(token: string, query: string): Promise<{
