@@ -69,6 +69,13 @@ export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 /** Factory function that creates an AgentProcess from an agent ID. */
 export type WorkerAgentFactory = (agentId: AgentId) => AgentProcess;
 
+/**
+ * Resolved fast-install plan for a cacheable single-command install: where the
+ * materialized `node_modules` store lives and the tuned command to run on a
+ * miss. Produced by {@link SessionWorker.computeFastPath}.
+ */
+interface FastPathPlan { storeKey: string; storeDir: string; tunedCommand: string }
+
 export interface SessionWorkerDeps {
   /** Factory for creating agent processes. */
   agentFactory: WorkerAgentFactory;
@@ -593,12 +600,39 @@ export class SessionWorker extends EventEmitter {
         return { started: true, joined: true };
       }
 
-      // Return immediately — progress streams via SSE
       this._installRunning = true;
       // New install starts — clear any previous result so the SSE-reconnect
       // resync path doesn't surface a stale outcome from a prior install.
       this._lastInstallResult = null;
-      void this.runInstallCommands(commands, markerDir, markerFile);
+
+      // Fast path (docs/148 + docs/162 fast-install gate race): a cache HIT is
+      // resolved SYNCHRONOUSLY inside this request and reported in the HTTP
+      // response (`{ completed: true }`), so the orchestrator settles its
+      // install gate directly from the response. Completion of a hit must NOT
+      // depend on the SSE-delivered `install_done` event: on the fast path that
+      // event can be broadcast within a few ms — before/at the same tick as the
+      // orchestrator arms its gate resolver or its SSE handshake completes — and
+      // be consumed while the resolver is null, leaving the gate (and the user's
+      // first turn) blocked forever. A MISS falls through to the streamed real
+      // install exactly as before (returns `{ started: true }`, completes via
+      // SSE).
+      let fast: FastPathPlan | null = null;
+      try {
+        fast = this.computeFastPath(commands);
+      } catch {
+        fast = null;
+      }
+      if (fast) {
+        const materialized = await this.tryMaterializeFromStore(fast).catch(() => false);
+        if (materialized) {
+          this.finishInstallOk(markerDir, markerFile);
+          return { completed: true, ok: true };
+        }
+      }
+
+      // Miss (or non-cacheable command set) — run the real install in the
+      // background; progress and completion stream via SSE.
+      void this.runRealInstallCommands(commands, fast, markerDir, markerFile);
       return { started: true };
     });
 
@@ -910,36 +944,46 @@ export class SessionWorker extends EventEmitter {
   // --- Install command execution ---
 
   /**
-   * Run install commands sequentially, streaming output via SSE.
-   * Writes a marker file on success to skip redundant re-runs.
+   * Latch a successful install: write the marker, record the result, clear the
+   * running flag, and broadcast `install_done`. Shared by the synchronous
+   * fast-path HIT (handled inline in the /install handler) and the background
+   * real-install path.
+   *
+   * State (`_lastInstallResult`, `_installRunning`) is updated BEFORE the
+   * broadcast so an orchestrator that races to query `/install/status` right
+   * after the SSE event sees a consistent `running: false` snapshot.
+   */
+  private finishInstallOk(markerDir: string, markerFile: string): void {
+    this.writeMarker(markerDir, markerFile);
+    this._lastInstallResult = { ok: true };
+    this._installRunning = false;
+    this._installProcess = null;
+    this.broadcastSSE({ type: "install_done", data: {} });
+  }
+
+  /**
+   * Run the real (non-cached) install path, streaming output via SSE and
+   * writing the marker on success. Reached on a fast-path MISS (or a
+   * non-cacheable command set) — the synchronous cache-HIT path is handled
+   * inline in the /install handler so its completion is reported in the HTTP
+   * response rather than depending on the SSE `install_done` event.
    *
    * Fast path (docs/148): for a single bare `npm install|ci|i`, `yarn
    * [install]`, or `pnpm install|i` against a workspace with exactly one
-   * lockfile, look up a previously-materialized `node_modules` keyed by
-   * lockfile content + runtime + tuned command. On hit, copy the tree in
-   * via tar/cp and write the marker — no install runs. On miss, run the
-   * (optionally tuned) install as today, then publish the resulting tree
-   * to the store via temp-dir + atomic rename. Any failure on the fast
-   * path falls through to a plain real install (the populate is best-effort).
+   * lockfile, the handler first tries to copy in a previously-materialized
+   * `node_modules`. On a miss we land here: for a fast-path candidate we
+   * substitute the tuned command (Option E flags) so the populated store
+   * reflects what was actually built, then publish the resulting tree to the
+   * store via temp-dir + atomic rename (best-effort — a populate failure must
+   * not fail the install, the workspace already has a working `node_modules`).
    */
-  private async runInstallCommands(commands: string[], markerDir: string, markerFile: string): Promise<void> {
+  private async runRealInstallCommands(
+    commands: string[],
+    fast: FastPathPlan | null,
+    markerDir: string,
+    markerFile: string,
+  ): Promise<void> {
     try {
-      const fast = this.computeFastPath(commands);
-      if (fast) {
-        const materialized = await this.tryMaterializeFromStore(fast);
-        if (materialized) {
-          this.writeMarker(markerDir, markerFile);
-          this._lastInstallResult = { ok: true };
-          this._installRunning = false;
-          this._installProcess = null;
-          this.broadcastSSE({ type: "install_done", data: {} });
-          return;
-        }
-      }
-
-      // Real-install path. For the fast-path candidate we substitute the
-      // tuned command (Option E flags) so the populated store reflects what
-      // was actually built.
       const resolvedCommands = fast ? [fast.tunedCommand] : commands;
       for (const cmd of resolvedCommands) {
         const exitCode = await this.runSingleInstallCommand(cmd);
@@ -959,9 +1003,6 @@ export class SessionWorker extends EventEmitter {
         }
       }
 
-      // Populate the store after a successful real install. Best-effort —
-      // a populate failure must not fail the install (the workspace already
-      // has a working `node_modules`).
       if (fast) {
         await this.tryPopulateStore(fast).catch((err: unknown) => {
           console.warn(
@@ -971,15 +1012,7 @@ export class SessionWorker extends EventEmitter {
         });
       }
 
-      // All commands succeeded — write marker
-      this.writeMarker(markerDir, markerFile);
-
-      this._lastInstallResult = { ok: true };
-      // See above — flip `running` to false before the success broadcast so
-      // the next `/install/status` poll observes consistent state.
-      this._installRunning = false;
-      this._installProcess = null;
-      this.broadcastSSE({ type: "install_done", data: {} });
+      this.finishInstallOk(markerDir, markerFile);
     } catch (err) {
       const message = getErrorMessage(err);
       this._lastInstallResult = { ok: false, message };
@@ -998,9 +1031,7 @@ export class SessionWorker extends EventEmitter {
    * gate fails (kill switch, non-cacheable command, multi-command sequence,
    * 0 or multiple lockfiles).
    */
-  private computeFastPath(
-    commands: string[],
-  ): { storeKey: string; storeDir: string; tunedCommand: string } | null {
+  private computeFastPath(commands: string[]): FastPathPlan | null {
     if (fastInstallDisabled()) {
       console.log("[install] fast path disabled via SHIPIT_FAST_INSTALL=disabled");
       return null;
@@ -1027,9 +1058,7 @@ export class SessionWorker extends EventEmitter {
    * materialize ladder fails — in either case the caller drops to a real
    * install, which also self-heals by repopulating the store.
    */
-  private async tryMaterializeFromStore(
-    fast: { storeKey: string; storeDir: string; tunedCommand: string },
-  ): Promise<boolean> {
+  private async tryMaterializeFromStore(fast: FastPathPlan): Promise<boolean> {
     let exists = false;
     try {
       const st = fs.statSync(fast.storeDir);
