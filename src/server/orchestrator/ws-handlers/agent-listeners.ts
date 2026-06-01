@@ -8,6 +8,8 @@ import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
+import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
+import { hasAuthoredVoiceNoteThisTurn } from "../voice/voice-note-router.js";
 
 /**
  * Context-light dependency set for `wireAgentListeners`. Lifted out of the
@@ -63,6 +65,18 @@ export interface AgentListenerDeps {
    * if the agent has no registered hook.
    */
   onAgentAuthRequired?: (agentId: AgentId) => void;
+  /**
+   * docs/163 — deliver a voice note through the router. Used by the source
+   * observer to emit a *derived* headline when the agent reaches an
+   * `AskUserQuestion` / `ExitPlanMode` interrupt without having authored one
+   * via the built-in `voice_note` tool first (the fallback floor). Optional —
+   * absent in tests / minimal setups, in which case derivation is skipped.
+   */
+  deliverVoiceNote?: (
+    payload: VoiceNotePayload,
+    runner: SessionRunnerInterface,
+    source: VoiceNoteSource,
+  ) => void;
 }
 
 /**
@@ -274,6 +288,44 @@ function isWellFormedAskUserQuestion(t: ClaudeContentBlockToolUse): boolean {
   if (t.name !== "AskUserQuestion") return false;
   const questions = (t.input as { questions?: unknown }).questions;
   return Array.isArray(questions) && questions.length > 0;
+}
+
+/**
+ * docs/163 — derive an ear-shaped headline from an observed `AskUserQuestion`
+ * input. The fallback floor: used only when the agent didn't author a headline
+ * via the built-in `voice_note` tool. We voice the topic (the first question's
+ * `header`, or its `question` text) but never the options themselves — those
+ * stay on screen.
+ */
+function deriveAskHeadline(input: Record<string, unknown>): string {
+  const first: unknown = Array.isArray(input.questions) ? input.questions[0] : undefined;
+  const header = typeof (first as { header?: unknown })?.header === "string"
+    ? (first as { header: string }).header.trim()
+    : "";
+  const question = typeof (first as { question?: unknown })?.question === "string"
+    ? (first as { question: string }).question.trim()
+    : "";
+  const topic = header || question;
+  return topic
+    ? `I've got a question about ${topic} — options are on screen.`
+    : "I've got a question for you — options are on screen.";
+}
+
+/**
+ * docs/163 — derive an ear-shaped headline from an observed `ExitPlanMode`
+ * input. Voices the plan's title (first non-empty line, heading markers
+ * stripped) but never the plan body.
+ */
+function derivePlanHeadline(input: Record<string, unknown>): string {
+  const plan = typeof input.plan === "string" ? input.plan : "";
+  const firstLine = plan
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find(Boolean) ?? "";
+  const title = firstLine.replace(/^#+\s*/, "").slice(0, 80);
+  return title
+    ? `I've drafted a plan — ${title}. Want to review it?`
+    : "I've drafted a plan — want to review it?";
 }
 
 /**
@@ -715,6 +767,32 @@ export function wireAgentListeners(
           last.toolUse.push(...toolBlocks);
         }
         runner.chatMessageGroups = groups;
+      }
+
+      // docs/163 — source observation for the voice-note router. A top-level
+      // AskUserQuestion / ExitPlanMode interrupt always needs the user, so it
+      // should reach a hands-free user as a spoken headline. Authored-first:
+      // if the agent already authored a headline via the built-in `voice_note`
+      // tool this turn, ShipIt uses that and suppresses this derived nudge.
+      // Derivation is the fallback floor only — never leave the user silent.
+      // (Gated on the authored flag, which the bridge route sets synchronously;
+      // the per-turn cap in the router backstops any rare same-message overlap.)
+      if (runner && deps.deliverVoiceNote && !hasAuthoredVoiceNoteThisTurn(runner)) {
+        const ask = toolBlocks.find(isWellFormedAskUserQuestion);
+        const plan = toolBlocks.find((t) => t.name === "ExitPlanMode");
+        if (ask) {
+          deps.deliverVoiceNote(
+            { summary: deriveAskHeadline(ask.input), needsAttention: true },
+            runner,
+            "ask",
+          );
+        } else if (plan) {
+          deps.deliverVoiceNote(
+            { summary: derivePlanHeadline(plan.input), needsAttention: true },
+            runner,
+            "plan",
+          );
+        }
       }
 
       // AskUserQuestion blocking: the Claude CLI in `-p` (headless) mode has no

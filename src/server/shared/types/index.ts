@@ -8,5 +8,6 @@ export * from "./terminal-types.js";
 export * from "./deployment-types.js";
 export * from "./usage-types.js";
 export * from "./usage-limits-types.js";
+export * from "./voice-note-types.js";
 export * from "./ws-client-messages.js";
 export * from "./ws-server-messages.js";

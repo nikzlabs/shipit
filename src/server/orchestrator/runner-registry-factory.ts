@@ -1,6 +1,7 @@
 import type { GitManager } from "../shared/git.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -25,6 +26,8 @@ import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { finalizeSessionAgentEnvironment, prepareSessionAgentEnvironment } from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
+import { routeVoiceNote } from "./voice/voice-note-router.js";
+import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
 // ---- Runner registry setup ----
@@ -261,6 +264,23 @@ export function createRunnerRegistry(
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
         ...(nudgeClaudeOAuthRefresh ? { nudgeClaudeOAuthRefresh } : {}),
         ...(onAgentAuthRequired ? { onAgentAuthRequired } : {}),
+        // docs/163 — derived voice-note delivery for system turns. Only when a
+        // credential store is present (it carries the delivery setting).
+        ...(credentialStore
+          ? {
+              deliverVoiceNote: (
+                payload: VoiceNotePayload,
+                runner: SessionRunnerInterface,
+                source: VoiceNoteSource,
+              ) =>
+                void routeVoiceNote(payload, {
+                  runner,
+                  sessionId: runner.sessionId,
+                  credentialStore,
+                  source,
+                }),
+            }
+          : {}),
       };
       // Shared debounced auto-push for a resolved GitManager. Used by both the
       // `scheduleAutoPush(sessionDir)` dep and the `commitTurn` helper below, so

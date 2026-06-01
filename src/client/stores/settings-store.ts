@@ -11,6 +11,7 @@ import {
   getSavedVoiceHotkeyModeB, saveVoiceHotkeyModeB,
   getSavedVoiceLanguage, saveVoiceLanguage,
   getSavedVoicePlaybackEnabled, saveVoicePlaybackEnabled,
+  getSavedVoiceHandsFree, saveVoiceHandsFree,
   getSavedTtsProvider, saveTtsProvider,
   getSavedTtsVoice, saveTtsVoice,
   getSavedTtsSpeed, saveTtsSpeed,
@@ -73,6 +74,19 @@ interface SettingsState {
   ttsProvider: string;
   ttsVoice: string;
   ttsSpeed: number;
+  /**
+   * docs/163 — voice-note delivery mode (native / external / both). Persisted
+   * server-side (it drives the router); mirrored here from global settings.
+   */
+  voiceDeliveryMode: "native" | "external" | "both";
+  /** docs/163 — whether an external voice-note webhook is configured (server-side). */
+  voiceWebhookConfigured: boolean;
+  /**
+   * docs/163 — hands-free mode. OFF by default. When ON, native voice notes
+   * autoplay (with a debounced chime). Client-only (localStorage); the server
+   * always produces the note, the client decides whether to autoplay.
+   */
+  voiceHandsFree: boolean;
   autoCreatePr: boolean;
   liveSteering: boolean;
   /** docs/146 — global gate for the auto-resolve-conflicts loop. */
@@ -101,6 +115,9 @@ interface SettingsState {
   setTtsProvider: (provider: string) => void;
   setTtsVoice: (voice: string) => void;
   setTtsSpeed: (speed: number) => void;
+  setVoiceDeliveryMode: (mode: "native" | "external" | "both") => void;
+  setVoiceWebhookConfigured: (configured: boolean) => void;
+  setVoiceHandsFree: (enabled: boolean) => void;
   setAutoCreatePr: (enabled: boolean) => void;
   setLiveSteering: (enabled: boolean) => void;
   setAutoResolveConflicts: (enabled: boolean) => void;
@@ -160,6 +177,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   ttsProvider: getSavedTtsProvider(),
   ttsVoice: getSavedTtsVoice(),
   ttsSpeed: getSavedTtsSpeed(),
+  voiceDeliveryMode: "native",
+  voiceWebhookConfigured: false,
+  voiceHandsFree: getSavedVoiceHandsFree(),
   autoCreatePr: false,
   liveSteering: true,
   autoResolveConflicts: false,
@@ -255,6 +275,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setTtsSpeed: (speed) => {
     saveTtsSpeed(speed);
     set({ ttsSpeed: speed });
+  },
+
+  setVoiceDeliveryMode: (mode) => set({ voiceDeliveryMode: mode }),
+
+  setVoiceWebhookConfigured: (configured) => set({ voiceWebhookConfigured: configured }),
+
+  setVoiceHandsFree: (enabled) => {
+    saveVoiceHandsFree(enabled);
+    set({ voiceHandsFree: enabled });
   },
 
   setAutoCreatePr: (enabled) => set({ autoCreatePr: enabled }),

@@ -527,6 +527,16 @@ export class CodexAdapter
       );
     }
 
+    if (ctx.voiceBridge) {
+      lines.push(
+        "",
+        "# docs/163 — built-in voice_note tool bridge.",
+        "[mcp_servers.shipit-voice]",
+        `command = ${tomlString(ctx.voiceBridge.tsxBin)}`,
+        `args = ${tomlArray([ctx.voiceBridge.bridgePath])}`,
+      );
+    }
+
     for (const server of ctx.servers) {
       const { resolved, missing } = resolveMcpServer(server);
       if (!resolved) {
