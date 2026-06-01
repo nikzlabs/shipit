@@ -1,7 +1,7 @@
 ---
 status: planned
 priority: medium
-description: Let a regular user file a redacted bug report against ShipIt itself from chat — the agent compiles it, the user confirms an inline card, and the server creates the issue with a ShipIt-owned credential.
+description: Let a regular user file a redacted bug report against ShipIt itself from chat — the agent compiles it, the user confirms an inline card, and ShipIt opens a GitHub issue on the upstream repo under the user's own GitHub identity.
 ---
 
 # User bug filing
@@ -9,11 +9,12 @@ description: Let a regular user file a redacted bug report against ShipIt itself
 ## Goal
 
 A regular ShipIt user who hits a bug **in ShipIt itself** should be able to report
-it without leaving the chat, without exposing their personal information, and
-without needing any access to the ShipIt team's issue tracker. They describe the
-problem to the agent; the agent compiles a **redacted** report; ShipIt renders an
-inline review card showing the exact payload; the user confirms; the **server**
-files the issue using a **ShipIt-owned, server-held credential**.
+it without leaving the chat and without accidentally exposing their personal
+information. They describe the problem to the agent; the agent compiles a
+**redacted** report; ShipIt renders an inline review card showing the exact
+payload; the user confirms; ShipIt opens a **GitHub issue on the upstream ShipIt
+repo under the user's own GitHub identity** — the same outcome as if the user had
+filed it by hand on github.com.
 
 This is the user-facing, outbound counterpart to the operator and inbound flows we
 already have designed (see [Reconciliation](#reconciliation-with-existing-work)).
@@ -38,9 +39,14 @@ done*, never *go open a GitHub/Linear tab and hand over your credentials*.
 
 ## Core principles for this feature
 
-1. **The user never authenticates to the tracker and never sees a credential.**
-   They produce redacted *text* only. The server files the issue with a
-   ShipIt-owned service credential configured once at deploy time.
+1. **File under the user's own GitHub identity — there is no trusted central
+   party.** ShipIt is self-hosted: the orchestrator *is* the user's box, so a
+   "server-held ShipIt credential" is a credential the user controls — it grants no
+   privilege and enforces no trust boundary. The only credential that legitimately
+   exists is the user's own GitHub auth (which the orchestrator already holds for
+   PRs). ShipIt opens the issue on the upstream repo as that user. The result is
+   identical to the user filing the issue by hand, so we inherit GitHub's identity
+   and abuse model rather than inventing our own.
 2. **Nothing leaves the box without explicit confirmation.** The agent drafts; the
    user reviews the exact redacted payload in an inline card; only an explicit
    "Submit" creates the issue. (Action-oriented for the *draft*; consent-gated for
@@ -76,12 +82,14 @@ corollary: "saves an LLM round-trip is not a feature").
 | What happened / repro | Agent, from the redacted transcript excerpt | Recent turns around the failure, scrubbed. |
 | ShipIt platform version / build | **Orchestrator, server-side** | The user can't know the platform commit; the server stamps it. Not from the session container. |
 | Browser / environment | Client-supplied, coarse | UA family, viewport — no fingerprinting. |
-| Opaque session reference | Server | An internal id for the team to correlate, **not** the user's email or repo. |
+| Author identity | GitHub (the user's own account) | The issue is attributed to the filer's real GitHub identity — same as a hand-filed issue. Expected and fine. |
 
-**Never included:** the user's email, their project's repo URL/name, file contents
-from their workspace, secrets, OAuth tokens, or full chat history. The user's
-*project* is irrelevant to a ShipIt bug; only the redacted *interaction with
-ShipIt* matters.
+**Never included:** the user's email (beyond what GitHub already exposes for the
+author), their project's repo URL/name, file contents from their workspace,
+secrets, OAuth tokens, or full chat history. The user's *project* is irrelevant to
+a ShipIt bug; only the redacted *interaction with ShipIt* matters. Because the
+issue is **public and carries the user's name**, redaction is the load-bearing
+safety mechanism here.
 
 ### Redaction engine (fulfills part of `docs/023`)
 
@@ -119,91 +127,97 @@ A new card type, sibling of `PrLifecycleCard`, emitted into the chat:
 ```
 
 - The card shows the **exact** payload (post-redaction). Title/body are editable.
-- "Submit" is the only path that calls the tracker. On success the card swaps to a
-  "Filed — #1234" state with a secondary "View on GitHub/Linear" escape hatch in an
+- "Submit" is the only path that files the issue. On success the card swaps to a
+  "Filed — #1234" state with a secondary "View on GitHub" escape hatch in an
   overflow (principle §2: inline first, link-out is the escape hatch).
 - "Cancel" discards; nothing is sent.
 
-### Server flow & anti-spam
+### Server flow
 
 ```
 agent → report_shipit_bug (draft)
       → server: redact() → emit bug_report_card (no issue yet)
 user  → submit_bug_report (edited title/body + confirm)
-      → server: rate-limit check (per account/deployment: N/day + cooldown)
-              → IssueTrackerProvider.createIssue(report)  [ShipIt-owned credential]
-              → emit bug_report_filed (issue ref) | bug_report_rejected (rate limited)
+      → server: GitHubAuthManager.createIssue(UPSTREAM_REPO, report)  [user's own token]
+              → emit bug_report_filed (issue ref) | bug_report_failed (error)
 ```
 
-**Anti-spam (v1 = rate-limit only, per decision):**
+### Anti-spam — GitHub's, not ours
 
-- Per-account/per-deployment cap (e.g. 5/day) + short cooldown, enforced
-  **server-side** in the submit handler before `createIssue`.
-- The raw-API spam vector is already closed: the client never holds the credential,
-  and every report is forced through the agent → redact → confirm → server path.
-- Rate-limit state persists in a small SQLite-backed store (sibling of
-  `secret-store.ts`) so it survives orchestrator restarts (deploys).
-- Dedup, similarity-collapse, and an LLM quality gate are **explicitly deferred** —
-  see Rejected/deferred.
+We add **no rate-limiting of our own**, and v1's earlier "rate-limit only" decision
+is moot under the corrected credential model. The issue is filed under the user's
+real GitHub identity against a public repo, so it is *exactly* equivalent to the
+user opening the issue by hand on github.com — same attribution, same abuse
+surface. A user who wants to spam the repo can already script `POST /issues`
+directly; ShipIt's flow does not create a new or cheaper vector, so adding our own
+quota would be theater. Abuse is handled where it already is: GitHub's spam
+detection, issue locking, and the maintainers' ability to block an account.
 
 ### Credential & destination model
 
-- A **server-held ShipIt service credential**, configured once at deploy time via a
-  secret (e.g. `SHIPIT_BUGREPORT_TOKEN` + `SHIPIT_BUGREPORT_TARGET`). Stored in
-  `CredentialStore`, never sent to the client or the session container.
-- Destination is **pluggable** behind `IssueTrackerProvider.createIssue(report):
-  Promise<IssueRef>` (extends the interface in `docs/156`). Two concrete backends:
-  - **GitHub Issues on the ShipIt repo** (bot/App token), labeled `user-reported`
-    into a triage queue. **Recommended default** — the product's natural public
-    tracker; doesn't pollute a private personal Linear; `gh issue` is blocked in the
-    user-facing shim, so this is a *server-side* path with the team credential, not
-    the shim.
-  - **A dedicated ShipIt Linear intake team** (server-held Linear API key — a
-    separate intake team, *not* a developer's personal workspace).
-
-The deployment owner picks the backend via config; the code does not fork on it.
+- **Destination is fixed:** the upstream ShipIt GitHub repo, hard-coded as the
+  bug-report target (`UPSTREAM_REPO`). Not the user's project repo.
+- **Credential is the user's own GitHub auth** — the orchestrator already holds it
+  via `GitHubAuthManager` for PRs. Opening an issue on a *public* repo only needs
+  `public_repo` scope, which the user has even with no write access to ShipIt; the
+  feature degrades to a clear "connect GitHub to file a bug" prompt if the scope is
+  missing.
+- **No central/service credential**, because a self-hosted deployment has no trusted
+  central party to own one (see principle #1).
+- **No Linear, no pluggable backend.** Linear requires access the user doesn't have
+  (the team's workspace is private) and a server-held key that can't exist here.
+  GitHub-issues-on-the-public-repo-as-the-user is the only model that works. We do
+  **not** route through `docs/156`'s `IssueTrackerProvider` for the outbound call —
+  that abstraction was built around a per-deployment app credential, which is the
+  wrong owner for this.
+- **This is a server-side GitHub API call, not the `gh issue` shim.** The shim
+  intentionally blocks `gh issue`; this path adds a dedicated `createIssue` method
+  on `GitHubAuthManager` against the fixed upstream repo, so the shim policy is
+  untouched.
 
 ## Reconciliation with existing work
 
 | Existing | Relationship |
 |---|---|
-| `docs/156` tracker→session | **Reused.** This feature adds the outbound `createIssue()` to the same `IssueTrackerProvider` abstraction. 156 = issue→session (inbound); this = session→issue (outbound). Mirror halves of one tracker integration. |
+| `docs/156` tracker→session | **Conceptually mirror, not code-shared.** 156 = issue→session (inbound) via a per-deployment app credential; this = session→issue (outbound) via the *user's own* GitHub auth. The credential owners differ, so the outbound call lives on `GitHubAuthManager`, not 156's `IssueTrackerProvider`. |
 | `docs/023` session sharing | **Partially un-paused.** We build the shared redaction engine now; 023's full HTML/JSON export consumes it later. |
-| `docs/128` ops session | **Closes the loop.** User files a redacted, consented report → issue → operator triages and uses 156's inbound path to spin an ops/fix session. The user never gets ops privileges; the operator does. |
+| `docs/128` ops session | **Closes the loop.** User files a redacted, consented report → issue → operator (on the upstream ShipIt deployment) triages and uses 156's inbound path to spin an ops/fix session. The user never gets ops privileges; the operator does. |
 
 ## Rejected / deferred
 
 - **A "Report a bug" button / command** — shell-shaped affordance (principle §5).
   Chat is the entry point.
-- **Filing with the user's own GitHub/Linear credentials** — the user has no access
-  to the ShipIt tracker and shouldn't; routing through their auth is wrong. The
-  server files with the team credential. (This is the explicit clarification that
-  motivated the credential model.)
-- **Routing into the deployment owner's personal/private Linear workspace** — mixes
-  external user reports into a private dev tracker. Use a dedicated intake target.
-- **Reusing 156's per-deployment app for outbound** — wrong direction and wrong
-  owner; outbound against the single fixed ShipIt tracker wants a central
-  ShipIt-owned credential.
-- **Dedup / similarity-collapse / LLM triage gate (v1)** — deferred. Decision for
-  v1 is rate-limit only. Revisit once we see real report volume and quality.
+- **A server-held / ShipIt-owned service credential** — impossible in a self-hosted
+  deployment: the server is the *user's* box, so any credential it holds is
+  controlled by the user and grants no privilege or trust boundary. This was the
+  clarification that reshaped the design.
+- **Linear (any backend)** — the user has no access to the team's private Linear
+  workspace, and there's no trusted server to hold a Linear key. Only
+  GitHub-issues-on-the-public-repo, filed as the user, works.
+- **A pluggable `IssueTrackerProvider` backend for outbound** — over-engineering
+  given there is exactly one viable destination and credential owner.
+- **Our own rate-limiting / quota** — adds no protection over GitHub's native abuse
+  handling, since the issue is filed as the user against a public repo (the same
+  thing they can already script). v1's earlier "rate-limit only" choice is moot.
+- **Dedup / similarity-collapse / LLM triage gate** — deferred; revisit if report
+  volume warrants it. Not a v1 concern.
 - **Sending the full session or chat history** — only a redacted, scoped excerpt.
 
 ## Key files
 
 - `src/server/orchestrator/services/redaction.ts` (new) + test — shared redaction.
-- `src/server/orchestrator/services/issue-trackers/types.ts` — add `createIssue` to
-  `IssueTrackerProvider` (created by `docs/156`; this feature may land the interface
-  if 156 hasn't yet).
 - `src/server/orchestrator/services/bug-report.ts` (new) — compile draft, redact,
-  rate-limit, dispatch to provider.
-- `src/server/orchestrator/credential-store.ts` — store the ShipIt service
-  credential + bug-report rate-limit state.
+  stamp platform version, dispatch to `GitHubAuthManager`.
+- `src/server/orchestrator/github-auth.ts` (+ `github-auth-*.ts`) — new
+  `createIssue(repo, { title, body })` method against the fixed upstream repo,
+  using the user's existing token; surfaces a clear error if `public_repo` scope is
+  missing.
 - `src/server/orchestrator/ws-handlers/` — `report_shipit_bug` (draft) and
   `submit_bug_report` (confirm) handlers.
 - `src/server/shared/types/ws-server-messages.ts` / `ws-client-messages.ts` —
-  `bug_report_card`, `bug_report_filed`, `bug_report_rejected`, `submit_bug_report`.
+  `bug_report_card`, `bug_report_filed`, `bug_report_failed`, `submit_bug_report`.
 - `src/server/orchestrator/agent-instructions.ts` — bug-filing capability prompt.
 - `src/client/components/BugReportCard.tsx` (new) — the inline review card.
 - `src/server/orchestrator/integration_tests/user-bug-filing.test.ts` (new) —
-  end-to-end with a stubbed provider: redaction applied, rate limit enforced, issue
-  created only after confirm.
+  end-to-end with a stubbed GitHub auth manager: redaction applied, issue created
+  only after explicit confirm, scope-missing path surfaces a connect prompt.
