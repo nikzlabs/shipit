@@ -111,6 +111,11 @@ interface TranscribeResponse {
   cleanupErrorCode?: string;
 }
 
+function formatTranscribeError(detail?: string): string {
+  const trimmed = detail?.trim();
+  return trimmed || "Couldn't transcribe — try again";
+}
+
 export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
   const { enabled, hotkey, cleanup = true, language, sttProvider, sessionId } = options;
 
@@ -164,7 +169,7 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
         let detail = "";
         try { detail = ((await res.json()) as { error?: string }).error ?? ""; } catch { /* ignore */ }
         console.error(`Voice transcribe failed (${res.status})`, detail);
-        setErrorMessage("Couldn't transcribe — try again");
+        setErrorMessage(formatTranscribeError(detail));
         setCanRetryTranscription(true);
         setState("error");
         return;
@@ -182,7 +187,8 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
       setState("idle");
     } catch (err) {
       console.error("Voice transcribe error", err);
-      setErrorMessage("Couldn't transcribe — try again");
+      const detail = err instanceof Error ? `Couldn't transcribe: ${err.message}` : undefined;
+      setErrorMessage(formatTranscribeError(detail));
       setCanRetryTranscription(true);
       setState("error");
     }

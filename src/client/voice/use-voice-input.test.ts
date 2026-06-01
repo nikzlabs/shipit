@@ -198,8 +198,22 @@ describe("useVoiceInput", () => {
     await flushMicrotasks();
 
     expect(result.current.state).toBe("error");
-    expect(result.current.errorMessage).toMatch(/transcribe/i);
+    expect(result.current.errorMessage).toBe("boom");
     expect(received).toEqual([]);
+  });
+
+  it("falls back to the generic transcription error when the response has no detail", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500, json: () => Promise.reject(new Error("bad json")) });
+    const { result } = renderHook(() => useVoiceInput({ enabled: true }));
+
+    act(() => { result.current.startRecording(); });
+    await flushMicrotasks();
+    await act(async () => { vi.advanceTimersByTime(300); });
+    act(() => { result.current.stopRecording(); });
+    await flushMicrotasks();
+
+    expect(result.current.state).toBe("error");
+    expect(result.current.errorMessage).toBe("Couldn't transcribe — try again");
   });
 
   it("retains the audio after a transcribe failure and resends it verbatim on retry", async () => {

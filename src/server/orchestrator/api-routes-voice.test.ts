@@ -380,6 +380,39 @@ describe("POST /api/voice/transcribe", () => {
     expect(JSON.stringify(res.headers)).not.toContain(secret);
     await app.close();
   });
+
+  it("returns provider transcription details when upstream transcription fails", async () => {
+    const credentialStore = makeCredentialStore();
+    credentialStore.setVoiceProviderKey("openai", "sk-route-transcribe-secret");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: { message: "audio format is unsupported" } }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const { payload, boundary } = buildMultipartBody([
+      { name: "audio", filename: "audio.webm", contentType: "audio/webm", value: Buffer.from("audio-bytes") },
+      { name: "cleanup", value: "false" },
+      { name: "sttProvider", value: "openai" },
+    ]);
+    const { app } = await buildApp({ credentialStore });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/voice/transcribe",
+      payload,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("Couldn't transcribe: Whisper returned 400");
+    expect(res.json().error).toContain("audio format is unsupported");
+    await app.close();
+  });
 });
 
 describe("SECURITY: no GET route returns the raw key", () => {
