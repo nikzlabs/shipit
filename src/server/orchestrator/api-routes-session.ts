@@ -304,15 +304,16 @@ export async function registerSessionRoutes(
   );
 
   // POST /api/sessions/:id/template — apply a template
-  app.post<{ Params: { id: string }; Body: { templateId: string } }>(
+  app.post<{ Params: { id: string }; Body: { templateId: string; targetSessionId?: string } }>(
     "/api/sessions/:id/template",
     async (request, reply) => {
       try {
         const result = await applyTemplate(
           sessionManager, createGitManager, deps.createSessionDir,
           request.body.templateId, request.params.id === "new" ? undefined : request.params.id,
+          request.body.targetSessionId,
         );
-        return { templateId: result.templateId, name: result.name, session: result.session };
+        return { templateId: result.templateId, name: result.name, session: result.session, seedPrompt: result.seedPrompt };
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

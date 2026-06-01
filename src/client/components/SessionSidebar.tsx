@@ -280,6 +280,19 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
     setEditingTitle("");
   }, []);
 
+  // docs/128 — spin up a privileged ops session pre-loaded to investigate THIS
+  // session. The store seeds the new session's composer with the target id +
+  // a read-only first step, so the operator never copy-pastes the session id
+  // into a blank ops session. On success we navigate straight into it.
+  const handleInvestigateInOps = useCallback(async () => {
+    const newId = await useSessionStore.getState().createOpsSession(session.id);
+    if (newId) {
+      onResume(newId);
+    } else {
+      useUiStore.getState().setToast({ message: "Failed to create ops session" });
+    }
+  }, [session.id, onResume]);
+
   // The overflow trigger is always visible on the active row, on touch
   // devices, and while the menu itself is open. On inactive desktop rows it
   // hover-reveals so it doesn't add visual noise to the long sidebar list.
@@ -386,6 +399,12 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                   <PencilSimpleIcon size={ICON_SIZE.SM} />
                   Rename
                 </DropdownMenuItem>
+                {session.kind !== "ops" && (
+                  <DropdownMenuItem onSelect={() => void handleInvestigateInOps()} disabled={disabled}>
+                    <WrenchIcon size={ICON_SIZE.SM} />
+                    Investigate in Ops session
+                  </DropdownMenuItem>
+                )}
                 {onArchive && (
                   <DropdownMenuItem onSelect={() => onArchive(session.id)} disabled={disabled}>
                     <PhArchiveIcon size={ICON_SIZE.SM} />

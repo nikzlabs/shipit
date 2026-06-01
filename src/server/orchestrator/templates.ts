@@ -7,7 +7,7 @@ import { FULLSTACK_TEMPLATES } from "./templates-fullstack.js";
 import { BACKEND_TEMPLATES } from "./templates-backend.js";
 import { OPS_TEMPLATE, OPS_TEMPLATE_ID } from "./templates-ops.js";
 
-export { OPS_TEMPLATE, OPS_TEMPLATE_ID } from "./templates-ops.js";
+export { OPS_TEMPLATE, OPS_TEMPLATE_ID, buildOpsInvestigationSeed } from "./templates-ops.js";
 
 // Re-export sub-module symbols for backwards compatibility
 export { VITE_GITIGNORE, NEXTJS_GITIGNORE, ASTRO_GITIGNORE, NODE_GITIGNORE } from "./template-gitignores.js";

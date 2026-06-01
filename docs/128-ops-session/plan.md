@@ -467,6 +467,48 @@ proxy and mount — runs the prompts directly. The investigation logs
 themselves become part of the session's chat history, which is the
 audit trail for the next incident.
 
+## Contextual entry point: "Investigate in Ops session"
+
+The Settings button creates a *blank* ops session named `Ops —
+<hostname>`. But the common trigger is "**this** session is
+misbehaving — debug it." Previously the operator created a blank ops
+session and then hand-copied the offending session's id into the
+chat. That copy-paste is the friction this entry point removes.
+
+Every non-ops session row's overflow (`⋯`) menu in the sidebar now
+carries **Investigate in Ops session** (`SessionSidebar.tsx`,
+`SessionItem`). It works on any row — active or not — which matters
+because a stuck session is often one you don't want to (or can't)
+open. The item is hidden on ops rows (no self-investigation).
+
+Data flow (no new races, no new dispatch wiring):
+
+1. The menu item calls the `createOpsSession(targetSessionId)` store
+   action (`session-store.ts`), which POSTs the existing
+   `/api/sessions/new/template` route with `{ templateId: "ops",
+   targetSessionId }`.
+2. `applyTemplate` (`services/templates.ts`) treats `targetSessionId`
+   as a **reference**, never the templated session — so the fresh-only
+   privilege gate is untouched. When the target resolves it (a) names
+   the new session `Ops — debug: <title>` and (b) returns a
+   `seedPrompt` built by `buildOpsInvestigationSeed` (`templates-ops.ts`),
+   which mirrors the `diagnose-stuck-session` recipe with the concrete
+   target id baked into the `docker ps --filter` / `journalctl | grep`
+   steps. An unknown id is silently ignored → generic ops session.
+3. The store writes `seedPrompt` into the new session's composer draft
+   via `saveDraftMessage(id, …)` **before** navigation. `MessageInput`
+   loads the per-session draft on `focusKey` change, so the operator
+   lands in the new ops session with the investigation prompt already
+   typed. It is a *draft*, not an auto-dispatched turn: the operator
+   reviews and presses send. That keeps a human in the loop on a
+   privileged session and sidesteps any race with container boot /
+   runner registration (no dependency on `/agent/dispatch`, which 404s
+   until a runner exists).
+
+The session id is the right handle because container names embed it —
+the agent filters on it directly (same convention the embedded
+prompts already use).
+
 ## Out of scope (might be follow-ups)
 
 - **Write access to Docker for actions like "kill orphan container."**
