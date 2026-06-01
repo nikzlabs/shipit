@@ -35,6 +35,18 @@ const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md
 
 type Tab = "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "skills" | "mcp" | "voice" | "advanced";
 
+/** Shape of the /api/updates/check and /api/updates/channel responses. */
+interface UpdateStatusResult {
+  available: boolean;
+  behindBy: number;
+  commitMessages: string[];
+  currentCommit: string;
+  channel: "stable" | "edge";
+  currentVersion: string;
+  latestVersion: string;
+  isDowngrade: boolean;
+}
+
 const providerNames: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
@@ -1050,13 +1062,16 @@ export function Settings({
   const [idleContainers, setIdleContainers] = useState(maxIdleContainers);
   const [idleContainersSaved, setIdleContainersSaved] = useState(false);
   const [instructionsExpanded, setInstructionsExpanded] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<{
-    available: boolean; behindBy: number; commitMessages: string[]; currentCommit: string;
-  } | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatusResult | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [channelSwitching, setChannelSwitching] = useState(false);
+  const version = useUiStore((s) => s.version);
+  // Optimistic channel: the persisted preference reflected by either the
+  // ambient version (running instance) or the latest check/switch result.
+  const selectedChannel = updateStatus?.channel ?? version?.channel ?? "edge";
   const savedRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -1416,6 +1431,76 @@ export function Settings({
                 <p className="text-sm text-(--color-text-secondary)">
                   Check for new versions and update ShipIt in place.
                 </p>
+
+                {/* Current version — channel-aware label, e.g. "Stable · v1.4.0" */}
+                {version && (
+                  <p className="text-sm text-(--color-text-secondary)" data-testid="settings-version">
+                    Current version:{" "}
+                    <span className="font-medium text-(--color-text-primary)">
+                      {version.channel === "stable" ? "Stable" : "Edge"} · {version.version}
+                    </span>
+                  </p>
+                )}
+
+                {/* Release-channel selector (feature 162) */}
+                <div className="space-y-1.5">
+                  <span className="text-xs font-medium text-(--color-text-secondary)">Release channel</span>
+                  <div className="flex gap-2" role="group" aria-label="Release channel">
+                    {([
+                      { id: "stable" as const, label: "Stable", desc: "Vetted releases, fewer updates." },
+                      { id: "edge" as const, label: "Edge", desc: "Latest changes from main, updated continuously." },
+                    ]).map((opt) => {
+                      const active = selectedChannel === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          disabled={channelSwitching || updateApplying}
+                          aria-pressed={active}
+                          data-testid={`settings-channel-${opt.id}`}
+                          onClick={async () => {
+                            if (active || channelSwitching) return;
+                            setChannelSwitching(true);
+                            setUpdateError(null);
+                            try {
+                              const res = await fetch("/api/updates/channel", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ channel: opt.id }),
+                              });
+                              if (!res.ok) {
+                                const body = await res.json().catch(() => ({})) as { error?: string };
+                                throw new Error(body.error ?? `HTTP ${res.status}`);
+                              }
+                              setUpdateStatus(await res.json() as UpdateStatusResult);
+                            } catch (err) {
+                              setUpdateError((err as Error).message);
+                            } finally {
+                              setChannelSwitching(false);
+                            }
+                          }}
+                          className={`flex-1 rounded-md border px-3 py-2 text-left transition-colors disabled:opacity-50 ${
+                            active
+                              ? "border-(--color-accent) bg-(--color-accent-subtle)"
+                              : "border-(--color-border-secondary) hover:border-(--color-border-primary)"
+                          }`}
+                        >
+                          <span className="block text-sm font-medium text-(--color-text-primary)">
+                            {opt.label}
+                            {opt.id === "stable" && (
+                              <span className="ml-1.5 text-xs font-normal text-(--color-text-tertiary)">recommended</span>
+                            )}
+                          </span>
+                          <span className="block text-xs text-(--color-text-tertiary)">{opt.desc}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {channelSwitching && (
+                    <p className="text-xs text-(--color-text-tertiary)">Switching channel…</p>
+                  )}
+                </div>
+
                 <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                   <Button
                     variant="primary"
@@ -1430,7 +1515,7 @@ export function Settings({
                           const body = await res.json().catch(() => ({})) as { error?: string };
                           throw new Error(body.error ?? `HTTP ${res.status}`);
                         }
-                        const data = await res.json() as { available: boolean; behindBy: number; commitMessages: string[]; currentCommit: string };
+                        const data = await res.json() as UpdateStatusResult;
                         setUpdateStatus(data);
                       } catch (err) {
                         setUpdateError((err as Error).message);
@@ -1508,16 +1593,32 @@ export function Settings({
                   <div className="text-sm text-(--color-text-secondary)">
                     {updateStatus.available ? (
                       <>
-                        <p>{updateStatus.behindBy} update{updateStatus.behindBy === 1 ? "" : "s"} available</p>
+                        {updateStatus.isDowngrade ? (
+                          <p
+                            className="text-(--color-warning)"
+                            data-testid="settings-downgrade-warning"
+                          >
+                            ⚠ Switching to {updateStatus.latestVersion} would move you off newer
+                            code you&apos;re currently running ({updateStatus.currentVersion}). This is a
+                            downgrade — older code may not read newer on-disk data cleanly.
+                          </p>
+                        ) : (
+                          <p>
+                            {updateStatus.latestVersion} available (you&apos;re on {updateStatus.currentVersion}) —{" "}
+                            {updateStatus.behindBy} commit{updateStatus.behindBy === 1 ? "" : "s"} behind
+                          </p>
+                        )}
                         <ul className="mt-1 ml-4 list-disc space-y-0.5 text-xs font-mono text-(--color-text-tertiary)">
                           {updateStatus.commitMessages.slice(0, 10).map((msg, i) => (
                             <li key={i}>{msg}</li>
                           ))}
-                          {updateStatus.behindBy > 10 && <li>...and {updateStatus.behindBy - 10} more</li>}
+                          {updateStatus.commitMessages.length > 10 && (
+                            <li>...and {updateStatus.commitMessages.length - 10} more</li>
+                          )}
                         </ul>
                       </>
                     ) : (
-                      <p>ShipIt is up to date ({updateStatus.currentCommit.slice(0, 7)})</p>
+                      <p>ShipIt is up to date ({updateStatus.currentVersion})</p>
                     )}
                   </div>
                 )}

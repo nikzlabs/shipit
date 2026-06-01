@@ -7,6 +7,10 @@ dist/
 *.db-wal
 *.db-shm
 .update-requested
+.restart-requested
+# Release-channel preference (feature 162). Untracked so it survives
+# `git reset --hard` and image rebuilds.
+.release-channel
 .shipit
 
 # Playwright MCP browser-driven debugging output (snapshots, console logs)
