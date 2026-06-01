@@ -53,7 +53,9 @@ function mapProviderError(err: unknown, fallback: string): ServiceError {
     // Surface upstream auth/rate-limit/4xx status; collapse 5xx onto 502.
     const status = err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 502;
     console.warn(`[voice] provider error ${err.statusCode}: ${err.message}`);
-    return new ServiceError(status, fallback);
+    const detail = err.message.trim().replace(/\s+/g, " ");
+    const separator = /[.!?]$/.test(fallback) ? " " : ": ";
+    return new ServiceError(status, detail ? `${fallback}${separator}${detail}` : fallback);
   }
   console.warn(`[voice] unexpected error:`, err);
   return new ServiceError(502, fallback);
@@ -138,7 +140,7 @@ export async function transcribeVoice(
       ...(input.mimeType ? { mimeType: input.mimeType } : {}),
     });
   } catch (err) {
-    throw mapProviderError(err, "Couldn't transcribe — try again.");
+    throw mapProviderError(err, "Couldn't transcribe");
   }
 
   if (!raw) return { text: "", rawText: "" };
