@@ -383,4 +383,25 @@ describe("agent-ops routes", () => {
     expect(res.statusCode).toBe(200);
     expect(client.calls[0].path).toBe("/source/cat?path=src%2Findex.ts");
   });
+
+  it("GET /agent-ops/source/log forwards path and limit", async () => {
+    client.setResponse("GET", "/source/log", { ok: true, status: 200, body: { commits: [] } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/source/log?path=src/server&limit=5" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/source/log?path=src%2Fserver&limit=5");
+  });
+
+  it("GET /agent-ops/source/blame forwards the path query", async () => {
+    client.setResponse("GET", "/source/blame", { ok: true, status: 200, body: { lines: [] } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/source/blame?path=src/index.ts" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/source/blame?path=src%2Findex.ts");
+  });
+
+  it("GET /agent-ops/source/show forwards commit and path", async () => {
+    client.setResponse("GET", "/source/show", { ok: true, status: 200, body: { content: "diff" } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/source/show?commit=abc123&path=src/a.ts" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/source/show?commit=abc123&path=src%2Fa.ts");
+  });
 });

@@ -83,6 +83,13 @@ and otherwise behaves like a normal spawn — the child owns all edits, tests,
 commits, push, and the PR. Add `--approximate` to acknowledge a non-exact source
 ref. `--shipit-source` is rejected outside Ops sessions.
 
+The child branch *starts* at the inspected deployed commit (so it can reproduce
+the production bug), which is usually behind the repo's default branch; the
+incident packet tells the child to rebase onto the latest default branch before
+opening its PR so the PR stays mergeable. Fix-session spawns also have a lower
+per-turn cap than generic fan-out children (default 2, env
+`MAX_SHIPIT_FIX_SESSIONS_PER_TURN`).
+
 ### Example
 
 ```sh

@@ -157,6 +157,50 @@ describe("Integration: read-only ShipIt source surface (docs/162)", () => {
     expect(matches[0].path).toBe("src/index.ts");
   });
 
+  it("log returns commit history at the source ref", async () => {
+    const id = await createSession("ops");
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${id}/source/log` });
+    expect(res.statusCode).toBe(200);
+    const commits = res.json().commits as { hash: string; subject: string }[];
+    expect(commits.length).toBeGreaterThanOrEqual(1);
+    expect(commits[0].hash).toBe(headSha);
+    expect(commits[0].subject).toBe("init");
+  });
+
+  it("blame attributes lines to the source ref", async () => {
+    const id = await createSession("ops");
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${id}/source/blame?path=src/index.ts` });
+    expect(res.statusCode).toBe(200);
+    const lines = res.json().lines as { line: number; shortHash: string; text: string }[];
+    expect(lines[0].line).toBe(1);
+    expect(lines[0].shortHash).toBe(headSha.slice(0, 12));
+    expect(lines[0].text).toContain("ContainerSessionRunner");
+  });
+
+  it("blame refuses a redacted path (403)", async () => {
+    const id = await createSession("ops");
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${id}/source/blame?path=.env` });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("show returns a commit diff with redacted file diffs hidden", async () => {
+    const id = await createSession("ops");
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${id}/source/show?commit=${headSha}` });
+    expect(res.statusCode).toBe(200);
+    const content = res.json().content as string;
+    // The init commit added src/index.ts AND .env — the source file shows, the
+    // secret does not, and the omission is noted.
+    expect(content).toContain("src/index.ts");
+    expect(content).not.toContain("topsecret");
+    expect(content).toMatch(/file diff\(s\) hidden/);
+  });
+
+  it("show rejects an invalid commit-ish (400)", async () => {
+    const id = await createSession("ops");
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${id}/source/show?commit=${encodeURIComponent("--output=/tmp/x")}` });
+    expect(res.statusCode).toBe(400);
+  });
+
   it("returns 403 for a non-ops session", async () => {
     const id = await createSession();
     const res = await app.inject({ method: "GET", url: `/api/sessions/${id}/source/status` });

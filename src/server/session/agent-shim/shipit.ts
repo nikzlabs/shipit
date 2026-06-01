@@ -45,6 +45,9 @@ Ops-only (read-only ShipIt source, docs/162):
   shipit source tree     [PATH] [--json]
   shipit source search   "QUERY" [--path PATH] [--json]
   shipit source cat      PATH [--json]
+  shipit source log      [PATH] [--limit N] [--json]
+  shipit source blame    PATH [--json]
+  shipit source show     COMMIT [PATH] [--json]
 
 The shim brokers session operations through the ShipIt orchestrator. The
 parent session is always the session this container belongs to — the agent
@@ -725,6 +728,93 @@ async function handleSourceCat(args: string[], deps: RunDeps): Promise<void> {
   deps.io.exit(0);
 }
 
+async function handleSourceLog(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--limit": "limit" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit source log: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const params = new URLSearchParams();
+  const path = parsed.positional[0];
+  if (path) params.set("path", path);
+  if (parsed.values.limit) params.set("limit", parsed.values.limit);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  const res = await deps.call("GET", `/agent-ops/source/log${qs}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to read source history"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const commits = (res.body.commits as Record<string, unknown>[] | undefined) ?? [];
+  if (commits.length === 0) {
+    success(deps.io, `(no commits${path ? ` touching ${path}` : ""})`);
+    return;
+  }
+  const lines = commits.map((c) =>
+    `${asString(c.shortHash)}  ${asString(c.date).slice(0, 10)}  ${asString(c.author)}  ${asString(c.subject)}`,
+  );
+  if (res.body.truncated === true) lines.push("… (truncated; pass --limit to widen)");
+  success(deps.io, lines.join("\n"));
+}
+
+async function handleSourceBlame(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { booleans: { "--json": "json" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit source blame: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const path = parsed.positional[0];
+  if (!path) {
+    fail(deps.io, "shipit source blame: a file path is required, e.g. shipit source blame src/server/orchestrator/index.ts.");
+  }
+  const res = await deps.call("GET", `/agent-ops/source/blame?path=${encodeURIComponent(path)}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to blame source file"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const lines = (res.body.lines as Record<string, unknown>[] | undefined) ?? [];
+  const out = lines.map((l) =>
+    `${asString(l.shortHash)}  ${asString(l.line).padStart(5)}  ${asString(l.text)}`,
+  );
+  if (res.body.truncated === true) out.push("… (truncated)");
+  success(deps.io, out.join("\n"));
+}
+
+async function handleSourceShow(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { booleans: { "--json": "json" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit source show: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const commit = parsed.positional[0];
+  if (!commit) {
+    fail(deps.io, "shipit source show: a commit is required, e.g. shipit source show abc123 [PATH].");
+  }
+  const params = new URLSearchParams({ commit });
+  const path = parsed.positional[1];
+  if (path) params.set("path", path);
+  const res = await deps.call("GET", `/agent-ops/source/show?${params.toString()}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to show source commit"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const content = asString(res.body.content);
+  deps.io.stdout(content.endsWith("\n") ? content : `${content}\n`);
+  if (res.body.truncated === true) deps.io.stderr("… (truncated; diff exceeds the source show size cap)\n");
+  deps.io.exit(0);
+}
+
 /** Format a broker/orchestrator error response as a single-line message. */
 function formatError(
   res: { status: number; body: Record<string, unknown> },
@@ -765,6 +855,9 @@ const SOURCE_HANDLERS: Record<
   tree: handleSourceTree,
   search: handleSourceSearch,
   cat: handleSourceCat,
+  log: handleSourceLog,
+  blame: handleSourceBlame,
+  show: handleSourceShow,
 };
 
 /**
