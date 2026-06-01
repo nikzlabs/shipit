@@ -14,6 +14,15 @@
 - [x] `applyTemplate` service stamps `kind="ops"` before container boot; refuses an
       existing `sessionId` (no retrofitting an ordinary session into a privileged one).
 - [x] `getHostOverview` service + `GET /api/host/overview` route (read-only container list).
+- [x] System-prompt ops overlay: `buildAgentSystemInstructions({ isOps })` splices in an
+      "Ops session" block (read-only privilege surface + `journalctl -D` rule), swaps the
+      aggressive PR nudge for a read-only variant, drops the scaffold best-practice, and
+      replaces "Live preview" with a "Compose services" note (the workspace compose only
+      runs the host-access `docker-socket-proxy` — it's not an app preview, so hot-reload /
+      `x-shipit-preview` guidance is irrelevant). Threaded from `session-agent-run-params.ts`
+      off `session.kind === "ops"` (read in the pre-`await` DB block). Previously the agent
+      got the generic build-oriented prompt and had no idea it was a privileged read-only
+      host-debug session.
 
 ## Client
 

@@ -2,12 +2,39 @@ import { describe, it, expect } from "vitest";
 import {
   buildAgentSystemInstructions,
   AGENT_SYSTEM_INSTRUCTIONS,
+  type AgentSystemInstructionOptions,
 } from "./agent-instructions.js";
 
 describe("buildAgentSystemInstructions", () => {
   it("is static — every call returns the same string as AGENT_SYSTEM_INSTRUCTIONS", () => {
     expect(buildAgentSystemInstructions()).toBe(AGENT_SYSTEM_INSTRUCTIONS);
     expect(buildAgentSystemInstructions()).toBe(buildAgentSystemInstructions());
+  });
+
+  it("every variant is a precomputed constant — same reference each call (cache stability)", () => {
+    // Reference equality (toBe on a string returned by two separate calls)
+    // proves the per-turn path is a pure lookup of a frozen constant, not a
+    // re-assembly. Re-assembly would produce an equal-but-distinct string and
+    // still pass `toEqual`; only `toBe` on the precomputed instance catches a
+    // regression back to per-call composition. Cover all axes.
+    const variants: AgentSystemInstructionOptions[] = [
+      {},
+      { agentId: "claude" },
+      { agentId: "codex" },
+      { isOps: true },
+      { agentId: "claude", isOps: true },
+      { agentId: "codex", isOps: true },
+      { isOps: false },
+    ];
+    for (const opts of variants) {
+      expect(buildAgentSystemInstructions(opts)).toBe(
+        buildAgentSystemInstructions(opts),
+      );
+    }
+    // `isOps: false` must be the exact same instance as the no-options default.
+    expect(buildAgentSystemInstructions({ isOps: false })).toBe(
+      buildAgentSystemInstructions(),
+    );
   });
 
   it("describes the browser tools unconditionally", () => {
@@ -174,5 +201,69 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("## Browser access");
     expect(out).toContain("## Pull requests");
     expect(out).toContain("## Parallel sessions");
+  });
+
+  // docs/128 — ops overlay.
+
+  it("omits the ops overlay by default and renders byte-identically", () => {
+    // The non-ops rendering must be unchanged, so the prompt cache and the
+    // existing static contract are preserved.
+    expect(buildAgentSystemInstructions({ isOps: false })).toBe(
+      buildAgentSystemInstructions(),
+    );
+    const out = buildAgentSystemInstructions();
+    expect(out).not.toContain("## Ops session");
+    expect(out).not.toContain("docker-socket-proxy");
+  });
+
+  it("ops overlay names the read-only privilege surface and the journalctl -D rule", () => {
+    const out = buildAgentSystemInstructions({ isOps: true });
+    expect(out).toContain("## Ops session");
+    // It must tell the agent what it is — a read-only privileged session.
+    expect(out).toContain("privileged ops session");
+    expect(out).toContain("read-only");
+    // Docker is reachable only through the proxy, and mutations are rejected.
+    expect(out).toContain("tcp://docker-socket-proxy:2375");
+    expect(out).toMatch(/Mutations are rejected/i);
+    // The journalctl quirk that makes agents think the mount is broken.
+    expect(out).toContain("journalctl -D /var/log/journal");
+    expect(out).toContain("No journal files were found");
+    // Pointers to the contract doc and the in-workspace recipes.
+    expect(out).toContain("/shipit-docs/ops-session.md");
+    expect(out).toContain("prompts/");
+  });
+
+  it("ops overlay swaps the aggressive PR nudge for a read-only variant", () => {
+    const out = buildAgentSystemInstructions({ isOps: true });
+    // The section header still exists...
+    expect(out).toContain("## Pull requests");
+    // ...but the "edited a file ⇒ open a PR" reflex is gone.
+    expect(out).not.toContain("Do not ask first");
+    expect(out).not.toContain("no \"this change is too small\" exception");
+    expect(out).toMatch(/Do \*\*not\*\* open a PR/);
+    // And the "scaffold a new project" best practice is dropped.
+    expect(out).not.toContain("scaffold the essential files");
+  });
+
+  it("ops overlay replaces Live preview with an infra clarification", () => {
+    const out = buildAgentSystemInstructions({ isOps: true });
+    // The build-oriented preview guidance must be gone — there's no app here.
+    expect(out).not.toContain("## Live preview");
+    expect(out).not.toContain("If the project needs a preview");
+    // ...and replaced by a note that the compose service is host infra, not a
+    // frontend preview, so the agent doesn't misread the proxy.
+    expect(out).toContain("## Compose services");
+    expect(out).toContain("docker-socket-proxy");
+    expect(out).toMatch(/not an app preview/i);
+    // The default (non-ops) prompt still has the real Live preview section.
+    expect(buildAgentSystemInstructions()).toContain("## Live preview");
+  });
+
+  it("ops overlay composes with the per-agent Parallel sessions section", () => {
+    const out = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
+    expect(out).toContain("## Ops session");
+    expect(out).toContain("## Parallel sessions");
+    // Shared base still present.
+    expect(out).toContain("## Browser access");
   });
 });
