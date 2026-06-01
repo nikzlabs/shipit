@@ -79,7 +79,13 @@ function createFakeDocker(opts: { failCreateAfter?: number } = {}) {
         throw new Error("simulated container boot failure");
       }
       const id = `fake-container-${containerCounter}`;
-      const ip = `172.18.0.${containerCounter + 2}`;
+      // Use a loopback IP so the worker URL (http://127.0.0.1:9100) refuses
+      // connections INSTANTLY. The env-prep agent-secrets push and SSE connect
+      // fire against this URL; a non-routable bridge IP (172.18.x) blackholes
+      // in some CI network namespaces and only resolves on the 12s fail-open
+      // timeout, blowing the per-test budget. 127.0.0.1 fails fast everywhere
+      // (nothing listens on 9100 here — the orchestrator binds a random port).
+      const ip = "127.0.0.1";
       containers.set(id, { id, started: false, labels: createOpts.Labels ?? {}, ip });
       return {
         id,
@@ -182,7 +188,7 @@ describe("Integration: child-message container resume (Ops docs/162 follow-up)",
     return { parentId, childId };
   }
 
-  it("resumes a fresh container when the runner survives but its container was reaped", async () => {
+  it("resumes a fresh container when the runner survives but its container was reaped", { timeout: 15_000 }, async () => {
     await buildAppWith(createFakeDocker());
     const { parentId, childId } = await setupParentAndChild();
 
@@ -206,7 +212,7 @@ describe("Integration: child-message container resume (Ops docs/162 follow-up)",
     expect(containerManager.get(childId)?.status).toBe("running");
   });
 
-  it("resumes a fresh container after a full idle reap (runner disposed + container destroyed)", async () => {
+  it("resumes a fresh container after a full idle reap (runner disposed + container destroyed)", { timeout: 15_000 }, async () => {
     await buildAppWith(createFakeDocker());
     const { parentId, childId } = await setupParentAndChild();
 
@@ -227,7 +233,7 @@ describe("Integration: child-message container resume (Ops docs/162 follow-up)",
     expect(containerManager.get(childId)?.status).toBe("running");
   });
 
-  it("fails loudly (does not falsely ack) when the resumed container cannot boot", async () => {
+  it("fails loudly (does not falsely ack) when the resumed container cannot boot", { timeout: 15_000 }, async () => {
     // First container boots fine; the resume boot (2nd create) fails.
     await buildAppWith(createFakeDocker({ failCreateAfter: 1 }));
     const { parentId, childId } = await setupParentAndChild();
