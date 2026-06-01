@@ -3,7 +3,7 @@
 ## Phase 1 — Foundations
 - [x] Decide initial version number — `v0.1.0` (matches the plan's bootstrap release; `package.json` already `0.1.0`)
 - [x] Add `.github/workflows/release.yml` (CI gate → FF `stable` → GitHub Release notes)
-- [ ] Cut the first release tag (`vX.Y.Z`) and verify `stable` is created/advanced (maintainer action)
+- [x] Cut the first release tag (`v0.1.0`) and verify `stable` is created/advanced — `origin/stable` points at the `v0.1.0` tag commit (`dbf5a77`)
 - [x] Add `RELEASING.md` (tag ritual, patch releases, FF-only invariant)
 
 ## Phase 2 — Channel-aware updater
@@ -31,5 +31,5 @@
 - [x] `setup.sh`: default new installs to `stable`, write `.release-channel`, checkout `origin/stable`;
       re-run path is channel-aware (replaced `git pull`)
 - [x] `deployment/README.md`: channels, switching, release process
-- [ ] Update `src/server/shipit-docs/*` if channel/version is agent-visible (N/A — not agent-visible)
+- [x] Update `src/server/shipit-docs/*` if channel/version is agent-visible (N/A — not agent-visible)
 - [x] Verify dogfood / `RUNTIME_MODE=local` degrades gracefully (edge fallback when `/opt/shipit` absent)
