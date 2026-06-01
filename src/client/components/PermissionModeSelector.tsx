@@ -1,4 +1,4 @@
-import { NotepadIcon, ShieldCheckIcon, LightningIcon, CheckIcon } from "@phosphor-icons/react";
+import { NotepadIcon, ShieldCheckIcon, FastForwardIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import {
   DropdownMenu,
@@ -46,7 +46,7 @@ const MODE_META: Record<
   },
   auto: {
     label: "Auto mode",
-    icon: LightningIcon,
+    icon: FastForwardIcon,
     description: "Autonomous — no command safety check.",
   },
 };
