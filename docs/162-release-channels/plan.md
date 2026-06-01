@@ -203,11 +203,19 @@ client reload logic in `client-build.ts` depends on — leave that contract
 alone). Add a separate human-facing version resolver:
 
 - New `resolveVersion()` (server) returns `{ channel, version, commit }` where
-  `version` is `git describe --tags --exact-match` (→ `vX.Y.Z`) when on a
-  release, else `main @ <short-sha>`. Surface it on the bootstrap payload /
-  Software Updates panel.
-- The Settings panel shows e.g. **"Stable · v1.4.0"** or **"Edge · main @ abc1234"**
-  instead of a bare SHA.
+  `version` is `vX.Y.Z` when on a release, else `main @ <short-sha>`. Surface it
+  on the bootstrap payload / Software Updates panel; the Settings panel then
+  shows e.g. **"Stable · v1.4.0"** or **"Edge · main @ abc1234"** instead of a
+  bare SHA.
+- **It must `git describe`/`rev-parse` inside the bind-mounted `/opt/shipit`, not
+  reuse `resolveBuildId()`'s mechanism.** In the prod container `resolveBuildId()`
+  reads the baked `SHIPIT_BUILD_ID` env var — the image has no `.git`, so running
+  `git describe --tags --exact-match` in the container's own cwd sees no repo and
+  returns nothing. `resolveVersion()` must shell out against `/opt/shipit` exactly
+  as `checkForUpdates()` already does (`cwd: HOST_REPO_DIR`), and must define a
+  fallback for the local/dogfood case where `/opt/shipit` is absent — fall back to
+  the `SHIPIT_BUILD_ID` short SHA with channel reported as `edge`, the same
+  graceful-degradation case as the channel selector.
 
 ## UI (Settings → Advanced → Software Updates, `Settings.tsx`)
 
@@ -233,6 +241,15 @@ alone). Add a separate human-facing version resolver:
   release rather than the tip of `main`. (Requires `stable` to exist — bootstrap
   the first `stable` by cutting `v0.1.0` before this ships, otherwise `setup.sh`
   falls back to `main`.)
+- **`setup.sh` re-run path must become channel-aware.** `setup.sh` is documented
+  "safe to re-run" and its repo-update branch currently does an unconditional
+  `git -C /opt/shipit pull` (line 88), which advances the checked-out branch to
+  its upstream tip. On a stable box that would silently jump the instance forward
+  to `main`'s tip (or whatever the local upstream is) on the next provisioning
+  re-run — exactly the un-pinning the channel model exists to prevent. The
+  re-run path must instead read `.release-channel`, then `git fetch origin --tags`
+  and `git reset --hard <channel ref>`, mirroring `update.sh` rather than calling
+  `git pull`.
 - The default-absent asymmetry (existing→edge, new→stable) is intentional: it
   preserves current behavior for current users while making the safer choice the
   default for newcomers.
@@ -268,11 +285,11 @@ alone). Add a separate human-facing version resolver:
 |------|--------|
 | `src/server/orchestrator/services/updates.ts` | Channel-aware `checkForUpdates()`; new `setChannel()`; extend `UpdateStatus` with channel/version fields |
 | `src/server/orchestrator/api-routes-updates.ts` | New `POST /api/updates/channel`; channel in check response |
-| `src/server/orchestrator/build-id.ts` | Add `resolveVersion()` (tag/`describe`-based) alongside `resolveBuildId()` |
+| `src/server/orchestrator/build-id.ts` | Add `resolveVersion()` — `git describe` against `/opt/shipit` (NOT the container cwd / `SHIPIT_BUILD_ID` env), with a short-SHA/`edge` fallback when the host repo is absent; keep `resolveBuildId()`'s SHA contract untouched |
 | `src/server/shared/types/domain-types.ts` | Version/channel types surfaced to client |
 | `src/client/components/Settings.tsx` | Channel selector + version label + inline release notes + downgrade warning |
 | `deployment/vps/update.sh` | Read `.release-channel`, reset to the channel's ref |
-| `deployment/vps/setup.sh` | Default new installs to `stable`; write `.release-channel`; clone/checkout `origin/stable` |
+| `deployment/vps/setup.sh` | Default new installs to `stable`; write `.release-channel`; clone/checkout `origin/stable`; **replace the re-run `git pull` (line 88) with a channel-aware `fetch --tags` + `reset --hard <ref>`** so a re-run never un-pins a stable box |
 | `deployment/vps/docker-compose.yml` | (no change — `/opt/shipit` mount already present at line 26) |
 | `.gitignore` | Add `.release-channel` |
 | `.github/workflows/release.yml` | New: on `v*` tag → CI gate → FF `stable` → GitHub Release with notes |
