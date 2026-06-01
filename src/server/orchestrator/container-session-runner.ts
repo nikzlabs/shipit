@@ -53,6 +53,15 @@ export type { ProxyAgentRunner } from "./proxy-agent-process.js";
 // ContainerSessionRunner
 // ---------------------------------------------------------------------------
 
+/**
+ * Timeout for the POST /install request. A fast-install cache HIT holds the
+ * response open while the worker materializes `node_modules` (seconds for a
+ * large tree); a MISS returns `{ started: true }` immediately and streams via
+ * SSE. The bound is generous but finite so a genuinely wedged worker resolves
+ * the install gate (as a failure) rather than blocking the first turn forever.
+ */
+const INSTALL_POST_TIMEOUT_MS = 180_000;
+
 export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> implements SessionRunnerInterface, ProxyAgentRunner {
   readonly sessionId: string;
   readonly sessionDir: string;
@@ -988,7 +997,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     });
 
     try {
-      const result = await workerInstall(this.workerUrl, commands) as { skipped?: boolean; started?: boolean };
+      // Generous timeout: a fast-install cache HIT holds the response open
+      // while the worker materializes `node_modules` (seconds for large
+      // trees). A MISS / non-cacheable set returns `{ started: true }` fast.
+      // We still bound it so a wedged worker resolves the gate (as a failure)
+      // via the catch below instead of hanging the user's first turn forever.
+      const result = await workerInstall(this.workerUrl, commands, {
+        timeoutMs: INSTALL_POST_TIMEOUT_MS,
+      }) as { skipped?: boolean; started?: boolean; completed?: boolean; ok?: boolean };
       if (result.skipped) {
         this.emitMessage({
           type: "install_status",
@@ -997,6 +1013,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         });
         this.signalInstallComplete();
         return { ok: true };
+      }
+      if (result.completed) {
+        // Fast-install cache HIT — the worker resolved the install fully and
+        // reported the outcome in THIS HTTP response. Settle the gate directly
+        // from the response so completion never depends on the SSE-delivered
+        // `install_done` event (which on the fast path can be consumed before
+        // the resolver is armed, deadlocking the first turn — docs/162).
+        const ok = result.ok !== false;
+        this.emitMessage({
+          type: "install_status",
+          sessionId: this.sessionId,
+          status: ok ? "complete" : "error",
+        });
+        this.signalInstallComplete(ok);
+        return { ok };
       }
       // Started — wait for SSE-delivered install_done / install_error to
       // resolve the completion promise with the success/failure outcome.
@@ -1030,14 +1061,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
-   * After an SSE reconnect, re-poll the worker for its current install
-   * state. If the worker finished install while we were disconnected, we
-   * never received the `install_done`/`install_error` event — synthesize
-   * the completion locally so a) the awaiting `runInstall` resolves and
-   * b) the client gets the terminal `install_status` it would have seen.
+   * Re-poll the worker for its current install state when an SSE stream opens
+   * (first connect or reconnect). If the worker finished install while we had
+   * no attached consumer — or the `install_done`/`install_error` event raced
+   * our handshake and was lost — synthesize the completion locally so a) the
+   * awaiting `runInstall` resolves and b) the client gets the terminal
+   * `install_status` it would have seen.
    *
    * No-op when no install was in flight from our POV (avoids double-emitting
-   * for the steady-state reconnect-during-idle case).
+   * for the steady-state reconnect-during-idle case). Idempotent against the
+   * real event and the HTTP-response fast-path resolution — `signalInstallComplete`
+   * only fires once.
    */
   private async resyncInstallStateAfterReconnect(): Promise<void> {
     if (!this._installInFlight || this._disposed) return;
@@ -1136,9 +1170,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   /**
    * Called by the SSE manager when a fresh stream opens. On reconnect with
    * a running terminal we replay buffered output prefixed with a terminal
-   * reset sequence so xterm.js starts from a known-good state; on reconnect
-   * with an in-flight install we re-poll the worker so we don't hang
-   * forever waiting for an `install_done` event that was lost.
+   * reset sequence so xterm.js starts from a known-good state.
+   *
+   * With an in-flight install we re-poll the worker so we don't hang forever
+   * waiting for an `install_done` event that was lost — and we do this on the
+   * FIRST connect too, not just reconnects (docs/162). The fast-install path
+   * can finish and broadcast `install_done` before our SSE consumer is even
+   * attached; if that event raced our handshake, the buffered-replay/live
+   * delivery could be consumed before the gate resolver is armed, leaving the
+   * gate stuck. Probing `/install/status` on first open is a deterministic
+   * backstop: if the worker already finished, `resyncInstallStateAfterReconnect`
+   * synthesizes the completion and resolves the gate. (The primary fix is the
+   * worker resolving a cache HIT in the /install HTTP response; this is belt
+   * and braces for the streamed real-install path.)
    */
   private onSseOpen(isReconnect: boolean): void {
     if (isReconnect && this.termBuf.running) {
@@ -1147,7 +1191,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         this.emitMessage({ type: "terminal_output", data: `\x1bc${  buffered}` });
       }
     }
-    if (isReconnect && this._installInFlight) {
+    if (this._installInFlight) {
       void this.resyncInstallStateAfterReconnect();
     }
   }
