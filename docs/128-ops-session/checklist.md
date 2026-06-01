@@ -29,6 +29,10 @@
 - [x] Pinned "Host / Ops" sidebar group keyed off `kind === "ops"` (separate from repo/orphan).
 - [x] `ops` badge on ops session rows.
 - [x] Settings → advanced "Create ops session for this host" affordance.
+- [x] Per-session `⋯` menu "Investigate in Ops session" entry point (any non-ops row);
+      seeds the new session's composer draft with a target-scoped investigation prompt.
+- [x] `createOpsSession(targetSessionId?)` store action centralizing ops creation
+      (Settings + sidebar both use it); refactored the Settings inline fetch onto it.
 - [x] Per-kind right-panel tabs: hide Preview + PR, add read-only Host tab (`HostPanel`).
 - [x] `"host"` added to `RightTab` union + persisted-tab allow-list.
 
@@ -47,7 +51,11 @@
       a forged non-ops shipit.yaml gets nothing (mounts dropped).
 - [x] `services/host.test.ts` — `getHostOverview` (docker null → unavailable; mapping/correlation).
 - [x] `templates.test.ts` — ops template resolvable but hidden; embeds proxy + journal mounts.
-- [x] `services/templates.test.ts` — `applyTemplate` stamps kind, rejects existing sessionId.
+- [x] `services/templates.test.ts` — `applyTemplate` stamps kind, rejects existing sessionId,
+      seeds a target-scoped prompt + `Ops — debug:` title for a known `targetSessionId`,
+      and falls back to a generic ops session for an unknown id.
+- [x] `SessionSidebar.test.tsx` — `⋯` menu offers "Investigate in Ops session" on a non-ops
+      row (creates + navigates via `createOpsSession`), hides it on an ops row.
 - [x] `SessionSidebar.test.tsx` — ops session renders in Host/Ops group, not a repo group.
 
 ## Provisioning fixes from the live audit (host `shipit-16gb`)

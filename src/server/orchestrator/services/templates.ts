@@ -7,7 +7,7 @@ import os from "node:os";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo } from "../../shared/types.js";
-import { getTemplate, applyTemplate as applyTemplateFiles, generatePackageLock, OPS_TEMPLATE_ID } from "../templates.js";
+import { getTemplate, applyTemplate as applyTemplateFiles, generatePackageLock, OPS_TEMPLATE_ID, buildOpsInvestigationSeed } from "../templates.js";
 import { ServiceError } from "./types.js";
 
 /** Create a GitHub repo with a template applied, committed, and pushed.
@@ -72,7 +72,8 @@ export async function applyTemplate(
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>,
   templateId: string,
   sessionId?: string,
-): Promise<{ templateId: string; name: string; session?: SessionInfo; sessionDir: string }> {
+  targetSessionId?: string,
+): Promise<{ templateId: string; name: string; session?: SessionInfo; sessionDir: string; seedPrompt?: string }> {
   if (!templateId || typeof templateId !== "string" || !templateId.trim()) {
     throw new ServiceError(400, "Template ID is required");
   }
@@ -88,6 +89,28 @@ export async function applyTemplate(
     throw new ServiceError(400, "Ops session must be created fresh (use sessionId 'new')");
   }
 
+  // docs/128 — "Investigate in Ops session" entry point. `targetSessionId` is
+  // a *reference* to the session the operator wants to debug — never the
+  // session being templated — so it doesn't weaken the fresh-only privilege
+  // gate above. We use it to name the new ops session after its quarry and to
+  // seed the composer with a concrete read-only first step (the agent filters
+  // containers by the target id). Silently ignored for non-ops templates or an
+  // unknown id, so a stale reference still yields a usable generic ops session.
+  let seedPrompt: string | undefined;
+  let opsTitle = `Ops — ${os.hostname()}`;
+  if (isOps && targetSessionId) {
+    const target = sessionManager.get(targetSessionId);
+    if (target) {
+      opsTitle = `Ops — debug: ${target.title}`;
+      seedPrompt = buildOpsInvestigationSeed({
+        id: target.id,
+        title: target.title,
+        ...(target.remoteUrl ? { remoteUrl: target.remoteUrl } : {}),
+        ...(target.branch ? { branch: target.branch } : {}),
+      });
+    }
+  }
+
   let appSessionId = sessionId;
   let sessionDir: string;
 
@@ -96,7 +119,7 @@ export async function applyTemplate(
     if (!session?.workspaceDir) throw new ServiceError(404, "Session not found");
     sessionDir = session.workspaceDir;
   } else {
-    const created = await createSessionDir(isOps ? `Ops — ${os.hostname()}` : template.name);
+    const created = await createSessionDir(isOps ? opsTitle : template.name);
     appSessionId = created.appSessionId;
     sessionDir = created.workspaceDir;
     // New session directory needs git init before we can commit template files
@@ -122,5 +145,6 @@ export async function applyTemplate(
     name: template.name,
     session: session ?? undefined,
     sessionDir,
+    ...(seedPrompt ? { seedPrompt } : {}),
   };
 }
