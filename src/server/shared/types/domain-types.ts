@@ -596,6 +596,23 @@ export interface DockerMemoryStats {
 
 // ---- System info ----
 
+/** Release channel an instance tracks. See docs/162-release-channels. */
+export type ReleaseChannel = "stable" | "edge";
+
+/**
+ * Human-facing version identity of the running instance, channel-aware.
+ * On `stable` this is the exact release tag (e.g. `v1.4.0`); on `edge` it is
+ * `main @ <short-sha>`. Distinct from {@link SystemInfo.buildId}, which stays
+ * the raw SHA used for client cache-busting.
+ */
+export interface VersionInfo {
+  channel: ReleaseChannel;
+  /** `vX.Y.Z` on a stable release, else `main @ <short-sha>`. */
+  version: string;
+  /** Full commit SHA the instance is built from, when resolvable. */
+  commit?: string;
+}
+
 /**
  * Static per-process metadata about the orchestrator. Sent once on SSE
  * connect; the client uses `processStartedAt` to render a live-ticking
@@ -611,6 +628,12 @@ export interface SystemInfo {
    * to the current git commit SHA.
    */
   buildId?: string;
+  /**
+   * Channel-aware human-facing version of the running instance. Surfaced in
+   * Settings → Advanced → Software Updates so the user sees "Stable · v1.4.0"
+   * or "Edge · main @ abc1234" instead of a bare SHA.
+   */
+  version?: VersionInfo;
 }
 
 // ---- Chat history message (shared data type) ----

@@ -65,13 +65,37 @@ Once Cloudflare setup is complete, visit `https://shipit.example.com` — authen
 
 ## Updating
 
-ShipIt updates itself from the UI. Go to **Settings → Advanced → Software Updates** and click **Check for Updates**. If an update is available, click **Update Now** — ShipIt will pull the latest code, rebuild, and restart automatically.
+ShipIt updates itself from the UI. Go to **Settings → Advanced → Software Updates** and click **Check for Updates**. If an update is available, click **Update Now** — ShipIt will pull the latest code for your release channel, rebuild, and restart automatically.
 
-To update or restart manually via SSH:
+### Release channels
+
+ShipIt instances track one of two channels, selectable in the same Software
+Updates panel:
+
+- **Stable** (default for new installs) — advances only to vetted, tagged
+  releases (`vX.Y.Z`). Fewer updates, lower risk. Tracks `origin/stable`.
+- **Edge** — tracks `main`, updated on every merge. For early adopters and
+  contributors who want the latest changes.
+
+The choice is stored in `/opt/shipit/.release-channel` (untracked, so it
+survives updates and rebuilds). Existing installs that upgrade into this feature
+default to **edge** so their behavior doesn't change; the selector lets them opt
+into stable.
+
+Switching from edge to a stable release that is *behind* your current code is a
+**downgrade** — the UI warns before applying, because older code may not read
+newer on-disk data cleanly.
+
+See [`../RELEASING.md`](../RELEASING.md) for how maintainers cut a stable release.
+
+To update or restart manually via SSH (channel-aware):
 
 ```bash
 ssh root@<server-ip>
-cd /opt/shipit && git pull origin main
+cd /opt/shipit
+CHANNEL="$(cat .release-channel 2>/dev/null || echo edge)"
+case "$CHANNEL" in stable) REF=origin/stable;; *) REF=origin/main;; esac
+git fetch origin --tags --prune && git reset --hard "$REF"
 bash deployment/vps/deploy.sh
 ```
 

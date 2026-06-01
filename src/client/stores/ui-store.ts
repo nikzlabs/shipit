@@ -7,7 +7,7 @@ import type {
 } from "../components/UsageModal.js";
 import type { ModelInfo } from "../utils/model-info.js";
 import type { ToastData } from "../components/Toast.js";
-import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap, RuntimeMode } from "../../server/shared/types.js";
+import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap, RuntimeMode, VersionInfo } from "../../server/shared/types.js";
 import {
   getSavedAgentId,
   getSavedSidebarCollapsed,
@@ -107,6 +107,12 @@ interface UiState {
    */
   processStartedAt: number | null;
   /**
+   * Channel-aware human-facing version of the running instance, from the
+   * `system_info` SSE event. Surfaced in Settings → Advanced as
+   * "Stable · v1.4.0" / "Edge · main @ abc1234". `null` until SSE connects.
+   */
+  version: VersionInfo | null;
+  /**
    * Account-wide subscription rate-limit snapshots, keyed by agent id.
    * Driven by the `subscription_limits` SSE broadcast; the server
    * replaces the map wholesale on every tick so sign-outs / unfetchable
@@ -156,6 +162,7 @@ interface UiState {
   setToast: (toast: ToastData | null) => void;
   setDockerMemory: (stats: DockerMemoryStats | null) => void;
   setProcessStartedAt: (epochMs: number | null) => void;
+  setVersion: (version: VersionInfo | null) => void;
   setSubscriptionLimits: (limits: SubscriptionLimitsMap) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
   setRuntimeMode: (mode: RuntimeMode) => void;
@@ -192,6 +199,7 @@ const initialState = {
   bootstrapLoaded: false,
   dockerMemory: null as DockerMemoryStats | null,
   processStartedAt: null as number | null,
+  version: null as VersionInfo | null,
   subscriptionLimits: {} as SubscriptionLimitsMap,
   runtimeMode: "containerized" as RuntimeMode,
   previewSubdomains: "auto" as "auto" | "always",
@@ -259,6 +267,7 @@ export const useUiStore = create<UiState>((set) => ({
   setDockerMemory: (dockerMemory) => set({ dockerMemory }),
 
   setProcessStartedAt: (processStartedAt) => set({ processStartedAt }),
+  setVersion: (version) => set({ version }),
 
   setSubscriptionLimits: (subscriptionLimits) => set({ subscriptionLimits }),
 

@@ -9,6 +9,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 afterEach(() => {
   cleanup();
   useUiStore.getState().setSettingsTab(undefined);
+  useUiStore.getState().setVersion(null);
   usePreviewStore.getState().setSecrets({
     declared: [],
     missingByService: {},
@@ -508,6 +509,62 @@ describe("Settings - Advanced tab", () => {
     fireEvent.change(input, { target: { value: "7" } });
     await userEvent.click(screen.getByTestId("settings-max-idle-containers-save"));
     expect(onMaxIdleContainersSave).toHaveBeenCalledWith(7);
+  });
+
+  // ---- Release channels (feature 162) ----
+
+  it("renders the release-channel selector", async () => {
+    await renderOnAdvancedTab();
+    expect(screen.getByTestId("settings-channel-stable")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-channel-edge")).toBeInTheDocument();
+  });
+
+  it("shows the channel-aware version label from the store", async () => {
+    useUiStore.getState().setVersion({ channel: "stable", version: "v1.4.0", commit: "abc1234" });
+    await renderOnAdvancedTab();
+    expect(screen.getByTestId("settings-version")).toHaveTextContent("Stable · v1.4.0");
+  });
+
+  it("marks the active channel via aria-pressed", async () => {
+    useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234" });
+    await renderOnAdvancedTab();
+    expect(screen.getByTestId("settings-channel-edge")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("settings-channel-stable")).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("POSTs the chosen channel and reflects the response", async () => {
+    useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          available: true,
+          behindBy: 0,
+          commitMessages: ["feat: something"],
+          currentCommit: "abc1234",
+          channel: "stable",
+          currentVersion: "main @ abc1234",
+          latestVersion: "v1.3.0",
+          isDowngrade: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    try {
+      await renderOnAdvancedTab();
+      await userEvent.click(screen.getByTestId("settings-channel-stable"));
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledWith(
+          "/api/updates/channel",
+          expect.objectContaining({ method: "POST" }),
+        );
+      });
+      // Downgrade warning surfaces from the response.
+      await waitFor(() => {
+        expect(screen.getByTestId("settings-downgrade-warning")).toBeInTheDocument();
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
 

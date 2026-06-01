@@ -3,7 +3,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { checkForUpdates, requestRestart, requestUpdate } from "./services/updates.js";
+import { checkForUpdates, requestRestart, requestUpdate, setChannel } from "./services/updates.js";
 import { ServiceError } from "./services/types.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -18,6 +18,24 @@ export async function registerUpdateRoutes(app: FastifyInstance): Promise<void> 
         return;
       }
       reply.code(500).send({ error: `Failed to check for updates: ${getErrorMessage(err)}` });
+    }
+  });
+
+  // POST /api/updates/channel — switch release channel, returns a fresh check
+  app.post<{ Body: { channel?: unknown } }>("/api/updates/channel", async (request, reply) => {
+    const channel = request.body?.channel;
+    if (channel !== "stable" && channel !== "edge") {
+      reply.code(400).send({ error: "channel must be 'stable' or 'edge'" });
+      return;
+    }
+    try {
+      return await setChannel(channel);
+    } catch (err) {
+      if (err instanceof ServiceError) {
+        reply.code(err.statusCode).send({ error: err.message });
+        return;
+      }
+      reply.code(500).send({ error: `Failed to set channel: ${getErrorMessage(err)}` });
     }
   });
 

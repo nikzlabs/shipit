@@ -1,0 +1,81 @@
+name: Release
+
+# Cut a stable release: push an annotated tag `vX.Y.Z` to main, and this
+# workflow gates it on a green build, fast-forwards the `stable` branch to the
+# tagged commit, and publishes a GitHub Release with auto-generated notes.
+# Those notes are the changelog ShipIt surfaces inline in the update panel.
+# See docs/162-release-channels/plan.md and RELEASING.md.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: write
+
+jobs:
+  # 1. A release must be green — reuse the same gates as ci.yml.
+  check:
+    name: Lint, Type Check & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run check-deps
+      - run: npm run build
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  # 2. On success, fast-forward `stable` and publish the Release.
+  promote:
+    name: Promote to stable
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so the FF check can verify ancestry.
+          fetch-depth: 0
+
+      # Fast-forward `stable` to the tagged commit. `--ff-only` semantics are
+      # enforced by pushing the SHA to refs/heads/stable: GitHub rejects a
+      # non-fast-forward push, so tagging off a commit that isn't an ancestor
+      # of current `stable` fails loudly here (never force-push stable).
+      - name: Fast-forward stable to ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse "${{ github.ref_name }}^{commit}")"
+          echo "Promoting $SHA to refs/heads/stable"
+          git push origin "$SHA:refs/heads/stable"
+
+      # Publish a GitHub Release with auto-generated notes (PR titles since the
+      # previous tag). These notes are the inline changelog.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            --verify-tag
