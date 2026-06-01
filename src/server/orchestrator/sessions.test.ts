@@ -469,6 +469,40 @@ describe("SessionManager", () => {
       );
       expect(filterVisibleInSidebar(sessions)).toHaveLength(MAX_MERGED_SESSIONS_PER_REPO);
     });
+
+    it("excludes user-archived sessions from the result", () => {
+      const sessions = [active("a"), { ...active("b"), userArchived: true }];
+      expect(filterVisibleInSidebar(sessions).map((s) => s.id)).toEqual(["a"]);
+    });
+
+    it("archiving a visible merged session does not promote a demoted one", () => {
+      // m4,m3,m2 are within the cap of 3; m1 is demoted (oldest merge).
+      const sessions = [
+        merged("m1", "2024-01-01 09:00:00"),
+        merged("m2", "2024-01-02 09:00:00"),
+        merged("m3", "2024-01-03 09:00:00"),
+        merged("m4", "2024-01-04 09:00:00"),
+      ];
+      // Archive m3 (one of the three visible). It keeps its ranking slot, so the
+      // freed view goes to N-1 rather than pulling m1 back up.
+      const withArchive = sessions.map((s) => (s.id === "m3" ? { ...s, userArchived: true } : s));
+      const visible = filterVisibleInSidebar(withArchive, 3).map((s) => s.id).sort();
+      expect(visible).toEqual(["m2", "m4"]);
+    });
+
+    it("releases the slot once newer merges push the archived session past the cap", () => {
+      // m1 archived but newest; two newer merges (m2, m3) arrive after it. With a
+      // cap of 2, m1's slot is consumed by the newer m3/m2, so m1 stops holding it.
+      const sessions = [
+        { ...merged("m1", "2024-01-03 09:00:00"), userArchived: true },
+        merged("m2", "2024-01-02 09:00:00"),
+        merged("m3", "2024-01-04 09:00:00"),
+        merged("m4", "2024-01-01 09:00:00"),
+      ];
+      // Ranking incl. archived: m3, m1(archived), m2, m4. Cap 2 → top = m3, m1.
+      // m1 is archived → hidden; only m3 shows. m2/m4 stay demoted.
+      expect(filterVisibleInSidebar(sessions, 2).map((s) => s.id)).toEqual(["m3"]);
+    });
   });
 
   // docs/161 — exercises the full visibility path through SessionManager.list()
@@ -509,6 +543,20 @@ describe("SessionManager", () => {
 
       // After reopening: target rejoins the active listing regardless of the cap.
       expect(mgr.list().map((s) => s.id)).toContain("target");
+    });
+
+    it("archiving a visible merged session lowers the count without surfacing a demoted one", () => {
+      const mgr = new SessionManager(dbManager);
+      // 4 merged in one repo, default cap is 3. m1 has the oldest merge → demoted.
+      seedMerged(mgr, "m1", "2024-01-01 09:00:00", "2024-01-01 09:00:00");
+      seedMerged(mgr, "m2", "2024-01-02 09:00:00", "2024-01-02 09:00:00");
+      seedMerged(mgr, "m3", "2024-01-03 09:00:00", "2024-01-03 09:00:00");
+      seedMerged(mgr, "m4", "2024-01-04 09:00:00", "2024-01-04 09:00:00");
+      expect(mgr.list().map((s) => s.id).sort()).toEqual(["m2", "m3", "m4"]);
+
+      // Archive a visible one → count drops to 2; m1 stays demoted (not promoted).
+      mgr.archive("m3");
+      expect(mgr.list().map((s) => s.id).sort()).toEqual(["m2", "m4"]);
     });
   });
 });

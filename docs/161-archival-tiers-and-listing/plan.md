@@ -134,6 +134,15 @@ Grouping in the sidebar:
   repo by `mergedAt` desc. Rendered in the existing collapsed/demoted position
   (`SessionSidebar.tsx:700`). This is now a **pure view cap** — exceeding it has
   **zero disk consequence**; the overflow simply isn't in the sidebar.
+  - **The top-N ranking includes user-archived merged sessions** (then drops
+    them from the result). An archived merged session keeps occupying its
+    chronological slot, so manually archiving one of the N visible merged
+    sessions lowers the visible count to N-1 instead of pulling a previously
+    demoted session up into the freed slot — which read as "archiving did
+    nothing, it's always 3." The slot self-heals: as newer PRs merge, they push
+    the archived session past rank N and the cap fills back up with fresh merges.
+    `filterVisibleInSidebar` therefore receives archived rows (`list()` only
+    filters `warm`) and excludes them via its own `!userArchived` guard.
 - **Not listed** — everything else. Reachable through the existing
   **All Sessions** dialog (`AllSessionsDialog.tsx`, `/api/sessions/all` →
   `listAll()`), which already shows every non-warm session.

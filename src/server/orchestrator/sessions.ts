@@ -77,17 +77,28 @@ export function reopenedAfterMerge(s: SessionInfo): boolean {
  * docs/161 — the sidebar visibility predicate. Pure derivation over session
  * metadata; `diskTier` is deliberately NOT consulted (a disk-evicted but recent
  * session stays listed and restores on select). Input must already exclude
- * warm and user-archived sessions. A session is visible when it is:
+ * warm sessions but MAY include user-archived ones — they are filtered out of
+ * the result here, yet still count toward the per-repo merged ranking (see
+ * below). A session is visible when it is NOT user-archived and is:
  *   - active (never merged), or
  *   - merged but reopened (worked in since the merge), or
  *   - among the top-N most-recently-merged for its repo (the view cap).
  * Exceeding the cap only removes it from the sidebar — zero disk consequence.
+ *
+ * The merged ranking deliberately INCLUDES user-archived merged sessions so an
+ * archived session keeps occupying its chronological slot. This makes manual
+ * archiving feel right: archiving one of the N visible merged sessions lowers
+ * the visible count to N-1 instead of promoting an older, previously-demoted
+ * session into the freed slot. The slot self-heals as newer PRs merge and push
+ * the archived session past rank N.
  */
 export function filterVisibleInSidebar(
   sessions: SessionInfo[],
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
 ): SessionInfo[] {
   // Rank merged-not-reopened sessions per repo by mergedAt desc; keep top N.
+  // Archived sessions are included in the ranking (so they hold their slot) but
+  // dropped from the output by the `!s.userArchived` guard at the end.
   const mergedByRepo = new Map<string, SessionInfo[]>();
   for (const s of sessions) {
     if (!s.mergedAt || reopenedAfterMerge(s)) continue;
@@ -105,7 +116,7 @@ export function filterVisibleInSidebar(
     for (const s of group.slice(0, maxMerged)) topMergedIds.add(s.id);
   }
   return sessions.filter(
-    (s) => !s.mergedAt || reopenedAfterMerge(s) || topMergedIds.has(s.id),
+    (s) => !s.userArchived && (!s.mergedAt || reopenedAfterMerge(s) || topMergedIds.has(s.id)),
   );
 }
 
@@ -156,10 +167,15 @@ export class SessionManager {
    * legacy `archived` flag: returns non-warm, non-user-archived sessions that
    * satisfy `filterVisibleInSidebar` (active, reopened-merged, or within the
    * per-repo merged view cap). Disk tier is irrelevant to visibility.
+   *
+   * We fetch user-archived rows too (the SQL only drops warm sessions) and let
+   * `filterVisibleInSidebar` exclude them: archived merged sessions must still
+   * count toward the per-repo merged ranking so archiving a visible session
+   * doesn't promote a previously-demoted one into the freed slot.
    */
   list(): SessionInfo[] {
     const rows = this.db.prepare(
-      "SELECT * FROM sessions WHERE user_archived = 0 AND warm = 0 ORDER BY last_used_at DESC, rowid DESC",
+      "SELECT * FROM sessions WHERE warm = 0 ORDER BY last_used_at DESC, rowid DESC",
     ).all() as SessionRow[];
     return filterVisibleInSidebar(rows.map((r) => this.fromRow(r)));
   }
