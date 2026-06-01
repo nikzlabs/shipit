@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
+import { ContainerSessionRunner } from "./container-session-runner.js";
+import {
+  prepareSessionAgentEnvironment,
+  PUSH_AGENT_SECRETS_TIMEOUT_MS,
+} from "./session-agent-env.js";
 import type { AgentId } from "../shared/types.js";
 
 describe("SessionRunner", () => {
@@ -240,6 +245,85 @@ describe("SessionRunner", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(callOrder).toEqual(["prepareAgentEnv", "buildRunParams"]);
     expect(fakeAgent.run).toHaveBeenCalled();
+    runner.dispose({ force: true });
+  });
+
+  it("dispatch still spawns the agent when env prep's network step hangs (warm-pool hang regression)", async () => {
+    // The warm-pool quick-session hang (docs/162 follow-up): the install gate
+    // resolved, but a pre-spawn env-prep await (an un-timed MCP-OAuth refresh /
+    // worker secrets push) never settled, so `agent.run()` never fired and the
+    // worker never received `/agent/start`. With the fix, env prep is bounded
+    // and FAILS OPEN, so the agent still spawns once the timeout elapses.
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const fakeAgent = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
+
+    // A ContainerSessionRunner-shaped object whose worker secrets push hangs
+    // forever — the exact pre-spawn await that stalled the turn. Reparented so
+    // the `instanceof ContainerSessionRunner` branch inside env-prep is taken.
+    class HangingContainerRunner extends EventEmitter {
+      serviceManager = null;
+      tryPushAgentSecrets = (): Promise<void> => new Promise<void>(() => { /* never resolves */ });
+    }
+    Object.setPrototypeOf(HangingContainerRunner.prototype, ContainerSessionRunner.prototype);
+    const envRunner = new HangingContainerRunner();
+
+    const credentialStore = {
+      getAllAgentEnv: () => ({}),
+      getAllMcpOAuthTokens: () => ({}),
+    } as any;
+    const sessionManager = {
+      get: () => ({ agentPinned: true, id: "s1", agentSessionId: "sid" }),
+      setAgentId: vi.fn(),
+      setAgentPinned: vi.fn(),
+      setProviderRoute: vi.fn(),
+      setAgentSessionId: vi.fn(),
+      clearAgentSessionId: vi.fn(),
+    } as any;
+
+    runner.setSystemTurnDeps({
+      agentFactory: () => fakeAgent,
+      autoCommit: vi.fn().mockResolvedValue({
+        commitHash: null,
+        parentHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+      }),
+      scheduleAutoPush: vi.fn(),
+      listenerDeps: {
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn() } as any,
+        chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
+        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
+        authManager: { startOAuthFlow: vi.fn() } as any,
+        sseBroadcast: vi.fn(),
+        broadcastLog: vi.fn(),
+        getSelectedModel: () => undefined,
+      },
+      // Wire the REAL env-prep over the hanging container runner so the test
+      // exercises the actual fail-open timeout, not a stub.
+      prepareAgentEnv: async (sessionId, agentId) => {
+        await prepareSessionAgentEnvironment(envRunner as any, {
+          sessionId,
+          agentId,
+          deps: { credentialsDir: "/tmp/shipit-env-prep-hang-test", credentialStore, sessionManager },
+        });
+      },
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "fix ci", cwd: "/tmp/s1" }),
+    });
+
+    vi.useFakeTimers();
+    try {
+      runner.dispatch({ text: "fix ci" });
+      // Advance past the worker-secrets-push fail-open timeout, flushing
+      // microtasks between timers so the turn proceeds to the spawn.
+      await vi.advanceTimersByTimeAsync(PUSH_AGENT_SECRETS_TIMEOUT_MS + 1_000);
+      expect(fakeAgent.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "fix ci" }));
+    } finally {
+      vi.useRealTimers();
+    }
     runner.dispose({ force: true });
   });
 

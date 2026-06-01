@@ -40,6 +40,26 @@ import {
   type DiscoveredOAuthMetadata,
 } from "./mcp-oauth-discovery.js";
 
+/**
+ * Hard ceiling for every outbound call to a provider's OAuth endpoints
+ * (token exchange, refresh, dynamic client registration). `fetch` has no
+ * default timeout, so without this an unresponsive token endpoint hangs the
+ * request forever. That mattered most for {@link refreshExpiredMcpOAuthTokens}
+ * on the pre-spawn env-prep path — an un-timed refresh stalled the whole turn
+ * before the agent could spawn. The env-prep caller also fails open after its
+ * own (longer) timeout; this inner bound additionally ABORTS the dangling
+ * socket so we don't leak a connection the caller has already walked away from.
+ */
+const OAUTH_FETCH_TIMEOUT_MS = 7_000;
+
+/**
+ * `AbortSignal` that fires after {@link OAUTH_FETCH_TIMEOUT_MS}. Factored out
+ * so the default is applied consistently and tests can reason about it.
+ */
+function oauthFetchSignal(): AbortSignal {
+  return AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS);
+}
+
 // ---------------------------------------------------------------------------
 // In-memory state store for pending OAuth flows
 // ---------------------------------------------------------------------------
@@ -335,6 +355,7 @@ export async function registerOAuthClient(opts: {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(body),
+      signal: oauthFetchSignal(),
     });
   } catch (err) {
     throw new ServiceError(
@@ -447,6 +468,7 @@ async function exchangeCodeForTokens(opts: {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
       body: body.toString(),
+      signal: oauthFetchSignal(),
     });
   } catch (err) {
     throw new Error(`Token endpoint request failed: ${getErrorMessage(err)}`);
@@ -538,6 +560,7 @@ export async function refreshOAuthTokens(opts: {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     body: body.toString(),
+    signal: oauthFetchSignal(),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
