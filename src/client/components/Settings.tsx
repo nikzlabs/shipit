@@ -308,22 +308,13 @@ function OpsSessionSettings({ onClose, onResumeSession }: { onClose: () => void;
   const handleCreate = async () => {
     setCreating(true);
     try {
-      const res = await fetch("/api/sessions/new/template", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ templateId: "ops" }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { session?: { id: string } };
-      await useSessionStore.getState().refreshSessions();
-      const id = data.session?.id;
+      const id = await useSessionStore.getState().createOpsSession();
       if (id) {
         onClose();
         onResumeSession?.(id);
+      } else {
+        useUiStore.getState().setToast({ message: "Failed to create ops session" });
       }
-    } catch (err) {
-      useUiStore.getState().setToast({ message: "Failed to create ops session" });
-      console.error("[settings] create ops session failed:", err);
     } finally {
       setCreating(false);
     }

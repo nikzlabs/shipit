@@ -566,7 +566,32 @@ describe("SessionSidebar", () => {
       await user.click(screen.getByLabelText("Session actions"));
       expect(await screen.findByText("Rename")).toBeInTheDocument();
       expect(screen.getByText("Archive")).toBeInTheDocument();
+      expect(screen.getByText("Investigate in Ops session")).toBeInTheDocument();
       expect(screen.queryByText("Restore")).toBeNull();
+    });
+
+    it("creates a target-seeded ops session and navigates to it from the row menu (docs/128)", async () => {
+      const user = userEvent.setup();
+      const onResume = vi.fn();
+      const createOpsSession = vi.fn().mockResolvedValue("ops-new");
+      useSessionStore.setState({ createOpsSession });
+      const sessions = [baseSession({ id: "s1", title: "Broken", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" onResume={onResume} />);
+
+      await user.click(screen.getByLabelText("Session actions"));
+      await user.click(await screen.findByText("Investigate in Ops session"));
+
+      expect(createOpsSession).toHaveBeenCalledWith("s1");
+      await vi.waitFor(() => expect(onResume).toHaveBeenCalledWith("ops-new"));
+    });
+
+    it("hides 'Investigate in Ops session' on an ops row (no self-investigation)", async () => {
+      const user = userEvent.setup();
+      const sessions = [baseSession({ id: "s1", title: "Host", kind: "ops" })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+      await user.click(screen.getByLabelText("Session actions"));
+      expect(await screen.findByText("Rename")).toBeInTheDocument();
+      expect(screen.queryByText("Investigate in Ops session")).toBeNull();
     });
 
     it("offers Restore (and not Rename/Archive) on an archived row", async () => {

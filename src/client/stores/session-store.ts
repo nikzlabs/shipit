@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
 import type { SessionInfo, TurnUsage, RescuePhase, WsRewindPreview } from "../../server/shared/types.js";
@@ -161,6 +162,16 @@ interface SessionState {
   archiveSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
+
+  /**
+   * docs/128 — create a privileged ops session via the ops template. When
+   * `targetSessionId` is supplied (the "Investigate in Ops session" entry point
+   * off another session's row), the server names the new session after its
+   * quarry and returns a `seedPrompt`, which we stash as the new session's
+   * composer draft so the operator lands with the investigation prompt
+   * pre-typed. Returns the new session id, or `null` on failure (caller toasts).
+   */
+  createOpsSession: (targetSessionId?: string) => Promise<string | null>;
 
   /**
    * docs/117 Phase 2 — return all sessions whose `parentSessionId` matches
@@ -399,6 +410,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
     const data = await res.json() as { sessions: SessionInfo[] };
     set({ sessions: data.sessions });
+  },
+
+  createOpsSession: async (targetSessionId) => {
+    try {
+      const res = await fetch("/api/sessions/new/template", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          templateId: "ops",
+          ...(targetSessionId ? { targetSessionId } : {}),
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { session?: { id: string }; seedPrompt?: string };
+      const id = data.session?.id;
+      if (!id) return null;
+      // Seed the composer BEFORE the caller navigates: MessageInput loads the
+      // per-session draft on focusKey change, so writing it here means the
+      // operator lands in the new ops session with the investigation prompt
+      // already typed (no race with container boot — this is a plain draft, not
+      // an auto-dispatched turn). See docs/128.
+      if (data.seedPrompt) saveDraftMessage(id, data.seedPrompt);
+      await get().refreshSessions();
+      return id;
+    } catch (err) {
+      console.error("[session-store] create ops session failed:", err);
+      return null;
+    }
   },
 
   getChildren: (parentSessionId) =>
