@@ -257,8 +257,14 @@ export function useServerEvents(): void {
       const data = JSON.parse(e.data as string) as {
         updates: PrStatusSummary[];
         removals?: string[];
+        // Initial-connect snapshot (see /api/events). When true the client
+        // treats `updates` as the complete poller-derived PR set and drops
+        // any stale entry it holds for a session not present — so a reconnect
+        // (e.g. mobile foreground) converges to the server's current truth
+        // even for PRs that merged/closed while the socket was dead.
+        isSnapshot?: boolean;
       };
-      usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals);
+      usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals, data.isSnapshot);
     });
 
     // GitHub API rate-limit state. The server pauses GraphQL polling while

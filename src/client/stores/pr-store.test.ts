@@ -129,6 +129,60 @@ describe("pr-store", () => {
       expect(usePrStore.getState().autoMergeBySession.s1).toEqual(autoMerge);
       expect(usePrStore.getState().cardBySession.s1?.autoMerge).toEqual(autoMerge);
     });
+
+    describe("isSnapshot (authoritative reconnect snapshot)", () => {
+      it("drops poller state for sessions absent from the snapshot", () => {
+        // Two sessions known to the client...
+        usePrStore.getState().applyPrStatusUpdates([
+          makePrStatus({ sessionId: "s1", prNumber: 1 }),
+          makePrStatus({ sessionId: "s2", prNumber: 2 }),
+        ]);
+        expect(usePrStore.getState().statusBySession.s2).toBeDefined();
+        expect(usePrStore.getState().cardBySession.s2).toBeDefined();
+
+        // ...but the reconnect snapshot only knows about s1 (s2's PR merged
+        // and was dropped server-side while the socket was dead).
+        usePrStore.getState().applyPrStatusUpdates(
+          [makePrStatus({ sessionId: "s1", prNumber: 1 })],
+          undefined,
+          true,
+        );
+
+        expect(usePrStore.getState().statusBySession.s1).toBeDefined();
+        expect(usePrStore.getState().statusBySession.s2).toBeUndefined();
+        expect(usePrStore.getState().cardBySession.s2).toBeUndefined();
+      });
+
+      it("clears everything when the snapshot is empty", () => {
+        usePrStore.getState().applyPrStatusUpdates([makePrStatus({ sessionId: "s1" })]);
+        usePrStore.getState().applyPrStatusUpdates([], undefined, true);
+        expect(usePrStore.getState().statusBySession.s1).toBeUndefined();
+        expect(usePrStore.getState().cardBySession.s1).toBeUndefined();
+      });
+
+      it("preserves in-flight cards (creating/ready/error) the poller doesn't track yet", () => {
+        // A PR is mid-creation for s3 via WS; the poller has no status for it.
+        usePrStore.getState().updateCard("s3", makeCard("creating"));
+        // A reconnect snapshot arrives that only knows about s1.
+        usePrStore.getState().applyPrStatusUpdates(
+          [makePrStatus({ sessionId: "s1" })],
+          undefined,
+          true,
+        );
+        // The in-flight s3 card must survive — its PR isn't poller-known yet.
+        expect(usePrStore.getState().cardBySession.s3?.phase).toBe("creating");
+      });
+
+      it("does not prune when isSnapshot is falsy (incremental merge)", () => {
+        usePrStore.getState().applyPrStatusUpdates([
+          makePrStatus({ sessionId: "s1" }),
+          makePrStatus({ sessionId: "s2" }),
+        ]);
+        // An incremental update touching only s1 must not drop s2.
+        usePrStore.getState().applyPrStatusUpdates([makePrStatus({ sessionId: "s1" })]);
+        expect(usePrStore.getState().statusBySession.s2).toBeDefined();
+      });
+    });
   });
 
   describe("toggleAutoMerge", () => {
