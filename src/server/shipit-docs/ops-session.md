@@ -44,11 +44,16 @@ dropped unless the session was created as an ops session.
   shipit source tree src/server/orchestrator              # list a directory
   shipit source search "ContainerSessionRunner"           # git grep at that commit
   shipit source cat src/server/orchestrator/session-container.ts
+  shipit source log src/server/orchestrator/container-lifecycle.ts  # recent commits touching a path
+  shipit source blame src/server/orchestrator/container-lifecycle.ts # who last changed each line
+  shipit source show <commit> [path]                      # a commit's metadata + diff
   ```
   This is strictly read-only. Credentials, `.env` files, and `.git` internals
-  are redacted. `shipit source status` tells you whether the snapshot is the
-  **exact** deployed build or only an **approximate** checkout HEAD — carry that
-  distinction into any fix you propose.
+  are redacted (including inside `show` diffs). `shipit source status` tells you
+  whether the snapshot is the **exact** deployed build or only an **approximate**
+  checkout HEAD — carry that distinction into any fix you propose. For a
+  regression, `log`/`blame`/`show` are the fastest way to connect a symptom to
+  the change that introduced it.
 - **Spawn a ShipIt fix session.** Once you have a root-cause hypothesis and the
   suspect files, delegate the fix to a normal repo-backed session branched from
   the exact commit you inspected:
@@ -61,6 +66,13 @@ dropped unless the session was created as an ops session.
   repo; if it cannot, the command fails and you should produce a written
   incident report with source references instead. If the source ref was only
   approximate, add `--approximate` to acknowledge it.
+
+  The child's branch *starts* at the exact deployed commit so it can reproduce
+  the bug against the code that's actually running — which is usually behind the
+  repo's default branch. Its incident packet instructs it to rebase onto the
+  latest default branch before opening the PR, so the PR stays mergeable. Fix
+  sessions also have a lower per-turn spawn cap than generic fan-out children, so
+  spawn one deliberate, well-scoped fix per diagnosis rather than several.
 
 ## What you CANNOT do (by design)
 

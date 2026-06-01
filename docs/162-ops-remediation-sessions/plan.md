@@ -275,7 +275,18 @@ shipit source status [--json]
 shipit source tree [path] [--json]
 shipit source search "query" [--path PATH] [--json]
 shipit source cat path/to/file
+shipit source log [path] [--limit N] [--json]
+shipit source blame path/to/file [--json]
+shipit source show <commit> [path] [--json]
 ```
+
+`log`/`blame`/`show` exist because the most common Ops question for a regression
+is "what recently changed near this code path?" — they connect a production
+symptom to the commit that introduced it. All three are inherently read-only and
+run `git` plumbing against the resolved snapshot ref like the other reads.
+`show` post-filters its diff so a commit that also touched a redacted file
+(`.env`, key material) never leaks that file's contents; `log`/`blame` reject
+redacted paths up front.
 
 Rejected:
 
@@ -353,10 +364,15 @@ Source ref resolution (`services/shipit-source.ts`):
   repo-store key, and persisted into the child's session config is always
   credential-free. Auth is injected at git-operation time by the credential
   helper, never via the URL.
-- All reads (`tree`/`search`/`cat`) run `git` plumbing against the resolved ref,
-  never the working tree, so they always match `status`. Redaction
-  (`isRedactedSourcePath`) blocks `.env`, key material, ssh keys, `.netrc`/
-  `.npmrc`, and `.git/` internals at the tree/search/cat layer.
+- All reads (`tree`/`search`/`cat`/`log`/`blame`/`show`) run `git` plumbing
+  against the resolved ref, never the working tree, so they always match
+  `status`. Redaction (`isRedactedSourcePath`) blocks `.env`, key material, ssh
+  keys, `.netrc`/`.npmrc`, and `.git/` internals. `log`/`blame` reject a
+  redacted path before touching git; `show` post-filters its diff
+  (`filterRedactedDiff`) to drop per-file sections for redacted paths so a
+  commit that also touched `.env` can't leak it through the diff, leaving a
+  visible "N file diff(s) hidden" note. `show`'s commit argument is validated
+  (`normalizeCommitish`) so it can't be parsed as a git flag.
 
 Write path:
 
@@ -378,17 +394,65 @@ Write path:
   the *same* token `checkRepoWriteAccess` validates in the pre-flight — rather
   than a PAT baked into the source checkout's origin.
 
+PR base vs. deployed ref (mergeability):
+
+- The child branches from the **exact deployed commit** so it can reproduce the
+  bug against the code actually running in production — which is usually behind
+  the repo's default branch. The PR it opens targets the default branch.
+- The displayed PR diff is *not* polluted by intervening default-branch commits:
+  GitHub's three-dot diff is computed against the merge-base, which is the
+  deployed commit, so it shows only the fix. The real risk is mergeability — if
+  the default branch moved the same lines, or the bug was already fixed
+  upstream. `buildShipitFixPrompt` therefore instructs the child to `git fetch`
+  and rebase onto the latest default branch (re-applying its fix and resolving
+  drift) before opening the PR, and to *not* open a PR if the root cause was
+  already fixed upstream. The deployed commit is the reproduction starting point,
+  not the merge target.
+
+Quota:
+
+- Fix-session spawns get a lower per-turn cap than generic fan-out children:
+  `DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN` (env
+  `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`, default 2), passed as
+  `maxSpawnedSessionsPerTurn` only when `shipitSource` is set. The per-parent cap
+  (16) still applies. Each fix child claims the ShipIt repo and opens a PR, so it
+  is heavier and higher-stakes than a research/codegen fan-out child.
+
+TOCTOU between inspection and spawn:
+
+- `resolveShipitFixTarget` re-resolves `status` at spawn time, so the ref the
+  child branches from is whatever is deployed *now*, not whatever the agent
+  inspected earlier in the turn. If a deploy lands mid-turn the two can differ.
+  This is bounded, not eliminated: the incident packet records the ref the child
+  *actually* branched from (and its exact/approximate flag), so a reviewer can
+  always see the true starting point. An exact→approximate flip between inspect
+  and spawn will additionally fail the spawn unless `--approximate` is passed.
+
+Authorization:
+
+- Every `source/*` route and the `--shipit-source` spawn are gated on the
+  server-authoritative `session.kind === "ops"` — the same gate that controls
+  the privileged Docker/journal mounts (docs/128). *Who can create an Ops
+  session* is the actual authz boundary: per docs/128 ("Auth gate"), v1 is
+  single-tenant — host operator == ShipIt user, and the gated Settings template
+  route is the only way to mint a `kind: "ops"` session. A multi-tenant "ops
+  role" is explicitly deferred there. docs/162 adds no new authz surface; it
+  rides on that gate.
+
 ### Key files added/changed
 
 | File | Change |
 |---|---|
-| `src/server/orchestrator/services/shipit-source.ts` | New: ref resolution, status/tree/search/cat, redaction, fix-target + incident-packet helpers. |
-| `src/server/orchestrator/api-routes-source.ts` | New: Ops-gated `/api/sessions/:id/source/*` routes. |
-| `src/server/session/agent-ops-routes.ts` | Broker `/agent-ops/source/*`. |
-| `src/server/session/agent-shim/shipit.ts` | `shipit source *` commands; `--shipit-source` / `--approximate` on `session create`. |
+| `src/server/orchestrator/services/shipit-source.ts` | New: ref resolution, status/tree/search/cat/log/blame/show, redaction (incl. `filterRedactedDiff`/`normalizeCommitish`), fix-target + incident-packet helpers. |
+| `src/server/orchestrator/api-routes-source.ts` | New: Ops-gated `/api/sessions/:id/source/*` routes (status/tree/search/cat/log/blame/show). |
+| `src/server/session/agent-ops-routes.ts` | Broker `/agent-ops/source/*` (incl. log/blame/show). |
+| `src/server/session/agent-shim/shipit.ts` | `shipit source *` commands (incl. log/blame/show); `--shipit-source` / `--approximate` on `session create`. |
 | `src/server/orchestrator/github-auth-repos.ts` + `github-auth.ts` | `checkRepoWriteAccess`. |
-| `src/server/orchestrator/services/child-sessions.ts` | `repoUrlOverride` spawn option. |
-| `src/server/orchestrator/api-routes-session.ts` | `/spawn` handles the Ops `--shipit-source` target. |
+| `src/server/orchestrator/services/child-sessions.ts` | `repoUrlOverride` spawn option; `DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN`. |
+| `src/server/orchestrator/api-routes-session.ts` | `/spawn` handles the Ops `--shipit-source` target; applies the lower fix-session per-turn cap. |
+| `src/server/orchestrator/services/shipit-source.test.ts` | Unit tests incl. log/blame/show + `filterRedactedDiff`. |
+| `src/server/orchestrator/integration_tests/ops-source-routes.test.ts` | Route tests incl. log/blame/show + show-diff redaction. |
+| `src/server/orchestrator/integration_tests/ops-fix-spawn.test.ts` | New: write-path tests (writable child branched from exact ref; no-write 403; non-ops 403). |
 | `src/server/shipit-docs/ops-session.md`, `sessions.md` | Agent-facing contract. |
 
 Remaining work is tracked in `checklist.md` (notably the Ops remediation chat

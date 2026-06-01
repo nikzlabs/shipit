@@ -4,6 +4,10 @@ import {
   listShipitSourceTree,
   searchShipitSource,
   catShipitSource,
+  logShipitSource,
+  blameShipitSource,
+  showShipitSource,
+  filterRedactedDiff,
   isRedactedSourcePath,
   resolveShipitFixTarget,
   ensureShipitSourceRepoReady,
@@ -229,6 +233,137 @@ describe("catShipitSource", () => {
         [`show ${BUILD_SHA}:src/missing.ts`]: missing,
       })),
     ).rejects.toMatchObject({ statusCode: 404 });
+  });
+});
+
+describe("logShipitSource", () => {
+  const base = {
+    "rev-parse --is-inside-work-tree": "true\n",
+    [`cat-file -e ${BUILD_SHA}^{commit}`]: "",
+    "remote get-url origin": "https://github.com/acme/shipit.git\n",
+  };
+  const SHA2 = "1111222233334444555566667777888899990000";
+
+  it("parses NUL-delimited commit records", async () => {
+    const out =
+      `${BUILD_SHA}\x00Alice\x002026-01-02T03:04:05Z\x00Fix the bug\x1e\n` +
+      `${SHA2}\x00Bob\x002026-01-01T00:00:00Z\x00Earlier: change\x1e\n`;
+    const result = await logShipitSource(undefined, {}, depsWithBuildId({
+      ...base,
+      [`log --max-count=21 --format=%H%x00%an%x00%aI%x00%s%x1e ${BUILD_SHA}`]: out,
+    }));
+    expect(result.commits).toEqual([
+      { hash: BUILD_SHA, shortHash: BUILD_SHA.slice(0, 12), author: "Alice", date: "2026-01-02T03:04:05Z", subject: "Fix the bug" },
+      { hash: SHA2, shortHash: SHA2.slice(0, 12), author: "Bob", date: "2026-01-01T00:00:00Z", subject: "Earlier: change" },
+    ]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("flags truncation when more than `limit` commits come back", async () => {
+    const rec = (h: string) => `${h}\x00A\x002026\x00s\x1e\n`;
+    const result = await logShipitSource(undefined, { limit: 1 }, depsWithBuildId({
+      ...base,
+      [`log --max-count=2 --format=%H%x00%an%x00%aI%x00%s%x1e ${BUILD_SHA}`]: rec(BUILD_SHA) + rec(SHA2),
+    }));
+    expect(result.commits.length).toBe(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("scopes to a path and rejects redacted paths", async () => {
+    const result = await logShipitSource("src", {}, depsWithBuildId({
+      ...base,
+      [`log --max-count=21 --format=%H%x00%an%x00%aI%x00%s%x1e ${BUILD_SHA} -- src`]: `${BUILD_SHA}\x00A\x002026\x00s\x1e\n`,
+    }));
+    expect(result.path).toBe("src");
+    expect(result.commits.length).toBe(1);
+    await expect(logShipitSource(".env", {}, depsWithBuildId(base))).rejects.toMatchObject({ statusCode: 403 });
+  });
+});
+
+describe("blameShipitSource", () => {
+  const base = {
+    "rev-parse --is-inside-work-tree": "true\n",
+    [`cat-file -e ${BUILD_SHA}^{commit}`]: "",
+    "remote get-url origin": "https://github.com/acme/shipit.git\n",
+  };
+  const SHA2 = "1111222233334444555566667777888899990000";
+
+  it("parses line-porcelain into per-line attribution", async () => {
+    const porcelain =
+      `${BUILD_SHA} 1 1 1\n` +
+      `author Alice\n` +
+      `author-time 100\n` +
+      `\texport const x = 1;\n` +
+      `${SHA2} 2 2\n` +
+      `author Bob\n` +
+      `author-time 200\n` +
+      `\texport const y = 2;\n`;
+    const result = await blameShipitSource("src/index.ts", depsWithBuildId({
+      ...base,
+      [`blame --line-porcelain ${BUILD_SHA} -- src/index.ts`]: porcelain,
+    }));
+    expect(result.lines).toEqual([
+      { line: 1, shortHash: BUILD_SHA.slice(0, 12), author: "Alice", text: "export const x = 1;" },
+      { line: 2, shortHash: SHA2.slice(0, 12), author: "Bob", text: "export const y = 2;" },
+    ]);
+  });
+
+  it("refuses a redacted path before touching git", async () => {
+    await expect(blameShipitSource(".env", depsWithBuildId(base))).rejects.toMatchObject({ statusCode: 403 });
+  });
+});
+
+describe("showShipitSource", () => {
+  const base = {
+    "rev-parse --is-inside-work-tree": "true\n",
+    [`cat-file -e ${BUILD_SHA}^{commit}`]: "",
+    "remote get-url origin": "https://github.com/acme/shipit.git\n",
+  };
+
+  it("returns commit metadata + diff, hiding redacted file diffs", async () => {
+    const showOut =
+      `commit abc123\nAuthor: A\n\n    msg\n\n` +
+      `diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n` +
+      `diff --git a/.env b/.env\n@@ -1 +1 @@\n-SECRET=old\n+SECRET=new\n`;
+    const result = await showShipitSource("abc123", undefined, depsWithBuildId({
+      ...base,
+      "show --no-color abc123": showOut,
+    }));
+    expect(result.content).toContain("src/a.ts");
+    expect(result.content).not.toContain("SECRET=new");
+    expect(result.content).toMatch(/file diff\(s\) hidden/);
+  });
+
+  it("rejects an invalid commit-ish", async () => {
+    await expect(showShipitSource("--upload-pack=evil", undefined, depsWithBuildId(base)))
+      .rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("scopes to a path when given, rejecting redacted paths", async () => {
+    const result = await showShipitSource("abc123", "src/a.ts", depsWithBuildId({
+      ...base,
+      "show --no-color abc123 -- src/a.ts": "diff --git a/src/a.ts b/src/a.ts\n+new\n",
+    }));
+    expect(result.content).toContain("src/a.ts");
+    await expect(showShipitSource("abc123", ".env", depsWithBuildId(base)))
+      .rejects.toMatchObject({ statusCode: 403 });
+  });
+});
+
+describe("filterRedactedDiff", () => {
+  it("drops redacted file sections and keeps the header + safe diffs", () => {
+    const out = filterRedactedDiff(
+      `commit X\n\ndiff --git a/src/ok.ts b/src/ok.ts\n+ok\n` +
+        `diff --git a/secrets/key.pem b/secrets/key.pem\n+PRIVATE\n`,
+    );
+    expect(out).toContain("commit X");
+    expect(out).toContain("src/ok.ts");
+    expect(out).not.toContain("PRIVATE");
+    expect(out).toContain("1 file diff(s) hidden");
+  });
+
+  it("returns metadata-only output unchanged when there is no diff", () => {
+    expect(filterRedactedDiff("commit X\nAuthor: A\n\n    msg\n")).toBe("commit X\nAuthor: A\n\n    msg\n");
   });
 });
 

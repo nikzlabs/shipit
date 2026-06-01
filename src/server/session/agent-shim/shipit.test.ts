@@ -840,6 +840,67 @@ describe("shipit source", () => {
     expect(out.exitCode).not.toBe(0);
   });
 
+  it("log renders commit rows and passes path + --limit", async () => {
+    const { run } = makeRunner();
+    const out = await run(["source", "log", "src/server", "--limit", "5"], {
+      "GET /agent-ops/source/log": {
+        status: 200,
+        body: {
+          ref: "abc", path: "src/server", truncated: false,
+          commits: [
+            { hash: "deadbeef1234", shortHash: "deadbeef1234", author: "Alice", date: "2026-01-02T03:04:05Z", subject: "Fix loop" },
+          ],
+        },
+      },
+    });
+    const p = out.calls[0].path;
+    expect(p).toContain("path=src%2Fserver");
+    expect(p).toContain("limit=5");
+    expect(out.stdout).toContain("deadbeef1234");
+    expect(out.stdout).toContain("2026-01-02");
+    expect(out.stdout).toContain("Fix loop");
+    expect(out.exitCode).toBe(0);
+  });
+
+  it("blame requires a path and renders attributed lines", async () => {
+    const { run } = makeRunner();
+    const missing = await run(["source", "blame"]);
+    expect(missing.stderr).toContain("a file path is required");
+    expect(missing.exitCode).not.toBe(0);
+
+    const out = await run(["source", "blame", "src/index.ts"], {
+      "GET /agent-ops/source/blame": {
+        status: 200,
+        body: {
+          ref: "abc", path: "src/index.ts", truncated: false,
+          lines: [{ line: 1, shortHash: "deadbeef1234", author: "Alice", text: "export const x = 1;" }],
+        },
+      },
+    });
+    expect(out.calls[0].path).toBe("/agent-ops/source/blame?path=src%2Findex.ts");
+    expect(out.stdout).toContain("deadbeef1234");
+    expect(out.stdout).toContain("export const x = 1;");
+  });
+
+  it("show requires a commit and prints the diff", async () => {
+    const { run } = makeRunner();
+    const missing = await run(["source", "show"]);
+    expect(missing.stderr).toContain("a commit is required");
+    expect(missing.exitCode).not.toBe(0);
+
+    const out = await run(["source", "show", "abc123", "src/a.ts"], {
+      "GET /agent-ops/source/show": {
+        status: 200,
+        body: { ref: "abc123", path: "src/a.ts", content: "diff --git a/src/a.ts b/src/a.ts\n+new\n", truncated: false },
+      },
+    });
+    const p = out.calls[0].path;
+    expect(p).toContain("commit=abc123");
+    expect(p).toContain("path=src%2Fa.ts");
+    expect(out.stdout).toContain("diff --git a/src/a.ts");
+    expect(out.exitCode).toBe(0);
+  });
+
   it("rejects mutating source subcommands with a pointer to --shipit-source", async () => {
     const { run } = makeRunner();
     for (const sub of ["edit", "commit", "push", "checkout", "git"]) {

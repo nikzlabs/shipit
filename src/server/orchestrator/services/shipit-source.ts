@@ -36,6 +36,10 @@ const DEFAULT_SOURCE_DIR = "/opt/shipit";
 const MAX_TREE_ENTRIES = 1000;
 const MAX_SEARCH_MATCHES = 200;
 const MAX_CAT_BYTES = 1_000_000; // 1 MB
+const MAX_LOG_COMMITS = 100;
+const DEFAULT_LOG_COMMITS = 20;
+const MAX_BLAME_LINES = 5000;
+const MAX_SHOW_BYTES = 1_000_000; // 1 MB
 
 /**
  * Where the running ShipIt source ref came from.
@@ -381,6 +385,233 @@ export async function catShipitSource(
   return { ref, path, content, truncated };
 }
 
+/**
+ * Validate an agent-supplied commit-ish (SHA, short SHA, tag, or ref name)
+ * before it's handed to `git show`. Rejects anything that could be parsed as a
+ * flag or contains shell/path-escape characters. We don't use a shell — args
+ * go straight to execFile — but a leading `-` would still be read by git as an
+ * option, so reject it explicitly.
+ */
+function normalizeCommitish(raw: string): string {
+  const c = (raw ?? "").trim();
+  if (!c) throw new ServiceError(400, "A commit is required.");
+  if (!/^[0-9a-zA-Z][0-9a-zA-Z._/~^@-]*$/.test(c)) {
+    throw new ServiceError(400, `Invalid commit reference: ${c}`);
+  }
+  return c;
+}
+
+export interface SourceLogCommit {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  subject: string;
+}
+
+export interface SourceLogResult {
+  ref: string;
+  path: string;
+  commits: SourceLogCommit[];
+  truncated: boolean;
+}
+
+/**
+ * Commit history at the snapshot ref, optionally scoped to a path. This is the
+ * primary "what recently changed near this code path?" tool for connecting a
+ * production symptom to the change that introduced it. Read-only: it never
+ * touches the working tree and serves the same ref as `status`.
+ */
+export async function logShipitSource(
+  rawPath: string | undefined,
+  opts: { limit?: number } = {},
+  deps: ShipitSourceDeps = {},
+): Promise<SourceLogResult> {
+  const { dir, ref, runGit } = await requireSnapshot(deps);
+  const path = rawPath ? normalizeRepoPath(rawPath) : "";
+  if (path && isRedactedSourcePath(path)) {
+    throw new ServiceError(403, `History for '${path}' is not available (credentials, env, or git-internal path).`);
+  }
+  const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? DEFAULT_LOG_COMMITS)), MAX_LOG_COMMITS);
+
+  // NUL-delimit fields and newline-delimit records so subjects with spaces /
+  // colons parse unambiguously. %x00 = NUL, %x1e = record separator.
+  const fmt = "%H%x00%an%x00%aI%x00%s%x1e";
+  const args = ["log", `--max-count=${limit + 1}`, `--format=${fmt}`, ref];
+  if (path) args.push("--", path);
+
+  let stdout: string;
+  try {
+    stdout = await runGit(dir, args);
+  } catch (err) {
+    throw new ServiceError(400, `Could not read history for '${path || "."}': ${(err as Error).message}`);
+  }
+
+  const commits: SourceLogCommit[] = [];
+  for (const record of stdout.split("\x1e")) {
+    const rec = record.replace(/^\n/, "");
+    if (!rec.trim()) continue;
+    const [hash, author, date, subject] = rec.split("\x00");
+    if (!hash) continue;
+    commits.push({
+      hash,
+      shortHash: hash.slice(0, 12),
+      author: author ?? "",
+      date: date ?? "",
+      subject: subject ?? "",
+    });
+  }
+  const truncated = commits.length > limit;
+  return { ref, path, commits: commits.slice(0, limit), truncated };
+}
+
+export interface SourceBlameLine {
+  line: number;
+  shortHash: string;
+  author: string;
+  text: string;
+}
+
+export interface SourceBlameResult {
+  ref: string;
+  path: string;
+  lines: SourceBlameLine[];
+  truncated: boolean;
+}
+
+/**
+ * Line-by-line attribution for a single file at the snapshot ref — answers
+ * "which commit last touched this line?" for pinning a regression. Rejects
+ * redacted paths (blame exposes file contents) and caps the line count.
+ */
+export async function blameShipitSource(
+  rawPath: string,
+  deps: ShipitSourceDeps = {},
+): Promise<SourceBlameResult> {
+  const path = normalizeRepoPath(rawPath);
+  if (!path) throw new ServiceError(400, "A file path is required.");
+  if (isRedactedSourcePath(path)) {
+    throw new ServiceError(403, `Blaming '${path}' is not permitted (credentials, env, or git-internal path).`);
+  }
+  const { dir, ref, runGit } = await requireSnapshot(deps);
+
+  let stdout: string;
+  try {
+    stdout = await runGit(dir, ["blame", "--line-porcelain", ref, "--", path]);
+  } catch (err) {
+    const message = (err as { stderr?: string }).stderr ?? (err as Error).message;
+    throw new ServiceError(404, `Could not blame '${path}': ${message?.trim() || "not found at this ref"}`);
+  }
+
+  // --line-porcelain repeats a full header per line: a "<40-hex> <orig> <final>"
+  // line, key/value lines (author, author-time, …), then the content line
+  // prefixed with a TAB. Walk the stream and emit one entry per content line.
+  const lines: SourceBlameLine[] = [];
+  let truncated = false;
+  let curHash = "";
+  let curAuthor = "";
+  let lineNo = 0;
+  for (const raw of stdout.split("\n")) {
+    if (/^[0-9a-f]{40}( |$)/.test(raw)) {
+      const parts = raw.split(" ");
+      curHash = parts[0];
+      const finalLine = Number(parts[2]);
+      if (Number.isFinite(finalLine)) lineNo = finalLine;
+    } else if (raw.startsWith("author ")) {
+      curAuthor = raw.slice("author ".length);
+    } else if (raw.startsWith("\t")) {
+      if (lines.length >= MAX_BLAME_LINES) {
+        truncated = true;
+        break;
+      }
+      lines.push({
+        line: lineNo,
+        shortHash: curHash.slice(0, 12),
+        author: curAuthor,
+        text: raw.slice(1).slice(0, 500),
+      });
+    }
+  }
+  return { ref, path, lines, truncated };
+}
+
+export interface SourceShowResult {
+  /** The commit-ish that was shown (as requested, not necessarily a full SHA). */
+  ref: string;
+  path: string;
+  content: string;
+  truncated: boolean;
+}
+
+/**
+ * The metadata + diff for a single commit — the natural follow-up to `log`
+ * ("show me what that commit changed"). Diffs are post-filtered so a commit
+ * that also touched a redacted file (`.env`, key material) never leaks that
+ * file's contents through the diff. Optionally scoped to one path.
+ */
+export async function showShipitSource(
+  rawCommit: string,
+  rawPath: string | undefined,
+  deps: ShipitSourceDeps = {},
+): Promise<SourceShowResult> {
+  const commit = normalizeCommitish(rawCommit);
+  const path = rawPath ? normalizeRepoPath(rawPath) : "";
+  if (path && isRedactedSourcePath(path)) {
+    throw new ServiceError(403, `Showing '${path}' is not permitted (credentials, env, or git-internal path).`);
+  }
+  const { dir, runGit } = await requireSnapshot(deps);
+
+  const args = ["show", "--no-color", commit];
+  if (path) args.push("--", path);
+
+  let stdout: string;
+  try {
+    stdout = await runGit(dir, args);
+  } catch (err) {
+    const message = (err as { stderr?: string }).stderr ?? (err as Error).message;
+    throw new ServiceError(404, `Could not show '${commit}': ${message?.trim() || "unknown commit"}`);
+  }
+
+  let content = path ? stdout : filterRedactedDiff(stdout);
+  let truncated = false;
+  if (Buffer.byteLength(content, "utf8") > MAX_SHOW_BYTES) {
+    content = content.slice(0, MAX_SHOW_BYTES);
+    truncated = true;
+  }
+  return { ref: commit, path, content, truncated };
+}
+
+/**
+ * Strip per-file diff sections for redacted paths out of `git show` output,
+ * leaving the commit header and non-redacted file diffs intact. A note records
+ * how many files were hidden so the omission is visible, not silent.
+ */
+export function filterRedactedDiff(showOut: string): string {
+  const firstDiff = showOut.indexOf("diff --git ");
+  if (firstDiff === -1) return showOut; // no diff body (e.g. empty/merge commit)
+  const header = showOut.slice(0, firstDiff);
+  const body = showOut.slice(firstDiff);
+  const chunks = body.split(/(?=^diff --git )/m);
+  const kept: string[] = [];
+  let hidden = 0;
+  for (const chunk of chunks) {
+    // "diff --git a/<path> b/<path>" — use the b/ path (post-image).
+    const m = /^diff --git a\/.+? b\/(.+?)\s*$/m.exec(chunk);
+    const filePath = m ? m[1] : "";
+    if (filePath && isRedactedSourcePath(filePath)) {
+      hidden++;
+      continue;
+    }
+    kept.push(chunk);
+  }
+  let out = header + kept.join("");
+  if (hidden > 0) {
+    if (!out.endsWith("\n")) out += "\n";
+    out += `[${hidden} file diff(s) hidden: credentials/env/git-internal paths redacted]\n`;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Write path: spawning a repo-backed ShipIt fix session (docs/162)
 // ---------------------------------------------------------------------------
@@ -508,6 +739,15 @@ export function buildShipitFixPrompt(opts: {
     "",
     "## Diagnosis and requested fix",
     opts.diagnosis.trim(),
+    "",
+    "## Branch base — important",
+    `Your branch starts at the inspected commit (${opts.ref.slice(0, 12)}), which is the code`,
+    "running in production — NOT necessarily the repository's current default branch.",
+    "Start here so you can reproduce the bug against the deployed code. Then, before you",
+    "open the PR, bring your branch up to date with the default branch (`git fetch origin`",
+    "then rebase onto `origin/<default-branch>`) and re-apply your fix so the PR is",
+    "mergeable and reflects a fix against the latest code. Resolve any drift the rebase",
+    "surfaces — if the root cause was already fixed upstream, say so instead of opening a PR.",
     "",
     "## Constraints",
     "- Make the smallest change that fixes the root cause; preserve existing behavior elsewhere.",

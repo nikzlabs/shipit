@@ -52,6 +52,16 @@ export const DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS =
 export const DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN =
   readPositiveIntEnv("MAX_SPAWNED_SESSIONS_PER_TURN") ?? 4;
 
+/**
+ * docs/162 — lower per-turn cap for Ops `--shipit-source` fix-session spawns.
+ * A ShipIt fix session is heavier and higher-stakes than a generic fan-out
+ * child (it claims the ShipIt repo and opens a PR against it), so we bound how
+ * many an Ops turn can kick off. Overridable via `MAX_SHIPIT_FIX_SESSIONS_PER_TURN`
+ * (positive integer); the compile-time default is `2`. Read once at module init.
+ */
+export const DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN =
+  readPositiveIntEnv("MAX_SHIPIT_FIX_SESSIONS_PER_TURN") ?? 2;
+
 export interface SpawnChildSessionOptions {
   /** The required initial user prompt that the spawned session's agent runs. */
   prompt: string;
