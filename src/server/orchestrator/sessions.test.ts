@@ -503,6 +503,61 @@ describe("SessionManager", () => {
       // m1 is archived → hidden; only m3 shows. m2/m4 stay demoted.
       expect(filterVisibleInSidebar(sessions, 2).map((s) => s.id)).toEqual(["m3"]);
     });
+
+    // docs/117 — the merged view cap is automatic archiving, and spawned
+    // parent/child clusters are exempt from it (they leave only via a manual
+    // archive that cascades parent → children).
+    describe("parent/child exemption from the merged cap", () => {
+      it("never demotes a merged parent that still has a live child", () => {
+        // parent would be the oldest merge → past a cap of 1, but its live child
+        // pins it in the sidebar.
+        const sessions = [
+          merged("parent", "2024-01-01 09:00:00"),
+          merged("other", "2024-01-02 09:00:00"),
+          { ...active("child"), parentSessionId: "parent" },
+        ];
+        const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
+        expect(visible).toEqual(["child", "other", "parent"]);
+      });
+
+      it("never demotes a merged child while its parent is still live", () => {
+        // child is the oldest merge → past a cap of 1, but its live parent keeps it.
+        const sessions = [
+          active("parent"),
+          merged("other", "2024-01-02 09:00:00"),
+          { ...merged("child", "2024-01-01 09:00:00"), parentSessionId: "parent" },
+        ];
+        const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
+        expect(visible).toEqual(["child", "other", "parent"]);
+      });
+
+      it("does not pin a parent open via a user-archived child", () => {
+        // The only child is user-archived → it shouldn't rescue the parent from
+        // the cap, and it is itself excluded from the result.
+        const sessions = [
+          merged("parent", "2024-01-01 09:00:00"),
+          merged("other", "2024-01-02 09:00:00"),
+          { ...active("child"), parentSessionId: "parent", userArchived: true },
+        ];
+        const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
+        expect(visible).toEqual(["other"]);
+      });
+
+      it("does not pin a child open once its parent is gone", () => {
+        // Parent is user-archived (cascade would normally take the child too, but
+        // if the child outlives it the cap should reclaim it normally).
+        const sessions = [
+          { ...merged("parent", "2024-01-03 09:00:00"), userArchived: true },
+          merged("other", "2024-01-02 09:00:00"),
+          { ...merged("child", "2024-01-01 09:00:00"), parentSessionId: "parent" },
+        ];
+        // Cap of 2: ranking incl. archived is parent, other, child → top-2 holds
+        // parent (hidden, archived) + other. child falls past the cap and is no
+        // longer pinned because its parent isn't live.
+        const visible = filterVisibleInSidebar(sessions, 2).map((s) => s.id).sort();
+        expect(visible).toEqual(["other"]);
+      });
+    });
   });
 
   // docs/161 — exercises the full visibility path through SessionManager.list()
