@@ -15,6 +15,8 @@ import {
   fetchAndResolveDefaultBranch,
   isGitAuthError,
   isWorkspaceCloneInSyncWithCache,
+  stripUrlCredentials,
+  canonicalRepoKey,
 } from "./git-utils.js";
 
 function git(cwd: string, args: string): string {
@@ -29,6 +31,41 @@ function commitFile(repoDir: string, name: string, content: string, message: str
   git(repoDir, `commit -m "${message}" --no-gpg-sign`);
   return git(repoDir, "rev-parse HEAD");
 }
+
+describe("stripUrlCredentials", () => {
+  it("removes embedded userinfo from an HTTPS URL", () => {
+    expect(
+      stripUrlCredentials("https://x-access-token:github_pat_ABC@github.com/acme/shipit.git"),
+    ).toBe("https://github.com/acme/shipit.git");
+  });
+
+  it("leaves a clean HTTPS URL untouched", () => {
+    expect(stripUrlCredentials("https://github.com/acme/shipit.git")).toBe(
+      "https://github.com/acme/shipit.git",
+    );
+  });
+
+  it("leaves an scp-style SSH remote untouched", () => {
+    expect(stripUrlCredentials("git@github.com:acme/shipit.git")).toBe(
+      "git@github.com:acme/shipit.git",
+    );
+  });
+});
+
+describe("canonicalRepoKey", () => {
+  it("collapses credentialed, cased, and .git-suffixed forms to one key", () => {
+    const clean = canonicalRepoKey("https://github.com/acme/shipit.git");
+    expect(canonicalRepoKey("https://x:github_pat_X@github.com/acme/shipit")).toBe(clean);
+    expect(canonicalRepoKey("https://GitHub.com/acme/shipit.git")).toBe(clean);
+    expect(canonicalRepoKey("https://github.com/acme/shipit/")).toBe(clean);
+  });
+
+  it("does not collapse distinct repos", () => {
+    expect(canonicalRepoKey("https://github.com/acme/shipit.git")).not.toBe(
+      canonicalRepoKey("https://github.com/acme/other.git"),
+    );
+  });
+});
 
 describe("fetchAndResolveDefaultBranch", () => {
   let tmpDir: string;

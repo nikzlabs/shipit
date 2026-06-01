@@ -22,6 +22,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ServiceError } from "./types.js";
 import { resolveBuildId } from "../build-id.js";
+import { stripUrlCredentials, canonicalRepoKey } from "../git-utils.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -189,6 +190,12 @@ export async function getShipitSourceStatus(
       remoteUrl = undefined;
     }
   }
+  // The host checkout's `origin` typically carries an embedded GitHub PAT
+  // (`https://x:<pat>@github.com/o/r.git`). Strip it before the URL is ever
+  // returned, displayed by `shipit source status`, used as a repo-store key,
+  // or persisted into a child session's config. Auth is injected at
+  // git-operation time via the credential helper, never via the URL.
+  if (remoteUrl) remoteUrl = stripUrlCredentials(remoteUrl);
 
   const status: ShipitSourceStatus = {
     available: true,
@@ -430,6 +437,8 @@ export interface EnsureRepoReadyDeps {
     get(url: string): { status: string } | undefined;
     add(url: string): unknown;
     setReady(url: string): void;
+    /** Registered repos — scanned to reuse an existing entry by canonical identity. */
+    list(): { url: string }[];
   };
   getSharedRepoDir: (url: string) => string;
   /** Pre-bound `ensureBareCache(cacheDir, url, createRepoGit)`. */
@@ -437,19 +446,37 @@ export interface EnsureRepoReadyDeps {
 }
 
 /**
- * Make `url` claimable: register it in the repo store and ensure its bare
- * cache exists, then flip it to `ready`. Idempotent — a no-op when the repo is
- * already ready. The Ops fix spawn needs this because the ShipIt source repo
- * is generally not a repo the user added through the home screen.
+ * Make the ShipIt source repo claimable and return the credential-free URL the
+ * caller must use as the child's `repoUrlOverride`.
+ *
+ * Resolves repo identity canonically: if the user already added this repo
+ * through the home screen (the common case — ShipIt-in-ShipIt), we reuse that
+ * exact store entry rather than registering a second, near-duplicate row. The
+ * host checkout's `origin` differs from the user's clean URL only by an
+ * embedded PAT (and possibly host casing / `.git` suffix), so a raw
+ * `repoStore.get(url)` would miss it and `add` a duplicate (the BUG 1 sidebar
+ * double-listing). {@link canonicalRepoKey} collapses both forms to one key.
+ *
+ * When no entry matches, we register the credential-free URL (never the
+ * credentialed origin — see {@link stripUrlCredentials}), ensure its bare cache
+ * exists, and flip it to `ready`. Idempotent: a no-op when the resolved entry
+ * is already ready.
  */
 export async function ensureShipitSourceRepoReady(
   url: string,
   deps: EnsureRepoReadyDeps,
-): Promise<void> {
-  if (deps.repoStore.get(url)?.status === "ready") return;
-  deps.repoStore.add(url);
-  await deps.ensureBareCache(deps.getSharedRepoDir(url), url);
-  deps.repoStore.setReady(url);
+): Promise<string> {
+  const clean = stripUrlCredentials(url);
+  const wanted = canonicalRepoKey(url);
+  const existing = deps.repoStore.list().find((r) => canonicalRepoKey(r.url) === wanted);
+  // Reuse the user's existing entry verbatim (so the claim/override URL matches
+  // a real store key); otherwise key by the credential-free URL.
+  const key = existing?.url ?? clean;
+  if (deps.repoStore.get(key)?.status === "ready") return key;
+  deps.repoStore.add(key);
+  await deps.ensureBareCache(deps.getSharedRepoDir(key), key);
+  deps.repoStore.setReady(key);
+  return key;
 }
 
 /**
