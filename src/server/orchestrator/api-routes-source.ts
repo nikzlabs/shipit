@@ -5,6 +5,9 @@
  *   GET /api/sessions/:id/source/tree[?path=...]   — list a directory at that ref
  *   GET /api/sessions/:id/source/search?q=...       — git grep at that ref
  *   GET /api/sessions/:id/source/cat?path=...        — read a file at that ref
+ *   GET /api/sessions/:id/source/log[?path=&limit=] — commit history at that ref
+ *   GET /api/sessions/:id/source/blame?path=...      — line attribution at that ref
+ *   GET /api/sessions/:id/source/show?commit=[&path=] — a commit's metadata + diff
  *
  * Every route is gated on the server-authoritative `session.kind === "ops"`
  * (the same gate that controls the privileged Docker/journal access in
@@ -24,6 +27,9 @@ import {
   listShipitSourceTree,
   searchShipitSource,
   catShipitSource,
+  logShipitSource,
+  blameShipitSource,
+  showShipitSource,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -114,6 +120,49 @@ export async function registerSourceRoutes(
         return await catShipitSource(request.query.path ?? "");
       } catch (err) {
         sendError(reply, err, "Failed to read source file");
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/source/log[?path=...&limit=N]
+  app.get<{ Params: { id: string }; Querystring: { path?: string; limit?: string } }>(
+    "/api/sessions/:id/source/log",
+    async (request, reply) => {
+      if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
+      try {
+        const limit = request.query.limit ? Number(request.query.limit) : undefined;
+        return await logShipitSource(
+          request.query.path,
+          limit !== undefined && Number.isFinite(limit) ? { limit } : {},
+        );
+      } catch (err) {
+        sendError(reply, err, "Failed to read source history");
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/source/blame?path=...
+  app.get<{ Params: { id: string }; Querystring: { path?: string } }>(
+    "/api/sessions/:id/source/blame",
+    async (request, reply) => {
+      if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
+      try {
+        return await blameShipitSource(request.query.path ?? "");
+      } catch (err) {
+        sendError(reply, err, "Failed to blame source file");
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/source/show?commit=...[&path=...]
+  app.get<{ Params: { id: string }; Querystring: { commit?: string; path?: string } }>(
+    "/api/sessions/:id/source/show",
+    async (request, reply) => {
+      if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
+      try {
+        return await showShipitSource(request.query.commit ?? "", request.query.path);
+      } catch (err) {
+        sendError(reply, err, "Failed to show source commit");
       }
     },
   );

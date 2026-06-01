@@ -286,6 +286,15 @@ export class StubGitHubAuthManager extends EventEmitter {
   }
   configureGitCredentials() { /* no-op */ }
   async loadUserInfo() { /* no-op */ }
+
+  /** docs/162 — toggle whether `checkRepoWriteAccess` reports write access. */
+  private _canWriteRepo = true;
+  setRepoWriteAccess(canWrite: boolean) { this._canWriteRepo = canWrite; }
+  async checkRepoWriteAccess(_owner: string, _repo: string): Promise<{ canWrite: boolean; reason?: string }> {
+    return this._canWriteRepo
+      ? { canWrite: true }
+      : { canWrite: false, reason: "the connected account has read-only access" };
+  }
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async createRepo(name: string, options: { description?: string; isPrivate?: boolean } = {}) {
     return {

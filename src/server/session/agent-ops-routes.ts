@@ -206,6 +206,40 @@ export function registerAgentOpsRoutes(
     },
   );
 
+  // GET /agent-ops/source/log[?path=...&limit=N] — commit history at the source ref
+  app.get<{ Querystring: { path?: string; limit?: string } }>(
+    "/agent-ops/source/log",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      if (request.query.path) params.set("path", request.query.path);
+      if (request.query.limit) params.set("limit", request.query.limit);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/source/log${qs}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/source/blame?path=... — line attribution at the source ref
+  app.get<{ Querystring: { path?: string } }>(
+    "/agent-ops/source/blame",
+    async (request, reply) => {
+      const path = request.query.path;
+      const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+      return relay("GET", `/source/blame${qs}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/source/show?commit=...[&path=...] — a commit's metadata + diff
+  app.get<{ Querystring: { commit?: string; path?: string } }>(
+    "/agent-ops/source/show",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      if (request.query.commit) params.set("commit", request.query.commit);
+      if (request.query.path) params.set("path", request.query.path);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/source/show${qs}`, undefined, reply);
+    },
+  );
+
   // ---------------------------------------------------------------------------
   // Agent-spawned sibling sessions (docs/117)
   //
