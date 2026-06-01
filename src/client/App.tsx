@@ -659,6 +659,11 @@ export default function App() {
       useSessionStore.getState().setSessionId(undefined);
       resetSessionState();
       useUiStore.getState().setShowTemplates(false);
+      // On mobile, a new session must land in the chat panel — otherwise the
+      // session-list drawer (or the Workspace panel) stays in front of the
+      // fresh session. No-op on desktop, where these states are unused.
+      useUiStore.getState().setMobileSidebarOpen(false);
+      useUiStore.getState().setMobilePanel("chat");
 
       // 2. Navigate instantly (before API call) — user sees /{owner}/{repo}/new
       void navigate(repoLabelToNewPath(repoUrl));
@@ -1271,7 +1276,12 @@ export default function App() {
         showHomeScreen={showHomeScreen}
         showNewSessionView={showNewSessionView}
         mobilePanel={mobilePanel}
-        onMobilePanelChange={(p) => useUiStore.getState().setMobilePanel(p)}
+        onMobilePanelChange={(p) => {
+          // Selecting a content tab also dismisses the session drawer — the
+          // three form one mutually-exclusive segmented control.
+          useUiStore.getState().setMobilePanel(p);
+          useUiStore.getState().setMobileSidebarOpen(false);
+        }}
         onMobileNewSession={handleNewSessionShortcut}
         onMobileQuickSession={() => useUiStore.getState().setQuickCaptureOpen(true)}
         onMobileVoiceSession={() => useUiStore.getState().setQuickCaptureOpen(true, true)}

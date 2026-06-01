@@ -11,6 +11,7 @@ function renderMobileTabBar(
   return render(
     <MobileTabBar
       activePanel="chat"
+      sidebarOpen={false}
       onChangePanel={() => {}}
       onOpenSessions={() => {}}
       onNewSession={() => {}}
@@ -55,6 +56,20 @@ describe("MobileTabBar", () => {
 
     const chatButton = screen.getByText("Chat").closest("button")!;
     expect(chatButton.className).not.toContain("text-(--color-text-link)");
+  });
+
+  it("highlights the Sessions tab and de-highlights content tabs when the sidebar is open", () => {
+    renderMobileTabBar({ activePanel: "chat", sidebarOpen: true });
+
+    const sessionsButton = screen.getByText("Sessions").closest("button")!;
+    expect(sessionsButton.className).toContain("text-(--color-text-link)");
+    expect(sessionsButton).toHaveAttribute("aria-current", "page");
+
+    // Chat is the active panel underneath, but the open drawer owns the
+    // active state — so Chat is not highlighted.
+    const chatButton = screen.getByText("Chat").closest("button")!;
+    expect(chatButton.className).not.toContain("text-(--color-text-link)");
+    expect(chatButton).not.toHaveAttribute("aria-current");
   });
 
   it("calls onChangePanel with 'chat' when Chat is clicked", () => {
