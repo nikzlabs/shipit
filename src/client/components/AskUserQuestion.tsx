@@ -1,7 +1,15 @@
-import { useState, useCallback, useMemo } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect drives the voice transcript subscription (external system) in OtherAnswerInput
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { CheckIcon } from "@phosphor-icons/react";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
+import { MicButton } from "./MicButton.js";
+import { MobileRecordingOverlay } from "./MobileRecordingOverlay.js";
+import { useVoiceInput } from "../voice/use-voice-input.js";
+import { spliceTranscript } from "../voice/insert-transcript.js";
+import { useSettingsStore } from "../stores/settings-store.js";
+import { useUiStore } from "../stores/ui-store.js";
+import { useIsMobile } from "../hooks/useMediaQuery.js";
 
 export interface AskQuestionOption {
   label: string;
@@ -241,6 +249,19 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
     });
   }, []);
 
+  // Submit a single-question "Other" answer (Enter key). Mirrors the inline
+  // submit that used to live in the textarea's onKeyDown — only the one
+  // question's free-text answer is sent, which is all the bare-answer (no
+  // submit button) case ever has.
+  const submitOther = useCallback((qIndex: number) => {
+    if (disabled || submittedAnswers) return;
+    const text = otherTexts.get(qIndex)?.trim();
+    if (!text) return;
+    const answers: Record<string, string> = { [String(qIndex)]: text };
+    setSubmittedAnswers(answers);
+    onAnswer(toolUseId, answers, formatAnswerText(questions, answers));
+  }, [disabled, submittedAnswers, otherTexts, questions, onAnswer, toolUseId, setSubmittedAnswers]);
+
   const handleSubmit = useCallback(() => {
     if (disabled || submittedAnswers) return;
 
@@ -360,25 +381,11 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                     </div>
                   </button>
                   {isOther && (
-                    <textarea
+                    <OtherAnswerInput
                       value={otherTexts.get(qIndex) ?? ""}
-                      onChange={(e) => handleOtherTextChange(qIndex, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey && !needsSubmitButton) {
-                          e.preventDefault();
-                          const text = otherTexts.get(qIndex)?.trim();
-                          if (text) {
-                            const answers: Record<string, string> = { [String(qIndex)]: text };
-                            setSubmittedAnswers(answers);
-                            onAnswer(toolUseId, answers, formatAnswerText(questions, answers));
-                          }
-                        }
-                      }}
-                      placeholder="Type your answer..."
-                      rows={1}
-                      className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] resize-none rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) field-sizing-content max-h-[40vh] overflow-y-auto"
-                      data-testid="other-input"
-                      autoFocus
+                      onChange={(text) => handleOtherTextChange(qIndex, text)}
+                      allowEnterSubmit={!needsSubmitButton}
+                      onEnterSubmit={() => submitOther(qIndex)}
                     />
                   )}
                 </div>
@@ -414,6 +421,115 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The "Other" free-text answer field, with voice dictation (docs/144).
+ *
+ * Reuses the exact same voice stack as the main composer: `useVoiceInput`
+ * owns the recording state machine, `MicButton` renders the four states, and
+ * `spliceTranscript` inserts the cleaned transcript at the cursor. The only
+ * deliberate difference is that there is **no push-to-talk hotkey** here — the
+ * global hotkey belongs to the chat composer, and binding it again would fire
+ * every mounted question card's recorder at once. The mic is button-only.
+ *
+ * `value`/`onChange` are read through refs inside the transcript subscription
+ * so it wires up once and still splices into freshly-typed text without
+ * re-subscribing on every keystroke.
+ */
+function OtherAnswerInput({
+  value,
+  onChange,
+  onEnterSubmit,
+  allowEnterSubmit,
+}: {
+  value: string;
+  onChange: (text: string) => void;
+  onEnterSubmit: () => void;
+  allowEnterSubmit: boolean;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isMobile = useIsMobile();
+
+  const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
+  const cleanupEnabled = useSettingsStore((s) => s.cleanupEnabled);
+  const voiceLanguage = useSettingsStore((s) => s.voiceLanguage);
+  const sttProvider = useSettingsStore((s) => s.sttProvider);
+
+  const voice = useVoiceInput({
+    enabled: voiceInputEnabled,
+    hotkey: "",
+    cleanup: cleanupEnabled,
+    language: voiceLanguage || undefined,
+    sttProvider,
+  });
+
+  // Keep latest value/onChange in refs so the subscription wires up once.
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  // eslint-disable-next-line no-restricted-syntax -- transcript subscription with cleanup
+  useEffect(() => {
+    return voice.onTranscript((transcript) => {
+      const ta = textareaRef.current;
+      const res = spliceTranscript({
+        value: valueRef.current,
+        selectionStart: ta?.selectionStart,
+        selectionEnd: ta?.selectionEnd,
+        transcript,
+      });
+      onChangeRef.current(res.value);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (el) {
+          el.focus();
+          el.setSelectionRange(res.cursor, res.cursor);
+        }
+      });
+    });
+  }, [voice.onTranscript]);
+
+  // Reserve room on the right for the mic so dictated/typed text never slides
+  // under it; the mobile mic is a larger thumb target so it needs more space.
+  const rightPad = !voiceInputEnabled ? "pr-3" : isMobile ? "pr-14" : "pr-10";
+
+  return (
+    <div className="relative mt-1.5 ml-6 w-[calc(100%-1.5rem)]">
+      <textarea
+        ref={textareaRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey && allowEnterSubmit) {
+            e.preventDefault();
+            onEnterSubmit();
+          }
+        }}
+        placeholder="Type your answer..."
+        rows={1}
+        className={`w-full resize-none rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) py-1.5 pl-3 ${rightPad} text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) field-sizing-content max-h-[40vh] overflow-y-auto`}
+        data-testid="other-input"
+        autoFocus
+      />
+      {voiceInputEnabled && (
+        <div className="absolute bottom-1 right-1 flex items-center">
+          <MicButton
+            voice={voice}
+            large={isMobile}
+            onOpenSettings={() => {
+              const ui = useUiStore.getState();
+              ui.setSettingsTab("voice");
+              ui.setSettingsOpen(true);
+            }}
+          />
+        </div>
+      )}
+      {/* Mobile full-screen recording surface — null when idle, so harmless. */}
+      {voiceInputEnabled && isMobile && <MobileRecordingOverlay voice={voice} />}
     </div>
   );
 }

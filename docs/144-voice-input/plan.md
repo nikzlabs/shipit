@@ -527,7 +527,7 @@ not edge cases.
 
 ### UX
 
-**Mic button** appears in **two places** (same component, same hook
+**Mic button** appears in **three places** (same component, same hook
 state), only rendered when voice input is enabled in settings:
 
 - Next to the send/stop buttons in **MessageInput** — Mode A entry point.
@@ -535,6 +535,14 @@ state), only rendered when voice input is enabled in settings:
   On mobile, Mode B is also reachable from the bottom tab bar's action
   cluster via the Voice Quick Session action, which uses a quick-session
   icon plus a mic badge and opens the overlay with auto-mic requested.
+- Inside the **AskUserQuestion** card's "Other" free-text field — lets the
+  user dictate a custom answer to an agent question without retyping. This
+  surface is **button-only (no push-to-talk hotkey)**: the global Mode-A/B
+  hotkeys belong to the composer/overlay, and binding one again would fire
+  every mounted question card's recorder at once. The `OtherAnswerInput`
+  sub-component owns its own `useVoiceInput` instance and splices the
+  transcript into the textarea via `spliceTranscript`, exactly like
+  MessageInput. On mobile it also mounts `MobileRecordingOverlay`.
 
 States (shared across both mic instances):
 
@@ -959,6 +967,7 @@ Captured here so future readers know they were considered, not forgotten:
 - `src/client/components/MessageInput.tsx` — embed MicButton (pass `large={isMobile}`), mount `MobileRecordingOverlay` on mobile, wire the Mode-A hook instance, route transcript to `setText`
 - `src/client/components/QuickCaptureOverlay.tsx` (from doc 145) — embed MicButton, wire a Mode-B hook instance, route transcript to the overlay's own `setText`. Auto-start capture when opened via the Mode-B hotkey.
 - `src/client/hooks/useQuickCaptureHotkey.ts` (from doc 145) — add a sibling Mode-B variant that opens the overlay *and* signals the overlay to auto-start mic capture
+- `src/client/components/AskUserQuestion.tsx` — `OtherAnswerInput` sub-component embeds MicButton (button-only, no hotkey) in the "Other" free-text field, wires its own `useVoiceInput` instance, splices the transcript with `spliceTranscript`, and mounts `MobileRecordingOverlay` on mobile
 - `src/client/components/MessageList.tsx` (or the existing turn-footer component, exact name verified during build) — render `PlayTurnButton` for each completed assistant turn; pass the turn's id and extracted prose
 - `src/client/stores/settings-store.ts` — add input fields (`voiceInputEnabled`, `sttProvider`, `cleanupEnabled`, `voiceHotkeyModeA`, `voiceHotkeyModeB`, `voiceLanguage`) **and** playback fields (`voicePlaybackEnabled`, `ttsProvider`, `ttsVoice`, `ttsSpeed`) and setters (no API key — that's server-side)
 - `src/client/utils/local-storage.ts` — persisters for the new non-credential settings
