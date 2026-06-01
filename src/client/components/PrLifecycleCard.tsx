@@ -395,7 +395,15 @@ function ReadyPhase({
   );
 }
 
-function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }) {
+function OpenPhase({
+  card,
+  sessionId,
+  canAutoMerge,
+}: {
+  card: PrCardState;
+  sessionId: string;
+  canAutoMerge?: boolean;
+}) {
   const pr = card.pr;
   const deployments = usePrStore((s) => s.statusBySession[sessionId]?.deployments);
   const mergeable = usePrStore((s) => s.statusBySession[sessionId]?.mergeable);
@@ -465,6 +473,11 @@ function OpenPhase({ card, sessionId }: { card: PrCardState; sessionId: string }
               <PendingReviewButton sessionId={sessionId} count={pendingReviewCount} />
             )}
             <CiIndicator checks={card.checks} />
+            {canAutoMerge && (
+              <span className="md:hidden shrink-0">
+                <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} compact />
+              </span>
+            )}
             {showConflictUi && <MergeConflictIndicator />}
             {showConflictUi && (
               <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
@@ -735,7 +748,7 @@ export function PrLifecycleCard({
   const phaseContent = card ? (
     <>
       {(card.phase === "ready" || card.phase === "creating") && <ReadyPhase card={card} sessionId={sessionId} creating={card.phase === "creating"} onCreatePr={onCreatePr} />}
-      {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} />}
+      {card.phase === "open" && <OpenPhase card={card} sessionId={sessionId} canAutoMerge={canAutoMerge} />}
       {card.phase === "merged" && (
         <TerminalPhase card={card} sessionId={sessionId}
           text={`Merged: ${card.pr?.title ?? `PR #${card.pr?.number}`}${card.pr?.baseBranch && !isDefaultBranch(card.pr.baseBranch) ? ` into ${card.pr.baseBranch}` : ""}`}

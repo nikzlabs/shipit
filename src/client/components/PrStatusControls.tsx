@@ -20,14 +20,16 @@ function ToggleSwitch({
   enabled,
   onToggle,
   title,
+  ariaLabel,
 }: {
   label: ReactNode;
   enabled: boolean;
   onToggle: () => void;
   title: string;
+  ariaLabel?: string;
 }) {
   return (
-    <Button variant="ghost" size="sm" onClick={onToggle} title={title}>
+    <Button variant="ghost" size="sm" onClick={onToggle} title={title} aria-label={ariaLabel}>
       <span className={`inline-block w-6 h-3.5 rounded-full transition-colors ${enabled ? "bg-(--color-success)" : "bg-(--color-text-tertiary)"}`}>
         <span className={`block w-2.5 h-2.5 mt-0.5 rounded-full bg-(--color-text-inverse) transition-transform ${enabled ? "translate-x-3" : "translate-x-0.5"}`} />
       </span>
@@ -86,17 +88,29 @@ export function AutoFixToggle({ sessionId, autoFix }: { sessionId: string; autoF
   );
 }
 
-export function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
+export function AutoMergeToggle({
+  sessionId,
+  autoMerge,
+  compact = false,
+}: {
+  sessionId: string;
+  autoMerge?: PrCardState["autoMerge"];
+  compact?: boolean;
+}) {
   const toggleAutoMerge = usePrStore((s) => s.toggleAutoMerge);
   const enabled = autoMerge?.enabled ?? false;
+  const title = enabled ? "Disable auto-merge" : "Enable auto-merge";
 
   return (
     <span className="flex items-center gap-1">
       <ToggleSwitch
-        label={<span className="inline-flex items-center gap-1"><GitMergeIcon size={ICON_SIZE.XS} className={AUTO_MERGE_ICON_CLASS} />Auto-merge</span>}
+        label={compact
+          ? <GitMergeIcon size={ICON_SIZE.XS} className={AUTO_MERGE_ICON_CLASS} />
+          : <span className="inline-flex items-center gap-1"><GitMergeIcon size={ICON_SIZE.XS} className={AUTO_MERGE_ICON_CLASS} />Auto-merge</span>}
         enabled={enabled}
         onToggle={() => toggleAutoMerge(sessionId, !enabled)}
-        title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
+        title={title}
+        ariaLabel={compact ? title : undefined}
       />
       {autoMerge?.managed && <ManagedMergeInfo settingsUrl={autoMerge.settingsUrl} />}
     </span>
