@@ -566,6 +566,66 @@ describe("Settings - Advanced tab", () => {
       fetchSpy.mockRestore();
     }
   });
+
+  it("renders the overflow 'View release on GitHub' link when a releaseUrl is present", async () => {
+    useUiStore.getState().setVersion({ channel: "stable", version: "v1.3.0" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          available: true,
+          behindBy: 3,
+          commitMessages: ["feat: a", "fix: b"],
+          currentCommit: "abc1234",
+          channel: "stable",
+          currentVersion: "v1.3.0",
+          latestVersion: "v1.4.0",
+          isDowngrade: false,
+          releaseUrl: "https://github.com/owner/repo/releases/tag/v1.4.0",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    try {
+      await renderOnAdvancedTab();
+      await userEvent.click(screen.getByTestId("settings-check-updates"));
+      await waitFor(() => {
+        const link = screen.getByTestId("settings-release-link");
+        expect(link).toHaveAttribute("href", "https://github.com/owner/repo/releases/tag/v1.4.0");
+        expect(link).toHaveAttribute("target", "_blank");
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("omits the release link on edge (no releaseUrl)", async () => {
+    useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          available: true,
+          behindBy: 2,
+          commitMessages: ["feat: a"],
+          currentCommit: "abc1234",
+          channel: "edge",
+          currentVersion: "main @ abc1234",
+          latestVersion: "main @ def5678",
+          isDowngrade: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    try {
+      await renderOnAdvancedTab();
+      await userEvent.click(screen.getByTestId("settings-check-updates"));
+      await waitFor(() => {
+        expect(screen.getByText(/2 commits behind/)).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId("settings-release-link")).not.toBeInTheDocument();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
 });
 
 describe("Settings - Sidebar groups", () => {

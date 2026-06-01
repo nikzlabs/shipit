@@ -1,7 +1,7 @@
 # Release Channels — checklist
 
 ## Phase 1 — Foundations
-- [ ] Decide initial version number; bump `package.json` `version` (still `0.1.0`)
+- [x] Decide initial version number — `v0.1.0` (matches the plan's bootstrap release; `package.json` already `0.1.0`)
 - [x] Add `.github/workflows/release.yml` (CI gate → FF `stable` → GitHub Release notes)
 - [ ] Cut the first release tag (`vX.Y.Z`) and verify `stable` is created/advanced (maintainer action)
 - [x] Add `RELEASING.md` (tag ritual, patch releases, FF-only invariant)
@@ -24,7 +24,7 @@
 - [x] Channel-aware version label (e.g. "Stable · v1.4.0" / "Edge · main @ abc1234")
 - [x] Inline release notes / commit list for pending update
 - [x] Downgrade warning before Update Now when target not strictly ahead
-- [ ] Overflow-only "View release on GitHub" escape hatch (deferred — needs Release URL plumbing)
+- [x] Overflow-only "View release on GitHub" escape hatch (`releaseUrl` from origin remote + stable tag)
 - [x] Client tests for selector + warning states
 
 ## Phase 4 — Setup & docs
