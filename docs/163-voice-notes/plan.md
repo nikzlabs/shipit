@@ -150,6 +150,23 @@ ShipIt standing up an MCP client session against a user server, it has no
 streaming/handshake surface, and it matches how every other outbound integration
 in ShipIt behaves. The cost is the one-time receiver change above.
 
+## Scope: foreground web delivery only
+
+The **Native sink in this doc is foreground-only** — it works when ShipIt is the
+active, visible tab/app: desktop, or mobile with the screen on and ShipIt
+focused. It deliberately does **not** attempt background or screen-locked
+delivery on mobile, because that is impossible in-browser: a backgrounded tab is
+frozen (JS throttled, the per-session WS dropped, so the `voice_note` message
+won't even arrive) and autoplay of fresh audio from a non-visible page is blocked
+by browser policy. A WebView wrapper (`docs/116`) shares the same page lifecycle,
+so it does not change this.
+
+Reaching a backgrounded or closed mobile device requires *server-initiated* push
+to a channel that survives a dead tab — an external push (the **External webhook**
+sink here, e.g. Telegram / voice call), Web Push, or a native app. Those options
+are analysed in their own doc, **`docs/164-mobile-voice-delivery`**; this doc
+covers the foreground Native sink and the External webhook only.
+
 ## Delivery gating — hands-free mode (Native sink only)
 
 `docs/144` shipped playback as manual, no auto-play, and deferred "what
@@ -158,8 +175,9 @@ no-auto-play default** — but only behind an opt-in mode that is OFF by default
 so the no-surprise-audio promise holds for users who don't enable it.
 
 - **Hands-free ON** → native notes autoplay with a chime (debounced — one chime
-  to re-grab attention after a quiet period, not on every note). Away-from-
-  keyboard / mobile (Android WebView) case.
+  to re-grab attention after a quiet period, not on every note). The
+  foreground-while-screen-on case (e.g. ShipIt open on a second monitor, or a
+  phone propped up with the tab active).
 - **Hands-free OFF** (default) → no autoplay; a prominent tap-to-play prompt.
 
 Mode is a client toggle; the server always produces the note, the client decides
@@ -263,6 +281,7 @@ router, not new audio infrastructure.
    the webhook body is the same JSON but arrives over plain HTTP. Do we version
    the body (`{ v: 1, ... }`) now to leave room, and what's the exact migration
    note for existing receivers?
-4. **Autoplay edge UX** — chime debounce window; behavior when a note arrives
-   mid-playback (reuse playback-store's one-at-a-time stop-and-start?); behavior
-   when the tab is backgrounded; the browser autoplay-unlock gesture.
+4. **Autoplay edge UX (foreground)** — chime debounce window; behavior when a
+   note arrives mid-playback (reuse playback-store's one-at-a-time
+   stop-and-start?); the one-time browser autoplay-unlock gesture. Backgrounded /
+   screen-locked behavior is out of scope here — see `docs/164`.
