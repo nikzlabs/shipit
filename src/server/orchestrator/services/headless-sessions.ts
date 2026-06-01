@@ -5,6 +5,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo, AgentId, UploadRef } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
+import { agentIdForModel } from "../../shared/agent-registry.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
@@ -131,7 +132,15 @@ export async function createHeadlessSession(
   // session row matches what's on disk.
   sessionManager.setBranch(newSessionId, branchName);
 
-  const agentId = opts.agent ?? defaultAgentId;
+  // Defense-in-depth: the model is the single source of truth (docs/142,
+  // Problem C). When a recognized model is supplied, derive the agent from it
+  // and prefer that over a conflicting `opts.agent` — this protects any caller
+  // (a stale `vibe-agent-id` in the quick-capture overlay, a legacy client)
+  // that sends an agent which disagrees with the model from pinning the new
+  // session to the wrong agent (the pin is write-once). Fall back to the
+  // explicit agent only when no model is given or the model is unrecognized.
+  // See docs/166-quick-capture-agent-pin.
+  const agentId = agentIdForModel(opts.model) ?? opts.agent ?? defaultAgentId;
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, agentId);
   if (credentialsDir && credentialStore) {
     await prepareSessionAgentEnvironment(runner, {

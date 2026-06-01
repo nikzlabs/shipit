@@ -101,6 +101,25 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
 ];
 
 /**
+ * Map a model id to the agent that owns it, using the static `AGENT_DEFS`
+ * model lists. Returns `undefined` when the model is empty or not present in
+ * any agent's list (e.g. a versioned id the picker doesn't surface, or an
+ * unknown model) so callers can fall back to an explicit agent / default.
+ *
+ * Mirrors the client's `agentIdForModel`
+ * (src/client/utils/agent-for-model.ts): the model is the single source of
+ * truth and the agent is derived from it, never tracked independently. Used as
+ * server-side defense-in-depth so a caller that sends a mismatched agent+model
+ * (e.g. a stale `vibe-agent-id`) can't pin a session to the wrong agent. See
+ * docs/142 (Problem C) and docs/166-quick-capture-agent-pin.
+ */
+export function agentIdForModel(model: string | undefined): AgentId | undefined {
+  if (!model) return undefined;
+  const owner = AGENT_DEFS.find((def) => def.capabilities.models.includes(model));
+  return owner?.id;
+}
+
+/**
  * Env var required for each agent's auth (Claude uses OAuth, not an env var).
  * Consumers should go through {@link getAuthEnvKey} rather than reading this
  * map directly so a new backend's key (e.g. `CURSOR_API_KEY`) is one edit

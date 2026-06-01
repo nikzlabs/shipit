@@ -152,6 +152,35 @@ describe("Integration: quick-capture headless sessions", () => {
     }).trim()).toBe("quick/flaky-test");
   });
 
+  it("pins the model's agent when agent+model disagree (model is source of truth)", { timeout: 15_000 }, async () => {
+    // docs/166: a caller (e.g. the quick-capture overlay with a stale
+    // `vibe-agent-id`, or a legacy client) sends a Claude model with a
+    // conflicting `agent: "codex"`. The model is authoritative, so the server
+    // must derive and pin "claude", never the mismatched agent it was handed.
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: {
+        repoUrl: REPO_URL,
+        initialPrompt: "Use the model's agent",
+        branch: "quick/agent-derive",
+        agent: "codex",
+        model: "claude-opus-4-8",
+      },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as { sessionId: string };
+    const session = sessionManager.get(body.sessionId);
+    expect(session).toMatchObject({
+      model: "claude-opus-4-8",
+      agentId: "claude",
+      agentPinned: true,
+    });
+  });
+
   it("maps validation errors through the HTTP route", async () => {
     const res = await app.inject({
       method: "POST",

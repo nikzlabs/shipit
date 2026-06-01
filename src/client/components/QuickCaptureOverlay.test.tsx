@@ -196,6 +196,42 @@ describe("QuickCaptureOverlay", () => {
     expect(useSessionStore.getState().sessionId).toBe("current");
   });
 
+  it("derives the sent agent from the saved model, ignoring a stale vibe-agent-id", async () => {
+    // Regression for docs/166: a user who used Codex once "a while ago" keeps a
+    // stale `vibe-agent-id="codex"` while their saved/selected model is a Claude
+    // model. The overlay must send the model-derived agent ("claude"), not the
+    // stale key, so the new quick session isn't pinned to Codex.
+    localStorage.setItem("vibe-agent-id", "codex");
+    localStorage.setItem("vibe-model-id", "claude-opus-4-8");
+    useUiStore.setState({
+      agentList: [
+        { id: "claude", name: "Claude", installed: true, authConfigured: true, models: ["sonnet", "haiku", "claude-opus-4-8"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
+      ],
+    });
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    createHeadlessSessionMock.mockResolvedValue(session("quick", "https://github.com/acme/app.git"));
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+
+    await waitFor(() => expect(createHeadlessSessionMock).toHaveBeenCalledWith({
+      repoUrl: "https://github.com/acme/app.git",
+      initialPrompt: "captured prompt",
+      agent: "claude",
+      model: "claude-opus-4-8",
+    }));
+    // The picker also shows the derived agent, so display and send agree.
+    expect(lastMessageInputProps?.activeAgentId).toBe("claude");
+
+    localStorage.removeItem("vibe-agent-id");
+    localStorage.removeItem("vibe-model-id");
+  });
+
   it("forwards attached files to createHeadlessSession", async () => {
     useRepoStore.setState({
       repos: [repo("https://github.com/acme/app.git")],
