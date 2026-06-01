@@ -38,6 +38,7 @@ import { TerminalPanel } from "./components/TerminalPanel.js";
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "./components/InteractiveTerminal.js";
 import { ServicesPanel } from "./components/ServicesPanel.js";
 import { SearchBar } from "./components/SearchBar.js";
+import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
 import { HomeScreen } from "./components/HomeScreen.js";
 import { AddRepoDialog } from "./components/AddRepoDialog.js";
@@ -1067,6 +1068,13 @@ export default function App() {
           recoverRewindAvailable={recoverRewindAvailable}
           onRecoverRewind={() => { if (currentSession) window.dispatchEvent(new CustomEvent("shipit:restore-rewind", { detail: { sessionId: currentSession.id } })); }}
         />
+      )}
+      {!showHomeScreen && !showNewSessionView && wsSessionId && isMobile && (
+        <div className="relative z-30 flex justify-center px-3 py-1.5 bg-(--color-bg-primary) pointer-events-none">
+          <div className="pointer-events-auto max-w-full">
+            <ConnectionBanner status={status} reconnectAttempt={reconnectAttempt} onReconnect={reconnect} compact />
+          </div>
+        </div>
       )}
       {showHomeScreen ? (
         <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
