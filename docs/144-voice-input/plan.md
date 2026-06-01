@@ -564,9 +564,22 @@ pain (both to start and to stop). The two ends get different treatments because
 they have different lifetimes:
 
 - **Start** can't be a full-screen takeover — it has to coexist permanently
-  with the composer (you might type instead of dictate). So on mobile the
-  inline `MicButton` keeps its position but grows its tap target via the
-  `large` prop (`p-3` instead of `p-1.5`; the icon stays `SM`).
+  with the composer (you might type instead of dictate). So it stays inline,
+  but on mobile the composer toolbar is **reordered and resized** for the
+  thumb (the desktop layout is left untouched, since it matches Claude Code
+  and other desktop chat UIs). Two changes, both gated on `useIsMobile()`:
+  - **Reorder (`MessageInput`).** The toolbar children are arranged via CSS
+    `order` so the frequently-used **mic + send** pack together on the right
+    (mic just left of send) and the rarely-tapped add-files / mode / cost
+    dial / model selector pack to the left. On desktop the conventional
+    `add/mic/mode | cost/model/send` split is preserved. Order values are
+    spaced (10, 20, …) so items can be inserted later without renumbering.
+  - **Resize.** The `large` prop now bumps the `MicButton` icon to `MD`
+    (was `SM`) and floors its hit area at 44px (`p-3 min-h-11 min-w-11`),
+    the Apple-HIG minimum and a match for the bottom-bar buttons. The Send /
+    Stop button — previously a fixed ~32px on every viewport, the worst
+    target in the row despite being the most-used — gets the same mobile
+    treatment (`p-3 min-h-11 min-w-11`, `MD` icon). Desktop stays compact.
 - **Stop / Cancel** only exist *while recording*, so they're free to take over
   the screen. `MobileRecordingOverlay` (gated on `useIsMobile()`) renders a
   full-screen scrim with a large centered Stop button, a live timer, a

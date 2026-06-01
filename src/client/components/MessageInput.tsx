@@ -712,11 +712,19 @@ export function MessageInput({
             className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none field-sizing-content max-h-[40vh] overflow-y-auto"
           />
 
-          {/* Toolbar row — below textarea */}
+          {/* Toolbar row — below textarea.
+              Desktop keeps the conventional split (add/mic/mode on the left,
+              cost/model/send on the right) to match Claude Code and other
+              desktop chat UIs. On mobile the order is swapped via CSS `order`
+              so the frequently-tapped mic + send sit together as large thumb
+              targets on the right, and the rarely-tapped add/mode/cost/model
+              pack to the left (docs/144). The numeric `order` values leave gaps
+              so items can be inserted later without renumbering. */}
           <div className="flex items-center gap-1 px-2 pb-2">
             {/* Add files button — always enabled. Files attached before a
                 session is ready are buffered by useFileUpload and uploaded
                 once sessionId resolves. */}
+            <div className="flex items-center shrink-0" style={{ order: 10 }}>
             <WithTooltip label="Add files">
             <button
               onClick={handleAttachClick}
@@ -726,41 +734,50 @@ export function MessageInput({
               <PlusIcon size={ICON_SIZE.SM} />
             </button>
             </WithTooltip>
+            </div>
 
             {/* Mic — dictation entry point (docs/144). Only when voice input is
                 enabled in settings, so the endpoint surface stays off for users
-                who don't opt in. */}
+                who don't opt in. On mobile it moves to the right, just left of
+                Send (order 60); on desktop it stays in the left group (20). */}
             {voiceInputEnabled && (
-              <MicButton
-                voice={voice}
-                large={isMobile}
-                hotkeyLabel={formatHotkeyLabel(isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA)}
-                onOpenSettings={() => {
-                  const ui = useUiStore.getState();
-                  ui.setSettingsTab("voice");
-                  ui.setSettingsOpen(true);
-                }}
-              />
+              <div className="flex items-center shrink-0" style={{ order: isMobile ? 60 : 20 }}>
+                <MicButton
+                  voice={voice}
+                  large={isMobile}
+                  hotkeyLabel={formatHotkeyLabel(isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA)}
+                  onOpenSettings={() => {
+                    const ui = useUiStore.getState();
+                    ui.setSettingsTab("voice");
+                    ui.setSettingsOpen(true);
+                  }}
+                />
+              </div>
             )}
 
             {/* Mobile-only full-screen recording surface (docs/144): a big
                 central Stop button + Cancel, shown while recording. Desktop
-                keeps the inline icon + push-to-talk hotkey. */}
+                keeps the inline icon + push-to-talk hotkey. Out of flow
+                (fixed) and null when idle, so its default order is harmless. */}
             {voiceInputEnabled && isMobile && <MobileRecordingOverlay voice={voice} />}
 
             {/* Permission mode selector (3-state, agent-aware — docs/138) */}
             {onPermissionModeChange && (
-              <PermissionModeSelector
-                mode={permissionMode}
-                onChange={onPermissionModeChange}
-                agents={agents}
-                activeAgentId={activeAgentId}
-                modelInfo={modelInfo}
-              />
+              <div className="flex items-center shrink-0" style={{ order: isMobile ? 20 : 30 }}>
+                <PermissionModeSelector
+                  mode={permissionMode}
+                  onChange={onPermissionModeChange}
+                  agents={agents}
+                  activeAgentId={activeAgentId}
+                  modelInfo={modelInfo}
+                />
+              </div>
             )}
 
-            {/* Spacer */}
-            <div className="flex-1" />
+            {/* Spacer — splits the left (infrequent) group from the right
+                (mic + send). After mode on desktop (40), after the model
+                selector on mobile (50). */}
+            <div className="flex-1" style={{ order: isMobile ? 50 : 40 }} />
 
             {/* Context dial — per-turn breakdown popover (105). The dial is now
              * also the cost surface: its trigger shows running session cost
@@ -768,49 +785,56 @@ export function MessageInput({
              * pill was removed to eliminate a stale-vs-authoritative
              * discrepancy between the two. */}
             {surface === "chat" && (modelInfo ?? contextTokens > 0) && (
-              <ContextDialMount
-                modelInfo={modelInfo ?? null}
-                contextTokensFallback={contextTokens}
-                onOpenUsageDetails={onOpenUsageDetails}
-              />
+              <div className="flex items-center shrink-0" style={{ order: isMobile ? 30 : 50 }}>
+                <ContextDialMount
+                  modelInfo={modelInfo ?? null}
+                  contextTokensFallback={contextTokens}
+                  onOpenUsageDetails={onOpenUsageDetails}
+                />
+              </div>
             )}
 
             {/* Model / agent selector */}
             {onAgentChange && (
-              <ModelAgentSelector
-                agents={agents}
-                activeAgentId={activeAgentId}
-                onAgentChange={onAgentChange}
-                onModelChange={onModelChange}
-                modelInfo={modelInfo ?? null}
-                hasActiveSession={hasActiveSession}
-                disabled={disabled || isLoading}
-              />
+              <div className="flex items-center shrink-0" style={{ order: isMobile ? 40 : 60 }}>
+                <ModelAgentSelector
+                  agents={agents}
+                  activeAgentId={activeAgentId}
+                  onAgentChange={onAgentChange}
+                  onModelChange={onModelChange}
+                  modelInfo={modelInfo ?? null}
+                  hasActiveSession={hasActiveSession}
+                  disabled={disabled || isLoading}
+                />
+              </div>
             )}
 
-            {/* Send / Stop button — extra gap from model selector */}
-            <div className="w-1" />
+            {/* Send / Stop button — pinned right (order 80) with a small gap
+                from the item before it. On mobile the icon (MD) and hit area
+                (≥44px) grow to match the bottom-bar thumb targets; desktop
+                stays compact (docs/144). */}
+            <div className="flex items-center gap-1 shrink-0 ml-1" style={{ order: 80 }}>
             {isLoading && onInterrupt ? (
               <>
                 <WithTooltip label="Stop (Esc)">
                 <button
                   onClick={onInterrupt}
-                  className="flex items-center justify-center shrink-0 rounded-lg p-2 bg-(--color-error) text-white hover:brightness-110 transition-colors"
+                  className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-error) text-white hover:brightness-110 transition-colors`}
                   aria-label="Stop the agent"
                   data-testid="stop-button"
                 >
-                  <StopIcon size={ICON_SIZE.SM} weight="fill" />
+                  <StopIcon size={isMobile ? ICON_SIZE.MD : ICON_SIZE.SM} weight="fill" />
                 </button>
                 </WithTooltip>
                 {liveSteeringActive && (
                   <button
                     onClick={handleSubmit}
                     disabled={disabled || !text.trim()}
-                    className="flex items-center justify-center shrink-0 rounded-lg p-2 bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                     aria-label="Send message"
                     data-testid="send-button"
                   >
-                    <ArrowUpIcon size={ICON_SIZE.SM} weight="bold" />
+                    <ArrowUpIcon size={isMobile ? ICON_SIZE.MD : ICON_SIZE.SM} weight="bold" />
                   </button>
                 )}
               </>
@@ -818,13 +842,14 @@ export function MessageInput({
               <button
                 onClick={handleSubmit}
                 disabled={disabled || !text.trim()}
-                className="flex items-center justify-center shrink-0 rounded-lg p-2 bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                 aria-label="Send message"
                 data-testid="send-button"
               >
-                <ArrowUpIcon size={ICON_SIZE.SM} weight="bold" />
+                <ArrowUpIcon size={isMobile ? ICON_SIZE.MD : ICON_SIZE.SM} weight="bold" />
               </button>
             )}
+            </div>
           </div>
 
           {/* Cleanup fell through to the raw transcript — non-fatal, dismissed
