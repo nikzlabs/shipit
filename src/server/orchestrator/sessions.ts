@@ -1,4 +1,5 @@
 import type { ProviderRouteKind, SessionInfo } from "../shared/types.js";
+import { parseTimestampMs } from "../shared/utils.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentId } from "../shared/types/agent-types.js";
@@ -63,12 +64,14 @@ export const IDLE_EVICT_MS = 14 * 24 * 60 * 60 * 1000; // 14d: light → evicted
  * ("YYYY-MM-DD HH:MM:SS") while `last_used_at` is `toISOString()`
  * ("…THH:MM:SS.sssZ"). A lexical `>` is wrong — 'T' (0x54) > ' ' (0x20), so an
  * ISO timestamp at the same wall-clock second always sorts greater, falsely
- * marking a just-merged session as reopened. `Date.parse` normalizes both.
+ * marking a just-merged session as reopened. `parseTimestampMs` reconciles the
+ * two formats to UTC epoch ms — a plain `Date.parse` would read the suffix-less
+ * SQLite form as *local* time and mis-order the two on any non-UTC runtime.
  */
 export function reopenedAfterMerge(s: SessionInfo): boolean {
   if (!s.mergedAt) return false;
-  const merged = Date.parse(s.mergedAt);
-  const used = Date.parse(s.lastUsedAt);
+  const merged = parseTimestampMs(s.mergedAt);
+  const used = parseTimestampMs(s.lastUsedAt);
   if (Number.isNaN(merged) || Number.isNaN(used)) return false;
   return used > merged;
 }

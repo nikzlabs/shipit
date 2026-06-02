@@ -91,7 +91,7 @@ beyond what already exists (`mergedAt`, `lastUsedAt`, `userArchived`,
 
 ```
 reopenedAfterMerge = mergedAt != null
-                     AND Date.parse(lastUsedAt) > Date.parse(mergedAt)
+                     AND parseTimestampMs(lastUsedAt) > parseTimestampMs(mergedAt)
 ```
 
 **Evaluate in JS, not SQL.** `merged_at` and `last_used_at` are stored in
@@ -100,9 +100,21 @@ reopenedAfterMerge = mergedAt != null
 write `toISOString()` (`"YYYY-MM-DDThh:mm:ss.sssZ"`). A lexical/SQL `>` is wrong:
 `'T'` (0x54) > `' '` (0x20), so an ISO `lastUsedAt` at the *same* wall-clock
 second as `mergedAt` always sorts greater, falsely marking a never-reopened
-just-merged session as reopened. Parse both with `Date.parse` — exactly what the
-existing `activityMs` helper does (`services/session.ts:418-419`, which documents
-this same hazard).
+just-merged session as reopened.
+
+**Parse via `parseTimestampMs` (shared/utils), NOT a bare `Date.parse`.** The
+original implementation used `Date.parse` on both strings. That fixes the
+lexical hazard above but introduces a worse one: `Date.parse` reads the
+suffix-less SQLite `datetime('now')` form as *local* time while reading the ISO
+form as UTC. The client mirror of this predicate runs in the **browser**, so in
+any UTC+ timezone a `mergedAt` is shifted earlier than a `lastUsedAt` recorded
+just before the merge (the normal flow: push → CI → merge minutes later) — and
+the session is falsely flagged reopened, floating a just-merged session back
+above active ones *in the same repo*. CI runs in UTC so the suite never caught
+it. `parseTimestampMs` normalizes the suffix-less form to UTC before parsing, so
+the comparison is timezone-independent on both server and client. Regression
+coverage: `shared/utils.test.ts` and the close-timestamp case in
+`sessions.test.ts` ("the merge follows the last turn by seconds").
 
 `lastUsedAt` is bumped at **turn start** (and end) — and **only** by turn
 activity, never by merely opening the session (see Part 2: a separate
