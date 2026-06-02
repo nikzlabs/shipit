@@ -1,7 +1,7 @@
 ---
 status: done
 priority: low
-description: Codex shares the same architectural OAuth-refresh vulnerability as Claude (per-session credentials, single shared NAT egress). It's not currently manifest, but if OpenAI changes its policies the symptom would mirror docs/153. Track the readiness work so we can flip the switch quickly when needed.
+description: Codex shares the same architectural OAuth-refresh vulnerability as Claude (per-session credentials, copied auth.json files, single shared NAT egress). It refreshes less often than Claude, but current Codex issue reports confirm copied auth.json refresh-token invalidation is real enough to justify orchestrator-owned refresh.
 ---
 
 # 154 — Codex OAuth refresh readiness
@@ -15,11 +15,11 @@ each session independently calling `console.anthropic.com/v1/oauth/token` →
 Anthropic's rate limiter sees one noisy client and 429s them all → no refresh
 ever succeeds → source token rots → every session 401s.
 
-**Codex sessions on the same host are not currently affected.** docs/153 is
-shipped Claude-only. This doc captures *why* Codex is fine today, *what would
-change that*, and *what we'd build* if/when it does. No new investigation
-required to pick this up later — just the trigger conditions to watch for and
-the design steps that follow from docs/153.
+Codex sessions refresh less frequently than Claude sessions, but they share the
+same copied-token architecture. Current Codex reports now show the important
+part of the risk is real: copied `auth.json` files can end up with a stale
+single-use refresh-token chain after another copy refreshes first. That maps
+directly onto ShipIt's per-session credential copies.
 
 ## The shared architecture
 
@@ -38,36 +38,53 @@ providers. The same flow exists for both:
 So the structural conditions for the stampede are present for both providers.
 The difference is whether OpenAI's OAuth policies trigger it.
 
-## Why Codex doesn't manifest the bug today
+## Why Codex was lower urgency than Claude
 
-Best-effort enumeration (no new investigation, drawn from existing code and
-prior diagnostic data):
+Best-effort enumeration, drawn from existing code, local CLI checks, and prior
+diagnostic data:
 
-1. **OpenAI may not rotate refresh tokens.** Anthropic's are single-use — each
-   refresh invalidates the prior. If OpenAI's refresh tokens are non-rotating,
-   N sessions can all use the same refresh token in parallel without invalidating
-   each other. No race.
+1. **Codex refreshes much less often.** The diagnostic dump of a prod
+   `auth.json` showed the access-token JWT `exp` around 10-14 days out, vs
+   Anthropic's ~8 hours. Refresh frequency is much lower, so the failure is
+   less noisy than Claude's every-8h production break.
 
-2. **Codex access-token lifetime is longer.** The diagnostic dump of a prod
-   `auth.json` showed the access-token JWT `exp` ~13.7 days out, vs Anthropic's
-   ~8 hours. Refresh frequency is ~40× lower. Even if rate limits exist, the
-   pressure is much lower.
-
-3. **OpenAI's token endpoint may not be aggressively rate-limited.** Or the
+2. **OpenAI's token endpoint may not be aggressively rate-limited.** Or the
    bucket is wide enough that N daily-ish refreshes don't trip it.
 
-4. **Codex sync-back signal is more sensitive.** `readCodexTokenFreshness`
+3. **Codex sync-back signal is more sensitive.** `readCodexTokenFreshness`
    (`session-credentials.ts`) reads `last_refresh` (ISO timestamp) as a fallback,
    which advances on *every* CLI refresh even when JWT `exp` doesn't change
    meaningfully between two refreshes a few seconds apart. Claude's freshness
    reader only knows `claudeAiOauth.expiresAt`. So Codex's existing sync-back
    catches more rotations than Claude's does.
 
-Each of these is a property of *current* OpenAI behavior, not an invariant.
+These factors reduce frequency and blast radius. They do not remove the copied
+refresh-token race.
+
+## Verification
+
+Checked on 2026-06-02 against ShipIt's pinned Codex CLI:
+
+- `/opt/agent-cli/.../codex --version` reports `codex-cli 0.133.0`, matching
+  `docker/agent-cli/package-lock.json`.
+- `codex login --help` exposes `login status`; `codex exec --help` exposes
+  `--skip-git-repo-check`, so the refresher's selected commands exist on the
+  pinned CLI.
+- Running `HOME=/credentials CODEX_HOME=/credentials/.codex codex login status`
+  against a healthy token printed `Logged in using ChatGPT` and did not mutate
+  `auth.json`. Tier 1 is therefore a cheap status probe, not proof of refresh.
+- The live auth file had `last_refresh` from 2026-05-31 and an access-token
+  JWT expiring on 2026-06-10, so an in-session forced refresh would require
+  either waiting for expiry or deliberately exercising the refresh-token chain.
+  I did not force that against the real credential.
+- Current upstream `openai/codex` issue reports document the same copied-auth
+  failure mode ShipIt creates: one copy refreshes, other copied `auth.json`
+  files later fail because the refresh token has already been used. That is the
+  direct justification for moving refresh ownership to the orchestrator.
 
 ## Trigger conditions (when to pick this up)
 
-Build a Codex equivalent of docs/153's refresher when any of:
+The original trigger conditions were:
 
 - **Symptom**: Codex sessions start hitting `401`-shaped errors a fixed time
   after sign-in (similar to the Claude pattern in docs/142 / docs/153). Likely
@@ -79,8 +96,10 @@ Build a Codex equivalent of docs/153's refresher when any of:
 - **Upstream change**: OpenAI announces refresh-token rotation, shorter
   access-token TTLs, or rate-limit policy changes on the OAuth endpoint.
 
-If you observe any of those, copy docs/153's design directly — the
-architectural answer is identical, only the per-provider details change.
+The copied-auth upstream reports satisfy the architectural trigger even though
+ShipIt has not yet seen a Claude-like every-session outage from Codex. The
+answer remains identical to docs/153: one orchestrator-owned refresh source,
+then repush the rotated token into pinned sessions.
 
 ## What changes from docs/153
 
@@ -104,7 +123,7 @@ the Codex refresher would call `readCodexTokenFreshness(file)` instead.
 
 ### 3. CLI commands
 
-Not investigated. The Claude refresher uses:
+The Claude refresher uses:
 
 - **Tier 1**: `claude auth status --json` (designed for scripted use; may or
   may not trigger refresh-on-use; refresher discovers at runtime via file-state
@@ -112,12 +131,12 @@ Not investigated. The Claude refresher uses:
 - **Tier 2**: `claude --print "ok" --model claude-haiku-4-5-20251001 --tools "" --no-session-persistence`
   (billable, structurally guaranteed to trigger refresh-on-use).
 
-For Codex we'd need to inventory `codex auth ...` / `codex --help`. Likely
-candidates:
+Codex's pinned `0.133.0` CLI exposes:
 
-- `codex auth status` (if it exists and triggers refresh — the cheap path).
-- `codex exec "ok"` or equivalent minimal prompt with a cheap model
-  (billable fallback).
+- **Tier 1**: `codex login status` (verified cheap status probe; did not mutate
+  a healthy `auth.json` during local verification).
+- **Tier 2**: `codex exec --skip-git-repo-check "ok"` (minimal real run; expected
+  to exercise refresh-on-use when the access token is near expiry).
 
 The two-tier shape (free preferred, billable fallback) carries over. The
 runtime discovery (file-state delta as the success signal) carries over.
@@ -160,9 +179,6 @@ clear until both implementations exist.
 
 ## What's out of scope here
 
-- **A CLI inventory for Codex.** When you pick this up, run the same
-  inventory prompt that produced docs/153's Tier 1 / Tier 2 decisions, against
-  the prod-deployed `@openai/codex` version at that time.
 - **The per-account failover that consumes the unauthenticated SSE event.**
   Owned by docs/150 (multiple provider subscriptions). Both Claude and Codex
   hooks feed into the same failover layer.
@@ -189,9 +205,9 @@ to pinned Codex sessions, and emits:
 - `codex_account_unauthenticated` / `codex_account_authenticated`
 - unified `agent_auth_failed` with `{ agentId: "codex", reason: "revoked" }`
 
-The dev container used for implementation did not have `codex` on `PATH`, so
-live CLI inventory was not possible in-session. The chosen commands use shapes
-already documented or used elsewhere in ShipIt:
+The implementation session's shell did not have `codex` on `PATH`, but the
+pinned binary was available under `/opt/agent-cli/.../bin/codex` and was checked
+directly. The chosen commands are present in `codex-cli 0.133.0`:
 
 - Tier 1: `codex login status`
 - Tier 2: `codex exec --skip-git-repo-check "ok"`
