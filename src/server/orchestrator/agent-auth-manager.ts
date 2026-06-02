@@ -32,6 +32,40 @@ export interface AgentAuthFailedPayload {
   message?: string;
 }
 
+/**
+ * Options for starting an account-scoped auth flow (docs/150). When a
+ * `credentialDir` is supplied, the manager forces the provider CLI to read
+ * and write credentials under that directory instead of the legacy singleton
+ * root (`/root/.claude`, `/root/.codex`). The directory is a provider-account
+ * root (`provider-accounts/<provider>/acct_<id>`) whose layout already mirrors
+ * `$HOME` — `<root>/.claude` + `<root>/.claude.json` for Claude, `<root>/.codex`
+ * for Codex — so scoping a flow is just spawning the CLI with `HOME` set to it.
+ *
+ * Omitting both fields preserves the pre-150 singleton behavior, so existing
+ * call sites (`startAuth`, shutdown `kill`, AgentRegistry auth checks) keep
+ * working unchanged.
+ */
+export interface AgentAuthStartOptions {
+  /**
+   * Provider-account id this flow authenticates. Echoed back through
+   * {@link AgentAuthManager.getActiveAccountId} so the SSE wiring can qualify
+   * `agent_auth_*` events to the originating Settings row.
+   */
+  accountId?: string;
+  /**
+   * Credential root (account directory) the CLI should read/write. When set,
+   * the manager spawns the CLI with `HOME` pointed here. When omitted, the
+   * legacy singleton paths are used.
+   */
+  credentialDir?: string;
+}
+
+/** Options for the account-scoped read/sign-out methods. */
+export interface AgentAuthScopeOptions {
+  /** Credential root to target. Omit for the legacy singleton path. */
+  credentialDir?: string;
+}
+
 export interface AgentAuthManager extends EventEmitter {
   /** Which agent backend this manager belongs to. */
   readonly agentId: AgentId;
@@ -40,8 +74,11 @@ export interface AgentAuthManager extends EventEmitter {
    * Start the agent's auth flow. Idempotent — no-op if a flow is already
    * in-flight. Concrete classes may re-broadcast cached pending state to
    * accommodate page reloads mid-flow (Codex's device-code replay).
+   *
+   * Pass {@link AgentAuthStartOptions} to scope the flow to a specific
+   * provider account (docs/150); omit them for the legacy singleton flow.
    */
-  start(): void;
+  start(opts?: AgentAuthStartOptions): void;
 
   /**
    * Cancel any in-flight flow. Idempotent. Used by explicit cancel routes
@@ -51,17 +88,36 @@ export interface AgentAuthManager extends EventEmitter {
   cancel(): void;
 
   /**
-   * Remove on-disk credentials so the next agent turn falls back to env-var
-   * auth (or to `auth_required` if none is set). Idempotent.
+   * Submit a verification code into an in-flight flow, for backends whose
+   * flow has a paste-code step (Claude OAuth). Backends without one (Codex
+   * device-auth) omit this. Optional so the interface stays satisfiable by
+   * both shapes.
    */
-  signOut(): void;
+  submitCode?(code: string): void;
+
+  /**
+   * Remove on-disk credentials so the next agent turn falls back to env-var
+   * auth (or to `auth_required` if none is set). Idempotent. Pass a
+   * `credentialDir` to target a specific provider account (docs/150).
+   */
+  signOut(opts?: AgentAuthScopeOptions): void;
 
   /**
    * Whether credentials are present (file on disk OR an env var). The
    * matching `AgentRegistry.refreshAuth` consults this to flip the agent's
-   * `authConfigured` flag.
+   * `authConfigured` flag. Pass a `credentialDir` to check a specific
+   * provider account's credentials instead of the singleton path.
    */
-  isConfigured(): boolean;
+  isConfigured(opts?: AgentAuthScopeOptions): boolean;
+
+  /**
+   * The provider-account id of the flow currently in flight (or just
+   * finished and not yet superseded), or `null` for a legacy singleton flow.
+   * Read synchronously inside the `pending`/`complete`/`failed` event
+   * handlers so the SSE wiring can qualify the broadcast to the right
+   * Settings row (docs/150).
+   */
+  getActiveAccountId(): string | null;
 
   /**
    * Tear down any in-flight CLI subprocess and per-flow timers. Called from

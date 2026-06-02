@@ -879,27 +879,54 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   // remaining direct listeners, but no SSE wiring depends on them.
   for (const [agentId, mgr] of authManagers) {
     mgr.on("pending", (details: AgentAuthPendingDetails) => {
-      sseBroadcast("agent_auth_pending", { agentId, details });
+      // docs/150 — qualify the broadcast with the account being authenticated
+      // (read synchronously here, while the flow is still active) so the
+      // matching Settings row surfaces the pending URL/code.
+      const accountId = mgr.getActiveAccountId() ?? undefined;
+      sseBroadcast("agent_auth_pending", { agentId, ...(accountId ? { accountId } : {}), details });
     });
 
     mgr.on("complete", () => {
-      // After a fresh sign-in, re-register the default provider-account row
-      // if it was dropped on the previous sign-out. The migration is a no-op
-      // when any account row for the agent already exists, so re-auth into
-      // an existing account stays untouched. See the matching teardown in
-      // `DELETE /api/auth/api-key` (Claude) and `DELETE /api/codex-auth`.
-      providerAccountManager.migrateDefaultAccounts();
+      const accountId = mgr.getActiveAccountId() ?? undefined;
+      if (accountId) {
+        // docs/150 — a scoped login finished: flip the row to `ready` and
+        // re-push the fresh token only into sessions pinned to this account.
+        try {
+          providerAccountManager.setAccountStatus(agentId, accountId, "ready");
+        } catch (err) {
+          console.error(`[auth] failed to mark account ${accountId} ready:`, err);
+        }
+      } else {
+        // Singleton sign-in: re-register the default provider-account row if it
+        // was dropped on the previous sign-out. The migration is a no-op when
+        // any account row for the agent already exists, so re-auth into an
+        // existing account stays untouched. See the matching teardown in
+        // `DELETE /api/auth/api-key` (Claude) and `DELETE /api/codex-auth`.
+        providerAccountManager.migrateDefaultAccounts();
+      }
       agentRegistry.refreshAuth(agentId);
-      repushTokenToPinnedSessions(agentId);
-      sseBroadcast("agent_auth_complete", { agentId });
+      repushTokenToPinnedSessions(agentId, accountId);
+      sseBroadcast("agent_auth_complete", { agentId, ...(accountId ? { accountId } : {}) });
       sseBroadcast("agent_list", agentListPayload());
       sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
     });
 
     mgr.on("failed", (payload?: AgentAuthFailedPayload) => {
+      const accountId = mgr.getActiveAccountId() ?? undefined;
       console.log(`[${agentId}-auth] flow failed:`, payload?.reason ?? "", payload?.message ?? "");
+      if (accountId) {
+        // docs/150 — record the scoped failure on the row so Settings shows
+        // "auth failed" instead of a stuck "authenticating" spinner.
+        try {
+          providerAccountManager.setAccountStatus(agentId, accountId, "auth_failed");
+        } catch (err) {
+          console.error(`[auth] failed to mark account ${accountId} auth_failed:`, err);
+        }
+        sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
+      }
       sseBroadcast("agent_auth_failed", {
         agentId,
+        ...(accountId ? { accountId } : {}),
         ...(payload?.reason ? { reason: payload.reason } : {}),
         ...(payload?.message ? { message: payload.message } : {}),
       });

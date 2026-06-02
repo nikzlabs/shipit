@@ -459,6 +459,68 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(deleted.statusCode).toBe(409);
       expect((deleted.json() as { error: string }).error).toMatch(/pinned/i);
     });
+
+    it("starts, feeds a code to, and cancels an account-scoped login (docs/150)", async () => {
+      // The Claude auth manager is the StubAuthManager here, so the scoped
+      // login flow never spawns a real CLI.
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/provider-accounts",
+        payload: { provider: "claude", label: "Work Anthropic" },
+      });
+      const accountId = (created.json() as { account: { id: string } }).account.id;
+
+      const login = await app.inject({
+        method: "POST",
+        url: `/api/provider-accounts/claude/${accountId}/login`,
+      });
+      expect(login.statusCode).toBe(202);
+      expect((login.json() as { account: { status: string } }).account.status).toBe("authenticating");
+
+      // The list reflects the in-flight status too.
+      const listed = await app.inject({ method: "GET", url: "/api/provider-accounts" });
+      const row = (listed.json() as { accounts: { id: string; status: string }[] }).accounts
+        .find((a) => a.id === accountId);
+      expect(row?.status).toBe("authenticating");
+
+      const code = await app.inject({
+        method: "POST",
+        url: `/api/provider-accounts/claude/${accountId}/login/code`,
+        payload: { code: "abc-123" },
+      });
+      expect(code.statusCode).toBe(200);
+
+      // Cancel resets the row from the on-disk credential check (the stub
+      // reports configured, so it lands on "ready").
+      const cancelled = await app.inject({
+        method: "POST",
+        url: `/api/provider-accounts/claude/${accountId}/login/cancel`,
+      });
+      expect(cancelled.statusCode).toBe(200);
+      expect((cancelled.json() as { account: { status: string } }).account.status).toBe("ready");
+    });
+
+    it("rejects an empty login code and an unknown account (docs/150)", async () => {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/provider-accounts",
+        payload: { provider: "claude", label: "Work Anthropic" },
+      });
+      const accountId = (created.json() as { account: { id: string } }).account.id;
+
+      const emptyCode = await app.inject({
+        method: "POST",
+        url: `/api/provider-accounts/claude/${accountId}/login/code`,
+        payload: { code: "   " },
+      });
+      expect(emptyCode.statusCode).toBe(400);
+
+      const unknown = await app.inject({
+        method: "POST",
+        url: "/api/provider-accounts/claude/acct_does-not-exist/login",
+      });
+      expect(unknown.statusCode).toBe(404);
+    });
   });
 
   // ---- Auth mutations ----

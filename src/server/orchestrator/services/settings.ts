@@ -353,6 +353,62 @@ export function deleteProviderAccount(
   }
 }
 
+/**
+ * Start an account-scoped provider login (docs/150). The provider CLI is
+ * spawned with HOME pointed at the account's credential root; pending URL/code
+ * and completion stream over the existing `agent_auth_*` SSE family, now
+ * carrying the `accountId`. Returns the refreshed account list so the row's
+ * `authenticating` status renders immediately.
+ */
+export function startProviderAccountLogin(
+  providerAccountManager: ProviderAccountManager,
+  provider: AgentId,
+  accountId: string,
+): { account: ProviderAccount; accounts: ProviderAccount[] } {
+  validateProvider(provider);
+  validateAccountId(accountId);
+  try {
+    const account = providerAccountManager.startAccountAuth(provider, accountId);
+    return { account, accounts: providerAccountManager.list() };
+  } catch (err) {
+    throw providerAccountServiceError(err);
+  }
+}
+
+/** Cancel an in-flight account-scoped login (docs/150). */
+export function cancelProviderAccountLogin(
+  providerAccountManager: ProviderAccountManager,
+  provider: AgentId,
+  accountId: string,
+): { account: ProviderAccount; accounts: ProviderAccount[] } {
+  validateProvider(provider);
+  validateAccountId(accountId);
+  try {
+    const account = providerAccountManager.cancelAccountAuth(provider, accountId);
+    return { account, accounts: providerAccountManager.list() };
+  } catch (err) {
+    throw providerAccountServiceError(err);
+  }
+}
+
+/** Submit an OAuth code into an in-flight scoped Claude login (docs/150). */
+export function submitProviderAccountCode(
+  providerAccountManager: ProviderAccountManager,
+  provider: AgentId,
+  accountId: string,
+  code: string,
+): void {
+  validateProvider(provider);
+  validateAccountId(accountId);
+  const trimmed = typeof code === "string" ? code.trim() : "";
+  if (!trimmed) throw new ServiceError(400, "Authorization code cannot be empty");
+  try {
+    providerAccountManager.submitAccountCode(provider, accountId, trimmed);
+  } catch (err) {
+    throw providerAccountServiceError(err);
+  }
+}
+
 function validateProvider(provider: AgentId): void {
   if (provider !== "claude" && provider !== "codex") {
     throw new ServiceError(400, "Unknown provider");

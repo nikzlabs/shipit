@@ -2,17 +2,25 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import {
   buildRunnerFactory,
   createIdleEnforcer,
   IDLE_GRACE_PERIOD_MS,
   runMcpOAuthStartupRefresh,
   scheduleStartupTasks,
+  wireEventHandlers,
 } from "./app-lifecycle.js";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { CredentialStore } from "./credential-store.js";
+import { ProviderAccountManager } from "./provider-account-manager.js";
+import { SessionManager } from "./sessions.js";
+import { createTestDatabaseManager } from "./integration_tests/test-helpers.js";
 import type { AgentId } from "../shared/types.js";
+import type { AgentAuthManager } from "./agent-auth-manager.js";
+import type { GitHubAuthManager } from "./github-auth.js";
+import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { SessionContainerManager } from "./session-container.js";
 
 /**
@@ -711,5 +719,85 @@ describe("scheduleStartupTasks — warms every ready repo at boot (docs/148)", (
     expect([...calls].sort()).toEqual(["fresh", "migrated", "stale"]);
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
+  let tmp: string;
+
+  /** Fake auth manager exposing a settable active account id. */
+  class FakeAuthManager extends EventEmitter {
+    activeAccountId: string | null = null;
+    readonly agentId: AgentId = "claude";
+    getActiveAccountId(): string | null { return this.activeAccountId; }
+    start() {}
+    cancel() {}
+    signOut() {}
+    isConfigured() { return true; }
+    kill() {}
+    getPendingPayload() { return null; }
+  }
+
+  function setup() {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-wire-auth-"));
+    const credentialStore = new CredentialStore(tmp);
+    const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
+    const account = providerAccountManager.create("claude", "Work");
+    const sessionManager = new SessionManager(createTestDatabaseManager());
+    const mgr = new FakeAuthManager();
+    const events: { event: string; data: Record<string, unknown> }[] = [];
+    wireEventHandlers({
+      authManagers: new Map<AgentId, AgentAuthManager>([["claude", mgr as unknown as AgentAuthManager]]),
+      githubAuthManager: new EventEmitter() as unknown as GitHubAuthManager,
+      agentRegistry: { refreshAuth: () => {}, list: () => [] } as unknown as AgentRegistry,
+      providerAccountManager,
+      sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
+      credentialsDir: tmp,
+      sessionManager,
+    });
+    return { providerAccountManager, mgr, events, account };
+  }
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("scoped complete flips the row to ready and qualifies the SSE with accountId", () => {
+    const { providerAccountManager, mgr, events, account } = setup();
+    mgr.activeAccountId = account.id;
+    mgr.emit("complete");
+
+    expect(providerAccountManager.get("claude", account.id)?.status).toBe("ready");
+    const complete = events.find((e) => e.event === "agent_auth_complete");
+    expect(complete?.data).toMatchObject({ agentId: "claude", accountId: account.id });
+  });
+
+  it("scoped failure marks the row auth_failed and qualifies the SSE", () => {
+    const { providerAccountManager, mgr, events, account } = setup();
+    mgr.activeAccountId = account.id;
+    mgr.emit("failed", { reason: "error" });
+
+    expect(providerAccountManager.get("claude", account.id)?.status).toBe("auth_failed");
+    const failed = events.find((e) => e.event === "agent_auth_failed");
+    expect(failed?.data).toMatchObject({ agentId: "claude", accountId: account.id, reason: "error" });
+  });
+
+  it("scoped pending qualifies the SSE with accountId", () => {
+    const { mgr, events, account } = setup();
+    mgr.activeAccountId = account.id;
+    mgr.emit("pending", { kind: "code-paste-url", verificationUri: "https://example.com" });
+
+    const pending = events.find((e) => e.event === "agent_auth_pending");
+    expect(pending?.data).toMatchObject({ agentId: "claude", accountId: account.id });
+  });
+
+  it("singleton complete omits accountId", () => {
+    const { mgr, events } = setup();
+    mgr.activeAccountId = null;
+    mgr.emit("complete");
+
+    const complete = events.find((e) => e.event === "agent_auth_complete");
+    expect(complete?.data).toMatchObject({ agentId: "claude" });
+    expect(complete?.data.accountId).toBeUndefined();
   });
 });

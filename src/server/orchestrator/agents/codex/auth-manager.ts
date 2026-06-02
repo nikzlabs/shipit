@@ -32,6 +32,7 @@
 
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
+import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import {
   existsSync,
@@ -42,7 +43,11 @@ import {
   statSync,
 } from "node:fs";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
-import type { AgentAuthManager } from "../../agent-auth-manager.js";
+import type {
+  AgentAuthManager,
+  AgentAuthStartOptions,
+  AgentAuthScopeOptions,
+} from "../../agent-auth-manager.js";
 import type { AgentId } from "../../../shared/types.js";
 import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
 
@@ -64,11 +69,24 @@ export interface CodexAuthFailedEvent {
 
 // ---- Constants ----
 
-/** Path the Codex CLI uses for persisted ChatGPT credentials. */
+/** Legacy singleton HOME the CLI runs under when no account scope is set. */
+const CODEX_DEFAULT_HOME = "/root";
+
+/** Path the Codex CLI uses for persisted ChatGPT credentials (singleton). */
 export const CODEX_CONFIG_DIR = "/root/.codex";
 
 /** File written by `codex login --device-auth` once the user approves. */
 export const CODEX_AUTH_FILE = `${CODEX_CONFIG_DIR}/auth.json`;
+
+/** `.codex` config dir for an account root (docs/150) or the singleton path. */
+function codexConfigDirFor(credentialDir: string | null): string {
+  return credentialDir ? path.join(credentialDir, ".codex") : CODEX_CONFIG_DIR;
+}
+
+/** `auth.json` path for an account root (docs/150) or the singleton path. */
+function codexAuthFileFor(credentialDir: string | null): string {
+  return path.join(codexConfigDirFor(credentialDir), "auth.json");
+}
 
 /**
  * OAuth 2.0 Device Authorization Grant codes are TTL-bounded by the auth
@@ -99,10 +117,10 @@ export const USER_CODE_PATTERN = /\b([A-Z0-9]{4}-[A-Z0-9]{5})\b/;
  * broken symlink errors, so resolve the target first. Mirrors the
  * `ensureOnboardingComplete` dance in `auth.ts`.
  */
-function ensureCodexDir(): void {
-  let dir = CODEX_CONFIG_DIR;
+function ensureCodexDir(configDir: string): void {
+  let dir = configDir;
   try {
-    dir = readlinkSync(CODEX_CONFIG_DIR);
+    dir = readlinkSync(configDir);
   } catch {
     // Not a symlink or doesn't exist — use the path directly.
   }
@@ -110,6 +128,17 @@ function ensureCodexDir(): void {
     mkdirSync(dir, { recursive: true });
   } catch (err) {
     console.warn("[codex-auth] Failed to create config dir:", err);
+  }
+}
+
+/** True iff the `auth.json` under `configDir` exists and is non-empty. */
+function authFileExistsAt(authFile: string): boolean {
+  try {
+    if (!existsSync(authFile)) return false;
+    const st = statSync(authFile);
+    return st.isFile() && st.size > 0;
+  } catch {
+    return false;
   }
 }
 
@@ -224,15 +253,9 @@ export function extractCodexPlan(obj: Record<string, unknown>): string | null {
   return known[lower] ?? raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
-/** True iff `auth.json` exists and has non-zero size. */
+/** True iff the singleton `auth.json` exists and has non-zero size. */
 function authFileExists(): boolean {
-  try {
-    if (!existsSync(CODEX_AUTH_FILE)) return false;
-    const st = statSync(CODEX_AUTH_FILE);
-    return st.isFile() && st.size > 0;
-  } catch {
-    return false;
-  }
+  return authFileExistsAt(CODEX_AUTH_FILE);
 }
 
 // ---- Manager ----
@@ -276,6 +299,15 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
   private spawnFn: SpawnFn;
   private checkAuthFile: () => boolean;
   private timeoutMs: number;
+  /**
+   * Credential root (provider-account directory) the in-flight flow is
+   * scoped to, or `null` for the legacy singleton flow (docs/150). The CLI
+   * is spawned with `HOME` pointed here; the close-handler credential check
+   * resolves the `auth.json` path off it. Cleared after the terminal events.
+   */
+  private activeCredentialDir: string | null = null;
+  /** Provider-account id for the in-flight flow, or `null` when singleton. */
+  private activeFlowAccountId: string | null = null;
 
   constructor(opts: CodexAuthManagerOptions = {}) {
     super();
@@ -291,8 +323,18 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
    * `authConfigured: true` whenever a ChatGPT login is on disk, regardless
    * of whether `OPENAI_API_KEY` is also set.
    */
-  checkCredentials(): boolean {
+  checkCredentials(credentialDir?: string): boolean {
+    // During a scoped flow, a no-arg call (from the close handler) resolves
+    // to the active account's dir; an explicit `credentialDir` always wins.
+    // The injected `checkAuthFile` only knows the singleton path, so scoped
+    // checks read the account's `auth.json` directly.
+    const scoped = credentialDir ?? this.activeCredentialDir;
+    if (scoped) return authFileExistsAt(codexAuthFileFor(scoped));
     return this.checkAuthFile();
+  }
+
+  getActiveAccountId(): string | null {
+    return this.activeFlowAccountId;
   }
 
   /**
@@ -306,12 +348,12 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
    * `cancel()` and `kill()` already exist on this class with the right
    * shape; the interface just requires them.
    */
-  start(): void {
-    this.startDeviceFlow();
+  start(opts?: AgentAuthStartOptions): void {
+    this.startDeviceFlow(opts);
   }
 
-  isConfigured(): boolean {
-    return this.checkCredentials();
+  isConfigured(opts?: AgentAuthScopeOptions): boolean {
+    return this.checkCredentials(opts?.credentialDir);
   }
 
   /**
@@ -346,7 +388,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
    *   quota to surface), and `{ token: null, reason:
    *   "not-authenticated" }` when nothing usable is present.
    */
-  async getAccessToken(): Promise<
+  async getAccessToken(credentialDir?: string): Promise<
     | {
         token: string;
         source: "file";
@@ -355,9 +397,11 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
       }
     | { token: null; reason: "api-key" | "not-authenticated" }
   > {
-    if (this.checkAuthFile()) {
+    const authFile = credentialDir ? codexAuthFileFor(credentialDir) : CODEX_AUTH_FILE;
+    const present = credentialDir ? authFileExistsAt(authFile) : this.checkAuthFile();
+    if (present) {
       try {
-        const raw = readFileSync(CODEX_AUTH_FILE, "utf-8");
+        const raw = readFileSync(authFile, "utf-8");
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         const token = extractCodexAccessToken(parsed);
         if (token) {
@@ -405,7 +449,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
    * progresses. No-op if a device flow is already in flight (mirrors the
    * `if (this.proc) return` guard in `AuthManager.startOAuthFlow`).
    */
-  startDeviceFlow(): void {
+  startDeviceFlow(opts?: AgentAuthStartOptions): void {
     if (this.proc) {
       console.log("[codex-auth] startDeviceFlow() skipped — process already running (pid %d)", this.proc.pid);
       // Re-broadcast the cached pending event so a caller that lost its UI
@@ -430,11 +474,17 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     this.outputBuffer = "";
     this.pendingEmitted = false;
     this.lastPendingEvent = null;
+    // Scope this flow to a provider account (docs/150) — or `null` for the
+    // legacy singleton flow. The CLI runs with HOME pointed at the account
+    // root, so it writes `<root>/.codex/auth.json`.
+    this.activeCredentialDir = opts?.credentialDir ?? null;
+    this.activeFlowAccountId = opts?.accountId ?? null;
+    const home = this.activeCredentialDir ?? CODEX_DEFAULT_HOME;
 
     // Make sure the dir exists; the CLI creates the file but expects the
     // parent dir to be writable. In Docker this also dereferences the
     // /root/.codex → /credentials/.codex symlink.
-    ensureCodexDir();
+    ensureCodexDir(codexConfigDirFor(this.activeCredentialDir));
 
     let proc: ChildProcess;
     try {
@@ -442,7 +492,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
         "codex",
         ["login", "--device-auth"],
         {
-          env: { ...process.env, HOME: "/root" },
+          env: { ...process.env, HOME: home },
           stdio: ["ignore", "pipe", "pipe"],
         },
       );
@@ -451,6 +501,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
       console.warn("[codex-auth] Failed to spawn codex login:", msg);
       this.emit("codex_auth_failed", { reason: "error", message: msg } satisfies CodexAuthFailedEvent);
       this.emit("failed", { reason: "error", message: msg });
+      this.clearActiveScope();
       return;
     }
 
@@ -483,8 +534,11 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
         // Normalized AgentAuthManager event — see the matching emit in
         // `AuthManager`. The legacy event keeps the per-agent SSE wiring
         // working; the normalized event lets the limits-registry map-loop
-        // subscribe without knowing the backend.
+        // subscribe without knowing the backend. The SSE wiring reads
+        // `getActiveAccountId()` synchronously here, so clear the scope
+        // *after* the emit returns.
         this.emit("complete");
+        this.clearActiveScope();
         return;
       }
 
@@ -501,6 +555,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
         message: failMessage,
       } satisfies CodexAuthFailedEvent);
       this.emit("failed", { reason: "error", message: failMessage });
+      this.clearActiveScope();
     });
 
     // Hard ceiling — the device code itself expires after 15 minutes.
@@ -534,17 +589,21 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     } catch {
       // Process already dead — nothing to do.
     }
+    this.clearActiveScope();
   }
 
   /**
    * Drop the on-disk credentials so the next agent turn falls back to the
-   * API key path (or to no auth at all). Idempotent.
+   * API key path (or to no auth at all). Idempotent. Pass a `credentialDir`
+   * to remove a specific provider account's `auth.json` (docs/150) instead
+   * of the singleton file.
    */
-  signOut(): void {
+  signOut(opts?: AgentAuthScopeOptions): void {
+    const authFile = opts?.credentialDir ? codexAuthFileFor(opts.credentialDir) : CODEX_AUTH_FILE;
     try {
-      if (existsSync(CODEX_AUTH_FILE)) {
-        rmSync(CODEX_AUTH_FILE, { force: true });
-        console.log("[codex-auth] Removed", CODEX_AUTH_FILE);
+      if (existsSync(authFile)) {
+        rmSync(authFile, { force: true });
+        console.log("[codex-auth] Removed", authFile);
       }
     } catch (err) {
       console.warn("[codex-auth] Failed to remove auth file:", err);
@@ -605,6 +664,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     this.proc = null;
     this.lastPendingEvent = null;
     this.clearTimeoutHandle();
+    this.clearActiveScope();
     if (!proc) return;
     proc.removeAllListeners("close");
     proc.removeAllListeners("error");
@@ -613,6 +673,17 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     } catch {
       // Already gone.
     }
+  }
+
+  /**
+   * Forget the in-flight flow's account scope. Called after the terminal
+   * `complete`/`failed` events have fired (the SSE wiring reads
+   * {@link getActiveAccountId} synchronously inside those handlers, so
+   * clearing earlier would strand the broadcast with a `null` account).
+   */
+  private clearActiveScope(): void {
+    this.activeCredentialDir = null;
+    this.activeFlowAccountId = null;
   }
 
   private clearTimeoutHandle(): void {
