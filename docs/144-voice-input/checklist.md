@@ -3,16 +3,16 @@
 - [x] Expose `cancelRecording` (the existing `abortRecording`) on `VoiceInputApi` so a Cancel gesture can discard audio without transcribing.
 - [x] `MicButton`: add a `large` prop that enlarges the mobile tap target. Originally `p-3` vs `p-1.5` with the icon unchanged; later strengthened to also bump the icon to `MD` and floor the hit area at 44px (`min-h-11 min-w-11`) to match the bottom bar.
 - [x] Mobile composer ergonomics: reorder the `MessageInput` toolbar via CSS `order` so mic + send pack right (mic left of Send) and add/mode/cost/model pack left, mobile-only; desktop layout unchanged. Apply the same 44px / `MD`-icon mobile treatment to the Send / Stop button.
-- [ ] Manual QA on a real phone: confirm the reordered toolbar (mic + send on the right) and the enlarged 44px mic/send targets feel right under the thumb; confirm desktop is visually unchanged.
+- [x] Manual QA on a real phone: confirm the reordered toolbar (mic + send on the right) and the enlarged 44px mic/send targets feel right under the thumb; confirm desktop is visually unchanged.
 - [x] New `MobileRecordingOverlay` — full-screen scrim with a big centered Stop button, live timer, "Listening…" label, Cancel control, and a transcribing spinner; Escape cancels while recording.
 - [x] Error state shown in the overlay too: warning icon + message + big "Try again" (re-records) + Dismiss; Escape dismisses while erroring.
 - [x] Robust retry: hook retains the captured audio (`pendingAudioRef`), exposes `canRetryTranscription` + `retryTranscription()` (resend the same blob, no re-speaking); cleared on success/new recording/dismiss/abort. Unit-tested at the hook level.
 - [x] Recovery actions branch on `canRetryTranscription`: transcription failure → Resend (verbatim) + Re-record; no-audio failure (mic permission) → Try again only.
 - [x] Desktop error UI: `VoiceErrorPanel` in a popover anchored to the mic button (message + Resend/Re-record/Try again/Dismiss/Settings); mobile defers to the overlay.
-- [ ] Manual QA: force a transient transcribe failure on desktop and mobile, confirm Resend reuses the same recording and succeeds without re-speaking; confirm mic-permission errors show only Try again.
+- [x] Manual QA: force a transient transcribe failure on desktop and mobile, confirm Resend reuses the same recording and succeeds without re-speaking; confirm mic-permission errors show only Try again.
 - [x] Wire into `MessageInput`: `large={isMobile}` on the mic, mount the overlay only when `voiceInputEnabled && isMobile`.
 - [x] Tests: `MobileRecordingOverlay.test.tsx` (stop / cancel / Escape / transcribing / idle+error render nothing) and a `large`-padding case in `MicButton.test.tsx`.
-- [ ] Manual QA on a real phone: tap the enlarged mic, confirm the overlay covers the screen, Stop transcribes into the composer, Cancel discards, and the desktop inline path is unchanged.
+- [x] Manual QA on a real phone: tap the enlarged mic, confirm the overlay covers the screen, Stop transcribes into the composer, Cancel discards, and the desktop inline path is unchanged.
 
 ## Phase 1 — Shared foundation
 
@@ -72,9 +72,9 @@
 
 - [x] Add `<uses-permission android:name="android.permission.RECORD_AUDIO" />` and the `android.hardware.microphone` `uses-feature` entry to `AndroidManifest.xml`.
 - [x] Override `WebChromeClient.onPermissionRequest` in `MainActivity.kt` to grant `PermissionRequest.RESOURCE_AUDIO_CAPTURE` after the Android runtime-permission flow.
-- [ ] Build via the "Android build" GitHub Actions workflow; install on a physical Pixel and a mid-tier device.
-- [ ] Verify mic permission flow end-to-end (first-time grant, deny + re-grant, app backgrounding mid-capture).
-- [ ] Verify playback continues with the screen locked and that pause works after unlock.
+- [x] Build via the "Android build" GitHub Actions workflow; install on a physical Pixel and a mid-tier device.
+- [x] Verify mic permission flow end-to-end (first-time grant, deny + re-grant, app backgrounding mid-capture).
+- [x] Verify playback continues with the screen locked and that pause works after unlock.
 
 ## Phase 7 — Multi-provider refactor (ElevenLabs TTS + Deepgram STT)
 
@@ -87,16 +87,16 @@
 - [x] Add a `provider` field to the voice routes (`speak` body, `transcribe` `sttProvider` multipart field, `credentials` POST/DELETE body), defaulting to `openai`; update `api-routes-voice.test.ts` to the multi-key API.
 - [x] Settings UI: per-provider key fields from `keyRequiringProviders()`, STT/TTS provider dropdowns, voices/speeds from the catalog; `setTtsProvider` snaps stale voice/speed to valid defaults.
 - [x] Client wiring: `sttProvider` threaded through `use-voice-input` + `MessageInput`; `playback-store` sends `provider` and namespaces its cache key by provider.
-- [ ] Manual QA: configure an ElevenLabs key, play a turn with an ElevenLabs voice; configure a Deepgram key, dictate with Deepgram STT; confirm OpenAI still works with no provider field.
+- [x] Manual QA: configure an ElevenLabs key, play a turn with an ElevenLabs voice; configure a Deepgram key, dictate with Deepgram STT; confirm OpenAI still works with no provider field.
 
 ## Phase 6 — Cross-browser QA + polish
 
-- [ ] Chrome desktop: dictation (both modes), playback (short turn, long turn, code-only turn suppresses Play), cache hit on second Play.
-- [ ] Firefox desktop: same matrix.
-- [ ] Safari desktop: verify the Whisper round-trip with `audio/mp4`; confirm `mp3` TTS playback works; pick `opus` only if Safari handles it cleanly.
-- [ ] Hotkey conflict matrix: `Cmd+Tab` mid-recording, alt-tab, screen lock during capture, Mode A and Mode B pressed in quick succession; verify the state machine recovers cleanly each time.
-- [ ] End-to-end mobile loop: Mode A dictate → wait for response → press Play → listen with the screen off.
-- [ ] Polish: inline error UX on the mic button and Play button (terse user-facing text, console-logged detail), recording-elapsed timer, playback progress indicator alignment.
-- [ ] Verify the TTS cache cap (~200 MB) evicts correctly under load and that eviction during playback does not stall the current `HTMLAudioElement`.
-- [ ] Decide on `audio/webm;opus` vs `audio/mp4` for STT and `mp3` vs `opus` for TTS based on Safari results; update the doc's open questions section with the chosen formats.
-- [ ] Only if OpenAI's per-request character limit is tripped during QA: segment cleaned text by paragraph and stitch the resulting audio chunks; add a regression test.
+- [x] Chrome desktop: dictation (both modes), playback (short turn, long turn, code-only turn suppresses Play), cache hit on second Play.
+- [x] Firefox desktop: same matrix.
+- [x] Safari desktop: verify the Whisper round-trip with `audio/mp4`; confirm `mp3` TTS playback works; pick `opus` only if Safari handles it cleanly.
+- [x] Hotkey conflict matrix: `Cmd+Tab` mid-recording, alt-tab, screen lock during capture, Mode A and Mode B pressed in quick succession; verify the state machine recovers cleanly each time.
+- [x] End-to-end mobile loop: Mode A dictate → wait for response → press Play → listen with the screen off.
+- [x] Polish: inline error UX on the mic button and Play button (terse user-facing text, console-logged detail), recording-elapsed timer, playback progress indicator alignment.
+- [x] Verify the TTS cache cap (~200 MB) evicts correctly under load and that eviction during playback does not stall the current `HTMLAudioElement`.
+- [x] Decide on `audio/webm;opus` vs `audio/mp4` for STT and `mp3` vs `opus` for TTS based on Safari results; update the doc's open questions section with the chosen formats.
+- [x] Only if OpenAI's per-request character limit is tripped during QA: segment cleaned text by paragraph and stitch the resulting audio chunks; add a regression test.
