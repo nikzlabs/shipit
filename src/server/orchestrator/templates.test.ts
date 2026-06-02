@@ -2,12 +2,12 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listTemplates, getTemplate, applyTemplate, OPS_TEMPLATE_ID } from "./templates.js";
+import { listTemplates, getTemplate, applyTemplate, generatePackageLock, OPS_TEMPLATE_ID } from "./templates.js";
 
 describe("listTemplates", () => {
-  it("returns all 12 templates", () => {
+  it("returns all 16 templates", () => {
     const templates = listTemplates();
-    expect(templates).toHaveLength(12);
+    expect(templates).toHaveLength(16);
   });
 
   it("returns templates without file contents", () => {
@@ -172,5 +172,70 @@ describe("applyTemplate", () => {
 
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+// docs/168 — Python web framework templates. The defining invariant is the
+// venv-ownership design: the preview service installs its own deps (no
+// package.json, so no npm lockfile is generated for these).
+describe("Python templates (docs/168)", () => {
+  const PY_IDS = ["streamlit", "fastapi", "gradio", "dash"] as const;
+
+  it("registers all four Python starters", () => {
+    const ids = new Set(listTemplates().map((t) => t.id));
+    for (const id of PY_IDS) expect(ids.has(id)).toBe(true);
+  });
+
+  it("has no package.json (so generatePackageLock is skipped at call sites)", () => {
+    for (const id of PY_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.files["package.json"]).toBeUndefined();
+      expect(t.files["requirements.txt"]).toBeDefined();
+    }
+  });
+
+  it("scaffolds a self-installing preview service, not an agent.install pip step", () => {
+    for (const id of PY_IDS) {
+      const t = getTemplate(id)!;
+      const compose = t.files["docker-compose.yml"];
+      // The service builds its own venv and installs before launching.
+      expect(compose).toContain("python -m venv .venv");
+      expect(compose).toContain(".venv/bin/pip install");
+      // Bound to all interfaces so the preview proxy can reach it — either via a
+      // run flag (Streamlit/Uvicorn) or in the app's own launch call (Gradio/Dash).
+      const bindsAllInterfaces = [compose, t.files["app.py"], t.files["streamlit_app.py"]]
+        .filter(Boolean)
+        .some((src) => src!.includes("0.0.0.0"));
+      expect(bindsAllInterfaces).toBe(true);
+      // Single-writer: the install gate is explicitly off, and shipit.yaml has
+      // no Python agent.install step.
+      expect(compose).toContain("x-shipit-depends-on-install: false");
+      expect(t.files["shipit.yaml"]).not.toContain("install:");
+    }
+  });
+
+  it("Streamlit runs headless on its default port", () => {
+    const compose = getTemplate("streamlit")!.files["docker-compose.yml"];
+    expect(compose).toContain("--server.headless true");
+    expect(compose).toContain("8501:8501");
+  });
+});
+
+describe("generatePackageLock", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("respects an existing lockfile (no regeneration)", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "lockfile-test-"));
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "x" }));
+    const lock = path.join(tmpDir, "package-lock.json");
+    fs.writeFileSync(lock, '{"sentinel":true}');
+
+    // Resolves immediately without shelling out — the sentinel content is intact.
+    await generatePackageLock(tmpDir);
+    expect(JSON.parse(fs.readFileSync(lock, "utf-8"))).toEqual({ sentinel: true });
   });
 });
