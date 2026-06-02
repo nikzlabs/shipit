@@ -7,7 +7,7 @@ A browser-based AI editor — describe what you want in chat, the agent writes t
 
 The architecture is agent-agnostic, so additional backends can be added later.
 
-Six product choices set ShipIt apart from other AI coding harnesses:
+A few product choices set ShipIt apart from other AI coding harnesses:
 
 - **Compose-based previews** — declare your dev server, databases, queues, log tailers, and other app services in `docker-compose.yml`; ShipIt manages them and surfaces automatic or manual previews inside the app.
 - **Container-isolated sessions** — each session gets its own Docker container, branch, chat history, and workspace, so concurrent agents can't step on each other's files, processes, or installed dependencies. Sessions can span multiple repos, and an agent can spawn its own follow-up sessions to fan work out in parallel.
