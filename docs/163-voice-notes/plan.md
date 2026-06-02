@@ -37,6 +37,20 @@ Built end-to-end on the existing voice stack. Key files added/changed:
 - **Agent instructions + docs:** `agent-instructions.ts` "Voice notes" section
   and `shipit-docs/voice-notes.md`.
 
+### Post-ship fix — card render (visual-elements)
+
+The native sink shipped non-functional: `voice_note` WS messages arrived and
+`handleVoiceNote` appended the `{ role: "assistant", text: "", voiceNote }`
+message, but `buildVisualElements` (`src/client/components/visual-elements.ts`)
+silently dropped it. That grouping pass only emits a `message` element when a
+message has tools, non-empty text, images, files, or is a user message — an
+empty-text card message matched none of those and fell through to the
+"no bubble needed" branch, so `MessageList`'s `voiceNote` render branch never
+ran. The same latent gap affected every empty-text inline card —
+`agentReview` (151), `bugReport` (164), `spawnedSession`, and `spawnFailed`.
+Fixed by adding a `hasCardContent` guard so a card-bearing message always emits
+its `message` element; covered by `visual-elements.test.ts`.
+
 ## Problem
 
 ShipIt has two voice mechanisms today, and neither is the right surface for
