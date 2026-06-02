@@ -271,7 +271,7 @@ function readClaudeTokenExpiry(file: string): number | null {
  * else the `last_refresh` ISO timestamp. Returns null when none is parseable —
  * which the guards treat as "can't prove it's newer".
  */
-function readCodexTokenFreshness(file: string): number | null {
+export function readCodexTokenFreshness(file: string): number | null {
   try {
     const o = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
     const tokens = (o.tokens && typeof o.tokens === "object" ? o.tokens : {}) as Record<string, unknown>;
