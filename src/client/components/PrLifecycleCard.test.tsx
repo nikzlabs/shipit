@@ -259,6 +259,57 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByRole("menuitem", { name: "Copy branch name" })).toBeNull();
   });
 
+  describe("Sync with base overflow item", () => {
+    it("rebases onto the PR's base branch when clicked", async () => {
+      const user = userEvent.setup();
+      setCard("s1", {
+        ...openPrCard,
+        pr: { ...openPrCard.pr!, baseBranch: "develop" },
+      });
+      const startRebase = vi.fn().mockResolvedValue(undefined);
+      useGitStore.setState({ startRebase });
+
+      render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+      await user.click(screen.getByLabelText("Session actions"));
+
+      const item = screen.getByRole("menuitem", { name: "Sync with develop" });
+      expect(item).toHaveAttribute("title", "Rebase onto develop and push");
+
+      await act(async () => {
+        await user.click(item);
+      });
+      expect(startRebase).toHaveBeenCalledWith("s1", "develop");
+    });
+
+    it("hides the item when the session has no remote", async () => {
+      const user = userEvent.setup();
+      setCard("s1", openPrCard);
+      // canAutoMerge omitted → no remote → no sync affordance.
+      render(<PrLifecycleCard sessionId="s1" />);
+      await user.click(screen.getByLabelText("Session actions"));
+      expect(screen.queryByRole("menuitem", { name: /^Sync with/ })).toBeNull();
+    });
+
+    it("disables the item and does not rebase while the agent is in a turn", async () => {
+      const user = userEvent.setup();
+      setCard("s1", openPrCard);
+      useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
+      const startRebase = vi.fn().mockResolvedValue(undefined);
+      useGitStore.setState({ startRebase });
+
+      render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+      await user.click(screen.getByLabelText("Session actions"));
+
+      const item = screen.getByRole("menuitem", { name: "Sync with main" });
+      expect(item).toHaveAttribute("data-disabled");
+
+      await act(async () => {
+        await user.click(item);
+      });
+      expect(startRebase).not.toHaveBeenCalled();
+    });
+  });
+
   it("keeps ready phase create button idle while a normal agent turn is running", () => {
     useSessionStore.setState({ isLoading: true, activity: { label: "Thinking..." } });
     setCard("s1", {

@@ -29,6 +29,7 @@ import {
 } from "./PrStatusControls.js";
 import {
   ArrowCounterClockwiseIcon,
+  ArrowsClockwiseIcon,
   CopyIcon,
   DownloadSimpleIcon,
   GitBranchIcon,
@@ -718,6 +719,9 @@ export function PrLifecycleCard({
   const autoMerge = usePrStore((s) => s.autoMergeBySession[sessionId] ?? s.cardBySession[sessionId]?.autoMerge);
   const sessionBranch = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId)?.branch);
   const setToast = useUiStore((s) => s.setToast);
+  const startRebase = useGitStore((s) => s.startRebase);
+  const rebaseStatus = useGitStore((s) => s.rebaseStatus);
+  const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   // Prefer card-derived branches because they update mid-turn (e.g. branch
   // rename on graduation), then fall back to the session record.
   const headBranch = card?.pr?.headBranch ?? card?.headBranch ?? sessionBranch;
@@ -726,6 +730,19 @@ export function PrLifecycleCard({
     void navigator.clipboard.writeText(headBranch);
     setToast({ message: "Branch name copied" });
   }, [headBranch, setToast]);
+
+  // "Sync with <base>" rebases the branch onto the latest base and pushes,
+  // reusing the conflict-resolution flow that the push-rejected banner and the
+  // "Resolve conflicts" button already drive. Unlike those, this entry point is
+  // always available — the user no longer has to wait for a rejected push or a
+  // GitHub-reported conflict to pull in upstream changes. A clean rebase shows
+  // the spinner banner; a no-op (already current) confirms via toast.
+  const syncBaseBranch = card?.pr?.baseBranch ?? "main";
+  const syncDisabled = isAgentRunning || rebaseStatus !== "idle";
+  const handleSyncWithBase = useCallback(() => {
+    if (isAgentRunning || useGitStore.getState().rebaseStatus !== "idle") return;
+    void startRebase(sessionId, syncBaseBranch);
+  }, [isAgentRunning, startRebase, sessionId, syncBaseBranch]);
 
   // The whole card body opens the PR detail tab, but only once a PR exists
   // (open/merged/closed) — the ready/creating/error phases have no PR to
@@ -799,6 +816,20 @@ export function PrLifecycleCard({
               </div>
               <DropdownMenuSeparator />
             </>
+          )}
+          {canAutoMerge && (
+            <DropdownMenuItem
+              onSelect={handleSyncWithBase}
+              disabled={syncDisabled}
+              title={
+                isAgentRunning
+                  ? "Wait for the agent to finish before syncing"
+                  : `Rebase onto ${syncBaseBranch} and push`
+              }
+            >
+              <ArrowsClockwiseIcon size={ICON_SIZE.SM} />
+              Sync with {syncBaseBranch}
+            </DropdownMenuItem>
           )}
           {headBranch && (
             <DropdownMenuItem onSelect={handleCopyBranch} title={`Copy ${headBranch}`}>

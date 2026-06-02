@@ -376,6 +376,14 @@ interface GitStore {
 
 The agent resolves conflicts in chat (Phase 6). These UI components show status and provide manual triggers — the user doesn't need to interact with conflicts directly unless they want to abort.
 
+#### Always-available "Sync with {base}" entry point (2026-06-02)
+
+The original triggers above are both **reactive**: the push-rejected banner only appears after an auto-push is rejected for being behind, and the "Resolve conflicts" button (`PrStatusControls.tsx`) only appears when GitHub reports `mergeable === "conflicting"`. There was no way to pull in upstream changes *proactively* — before a rejected push or a reported conflict.
+
+The PR card overflow menu (`PrLifecycleCard.tsx`) now hosts a **"Sync with {base}"** item, gated on `canAutoMerge` (the session has a GitHub remote). It calls the existing `startRebase(sessionId, pr.baseBranch ?? "main")` — no new endpoint or server flow; it reuses `runRebaseFlow`, which already handles the up-to-date, clean-rebase, and conflict paths. It's disabled while an agent turn is running (mirrors `ResolveConflictsButton`) and while a rebase is already in progress.
+
+The one wire change: `WsRebaseComplete` gained an optional `upToDate` flag, set on the ancestry short-circuit in `runRebaseFlow`. A no-op sync (branch already current) would otherwise flash the in-progress banner and silently return to idle; the client now shows an "Already up to date" toast when `upToDate` is set. A real rebase already has the spinner banner, so only the no-op case toasts.
+
 ### WS Message Types
 
 ```typescript
