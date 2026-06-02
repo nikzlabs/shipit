@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,21 @@ import {
   extractPlanLabel,
   extractUrlFromBuffer,
 } from "./auth-manager.js";
+
+// docs/150 — mock node-pty so the scoped-spawn test can assert the CLI is
+// launched with HOME pointed at the account root, without spawning a real
+// `claude /login`. The other suites in this file don't spawn, so the mock is
+// inert for them. `vi.hoisted` keeps the capture array reachable from the
+// hoisted `vi.mock` factory.
+const ptyHoisted = vi.hoisted(() => ({
+  calls: [] as { cmd: string; args: readonly string[]; opts: { env?: Record<string, string> } }[],
+}));
+vi.mock("node-pty", () => ({
+  spawn: (cmd: string, args: readonly string[], opts: { env?: Record<string, string> }) => {
+    ptyHoisted.calls.push({ cmd, args, opts });
+    return { pid: 4242, onData: () => {}, onExit: () => {}, write: () => {}, kill: () => {} };
+  },
+}));
 
 describe("AUTH_URL_PATTERNS", () => {
   it("matches Anthropic console URLs", () => {
@@ -367,5 +382,43 @@ describe("AuthManager / account-scoped (docs/150)", () => {
     fs.writeFileSync(credPath, "{}");
     mgr.signOut({ credentialDir: tmp });
     expect(fs.existsSync(credPath)).toBe(false);
+  });
+});
+
+describe("AuthManager / scoped spawn (docs/150)", () => {
+  beforeEach(() => {
+    ptyHoisted.calls.length = 0;
+    // Fake timers so the 15s watchdog + wizard-Enter debounce don't leak/fire.
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("spawns claude /login with HOME at the account credential root", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-home-"));
+    try {
+      const mgr = new AuthManager();
+      mgr.startOAuthFlow({ accountId: "acct-7", credentialDir: tmp });
+
+      expect(ptyHoisted.calls).toHaveLength(1);
+      expect(ptyHoisted.calls[0].cmd).toBe("claude");
+      expect(ptyHoisted.calls[0].args).toEqual(["/login"]);
+      expect(ptyHoisted.calls[0].opts.env?.HOME).toBe(tmp);
+      expect(mgr.getActiveAccountId()).toBe("acct-7");
+      mgr.kill();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("spawns with HOME=/root for the legacy singleton flow", () => {
+    const mgr = new AuthManager();
+    mgr.startOAuthFlow();
+    expect(ptyHoisted.calls[0].opts.env?.HOME).toBe("/root");
+    expect(mgr.getActiveAccountId()).toBeNull();
+    mgr.kill();
   });
 });
