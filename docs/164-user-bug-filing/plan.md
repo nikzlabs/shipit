@@ -137,10 +137,14 @@ floor**: whatever happens next, known-shape secrets are already gone.
 **Stage 2 — LLM redaction pass (last step, best-effort).** Heuristics miss the
 unstructured stuff: a person's name, an internal hostname, a customer's data quoted
 in prose, a secret in a novel format. After Stage 1, send the *already-scrubbed*
-body to the model for a semantic privacy pass, using a **mid-tier (Sonnet-class)
-model** of the session's provider (`claude-sonnet-4-6` for Claude; the provider's
-mid-tier equivalent for Codex) — worth the small extra cost for a safety-critical
-pass that's filed publicly under the user's name. The input is just the
+body to the model for a semantic privacy pass, using **the same model the session
+already runs on** — whatever provider/CLI/model that is. This is deliberately
+provider-agnostic: there's no tier-mapping table to maintain (no "Sonnet-class for
+Claude, equivalent-for-Codex" guesswork that breaks on the next backend we add), and
+it makes the trust-boundary argument exact — it's literally the model that already
+processed the conversation. Cost and strength track the user's own session choice;
+a cheaper model yielding a weaker net is acceptable because Stage 1 is the
+deterministic floor and the card is the human backstop. The input is just the
 agent-authored body (the agent already chooses what's relevant when it composes the
 report — there is no separate excerpt-extraction step), with a sanity token ceiling
 as a guard against a pathologically large body. Hard constraints:
@@ -314,8 +318,8 @@ detection, issue locking, and the maintainers' ability to block an account.
 ## Open questions
 
 All four original open questions are resolved (Stage-2 runs orchestrator-side on the
-already-held OAuth credential; Stage-2 model is Sonnet-class; build is the bare
-`SHIPIT_BUILD_ID` SHA; target is hard-coded `nicolasalt/shipit` with body-marker
+already-held OAuth credential; Stage-2 reuses the session's own model; build is the
+bare `SHIPIT_BUILD_ID` SHA; target is hard-coded `nicolasalt/shipit` with body-marker
 labels). One follow-up emerged, tracked separately:
 
 - **Maintainer-side label automation** on `nicolasalt/shipit` — a small GitHub

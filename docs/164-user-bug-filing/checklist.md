@@ -2,7 +2,7 @@
 
 ## Redaction pipeline
 - [ ] `redaction.ts` Stage 1 — heuristic content scrubbers (`sk-`/`ghp_`/`Bearer`/long-token, emails, git URLs via `stripUrlCredentials`, workspace paths) replacing inline substrings with `[REDACTED]`; reuse `shipit-source.ts` path matchers only for path exclusion, not content
-- [ ] `redaction.ts` Stage 2 — LLM pass on the Stage-1 output using a mid-tier (Sonnet-class) model of the session's provider: model returns sensitive **spans**, orchestrator code applies redaction (verify deletion-only, no rewrite/inject); orchestrator-side call using the OAuth token it already owns (`agents/*/auth-manager.ts`) — no container round-trip, no new key; sanity token ceiling on the body
+- [ ] `redaction.ts` Stage 2 — LLM pass on the Stage-1 output using the session's own model (provider-agnostic, no tier mapping): model returns sensitive **spans**, orchestrator code applies redaction (verify deletion-only, no rewrite/inject); orchestrator-side call using the OAuth token it already owns (`agents/*/auth-manager.ts`) — no container round-trip, no new key; sanity token ceiling on the body
 - [ ] Fail-safe: Stage-2 error/timeout degrades to the Stage-1 floor and sets a "deep privacy check didn't run" flag on the card (never silently ships)
 - [ ] `redaction.test.ts` — Stage 1 scrubs inline `ghp_…`/email/workspace path in *free text*; Stage 2 (stubbed model) applies returned spans and rejects non-deletion output; Stage-2 failure degrades to floor + flag
 
