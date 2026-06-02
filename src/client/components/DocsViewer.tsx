@@ -10,6 +10,7 @@ import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { DocEntry } from "../../server/shared/types.js";
+import { compareDocsByRecency } from "../../server/shared/doc-sort.js";
 import { hasTrackedPlanSibling, hasTrackedSibling, isTracked } from "../utils/doc-paths.js";
 import { parseIssueRef } from "../utils/issue-ref.js";
 
@@ -151,13 +152,15 @@ function DocRowText({ doc, onClick }: { doc: DocEntry; onClick: () => void }) {
 }
 
 /**
- * Sort tracked docs. docs/168 removed priority/status from docs, so there's no
- * longer a "what's hot" signal to sort on — priority lives in the tracker now.
- * We fall back to a stable alphabetical path order, which keeps feature
- * directories grouped by their `NNN-` prefix.
+ * Sort tracked docs newest-first. docs/168 removed priority/status from docs,
+ * so there's no longer a "what's hot" signal to sort on — priority lives in the
+ * tracker now. Creation-recency is the best ordering left, and the `NNN-`
+ * prefix on feature directories is a reliable proxy for it, so we order
+ * descending by that number (see `compareDocsByRecency`) to keep the newest
+ * work at the top without scrolling.
  */
 function sortTrackedDocs(docs: DocEntry[]): DocEntry[] {
-  return [...docs].sort((a, b) => a.path.localeCompare(b.path));
+  return [...docs].sort((a, b) => compareDocsByRecency(a.path, b.path));
 }
 
 /**
