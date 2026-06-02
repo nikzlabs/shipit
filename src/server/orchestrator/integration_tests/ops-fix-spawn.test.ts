@@ -44,6 +44,7 @@ import {
   StubAuthManager,
   StubGitHubAuthManager,
   FakeClaudeProcess,
+  TestClient,
   createTestCredentialStore,
   createTestDatabaseManager,
   getRepoCacheDir,
@@ -60,6 +61,7 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
   let dbManager: DatabaseManager;
   let github: StubGitHubAuthManager;
   let buildSha: string;
+  let port: number;
   let origGitTerminalPrompt: string | undefined;
   const savedEnv = {
     dir: process.env.SHIPIT_SOURCE_DIR,
@@ -114,7 +116,9 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
       workspaceDir: tmpDir,
       serveStatic: false,
     });
-    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = /:(\d+)$/.exec(address);
+    port = match ? Number(match[1]) : 0;
   });
 
   afterEach(async () => {
@@ -172,6 +176,43 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
     const childWorkspace = path.join(tmpDir, "sessions", body.sessionId, "workspace");
     const childHead = execSync("git rev-parse HEAD", { cwd: childWorkspace, encoding: "utf8" }).trim();
     expect(childHead).toBe(buildSha);
+  });
+
+  it("emits a session_spawned event carrying the Ops fix metadata (source ref, target repo, diagnosis)", { timeout: 20_000 }, async () => {
+    const parentId = await createOpsParent();
+    github.setRepoWriteAccess(true);
+    // An attached viewer is what creates the runner the spawn route emits on.
+    const parentClient = await TestClient.connect(port, parentId);
+
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "Fix the container recreate loop\nmore detail", shipitSource: true, spawnedByTurn: "turn-1" },
+      });
+      expect(res.statusCode).toBe(200);
+
+      const spawnedMsg = (await parentClient.receiveType("session_spawned", 5000)) as {
+        type: "session_spawned";
+        shipitFix?: {
+          sourceRef: string;
+          sourceExact: boolean;
+          refSource?: string;
+          targetRepo?: string;
+          diagnosis?: string;
+        };
+      };
+
+      expect(spawnedMsg.shipitFix).toBeDefined();
+      // The child branched from the exact deployed commit, so the card shows it.
+      expect(spawnedMsg.shipitFix?.sourceRef).toBe(buildSha);
+      expect(spawnedMsg.shipitFix?.sourceExact).toBe(true);
+      expect(spawnedMsg.shipitFix?.targetRepo).toBe("owner/shipit");
+      // Diagnosis is the agent's first line — NOT the wrapped incident packet.
+      expect(spawnedMsg.shipitFix?.diagnosis).toBe("Fix the container recreate loop");
+    } finally {
+      parentClient.close();
+    }
   });
 
   it("refuses to spawn when the operator lacks write access (403)", { timeout: 20_000 }, async () => {

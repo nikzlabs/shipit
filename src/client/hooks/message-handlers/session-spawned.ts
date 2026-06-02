@@ -30,6 +30,7 @@ export const handleSessionSpawned: Handler<WsSessionSpawned> = (_ctx, data) => {
         title: data.title,
         ...(data.branch ? { branch: data.branch } : {}),
         spawnedAt: data.spawnedAt,
+        ...(data.shipitFix ? { shipitFix: data.shipitFix } : {}),
       },
     },
   ]);

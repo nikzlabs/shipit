@@ -504,6 +504,19 @@ export async function registerSessionRoutes(
         let effectivePrompt = body.prompt ?? "";
         let sourceBase = body.base;
         let repoUrlOverride: string | undefined;
+        // docs/162 — metadata for the Ops remediation card, captured here so the
+        // `session_spawned` emit below can render the "ShipIt fix" variant
+        // (source ref, target repo, diagnosis summary). Undefined for ordinary
+        // fan-out spawns.
+        let shipitFixMeta:
+          | {
+              sourceRef: string;
+              sourceExact: boolean;
+              refSource?: "build-id" | "checkout-head";
+              targetRepo?: string;
+              diagnosis?: string;
+            }
+          | undefined;
         if (body.shipitSource) {
           const parent = sessionManager.get(request.params.parentId);
           if (!parent) throw new ServiceError(404, "Parent session not found");
@@ -541,6 +554,17 @@ export async function registerSessionRoutes(
           });
           repoUrlOverride = readyRepoUrl;
           sourceBase = target.ref;
+          // Capture the diagnosis summary BEFORE wrapping it in the incident
+          // packet — the card shows the agent's own first line, not the packet
+          // header.
+          const diagnosisSummary = (body.prompt ?? "").trim().split(/\r?\n/)[0]?.slice(0, 200);
+          shipitFixMeta = {
+            sourceRef: target.ref,
+            sourceExact: target.exact,
+            ...(target.refSource ? { refSource: target.refSource } : {}),
+            targetRepo: `${parsed.owner}/${parsed.repo}`,
+            ...(diagnosisSummary ? { diagnosis: diagnosisSummary } : {}),
+          };
           effectivePrompt = buildShipitFixPrompt({
             ref: target.ref,
             exact: target.exact,
@@ -592,6 +616,7 @@ export async function registerSessionRoutes(
             title: result.session.title,
             ...(result.branch ? { branch: result.branch } : {}),
             spawnedAt: result.session.createdAt,
+            ...(shipitFixMeta ? { shipitFix: shipitFixMeta } : {}),
           });
         }
 
@@ -636,6 +661,7 @@ export async function registerSessionRoutes(
             reason: classifySpawnFailure(statusCode, errorMessage),
             ...(body.title ? { title: body.title } : {}),
             ...(promptPreview ? { promptPreview } : {}),
+            ...(body.shipitSource ? { shipitSource: true } : {}),
             failedAt: new Date().toISOString(),
           });
         }

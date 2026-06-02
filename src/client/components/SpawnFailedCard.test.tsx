@@ -74,4 +74,34 @@ describe("SpawnFailedCard", () => {
     render(<SpawnFailedCard {...rest} />);
     expect(screen.queryByTestId("spawn-failed-prompt")).not.toBeInTheDocument();
   });
+
+  // docs/162 — Ops `--shipit-source` failures get tailored copy.
+  describe("shipitSource variant", () => {
+    it("shows a write-access headline and incident hint on a 403", () => {
+      render(
+        <SpawnFailedCard
+          {...BASE_PROPS}
+          reason="invalid_request"
+          statusCode={403}
+          message="Cannot open a fix PR against shipit-hq/shipit: no write access. Produce a structured incident report with source references instead."
+          shipitSource
+        />,
+      );
+      expect(screen.getByTestId("spawn-failed-headline")).toHaveTextContent(/no write access to the shipit repo/i);
+      expect(screen.getByTestId("spawn-failed-incident-hint")).toHaveTextContent(/incident report/i);
+    });
+
+    it("labels the card as a ShipIt fix failure and defaults the title", () => {
+      const { title: _omit, ...rest } = BASE_PROPS;
+      render(<SpawnFailedCard {...rest} reason="error" statusCode={500} shipitSource />);
+      expect(screen.getByText("ShipIt fix failed")).toBeInTheDocument();
+      expect(screen.getByTestId("spawn-failed-title")).toHaveTextContent("ShipIt fix session");
+    });
+
+    it("does not show the incident hint for non-403 ShipIt-fix failures", () => {
+      render(<SpawnFailedCard {...BASE_PROPS} reason="quota_per_turn" statusCode={429} shipitSource />);
+      expect(screen.queryByTestId("spawn-failed-incident-hint")).not.toBeInTheDocument();
+      expect(screen.getByTestId("spawn-failed-headline")).toHaveTextContent(/per-turn shipit-fix limit/i);
+    });
+  });
 });

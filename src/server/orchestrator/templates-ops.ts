@@ -122,6 +122,9 @@ Paste one of these into chat instead of reconstructing the commands from memory:
 - [\`prompts/verify-ops-access.md\`](prompts/verify-ops-access.md) — verify that
   every privilege in the design doc actually works on this host (run this first
   on a freshly-provisioned ops host).
+- [\`prompts/remediate-shipit-bug.md\`](prompts/remediate-shipit-bug.md) — when
+  the incident looks like a ShipIt bug: read the deployed source read-only, then
+  spawn a targeted fix session that opens a PR (docs/162).
 
 ## How to act
 
@@ -287,6 +290,59 @@ host data and C was actually rejected.
   not a functional break.
 `;
 
+const PROMPT_REMEDIATE_SHIPIT_BUG = `# Remediate a ShipIt bug from Ops
+
+The current incident looks like it's caused by a bug in ShipIt itself (a
+lifecycle loop, stale runner, preview failure, GitHub-polling issue, deployment
+bug, etc.), not by a user's project. Diagnose it against the **deployed source**
+read-only, then — only if you have a concrete fix hypothesis — spawn a targeted
+fix session that owns the edits and opens a PR. This is the docs/162 flow.
+
+## 1. Confirm what's deployed
+\`\`\`
+shipit source status            # which commit is running, and is it exact or approximate?
+\`\`\`
+If \`status\` reports the source is unavailable, you can't reliably tie logs to
+code — say so and fall back to a written incident report. If it reports
+**approximate**, note that: a fix session off an approximate ref needs
+\`--approximate\` and the PR is explicitly marked as such.
+
+## 2. Tie the symptom to code (read-only)
+Use the host signals you already have (Docker state, container/orchestrator
+journals) to find the failing code path, then read the source *at the deployed
+commit*:
+\`\`\`
+shipit source search "LOOP DETECTED"                       # where is the symptom emitted?
+shipit source cat src/server/orchestrator/container-lifecycle.ts
+shipit source log src/server/orchestrator/container-lifecycle.ts   # what changed recently near here?
+shipit source blame src/server/orchestrator/container-lifecycle.ts # who last touched the suspect lines?
+shipit source show <commit>                                # inspect a suspect commit's diff
+\`\`\`
+Reads run against the deployed ref, so what you see is the code actually
+running. Secrets (\`.env\`, keys, \`.git\` internals) are redacted.
+
+## 3. Spawn a fix session (only with a real hypothesis)
+Write a tight diagnosis: the symptom, the suspected root cause, the candidate
+files/symbols, what to preserve, and what tests to run. Then:
+\`\`\`
+shipit session create --shipit-source --prompt-file - <<'EOF'
+Symptom: <one line>
+Root cause: <your hypothesis>
+Candidate files: <paths/symbols you inspected>
+Constraints: smallest fix; preserve <behavior>; run npm run test:dev + lint:dev + typecheck.
+EOF
+\`\`\`
+The child branches from the **exact deployed commit** so it can reproduce the
+bug, rebases onto the default branch before opening its PR, and owns all edits,
+commits, push, and PR creation. You can't edit its files or push its branch —
+use \`shipit session view/wait/message\` to follow up.
+
+If the spawn is refused with a write-access error, you don't have push access to
+the ShipIt repo. Don't retry — produce a structured incident report with the
+source references and a recommended patch outline so someone with write access
+can land it.
+`;
+
 /**
  * docs/128 — seed prompt for an ops session opened *to investigate another
  * session* (the sidebar "Investigate in Ops session" entry point).
@@ -341,5 +397,6 @@ export const OPS_TEMPLATE: ProjectTemplate = {
     "prompts/diagnose-stuck-session.md": PROMPT_DIAGNOSE_STUCK_SESSION,
     "prompts/daily-health.md": PROMPT_DAILY_HEALTH,
     "prompts/verify-ops-access.md": PROMPT_VERIFY_OPS_ACCESS,
+    "prompts/remediate-shipit-bug.md": PROMPT_REMEDIATE_SHIPIT_BUG,
   },
 };

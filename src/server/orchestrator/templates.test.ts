@@ -72,8 +72,12 @@ describe("getTemplate", () => {
         "prompts/diagnose-stuck-session.md",
         "prompts/daily-health.md",
         "prompts/verify-ops-access.md",
+        "prompts/remediate-shipit-bug.md",
       ]),
     );
+    // docs/162 — the remediation prompt drives the inspect-source → spawn-fix flow.
+    expect(ops.files["prompts/remediate-shipit-bug.md"]).toContain("shipit source status");
+    expect(ops.files["prompts/remediate-shipit-bug.md"]).toContain("--shipit-source");
     // The proxy mounts the real socket read-only; nothing else gets it.
     expect(ops.files["docker-compose.yml"]).toContain("docker-socket-proxy");
     expect(ops.files["docker-compose.yml"]).toContain("x-shipit-preview: auto");

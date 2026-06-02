@@ -141,6 +141,18 @@ export interface ChatMessage {
     title: string;
     branch?: string;
     spawnedAt: string;
+    /**
+     * docs/162 — present only for Ops `--shipit-source` fix-session spawns;
+     * renders the card's "ShipIt fix" variant (source ref, target repo,
+     * diagnosis summary). Absent for ordinary fan-out spawns.
+     */
+    shipitFix?: {
+      sourceRef: string;
+      sourceExact: boolean;
+      refSource?: "build-id" | "checkout-head";
+      targetRepo?: string;
+      diagnosis?: string;
+    };
   };
   /**
    * docs/117 cross-cutting follow-up — when set, this message renders a
@@ -160,6 +172,8 @@ export interface ChatMessage {
     message: string;
     statusCode: number;
     promptPreview?: string;
+    /** docs/162 — true when the rejected spawn was an Ops ShipIt fix session. */
+    shipitSource?: boolean;
     failedAt: string;
   };
   /**
@@ -624,6 +638,7 @@ export function MessageList({
                   title={msg.spawnedSession.title}
                   {...(msg.spawnedSession.branch ? { branch: msg.spawnedSession.branch } : {})}
                   spawnedAt={msg.spawnedSession.spawnedAt}
+                  {...(msg.spawnedSession.shipitFix ? { shipitFix: msg.spawnedSession.shipitFix } : {})}
                 />
               </div>
             </div>
@@ -705,6 +720,7 @@ export function MessageList({
                   message={msg.spawnFailed.message}
                   statusCode={msg.spawnFailed.statusCode}
                   {...(msg.spawnFailed.promptPreview ? { promptPreview: msg.spawnFailed.promptPreview } : {})}
+                  {...(msg.spawnFailed.shipitSource ? { shipitSource: true } : {})}
                   failedAt={msg.spawnFailed.failedAt}
                 />
               </div>

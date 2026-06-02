@@ -26,6 +26,7 @@ export const handleSessionSpawnFailed: Handler<WsSessionSpawnFailed> = (_ctx, da
         reason: data.reason,
         ...(data.title ? { title: data.title } : {}),
         ...(data.promptPreview ? { promptPreview: data.promptPreview } : {}),
+        ...(data.shipitSource ? { shipitSource: true } : {}),
         failedAt: data.failedAt,
       },
     },
