@@ -97,85 +97,11 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("POST /api/sessions/:id/pr/auto-fix", () => {
-  it("returns 500 when body missing 'enabled' field", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: `/api/sessions/${sessionId}/pr/auto-fix`,
-      headers: { "Content-Type": "application/json" },
-      payload: JSON.stringify({}),
-    });
-    expect(res.statusCode).toBe(400);
-    expect(res.json()).toMatchObject({ error: "\"enabled\" field is required (boolean)" });
-  });
-
-  it("toggles auto-fix on and returns state", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: `/api/sessions/${sessionId}/pr/auto-fix`,
-      headers: { "Content-Type": "application/json" },
-      payload: JSON.stringify({ enabled: true }),
-    });
-    expect(res.statusCode).toBe(200);
-    const data = res.json();
-    expect(data).toMatchObject({
-      enabled: true,
-      attemptCount: 0,
-      status: "idle",
-    });
-  });
-
-  it("toggles auto-fix off", async () => {
-    // Enable first
-    await app.inject({
-      method: "POST",
-      url: `/api/sessions/${sessionId}/pr/auto-fix`,
-      headers: { "Content-Type": "application/json" },
-      payload: JSON.stringify({ enabled: true }),
-    });
-
-    // Disable
-    const res = await app.inject({
-      method: "POST",
-      url: `/api/sessions/${sessionId}/pr/auto-fix`,
-      headers: { "Content-Type": "application/json" },
-      payload: JSON.stringify({ enabled: false }),
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ enabled: false });
-  });
-
-  it("persists auto-fix enablement set BEFORE a PR exists (docs/156)", async () => {
-    // The client side now exposes Auto-fix in the top-bar overflow whenever
-    // a session has a GitHub remote — including the pre-PR phase. This test
-    // pins the corresponding server contract: enabling auto-fix without a
-    // PR present must persist, so the poller's CI-failure path can react to
-    // the very first failing run once a PR is created.
-    expect(prStatusPoller.getAutoFixState(sessionId)).toBeUndefined();
-
-    const enableRes = await app.inject({
-      method: "POST",
-      url: `/api/sessions/${sessionId}/pr/auto-fix`,
-      headers: { "Content-Type": "application/json" },
-      payload: JSON.stringify({ enabled: true }),
-    });
-    expect(enableRes.statusCode).toBe(200);
-
-    // The setting is in place even though we never created a PR — the poller
-    // exposes it directly, and `markAutoFixRunning` (the function the poller
-    // calls when a failing CI run is observed) finds the existing state and
-    // increments its attempt counter rather than refusing to act.
-    const stored = prStatusPoller.getAutoFixState(sessionId);
-    expect(stored).toMatchObject({ enabled: true, attemptCount: 0, status: "idle" });
-
-    prStatusPoller.markAutoFixRunning(sessionId);
-    expect(prStatusPoller.getAutoFixState(sessionId)).toMatchObject({
-      enabled: true,
-      attemptCount: 1,
-      status: "running",
-    });
-  });
-});
+// docs/169 — the per-session POST /api/sessions/:id/pr/auto-fix toggle was
+// removed; auto-fix CI is now a global account-level setting
+// (PUT /api/settings { autoFixCi }). The auto-loop reads the global flag at
+// decision time. The manual "Fix CI" button (/pr/fix-ci) and `markAutoFixRunning`
+// remain and are covered below.
 
 describe("POST /api/sessions/:id/pr/fix-ci", () => {
   it("returns 401 when not authenticated with GitHub", async () => {
@@ -199,17 +125,13 @@ describe("POST /api/sessions/:id/pr/fix-ci", () => {
 });
 
 describe("PrStatusPoller auto-fix state", () => {
-  it("setAutoFixEnabled creates and returns state", () => {
-    const state = prStatusPoller.setAutoFixEnabled(sessionId, true);
-    expect(state).toMatchObject({ enabled: true, attemptCount: 0, status: "idle" });
-  });
-
   it("getAutoFixState returns undefined when not set", () => {
     expect(prStatusPoller.getAutoFixState(sessionId)).toBeUndefined();
   });
 
-  it("markAutoFixRunning increments attempt count", () => {
-    prStatusPoller.setAutoFixEnabled(sessionId, true);
+  it("markAutoFixRunning creates state and increments attempt count", () => {
+    // docs/169 — the manual "Fix CI" path marks a one-shot fix running. With
+    // no per-session toggle, markRunning lazily creates the state.
     prStatusPoller.markAutoFixRunning(sessionId);
 
     const state = prStatusPoller.getAutoFixState(sessionId);
@@ -217,7 +139,7 @@ describe("PrStatusPoller auto-fix state", () => {
   });
 
   it("untrackSession clears auto-fix state", () => {
-    prStatusPoller.setAutoFixEnabled(sessionId, true);
+    prStatusPoller.markAutoFixRunning(sessionId);
     prStatusPoller.untrackSession(sessionId);
 
     expect(prStatusPoller.getAutoFixState(sessionId)).toBeUndefined();

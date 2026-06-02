@@ -38,6 +38,7 @@ import { AutoFixManager, MAX_AUTO_FIX_ATTEMPTS, type FetchAndFixCb } from "./aut
 import { AutoMergeManager } from "./auto-merge-manager.js";
 import { CiGraceTracker } from "./ci-grace-tracker.js";
 import { AutoConflictResolveManager, MAX_AUTO_RESOLVE_ATTEMPTS, type RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
+import { RemediationArbiter } from "./auto-remediation-arbiter.js";
 
 // Re-export the pure parser helpers so existing callers
 // (`pr-status-poller.test.ts`, `services/github-ci-fix.ts`) keep working
@@ -184,6 +185,21 @@ export class PrStatusPoller {
    */
   private isAutoResolveEnabled: () => boolean;
 
+  /**
+   * docs/169 — global enable getter for the auto-fix-CI loop. Read at decision
+   * time so toggling the global setting takes effect on the next poll/idle with
+   * no per-session fan-out.
+   */
+  private isAutoFixEnabled: () => boolean;
+
+  /**
+   * docs/169 Workstream C — cross-automation arbiter shared by both remediation
+   * managers (mutual exclusion + await-fresh-signal) and consulted by auto-merge
+   * as a cheap precondition. One instance covers every session this poller
+   * tracks.
+   */
+  public readonly remediationArbiter = new RemediationArbiter();
+
   constructor(opts: {
     githubAuth: GitHubAuthManager;
     sessionManager: SessionManager;
@@ -203,6 +219,8 @@ export class PrStatusPoller {
     isAutoResolveEnabled?: () => boolean;
     /** docs/146 — rebase-and-resolve callback. Late-bindable via the manager's setter. */
     rebaseAndResolveCb?: RebaseAndResolveCb;
+    /** docs/169 — global gate getter for the auto-fix-CI loop. */
+    isAutoFixEnabled?: () => boolean;
   }) {
     this.githubAuth = opts.githubAuth;
     this.sessionManager = opts.sessionManager;
@@ -211,11 +229,23 @@ export class PrStatusPoller {
     this.onMergeDetectedCb = opts.onMergeDetectedCb;
     this.createGitManager = opts.createGitManager;
     this.isAutoResolveEnabled = opts.isAutoResolveEnabled ?? (() => false);
+    this.isAutoFixEnabled = opts.isAutoFixEnabled ?? (() => false);
 
     // Bind broadcast as the change callback so collaborators don't need to
     // know about SSE plumbing — they just say "this session changed."
     const onSessionChange = (sessionId: string) => this.broadcastSessionStatus(sessionId);
-    this.autoFix = new AutoFixManager(onSessionChange, opts.fetchAndFixCb);
+    // docs/169 — auto-fix is now a global-toggle, arbiter-aware specialization
+    // of the shared remediation base. Resolving runners needs the registry; in
+    // degraded test setups without one, `getRunner` returns undefined and the
+    // base's pre-attempt gate defers (matching the conflict manager's contract).
+    this.autoFix = new AutoFixManager(
+      onSessionChange,
+      (sessionId) => opts.runnerRegistry?.get(sessionId),
+      this.isAutoFixEnabled,
+      opts.fetchAndFixCb,
+      undefined,
+      this.remediationArbiter,
+    );
     this.autoMerge = new AutoMergeManager(this.githubAuth, onSessionChange);
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);
     // docs/146 — the manager requires the runner registry for its pre-attempt
@@ -229,6 +259,8 @@ export class PrStatusPoller {
         (sessionId) => registry.get(sessionId),
         this.isAutoResolveEnabled,
         opts.rebaseAndResolveCb,
+        undefined,
+        this.remediationArbiter,
       );
     }
   }
@@ -272,7 +304,7 @@ export class PrStatusPoller {
       if (this.mergedSessions.has(sessionId)) continue;
 
       const fix = this.autoFix.get(sessionId);
-      if (fix?.enabled && fix.status === "running") return true;
+      if (fix?.status === "running") return true;
 
       const merge = this.autoMerge.get(sessionId);
       // ShipIt-managed auto-merge needs the poller to detect CI-success → merge.
@@ -315,7 +347,7 @@ export class PrStatusPoller {
   private perSessionInterval(sessionId: string): number {
     // Autonomous action keep-alive: the loop needs prompt feedback.
     const fix = this.autoFix.get(sessionId);
-    if (fix?.enabled && fix.status === "running") return PR_STATUS_POLL_INTERVAL_MS;
+    if (fix?.status === "running") return PR_STATUS_POLL_INTERVAL_MS;
     const merge = this.autoMerge.get(sessionId);
     if (merge?.enabled && merge.managed) return PR_STATUS_POLL_INTERVAL_MS;
 
@@ -492,6 +524,7 @@ export class PrStatusPoller {
     this.autoFix.delete(sessionId);
     this.autoMerge.delete(sessionId);
     this.autoConflictResolveManager?.delete(sessionId);
+    this.remediationArbiter.delete(sessionId);
     this.lastPrNodes.delete(sessionId);
     this.inFlightVerify.delete(sessionId);
     this.verifiedAbsent.delete(sessionId);
@@ -645,9 +678,29 @@ export class PrStatusPoller {
     return this.autoFix.get(sessionId);
   }
 
-  /** Set auto-fix enabled/disabled for a session. Returns the updated state. */
-  setAutoFixEnabled(sessionId: string, enabled: boolean): AutoFixState {
-    return this.autoFix.setEnabled(sessionId, enabled);
+  /**
+   * docs/169 — fan a runner "idle" event out to BOTH remediation managers so a
+   * `deferred` attempt (the agent was busy when CI failed / a conflict landed)
+   * re-evaluates the moment the runner frees up, rather than waiting for the
+   * next poll. Called from the runner registry's "idle" subscription.
+   */
+  notifyRunnerIdle(sessionId: string): void {
+    void this.autoFix.onRunnerIdle(sessionId).catch((err: unknown) => {
+      console.error(`[pr-poller] auto-fix onRunnerIdle error for ${sessionId}:`, err);
+    });
+    void this.autoConflictResolveManager?.onRunnerIdle(sessionId).catch((err: unknown) => {
+      console.error(`[pr-poller] auto-resolve onRunnerIdle error for ${sessionId}:`, err);
+    });
+  }
+
+  /**
+   * docs/169 — a WS-typed user input refreshes BOTH remediation automations'
+   * attempt budgets (the user re-engaged with the session). Fanned out from the
+   * WS dispatch switch in `index.ts`.
+   */
+  resetRemediationForUserActivity(sessionId: string): void {
+    this.autoFix.resetForUserActivity(sessionId);
+    this.autoConflictResolveManager?.resetForUserActivity(sessionId);
   }
 
   /** Get the cached GraphQL PR node for a session (for extracting check details). */
@@ -716,7 +769,6 @@ export class PrStatusPoller {
       result = {
         ...result,
         autoFix: {
-          enabled: fixState.enabled,
           status: fixState.status,
           attemptCount: fixState.attemptCount,
           maxAttempts: MAX_AUTO_FIX_ATTEMPTS,
@@ -988,13 +1040,24 @@ export class PrStatusPoller {
           summary.reviewThreads = prev.reviewThreads;
         }
 
-        // Handle auto-fix state transitions
-        this.autoFix.handleTransition(session.id, summary, prNode, owner, repo);
+        // Handle auto-fix state transitions. docs/169 — now async (the base's
+        // pre-attempt gate may HTTP-roundtrip `verifyRunningState`); fire-and-
+        // forget so one session's gate doesn't delay the rest of the poll.
+        void this.autoFix.handleTransition(session.id, summary, prNode, owner, repo)
+          .catch((err: unknown) => {
+            console.error(`[pr-poller] Auto-fix handleTransition error for ${session.id}:`, err);
+          });
 
-        // Handle ShipIt-managed auto-merge
-        this.autoMerge.handleManaged(session.id, summary, owner, repo).catch((err: unknown) => {
-          console.error(`[pr-poller] Managed auto-merge error for ${session.id}:`, err);
-        });
+        // Handle ShipIt-managed auto-merge. docs/169 — consult the arbiter as a
+        // cheap precondition: don't drive a merge while a remediation claim is
+        // held (a fix/resolve turn is mid-flight). Belt-and-suspenders — the
+        // merge's own green-CI + mergeable preconditions already make collision
+        // rare.
+        if (!this.remediationArbiter.isClaimed(session.id)) {
+          this.autoMerge.handleManaged(session.id, summary, owner, repo).catch((err: unknown) => {
+            console.error(`[pr-poller] Managed auto-merge error for ${session.id}:`, err);
+          });
+        }
 
         // docs/146 — auto-resolve transitions. Fire-and-forget; the poller
         // loop is synchronous and we don't want one session's worker HTTP
@@ -1117,6 +1180,8 @@ export class PrStatusPoller {
     // the state is dormant-but-harmless (subsequent polls short-circuit
     // before reaching the manager) but the map grows unbounded.
     this.autoConflictResolveManager?.delete(sessionId);
+    this.autoFix.delete(sessionId);
+    this.remediationArbiter.delete(sessionId);
     this.sseBroadcast("pr_status", { updates: [summary] });
 
     if (isMerged && this.onMergeDetectedCb) {

@@ -28,6 +28,13 @@ interface CredentialData {
    */
   autoResolveConflicts?: boolean;
   /**
+   * docs/169 — when true, the PR poller's auto-fix-CI loop fires when a tracked
+   * PR's checks go to FAILURE while the agent is idle. Global + persisted,
+   * mirroring `autoResolveConflicts`; replaced the old per-session in-memory
+   * toggle. Default off.
+   */
+  autoFixCi?: boolean;
+  /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
    * the `mcp__<server>__<KEY>` namespace, not here.
@@ -468,6 +475,17 @@ export class CredentialStore {
 
   setAutoResolveConflicts(enabled: boolean): void {
     this.data.autoResolveConflicts = enabled;
+    this.save();
+  }
+
+  // ---- Auto-fix CI (docs/169) ----
+
+  getAutoFixCi(): boolean {
+    return this.data.autoFixCi ?? false;
+  }
+
+  setAutoFixCi(enabled: boolean): void {
+    this.data.autoFixCi = enabled;
     this.save();
   }
 

@@ -249,46 +249,10 @@ describe("pr-store", () => {
     });
   });
 
-  describe("toggleAutoFix", () => {
-    it("flips the toggle optimistically before the request resolves", async () => {
-      usePrStore.getState().updateCard("s1", makeCard("open", {
-        autoFix: { enabled: false, status: "idle", attemptCount: 0, maxAttempts: 3 },
-      }));
-
-      let resolveFetch: ((value: Response) => void) | undefined;
-      const fetchPromise = new Promise<Response>((resolve) => { resolveFetch = resolve; });
-      globalThis.fetch = vi.fn(() => fetchPromise) as typeof fetch;
-
-      const togglePromise = usePrStore.getState().toggleAutoFix("s1", true);
-
-      // Optimistic flip is visible before the fetch resolves.
-      expect(usePrStore.getState().cardBySession.s1?.autoFix?.enabled).toBe(true);
-
-      resolveFetch!(new Response(
-        JSON.stringify({ enabled: true, status: "idle", attemptCount: 0 }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ));
-      await togglePromise;
-
-      expect(usePrStore.getState().cardBySession.s1?.autoFix?.enabled).toBe(true);
-    });
-
-    it("reverts the optimistic flip when the request fails", async () => {
-      usePrStore.getState().updateCard("s1", makeCard("open", {
-        autoFix: { enabled: false, status: "idle", attemptCount: 0, maxAttempts: 3 },
-      }));
-
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: false,
-        status: 500,
-        json: async () => ({ error: "boom" }),
-      }) as typeof fetch;
-
-      await usePrStore.getState().toggleAutoFix("s1", true);
-
-      expect(usePrStore.getState().cardBySession.s1?.autoFix?.enabled).toBe(false);
-    });
-  });
+  // docs/169 — the per-card auto-fix toggle was removed in favor of a global
+  // setting (Settings → PR automations), so there is no `toggleAutoFix` action
+  // to test here anymore. The auto-fix card state (`status`/`attemptCount`)
+  // still arrives via `updateCard` from the poller's SSE snapshot.
 
   describe("postComment (docs/133 Phase 4)", () => {
     beforeEach(() => {
