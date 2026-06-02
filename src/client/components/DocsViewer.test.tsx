@@ -139,7 +139,7 @@ describe("DocsViewer", () => {
       expect(screen.queryByText(/Other/)).not.toBeInTheDocument();
     });
 
-    it("sorts tracked active docs alphabetically by path", () => {
+    it("sorts tracked active docs newest-first by feature number", () => {
       const props = defaultProps();
       props.files = [
         makeDoc({ path: "docs/003-c/plan.md", title: "C-Doc" }),
@@ -150,10 +150,12 @@ describe("DocsViewer", () => {
       const items = screen.getAllByRole("button").filter(
         (btn) => (btn.querySelector("span")?.textContent ?? "").endsWith("-Doc"),
       );
+      // Highest feature number first (003 → 002 → 001), so the newest doc is at
+      // the top of the list without scrolling.
       expect(items.map((btn) => btn.querySelector("span")?.textContent)).toEqual([
-        "A-Doc",
-        "B-Doc",
         "C-Doc",
+        "B-Doc",
+        "A-Doc",
       ]);
     });
 
