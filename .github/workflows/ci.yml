@@ -16,6 +16,10 @@ env:
 jobs:
   check:
     name: Lint, Type Check & Build
+    # Only run for PRs whose branch lives in this repo. Fork/external PRs have a
+    # different head repo, so this skips them entirely — no CI minutes spent on
+    # untrusted code, regardless of the repo's first-time-contributor setting.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -31,6 +35,7 @@ jobs:
 
   test:
     name: Test
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

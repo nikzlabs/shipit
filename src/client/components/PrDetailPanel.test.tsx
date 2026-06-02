@@ -1,6 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { PrDetailPanel } from "./PrDetailPanel.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
@@ -107,16 +106,15 @@ describe("PrDetailPanel", () => {
     expect(screen.getByText("lint")).toBeInTheDocument();
   });
 
-  it("exposes the View on GitHub link in the overflow menu", async () => {
-    const user = userEvent.setup();
+  it("links the Open state badge to the PR on GitHub", () => {
     setCard("s1", openPrCard);
     render(<PrDetailPanel sessionId="s1" />);
 
-    // Link is behind the overflow menu, not on the happy path (docs/133 §2).
-    expect(screen.queryByText("View on GitHub")).not.toBeInTheDocument();
-    await user.click(screen.getByLabelText("More options"));
-    const link = (await screen.findByText("View on GitHub")).closest("a");
+    // The one-item overflow menu was dropped; the Open badge is itself the
+    // GitHub escape-hatch link (docs/133 §2 — inline is the primary surface).
+    const link = screen.getByTitle("View on GitHub");
     expect(link).toHaveAttribute("href", "https://github.com/o/r/pull/42");
+    expect(link).toHaveTextContent("Open");
   });
 
   it("offers a View full diff button in the Files section", () => {
