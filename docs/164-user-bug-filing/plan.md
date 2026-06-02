@@ -137,14 +137,18 @@ floor**: whatever happens next, known-shape secrets are already gone.
 **Stage 2 — LLM redaction pass (last step, best-effort).** Heuristics miss the
 unstructured stuff: a person's name, an internal hostname, a customer's data quoted
 in prose, a secret in a novel format. After Stage 1, send the *already-scrubbed*
-body to the model for a semantic privacy pass, using **the same model the session
-already runs on** — whatever provider/CLI/model that is. This is deliberately
-provider-agnostic: there's no tier-mapping table to maintain (no "Sonnet-class for
-Claude, equivalent-for-Codex" guesswork that breaks on the next backend we add), and
-it makes the trust-boundary argument exact — it's literally the model that already
-processed the conversation. Cost and strength track the user's own session choice;
-a cheaper model yielding a weaker net is acceptable because Stage 1 is the
-deterministic floor and the card is the human backstop. The input is just the
+body to the model for a semantic privacy pass, run **orchestrator-side by invoking
+the session's own agent CLI as a one-shot prompt** — the exact mechanism
+`session-namer.ts` already uses (it shells out to `claude -p …` / `codex exec
+--skip-git-repo-check …` with `HOME` pointed at the shared credentials mount,
+reusing each CLI's own auth). This is genuinely provider-agnostic and reuses **the
+session's own model and credentials**: it works for Claude *and* Codex (including
+ChatGPT-subscription auth) and any future CLI, with **no new key and no
+provider-specific inference plumbing**. Like the namer, it's best-effort — a
+failure/timeout/unparseable output yields nothing and we **degrade to the Stage-1
+floor + card flag**. Cost and strength track the session's model; a cheaper model
+yielding a weaker net is acceptable because Stage 1 is the deterministic floor and
+the card is the human backstop. The input is just the
 agent-authored body (the agent already chooses what's relevant when it composes the
 report — there is no separate excerpt-extraction step), with a sanity token ceiling
 as a guard against a pathologically large body. Hard constraints:
@@ -158,17 +162,19 @@ as a guard against a pathologically large body. Hard constraints:
   though it ran. Stage 1's output stands as the floor, and the card is flagged
   ("deep privacy check didn't complete — review carefully") so the human knows the
   semantic net didn't run.
-- **No new trust boundary, and it runs orchestrator-side.** The session transcript
-  already passed through the same model provider during the session, so re-sending
-  the scrubbed text for redaction exposes it to no new third party — *provided the
-  pass runs on that same provider/credential*. It does: the **orchestrator already
-  owns and refreshes the user's subscription OAuth token** (`agents/claude/auth-manager.ts`
-  + `oauth-refresher.ts`, `agents/codex/auth-manager.ts`; see `docs/153`) — the same
-  token it injects into the session container. So the Stage-2 call is a dedicated,
-  single-purpose **structured call made by the orchestrator** using that already-held
-  credential for the session's provider. No session-container round-trip, no new API
-  key, and it's a deterministic orchestrator-controlled pipeline stage (not dependent
-  on agent diligence). The model returns spans; orchestrator code applies them.
+- **Provider-agnostic via the agent-CLI shell-out (the `session-namer` precedent,
+  not the voice-cleanup direct-API path).** The pass must stay on the provider that
+  already saw the session (no new third party), and the one-shot CLI invocation
+  guarantees that for free: it uses the **same CLI auth that ran the session** —
+  Claude OAuth or Codex/ChatGPT subscription alike — so there's no
+  `anthropic-beta`/OAuth-header handling, no `OPENAI_API_KEY` or voice-provider-key
+  selection, and nothing to re-answer per backend. (We deliberately do *not* reuse
+  the voice-cleanup `pickCleanupProvider` direct-API approach: it has a usable path
+  only for Claude OAuth or a separately-configured OpenAI key, and would leave
+  subscription-only Codex sessions with no Stage 2.) Output is parsed for spans (the
+  namer already parses CLI output this way) and orchestrator code applies them. It's
+  a deterministic, orchestrator-controlled stage; on CLI error or unparseable output
+  we degrade to the Stage-1 floor + card flag.
 - **Not a substitute for consent.** Two redaction layers shrink what the user must
   catch; they do not replace the user confirming the exact payload in the card. We
   never present "LLM-redacted" as "safe to ignore."
@@ -318,8 +324,10 @@ detection, issue locking, and the maintainers' ability to block an account.
 ## Open questions
 
 All four original open questions are resolved (Stage-2 runs orchestrator-side on the
-already-held OAuth credential; Stage-2 reuses the session's own model; build is the
-bare `SHIPIT_BUILD_ID` SHA; target is hard-coded `nicolasalt/shipit` with body-marker
+session's own agent CLI as a one-shot prompt — the `session-namer.ts` pattern — so it
+reuses the session's model/credentials and is provider-agnostic across Claude and
+Codex, degrading to the Stage-1 floor when the CLI call fails; build is the bare
+`SHIPIT_BUILD_ID` SHA; target is hard-coded `nicolasalt/shipit` with body-marker
 labels). One follow-up emerged, tracked separately:
 
 - **Maintainer-side label automation** on `nicolasalt/shipit` — a small GitHub
