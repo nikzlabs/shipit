@@ -15,8 +15,8 @@
 ## Open decisions (deferred)
 - [ ] Webhook/polling follow-up if fetch-on-open staleness proves insufficient
 
-## Blocking pre-build decision
-- [ ] Overturn docs/156's rejection of the in-ShipIt issue picker (amend 156's non-goal + rejected-alternative entries to cross-reference this doc)
+## Settled pre-build decisions
+- [x] Overturn docs/156's rejection of the in-ShipIt issue picker — confirmed by the user; docs/156 non-goals, rejected-alternative entry, and "Push, not pull" section amended to cross-reference this doc
 
 ## Doc side
 - [ ] `markdown.ts`: stop parsing/validating `status` & `priority`

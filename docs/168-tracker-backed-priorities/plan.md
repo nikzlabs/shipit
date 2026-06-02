@@ -219,10 +219,10 @@ narrow and is **not** a triage tool:
   (start a session) without leaving — it does not try to replace triage, which
   still happens in the tracker.
 
-If 156's author disagrees, this is the decision to litigate before build — two
-high-priority planned docs cannot ship with opposite stances on the same
-surface. `docs/156`'s non-goal and rejected-alternative entries should be
-amended to point here once this is accepted.
+**Settled:** the user confirmed this doc supersedes 156's decision. `docs/156`'s
+non-goals, its rejected-alternative entry, and its "Push, not pull" section have
+been amended to cross-reference this doc; 156 now owns the push trigger and this
+doc owns the pull surface.
 
 ### Tracker abstraction (extensibility)
 
@@ -335,8 +335,9 @@ Docs/config:
   explicitly rejected; see "Reconciling with docs/156's rejected 'Issue picker'"
   above for why the changed premise (priority leaving docs) reopens that
   decision. Shares 156's `headless-sessions.create()` seeding primitive and its
-  auth/app-registration foundation. **156's non-goal/rejected-alternative
-  entries must be amended to cross-reference this doc once accepted.**
+  auth/app-registration foundation. **Settled:** 156 has been amended to
+  cross-reference this doc — it owns the push trigger; this doc owns the pull
+  surface.
 - **`docs/164-user-bug-filing`** (planned) — outbound: user files a GitHub
   issue against upstream ShipIt. Complementary; same GitHub auth model.
 - **`docs/114-tracked-doc-checklist`** (done) — the checklist badge this
