@@ -75,12 +75,13 @@ installed, which is the blocker below.
    adding Python templates is additive.
 
 3. **`generatePackageLock()` hardcodes npm** (`templates.ts:81` — `npm install
-   --package-lock-only`). It runs for templates that scaffold a `package.json`,
-   and it assumes **npm specifically**: a web template that wants pnpm or yarn
-   still gets a `package-lock.json` generated, which is the wrong lockfile for
-   that project. So this path has two problems we should fix together — it must
-   (a) not fire at all for Python templates, and (b) generate the *correct*
-   lockfile for the JS package manager a web template actually uses.
+   --package-lock-only`). Both call sites already guard on `package.json` presence
+   (`services/templates.ts:56` and `:136` — `if (template.files["package.json"])`),
+   so Python templates (no `package.json`) **already** skip it with zero changes —
+   no new "language" gate is needed for that. The genuine gap is narrower: when it
+   *does* fire, it assumes **npm specifically**, so a web template that wants pnpm
+   or yarn still gets a `package-lock.json`, the wrong lockfile for that project.
+   The real work here is just making the existing JS path package-manager-aware.
 
 4. **No shared pip cache.** npm projects get a shared `dep-cache` volume; Python
    would re-download wheels on every fresh session activation. Nice-to-have, not a
@@ -102,15 +103,69 @@ options:
   shadows a system module can break the image's own tooling. Rejected as the
   default.
 - **B. A project-local virtualenv (`.venv` in `/workspace`).** Standard Python
-  practice, isolates deps per project, survives in the workspace volume so it
-  persists across container restarts like `node_modules` does. The compose service
-  and the agent both activate it. **Chosen.**
+  practice, isolates deps per project, persists in the workspace volume. **Chosen
+  for isolation — but a venv is NOT portable the way `node_modules` is** (see the
+  next subsection); how it's created matters.
 - **C. A baked-in venv in the image.** Doesn't survive workspace resets and can't
   represent per-project dep sets. Rejected.
 
-So the template-scaffolded compose service installs into and runs from a
-`.venv`, mirroring how the Node story keeps `node_modules` in the workspace.
-`agent.install` does the same so the agent's own shell can import the deps.
+### A shared `.venv` does not work like a shared `node_modules`
+
+The obvious design — `agent.install` builds one `.venv` in `/workspace` and the
+compose preview service runs from it, mirroring how Node shares `node_modules` —
+**fails at runtime**, and this is the most important correction in this doc.
+
+`agent.install` runs in the **agent container** (`service-manager-setup.ts:292` —
+"Fire install on the agent container", via `runner.runInstall`). That container is
+`node:24-slim`, whose Python is Debian's `python3` at `/usr/bin/python3`. The
+template's preview service is `image: python:3.12`, whose interpreter is at
+`/usr/local/bin/python`. A virtualenv is **hard-pinned to the interpreter that
+created it**: `.venv/bin/python` is a symlink to that interpreter's absolute path,
+`pyvenv.cfg` records its `home` and version, and any compiled wheels (`.so`) are
+ABI-pinned to it. So a `.venv` created by the agent container's Debian python is
+broken for the `python:3.12` service (dangling symlink, wrong `home`, possibly
+incompatible ABI) — and vice-versa. This is structural, not a version coincidence:
+even if both were 3.12, the interpreter *paths* differ, so neither venv is valid in
+the other container. `node_modules` has none of these properties (no absolute
+interpreter symlinks, ABI-agnostic JS), which is why the Node story gets away with
+sharing it across the agent container and a differently-versioned `node:` service.
+
+**Resolution: the preview service owns its own install.** Dependencies must be
+installed by the interpreter that runs them, so the install belongs to the
+`python:3.12` preview service, not to `agent.install`. The mechanism is the
+**service's own startup command/entrypoint** — it creates `.venv` with *its* python,
+installs, then launches — *not* `x-shipit-depends-on-install`. That field does the
+opposite of what's wanted here: it gates a service on the **agent container's**
+`agent.install` finishing (compose-generator.ts:246; default `true` for `auto`
+previews). Under B1 there is no Python `agent.install`, so that gate just opens
+vacuously and is harmless, but it is not the ownership mechanism — leave it at its
+default (or set it `false`) and do the work in the service command.
+
+**This is a deliberate carve-out from the platform's "don't install in a service
+`command`" rule, and it is safe *because* it's single-writer.** compose.md forbids
+service-command installs specifically to avoid the *two-writer* race — the agent
+container and a compose service both `pip`/`npm install`-ing into one bind-mounted
+tree at once. Under B1 only the preview service ever installs Python deps (the agent
+never runs pip), so there is no second writer and no race. The npm rule still holds
+for JS (install stays in `agent.install`); the Python single-installer case is the
+exception, and **compose.md must be updated to document it** (see Docs).
+
+That leaves one explicit decision — **can the agent's own shell run/test the app?**
+For Node the agent gets this for free (shared `node_modules`). For Python it does
+not, and there are two honest options:
+
+- **B1 — preview-only (simplest, recommended for v1).** Only the preview service has
+  the deps. The agent edits source; the running app reflects changes via the mounted
+  volume. The agent *cannot* `import` project deps in an ad-hoc `python -c`. Accept
+  this for v1 and document it.
+- **B2 — matching interpreter in the agent image.** Install a Python in the
+  session-worker image whose version matches what the templates pin (e.g. 3.12) and
+  have the agent create its **own** venv at a distinct path (e.g. `.venv-agent`, not
+  the service's `.venv`) so the two never clobber each other. More capable, more
+  image weight and more moving parts.
+
+Pick one explicitly before implementation; do not ship the "both activate the same
+`.venv`" design — it will not run.
 
 ### The package manager is the project's choice, not ShipIt's
 
@@ -130,10 +185,10 @@ Two consequences:
   a `uv.lock` "just works" without the agent having to bootstrap a package manager.
   Providing both costs us almost nothing and removes a decision the platform has no
   business making.
-- **`agent.install` / compose just run whatever the repo implies.** The agent (or a
-  template's `shipit.yaml`) picks the command — `uv sync`, `pip install -r
-  requirements.txt`, `poetry install` — based on the project's own lockfile. ShipIt
-  doesn't enforce one.
+- **The install step just runs whatever the repo implies.** Whichever side owns the
+  install (per the subsection above, the preview service for the runtime venv) picks
+  the command — `uv sync`, `pip install -r requirements.txt`, `poetry install` —
+  based on the project's own lockfile. ShipIt doesn't enforce one.
 
 This only leaves a default-for-our-own-templates choice (what the *scaffolded*
 Streamlit/FastAPI starters use). That's a much smaller decision than a global
@@ -146,7 +201,18 @@ Add to both `docker/Dockerfile.session-worker.dev` and `.prod` the tools that le
 any Python project install: `python3-pip` and `python3-venv` via the existing apt
 line, plus the `uv` binary (so repos with a `uv.lock` work without bootstrapping).
 Per the section above, the goal is to *provide* the toolchain, not pick one for the
-user. This is the single required change that unblocks everything else.
+user.
+
+Note the version caveat from the venv subsection: `python3-venv` here builds venvs
+against the agent container's **Debian system `python3`**, which is a *different*
+interpreter (path and likely version) from the templates' `python:3.12` preview
+service. So this image change alone only enables **agent-side** Python; it does not
+produce a venv the preview service can use. State the version the agent image
+provides, and either (B1) scope the agent's Python as agent-only — install
+correctness for the *preview* is the service's responsibility — or (B2) install a
+Python matching the templates' pinned version so the agent can stand up an
+equivalent (separate-path) env. This is the one image decision that is *not* "just
+provide everything."
 
 ### Templates
 
@@ -156,8 +222,11 @@ Add a new `templates-python.ts` exporting starter templates, registered in
 - the app entry file (`streamlit_app.py`, `app.py`, …),
 - `requirements.txt` (or `pyproject.toml`),
 - a `docker-compose.yml` with `image: python:3.12`, the right `command`, `ports`,
-  `volumes: [.:/app]`, and `x-shipit-preview: auto`,
-- a `shipit.yaml` whose `agent.install` creates the venv and installs deps.
+  `volumes: [.:/app]`, and `x-shipit-preview: auto`, where the **service itself**
+  creates `.venv` and installs deps before launching (per the venv subsection — the
+  install belongs to the interpreter that runs the app, not `agent.install`),
+- a `shipit.yaml` that, if B2 is chosen, stands up the agent-side env at a separate
+  path; under B1 (recommended v1) it leaves Python install to the preview service.
 
 Initial set (ordered by leverage):
 
@@ -173,13 +242,12 @@ service"); Gradio and Dash follow the same pattern.
 
 ### Lockfile generation — generalize beyond `npm`
 
-`generatePackageLock()` is the one genuinely npm-coupled spot, and the fix has two
-halves:
+`generatePackageLock()` is the one genuinely npm-coupled spot. Note the non-JS case
+needs **no** new work: both call sites already gate on
+`template.files["package.json"]` (`services/templates.ts:56`, `:136`), so Python
+templates skip it for free — no `runtime`/`language` discriminator is required for
+this. The single real fix is making the existing JS path package-manager-aware:
 
-- **Skip for non-JS templates.** Gate on whether the template scaffolds a
-  `package.json` (check for the key in `template.files`, or read a `runtime`/
-  `language` discriminator added to `ProjectTemplate`). Python templates never call
-  it.
 - **Pick the right tool for JS templates.** Today it always runs `npm install
   --package-lock-only` even for a template that uses pnpm or yarn, producing the
   wrong lockfile. Detect the package manager from the template — most robustly from
@@ -200,11 +268,19 @@ default ports, and the Streamlit headless flag. These are the agent's primary
 reference inside containers, so this is what makes custom (non-template) Python
 projects work reliably.
 
+Critically, compose.md's **"Where to put `npm install`"** and **"What not to do"**
+sections currently forbid installing in a service `command` outright. They must be
+amended to carve out the Python single-installer case: for Python, deps install in
+the *preview service* (its interpreter owns the venv), and because nothing else
+writes those deps there is no two-writer race — the prohibition that targets
+JS-with-`agent.install` does not apply. Without this edit the doc the agent reads
+will directly contradict the templates we ship.
+
 ## Scope
 
 **In scope:** image fix (pip/venv + uv), Streamlit + FastAPI templates (Gradio/Dash
-to follow), generalizing `generatePackageLock()` (skip for Python, pick the right
-lockfile for npm/pnpm/yarn), platform docs.
+to follow) whose preview service owns its own venv install, making
+`generatePackageLock()` package-manager-aware (npm/pnpm/yarn), platform docs.
 
 **Out of scope (follow-ups):** shared pip/uv cache volume, fast-install path
 optimization for Python (today it falls back to a full install — correct, just
@@ -215,12 +291,15 @@ non-web Python (notebooks, CLI tools).
 
 - `docker/Dockerfile.session-worker.dev:5`, `docker/Dockerfile.session-worker.prod:26`
   — add `python3-pip`, `python3-venv`, and the `uv` binary.
-- `src/server/orchestrator/templates.ts:81` — `generatePackageLock()`; gate its call
-  site for non-JS templates **and** make it package-manager-aware (npm/pnpm/yarn).
+- `src/server/orchestrator/templates.ts:81` — `generatePackageLock()`; make it
+  package-manager-aware (npm/pnpm/yarn). The non-JS skip already exists at the call
+  sites, so no change there.
+- `src/server/orchestrator/services/templates.ts:56,136` — the two call sites
+  (already `package.json`-guarded); thread package-manager detection through here.
 - `src/server/orchestrator/templates-python.ts` — **new**, Python starter templates.
 - `src/server/orchestrator/templates.ts:23` — register the Python templates array.
-- `src/server/orchestrator/services/templates.ts` — template-creation service; gate lock generation.
-- `src/server/shared/types/domain-types.ts` — `ProjectTemplate`; optionally add a `runtime`/`language` discriminator.
+- `src/server/orchestrator/service-manager-setup.ts:292` — where `agent.install`
+  fires (agent container); relevant to the venv-ownership decision.
 - `src/server/shipit-docs/compose.md`, `src/server/shipit-docs/shipit-yaml.md` — Python patterns.
 
 ## Risks / open questions
