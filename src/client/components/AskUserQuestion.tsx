@@ -286,6 +286,10 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
 
   // Determine if submit button should be shown (multi-select or multi-question)
   const needsSubmitButton = questions.length > 1 || questions.some((q) => q.multiSelect);
+  // Also surface the Submit button whenever "Other" is active — even for a
+  // single single-select question — so a typed free-text answer has a visible
+  // way to submit instead of relying on the (undiscoverable) Enter key.
+  const showSubmitButton = needsSubmitButton || usingOther.size > 0;
   const hasAnyAnswer = questions.some((_, i) => {
     if (usingOther.has(i)) return !!otherTexts.get(i)?.trim();
     const sel = selections.get(i);
@@ -407,8 +411,8 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         );
       })}
 
-      {/* Submit button for multi-select or multi-question */}
-      {needsSubmitButton && !isAnswered && (
+      {/* Submit button for multi-select, multi-question, or an active "Other" */}
+      {showSubmitButton && !isAnswered && (
         <div className="px-3 pb-3">
           <Button
             variant="primary"
@@ -511,12 +515,12 @@ function OtherAnswerInput({
         }}
         placeholder="Type your answer..."
         rows={1}
-        className={`w-full resize-none rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) py-1.5 pl-3 ${rightPad} text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) field-sizing-content max-h-[40vh] overflow-y-auto`}
+        className={`block w-full resize-none rounded-md bg-(--color-bg-secondary) border border-(--color-border-secondary) py-1.5 pl-3 ${rightPad} text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:border-(--color-border-focus) field-sizing-content max-h-[40vh] overflow-y-auto`}
         data-testid="other-input"
         autoFocus
       />
       {voiceInputEnabled && (
-        <div className="absolute bottom-1 right-1 flex items-center">
+        <div className="absolute inset-y-0 right-1 flex items-center">
           <MicButton
             voice={voice}
             large={isMobile}
