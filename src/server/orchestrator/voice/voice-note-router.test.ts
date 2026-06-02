@@ -10,12 +10,18 @@ import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import type { CredentialStore } from "../credential-store.js";
 
-// Minimal fake runner: only emitMessage matters to the router. Identity is what
-// the WeakMap keys on, so a fresh object per test is an isolated "turn".
-function fakeRunner(): { runner: SessionRunnerInterface; emitted: WsServerMessage[] } {
+// Minimal fake runner: emitMessage + the turn-accumulation fields the native
+// sink records onto (`recordVoiceNote` reads chatMessageGroups for the anchor
+// and pushes onto voiceNotes). Identity is what the WeakMap keys on, so a fresh
+// object per test is an isolated "turn".
+function fakeRunner(
+  groups: { text: string; toolUse: unknown[] }[] = [],
+): { runner: SessionRunnerInterface; emitted: WsServerMessage[] } {
   const emitted: WsServerMessage[] = [];
   const runner = {
     emitMessage: (m: WsServerMessage) => emitted.push(m),
+    chatMessageGroups: groups,
+    voiceNotes: [],
   } as unknown as SessionRunnerInterface;
   return { runner, emitted };
 }
@@ -28,18 +34,6 @@ function fakeCredentialStore(opts: {
     getVoiceDeliveryMode: () => opts.mode,
     getVoiceWebhook: () => opts.webhook ?? null,
   } as unknown as CredentialStore;
-}
-
-// Captures chat-history appends so we can assert the card is persisted.
-function fakeChatHistory(): { mgr: { append: (s: string, m: unknown) => number }; appended: { sessionId: string; message: Record<string, unknown> }[] } {
-  const appended: { sessionId: string; message: Record<string, unknown> }[] = [];
-  const mgr = {
-    append: (sessionId: string, message: unknown) => {
-      appended.push({ sessionId, message: message as Record<string, unknown> });
-      return appended.length;
-    },
-  };
-  return { mgr, appended };
 }
 
 const base = (over: Partial<{ summary: string; needsAttention: boolean }> = {}) => ({
@@ -79,25 +73,27 @@ describe("routeVoiceNote", () => {
     });
   });
 
-  it("persists the native card to chat history so it survives a reload", async () => {
-    const { runner } = fakeRunner();
+  it("records the native card on the runner, anchored after the current groups, so it survives a reload", async () => {
+    // Two persistable assistant groups already accumulated this turn — the card
+    // must anchor after them so `buildTurnMessages` re-interleaves it at the end
+    // of the turn (where the tool was issued), not above it.
+    const { runner } = fakeRunner([
+      { text: "working…", toolUse: [] },
+      { text: "", toolUse: [{ name: "Edit" }] },
+    ]);
     const credentialStore = fakeCredentialStore({ mode: "native" });
-    const { mgr, appended } = fakeChatHistory();
     await routeVoiceNote(base(), {
       runner,
       sessionId: "s1",
       credentialStore,
-      chatHistoryManager: mgr as never,
       source: "authored",
       idFactory: deterministicId,
       now: fixedNow,
     });
-    expect(appended).toHaveLength(1);
-    expect(appended[0].sessionId).toBe("s1");
-    expect(appended[0].message).toMatchObject({
-      role: "assistant",
-      text: "",
-      voiceNote: {
+    expect(runner.voiceNotes).toHaveLength(1);
+    expect(runner.voiceNotes[0]).toMatchObject({
+      afterGroupIndex: 2,
+      note: {
         id: "voice-test-1",
         headline: base().summary,
         needsAttention: true,
@@ -107,19 +103,18 @@ describe("routeVoiceNote", () => {
     });
   });
 
-  it("does NOT persist a card when delivery is external-only (no native bubble)", async () => {
+  it("does NOT record a card when delivery is external-only (no native bubble)", async () => {
     const { runner } = fakeRunner();
     const credentialStore = fakeCredentialStore({
       mode: "external",
       webhook: { url: "https://hook.example/notes", token: "t" },
     });
-    const { mgr, appended } = fakeChatHistory();
     const fetchImpl = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
     await routeVoiceNote(base(), {
-      runner, sessionId: "s1", credentialStore, chatHistoryManager: mgr as never,
+      runner, sessionId: "s1", credentialStore,
       source: "authored", fetchImpl, idFactory: deterministicId, now: fixedNow,
     });
-    expect(appended).toHaveLength(0);
+    expect(runner.voiceNotes).toHaveLength(0);
   });
 
   it("external mode posts to the webhook with bearer auth and v:1 body, no native note", async () => {

@@ -50,9 +50,16 @@ function makeCredentialStore() {
 /** Fake runner registry capturing emitted WS messages for one session. */
 function makeRunnerRegistry(sessionId: string) {
   const emitted: { type: string; [k: string]: unknown }[] = [];
-  const runner = { emitMessage: (m: { type: string }) => emitted.push(m) };
+  // The native sink records the card on the runner (docs/163): `recordVoiceNote`
+  // reads chatMessageGroups for the anchor and pushes onto voiceNotes.
+  const runner = {
+    emitMessage: (m: { type: string }) => emitted.push(m),
+    chatMessageGroups: [] as { text: string; toolUse: unknown[] }[],
+    voiceNotes: [] as unknown[],
+  };
   return {
     emitted,
+    runner,
     registry: { get: (id: string) => (id === sessionId ? runner : undefined) },
   };
 }
@@ -486,7 +493,7 @@ describe("Voice-note webhook config (docs/163)", () => {
 
 describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
   it("routes an authored note to the native sink and emits voice_note", async () => {
-    const { emitted, registry } = makeRunnerRegistry("sess-1");
+    const { emitted, runner, registry } = makeRunnerRegistry("sess-1");
     const { app } = await buildApp({ runnerRegistry: registry });
     const res = await app.inject({
       method: "POST",
@@ -503,6 +510,9 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
       needsAttention: true,
       kind: "authored",
     });
+    // docs/163 — the card is recorded on the runner for in-band persistence so
+    // it reloads where the tool was issued, not above the turn.
+    expect(runner.voiceNotes).toHaveLength(1);
     await app.close();
   });
 

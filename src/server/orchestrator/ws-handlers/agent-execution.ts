@@ -340,7 +340,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         runner,
         sessionId: runner.sessionId,
         credentialStore: ctx.credentialStore,
-        chatHistoryManager: ctx.chatHistoryManager,
         source,
       }),
   };
@@ -435,7 +434,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // Preserve a partial interrupted turn (flip in-progress rows to persisted).
   const onInterruptedTurn = (): void => {
     if (!runner || !capturedSessionId) return;
-    const partial = buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages ?? [], { inProgress: false });
+    const partial = buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages ?? [], runner.voiceNotes ?? [], { inProgress: false });
     persistInterruptedTurn(ctx, capturedSessionId, partial);
     // docs/163 — the interrupted turn is now finalized into chat history, so
     // clear the turn-event replay buffer. Otherwise the buffer stays dirty
