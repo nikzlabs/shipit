@@ -343,6 +343,52 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(state.agentSessionId).toBeUndefined();
   });
 
+  it("does not clear Codex agentSessionId when .codex symlink repair finds no Claude jsonl", async () => {
+    // Production regression: a Codex session had a provider-account .codex
+    // symlink repaired. The repair path found no Claude-style
+    // .claude/projects jsonl and incorrectly cleared the generic
+    // agent_session_id, so the next Codex turn started without thread/resume.
+    const account = path.join(tmpDir, "provider-accounts", "codex", "codex-default");
+    fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
+    fs.writeFileSync(
+      path.join(account, ".codex", "auth.json"),
+      JSON.stringify({ last_refresh: "2026-06-02T00:00:00.000Z" }),
+    );
+
+    const sessionDir = path.join(tmpDir, "sessions", "s1");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.symlinkSync(path.join(account, ".codex"), path.join(sessionDir, ".codex"));
+    fs.mkdirSync(path.join(sessionDir, "provider-accounts", "codex", "codex-default", ".codex"), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(sessionDir, "provider-accounts", "codex", "codex-default", ".codex", "auth.json"),
+      JSON.stringify({ last_refresh: "2026-06-01T00:00:00.000Z" }),
+    );
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const existingThreadId = "019e8956-beff-7300-b553-6eff4f9e3ee6";
+    const { sm, state } = makeFakeSessionManager({
+      agentPinned: true,
+      agentSessionId: existingThreadId,
+      providerRouteKind: "account",
+      providerRouteId: "codex-default",
+    });
+
+    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "codex",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    expect(result.overrideAgentSessionId).toBeUndefined();
+    expect(state.clearAgentSessionIdCalls).toHaveLength(0);
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
+    expect(state.agentSessionId).toBe(existingThreadId);
+    expect(fs.lstatSync(path.join(sessionDir, ".codex")).isSymbolicLink()).toBe(false);
+  });
+
   // Warm-pool quick-session hang (docs/162 follow-up): the install gate
   // resolved, but a pre-spawn env-prep await never settled, so `agent.run()`
   // never fired and the worker never saw `/agent/start`. The fix bounds every
