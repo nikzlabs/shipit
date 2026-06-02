@@ -2,7 +2,7 @@
 
 ## Redaction pipeline
 - [ ] `redaction.ts` Stage 1 — heuristic content scrubbers (`sk-`/`ghp_`/`Bearer`/long-token, emails, git URLs via `stripUrlCredentials`, workspace paths) replacing inline substrings with `[REDACTED]`; reuse `shipit-source.ts` path matchers only for path exclusion, not content
-- [ ] `redaction.ts` Stage 2 — LLM pass on the Stage-1 output: model returns sensitive **spans**, code applies redaction (verify deletion-only, no rewrite/inject); runs on the same provider that saw the session
+- [ ] `redaction.ts` Stage 2 — LLM pass on the Stage-1 output: model returns sensitive **spans**, orchestrator code applies redaction (verify deletion-only, no rewrite/inject); orchestrator-side call using the OAuth token it already owns (`agents/*/auth-manager.ts`) for the session's provider — no container round-trip, no new key
 - [ ] Fail-safe: Stage-2 error/timeout degrades to the Stage-1 floor and sets a "deep privacy check didn't run" flag on the card (never silently ships)
 - [ ] `redaction.test.ts` — Stage 1 scrubs inline `ghp_…`/email/workspace path in *free text*; Stage 2 (stubbed model) applies returned spans and rejects non-deletion output; Stage-2 failure degrades to floor + flag
 
@@ -38,7 +38,6 @@
 - [ ] Update `docs/023` (redaction engine now exists) cross-ref
 
 ## Open questions
-- [ ] Where the Stage-2 LLM redaction call runs (session agent backend vs. orchestrator-side); must stay on the provider that already saw the session
 - [ ] Stage-2 model choice + excerpt size cap
 - [ ] How "ShipIt build/version" is exposed to the orchestrator in a non-dogfood deployment
 - [ ] Exact upstream repo + label convention for incoming user reports

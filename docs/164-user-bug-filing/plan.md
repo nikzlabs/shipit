@@ -148,13 +148,17 @@ text to the model for a semantic privacy pass. Hard constraints:
   though it ran. Stage 1's output stands as the floor, and the card is flagged
   ("deep privacy check didn't complete — review carefully") so the human knows the
   semantic net didn't run.
-- **No new trust boundary.** The session transcript already passed through the same
-  model provider during the session (the agent *is* Claude), so re-sending the
-  scrubbed text for redaction exposes it to no new third party — *provided the pass
-  runs on that same backend/credential*. Where the call runs (reuse the session
-  agent backend via a constrained structured prompt, vs. a dedicated
-  orchestrator-side model call) is an implementation detail; the constraint is that
-  it stays on the provider that already saw the data. See Open questions.
+- **No new trust boundary, and it runs orchestrator-side.** The session transcript
+  already passed through the same model provider during the session, so re-sending
+  the scrubbed text for redaction exposes it to no new third party — *provided the
+  pass runs on that same provider/credential*. It does: the **orchestrator already
+  owns and refreshes the user's subscription OAuth token** (`agents/claude/auth-manager.ts`
+  + `oauth-refresher.ts`, `agents/codex/auth-manager.ts`; see `docs/153`) — the same
+  token it injects into the session container. So the Stage-2 call is a dedicated,
+  single-purpose **structured call made by the orchestrator** using that already-held
+  credential for the session's provider. No session-container round-trip, no new API
+  key, and it's a deterministic orchestrator-controlled pipeline stage (not dependent
+  on agent diligence). The model returns spans; orchestrator code applies them.
 - **Not a substitute for consent.** Two redaction layers shrink what the user must
   catch; they do not replace the user confirming the exact payload in the card. We
   never present "LLM-redacted" as "safe to ignore."
@@ -291,15 +295,8 @@ detection, issue locking, and the maintainers' ability to block an account.
 
 ## Open questions
 
-- **Where the Stage-2 LLM redaction call runs.** Two options: (a) reuse the session
-  agent backend via a constrained structured prompt (the agent already runs in the
-  container with the provider credential), or (b) a dedicated orchestrator-side
-  model call. The binding constraint is that it stays on the provider that already
-  processed the session, so it introduces no new trust boundary. (a) is simplest if
-  the orchestrator can't make model calls directly; (b) makes it a guaranteed
-  pipeline stage rather than depending on agent diligence. Decide at implementation.
 - **Stage-2 model + token budget.** A small/fast model is fine for span detection;
-  pick one and cap the excerpt size sent.
+  pick one and cap the excerpt size sent. (See Q2.)
 - How "ShipIt build/version" is exposed to the orchestrator in a non-dogfood
   deployment.
 - Exact upstream repo + label convention for incoming user reports.
