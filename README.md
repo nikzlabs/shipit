@@ -16,25 +16,24 @@ A few product choices set ShipIt apart from other AI coding harnesses:
   history, and workspace, so concurrent agents can't step on each other's files, processes, or
   installed dependencies. An agent can spawn its own follow-up sessions to fan work out in parallel.
 - **Self-hostable on a VPS** — ShipIt is Docker-based end to end. Run it on a remote server and your
-  laptop doesn't need to stay open for agents, previews, or CI-followup work to continue.
+  laptop doesn't need to stay open for agents, previews, or CI follow-up work to continue.
 - **Compose-based previews** — declare your dev server, databases, queues, log tailers, and other
   app services in `docker-compose.yml`; ShipIt manages them and surfaces automatic or manual
   previews inside the app.
 - **Tight GitHub integration** — branches, auto-commits, pushes, PR creation, CI checks, deploy
   status, review comments, and merge state are rendered inline instead of punting you to GitHub.
-- **Mobile-first, with first-class voice** — ShipIt is genuinely good to use from a phone, not a
-  desktop tool that merely survives a small screen. The layout adapts to a focused tab-based view on
-  mobile and resizable split panels on desktop, and there's a thin Android WebView wrapper for
-  native-feeling access. Voice is a first-class input and output channel: dictate prompts
-  hands-free, and hear spoken summaries when the agent needs you or finishes a turn — so you can
-  kick off, review, steer, and ship work on the go without staring at the screen.
+- **Mobile-first, with first-class voice** — ShipIt is genuinely good from a phone, not a desktop
+  tool that merely survives a small screen: a focused tab-based view on mobile, resizable split
+  panels on desktop, and a thin Android WebView wrapper for native-feeling access. Voice runs both
+  ways — dictate prompts hands-free and hear spoken summaries when the agent finishes a turn or needs
+  you, so you can kick off, review, and ship on the go.
 - **Smooth browser IDE UX** — chat, file tree, Monaco editor, terminal, preview, diffs, session
   history, and PR lifecycle all live in one interface.
 
-Around that core, ShipIt is the surface: build, review, ship, and debug software inside one
-chat-shaped IDE. Terminal output, diffs, previews, CI, deploys, PR comments, rollback points, and
-session history are inline by default. The agent runs the commands, edits the files, reads the logs,
-opens PRs, watches checks, and fixes failures while the user stays in ShipIt.
+Around that core, ShipIt is the surface: you build, review, ship, and debug inside one chat-shaped
+IDE. The agent runs the commands, edits the files, reads the logs, opens PRs, watches checks, and
+fixes failures — and you stay in the conversation, never bounced out to a GitHub tab, a CI
+dashboard, or a local terminal to do your job.
 
 ## Installation
 
