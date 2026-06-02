@@ -7,8 +7,7 @@ pluggable agent backend:
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or
   an Anthropic API key
 - [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
-- More to come — the architecture is designed to be agent-agnostic, so additional backends can be
-  added later
+- More to come — the backend is agent-agnostic by design, so new runtimes can slot in
 
 A few product choices set ShipIt apart from other AI coding harnesses:
 
@@ -97,8 +96,9 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 
 ### Build
 
-- **Chat-driven development** — describe what you want in natural language; the agent writes the
-  code, runs the commands, and reads the logs
+- **Chat-driven development** — the conversation is the only input you need; the agent plans the
+  change, edits files, runs the commands, and reads the output, so you steer in chat instead of
+  driving a shell
 - **Existing subscription auth** — sign in with Claude Pro/Max or ChatGPT, or use Anthropic/OpenAI
   API keys when that fits your setup better
 - **Agent-agnostic backend** — pick Claude Code CLI or Codex CLI per session; the backend boundary
