@@ -233,8 +233,11 @@ export class StubAuthManager extends EventEmitter {
   // dispatches through (e.g. agent-listeners' auth_required handler).
   start() { this.startOAuthFlow(); }
   cancel() { this.kill(); }
+  submitCode(_code: string) { /* no-op */ }
   isConfigured() { return this.checkCredentials(); }
   getPendingPayload() { return null; }
+  // docs/150 — scoped-flow account id. The stub never runs a scoped flow.
+  getActiveAccountId(): string | null { return null; }
 }
 
 /**

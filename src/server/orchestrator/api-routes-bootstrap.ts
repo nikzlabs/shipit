@@ -24,6 +24,9 @@ import {
   renameProviderAccount,
   makePrimaryProviderAccount,
   deleteProviderAccount,
+  startProviderAccountLogin,
+  cancelProviderAccountLogin,
+  submitProviderAccountCode,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -227,6 +230,75 @@ export async function registerBootstrapRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to disconnect provider account: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ---- Provider-account scoped login (docs/150) ----
+  // Kicks off / cancels / feeds the per-account login flow. Pending URL/code
+  // and completion ride the existing `agent_auth_*` SSE family (now carrying
+  // `accountId`), so the existing sign-in card surfaces the flow and the
+  // account row's status pill updates from the `provider_accounts` broadcast.
+
+  app.post<{ Params: { provider: AgentId; accountId: string } }>(
+    "/api/provider-accounts/:provider/:accountId/login",
+    async (request, reply) => {
+      try {
+        const result = startProviderAccountLogin(
+          deps.providerAccountManager,
+          request.params.provider,
+          request.params.accountId,
+        );
+        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        reply.code(202).send({ success: true, account: result.account });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to start account login: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.post<{ Params: { provider: AgentId; accountId: string } }>(
+    "/api/provider-accounts/:provider/:accountId/login/cancel",
+    async (request, reply) => {
+      try {
+        const result = cancelProviderAccountLogin(
+          deps.providerAccountManager,
+          request.params.provider,
+          request.params.accountId,
+        );
+        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        return { success: true, account: result.account };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to cancel account login: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.post<{ Params: { provider: AgentId; accountId: string }; Body: { code: string } }>(
+    "/api/provider-accounts/:provider/:accountId/login/code",
+    async (request, reply) => {
+      try {
+        submitProviderAccountCode(
+          deps.providerAccountManager,
+          request.params.provider,
+          request.params.accountId,
+          request.body.code,
+        );
+        return { success: true };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to submit account login code: ${getErrorMessage(err)}` });
       }
     },
   );

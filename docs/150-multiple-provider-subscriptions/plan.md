@@ -1336,8 +1336,33 @@ Implementation started:
 - Settings now has provider-account CRUD endpoints under
   `/api/provider-accounts` and renders account rows in each agent tab. Users can
   rename account rows, make a row primary, add an unauthenticated placeholder
-  row, and disconnect rows that are not pinned to existing sessions. Scoped
-  login for those rows is intentionally still a separate Phase 1 item.
+  row, and disconnect rows that are not pinned to existing sessions.
+- Scoped login is wired: the Claude and Codex auth managers are now
+  account-scoped (`start({ accountId, credentialDir })`, plus
+  `checkCredentials`/`signOut`/`getAccessToken` credential-dir overrides and a
+  `getActiveAccountId()` accessor). A scoped flow spawns the provider CLI with
+  `HOME` pointed at the account credential root
+  (`provider-accounts/<provider>/acct_<id>`), whose layout already mirrors
+  `$HOME` (`<root>/.claude` + `<root>/.claude.json`, `<root>/.codex`), so no
+  symlinks are needed — the "per-flow temporary HOME" option from the auth-
+  managers section collapses to "set HOME to the account root." Account-scoped
+  credential checks are file-only (env-var auth belongs to reserved routes, so
+  it cannot make a half-finished scoped login look complete). The singleton
+  flow (no `accountId`/`credentialDir`) is unchanged.
+- `ProviderAccountManager` gained `attachAuthManagers` + `startAccountAuth` /
+  `cancelAccountAuth` / `submitAccountCode` / `signOutAccount` /
+  `setAccountStatus`, and is wired to the auth-manager map in `index.ts` after
+  `buildAgentRuntime`. New routes `POST /api/provider-accounts/:provider/
+  :accountId/login` (+ `/login/cancel`, `/login/code`) drive the flow.
+- The `agent_auth_pending` / `agent_auth_complete` / `agent_auth_failed` SSE
+  events now carry an optional `accountId`, read synchronously from the active
+  manager inside the `app-lifecycle` wiring. On scoped completion the row is
+  marked `ready` and the fresh token is re-pushed only into sessions pinned to
+  that account; on failure the row is marked `auth_failed`. Settings renders a
+  per-row Connect / Cancel sign-in control; the pending URL/code surfaces
+  through the existing per-agent sign-in card. Concurrency is serialized per
+  provider for now (the managers remain single-flow); concurrent flows for
+  different accounts are deferred.
 
 ### Phase 2 — Inline quota per account
 

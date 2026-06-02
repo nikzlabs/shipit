@@ -445,6 +445,32 @@ function ProviderAccountSection({ provider }: { provider: AgentId }) {
     }
   };
 
+  // docs/150 — kick off the account-scoped login. The pending sign-in URL/code
+  // surfaces through the existing per-agent sign-in card (it rides the same
+  // `agent_auth_*` SSE family); the row's status pill updates from the
+  // `provider_accounts` broadcast, so we just fire the request here.
+  const connect = async (account: ProviderAccount) => {
+    setSavingId(account.id);
+    try {
+      await request(`/api/provider-accounts/${provider}/${account.id}/login`, { method: "POST" });
+    } catch (err) {
+      useUiStore.getState().setToast({ message: err instanceof Error ? err.message : "Failed to start sign-in" });
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const cancelLogin = async (account: ProviderAccount) => {
+    setSavingId(account.id);
+    try {
+      await request(`/api/provider-accounts/${provider}/${account.id}/login/cancel`, { method: "POST" });
+    } catch (err) {
+      useUiStore.getState().setToast({ message: err instanceof Error ? err.message : "Failed to cancel sign-in" });
+    } finally {
+      setSavingId(null);
+    }
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
@@ -501,6 +527,29 @@ function ProviderAccountSection({ provider }: { provider: AgentId }) {
                 </div>
 
                 <div className="flex flex-wrap gap-2">
+                  {account.status === "authenticating" ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void cancelLogin(account)}
+                      disabled={busy}
+                      className="rounded-md"
+                      data-testid={`provider-account-cancel-login-${account.id}`}
+                    >
+                      Cancel sign-in
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void connect(account)}
+                      disabled={busy}
+                      className="rounded-md"
+                      data-testid={`provider-account-connect-${account.id}`}
+                    >
+                      {account.status === "ready" ? "Reconnect" : "Connect"}
+                    </Button>
+                  )}
                   <Button
                     variant="ghost"
                     size="sm"

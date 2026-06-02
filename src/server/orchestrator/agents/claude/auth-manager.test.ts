@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   AUTH_URL_PATTERNS,
   AuthManager,
@@ -323,5 +326,46 @@ describe("extractPlanLabel", () => {
   it("returns null when the file has no oauth metadata", () => {
     expect(extractPlanLabel({})).toBeNull();
     expect(extractPlanLabel({ claudeAiOauth: {} })).toBeNull();
+  });
+});
+
+describe("AuthManager / account-scoped (docs/150)", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-scoped-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+  });
+
+  it("getActiveAccountId is null before any scoped flow", () => {
+    expect(new AuthManager().getActiveAccountId()).toBeNull();
+  });
+
+  it("checkCredentials(dir) is file-only and ignores reserved env vars", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.ANTHROPIC_AUTH_TOKEN = "bearer";
+    const mgr = new AuthManager();
+    // No file in the account dir → scoped check is false despite env auth...
+    expect(mgr.isConfigured({ credentialDir: tmp })).toBe(false);
+    // ...while the singleton check still honors env auth.
+    expect(mgr.isConfigured()).toBe(true);
+
+    fs.mkdirSync(path.join(tmp, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, ".claude", ".credentials.json"), "{}");
+    expect(mgr.isConfigured({ credentialDir: tmp })).toBe(true);
+  });
+
+  it("signOut(credentialDir) removes only the account's credential files", () => {
+    const mgr = new AuthManager();
+    fs.mkdirSync(path.join(tmp, ".claude"), { recursive: true });
+    const credPath = path.join(tmp, ".claude", ".credentials.json");
+    fs.writeFileSync(credPath, "{}");
+    mgr.signOut({ credentialDir: tmp });
+    expect(fs.existsSync(credPath)).toBe(false);
   });
 });
