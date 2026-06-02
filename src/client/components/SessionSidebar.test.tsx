@@ -283,6 +283,66 @@ describe("SessionSidebar", () => {
     }
   });
 
+  it("sinks an archived merged session below a non-archived merged one", () => {
+    // Archived sessions in the sidebar are almost always merged (you archive
+    // after merge), so they share the demoted "Recently merged" group. Within
+    // that group the archived one must sink below the live-but-merged one even
+    // when it merged more recently.
+    const t0 = "2024-01-01T00:00:00.000Z";
+    const t1 = "2024-01-02T00:00:00.000Z";
+    const sessions = [
+      baseSession({
+        id: "s-archived",
+        title: "Archived merged",
+        remoteUrl: repoA.url,
+        createdAt: t1,
+        lastUsedAt: t1,
+        mergedAt: t1, // merged more recently than the live one
+        archived: true,
+      }),
+      baseSession({
+        id: "s-merged",
+        title: "Live merged",
+        remoteUrl: repoA.url,
+        createdAt: t0,
+        lastUsedAt: t0,
+        mergedAt: t0,
+      }),
+    ];
+    render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+
+    const live = screen.getByText("Live merged");
+    const archived = screen.getByText("Archived merged");
+    // Live-but-merged renders before the archived one despite the later mergedAt.
+    expect(live.compareDocumentPosition(archived) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("sinks an archived child below live siblings within a parent's brood", () => {
+    const parent = baseSession({ id: "parent-1", title: "Parent", remoteUrl: repoA.url });
+    const liveChild = baseSession({
+      id: "child-live",
+      title: "Live child",
+      remoteUrl: repoA.url,
+      parentSessionId: "parent-1",
+      createdAt: "2024-01-01T00:00:00.000Z",
+    });
+    const archivedChild = baseSession({
+      id: "child-archived",
+      title: "Archived child",
+      remoteUrl: repoA.url,
+      parentSessionId: "parent-1",
+      // Newer than the live child — would sort first without the archived key.
+      createdAt: "2024-01-02T00:00:00.000Z",
+      userArchived: true,
+    });
+    render(<SessionSidebar {...defaultProps} sessions={[parent, archivedChild, liveChild]} />);
+
+    const live = screen.getByText("Live child");
+    const archived = screen.getByText("Archived child");
+    // The live child renders before the archived one within the parent's brood.
+    expect(live.compareDocumentPosition(archived) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("does not reorder sessions when lastUsedAt changes", () => {
     // Regression test: the order must be derived from createdAt (stable), not lastUsedAt
     // (which updates on every agent event during a turn). Otherwise running agents would
