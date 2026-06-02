@@ -113,7 +113,7 @@ export class RemediationArbiter {
    */
   release(sessionId: string, owner: string, opts: { pushed: boolean }): void {
     const e = this.entries.get(sessionId);
-    if (!e || e.owner !== owner) return;
+    if (e?.owner !== owner) return;
     const acted = e.claimedHeadSha;
     delete e.owner;
     delete e.claimedHeadSha;
