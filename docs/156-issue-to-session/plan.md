@@ -18,9 +18,9 @@ A structural insight from the design discussion: **the issue is the persistent t
 
 ## Non-goals
 
-- **Not** an embedded issue tracker. We don't build picker UIs, board views, custom-field editors, or "create new issue" flows inside ShipIt. The tracker is the tracker; ShipIt is the executor.
+- **Not** an embedded issue tracker. We don't build board views, custom-field editors, or "create new issue" flows inside ShipIt. The tracker is the tracker; ShipIt is the executor. (A *read-only, priority-sorted* issue list with a start-session action is now in scope — but as a separate feature, `docs/168-tracker-backed-priorities`, not here. See the note under "Push, not pull" below.)
 - **Not** issue status mutation. We don't move issues to "In Progress" / "In Review" / "Done." Side effects on third-party systems stay behind explicit user action. (Linear's AgentSession state is *not* the issue's state — it's a separate agent-task surface.)
-- **Not** pulling lists of assigned issues into a ShipIt sidebar. Push from tracker, don't pull. See rejected alternatives.
+- **Not** pulling lists of assigned issues into a ShipIt sidebar — *for this feature*. This doc is the push trigger only. **Superseded for the pull case:** `docs/168-tracker-backed-priorities` adds an inline, read-only, priority-sorted Issues tab once priority leaves the docs (see that doc's "Reconciling with docs/156's rejected 'Issue picker'"). The rejection below was made on the premise that docs still carry priority; SHI-28 removes that premise.
 - **Not** universal "works with any tracker." First-class support for the two trackers our users actually use (Linear, GitHub Issues); other trackers wait until there's demand and we can design them properly.
 
 ## Design
@@ -38,6 +38,15 @@ Both providers terminate at the same internal endpoint and downstream flow:
 tracker → webhook → IssueTrackerProvider.handleTrigger() → headless-sessions.create()
                                                           → ack back to tracker
 ```
+
+> **Pull is no longer rejected — it's a sibling feature.** This doc owns the
+> push trigger. The complementary *pull* surface (a read-only, priority-sorted
+> Issues tab inside ShipIt, with a start-session action) is designed in
+> `docs/168-tracker-backed-priorities`, which reuses this doc's
+> `headless-sessions.create({ issueRef })` seeding primitive. The two are not in
+> tension: push is "I'm already in the tracker, send this to ShipIt"; pull is
+> "priority left the docs, so ShipIt must show what's next inline." See 168's
+> reconciliation section.
 
 ### Per-deployment app registration
 
@@ -140,7 +149,7 @@ Adds the GitHub App, the `/shipit` slash command, HMAC verification, and the edi
 
 ## Rejected alternatives
 
-- **Issue picker in ShipIt** (list issues, click to start). The user's job in the tracker is to triage and pick what to work on next; doing that *also* in ShipIt with worse filtering would be a strict loss. Push from tracker is simpler to build, more consistent with how users work, and avoids designing per-tracker filter UIs (Jira JQL ≠ Linear views ≠ GitHub queries) where we'd always be behind.
+- **Issue picker in ShipIt** (list issues, click to start). ~~The user's job in the tracker is to triage and pick what to work on next; doing that *also* in ShipIt with worse filtering would be a strict loss.~~ **Superseded by `docs/168-tracker-backed-priorities`.** This rejection assumed docs still carry `priority`, so ShipIt already had an internal "what's next" surface and a picker would be a redundant second triage surface. SHI-28 removes priority from docs, leaving no such surface — so an inline, read-only, *priority-sorted* picker (explicitly **not** a triage/filter UI: no JQL/Linear-view/GitHub-query builder) is now required by §1/§2, and lives in `docs/168`. The original concern — don't chase per-tracker filter UIs we'll always be behind on — is honored by keeping 168's picker read-only and priority-sorted only.
 - **Universal "magic URL" fallback** (`shipit.app/start?issue=...` as a custom-link template). Cheap, but the user chose quality of the deep integrations over breadth.
 - **Hosted webhook relay** for air-gapped deployments. Conflicts with the self-hosted-only stance. Users who want webhooks expose a public URL via Cloudflare Tunnel or Tailscale Funnel.
 - **Issue status mutation** (move to "In Progress" / "Done"). High surprise risk; the user has not asked for it. Easy to add later behind an explicit per-provider opt-in.
