@@ -50,6 +50,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
       reviewBridge: bridge,
       presentBridge: null,
       voiceBridge: null,
+      askBridge: null,
       onServerFailed,
     }).runtimeEnv;
   }
@@ -67,6 +68,25 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
   it("omits the review bridge when no bridge paths are supplied", () => {
     write([], null);
     expect(configText()).not.toContain("[mcp_servers.shipit-review]");
+  });
+
+  it("registers the ask-user bridge (docs/147) when askBridge paths are supplied", () => {
+    adapter.writeMcpConfig({
+      servers: [],
+      reviewBridge: null,
+      presentBridge: null,
+      voiceBridge: null,
+      askBridge: { tsxBin: "/opt/tsx", bridgePath: "/opt/mcp-ask-bridge.ts" },
+      onServerFailed,
+    });
+    const cfg = configText();
+    expect(cfg).toContain("[mcp_servers.shipit-ask]");
+    expect(cfg).toContain("mcp-ask-bridge.ts");
+  });
+
+  it("omits the ask-user bridge when askBridge is null", () => {
+    write();
+    expect(configText()).not.toContain("[mcp_servers.shipit-ask]");
   });
 
   it("is idempotent — repeat calls do not duplicate the block", () => {

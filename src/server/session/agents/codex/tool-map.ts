@@ -13,4 +13,8 @@ export const CODEX_TOOL_MAP: Record<string, CanonicalTool> = {
   file_edit: "file_edit",
   apply_diff: "file_edit",
   apply_patch: "file_edit",
+  // docs/147 — the ShipIt-managed ask bridge surfaces as an `AskUserQuestion`
+  // tool_use (see adapter.handleItem); canonicalize it like Claude's so
+  // activity labels render consistently.
+  AskUserQuestion: "ask_user",
 };
