@@ -909,6 +909,25 @@ export interface WsSessionSpawned {
   branch?: string;
   /** ISO8601 timestamp the child was created at. */
   spawnedAt: string;
+  /**
+   * docs/162 — present only for Ops `--shipit-source` fix-session spawns. When
+   * set, the client renders the spawned-session card in its "ShipIt fix"
+   * variant: the exact commit the child branched from, the target repo the fix
+   * PR opens against, and a short diagnosis summary. Absent for ordinary
+   * same-repo fan-out spawns (which render the plain card).
+   */
+  shipitFix?: {
+    /** Commit the child was branched from (the inspected source ref). */
+    sourceRef: string;
+    /** True only when `sourceRef` is the exact deployed build commit. */
+    sourceExact: boolean;
+    /** Where `sourceRef` came from — exact build id vs. checkout HEAD. */
+    refSource?: "build-id" | "checkout-head";
+    /** `owner/repo` the fix PR will open against. */
+    targetRepo?: string;
+    /** First line of the Ops diagnosis, truncated, for the card. */
+    diagnosis?: string;
+  };
 }
 
 /**
@@ -951,6 +970,13 @@ export interface WsSessionSpawnFailed {
    * failed without bloating the buffer.
    */
   promptPreview?: string;
+  /**
+   * docs/162 — true when the rejected spawn was an Ops `--shipit-source` fix
+   * session. Lets the failure card tailor its copy (e.g. a 403 here means "no
+   * write access to the ShipIt repo — produce an incident report instead",
+   * not a generic quota/parent error).
+   */
+  shipitSource?: boolean;
   /** ISO8601 timestamp the failure was recorded at. */
   failedAt: string;
 }

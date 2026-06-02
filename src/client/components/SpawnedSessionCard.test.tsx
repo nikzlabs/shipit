@@ -142,4 +142,48 @@ describe("SpawnedSessionCard", () => {
     );
     expect(screen.queryByText("port-api-ts")).not.toBeInTheDocument();
   });
+
+  // docs/162 — Ops "ShipIt fix session" variant.
+  describe("shipitFix variant", () => {
+    it("renders the ShipIt-fix header, source ref, target repo, and diagnosis", () => {
+      seedSessions([mkSession({ id: "child-1" })]);
+      render(
+        <SpawnedSessionCard
+          {...BASE_PROPS}
+          shipitFix={{
+            sourceRef: "abc123def456789",
+            sourceExact: true,
+            refSource: "build-id",
+            targetRepo: "shipit-hq/shipit",
+            diagnosis: "Container stuck in a SIGTERM recreate loop.",
+          }}
+        />,
+      );
+      expect(screen.getByText("ShipIt fix session")).toBeInTheDocument();
+      const fix = screen.getByTestId("spawned-session-shipit-fix");
+      // Source ref is rendered short (12 chars).
+      expect(fix).toHaveTextContent("abc123def456");
+      expect(fix).toHaveTextContent("shipit-hq/shipit");
+      expect(fix).toHaveTextContent("Container stuck in a SIGTERM recreate loop.");
+      expect(screen.getByTestId("spawned-session-source-exactness")).toHaveTextContent(/exact/i);
+    });
+
+    it("flags an approximate source ref", () => {
+      seedSessions([mkSession({ id: "child-1" })]);
+      render(
+        <SpawnedSessionCard
+          {...BASE_PROPS}
+          shipitFix={{ sourceRef: "deadbeefcafe", sourceExact: false }}
+        />,
+      );
+      expect(screen.getByTestId("spawned-session-source-exactness")).toHaveTextContent(/approximate/i);
+    });
+
+    it("renders the plain 'Spawned session' header when shipitFix is absent", () => {
+      seedSessions([mkSession({ id: "child-1" })]);
+      render(<SpawnedSessionCard {...BASE_PROPS} />);
+      expect(screen.getByText("Spawned session")).toBeInTheDocument();
+      expect(screen.queryByTestId("spawned-session-shipit-fix")).not.toBeInTheDocument();
+    });
+  });
 });
