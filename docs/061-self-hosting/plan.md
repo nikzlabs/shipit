@@ -247,14 +247,14 @@ Sysbox (fully isolated Docker daemon per session) is deferred to [062-managed-sh
 resources:
   memory: 2048    # MB (default: 512, cap set by deployment)
   cpu: 2.0        # cores (default: 0.5)
-  pids: 1024      # max PIDs (default: 256)
+  pids: 4096      # max PIDs (default: 4096)
 ```
 
 **Flow:**
 
 1. User clones a repo that has `shipit.yaml` with `resources`.
 2. Orchestrator reads `shipit.yaml` from the session directory *before* creating the container (today it's read by the session worker *after* the container starts — this must change).
-3. Orchestrator applies deployment-level caps: `MAX_SESSION_MEMORY_MB` (default 4096), `MAX_SESSION_CPU` (default 4), `MAX_SESSION_PIDS` (default 2048).
+3. Orchestrator applies deployment-level caps: `MAX_SESSION_MEMORY_MB` (default 4096), `MAX_SESSION_CPU` (default 4), `MAX_SESSION_PIDS` (default 4096).
 4. Capped values are passed to `SessionContainerManager.buildConfig()`.
 
 **Chicken-and-egg**: Today, `shipit.yaml` is parsed by the session worker inside the container. But resource limits must be known *before* the container is created. Fix: the orchestrator reads `shipit.yaml` directly from the session directory (which lives on a volume it can access) before calling `create()`. The session worker still reads it for preview config — no change there.
@@ -279,7 +279,7 @@ capabilities:
 resources:
   memory: 3072    # orchestrator + session workers + Claude CLI
   cpu: 2.0
-  pids: 2048      # many child processes from compose services, session workers, etc.
+  pids: 4096      # many child processes from compose services, session workers, etc.
 
 install: npm ci
 

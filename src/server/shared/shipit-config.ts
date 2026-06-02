@@ -7,7 +7,7 @@
  *   agent:              # optional agent container config
  *     memory: 2048
  *     cpu: 1.0
- *     pids: 512
+ *     pids: 4096
  *     install:
  *       - npm install
  *       - npx prisma generate
@@ -30,7 +30,7 @@ export interface AgentConfig {
   memory: number;
   /** CPU cores as float. Default: 0.5 */
   cpu: number;
-  /** Max PIDs. Default: 256 */
+  /** Max PIDs. Default: 4096 */
   pids: number;
   /** Install commands, run sequentially before compose starts. Default: [] */
   install: string[];
@@ -90,7 +90,7 @@ export class ShipitConfigError extends Error {
 export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
   memory: 1536,
   cpu: 0.5,
-  pids: 256,
+  pids: 4096,
   install: [],
 };
 

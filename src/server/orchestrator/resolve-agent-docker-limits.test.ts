@@ -19,7 +19,7 @@ import { AGENT_DEFAULTS } from "../shared/shipit-config.js";
 const MIB = 1024 * 1024;
 const DEFAULT_MEMORY_BYTES = 1536 * MIB; // shipit-config.ts AGENT_DEFAULTS.memory
 const DEFAULT_CPU_QUOTA = Math.round(0.5 * 100_000);
-const DEFAULT_PIDS = 256;
+const DEFAULT_PIDS = 4096;
 
 describe("resolveAgentDockerLimits", () => {
   let tmpDir: string;

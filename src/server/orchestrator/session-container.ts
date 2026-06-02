@@ -200,7 +200,7 @@ export interface SessionContainerManagerOpts {
   memoryLimit?: number;
   /** Default CPU quota (microseconds per 100ms period). Defaults to 50000 (0.5 CPU). */
   cpuQuota?: number;
-  /** Default PID limit. Defaults to 256. */
+  /** Default PID limit. Defaults to 4096. */
   pidsLimit?: number;
   /** Worker IPC port inside containers. Defaults to 9100. */
   workerPort?: number;
@@ -233,7 +233,7 @@ const DEFAULT_IMAGE = process.env.SESSION_WORKER_IMAGE;
 const DEFAULT_NETWORK = process.env.DOCKER_NETWORK;
 const DEFAULT_MEMORY_LIMIT = 1536 * 1024 * 1024; // 1.5 GB (agent container)
 const DEFAULT_CPU_QUOTA = 50_000; // 0.5 CPU (50000 µs per 100ms period)
-const DEFAULT_PIDS_LIMIT = 256;
+const DEFAULT_PIDS_LIMIT = 4096;
 const DEFAULT_WORKER_PORT = 9100;
 
 export const CONTAINER_LABEL_KEY = "shipit-session";
@@ -266,7 +266,7 @@ export interface AgentDockerLimits {
  * into Docker units. Every container creation path (fresh, standby fallback,
  * warm-pool standby, rediscover) must derive its limits from here — anything
  * else silently falls back to the manager's compiled-in defaults (1.5 GiB /
- * 0.5 CPU / 256 pids), under-provisioning containers that declared more.
+ * 0.5 CPU / 4096 pids), under-provisioning containers that declared more.
  *
  * Old-format shipit.yaml (`resources:` / `capabilities:` blocks) is no longer
  * recognised: `resolveShipitConfig` emits warnings for those keys but does
@@ -390,7 +390,7 @@ function getResourceCaps(): AgentResourceCaps {
   return {
     memoryMb: parseEnvInt("MAX_SESSION_MEMORY_MB", 4096),
     cpu: parseEnvFloat("MAX_SESSION_CPU", 4),
-    pids: parseEnvInt("MAX_SESSION_PIDS", 2048),
+    pids: parseEnvInt("MAX_SESSION_PIDS", 4096),
   };
 }
 

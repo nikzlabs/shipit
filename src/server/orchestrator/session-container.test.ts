@@ -432,7 +432,7 @@ describe("SessionContainerManager", () => {
       expect(config.imageName).toBe("shipit-session-worker:test");
       expect(config.memoryLimit).toBe(1536 * 1024 * 1024);
       expect(config.cpuQuota).toBe(50_000);
-      expect(config.pidsLimit).toBe(256);
+      expect(config.pidsLimit).toBe(4096);
     });
 
     it("allows overriding defaults", () => {
@@ -670,7 +670,7 @@ describe("readAgentConfig (W4a)", () => {
     // Fallback is preserved — a broken config must not block the session.
     expect(config.agent.memory).toBe(1536);
     expect(config.agent.cpu).toBe(0.5);
-    expect(config.agent.pids).toBe(256);
+    expect(config.agent.pids).toBe(4096);
 
     // ...but it is NOT silent: the catch logs the workspace dir + the cause
     // so a default-sized container never appears with zero trace.
