@@ -18,20 +18,28 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useAttentionInfo } from "../hooks/useAttentionInfo.js";
 import { useMediaQuery } from "../hooks/useMediaQuery.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
+import { parseTimestampMs } from "../../server/shared/utils.js";
 
 /**
  * docs/161 — client mirror of the server's `reopenedAfterMerge` predicate
  * (`sessions.ts`). True when a merged session has been *worked in* since its
  * merge — the user returned to start a follow-up PR. Keys on `lastUsedAt`
  * (bumped only by turn activity), so it flips true the instant the user sends a
- * message in a merged session. Parsed with `Date.parse` because `mergedAt`
- * (`datetime('now')`) and `lastUsedAt` (`toISOString()`) are stored in
- * format-incompatible strings that a lexical compare would order wrongly.
+ * message in a merged session.
+ *
+ * `mergedAt` (`datetime('now')`, a UTC string with no timezone suffix) and
+ * `lastUsedAt` (`toISOString()`, UTC with a trailing `Z`) are format-
+ * incompatible. This runs in the BROWSER, so a plain `Date.parse` reads the
+ * suffix-less `mergedAt` as *local* time: in a UTC+ timezone that shifts the
+ * merge instant earlier than a `lastUsedAt` recorded just before the merge,
+ * falsely flagging the session as reopened and floating it back into the Active
+ * group above genuinely active sessions. `parseTimestampMs` normalizes both to
+ * UTC. (CI runs in UTC, so the test suite never reproduced this.)
  */
 function reopenedAfterMerge(s: SessionInfo): boolean {
   if (!s.mergedAt) return false;
-  const merged = Date.parse(s.mergedAt);
-  const used = Date.parse(s.lastUsedAt);
+  const merged = parseTimestampMs(s.mergedAt);
+  const used = parseTimestampMs(s.lastUsedAt);
   if (Number.isNaN(merged) || Number.isNaN(used)) return false;
   return used > merged;
 }

@@ -398,6 +398,20 @@ describe("SessionManager", () => {
         lastUsedAt: "2024-06-02T00:00:00.000Z",
       }))).toBe(true);
     });
+
+    it("is false when the merge follows the last turn by seconds (the typical merge flow)", () => {
+      // Regression: the last turn lands moments before the PR merges. Both
+      // timestamps are UTC, but `merged_at` is the suffix-less SQLite form and
+      // `last_used_at` is ISO. A naive `Date.parse` reads `merged_at` as LOCAL
+      // time, so in a UTC+ timezone it lands *before* `last_used_at` and the
+      // session is wrongly treated as reopened — promoting a just-merged
+      // session back above active ones in the sidebar. UTC-normalized parsing
+      // keeps it correctly demoted regardless of host timezone.
+      expect(reopenedAfterMerge(make({
+        lastUsedAt: "2024-06-01T11:59:55.000Z",
+        mergedAt: "2024-06-01 12:00:00",
+      }))).toBe(false);
+    });
   });
 
   describe("docs/161: filterVisibleInSidebar predicate", () => {
