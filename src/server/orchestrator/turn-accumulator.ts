@@ -15,7 +15,7 @@
  * replay buffer, then perform their own emit.
  */
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
-import type { QueuedMessage, ChatMessageGroup, SteeredMessage } from "./session-runner.js";
+import type { QueuedMessage, ChatMessageGroup, SteeredMessage, RecordedVoiceNote } from "./session-runner.js";
 
 const MAX_QUEUE_SIZE = 50;
 const MAX_TURN_BUFFER = 1000;
@@ -28,6 +28,7 @@ export class TurnAccumulator {
   chatMessageGroups: ChatMessageGroup[] = [];
   needsNewMessageGroup = true;
   steeredMessages: SteeredMessage[] = [];
+  voiceNotes: RecordedVoiceNote[] = [];
 
   // Message queue
   private _messageQueue: QueuedMessage[] = [];

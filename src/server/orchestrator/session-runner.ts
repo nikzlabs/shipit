@@ -93,6 +93,32 @@ export interface SteeredMessage {
   uploadPaths?: string[];
 }
 
+/**
+ * docs/163 — a voice note recorded for in-band turn persistence.
+ *
+ * Voice notes arrive on a side channel (the `voice_note` tool bridge / the
+ * derived AskUserQuestion·ExitPlanMode observer), not the agent-event stream,
+ * so they aren't captured by `buildTurnMessages`. Persisting them out-of-band
+ * via `append` reproduces the exact bug `SteeredMessage` documents: the card
+ * row keeps its early id while the turn's assistant rows are deleted+reinserted
+ * at higher ids on every `replaceInProgress`, so on reload the card floats up
+ * above the whole turn instead of landing where the tool was issued.
+ *
+ * `afterGroupIndex` records how many persistable assistant groups existed when
+ * the note fired, so `buildTurnMessages` can re-interleave the card at its true
+ * transcript position on every in-progress rebuild — same mechanism as steers.
+ */
+export interface RecordedVoiceNote {
+  afterGroupIndex: number;
+  note: {
+    id: string;
+    headline: string;
+    needsAttention: boolean;
+    kind: "authored" | "ask" | "plan";
+    createdAt: string;
+  };
+}
+
 export interface QueuedMessage {
   text: string;
   /** Spinner label shown in the chat bubble (e.g. "Creating PR…"). Carried through queue drain. */
@@ -294,6 +320,7 @@ export function resetRunnerTurnState(
   runner.chatMessageGroups = [];
   runner.needsNewMessageGroup = true;
   runner.steeredMessages = [];
+  runner.voiceNotes = [];
   runner.wasInterrupted = false;
   runner.activeReviewFilePath = opts?.reviewFilePath ?? null;
   runner.pendingCommitLink = null;
@@ -389,6 +416,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   chatMessageGroups: ChatMessageGroup[];
   needsNewMessageGroup: boolean;
   steeredMessages: SteeredMessage[];
+  /** docs/163 — voice notes recorded this turn, folded into chat history by
+   * `buildTurnMessages` so the card persists at its true transcript position. */
+  voiceNotes: RecordedVoiceNote[];
   agentId: AgentId;
   /**
    * Commit info captured by `postTurnCommit` that couldn't be linked
@@ -576,6 +606,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _chatMessageGroups: ChatMessageGroup[] = [];
   private _needsNewMessageGroup = true;
   private _steeredMessages: SteeredMessage[] = [];
+  private _voiceNotes: RecordedVoiceNote[] = [];
   private _messageQueue: QueuedMessage[] = [];
   private _terminal: TerminalProcess | null = null;
   private _terminalOutputBuffer = "";
@@ -627,6 +658,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set needsNewMessageGroup(v: boolean) { this._needsNewMessageGroup = v; }
   get steeredMessages(): SteeredMessage[] { return this._steeredMessages; }
   set steeredMessages(m: SteeredMessage[]) { this._steeredMessages = m; }
+  get voiceNotes(): RecordedVoiceNote[] { return this._voiceNotes; }
+  set voiceNotes(m: RecordedVoiceNote[]) { this._voiceNotes = m; }
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
   getAgent(): AgentProcess | null { return this.agent; }

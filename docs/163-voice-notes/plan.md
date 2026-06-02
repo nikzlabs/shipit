@@ -61,10 +61,8 @@ by persisting the card like any other transcript content:
 
 - New `voice_note` column on `messages` (additive migration in `database.ts`);
   `PersistedMessage.voiceNote` + `toRow`/`fromRow` in `chat-history.ts`.
-- `routeVoiceNote` appends a finalized `{ role: "assistant", text: "",
-  voiceNote }` row whenever the native sink fires, via a new optional
-  `chatHistoryManager` dep wired at all three call sites (authored route +
-  the two derived `deliverVoiceNote` paths).
+- `routeVoiceNote` persists a finalized `{ role: "assistant", text: "",
+  voiceNote }` row whenever the native sink fires.
 - `handleVoiceNote` is now idempotent by `id` — the note is both persisted and
   buffered into the turn-event log, so a reconnect can deliver it twice (history
   load + buffer replay); the dedup skips the second append and the re-autoplay.
@@ -72,6 +70,33 @@ by persisting the card like any other transcript content:
 Note: the sibling empty-text cards (`agentReview`, `bugReport`, `spawnedSession`,
 `spawnFailed`) share the same non-persistence gap and remain ephemeral across a
 reload — out of scope here, tracked as follow-up.
+
+### Post-ship fix #2 — card reload position (in-band persistence)
+
+The persistence fix above used an out-of-band `chatHistoryManager.append` from
+`routeVoiceNote`. That reproduced the exact id-reordering bug `SteeredMessage`
+documents: the card row was inserted with a finalized (in_progress=0) id at the
+moment the tool fired, but `replaceInProgress` then deleted and **re-inserted**
+the turn's assistant rows with fresh, higher ids on every subsequent
+tool-result / agent_result boundary. On reload (`ORDER BY id`) the card kept its
+early id and floated **above the whole turn** — rendering before any of the
+agent's work instead of where the tool was issued.
+
+Fixed by persisting the card in-band, mirroring the live-steer mechanism:
+
+- New `RecordedVoiceNote` (`session-runner.ts`) + a `voiceNotes` per-turn
+  accumulator on the runner (interface, `SessionRunner`, `TurnAccumulator` /
+  `ContainerSessionRunner`), cleared in `resetRunnerTurnState`.
+- `recordVoiceNote(runner, note)` (in `voice-note-router.ts`, to avoid a value
+  import cycle with `agent-listeners`) replaces the `append`. It anchors the
+  card at `afterGroupIndex` = the count of persistable assistant groups so far.
+- `buildTurnMessages` takes a `voiceNotes` arg and interleaves the cards at
+  their anchor — same delete/reinsert cycle as the assistant rows, so the card
+  is reborn at its true position on every rebuild. All callers updated
+  (`persistTurnInProgress`, the in-progress + agent_result boundaries, the
+  interrupted-turn finalize for derived ask/plan notes, and the error path).
+- The now-unused `chatHistoryManager` dep was dropped from `RouteVoiceNoteDeps`
+  and its three call sites.
 
 ## Problem
 
