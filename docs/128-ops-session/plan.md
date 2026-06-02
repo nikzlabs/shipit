@@ -157,6 +157,30 @@ The ops session must be reachable only by the operator. Options:
 
 V1 ships with "same auth" — host operator == ShipIt user.
 
+### Fix path vs. issue path — the GitHub write-access fork
+
+A ShipIt deployment is **one human per box** (whoever runs the VPS is the ShipIt
+user), and that human **may or may not** have push access to the ShipIt repo. That
+single fact already forks what an ops session can do about a ShipIt bug, and the
+fork is enforced by `checkRepoWriteAccess` on the spawn route — no operator role is
+needed:
+
+- **Has push access (a ShipIt developer):** the ops session spawns a
+  `--shipit-source` fix session that branches from the deployed commit and opens a
+  PR. (existing path)
+- **No push access (a regular self-hosted user):** the spawn 403s. Instead of
+  dead-ending as a written incident report, the diagnosis is **filed as a redacted
+  issue against the ShipIt repo under the user's own GitHub identity**, via the
+  `docs/164` bug-filing flow (anyone can open an issue on the public repo; no push
+  needed). The ops session is the highest-quality producer of such a report — it
+  has real Docker/journal evidence to redact and attach.
+
+So "enable spawning into the ShipIt repo only for ShipIt developers" needs no new
+gate: GitHub authorization *is* the gate, it is self-enforcing, and the no-write
+branch degrades to issue-filing rather than failing. The current 403 fallback
+message (`api-routes-session.ts`: "Produce a structured incident report … instead")
+should be re-pointed at the `docs/164` filing flow when that lands.
+
 ### Surfacing in the UI
 
 The ops session is a genuinely different kind of session, not a
@@ -446,7 +470,10 @@ independently.)
 - **Operator-only gate enforcement.** ShipIt's existing auth doesn't
   distinguish "operator" from "user." In single-tenant deployments
   this is fine (one user, that user is the operator). For
-  multi-tenant we'd need an operator role — defer.
+  multi-tenant we'd need an operator role — defer. Note this is *not*
+  needed to gate the dangerous capability (spawning a fix PR into the
+  ShipIt repo): that is already gated by GitHub push access, which
+  forks to issue-filing when absent — see "Fix path vs. issue path".
 - **What if the operator breaks the ops session itself?** Then they
   bootstrap a new one from the template. The ops session shouldn't
   be load-bearing for any other ShipIt functionality.
