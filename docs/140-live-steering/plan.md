@@ -119,7 +119,7 @@ existing queue path runs unchanged.
 | Adapter | Steering primitive | Adapter work needed |
 |---|---|---|
 | **Claude** | `--input-format stream-json` + user-message NDJSON on stdin | Substantial: new persistent streaming spawn path (see below). |
-| **Codex** | `turn/steer` JSON-RPC notification | Minimal: `writeStdin` already sends `turn/steer` (`codex-adapter.ts:298`). Mostly just expose `sendUserMessage` and upgrade `interrupt()` to `turn/interrupt` (graceful) instead of the current hard `kill()`. |
+| **Codex** | `turn/steer` JSON-RPC request | Done: `writeStdin` sends `turn/steer` as a `sendRequest` (with `expectedTurnId`); `sendUserMessage` exposed; `interrupt()` upgraded to graceful `turn/interrupt` (falls back to `kill()` when there's no active turn or the request is rejected); a rejected `turn/steer` emits `agent_steer_rejected` so the orchestrator re-queues the message. |
 
 Codex caveat: `turn/steer` is rejected during **review** and **manual
 compaction** turns — the adapter must surface that rejection (fall back to the
@@ -387,12 +387,13 @@ suppressed, and the off-toggle one-shot path does NOT interrupt).
   "interrupted" vs. "error" for the post-turn flow (auto-commit, PR card).
 - Whether to also adopt `--include-partial-messages` for token-level streaming
   or keep message-granularity to limit blast radius.
-- How to detect/surface a `turn/steer` rejection (review/compaction turn) so the
-  message falls back to the queue instead of vanishing. **`turn/steer` is sent
-  as a fire-and-forget notification today (`codex-adapter.ts:343`), which has no
-  reply to observe a rejection from** — reliable detection likely requires
-  switching the steer to a `sendRequest` (with id) or watching for a specific
-  error notification. Promote to a Phase 3 design decision.
+- ~~How to detect/surface a `turn/steer` rejection (review/compaction turn) so
+  the message falls back to the queue instead of vanishing.~~ **Resolved
+  (Phase 3).** `turn/steer` is now a `sendRequest` (with id), so the
+  app-server's error response is observable. On rejection the Codex adapter
+  emits an `agent_steer_rejected` AgentEvent (rides the existing `agent_event`
+  relay); `agent-listeners.ts` re-queues the message and broadcasts
+  `message_queued`. See the checklist's Phase 3 entry for the full mechanism.
 
 ## Key files
 

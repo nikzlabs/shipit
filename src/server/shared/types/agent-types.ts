@@ -201,12 +201,27 @@ export interface AgentRateLimitsEvent {
   weekly: { usedPct: number | null; resetAt: string } | null;
 }
 
+/**
+ * A live-steer (`turn/steer` for Codex, NDJSON user-message for Claude) the
+ * backend refused to apply mid-turn. Codex rejects steering during **review**
+ * and **manual compaction** turns (`ActiveTurnNotSteerable`); rather than let
+ * the message vanish (it was already optimistically rendered), the adapter
+ * emits this so the orchestrator can fall back to the queue and run it as the
+ * next turn. `text` is the steer payload the adapter attempted to send.
+ * (docs/140)
+ */
+export interface AgentSteerRejectedEvent {
+  type: "agent_steer_rejected";
+  text: string;
+}
+
 export type AgentEvent =
   | AgentInitEvent
   | AgentAssistantEvent
   | AgentToolResultEvent
   | AgentResultEvent
-  | AgentRateLimitsEvent;
+  | AgentRateLimitsEvent
+  | AgentSteerRejectedEvent;
 
 /** Unified content blocks (text or tool use). */
 export type AgentContentBlock =

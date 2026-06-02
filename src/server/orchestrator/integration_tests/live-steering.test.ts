@@ -137,6 +137,40 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("re-queues a rejected steer instead of dropping it (Codex turn/steer rejection, docs/140)", async () => {
+    // When the backend refuses a mid-turn steer (Codex rejects `turn/steer`
+    // during review / manual-compaction turns with `ActiveTurnNotSteerable`),
+    // the adapter emits `agent_steer_rejected`. The orchestrator must fall back
+    // to the queue so the message runs as the next turn instead of vanishing.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "First message", sessionId: client.sessionId });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("steer-reject-session");
+
+    // Steer mid-turn — optimistically rendered + recorded on the runner.
+    client.send({ type: "send_message", text: "Steer me", sessionId: client.sessionId });
+    await drainUntil(client, (m) => m.type === "message_steered");
+
+    const runner = (app as any).runnerRegistry.get(client.sessionId);
+    expect(runner.steeredMessages.length).toBe(1);
+
+    // Backend refuses the steer.
+    claude.emit("event", { type: "agent_steer_rejected", text: "Steer me" });
+
+    // The rejected steer comes back as a queued message.
+    const queued = await drainUntil(client, (m) => m.type === "message_queued");
+    expect(queued).toMatchObject({ type: "message_queued", text: "Steer me" });
+
+    // The optimistic steered record is dropped (so it won't double-persist when
+    // the queued turn runs) and the text now lives in the runner's queue.
+    expect(runner.steeredMessages.length).toBe(0);
+    expect(runner.messageQueue.map((m: { text: string }) => m.text)).toContain("Steer me");
+
+    client.close();
+  });
+
   it("runs the post-turn flow (session_agent_finished, queue drain) on agent_result without waiting for done — streaming path", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
