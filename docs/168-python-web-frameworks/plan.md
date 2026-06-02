@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 priority: medium
 description: Support Python web app frameworks (Streamlit, Gradio, Dash, FastAPI/Uvicorn) — fix the session image so pip/venv work, ship Python starter templates, and document the compose patterns. Linear SHI-27.
 ---
@@ -287,6 +287,32 @@ optimization for Python (today it falls back to a full install — correct, just
 slower), Python-version auto-detection from `.python-version`/`pyproject.toml`,
 non-web Python (notebooks, CLI tools).
 
+## Implementation (shipped)
+
+Decisions made during implementation:
+
+- **B1 (preview-only) chosen.** No Python `agent.install`; the preview service
+  creates its own `.venv` and installs in its compose `command`. The agent edits
+  source and the running app picks it up via the mounted volume, but the agent's
+  shell can't `import` project deps — documented in `compose.md`.
+- **Templates use pip + `requirements.txt`** with `image: python:3.12` (the
+  robust, no-bootstrap path for the public image, which has pip but not uv). The
+  image ships `uv` so user repos with a `uv.lock` can use it; ShipIt doesn't
+  impose a manager.
+- **`uv` installed via `COPY --from=ghcr.io/astral-sh/uv:latest`** in both
+  Dockerfiles (the officially recommended Docker method — a single static
+  binary). Tagged `latest` for now with a TODO to pin under a Renovate policy
+  like the agent CLIs.
+- **All four templates shipped** (Streamlit, FastAPI, Gradio, Dash), not just
+  the initial two — they share one pattern, so completing the table was low-risk.
+- **`generatePackageLock()` is now package-manager-aware** (npm/pnpm/yarn,
+  detected from `package.json`'s `packageManager` field) and skips regeneration
+  when the template already ships a lockfile.
+
+Still a real follow-up: a browser-preview smoke test that Streamlit/Gradio's
+websockets work through the proxy (can only run against a built image), plus the
+out-of-scope items below (shared pip/uv cache, fast-install path).
+
 ## Key files
 
 - `docker/Dockerfile.session-worker.dev:5`, `docker/Dockerfile.session-worker.prod:26`
@@ -296,8 +322,11 @@ non-web Python (notebooks, CLI tools).
   sites, so no change there.
 - `src/server/orchestrator/services/templates.ts:56,136` — the two call sites
   (already `package.json`-guarded); thread package-manager detection through here.
-- `src/server/orchestrator/templates-python.ts` — **new**, Python starter templates.
-- `src/server/orchestrator/templates.ts:23` — register the Python templates array.
+- `src/server/orchestrator/templates-python.ts` — **new**, Python starter
+  templates (Streamlit, FastAPI, Gradio, Dash).
+- `src/server/orchestrator/templates.ts` — register the Python templates array.
+- `src/client/components/NewRepoDialog.tsx` — `ICON_MAP` entries for the new
+  Python template icons.
 - `src/server/orchestrator/service-manager-setup.ts:292` — where `agent.install`
   fires (agent container); relevant to the venv-ownership decision.
 - `src/server/shipit-docs/compose.md`, `src/server/shipit-docs/shipit-yaml.md` — Python patterns.

@@ -40,6 +40,10 @@ Expose ports via `ports: ["<port>:<port>"]`. Use the framework's default port:
 | Create React App | 3000 |
 | Django | 8000 |
 | Flask | 5000 |
+| FastAPI / Uvicorn | 8000 |
+| Streamlit | 8501 |
+| Gradio | 7860 |
+| Dash | 8050 |
 | Express | 3000 |
 | Rails | 3000 |
 
@@ -212,6 +216,79 @@ services:
       - .:/app
 ```
 
+## Python: the preview service owns its install
+
+Python web apps (Streamlit, FastAPI/Uvicorn, Gradio, Dash) are the **one
+exception** to the "don't install in a service `command`" rule below. For these,
+the **preview service installs its own dependencies in its `command`** — and
+that is correct, not a workaround.
+
+**Why:** a Python virtualenv is hard-pinned to the interpreter that created it
+(`.venv/bin/python` is an absolute symlink, `pyvenv.cfg` records its home, and
+any compiled wheels are ABI-pinned to it). `agent.install` runs in the **agent
+container** (Debian's `python3`), but the app runs in the **`python:3.12`
+preview service** — a different interpreter at a different path. A venv built by
+one is broken for the other. So the dependencies must be installed by the same
+python that runs the app, which means the install lives in the preview service.
+
+**Why it's safe:** the npm rule below exists to prevent a *two-writer race* —
+the agent container and a compose service both installing into one bind-mounted
+tree at once. Here only the preview service ever installs Python deps (the agent
+never runs pip), so there is no second writer and no race. This is **single-writer
+by construction**. Do **not** add a Python `agent.install` step as well.
+
+Pattern — the service creates its venv, installs, then `exec`s the server:
+
+```yaml
+# docker-compose.yml
+services:
+  web:
+    image: python:3.12
+    working_dir: /app
+    command: sh -c "test -d .venv || python -m venv .venv; .venv/bin/pip install -q -r requirements.txt && exec .venv/bin/streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true"
+    ports: ["8501:8501"]
+    volumes: [".:/app"]
+    x-shipit-preview: auto
+    x-shipit-depends-on-install: false   # no agent.install to gate on
+```
+
+```yaml
+# shipit.yaml — no Python install step; the service self-installs
+compose: docker-compose.yml
+```
+
+Notes:
+
+- **Bind to `0.0.0.0`**, not `127.0.0.1`, or the preview proxy can't reach the
+  server. Each framework has its own flag/argument for this (there is no shared
+  `HOST` env var convention like Node's): Streamlit `--server.address 0.0.0.0`,
+  Uvicorn `--host 0.0.0.0`, Gradio `launch(server_name="0.0.0.0")`, Dash
+  `app.run(host="0.0.0.0")`.
+- **Streamlit needs `--server.headless true`** so it doesn't try to open a
+  browser or prompt for an email on first run.
+- `test -d .venv || python -m venv .venv` keeps the venv across restarts; the
+  `pip install` line re-runs each boot but is a fast no-op once satisfied.
+- **`exec`** hands the server the service's main PID so signals and shutdown
+  work cleanly.
+- **Default ports:** Streamlit 8501, FastAPI/Uvicorn 8000, Gradio 7860, Dash
+  8050.
+
+### The package manager is the project's choice
+
+ShipIt provides `pip`, the stdlib `venv`, and the `uv` binary in the image, but
+it does not mandate one. Pick the command from what the repo ships, exactly as
+for JS (a `pnpm-lock.yaml` means pnpm): a `requirements.txt` → `pip install -r
+requirements.txt`, a `uv.lock` → `uv sync`, a `poetry.lock` → `poetry install`.
+`uv` is dramatically faster for cold installs, so prefer it when a repo already
+uses it.
+
+### v1 limitation: the agent can't import project deps
+
+Because the deps live only in the preview service's venv, the agent's own shell
+cannot `import` them in an ad-hoc `python -c '...'`. The agent edits source and
+the running app reflects the change via the mounted volume, but it can't execute
+the project's Python directly. This is expected for now.
+
 ## Service control API
 
 You can manage compose services programmatically via HTTP endpoints on
@@ -270,6 +347,12 @@ services both bind-mount the same workspace, so running `npm install` from
 two places simultaneously corrupts `node_modules` and leaves dev servers
 unable to start.
 
+> **Python is the exception.** This rule targets the JS two-writer race. Python
+> deps live in a venv pinned to the interpreter that runs the app, so the
+> *preview service* installs them in its `command` and the agent never does —
+> single-writer, no race. See "Python: the preview service owns its install"
+> above.
+
 Recommended:
 
 ```yaml
@@ -311,7 +394,9 @@ race the install-in-agent-only pattern avoids.
 - **Don't run `npm install` (or pnpm/yarn/bun install) in a service's
   `command`** when the same install lives in `agent.install`. Two
   containers writing to the same bind-mounted `node_modules` race each
-  other — see "Where to put `npm install`" above.
+  other — see "Where to put `npm install`" above. (Python is the documented
+  exception: its venv is interpreter-pinned, so the preview service installs
+  its own deps and the agent never does — single-writer, no race.)
 
 ## Pairing with shipit.yaml
 
