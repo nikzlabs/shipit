@@ -164,12 +164,19 @@ export interface CIFailureLog {
   logFilePath?: string;       // absolute path to full log file on disk
 }
 
-/** Auto-fix state for a session's PR, managed by the poller. */
+/**
+ * Auto-fix state for a session's PR, managed by the poller via `AutoFixManager`
+ * (which extends the shared `AutoRemediationManager`). docs/169 moved the toggle
+ * to a global persisted setting, so this no longer carries a per-session
+ * `enabled` flag; presence of the state means the auto-loop (or a manual fix)
+ * has acted at least once on this session.
+ */
 export interface AutoFixState {
-  enabled: boolean;
   attemptCount: number;       // resets when head SHA changes
   lastHeadSha: string;        // tracks which commit's CI we're fixing
-  status: "idle" | "running" | "exhausted";
+  status: "idle" | "running" | "deferred" | "exhausted";
+  lastError?: string;
+  nextEligibleAt?: number;
 }
 
 /** Auto-merge error from GitHub — missing repo settings or branch protection. */
@@ -287,10 +294,14 @@ export interface PrStatusSummary {
   };
   mergeable: PrMergeableState;
   autoMergeEnabled: boolean;
-  /** Auto-fix state — present when auto-fix has been interacted with. */
+  /**
+   * Auto-fix state — present when the auto-fix loop (or a manual "Fix CI") has
+   * acted on this session. docs/169: the on/off toggle is now the global
+   * `autoFixCi` setting, not a per-session flag, so this carries only the loop
+   * status. Omitted when the manager has no state for the session.
+   */
   autoFix?: {
-    enabled: boolean;
-    status: "idle" | "running" | "exhausted";
+    status: "idle" | "running" | "deferred" | "exhausted";
     attemptCount: number;
     maxAttempts: number;       // always 3
   };

@@ -263,35 +263,63 @@ function LiveSteeringSettings() {
   );
 }
 
-function AutoResolveConflictsSettings() {
+/**
+ * docs/169 — both PR remediation automations (auto-fix CI, auto-resolve
+ * conflicts) are global + persisted account-level toggles. They share one
+ * settings group so a user manages "auto-fix my PR" switches in one place.
+ */
+function PrAutomationsSettings() {
   const autoResolveConflicts = useSettingsStore((s) => s.autoResolveConflicts);
+  const autoFixCi = useSettingsStore((s) => s.autoFixCi);
 
-  const handleToggle = async (v: boolean) => {
-    useSettingsStore.getState().setAutoResolveConflicts(v);
+  const makeToggle = (
+    key: "autoResolveConflicts" | "autoFixCi",
+    setter: (v: boolean) => void,
+    label: string,
+  ) => async (v: boolean) => {
+    setter(v);
     try {
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ autoResolveConflicts: v }),
+        body: JSON.stringify({ [key]: v }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
-      useSettingsStore.getState().setAutoResolveConflicts(!v);
-      useUiStore.getState().setToast({ message: "Failed to update auto-resolve setting" });
-      console.error("[settings] toggle autoResolveConflicts failed:", err);
+      setter(!v);
+      useUiStore.getState().setToast({ message: `Failed to update ${label} setting` });
+      console.error(`[settings] toggle ${key} failed:`, err);
     }
   };
 
+  const handleResolveToggle = makeToggle(
+    "autoResolveConflicts",
+    (v) => useSettingsStore.getState().setAutoResolveConflicts(v),
+    "auto-resolve",
+  );
+  const handleFixToggle = makeToggle(
+    "autoFixCi",
+    (v) => useSettingsStore.getState().setAutoFixCi(v),
+    "auto-fix",
+  );
+
   return (
     <div className="space-y-3">
-      <h3 className="text-sm font-medium text-(--color-text-primary)">Auto-resolve conflicts</h3>
+      <h3 className="text-sm font-medium text-(--color-text-primary)">PR automations</h3>
       <div className="space-y-2">
+        <div className="flex items-center justify-between py-1 gap-4">
+          <div>
+            <span className="text-sm text-(--color-text-primary)">Auto-fix CI when checks fail</span>
+            <p className="text-xs text-(--color-text-tertiary)">When a PR&rsquo;s checks fail and the agent isn&rsquo;t busy, fetches the failing logs and asks the agent to fix them. Retries up to three times per commit.</p>
+          </div>
+          <ToggleSwitch enabled={autoFixCi} onToggle={(v) => void handleFixToggle(v)} testId="settings-auto-fix-ci" />
+        </div>
         <div className="flex items-center justify-between py-1 gap-4">
           <div>
             <span className="text-sm text-(--color-text-primary)">Auto-resolve conflicts when the base branch moves</span>
             <p className="text-xs text-(--color-text-tertiary)">Detects when the PR can no longer merge cleanly. When the agent isn&rsquo;t busy, runs a rebase and asks the agent to fix any conflicts. Force-pushes the result.</p>
           </div>
-          <ToggleSwitch enabled={autoResolveConflicts} onToggle={(v) => void handleToggle(v)} testId="settings-auto-resolve-conflicts" />
+          <ToggleSwitch enabled={autoResolveConflicts} onToggle={(v) => void handleResolveToggle(v)} testId="settings-auto-resolve-conflicts" />
         </div>
       </div>
     </div>
@@ -1870,7 +1898,7 @@ export function Settings({
 
               <div className="border-t border-(--color-border-secondary)" />
 
-              <AutoResolveConflictsSettings />
+              <PrAutomationsSettings />
 
               <div className="border-t border-(--color-border-secondary)" />
 

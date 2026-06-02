@@ -72,19 +72,8 @@ function ManagedMergeInfo({ settingsUrl }: { settingsUrl?: string }) {
   );
 }
 
-export function AutoFixToggle({ sessionId, autoFix }: { sessionId: string; autoFix?: PrCardState["autoFix"] }) {
-  const toggleAutoFix = usePrStore((s) => s.toggleAutoFix);
-  const enabled = autoFix?.enabled ?? false;
-
-  return (
-    <ToggleSwitch
-      label="Auto-fix"
-      enabled={enabled}
-      onToggle={() => toggleAutoFix(sessionId, !enabled)}
-      title={enabled ? "Disable auto-fix" : "Enable auto-fix"}
-    />
-  );
-}
+// docs/169 — the per-card AutoFixToggle was removed: auto-fix CI is now a global
+// account-level setting (Settings → PR automations), not a per-session toggle.
 
 export function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
   const toggleAutoMerge = usePrStore((s) => s.toggleAutoMerge);

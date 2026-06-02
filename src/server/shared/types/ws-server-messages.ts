@@ -239,6 +239,8 @@ export interface WsGlobalSettings {
   liveSteering: boolean;
   /** docs/146 — global gate for the auto-resolve-conflicts loop. */
   autoResolveConflicts?: boolean;
+  /** docs/169 — global gate for the auto-fix-CI loop. */
+  autoFixCi?: boolean;
 }
 
 // ---- Template messages ----

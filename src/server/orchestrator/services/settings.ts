@@ -65,6 +65,7 @@ export async function getGlobalSettings(
   const autoCreatePr = credentialStore?.getAutoCreatePr() ?? false;
   const liveSteering = credentialStore?.getLiveSteering() ?? true;
   const autoResolveConflicts = credentialStore?.getAutoResolveConflicts() ?? false;
+  const autoFixCi = credentialStore?.getAutoFixCi() ?? false;
   // Settings page renders the per-agent "Parallel sessions" guidance as a
   // preview. Pick the first installed-and-authed agent so a Codex-only host
   // shows Codex's variant, not Claude's. Fall back to the first registered
@@ -76,7 +77,7 @@ export async function getGlobalSettings(
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
   const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
   const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
-  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
+  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -112,6 +113,8 @@ export interface SaveGlobalSettingsOptions {
   providerAccountManager?: ProviderAccountManager;
   /** docs/146 — fired exactly when `autoResolveConflicts` transitions false → true. */
   onAutoResolveConflictsEnabled?: () => void;
+  /** docs/169 — fired exactly when `autoFixCi` transitions false → true. */
+  onAutoFixCiEnabled?: () => void;
   gitIdentity?: { name: string; email: string };
   systemPrompt?: string;
   maxIdleContainers?: number;
@@ -123,6 +126,8 @@ export interface SaveGlobalSettingsOptions {
    * CONFLICTING transitions while the agent is idle.
    */
   autoResolveConflicts?: boolean;
+  /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
+  autoFixCi?: boolean;
   /** docs/163 — voice-note delivery mode (native / external / both). */
   voiceDeliveryMode?: VoiceDeliveryMode;
 }
@@ -135,7 +140,7 @@ export async function saveGlobalSettings(
     onAutoResolveConflictsEnabled,
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
-    autoResolveConflicts, voiceDeliveryMode,
+    autoResolveConflicts, autoFixCi, voiceDeliveryMode,
   } = opts;
 
   // Save git identity if provided
@@ -199,6 +204,15 @@ export async function saveGlobalSettings(
     const prev = credentialStore.getAutoResolveConflicts();
     credentialStore.setAutoResolveConflicts(autoResolveConflicts);
     if (!prev && autoResolveConflicts) onAutoResolveConflictsEnabled?.();
+  }
+
+  // docs/169 — save auto-fix-CI toggle. On a false → true edge, re-broadcast
+  // snapshots so existing tracked sessions reflect the now-active loop without
+  // waiting for a genuine PR-status change.
+  if (autoFixCi !== undefined) {
+    const prev = credentialStore.getAutoFixCi();
+    credentialStore.setAutoFixCi(autoFixCi);
+    if (!prev && autoFixCi) opts.onAutoFixCiEnabled?.();
   }
 
   return getGlobalSettings(agentRegistry, workspaceDir, credentialStore, providerAccountManager);

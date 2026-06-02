@@ -21,14 +21,12 @@
 
 import type { GitManager, RebaseConflictFile } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import type { AgentProcess, AgentId, AgentRunParams } from "../../shared/types.js";
+import type { AgentProcess, AgentId } from "../../shared/types.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
-import { resetRunnerTurnState } from "../session-runner.js";
-import { wireAgentListeners, type AgentListenerDeps } from "../ws-handlers/agent-listeners.js";
 import { ServiceError } from "./types.js";
 import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
@@ -233,119 +231,65 @@ async function tryForcePush(
 /**
  * Run an agent turn dedicated to resolving rebase conflicts.
  *
- * Funnels through the same `wireAgentListeners` implementation the WS user-
- * typed turn and the system-dispatched turn (`runDispatchedTurn`) use, so
- * chat history accumulates the same message-group structure (tool calls
- * visible, assistant text split at tool-result boundaries) regardless of
- * caller. The only carve-out is the post-turn behavior: this flow skips
- * auto-commit / auto-push / queue-drain because the rebase machinery
- * commits via `rebase --continue` and force-push runs after the entire
- * flow completes — auto-committing mid-rebase would corrupt the rebase.
+ * docs/169 — the turn lifecycle now lives entirely on the shared dispatch path
+ * (`runner.dispatch` → `runDispatchedTurn` → `executeAgentTurn`). That path
+ * already owns: a fresh agent, the `running` / `systemTurnInProgress` flag
+ * management, the synchronous `_isRunning=true` race fix, the shared
+ * `wireAgentListeners` (so chat history accumulates the same message-group
+ * structure as a WS user turn), and the error/done teardown. Previously this
+ * function hand-rolled ALL of that, which meant a fix to the turn lifecycle had
+ * to be mirrored here by hand.
+ *
+ * The ONE carve-out is post-turn behavior — `postTurn: "none"` elides
+ * auto-commit / auto-push / queue-drain — because the rebase machinery commits
+ * via `git rebase --continue` and force-pushes after the whole flow; an
+ * auto-commit mid-rebase would corrupt it. The completion signal
+ * (`onTurnComplete`) is what lets this multi-turn driver await one resolution
+ * turn, run its git step, then dispatch the next.
  */
 function runRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
 ): Promise<void> {
-  const {
-    runner, agentFactory, sessionManager, chatHistoryManager,
-    sseBroadcast, usageManager, authManager,
-  } = deps;
+  const { runner } = deps;
 
-  return new Promise((resolve, reject) => {
-    const agentId = runner.agentId;
-    const createFn = runner.createAgent
-      ? (id: AgentId) => runner.createAgent!(id)
-      : agentFactory;
-    if (!createFn) {
-      reject(new ServiceError(500, "No agent factory available for rebase resolution"));
+  return new Promise<void>((resolve, reject) => {
+    // A user (or another system) turn slipped in between rebase iterations —
+    // `dispatch` would enqueue rather than start, and `onTurnComplete` would
+    // never fire, hanging this promise until the wall-clock timeout. Reject so
+    // the conflict loop aborts the in-progress rebase cleanly instead.
+    if (runner.running) {
+      reject(new ServiceError(409, "Cannot resolve conflicts while an agent turn is in progress"));
       return;
     }
 
-    const agent = createFn(agentId);
-    runner.setAgent(agent);
-    // docs/146 — flip `systemTurnInProgress` BEFORE the spawn callback fires,
-    // so any concurrent WS send_message in the same tick sees the flag set
-    // and suppresses live steering. Cleared in the `done` handler below.
-    runner.systemTurnInProgress = true;
-    runner.running = true;
-    resetRunnerTurnState(runner);
-    // docs/146 — signal to the auto-resolve wrapper that real work has started.
-    // The wrapper uses this to classify a subsequent throw as a real-work
-    // error vs. a pre-spawn defer.
+    // docs/146 — signal "real work has started" so the auto-resolve wrapper
+    // classifies a downstream throw as a post-spawn error (count it) rather
+    // than a pre-spawn defer. The conflict loop only calls this after all
+    // pre-flight (fetch, ancestry, base-ref) has passed, so the dispatch
+    // boundary IS the spawn boundary.
     deps.onAgentSpawned?.();
 
-    const activity = "Resolving conflicts...";
-    runner.emitMessage({ type: "system_user_message", text: prompt, activity });
-    chatHistoryManager.append(runner.sessionId, { role: "user", text: prompt });
-    sseBroadcast("session_agent_started", { sessionId: runner.sessionId, activity });
-
-    // Listener deps shared with the WS user-typed path. The rebase flow has
-    // no per-connection model selection, so we surface the session's pinned
-    // model (whatever the WS user-typed turn would have used).
-    const listenerDeps: AgentListenerDeps = {
-      sessionManager,
-      chatHistoryManager,
-      usageManager,
-      authManager,
-      sseBroadcast,
-      broadcastLog: (_source, _text) => { /* rebase flow doesn't surface CLI log lines */ },
-      getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
-    };
-
-    wireAgentListeners(agent, runner, listenerDeps, {
-      isNewSession: false,
-      // User message persisted synchronously above; the listener's `isNewSession`
-      // branch is gated to false, so this lambda never fires.
-      persistUserMessage: () => { /* no-op */ },
-      capturedSessionId: runner.sessionId,
-      fallbackTitle: "Rebase",
+    runner.dispatch({
+      text: prompt,
+      activity: "Resolving conflicts...",
+      // Elide the post-turn commit/push/PR/drain — the rebase owns committing.
+      postTurn: "none",
+      // Suppress live-steering for the duration so a concurrent user message
+      // is queued (and drained after the flow) rather than injected into the
+      // resolution turn and derailing it.
+      systemTurn: true,
+      onTurnComplete: ({ errored }) => {
+        if (errored) {
+          // The shared listener already wrote the error row + reset runner
+          // state; rejecting only unblocks the conflict loop so it aborts the
+          // in-progress rebase (mirrors the old hand-rolled error path).
+          reject(new Error("Agent error during rebase conflict resolution"));
+        } else {
+          resolve();
+        }
+      },
     });
-
-    // Reject the rebase Promise on agent process error. The listener's own
-    // error handler has already emitted the error to chat history and reset
-    // runner state; we just need to unblock the outer rebase loop.
-    agent.on("error", (err: Error) => {
-      console.error("[rebase] agent error:", err.message);
-      // docs/146 — clear the system-turn flag on the error path too. Without
-      // this, a turn that errors out before `done` fires would leave the
-      // flag stuck true and the next user turn would silently lose live
-      // steering.
-      runner.systemTurnInProgress = false;
-      reject(err);
-    });
-
-    // Resolve on process exit. The listener has already persisted message
-    // groups on `agent_result` and set `runner.running = false`; this `done`
-    // handler just performs the rebase-specific finish (sseBroadcast +
-    // onAgentFinished + resolve). No auto-commit / auto-push / queue drain
-    // — see the function docstring for why.
-    agent.on("done", (code: number | null) => {
-      console.log("[rebase] agent exited with code", code);
-      // Identity-guard: don't clobber a later turn that already replaced
-      // the runner's agent ref — that would silently drop its SSE events.
-      if (runner.getAgent() === agent) runner.setAgent(null);
-      // Defensive: a process that exited without firing `agent_result` (rare
-      // crash before any events) wouldn't have had its `running` flag reset
-      // by the listener. Force it false so the rebase loop's next iteration
-      // can start cleanly.
-      runner.running = false;
-      // docs/146 — clear the system-turn flag so live steering is allowed
-      // again. Clear BEFORE `onAgentFinished()` so a re-entrant subscriber
-      // running on the synchronous "idle" emit sees the correct state.
-      runner.systemTurnInProgress = false;
-      sseBroadcast("session_agent_finished", { sessionId: runner.sessionId });
-      runner.onAgentFinished();
-      resolve();
-    });
-
-    const session = sessionManager.get(runner.sessionId);
-    const agentSessionId = session?.agentSessionId ?? runner.sessionId;
-
-    agent.run({
-      prompt,
-      sessionId: agentSessionId,
-      cwd: runner.sessionDir,
-    } as AgentRunParams);
   });
 }
 

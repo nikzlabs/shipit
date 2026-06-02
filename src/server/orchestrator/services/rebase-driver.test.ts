@@ -185,6 +185,40 @@ function makeStubAuthManager(): AuthManager {
   return { startOAuthFlow: () => {} } as unknown as AuthManager;
 }
 
+/**
+ * docs/169 — the conflict-resolution turn now runs through `runner.dispatch`,
+ * which requires `SystemTurnDeps` wired on the runner (else dispatch enqueues
+ * and the turn never starts). This wrapper builds those deps from the same
+ * stubs the driver deps already carry, so the test exercises the real shared
+ * dispatch path (the unification refactor's whole point) before delegating to
+ * `runRebaseFlow`.
+ */
+async function runFlow(
+  deps: Parameters<typeof runRebaseFlow>[0],
+  baseBranch: string,
+): ReturnType<typeof runRebaseFlow> {
+  deps.runner.setSystemTurnDeps({
+    agentFactory: deps.agentFactory!,
+    autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false }),
+    scheduleAutoPush: () => { /* postTurn: "none" skips this for rebase turns */ },
+    listenerDeps: {
+      sessionManager: deps.sessionManager,
+      chatHistoryManager: deps.chatHistoryManager,
+      usageManager: deps.usageManager,
+      authManager: deps.authManager,
+      sseBroadcast: deps.sseBroadcast,
+      broadcastLog: () => { /* rebase flow doesn't surface CLI log lines */ },
+      getSelectedModel: () => deps.sessionManager.get(deps.runner.sessionId)?.model,
+    },
+    buildRunParams: async (sessionId, _agentId, prompt) => {
+      const session = deps.sessionManager.get(sessionId) as { agentSessionId?: string } | undefined;
+      const agentSessionId = session?.agentSessionId ?? sessionId;
+      return { prompt, sessionId: agentSessionId, cwd: deps.runner.sessionDir } as AgentRunParams;
+    },
+  });
+  return runRebaseFlow(deps, baseBranch);
+}
+
 describe("rebase-driver: runRebaseFlow", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
@@ -220,7 +254,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     runner.on("message", (m: WsServerMessage) => messages.push(m));
 
     const captured: { role: string; text: string }[] = [];
-    const result = await runRebaseFlow({
+    const result = await runFlow({
       git,
       githubAuthManager: makeStubAuth(false),
       runner,
@@ -254,7 +288,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     // Set the feature branch as the upstream so force-push has a target.
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
 
-    const result = await runRebaseFlow({
+    const result = await runFlow({
       git,
       githubAuthManager: makeStubAuth(true),
       runner,
@@ -309,7 +343,7 @@ describe("rebase-driver: runRebaseFlow", () => {
       .mockRejectedValue(new Error("simulated push failure: connection refused"));
 
     try {
-      const result = await runRebaseFlow({
+      const result = await runFlow({
         git,
         githubAuthManager: makeStubAuth(true),
         runner,
@@ -351,7 +385,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     const messages: WsServerMessage[] = [];
     runner.on("message", (m: WsServerMessage) => messages.push(m));
 
-    const result = await runRebaseFlow({
+    const result = await runFlow({
       git,
       githubAuthManager: makeStubAuth(false),
       runner,
@@ -387,7 +421,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     const captured: { role: string; text: string }[] = [];
     let agentInvocations = 0;
 
-    const result = await runRebaseFlow({
+    const result = await runFlow({
       git,
       githubAuthManager: makeStubAuth(true),
       runner,
@@ -500,7 +534,7 @@ describe("rebase-driver: runRebaseFlow", () => {
       }
     }
 
-    const result = await runRebaseFlow({
+    const result = await runFlow({
       git,
       githubAuthManager: makeStubAuth(false),
       runner,
@@ -551,7 +585,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     runner.running = true;
 
     await expect(
-      runRebaseFlow({
+      runFlow({
         git,
         githubAuthManager: makeStubAuth(false),
         runner,
@@ -574,7 +608,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     });
 
     await expect(
-      runRebaseFlow({
+      runFlow({
         git,
         githubAuthManager: makeStubAuth(false),
         runner,

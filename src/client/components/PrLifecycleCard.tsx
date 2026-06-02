@@ -22,7 +22,6 @@ import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import { MarkdownContent } from "./message-markdown.js";
 import {
-  AutoFixToggle,
   AutoMergeToggle,
   FixCIButton,
   MergeButton,
@@ -409,6 +408,7 @@ function OpenPhase({
   const mergeable = usePrStore((s) => s.statusBySession[sessionId]?.mergeable);
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const pendingReviewCount = useCommentStore((s) => s.getCommentCount(sessionId));
+  const autoFixCi = useSettingsStore((s) => s.autoFixCi);
   const openDiff = useOpenPrDiff(pr?.baseBranch);
   if (!pr) return null;
 
@@ -435,7 +435,10 @@ function OpenPhase({
   // would flicker the button off-on every push. The cost of a stale click
   // during that window is bounded (the merge attempt fails with a toast).
   const canMerge = (isCiPassed || isCiNone) && !isConflicting;
-  const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFix?.enabled || isAutoFixExhausted);
+  // docs/169 — auto-fix is now a global setting, not a per-card toggle. Show the
+  // manual "Fix CI" button when CI failed and the auto-loop isn't actively
+  // handling it (global auto-fix off, or its budget exhausted).
+  const showFixButton = isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
   const showMergeButton = canMerge && !autoMerge?.enabled;
   // The inline conflict UI yields to the RebaseBanner once a rebase is
   // active — RebaseBanner is the surface for the in-flight flow. The
@@ -713,7 +716,6 @@ export function PrLifecycleCard({
 }: PrLifecycleCardProps) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   const autoMerge = usePrStore((s) => s.autoMergeBySession[sessionId] ?? s.cardBySession[sessionId]?.autoMerge);
-  const autoFix = usePrStore((s) => s.cardBySession[sessionId]?.autoFix);
   const sessionBranch = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId)?.branch);
   const setToast = useUiStore((s) => s.setToast);
   // Prefer card-derived branches because they update mid-turn (e.g. branch
@@ -790,9 +792,8 @@ export function PrLifecycleCard({
         <OverflowMenu label="Session actions" triggerClassName="h-auto w-auto p-1">
           {canAutoMerge && (
             <>
-              <div className="px-2 py-1">
-                <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />
-              </div>
+              {/* docs/169 — auto-fix CI moved to a global setting (Settings → PR
+                  automations); the per-card toggle was removed. */}
               <div className="px-2 py-1">
                 <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
               </div>
