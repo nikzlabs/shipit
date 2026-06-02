@@ -69,10 +69,29 @@ Non-goals: changing what the CI-fix prompt or conflict prompt says; changing the
 rebase git plumbing; merging auto-merge into the same abstraction (it has no agent
 turn — only align it where cheap).
 
+## Resolved decisions
+
+1. **Toggle model → global + persisted, for both.** Auto-fix CI moves off the
+   per-session in-memory map onto the same global, `credentialStore`-persisted setting
+   shape as auto-resolve conflicts. Both become account-level switches in settings (not
+   per-PR-card toggles), and both survive an orchestrator restart. The per-session
+   auto-fix toggle on the PR card is removed in favor of the global setting.
+2. **Shared base → full generic base class** (not just shared helpers). The deciding
+   factor is the mutual-exclusion requirement (Workstream C): suppressing one automation
+   while another acts needs a single owner that sees all automations, and a generic base
+   is the natural home for the shared per-session arbiter. The conflict manager's subtle
+   race ordering is ported into the base under green tests (see Risks).
+3. **Auto-merge → leave the manager, share attach only.** `AutoMergeManager` keeps its
+   own logic (it never spawns an agent turn), but its `PrStatusSummary` contribution
+   routes through the same shared attach-state helper for consistency. It participates in
+   the arbiter only as a cheap precondition check (don't merge while a remediation turn
+   is in flight); it is not folded into the base.
+
 ## Approach
 
-Two independent workstreams. They can land in either order; B is lower-risk and
-higher-visibility, A is the deeper refactor.
+Three workstreams. A and B can land in either order; C depends on B's shared base.
+B is lower-risk and higher-visibility, A is the deeper refactor, C is the new
+cross-automation guarantee the user asked for.
 
 ### Workstream A — unify the agent-injection path
 
@@ -121,16 +140,48 @@ grouping all live in exactly one place; the rebase driver shrinks to git plumbin
    doesn't burn 3 attempts in seconds.
 4. **Give CI autofix `resetForUserActivity`** wiring in `index.ts` alongside the
    conflict reset (`send_message` / `answer_question` / `send_review_message`).
-5. **Decide the toggle model and make both consistent** — see Open question 1. Whatever
-   we pick, both features use it. If we go per-session+persisted, persist the auto-fix
-   map (it's currently lost on restart) and add a per-session conflict toggle to the
-   card; if we go global+persisted, move the CI toggle to settings.
+5. **Move the auto-fix toggle to global + persisted** (decision 1): add an
+   `autoFixCi` (or similarly named) flag to `credentialStore` / `services/settings.ts`
+   mirroring `autoResolveConflicts`, expose it in `settings-store.ts` and the settings
+   UI, and remove the per-session `AutoFixToggle` from the PR card. Managers read the
+   global flag at decision time (as the conflict manager already does) rather than
+   mirroring it per-session. Handle migration gracefully: default off, no surprise
+   re-enables for sessions that had it toggled on in the old per-session map.
+
+### Workstream C — cross-automation arbitration (mutual exclusion)
+
+The user requirement: two auto-changes must not act on the same head, and once one
+acts and pushes, the other stays suppressed until fresh code (a new head SHA) lands.
+
+1. Add a per-session **remediation arbiter** owned by the shared base. Automations
+   `claim(sessionId, headSha)` before firing and `release()` when the attempt settles.
+   At most one claim per session at a time — a second automation's `handleTransition`
+   defers while a claim is held. (This is the logical layer above the existing
+   `runner.running` turn-level gate, which already prevents two agent turns at once.)
+2. **Await-fresh-signal after a push.** When a claim's attempt force-pushes / pushes
+   (head SHA will change), the arbiter marks the session "awaiting fresh signal" and
+   suppresses ALL automations until the poller next observes a head SHA different from
+   the one that was acted on — i.e. GitHub has recomputed CI status and mergeability
+   for the new code. This keys off head SHA, composing with each manager's existing
+   reset-on-push logic rather than duplicating it.
+3. **Stale-signal guard.** A manager must not fire on a signal (failed CI / conflicting
+   mergeable) whose head SHA predates the last push the arbiter recorded. The arbiter
+   exposes `lastActedHeadSha(sessionId)` so a manager can drop a transition whose
+   `headSha` matches an already-acted head.
+4. Auto-merge consults the arbiter as a cheap precondition: skip a merge while a
+   remediation claim is held (auto-merge's own preconditions — green CI, mergeable —
+   already make collision rare, so this is belt-and-suspenders, not a rewrite).
+5. **Liveness:** the claim must always release — on success, error, exhaustion, defer,
+   and the auto-resolve wall-clock timeout. Tie `release()` into the same terminal
+   `writeBack` path that owns status transitions so there is exactly one release site
+   per automation.
 
 ## Key files
 
 - `src/server/orchestrator/auto-fix-manager.ts` — collapses into a base specialization.
 - `src/server/orchestrator/auto-conflict-resolve-manager.ts` — collapses into a base specialization.
-- `src/server/orchestrator/auto-merge-manager.ts` — align `attachAutomationState` shape only; no agent turn.
+- `src/server/orchestrator/auto-merge-manager.ts` — route through shared attach-state helper; consult arbiter as a cheap precondition; otherwise unchanged.
+- `src/server/orchestrator/auto-remediation-arbiter.ts` (new) — per-session claim/release + await-fresh-signal, owned by the shared base (Workstream C).
 - `src/server/orchestrator/session-runner.ts` — `dispatch()` + `AgentDispatchOptions` gain `postTurn` policy + completion signal.
 - `src/server/orchestrator/ws-handlers/dispatched-turn.ts` — honor `postTurn: "none"`.
 - `src/server/orchestrator/services/rebase-driver.ts` — `runRebaseResolutionTurn` rewritten on top of `dispatch()`; git plumbing unchanged.
@@ -151,19 +202,26 @@ grouping all live in exactly one place; the rebase driver shrinks to git plumbin
 - **The conflict manager's race comments are subtle** (the step-11 ordering, the
   synchronous "idle" re-entrancy in `verifyRunningState`). The base extraction must
   preserve that ordering — port the existing tests first, refactor under green.
-- **Toggle migration** — if we persist the auto-fix map or move toggles, handle
-  existing in-flight sessions gracefully (default off, no surprise re-enables).
+- **Toggle migration** — moving auto-fix to a global persisted setting must default
+  off; do not silently re-enable sessions that had the old per-session toggle on.
+- **Arbiter liveness** — a claim that never releases wedges every automation for that
+  session. Every terminal path (success / error / exhausted / deferred / timeout) must
+  release exactly once; cover with a test that asserts the claim is free after each.
+- **Await-fresh-signal vs. genuine re-fire** — the suppression must lift once a new head
+  SHA is observed, otherwise a legitimately-still-broken PR after a push would never get
+  a second automation. Test the full cycle: auto-resolve pushes → new head → CI fails on
+  new head → auto-fix is allowed to claim.
 
 ## Open questions
 
-1. **Toggle model** — per-session+persisted, or global+persisted, for both? (Leaning
-   per-session+persisted: matches the PR-card mental model and lets a user enable
-   auto-fix on one risky PR without it firing everywhere. Requires persisting the
-   auto-fix map and adding a per-session conflict toggle.)
-2. **Scope of the shared base** — full generic base class, or a lighter shared-helpers
-   module (cooldown gate, SHA-reset, attach-state) that both managers call? The latter
-   is less invasive and preserves the conflict manager's careful ordering with less
-   risk. Decide after reading the conflict manager's tests.
-3. **Auto-merge** — fold its `attachAutomationState` block into the same shape, or
-   leave it alone since it has no agent turn? (Probably leave the manager; only share
-   the SSE-attach helper.)
+All three original open questions are resolved (see Resolved decisions). Remaining
+finer-grained calls to make during implementation:
+
+1. **Release-on-push timing for the arbiter** — does the claim release the instant the
+   push completes, or only after the poller confirms the new head SHA? Leaning on the
+   latter (confirm-new-head) so a fast second automation can't slip in on the old
+   signal between push and the next poll. Validate against the auto-resolve force-push
+   path, which pushes mid-flow.
+2. **Settings UI grouping** — present auto-fix CI and auto-resolve conflicts as two
+   switches under a shared "PR automations" settings group? (Cosmetic, but worth doing
+   together since both move to global settings.)
