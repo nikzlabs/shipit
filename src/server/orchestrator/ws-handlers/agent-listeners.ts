@@ -1,7 +1,7 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, WsLogEntry } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, SessionRunnerInterface } from "../session-runner.js";
+import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
@@ -569,6 +569,52 @@ export function wireAgentListeners(
     // See docs/135.
     if (event.type === "agent_rate_limits") {
       deps.recordAgentRateLimits?.(agent.agentId, event.session, event.weekly);
+      return;
+    }
+
+    // docs/140 — a live steer the backend refused (Codex rejects `turn/steer`
+    // during review / manual-compaction turns with `ActiveTurnNotSteerable`).
+    // The message was already optimistically rendered + recorded as an
+    // in-progress steered row; rather than let it vanish, drop that row and
+    // re-queue the text so it runs as the next turn. Steerability is a
+    // turn-level property (a non-steerable turn rejects EVERY steer for its
+    // whole duration, and a steerable one accepts them all), so popping the
+    // OLDEST pending steer per rejection both preserves send order and can't
+    // re-queue a steer that actually landed. This is NOT chat content — handle
+    // it and return before the message accumulator, exactly like rate-limits.
+    if (event.type === "agent_steer_rejected") {
+      const turnSessionId = opts.capturedSessionId;
+      if (runner) {
+        const pending = runner.steeredMessages;
+        // Pop the oldest pending steer (FIFO). Its stored `text` is the raw
+        // user message (not the assembled prompt the adapter echoes back), so
+        // the re-queued bubble matches what the user typed.
+        const dropped = pending[0];
+        if (dropped) {
+          runner.steeredMessages = pending.slice(1);
+          // Re-persist the in-progress set without the dropped steer so a
+          // reload doesn't show it twice (once here, once when the queued turn
+          // runs and persists its own user row).
+          if (turnSessionId) {
+            persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
+          }
+        }
+        // Re-queue the original text (+ best-effort attachments). The post-turn
+        // drain feeds it as the next turn once the current (non-steerable) turn
+        // ends. Fall back to the adapter-echoed text if there's no record.
+        const requeueText = dropped?.text ?? event.text;
+        const queued: QueuedMessage = { text: requeueText };
+        if (dropped?.images && dropped.images.length > 0) queued.images = dropped.images;
+        if (dropped?.files && dropped.files.length > 0) {
+          queued.files = dropped.files.map((f) => ({ path: f.path }));
+        }
+        const position = runner.enqueue(queued);
+        emitToViewers({ type: "message_queued", text: requeueText, position });
+        deps.broadcastLog(
+          "server",
+          `Live steer rejected by ${agent.agentId} (turn not steerable) — re-queued for the next turn.`,
+        );
+      }
       return;
     }
 
