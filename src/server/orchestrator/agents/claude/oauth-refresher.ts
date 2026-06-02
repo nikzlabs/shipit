@@ -90,6 +90,22 @@ const TIER2_TIMEOUT_MS = 60_000;
 /** Path inside the per-account credential root that holds the OAuth token. */
 const CLAUDE_CREDENTIALS_RELATIVE = path.join(".claude", ".credentials.json");
 
+/**
+ * CLI phrases that mean the account cannot authenticate with its current
+ * credential set. Keep this in sync with the session-side Claude auth
+ * classifier without importing it: orchestrator code must not depend on
+ * session agent internals.
+ */
+const TERMINAL_AUTH_FAILURE_PATTERNS = [
+  "invalid_grant",
+  "invalid_refresh_token",
+  "invalid refresh token",
+  "401 invalid authentication credentials",
+  "invalid authentication credentials",
+  "authentication_error",
+  "unauthorized",
+];
+
 /** Sentinel for "no credentials on disk" (file missing or unparseable). */
 const NO_EXPIRY = null;
 
@@ -448,8 +464,8 @@ export class ClaudeOAuthRefresher extends EventEmitter {
    * Both tiers ran and neither rotated the token. Parse the CLI output for
    * known signals to classify the failure:
    *   - `429` / `rate_limit` / `rate limited` → rate_limited, backoff
-   *   - `invalid_grant` / `invalid_refresh_token` → revoked, stop scheduling
-   *     and emit `claude_account_unauthenticated`
+   *   - revoked/unauthorized/invalid credential signals → revoked, stop
+   *     scheduling and emit `claude_account_unauthenticated`
    *   - otherwise → unknown_failure, short backoff
    */
   private handleFailure(
@@ -463,11 +479,10 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     const lc = combinedOutput.toLowerCase();
     const isRateLimited =
       lc.includes("429") || lc.includes("rate_limit") || lc.includes("rate limited");
-    const isRevoked =
-      lc.includes("invalid_grant") || lc.includes("invalid_refresh_token") || lc.includes("invalid refresh token");
+    const isRevoked = TERMINAL_AUTH_FAILURE_PATTERNS.some((phrase) => lc.includes(phrase));
 
     if (isRevoked) {
-      console.log(`[claude-oauth-refresh] account=${accountId} revoked (invalid_grant) — emitting auth_required`);
+      console.log(`[claude-oauth-refresh] account=${accountId} revoked (${this.authFailureReason(lc)}) — emitting auth_required`);
       this.emitUnauthenticated(accountId);
       // Stop scheduling. The auth_complete handler will reschedule when the
       // user signs back in.
@@ -476,7 +491,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
         accountId,
         beforeExpiresAt: before,
         afterExpiresAt: after,
-        reason: "invalid_grant",
+        reason: this.authFailureReason(lc),
       };
     }
 
@@ -505,6 +520,10 @@ export class ClaudeOAuthRefresher extends EventEmitter {
       afterExpiresAt: after,
       reason: combinedOutput.slice(0, 200) || "no CLI output",
     };
+  }
+
+  private authFailureReason(lcOutput: string): string {
+    return TERMINAL_AUTH_FAILURE_PATTERNS.find((phrase) => lcOutput.includes(phrase)) ?? "auth_failure";
   }
 
   /**

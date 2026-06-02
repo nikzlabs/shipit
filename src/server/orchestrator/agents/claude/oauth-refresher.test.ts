@@ -344,6 +344,38 @@ describe("ClaudeOAuthRefresher", () => {
     expect(rig.refresher._inspectForTest("claude-default").hasTimer).toBe(false);
   });
 
+  it("classifies runtime 401 invalid-credentials output as revoked instead of unknown_failure", async () => {
+    const now = 1_700_000_000_000;
+    const nearExpiry = now + 5 * 60 * 1000;
+    const rig = buildRig({
+      accounts: [makeAccount("claude-default")],
+      initialExpiries: { "claude-default": nearExpiry },
+      initialNow: now,
+    });
+    rigs.push(rig);
+    rig.spawnHandle.effects = [
+      { stderr: "auth status did not rotate" },
+      {
+        stderr: [
+          "Failed to authenticate.",
+          "API Error: 401 Invalid authentication credentials",
+        ].join(" "),
+      },
+    ];
+
+    const [result] = await rig.refresher.refreshNow("claude-default");
+    expect(result!.outcome).toBe("revoked");
+    expect(result!.reason).toBe("401 invalid authentication credentials");
+
+    const sseEvents = rig.sseCalls.map((c) => c.event);
+    expect(sseEvents).toContain("claude_account_unauthenticated");
+    expect(sseEvents).toContain("agent_auth_failed");
+    expect(rig.sseCalls.find((c) => c.event === "agent_auth_failed")!.data)
+      .toEqual({ agentId: "claude", reason: "revoked" });
+    expect(rig.refresher._inspectForTest("claude-default").emittedUnauthenticated).toBe(true);
+    expect(rig.refresher._inspectForTest("claude-default").hasTimer).toBe(false);
+  });
+
   it("does not emit claude_account_unauthenticated twice across repeated revoked outcomes", async () => {
     const now = 1_700_000_000_000;
     const nearExpiry = now + 5 * 60 * 1000;
