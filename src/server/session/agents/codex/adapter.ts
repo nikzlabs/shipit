@@ -208,7 +208,9 @@ function summarizeCodexSubagentPrompt(prompt: unknown): string {
  * Codex app-server may surface an MCP tool under a server-qualified name
  * (`AskUserQuestion`, `shipit-ask__AskUserQuestion`, `shipit-ask.AskUserQuestion`,
  * `shipit-ask/AskUserQuestion`), so match the bare name or any of those
- * separator-prefixed forms rather than assuming one shape.
+ * separator-prefixed forms rather than assuming one shape. Used only to IGNORE
+ * the ask tool on the event stream — the question card is surfaced by the
+ * bridge's worker round-trip, not from here (see handleItem's mcpToolCall case).
  */
 const ASK_TOOL_NAME = "AskUserQuestion";
 
@@ -216,50 +218,6 @@ function isAskUserQuestionTool(tool: string | undefined): boolean {
   if (!tool) return false;
   if (tool === ASK_TOOL_NAME) return true;
   return /(?:^|[._/]|__)AskUserQuestion$/.test(tool);
-}
-
-/**
- * Normalize the bridge tool's `questions` argument into the exact shape the
- * AskUserQuestion card requires: `{ question, header, options: [{ label,
- * description }], multiSelect }`. Defensive against omitted fields the model
- * might leave out (missing `description`, missing `multiSelect`) so the card
- * always renders. Returns `[]` for a non-array input — the orchestrator's
- * well-formed gate then declines to interrupt (matching a malformed Claude
- * call), and the bridge has already rejected it with a validation error.
- */
-interface NormalizedAskOption {
-  label: string;
-  description: string;
-}
-interface NormalizedAskQuestion {
-  question: string;
-  header: string;
-  options: NormalizedAskOption[];
-  multiSelect: boolean;
-}
-
-function normalizeAskQuestions(raw: unknown): NormalizedAskQuestion[] {
-  if (!Array.isArray(raw)) return [];
-  const out: NormalizedAskQuestion[] = [];
-  for (const q of raw) {
-    if (typeof q !== "object" || q === null) continue;
-    const obj = q as Record<string, unknown>;
-    const rawOptions = Array.isArray(obj.options) ? obj.options : [];
-    const options = rawOptions
-      .filter((o): o is Record<string, unknown> => typeof o === "object" && o !== null)
-      .map((o) => ({
-        label: typeof o.label === "string" ? o.label : "",
-        description: typeof o.description === "string" ? o.description : "",
-      }))
-      .filter((o) => o.label.length > 0);
-    out.push({
-      question: typeof obj.question === "string" ? obj.question : "",
-      header: typeof obj.header === "string" ? obj.header : "",
-      options,
-      multiSelect: obj.multiSelect === true,
-    });
-  }
-  return out;
 }
 
 /**
@@ -1001,31 +959,17 @@ export class CodexAdapter
 
       case "mcpToolCall":
       case "dynamicToolCall": {
-        // docs/147 — the ShipIt-managed `shipit-ask` bridge exposes an
-        // `AskUserQuestion` tool. Re-emit its call under the RAW
-        // `AskUserQuestion` name with normalized `{ questions }` input so the
-        // client renders the standard question card and the orchestrator's
-        // existing interrupt/answer/resume flow (keyed on that tool name) takes
-        // over. The bridge call blocks; the orchestrator interrupts this turn
-        // and resumes the thread with the user's answer, so we never see a
-        // `completed` for it — but guard against one anyway and skip the
-        // tool_result, which would otherwise flip the card to "answered".
-        if (isAskUserQuestionTool(item.tool)) {
-          if (phase !== "started") return;
-          let parsed: Record<string, unknown> = {};
-          if (item.arguments) {
-            try {
-              parsed = JSON.parse(item.arguments) as Record<string, unknown>;
-            } catch {
-              parsed = {};
-            }
-          }
-          const questions = normalizeAskQuestions(parsed.questions);
-          this.emitAssistant([
-            { type: "tool_use", id, name: "AskUserQuestion", input: { questions } },
-          ]);
-          return;
-        }
+        // docs/147 — the ShipIt-managed `shipit-ask` bridge surfaces its
+        // AskUserQuestion card directly through the worker (the bridge POSTs to
+        // `/agent-ops/ask/submit`, which injects a synthetic `AskUserQuestion`
+        // tool_use), NOT through this event stream. The Codex app-server emits
+        // an `mcpToolCall` item only on `item/completed` — after the tool
+        // returns — but a well-formed question blocks and never returns, so
+        // relying on this path would never render the card (it would only time
+        // out). Ignore the ask tool entirely in both phases: emitting a
+        // tool_use here would duplicate the bridge's card, and emitting a
+        // tool_result would flip it to "answered" and disable the options.
+        if (isAskUserQuestionTool(item.tool)) return;
         if (phase === "started") {
           let input: Record<string, unknown> = {};
           if (item.arguments) {

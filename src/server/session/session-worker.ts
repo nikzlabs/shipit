@@ -46,6 +46,7 @@ import { ClaudeProcess } from "./agents/claude/process.js";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
 import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
+import { normalizeAskQuestions } from "./ask-question.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
@@ -182,6 +183,7 @@ export class SessionWorker extends EventEmitter {
     app.get("/health", async () => ({ status: "ok" }));
     this.registerSessionEndpoints(app);
     this.registerSSEEndpoint(app);
+    this.registerAskEndpoint(app);
     registerAgentOpsRoutes(app, {
       createOrchestratorClient: this._createOrchestratorClient,
     });
@@ -747,6 +749,52 @@ export class SessionWorker extends EventEmitter {
     });
 
     this.registerPresentEndpoints(app);
+  }
+
+  // --- AskUserQuestion bridge endpoint (docs/147) ---
+
+  /**
+   * `POST /agent-ops/ask/submit` — receives a structured question from the
+   * `mcp-ask-bridge` subprocess (a child of the Codex CLI) and injects it into
+   * the agent event stream as an `AskUserQuestion` tool_use.
+   *
+   * Why inject here instead of letting the adapter parse it off Codex's event
+   * stream? The Codex app-server surfaces an `mcpToolCall` item only on
+   * `item/completed`, after the tool returns — but the ask bridge blocks on a
+   * well-formed question and never returns, so the adapter would never see it
+   * (the call just sat until Codex's ~120s MCP timeout). Broadcasting the same
+   * `agent_event` the adapter emits for real tool calls drives the
+   * orchestrator's existing AskUserQuestion interrupt/answer/resume flow
+   * (agent-listeners.ts, keyed on the tool name) unchanged — the orchestrator
+   * renders the card and interrupts the turn immediately. The interrupt kills
+   * the Codex process (and with it the bridge), so the call never times out.
+   */
+  private registerAskEndpoint(app: FastifyInstance): void {
+    app.post<{ Body: { questions?: unknown } }>(
+      "/agent-ops/ask/submit",
+      async (request, reply) => {
+        const questions = normalizeAskQuestions(request.body?.questions);
+        if (questions.length === 0) {
+          return reply.code(400).send({
+            error:
+              "questions must be a non-empty array, and each question must have at least one labeled option",
+          });
+        }
+
+        const toolUseId = `ask_${crypto.randomUUID()}`;
+        this.broadcastSSE({
+          type: "agent_event",
+          data: {
+            type: "agent_assistant",
+            content: [
+              { type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: { questions } },
+            ],
+          } as AgentEvent,
+        });
+
+        return { status: "asked" };
+      },
+    );
   }
 
   // --- Present tool endpoints (docs/093) ---

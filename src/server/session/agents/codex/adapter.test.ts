@@ -875,13 +875,15 @@ describe("CodexAdapter", () => {
 
   // ---- AskUserQuestion bridge (docs/147) ----
   //
-  // Codex calls the ShipIt-managed `shipit-ask` MCP tool; the app-server
-  // surfaces it as a normal mcpToolCall item. The adapter must re-emit it under
-  // the raw `AskUserQuestion` name with a normalized `{ questions }` input so
-  // the standard question card renders and the orchestrator's existing
-  // interrupt/answer/resume flow (keyed on that tool name) takes over.
+  // The `shipit-ask` MCP tool surfaces its question card through the worker
+  // round-trip (the bridge POSTs to `/agent-ops/ask/submit`, which injects a
+  // synthetic AskUserQuestion tool_use), NOT through Codex's event stream — the
+  // app-server only emits an `mcpToolCall` item on `completed`, which never
+  // arrives for a blocking question. So the adapter must IGNORE the ask tool in
+  // both phases: any tool_use here would duplicate the bridge's card, and any
+  // tool_result would flip it to "answered".
 
-  it("re-emits a shipit-ask mcpToolCall as a normalized AskUserQuestion tool_use", async () => {
+  it("ignores a shipit-ask mcpToolCall on item/started (the bridge surfaces it)", async () => {
     await createAndInit("Hello");
     events.length = 0;
 
@@ -889,15 +891,13 @@ describe("CodexAdapter", () => {
       item: {
         type: "mcpToolCall",
         id: "call-ask-1",
-        // Codex surfaces MCP tools server-qualified; the adapter matches the
-        // server-prefixed form as well as the bare name.
+        // Server-qualified and bare names both match isAskUserQuestionTool.
         tool: "shipit-ask__AskUserQuestion",
         arguments: JSON.stringify({
           questions: [
             {
               question: "Which database should we use?",
               header: "Database",
-              multiSelect: false,
               options: [
                 { label: "Postgres", description: "Relational" },
                 { label: "Redis", description: "In-memory" },
@@ -908,73 +908,8 @@ describe("CodexAdapter", () => {
       },
     });
 
-    await vi.waitFor(() => {
-      expect(events.length).toBe(1);
-    });
-
-    expect(events[0]).toMatchObject({
-      type: "agent_assistant",
-      content: [
-        {
-          type: "tool_use",
-          id: "call-ask-1",
-          name: "AskUserQuestion",
-          input: {
-            questions: [
-              {
-                question: "Which database should we use?",
-                header: "Database",
-                multiSelect: false,
-                options: [
-                  { label: "Postgres", description: "Relational" },
-                  { label: "Redis", description: "In-memory" },
-                ],
-              },
-            ],
-          },
-        },
-      ],
-    });
-  });
-
-  it("synthesizes multiSelect=false and description fallbacks for an AskUserQuestion call", async () => {
-    await createAndInit("Hello");
-    events.length = 0;
-
-    fakeProc.sendNotification("item/started", {
-      item: {
-        type: "mcpToolCall",
-        id: "call-ask-2",
-        tool: "AskUserQuestion", // bare name also matches
-        arguments: JSON.stringify({
-          questions: [
-            {
-              question: "Pick a framework",
-              header: "Framework",
-              // multiSelect omitted; options missing descriptions
-              options: [{ label: "React" }, { label: "Vue" }],
-            },
-          ],
-        }),
-      },
-    });
-
-    await vi.waitFor(() => {
-      expect(events.length).toBe(1);
-    });
-
-    const block = (events[0] as { content: { input: { questions: unknown[] } }[] }).content[0];
-    expect(block.input.questions).toEqual([
-      {
-        question: "Pick a framework",
-        header: "Framework",
-        multiSelect: false,
-        options: [
-          { label: "React", description: "" },
-          { label: "Vue", description: "" },
-        ],
-      },
-    ]);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(events).toHaveLength(0);
   });
 
   it("does not emit a tool_result for a completed AskUserQuestion call (card stays interactive)", async () => {
@@ -987,7 +922,7 @@ describe("CodexAdapter", () => {
       item: {
         type: "mcpToolCall",
         id: "call-ask-3",
-        tool: "shipit-ask__AskUserQuestion",
+        tool: "AskUserQuestion", // bare name also matches
         result: "ignored",
       },
     });

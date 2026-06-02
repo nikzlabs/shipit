@@ -307,6 +307,86 @@ describe("Integration: Session Worker IPC", () => {
     runner.dispose();
   });
 
+  // ---- AskUserQuestion bridge round-trip (docs/147) ----
+
+  it("injects an AskUserQuestion tool_use into the event stream on POST /agent-ops/ask/submit", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-ask",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "codex",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxy = await runner.startAgentOnWorker("codex", {
+      prompt: "Decide something",
+      cwd: "/workspace",
+    });
+
+    interface AssistantEvent { type: string; content?: { name?: string; input?: { questions?: unknown[] } }[] }
+    const askEvents: AssistantEvent[] = [];
+    const got = new Promise<void>((resolve) => {
+      proxy.on("event", (event: { type: string }) => {
+        const e = event as AssistantEvent;
+        askEvents.push(e);
+        if (
+          e.type === "agent_assistant" &&
+          e.content?.some((b) => b.name === "AskUserQuestion")
+        ) {
+          resolve();
+        }
+      });
+    });
+
+    // The mcp-ask-bridge POSTs here when Codex calls the AskUserQuestion tool.
+    const res = await fetch(`${workerUrl}/agent-ops/ask/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        questions: [
+          {
+            question: "Which database?",
+            header: "Database",
+            options: [{ label: "Postgres" }, { label: "Redis" }],
+          },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "asked" });
+
+    await got;
+
+    const ask = askEvents.find(
+      (e) => e.type === "agent_assistant" && e.content?.some((b) => b.name === "AskUserQuestion"),
+    );
+    const block = ask?.content?.find((b) => b.name === "AskUserQuestion");
+    expect(block?.input?.questions).toEqual([
+      {
+        question: "Which database?",
+        header: "Database",
+        multiSelect: false,
+        options: [
+          { label: "Postgres", description: "" },
+          { label: "Redis", description: "" },
+        ],
+      },
+    ]);
+
+    runner.dispose();
+  });
+
+  it("rejects a malformed AskUserQuestion submit with 400 (so the bridge errors instead of hanging)", async () => {
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent-ops/ask/submit",
+      payload: { questions: [{ question: "Q", header: "H", options: [] }] },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("non-empty array");
+  });
+
   it("streams agent done event via SSE", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-done",
