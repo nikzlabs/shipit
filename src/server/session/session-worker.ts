@@ -29,6 +29,7 @@ import type {
   AgentMcpPresentBridge,
   AgentMcpVoiceBridge,
   AgentMcpAskBridge,
+  AgentMcpBugBridge,
   AgentMcpWriteResult,
   McpServerConfig,
 } from "./agents/agent-process.js";
@@ -204,6 +205,7 @@ export class SessionWorker extends EventEmitter {
       presentBridge: this.presentBridgePaths(),
       voiceBridge: this.voiceBridgePaths(),
       askBridge: this.askBridgePaths(),
+      bugBridge: this.bugBridgePaths(),
       onServerFailed: (name, reason) => {
         this.broadcastSSE({
           type: "mcp_server_status",
@@ -268,6 +270,20 @@ export class SessionWorker extends EventEmitter {
   private askBridgePaths(): AgentMcpAskBridge | null {
     const sessionDir = path.dirname(fileURLToPath(import.meta.url));
     const bridgePath = path.join(sessionDir, "mcp-ask-bridge.ts");
+    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
+    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
+    return { tsxBin, bridgePath };
+  }
+
+  /**
+   * Resolve the absolute paths needed to launch the bug-report MCP bridge
+   * (docs/164). Same lifecycle and graceful-degradation rules as the review,
+   * present, and voice bridges — if the bridge or `tsx` is missing, return
+   * null and the adapter omits the entry rather than failing agent start.
+   */
+  private bugBridgePaths(): AgentMcpBugBridge | null {
+    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
+    const bridgePath = path.join(sessionDir, "mcp-bug-bridge.ts");
     const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
     if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
     return { tsxBin, bridgePath };

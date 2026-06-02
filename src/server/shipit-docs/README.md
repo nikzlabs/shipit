@@ -16,3 +16,4 @@ platform capabilities.
 | [skills.md](skills.md) | Skill directory layout — hand-written vs ShipIt-installed, install markers, auto-commit |
 | [design-docs.md](design-docs.md) | Feature docs — frontmatter format, status values, structure |
 | [present.md](present.md) | `present` tool — show ephemeral artifacts (HTML/SVG/markdown/images) in the Present tab without writing to the workspace |
+| [bug-filing.md](bug-filing.md) | `report_shipit_bug` tool — file a redacted, consent-gated bug against ShipIt itself under the user's own GitHub identity |

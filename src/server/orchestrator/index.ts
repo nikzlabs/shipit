@@ -25,6 +25,7 @@ import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
 import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
+import * as bugReportHandlers from "./ws-handlers/bug-report-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
 import type { ServiceManager } from "./service-manager.js";
 import { createPlatformCredentialProvider } from "./platform-credentials.js";
@@ -904,6 +905,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // wires this; the function itself is defensive (catches its own
     // errors) so it's safe even when Docker isn't reachable.
     pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,
+    // docs/164 — disable the bug-report Stage-2 LLM pass in test mode so
+    // integration tests don't shell out to a real agent CLI; production omits
+    // this and the route derives the per-session CLI runner.
+    ...(isTestMode ? { bugReportModelRunner: async () => null } : {}),
     getLogBuffer,
     agentFactory,
     oomBreaker,
@@ -1710,6 +1715,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
             }
             return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
           }
+          case "submit_bug_report": return bugReportHandlers.handleSubmitBugReport(ctx, msg);
         }
       };
 

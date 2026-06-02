@@ -613,6 +613,16 @@ export class CodexAdapter
       );
     }
 
+    if (ctx.bugBridge) {
+      lines.push(
+        "",
+        "# docs/164 — report_shipit_bug tool bridge.",
+        "[mcp_servers.shipit-bug]",
+        `command = ${tomlString(ctx.bugBridge.tsxBin)}`,
+        `args = ${tomlArray([ctx.bugBridge.bridgePath])}`,
+      );
+    }
+
     for (const server of ctx.servers) {
       const { resolved, missing } = resolveMcpServer(server);
       if (!resolved) {

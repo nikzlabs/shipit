@@ -51,6 +51,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
       presentBridge: null,
       voiceBridge: null,
       askBridge: null,
+      bugBridge: null,
       onServerFailed,
     }).runtimeEnv;
   }
@@ -77,6 +78,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
       presentBridge: null,
       voiceBridge: null,
       askBridge: { tsxBin: "/opt/tsx", bridgePath: "/opt/mcp-ask-bridge.ts" },
+      bugBridge: null,
       onServerFailed,
     });
     const cfg = configText();

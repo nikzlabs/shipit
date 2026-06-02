@@ -6,6 +6,8 @@ import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper 
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
+import { createIssue as createIssueImpl } from "./github-auth-issues.js";
+import type { CreateIssueResult } from "./github-auth-issues.js";
 import { addReviewThreadReply as addReviewThreadReplyImpl, resolveReviewThread as resolveReviewThreadImpl, unresolveReviewThread as unresolveReviewThreadImpl, submitPullRequestReview as submitPullRequestReviewImpl } from "./github-auth-review-threads.js";
 import type { PullRequestReviewThreadDraft } from "./github-auth-review-threads.js";
 
@@ -320,6 +322,25 @@ export class GitHubAuthManager extends EventEmitter {
       return { success: false, message: "Not authenticated with GitHub" };
     }
     return createPullRequestImpl(this._token, options);
+  }
+
+  /**
+   * Create an issue on `owner/repo` under the authenticated user's identity
+   * (docs/164 — user bug filing). Returns a `scopeError` flag when GitHub
+   * rejects for lack of Issues:write on the target repo so the caller can
+   * surface a reconnect prompt. No scope pre-check — the 403 is the gate.
+   */
+  async createIssue(options: {
+    owner: string;
+    repo: string;
+    title: string;
+    body: string;
+    labels?: string[];
+  }): Promise<CreateIssueResult> {
+    if (!this._token) {
+      return { success: false, message: "Not authenticated with GitHub" };
+    }
+    return createIssueImpl(this._token, options);
   }
 
   /**
@@ -753,4 +774,5 @@ export class GitHubAuthManager extends EventEmitter {
 export { createRepo, listUserRepos, searchRepos } from "./github-auth-repos.js";
 export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, markPullRequestReady, listPullRequests, viewPullRequest, getPullRequestNodeId } from "./github-auth-prs.js";
 export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
+export { createIssue } from "./github-auth-issues.js";
 export { addReviewThreadReply, resolveReviewThread, unresolveReviewThread, submitPullRequestReview } from "./github-auth-review-threads.js";
