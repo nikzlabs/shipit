@@ -32,6 +32,8 @@ function queuedMessageToDispatchOptions(next: QueuedMessage): AgentDispatchOptio
   if (next.uploads !== undefined) nextOpts.uploads = next.uploads;
   if (next.permissionMode !== undefined) nextOpts.permissionMode = next.permissionMode;
   if (next.reviewFilePath !== undefined) nextOpts.reviewFilePath = next.reviewFilePath;
+  if (next.postTurn !== undefined) nextOpts.postTurn = next.postTurn;
+  if (next.systemTurn !== undefined) nextOpts.systemTurn = next.systemTurn;
   return nextOpts;
 }
 
@@ -78,6 +80,14 @@ export async function runDispatchedTurn(
       ...(activity !== undefined ? { activity } : {}),
       ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
       ...(opts.reviewFilePath !== undefined ? { reviewFilePath: opts.reviewFilePath } : {}),
+      // docs/169 — post-turn policy + system-turn marker + completion signal.
+      ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
+      ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
+      // The completion callback only fires on the FIRST attempt's turn — a
+      // no-result retry re-enters runOnce and would otherwise fire it twice.
+      // (The rebase loop never sets onNoResultExit, so retries don't apply to
+      // it; this guard keeps the contract clean regardless.)
+      ...(attempt === 0 && opts.onTurnComplete !== undefined ? { onTurnComplete: opts.onTurnComplete } : {}),
       // Server-initiated message → emit a bubble (no client-side optimistic
       // one). A retry must NOT re-echo the bubble or re-append the user row —
       // both already happened on the first attempt — so only the first run does.

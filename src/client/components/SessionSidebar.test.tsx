@@ -499,7 +499,7 @@ describe("SessionSidebar", () => {
       // so the user sees that ShipIt is automatically remediating the CI break.
       const card: PrCardState = {
         ...failingChecks,
-        autoFix: { enabled: true, status: "running", attemptCount: 1, maxAttempts: 3 },
+        autoFix: { status: "running", attemptCount: 1, maxAttempts: 3 },
       };
       usePrStore.setState({ cardBySession: { "s1": card } });
       useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });

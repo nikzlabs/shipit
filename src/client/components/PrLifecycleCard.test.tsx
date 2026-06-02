@@ -414,7 +414,7 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByRole("button", { name: "Fix CI" })).toHaveAttribute("title", "Fix CI");
   });
 
-  it("shows auto-fix toggle in the top-bar overflow whenever the session has a remote, regardless of CI state", async () => {
+  it("does NOT show a per-card auto-fix toggle (docs/169 — it moved to global settings)", async () => {
     const user = userEvent.setup();
     setCard("s1", {
       ...openPrCard,
@@ -424,14 +424,16 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
     await user.click(screen.getByLabelText("Session actions"));
-    expect(await screen.findByText("Auto-fix")).toBeInTheDocument();
+    // Auto-merge stays per-card; auto-fix is now an account-level setting.
+    expect((await screen.findAllByText("Auto-merge")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Auto-fix")).toBeNull();
   });
 
   it("shows auto-fix running state with attempt counter", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
-      autoFix: { enabled: true, status: "running", attemptCount: 2, maxAttempts: 3 },
+      autoFix: { status: "running", attemptCount: 2, maxAttempts: 3 },
     });
 
     render(<PrLifecycleCard sessionId="s1" />);
@@ -443,7 +445,7 @@ describe("PrLifecycleCard", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
-      autoFix: { enabled: true, status: "exhausted", attemptCount: 3, maxAttempts: 3 },
+      autoFix: { status: "exhausted", attemptCount: 3, maxAttempts: 3 },
     });
 
     render(<PrLifecycleCard sessionId="s1" />);
@@ -457,7 +459,7 @@ describe("PrLifecycleCard", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
-      autoFix: { enabled: true, status: "running", attemptCount: 1, maxAttempts: 3 },
+      autoFix: { status: "running", attemptCount: 1, maxAttempts: 3 },
     });
 
     render(<PrLifecycleCard sessionId="s1" />);
@@ -480,17 +482,16 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Auto-merge")).toBeNull();
   });
 
-  it("renders Auto-fix + Auto-merge in the top-bar overflow when the session has a remote (regardless of PR/CI state)", async () => {
-    // docs/156 — both toggles live in the top-bar overflow, gated only on
-    // `canAutoMerge` (i.e. the session has a GitHub remote). No PR card and
-    // no CI state are required. This unblocks the previously-unreachable
-    // "pre-enable auto-fix before the PR exists" workflow.
+  it("renders the Auto-merge toggle in the top-bar overflow when the session has a remote (regardless of PR/CI state)", async () => {
+    // docs/156/169 — the Auto-merge toggle lives in the top-bar overflow, gated
+    // only on `canAutoMerge` (i.e. the session has a GitHub remote). No PR card
+    // and no CI state are required. (Auto-fix moved to global settings.)
     const user = userEvent.setup();
     // Deliberately no card and no PR — `canAutoMerge` is the only gate.
     render(<PrLifecycleCard sessionId="no-card" canAutoMerge />);
     await user.click(screen.getByLabelText("Session actions"));
-    expect(await screen.findByText("Auto-fix")).toBeInTheDocument();
-    expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+    expect(await screen.findByText("Auto-merge")).toBeInTheDocument();
+    expect(screen.queryByText("Auto-fix")).toBeNull();
   });
 
   it("renders neither Auto-fix nor Auto-merge in the top-bar overflow when the session has no remote", async () => {
@@ -1014,7 +1015,7 @@ describe("PrLifecycleCard — open PR details", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "failure", total: 3, passed: 2, failed: 1, pending: 0 },
-      autoFix: { enabled: false, status: "idle", attemptCount: 0, maxAttempts: 3 },
+      autoFix: { status: "idle", attemptCount: 0, maxAttempts: 3 },
     });
     const onOpenDetails = vi.fn();
     render(<PrLifecycleCard sessionId="s1" canAutoMerge onOpenDetails={onOpenDetails} />);
@@ -1023,8 +1024,11 @@ describe("PrLifecycleCard — open PR details", () => {
     await user.click(screen.getByLabelText("Session actions"));
     expect(onOpenDetails).not.toHaveBeenCalled();
 
-    // Toggling auto-fix (a button inside the menu) must not switch the tab.
-    await user.click(await screen.findByText("Auto-fix"));
+    // docs/169 — the auto-fix toggle moved to global settings; the auto-merge
+    // toggle remains inside the menu. Clicking it (a button) must not switch tab.
+    // fireEvent bypasses the pointer-events guard radix puts on the menu items.
+    const mergeButtons = await screen.findAllByTitle("Enable auto-merge");
+    fireEvent.click(mergeButtons[mergeButtons.length - 1]);
     expect(onOpenDetails).not.toHaveBeenCalled();
   });
 

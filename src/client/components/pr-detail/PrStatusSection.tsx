@@ -20,9 +20,9 @@ import {
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore } from "../../stores/pr-store.js";
 import { useGitStore } from "../../stores/git-store.js";
+import { useSettingsStore } from "../../stores/settings-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import {
-  AutoFixToggle,
   AutoMergeToggle,
   FixCIButton,
   MergeButton,
@@ -72,6 +72,7 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   const deployments = status?.deployments ?? [];
   const mergeable = status?.mergeable;
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
+  const autoFixCi = useSettingsStore((s) => s.autoFixCi);
   const checks = card.checks ?? (status ? status.checks : undefined);
   const autoFix = card.autoFix;
   const autoMerge = card.autoMerge;
@@ -84,7 +85,9 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   const showConflictUi = isConflicting && rebaseStatus === "idle" && card.phase === "open" && pr;
   const canMerge = (isCiPassed || isCiNone) && !isConflicting;
   const showMergeButton = card.phase === "open" && canMerge && !autoMerge?.enabled;
-  const showFixButton = card.phase === "open" && isCiFailed && !isAutoFixRunning && (!autoFix?.enabled || isAutoFixExhausted);
+  // docs/169 — auto-fix is a global setting; the manual "Fix CI" button shows
+  // when CI failed and the auto-loop isn't actively handling it.
+  const showFixButton = card.phase === "open" && isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
   const showAutoMergeToggle = card.phase === "open" && (!isCiFailed || isCiPassed);
 
   return (
@@ -100,7 +103,6 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
           {showMergeButton && <MergeButton sessionId={sessionId} autoMerge={autoMerge} />}
           {showFixButton && <FixCIButton sessionId={sessionId} />}
           {showAutoMergeToggle && <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />}
-          {isCiFailed && <AutoFixToggle sessionId={sessionId} autoFix={autoFix} />}
           {showConflictUi && (
             <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
           )}

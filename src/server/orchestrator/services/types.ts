@@ -56,6 +56,8 @@ export interface GlobalSettings {
    * resolved rebase; default off.
    */
   autoResolveConflicts: boolean;
+  /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
+  autoFixCi: boolean;
   /**
    * docs/163 — voice-note delivery mode: "native" (inline note + TTS),
    * "external" (webhook only), or "both". Default "native".

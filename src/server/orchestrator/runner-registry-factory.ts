@@ -216,7 +216,7 @@ export function createRunnerRegistry(
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
-    credentialsDir, readSystemPrompt, generateText, getPrStatusPoller, getAutoConflictResolveManager,
+    credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, runParamsPreps,
   } = registryDeps;
@@ -232,17 +232,12 @@ export function createRunnerRegistry(
     },
     onRunnerIdle: (sessionId: string) => {
       enforceIdleContainerLimit();
-      // docs/146 — re-evaluate any session whose manager state is `deferred`
-      // (agent was busy when the conflict was detected) the moment the agent
-      // goes idle. Cooldown-driven retry runs through `handleTransition` on
-      // the next poll, NOT here. Fire-and-forget — manager owns its own
-      // error logging.
-      const mgr = getAutoConflictResolveManager?.();
-      if (mgr) {
-        mgr.onRunnerIdle(sessionId).catch((err: unknown) => {
-          console.error(`[runner-registry] auto-resolve onRunnerIdle error for ${sessionId}:`, err);
-        });
-      }
+      // docs/146/169 — re-evaluate any session whose remediation state is
+      // `deferred` (agent was busy when CI failed / a conflict landed) the
+      // moment the agent goes idle, rather than waiting for the next poll.
+      // Fans out to BOTH the auto-fix and auto-resolve managers. Cooldown-driven
+      // retry still runs through `handleTransition` on the next poll, not here.
+      getPrStatusPoller?.()?.notifyRunnerIdle(sessionId);
     },
     onRunnerCreated: (runner) => {
       // Shared listener deps — same shape `wireAgentListeners` consumes on

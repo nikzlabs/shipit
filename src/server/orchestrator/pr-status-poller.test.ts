@@ -1429,9 +1429,8 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
 
-    // Caller turns on auto-fix and the manager marks it running. That
-    // alone keeps the gate open and arms the supervisor.
-    poller.setAutoFixEnabled("s1", true);
+    // docs/169 — a manual fix marks the manager running. That alone keeps the
+    // gate open and arms the supervisor (creates state lazily).
     poller.markAutoFixRunning("s1");
 
     // Auto-fix keep-alive forces fast cadence → repeated polls fire over
@@ -1768,16 +1767,16 @@ describe("PrStatusPoller — auto-fix state", () => {
     pollerAF.destroy();
   });
 
-  it("setAutoFixEnabled creates state", () => {
-    const state = pollerAF.setAutoFixEnabled("s1", true);
-    expect(state).toMatchObject({ enabled: true, attemptCount: 0, status: "idle" });
+  it("markAutoFixRunning creates state lazily", () => {
+    pollerAF.markAutoFixRunning("s1");
+    const state = pollerAF.getAutoFixState("s1");
+    expect(state).toMatchObject({ attemptCount: 1, status: "running" });
   });
 
   it("markAutoFixRunning increments count and sets running", () => {
-    pollerAF.setAutoFixEnabled("s1", true);
     pollerAF.markAutoFixRunning("s1");
     const state = pollerAF.getAutoFixState("s1");
-    expect(state).toMatchObject({ enabled: true, attemptCount: 1, status: "running" });
+    expect(state).toMatchObject({ attemptCount: 1, status: "running" });
   });
 
   it("getAllStatuses includes autoFix state", async () => {
@@ -1793,14 +1792,15 @@ describe("PrStatusPoller — auto-fix state", () => {
     vi.useFakeTimers();
     const poller2 = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast: sseBroadcastAF });
     poller2.trackSession("s1", "https://github.com/owner/repo");
-    poller2.setAutoFixEnabled("s1", true);
+    // docs/169 — a manual fix populates the autoFix state (no per-session toggle).
+    poller2.markAutoFixRunning("s1");
 
     // Need to poll to populate lastKnown
     await vi.advanceTimersByTimeAsync(0);
 
     const statuses = poller2.getAllStatuses();
     expect(statuses).toHaveLength(1);
-    expect(statuses[0].autoFix).toMatchObject({ enabled: true, attemptCount: 0 });
+    expect(statuses[0].autoFix).toMatchObject({ attemptCount: 1, status: "running" });
     poller2.destroy();
     vi.useRealTimers();
   });

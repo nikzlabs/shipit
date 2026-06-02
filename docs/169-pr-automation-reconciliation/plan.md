@@ -1,10 +1,19 @@
 ---
-status: planned
+status: done
 priority: medium
 description: Reconcile the auto-fix-CI and auto-resolve-conflicts automations onto a shared state machine and agent-injection path, removing divergence and duplication.
 ---
 
 # PR automation reconciliation
+
+> **Status:** Implemented (all three workstreams). New modules:
+> `auto-remediation-manager.ts` (shared template-method base) and
+> `auto-remediation-arbiter.ts` (cross-automation mutual exclusion +
+> await-fresh-signal). `AutoFixManager` and `AutoConflictResolveManager` are now
+> thin specializations of the base; the rebase driver's conflict turn runs
+> through the shared `dispatch()` path (`postTurn: "none"`, `systemTurn: true`,
+> `onTurnComplete`); the auto-fix toggle is the global `autoFixCi` setting. See
+> `checklist.md` for the per-item status.
 
 ## Problem
 

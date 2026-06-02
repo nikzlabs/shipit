@@ -14,6 +14,7 @@ import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import { runAutoResolveAttempt } from "./services/rebase-driver.js";
 import type { AutoResolveResult, RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
+import type { AutoFixResult } from "./auto-fix-manager.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./agents/claude/auth-manager.js";
@@ -703,17 +704,32 @@ export function createPrStatusPoller(
     // credentialStore isn't wired (minimal test setups), the manager is
     // effectively disabled.
     isAutoResolveEnabled: credentialStore ? (() => credentialStore.getAutoResolveConflicts()) : (() => false),
+    // docs/169 — global gate for the auto-fix-CI loop, read at decision time.
+    isAutoFixEnabled: credentialStore ? (() => credentialStore.getAutoFixCi()) : (() => false),
     ...(rebaseAndResolveCb ? { rebaseAndResolveCb } : {}),
-    fetchAndFixCb: async (sessionId, owner, repo, failedChecks) => {
+    // docs/169 — the auto-fix loop's per-attempt callback. Fetches CI logs and
+    // dispatches the fix as a `systemTurn` (suppressing live-steering), then
+    // resolves once that turn completes so `AutoFixManager` can do its post-turn
+    // re-arm accounting. Returns "noop" (don't burn budget) when there is
+    // nothing to fix; "fixed" when a fix turn actually ran.
+    fetchAndFixCb: async (sessionId, owner, repo, failedChecks): Promise<AutoFixResult> => {
       const runner = runnerRegistry.get(sessionId);
-      if (!runner) return;
+      if (!runner) return { outcome: "noop", lastError: "no_runner" };
+      if (failedChecks.length === 0) return { outcome: "noop", lastError: "no_failed_checks" };
 
       const logs = await fetchCIFailureLogs(githubAuthManager, owner, repo, failedChecks, runner.sessionDir);
-      if (logs.length === 0) return;
+      if (logs.length === 0) return { outcome: "noop", lastError: "no_logs" };
       const prompt = buildCIFixPrompt(logs);
 
-      prStatusPoller.markAutoFixRunning(sessionId);
-      runner.dispatch({ text: prompt, activity: "Auto-fixing CI..." });
+      await new Promise<void>((resolve) => {
+        runner.dispatch({
+          text: prompt,
+          activity: "Auto-fixing CI...",
+          systemTurn: true,
+          onTurnComplete: () => resolve(),
+        });
+      });
+      return { outcome: "fixed" };
     },
     onMergeDetectedCb: async (sessionId) => {
       try {

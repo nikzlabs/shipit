@@ -103,6 +103,10 @@ export interface QueuedMessage {
   permissionMode?: PermissionMode;
   /** docs/125 — set when a chat-native review message is queued behind a running turn. */
   reviewFilePath?: string;
+  /** docs/169 — post-turn policy carried through the queue drain (see AgentDispatchOptions). */
+  postTurn?: "commit-push" | "none";
+  /** docs/169 — system-turn marker carried through the queue drain (see AgentDispatchOptions). */
+  systemTurn?: boolean;
 }
 
 /**
@@ -126,6 +130,32 @@ export interface AgentDispatchOptions {
   permissionMode?: PermissionMode;
   /** docs/125 — chat-native review turn marker. */
   reviewFilePath?: string;
+  /**
+   * docs/169 — post-turn policy. `"commit-push"` (default) runs the normal
+   * auto-commit / auto-push / PR-flow + queue drain after the turn.
+   * `"none"` skips ALL of them — used by the rebase driver, which commits via
+   * `git rebase --continue` and force-pushes once the whole flow finishes;
+   * auto-committing mid-rebase would corrupt the rebase.
+   */
+  postTurn?: "commit-push" | "none";
+  /**
+   * docs/169 — mark this as a system turn. When true, `dispatch()` sets
+   * `runner.systemTurnInProgress` synchronously (same tick as `_isRunning`)
+   * for the turn's duration so a concurrent user `send_message` is queued
+   * rather than steered into the system turn (and so live-steering stays
+   * suppressed). Cleared when the turn completes.
+   */
+  systemTurn?: boolean;
+  /**
+   * docs/169 — fired exactly once when the turn fully completes (process exit
+   * / teardown). Lets a multi-turn driver (the rebase loop) `await` one
+   * resolution turn, run its git step, then dispatch the next — the one
+   * capability the old hand-rolled `runRebaseResolutionTurn` had that
+   * fire-and-forget `dispatch()` lacked. `errored` is true when the turn
+   * ended via an agent process error. Dispatch-only (not carried through the
+   * queue — it is a live callback).
+   */
+  onTurnComplete?: (outcome: { errored: boolean }) => void;
 }
 
 /**
@@ -142,6 +172,8 @@ export function toQueuedMessage(opts: AgentDispatchOptions): QueuedMessage {
   if (opts.uploads !== undefined) queued.uploads = opts.uploads;
   if (opts.permissionMode !== undefined) queued.permissionMode = opts.permissionMode;
   if (opts.reviewFilePath !== undefined) queued.reviewFilePath = opts.reviewFilePath;
+  if (opts.postTurn !== undefined) queued.postTurn = opts.postTurn;
+  if (opts.systemTurn !== undefined) queued.systemTurn = opts.systemTurn;
   return queued;
 }
 
@@ -725,6 +757,13 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     // sees `running=false`, falls through to `runAgentWithMessage`, and
     // races with this dispatched turn for the `_agent` slot — silently
     // dropping one turn's SSE events.
+    //
+    // docs/169 — set `systemTurnInProgress` in the SAME synchronous tick as
+    // `_isRunning` for a system turn (rebase resolution, CI fix), so a
+    // `send_message` arriving in the gap sees the flag and queues instead of
+    // steering into the system turn. Cleared by `executeAgentTurn` on
+    // completion.
+    if (opts.systemTurn) this._systemTurnInProgress = true;
     this._isRunning = true;
     void this._runDispatchedTurn(opts);
   }

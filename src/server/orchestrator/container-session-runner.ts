@@ -1570,6 +1570,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // `running=false`, falls through to `runAgentWithMessage`, and races
     // with this dispatched turn for the `_agent` slot — silently dropping
     // one turn's SSE events.
+    //
+    // docs/169 — set `systemTurnInProgress` in the SAME synchronous tick as
+    // `_isRunning` for a system turn (rebase resolution, CI fix) so a
+    // `send_message` arriving in the gap queues instead of steering into it.
+    if (opts.systemTurn) this._systemTurnInProgress = true;
     this._isRunning = true;
     void this._runDispatchedTurn(opts);
   }

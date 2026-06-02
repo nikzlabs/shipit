@@ -107,6 +107,28 @@ export interface TurnInput {
    * teardown in place.
    */
   onNoResultExit?: (code: number | null) => Promise<boolean>;
+  /**
+   * docs/169 — post-turn policy. `"commit-push"` (default) runs the normal
+   * commit/push/PR + queue drain. `"none"` elides auto-commit, auto-push, the
+   * PR flow, AND the queue drain — used by the rebase driver, which commits
+   * via `git rebase --continue` and force-pushes after the whole flow; an
+   * auto-commit mid-rebase would corrupt it. `running` is still cleared so a
+   * multi-turn driver can dispatch the next turn.
+   */
+  postTurn?: "commit-push" | "none";
+  /**
+   * docs/169 — this turn set `runner.systemTurnInProgress` (via `dispatch`'s
+   * `systemTurn` option). The executor clears it on the terminal teardown so
+   * live steering is re-enabled exactly once the turn ends — on the clean
+   * `done` path AND the agent-error path.
+   */
+  systemTurn?: boolean;
+  /**
+   * docs/169 — fired exactly once on terminal teardown. `errored` is true when
+   * the turn ended via an agent process error (so a multi-turn driver can
+   * abort) and false on a clean completion.
+   */
+  onTurnComplete?: (outcome: { errored: boolean }) => void;
 }
 
 /**
@@ -123,6 +145,21 @@ export async function executeAgentTurn(
 ): Promise<void> {
   const { agentId, prompt, activity, sessionId, emit } = input;
   const useStreaming = input.useStreaming ?? false;
+  // docs/169 — "none" elides commit/push/PR + queue drain (rebase). Default
+  // preserves today's behavior for every other caller.
+  const postTurn = input.postTurn ?? "commit-push";
+
+  // docs/169 — terminal completion signal. Fires exactly once (guarded) on the
+  // clean `done` path or the agent-error path: clears the system-turn flag this
+  // turn set and hands control back to a multi-turn driver (the rebase loop).
+  let turnErrored = false;
+  let turnCompleteFired = false;
+  const finishTurn = (): void => {
+    if (turnCompleteFired) return;
+    turnCompleteFired = true;
+    if (input.systemTurn && runner) runner.systemTurnInProgress = false;
+    input.onTurnComplete?.({ errored: turnErrored });
+  };
 
   if (runner) {
     runner.running = true;
@@ -150,7 +187,10 @@ export async function executeAgentTurn(
     // agent_result / done paths use, so a process that both errors AND exits
     // can't drain the queue twice. (Defined below; the closure defers the
     // reference until the error actually fires.)
-    onError: () => tryDrain(),
+    // docs/169 — mark the turn errored and fire the completion signal here too,
+    // so a multi-turn driver (rebase loop) unblocks-and-aborts even when the
+    // process errors without a subsequent `done` event.
+    onError: () => { turnErrored = true; finishTurn(); return tryDrain(); },
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
   });
 
@@ -183,6 +223,12 @@ export async function executeAgentTurn(
     if (drainFired) return;
     drainFired = true;
     if (runner) runner.running = false;
+    // docs/169 — `postTurn: "none"` (rebase) still clears `running` so the
+    // driver can dispatch the next resolution turn, but must NOT drain the
+    // queue mid-rebase: a user message queued during conflict resolution
+    // drains only after the rebase fully settles (the driver's own
+    // `drainQueue` callback owns that).
+    if (postTurn === "none") return;
     await input.drainNext();
   };
 
@@ -247,6 +293,9 @@ export async function executeAgentTurn(
   };
 
   const runCommitAndPr = async (): Promise<void> => {
+    // docs/169 — rebase turns commit via `git rebase --continue` and force-push
+    // after the whole flow; auto-committing here would corrupt the rebase.
+    if (postTurn === "none") return;
     const commitHash = await runCommit();
     if (commitHash && runner) {
       try {
@@ -339,6 +388,7 @@ export async function executeAgentTurn(
       if (runner) runner.running = false;
       await tryDrain();
       emitFinishedIfIdle();
+      finishTurn();
       return;
     }
 
@@ -364,6 +414,9 @@ export async function executeAgentTurn(
     await tryDrain();
     await runCommitAndPr();
     emitFinishedIfIdle();
+    // docs/169 — hand control back to a multi-turn driver (rebase loop) and
+    // clear the system-turn flag, after all post-turn work has settled.
+    finishTurn();
   });
 
   try {

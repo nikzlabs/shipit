@@ -68,6 +68,8 @@ export async function registerBootstrapRoutes(
     liveSteering?: boolean;
     /** docs/146 — global gate for the auto-resolve-conflicts loop. */
     autoResolveConflicts?: boolean;
+    /** docs/169 — global gate for the auto-fix-CI loop. */
+    autoFixCi?: boolean;
     /** docs/163 — voice-note delivery mode (native / external / both). */
     voiceDeliveryMode?: "native" | "external" | "both";
   } }>(
@@ -86,6 +88,11 @@ export async function registerBootstrapRoutes(
           onAutoResolveConflictsEnabled: () => {
             deps.prStatusPoller?.broadcastAllSnapshots();
           },
+          // docs/169 — same re-broadcast on the auto-fix-CI false → true edge so
+          // the auto-loop's effect is reflected without waiting for a poll.
+          onAutoFixCiEnabled: () => {
+            deps.prStatusPoller?.broadcastAllSnapshots();
+          },
           ...(request.body.gitIdentity !== undefined ? { gitIdentity: request.body.gitIdentity } : {}),
           ...(request.body.systemPrompt !== undefined ? { systemPrompt: request.body.systemPrompt } : {}),
           ...(request.body.maxIdleContainers !== undefined ? { maxIdleContainers: request.body.maxIdleContainers } : {}),
@@ -93,6 +100,7 @@ export async function registerBootstrapRoutes(
           ...(request.body.autoCreatePr !== undefined ? { autoCreatePr: request.body.autoCreatePr } : {}),
           ...(request.body.liveSteering !== undefined ? { liveSteering: request.body.liveSteering } : {}),
           ...(request.body.autoResolveConflicts !== undefined ? { autoResolveConflicts: request.body.autoResolveConflicts } : {}),
+          ...(request.body.autoFixCi !== undefined ? { autoFixCi: request.body.autoFixCi } : {}),
           ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
         });
       } catch (err) {

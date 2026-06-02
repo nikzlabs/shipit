@@ -675,60 +675,9 @@ export async function registerGitHubRoutes(
     },
   );
 
-  // POST /api/sessions/:id/pr/auto-fix — toggle auto-fix on/off
-  app.post<{ Params: { id: string }; Body: { enabled: boolean } }>(
-    "/api/sessions/:id/pr/auto-fix",
-    async (request, reply) => {
-      try {
-        if (!deps.prStatusPoller) {
-          reply.code(500).send({ error: "PR status poller not available" });
-          return;
-        }
-        if (typeof request.body?.enabled !== "boolean") {
-          reply.code(400).send({ error: "\"enabled\" field is required (boolean)" });
-          return;
-        }
-
-        const state = deps.prStatusPoller.setAutoFixEnabled(
-          request.params.id,
-          request.body.enabled,
-        );
-
-        // If enabling and CI is currently failed, trigger a fix immediately
-        if (request.body.enabled) {
-          const prStatus = deps.prStatusPoller.getStatus(request.params.id);
-          if (prStatus?.checks.state === "failure") {
-            try {
-              await triggerCIFix(
-                deps.githubAuthManager,
-                deps.prStatusPoller,
-                deps.runnerRegistry,
-                request.params.id,
-                deps.sessionManager,
-                deps.credentialsDir,
-                deps.credentialStore,
-                deps.providerAccountManager,
-              );
-            } catch {
-              // Non-fatal — the toggle still worked, fix just didn't trigger
-            }
-          }
-        }
-
-        return {
-          enabled: state.enabled,
-          attemptCount: state.attemptCount,
-          status: state.status,
-        };
-      } catch (err) {
-        if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
-          return;
-        }
-        reply.code(500).send({ error: `Auto-fix toggle failed: ${getErrorMessage(err)}` });
-      }
-    },
-  );
+  // docs/169 — the per-session POST /api/sessions/:id/pr/auto-fix toggle was
+  // removed. Auto-fix CI is now a global account-level setting
+  // (PUT /api/settings { autoFixCi }); the poller reads it at decision time.
 
   // POST /api/sessions/:id/pr/auto-merge — toggle auto-merge on/off
   app.post<{ Params: { id: string }; Body: { enabled: boolean } }>(
