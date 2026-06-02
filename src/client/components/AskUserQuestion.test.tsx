@@ -264,6 +264,41 @@ describe("AskUserQuestion", () => {
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "My custom answer" }, "My custom answer");
     });
 
+    it("shows a submit button when Other is active for a single question", () => {
+      const onAnswer = vi.fn();
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      // No submit button before "Other" is chosen (predefined options auto-submit).
+      expect(screen.queryByTestId("submit-answer")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("option-other"));
+      expect(screen.getByTestId("submit-answer")).toBeInTheDocument();
+    });
+
+    it("submits other text via the submit button for a single question", () => {
+      const onAnswer = vi.fn();
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-other"));
+      const submit = screen.getByTestId("submit-answer");
+      // Disabled until some text is typed.
+      expect(submit).toBeDisabled();
+      fireEvent.change(screen.getByTestId("other-input"), { target: { value: "My custom answer" } });
+      fireEvent.click(submit);
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "My custom answer" }, "My custom answer");
+    });
+
     it("does not submit empty other text on Enter", () => {
       const onAnswer = vi.fn();
       render(
