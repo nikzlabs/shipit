@@ -54,7 +54,7 @@ export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff
 
   return (
     <>
-      <div className="mt-1 flex items-center gap-2 text-xs font-mono text-(--color-text-tertiary) pl-[1em] opacity-70 border-l-2 border-(--color-text-tertiary)/40">
+      <div className="py-1 flex items-center gap-2 text-xs font-mono text-(--color-text-tertiary) pl-[1em] opacity-70 border-l-2 border-(--color-text-tertiary)/40">
         <span className="text-(--color-text-secondary)">{verb}</span>
         <span className="text-(--color-text-primary) truncate">{sessionRelativePath(filePath)}</span>
         {hasContent ? (
