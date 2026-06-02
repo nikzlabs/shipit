@@ -23,6 +23,7 @@
  */
 
 import type { CredentialStore } from "../credential-store.js";
+import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import type {
   VoiceNotePayload,
@@ -77,6 +78,12 @@ export interface RouteVoiceNoteDeps {
   runner: SessionRunnerInterface;
   sessionId: string;
   credentialStore: CredentialStore;
+  /**
+   * Persists the native card so it survives a history reload (WS reconnect /
+   * refresh / restart). Optional: tests and minimal setups omit it, in which
+   * case the card still renders live but isn't durable.
+   */
+  chatHistoryManager?: ChatHistoryManager;
   /** Where this note came from (authored / derived). */
   source: VoiceNoteSource;
   /** Injectable for tests; defaults to the global fetch. */
@@ -155,16 +162,21 @@ export async function routeVoiceNote(
 
   // ---- Native sink ----
   if (mode === "native" || mode === "both") {
-    runner.emitMessage({
-      type: "voice_note",
-      sessionId,
+    const voiceNote = {
       id,
       headline: payload.summary,
       needsAttention: attention,
       kind: source,
       createdAt: nowIso,
-    });
+    };
+    runner.emitMessage({ type: "voice_note", sessionId, ...voiceNote });
     result.native = true;
+
+    // Persist the card so it survives a history reload. Voice notes arrive off
+    // the agent-event stream, so `buildTurnMessages` never captures them — the
+    // live append would otherwise be wiped by the next loadSessionHistory.
+    // Finalized (not in_progress) so the turn-end `replaceInProgress` keeps it.
+    deps.chatHistoryManager?.append(sessionId, { role: "assistant", text: "", voiceNote });
   }
 
   // ---- External (webhook) sink ----

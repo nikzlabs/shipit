@@ -30,6 +30,18 @@ function fakeCredentialStore(opts: {
   } as unknown as CredentialStore;
 }
 
+// Captures chat-history appends so we can assert the card is persisted.
+function fakeChatHistory(): { mgr: { append: (s: string, m: unknown) => number }; appended: { sessionId: string; message: Record<string, unknown> }[] } {
+  const appended: { sessionId: string; message: Record<string, unknown> }[] = [];
+  const mgr = {
+    append: (sessionId: string, message: unknown) => {
+      appended.push({ sessionId, message: message as Record<string, unknown> });
+      return appended.length;
+    },
+  };
+  return { mgr, appended };
+}
+
 const base = (over: Partial<{ summary: string; needsAttention: boolean }> = {}) => ({
   summary: over.summary ?? "Done — one test is still red, want me to dig in?",
   needsAttention: over.needsAttention ?? true,
@@ -65,6 +77,49 @@ describe("routeVoiceNote", () => {
       needsAttention: true,
       kind: "authored",
     });
+  });
+
+  it("persists the native card to chat history so it survives a reload", async () => {
+    const { runner } = fakeRunner();
+    const credentialStore = fakeCredentialStore({ mode: "native" });
+    const { mgr, appended } = fakeChatHistory();
+    await routeVoiceNote(base(), {
+      runner,
+      sessionId: "s1",
+      credentialStore,
+      chatHistoryManager: mgr as never,
+      source: "authored",
+      idFactory: deterministicId,
+      now: fixedNow,
+    });
+    expect(appended).toHaveLength(1);
+    expect(appended[0].sessionId).toBe("s1");
+    expect(appended[0].message).toMatchObject({
+      role: "assistant",
+      text: "",
+      voiceNote: {
+        id: "voice-test-1",
+        headline: base().summary,
+        needsAttention: true,
+        kind: "authored",
+        createdAt: "2026-06-01T00:00:00.000Z",
+      },
+    });
+  });
+
+  it("does NOT persist a card when delivery is external-only (no native bubble)", async () => {
+    const { runner } = fakeRunner();
+    const credentialStore = fakeCredentialStore({
+      mode: "external",
+      webhook: { url: "https://hook.example/notes", token: "t" },
+    });
+    const { mgr, appended } = fakeChatHistory();
+    const fetchImpl = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+    await routeVoiceNote(base(), {
+      runner, sessionId: "s1", credentialStore, chatHistoryManager: mgr as never,
+      source: "authored", fetchImpl, idFactory: deterministicId, now: fixedNow,
+    });
+    expect(appended).toHaveLength(0);
   });
 
   it("external mode posts to the webhook with bearer auth and v:1 body, no native note", async () => {

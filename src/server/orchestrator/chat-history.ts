@@ -71,6 +71,19 @@ export interface PersistedMessage {
   forkChild?: { childSessionId: string; title: string; branch: string };
   codeRollbackHash?: string;
   /**
+   * docs/163 — when set, this message renders an inline `VoiceNoteCard`. Voice
+   * notes arrive on a side channel (not the agent-event stream), so they aren't
+   * captured by `buildTurnMessages`; they are persisted directly so the card
+   * survives a history reload like any other transcript content.
+   */
+  voiceNote?: {
+    id: string;
+    headline: string;
+    needsAttention: boolean;
+    kind: "authored" | "ask" | "plan";
+    createdAt: string;
+  };
+  /**
    * Events emitted by subagents (Claude's Task tool) whose parent Task tool is
    * in this message's `toolUse`. Stored as a flat ordered list keyed by
    * `parentToolUseId` so the client can render the subagent's prompt, work,
@@ -98,6 +111,7 @@ interface MessageRow {
   notice_level: string | null;
   fork_child: string | null;
   code_rollback_hash: string | null;
+  voice_note: string | null;
   /**
    * Legacy column — older rows may carry a serialized per-turn usage record
    * here. The canonical per-turn series is now owned by `UsageManager`
@@ -111,8 +125,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note)
 `;
 
 const UPDATE_SQL = `
@@ -120,7 +134,8 @@ const UPDATE_SQL = `
     files=@files, is_error=@is_error, commit_hash=@commit_hash, parent_commit_hash=@parent_commit_hash,
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
-    notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash
+    notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
+    voice_note=@voice_note
   WHERE id = @id
 `;
 
@@ -177,6 +192,7 @@ export class ChatHistoryManager {
       notice_level: msg.noticeLevel ?? null,
       fork_child: msg.forkChild ? JSON.stringify(msg.forkChild) : null,
       code_rollback_hash: msg.codeRollbackHash ?? null,
+      voice_note: msg.voiceNote ? JSON.stringify(msg.voiceNote) : null,
     };
   }
 
@@ -201,6 +217,7 @@ export class ChatHistoryManager {
     if (row.rolled_back) msg.rolledBack = true;
     if (row.fork_child) msg.forkChild = JSON.parse(row.fork_child) as PersistedMessage["forkChild"];
     if (row.code_rollback_hash) msg.codeRollbackHash = row.code_rollback_hash;
+    if (row.voice_note) msg.voiceNote = JSON.parse(row.voice_note) as PersistedMessage["voiceNote"];
     return msg;
   }
 

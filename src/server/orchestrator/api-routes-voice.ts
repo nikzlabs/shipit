@@ -210,7 +210,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
       try {
         const result = await routeVoiceNote(
           { summary, needsAttention, ...(context ? { context } : {}) },
-          { runner, sessionId, credentialStore, source: "authored" },
+          { runner, sessionId, credentialStore, chatHistoryManager: deps.chatHistoryManager, source: "authored" },
         );
         return { delivered: result.native || result.webhook };
       } catch (err) {
