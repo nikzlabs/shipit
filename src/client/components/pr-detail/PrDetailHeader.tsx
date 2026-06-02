@@ -7,7 +7,7 @@
  * to an overflow menu — inline rendering is the primary surface.
  */
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   GitPullRequestIcon,
   GitMergeIcon,
@@ -20,27 +20,43 @@ import {
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore, type PrCardState } from "../../stores/pr-store.js";
 import { Banner } from "../ui/banner.js";
-import { OverflowMenu } from "../ui/overflow-menu.js";
 
-function StateBadge({ phase }: { phase: PrCardState["phase"] }) {
+function StateBadge({ phase, url }: { phase: PrCardState["phase"]; url?: string }) {
   const base = "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium border";
+  let colors: string;
+  let icon: ReactNode;
+  let label: string;
   if (phase === "merged") {
-    return (
-      <span className={`${base} bg-(--color-pr-subtle) text-(--color-pr) border-(--color-pr-border)`}>
-        <GitMergeIcon size={ICON_SIZE.XS} /> Merged
-      </span>
-    );
+    colors = "bg-(--color-pr-subtle) text-(--color-pr) border-(--color-pr-border)";
+    icon = <GitMergeIcon size={ICON_SIZE.XS} />;
+    label = "Merged";
+  } else if (phase === "closed") {
+    colors = "bg-(--color-bg-tertiary) text-(--color-text-tertiary) border-(--color-border-secondary)";
+    icon = <GitBranchIcon size={ICON_SIZE.XS} />;
+    label = "Closed";
+  } else {
+    colors = "bg-(--color-success-subtle) text-(--color-success) border-(--color-success-border)";
+    icon = <GitPullRequestIcon size={ICON_SIZE.XS} />;
+    label = "Open";
   }
-  if (phase === "closed") {
+
+  if (url) {
     return (
-      <span className={`${base} bg-(--color-bg-tertiary) text-(--color-text-tertiary) border-(--color-border-secondary)`}>
-        <GitBranchIcon size={ICON_SIZE.XS} /> Closed
-      </span>
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        title="View on GitHub"
+        className={`${base} ${colors} transition-opacity hover:opacity-80`}
+      >
+        {icon} {label}
+        <ArrowSquareOutIcon size={ICON_SIZE.XS} />
+      </a>
     );
   }
   return (
-    <span className={`${base} bg-(--color-success-subtle) text-(--color-success) border-(--color-success-border)`}>
-      <GitPullRequestIcon size={ICON_SIZE.XS} /> Open
+    <span className={`${base} ${colors}`}>
+      {icon} {label}
     </span>
   );
 }
@@ -111,7 +127,7 @@ export function PrDetailHeader({
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <StateBadge phase={card.phase} />
+            <StateBadge phase={card.phase} url={pr.url} />
             <span className="text-(--color-text-tertiary) text-sm font-mono">#{pr.number}</span>
           </div>
           {editingTitle ? (
@@ -205,16 +221,6 @@ export function PrDetailHeader({
             </span>
           </div>
         </div>
-        <OverflowMenu triggerClassName="h-7 w-7" contentClassName="min-w-44">
-          <a
-            href={pr.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 px-3 py-1.5 text-xs text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover)"
-          >
-            <ArrowSquareOutIcon size={ICON_SIZE.SM} /> View on GitHub
-          </a>
-        </OverflowMenu>
       </div>
     </div>
   );
