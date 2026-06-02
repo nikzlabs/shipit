@@ -7,7 +7,7 @@
   - [x] Parse `capabilities` block from `shipit.yaml` (`docker: boolean`)
   - [x] Return typed config with defaults for missing fields
 - [x] Read `shipit.yaml` in orchestrator's runner factory (`index.ts`) before container creation
-- [x] Add deployment-level cap env vars: `MAX_SESSION_MEMORY_MB` (default 4096), `MAX_SESSION_CPU` (default 4), `MAX_SESSION_PIDS` (default 2048)
+- [x] Add deployment-level cap env vars: `MAX_SESSION_MEMORY_MB` (default 4096), `MAX_SESSION_CPU` (default 4), `MAX_SESSION_PIDS` (default 4096)
 - [x] Apply caps in `resolveSessionConfig()` — `min(requested, cap)` for each resource
 - [x] Plumb capped values through `buildConfig()` → `create()`
 - [x] Unit tests for `resolveSessionConfig()`: valid config, missing fields (defaults), missing file (defaults), invalid values (capped/rejected)

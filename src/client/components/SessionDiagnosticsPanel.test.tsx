@@ -159,9 +159,9 @@ describe("SessionDiagnosticsPanel", () => {
     mockOk({
       ...samplePayload,
       parsedConfig: {
-        agent: { memory: 1024, cpu: 0.5, pids: 256, install: [] },
+        agent: { memory: 1024, cpu: 0.5, pids: 4096, install: [] },
         warnings: ["The `resources` block has been replaced by `agent`."],
-        effectiveAgent: { memory: 1024, cpu: 0.5, pids: 256, dockerAccess: false },
+        effectiveAgent: { memory: 1024, cpu: 0.5, pids: 4096, dockerAccess: false },
       },
     });
     render(
