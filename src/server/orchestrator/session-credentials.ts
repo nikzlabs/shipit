@@ -776,6 +776,13 @@ function materializeLeakedSubtreeSymlinks(
     }
   }
 
+  // The filesystem repair is cross-agent because both Claude and Codex can
+  // inherit leaked credential symlinks. The agent-session-id recovery signal is
+  // Claude-only: it is based on `.claude/projects/*/*.jsonl` and Claude's
+  // `--resume` behavior. Codex thread ids are resumed by `thread/resume` and
+  // must not be cleared just because no Claude jsonl exists.
+  // eslint-disable-next-line no-restricted-syntax -- docs/155: Claude-specific CLI-shape recovery, see comment above
+  if (agentId !== "claude") return { outcome: "no-action" };
   if (!aCaseFired) return { outcome: "no-action" };
   if (recoveredAgentSessionId !== null) {
     return { outcome: "recovered", recoveredAgentSessionId };
