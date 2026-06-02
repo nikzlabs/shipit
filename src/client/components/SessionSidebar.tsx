@@ -434,6 +434,8 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
 function OpsSessionGroup({
   sessions,
   currentSessionId,
+  isCollapsed,
+  onToggleCollapse,
   onResume,
   onSelectCurrent,
   onArchive,
@@ -441,6 +443,8 @@ function OpsSessionGroup({
 }: {
   sessions: SessionInfo[];
   currentSessionId?: string;
+  isCollapsed: boolean;
+  onToggleCollapse: () => void;
   onResume: (sessionId: string) => void;
   onSelectCurrent?: () => void;
   onArchive: (sessionId: string) => void;
@@ -450,14 +454,24 @@ function OpsSessionGroup({
   return (
     <div className="flex flex-col">
       <div className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10">
-        <span className="w-5 h-5 flex items-center justify-center shrink-0 text-(--color-text-tertiary)">
-          <WrenchIcon size={ICON_SIZE.XS} weight="fill" />
-        </span>
-        <span className="text-xs font-semibold text-(--color-text-secondary) truncate tracking-wide">
-          Host / Ops
-        </span>
+        <button
+          onClick={onToggleCollapse}
+          className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
+          aria-label={isCollapsed ? "Expand Host / Ops" : "Collapse Host / Ops"}
+        >
+          <span className="w-5 h-5 flex items-center justify-center shrink-0 text-(--color-text-tertiary) group-hover:text-(--color-text-secondary)">
+            {isCollapsed
+              ? <CaretRightIcon size={ICON_SIZE.XS} />
+              : <CaretDownIcon size={ICON_SIZE.XS} />
+            }
+          </span>
+          <WrenchIcon size={ICON_SIZE.XS} weight="fill" className="shrink-0 text-(--color-text-secondary)" />
+          <span className="text-xs font-semibold text-(--color-text-secondary) truncate tracking-wide group-hover:text-(--color-text-primary) transition-colors">
+            Host / Ops
+          </span>
+        </button>
       </div>
-      {sessions.map((session) => (
+      {!isCollapsed && sessions.map((session) => (
         <SessionItem
           key={session.id}
           session={session}
@@ -820,6 +834,8 @@ export function SessionSidebar({
   const toggleRepoCollapsed = useRepoStore((s) => s.toggleRepoCollapsed);
   const collapsedParents = useRepoStore((s) => s.collapsedParents);
   const toggleParentCollapsed = useRepoStore((s) => s.toggleParentCollapsed);
+  const opsCollapsed = useRepoStore((s) => s.opsCollapsed);
+  const toggleOpsCollapsed = useRepoStore((s) => s.toggleOpsCollapsed);
   const reorderRepos = useRepoStore((s) => s.reorderRepos);
 
   // Drag-and-drop reorder state. Lives at the sidebar level so all groups
@@ -1149,6 +1165,8 @@ export function SessionSidebar({
               key="ops"
               sessions={group.sessions}
               currentSessionId={currentSessionId}
+              isCollapsed={opsCollapsed}
+              onToggleCollapse={toggleOpsCollapsed}
               onResume={onResume}
               onSelectCurrent={handleSelectCurrent}
               onArchive={onArchive}

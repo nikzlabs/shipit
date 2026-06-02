@@ -289,6 +289,21 @@ export function saveCollapsedParents(collapsed: Set<string>): void {
   } catch { /* ignore */ }
 }
 
+const OPS_COLLAPSED_KEY = "shipit-ops-collapsed";
+
+export function getSavedOpsCollapsed(): boolean {
+  try {
+    return localStorage.getItem(OPS_COLLAPSED_KEY) === "1";
+  } catch { /* ignore */ }
+  return false;
+}
+
+export function saveOpsCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(OPS_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch { /* ignore */ }
+}
+
 const DRAFT_MESSAGE_KEY_PREFIX = "shipit-draft-message:";
 
 /** Read the saved draft message text for a session (or `"new"` for the new-session view). */
