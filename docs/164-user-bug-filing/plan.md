@@ -247,8 +247,20 @@ detection, issue locking, and the maintainers' ability to block an account.
 
 ### Credential & destination model
 
-- **Destination is fixed:** the upstream ShipIt GitHub repo, hard-coded as the
-  bug-report target (`UPSTREAM_REPO`). Not the user's project repo.
+- **Destination is fixed:** `UPSTREAM_REPO = "nicolasalt/shipit"`, hard-coded with
+  no env override. Not the user's project repo. (A fork that wants its own target
+  changes the constant — a deliberate code edit, not config.)
+- **Labels are markers, not API labels — because GitHub drops them.** GitHub
+  **silently discards `labels` (and assignees/milestone) on issue creation when the
+  filer lacks push access** — which is the common case here (a regular user has no
+  push to the ShipIt repo). So passing `labels: [...]` would no-op for exactly the
+  population this serves. Instead, the chosen markers — `user-reported` plus a
+  **producer marker** (`source:ops` when an ops session produced it, `source:session`
+  otherwise) — are encoded **in the issue body** (a visible footer line + a parseable
+  HTML comment, e.g. `<!-- shipit-report source=ops build=abc123 -->`), which always
+  survives. A small maintainer-side automation on `nicolasalt/shipit` reads the
+  marker and applies the real repo labels. When the filer *does* have push access (a
+  ShipIt developer), we additionally set the labels directly on the create call.
 - **Credential is the user's own GitHub auth** — the orchestrator already holds it
   via `GitHubAuthManager` for PRs (a pasted PAT). The common case is a **classic
   `repo`-scoped PAT**, which already includes `public_repo`, so creating an issue on
@@ -300,7 +312,17 @@ detection, issue locking, and the maintainers' ability to block an account.
 - **Sending the full session or chat history** — only a redacted, scoped excerpt.
 
 ## Open questions
-- Exact upstream repo + label convention for incoming user reports.
+
+All four original open questions are resolved (Stage-2 runs orchestrator-side on the
+already-held OAuth credential; Stage-2 model is Sonnet-class; build is the bare
+`SHIPIT_BUILD_ID` SHA; target is hard-coded `nicolasalt/shipit` with body-marker
+labels). One follow-up emerged, tracked separately:
+
+- **Maintainer-side label automation** on `nicolasalt/shipit` — a small GitHub
+  Action that reads the `<!-- shipit-report … -->` body marker and applies the real
+  `user-reported` / `source:*` labels (needed because the filer's token usually
+  can't set labels on a repo it can't push to). Lives in the upstream repo, not this
+  codebase; not a blocker for the in-product flow.
 
 ## Key files
 

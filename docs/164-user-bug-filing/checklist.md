@@ -12,9 +12,10 @@
 - [ ] Update `src/server/shipit-docs/ops-session.md` so the ops agent files an issue (instead of a text-only report) when it lacks push access
 
 ## GitHub issue filing (user's own identity)
-- [ ] `GitHubAuthManager.createIssue(repo, { title, body })` against the fixed upstream ShipIt repo, using the user's existing token
+- [ ] `GitHubAuthManager.createIssue(repo, { title, body })` against the hard-coded `nicolasalt/shipit` (no env override), using the user's existing token
 - [ ] No scope pre-check — attempt create, surface a GitHub 403/scope error as a "reconnect with a token that can file issues on the ShipIt repo" prompt
 - [ ] No service credential, no Linear, no pluggable backend (single fixed destination)
+- [ ] Labels via body marker — encode `user-reported` + producer marker (`source:ops` / `source:session`) as a footer line + parseable HTML comment in the body (GitHub drops API labels from non-push filers); set API labels directly only when the filer has push access
 
 ## Server flow
 - [ ] `bug-report.ts` service: compile draft → redact → stamp platform version → (on confirm) `createIssue`
@@ -37,5 +38,5 @@
 - [ ] `user-bug-filing.test.ts` integration: redaction applied, issue only after confirm, scope-missing path
 - [ ] Update `docs/023` (redaction engine now exists) cross-ref
 
-## Open questions
-- [ ] Exact upstream repo + label convention for incoming user reports
+## Follow-ups (not blockers)
+- [ ] Maintainer-side GitHub Action on `nicolasalt/shipit` to apply real `user-reported` / `source:*` labels from the `<!-- shipit-report … -->` body marker (lives in the upstream repo, not this codebase)
