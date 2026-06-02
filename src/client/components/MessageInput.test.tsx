@@ -326,6 +326,28 @@ describe("MessageInput", () => {
       expect(useSessionStore.getState().prefillText).toBe("send this to chat");
     });
 
+    it("auto-focuses the textarea on mount on desktop", async () => {
+      render(<MessageInput onSend={vi.fn()} disabled={false} surface="overlay" />);
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it("auto-focuses the textarea on mount on a mobile viewport", async () => {
+      // The overlay is a deliberate, user-initiated surface, so popping the
+      // mobile keyboard on open is wanted — unlike the chat focusKey path,
+      // which skips mobile to avoid summoning the keyboard on session switch.
+      mockMatchMedia(true);
+      render(<MessageInput onSend={vi.fn()} disabled={false} surface="overlay" />);
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      expect(document.activeElement).toBe(textarea);
+    });
+
     it("hides the context dial even when model info is present", () => {
       render(
         <MessageInput

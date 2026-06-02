@@ -416,12 +416,14 @@ export function MessageInput({
 
   // The quick-capture overlay suppresses the chat/session focus path above so
   // it cannot race the underlying chat composer, but it still needs to focus
-  // its own textarea when mounted.
+  // its own textarea when mounted. Focus on both desktop and mobile — the
+  // overlay is a deliberate, user-initiated surface, so popping the mobile
+  // keyboard on open is the wanted behavior, not focus theft.
   // eslint-disable-next-line no-restricted-syntax -- overlay mount autofocus
   useEffect(() => {
-    if (surface !== "overlay" || isMobile) return;
+    if (surface !== "overlay") return;
     requestAnimationFrame(() => textareaRef.current?.focus());
-  }, [surface, isMobile]);
+  }, [surface]);
 
   // Guard against iframe focus theft: when the textarea is focused and an iframe
   // (e.g. preview loading) steals focus, the textarea fires a blur event with no
