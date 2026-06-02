@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { compareDocsByRecency } from "../shared/doc-sort.js";
 import { WORKSPACE_SKIP_DIRS } from "../shared/fs-constants.js";
 import type { DocEntry } from "../shared/types.js";
 
@@ -204,9 +205,10 @@ async function scanMarkdownFiles(dir: string, prefix: string): Promise<DocEntry[
 /**
  * Recursively find `.md` files in a directory, skipping `node_modules` and `.git`.
  *
- * Returns `DocEntry[]` sorted alphabetically by path. Each entry includes
- * an optional `issue` pointer parsed from YAML frontmatter, plus `checklist`
- * progress aggregated from a sibling `checklist.md` (when present).
+ * Returns `DocEntry[]` ordered newest-first by feature number (see
+ * `compareDocsByRecency`). Each entry includes an optional `issue` pointer
+ * parsed from YAML frontmatter, plus `checklist` progress aggregated from a
+ * sibling `checklist.md` (when present).
  */
 export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEntry[]> {
   const results = await scanMarkdownFiles(dir, prefix);
@@ -231,5 +233,5 @@ export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEn
     if (progress) e.checklist = progress;
   }
 
-  return results.sort((a, b) => a.path.localeCompare(b.path));
+  return results.sort((a, b) => compareDocsByRecency(a.path, b.path));
 }

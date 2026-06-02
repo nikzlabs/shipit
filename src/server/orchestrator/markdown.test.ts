@@ -60,13 +60,29 @@ describe("findMarkdownFiles", () => {
     expect(docs.map((d) => d.path)).toEqual(["README.md"]);
   });
 
-  it("returns results sorted alphabetically by path", async () => {
+  it("sorts un-numbered docs alphabetically (ascending) by path", async () => {
     fs.writeFileSync(path.join(tmpDir, "Z.md"), "z");
     fs.writeFileSync(path.join(tmpDir, "A.md"), "a");
     fs.writeFileSync(path.join(tmpDir, "M.md"), "m");
 
     const docs = await findMarkdownFiles(tmpDir);
     expect(docs.map((d) => d.path)).toEqual(["A.md", "M.md", "Z.md"]);
+  });
+
+  it("orders numbered feature dirs newest-first, prose docs last", async () => {
+    // Mix feature dirs that straddle the lexical 99→100 trap with a prose doc.
+    fs.mkdirSync(path.join(tmpDir, "docs", "99-old"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "docs", "99-old", "plan.md"), "# old");
+    fs.mkdirSync(path.join(tmpDir, "docs", "100-new"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "docs", "100-new", "plan.md"), "# new");
+    fs.writeFileSync(path.join(tmpDir, "docs", "architecture.md"), "# arch");
+
+    const docs = await findMarkdownFiles(tmpDir);
+    expect(docs.map((d) => d.path)).toEqual([
+      "docs/100-new/plan.md",
+      "docs/99-old/plan.md",
+      "docs/architecture.md",
+    ]);
   });
 
   it("ignores non-.md files", async () => {
