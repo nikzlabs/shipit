@@ -112,7 +112,7 @@ npx vitest run src/server/git.test.ts # Run a specific file
 npm run test:watch                    # Watch mode
 ```
 
-Always run `npm run lint` and `npm run typecheck` before submitting a PR and fix any errors.
+For local development, run `npm run lint` and `npm run typecheck` before sharing a branch or issue reproduction.
 
 ## Project structure
 
@@ -133,11 +133,11 @@ src/
 
 For the full module-level map and the per-subsystem skills (server architecture, client architecture, session lifecycle, git architecture, etc.), see [`CLAUDE.md`](CLAUDE.md) and `.claude/skills/`.
 
-## Submitting changes
+## External contributions
 
 ShipIt isn't accepting pull requests right now. If you've found a bug, have a feature idea, or want to discuss a design, please [open an issue](https://github.com/nicolasalt/shipit/issues) instead.
 
-If you're hacking on your own fork, the quality checks the project gates on are:
+If you're hacking on your own fork, the quality checks the project gates on internally are:
 
 ```bash
 npm run typecheck
@@ -166,7 +166,7 @@ Found a security vulnerability? **Don't open a public issue.** Follow the privat
 
 ## Where to start
 
-- Check [open issues](https://github.com/nicolasalt/shipit/issues) for tasks labeled `good first issue`
+- Browse [open issues](https://github.com/nicolasalt/shipit/issues) to see known bugs, feature requests, and design discussions
 - Read the feature docs in `docs/NNN-feature-name/plan.md` before modifying a feature
 - Look at existing tests near the code you're changing to understand the expected patterns
 
