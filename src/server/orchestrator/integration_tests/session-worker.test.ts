@@ -151,7 +151,8 @@ describe("Integration: Session Worker IPC", () => {
 
     // Status should show running
     const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
-    expect(status.json()).toEqual({ running: true });
+    expect(status.json()).toMatchObject({ running: true });
+    expect(status.json().latestSseSeq).toBeGreaterThanOrEqual(0);
   });
 
   it("rejects starting a second agent while one is running", async () => {
@@ -206,7 +207,7 @@ describe("Integration: Session Worker IPC", () => {
 
     // Status should now be not running
     const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
-    expect(status.json()).toEqual({ running: false });
+    expect(status.json()).toMatchObject({ running: false });
   });
 
   it("returns 404 when interrupting with no agent", async () => {
