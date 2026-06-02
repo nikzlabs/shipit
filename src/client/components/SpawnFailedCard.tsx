@@ -40,23 +40,40 @@ export interface SpawnFailedCardProps {
   statusCode: number;
   /** First line of the prompt the spawn was meant to kick off. */
   promptPreview?: string;
+  /**
+   * docs/162 — true when the rejected spawn was an Ops `--shipit-source` fix
+   * session. Tailors the headline and adds an incident-report hint so the
+   * agent/user knows a 403 means "no write access to the ShipIt repo", not a
+   * quota hit.
+   */
+  shipitSource?: boolean;
   /** ISO8601 timestamp (currently unused in rendering; kept for parity with the WS event). */
   failedAt?: string;
 }
 
-function headlineForReason(reason: SpawnFailedCardProps["reason"]): string {
+function headlineForReason(
+  reason: SpawnFailedCardProps["reason"],
+  statusCode: number,
+  shipitSource: boolean,
+): string {
+  // docs/162 — a 403 on a ShipIt fix spawn is specifically a write-permission
+  // failure (the orchestrator checks push access before creating the child),
+  // not the generic "invalid request" the status-code bucket would imply.
+  if (shipitSource && statusCode === 403) {
+    return "No write access to the ShipIt repo";
+  }
   switch (reason) {
     case "quota_per_turn":
-      return "Per-turn spawn limit reached";
+      return shipitSource ? "Per-turn ShipIt-fix limit reached" : "Per-turn spawn limit reached";
     case "quota_per_parent":
       return "Per-session spawn limit reached";
     case "invalid_request":
-      return "Spawn request rejected";
+      return shipitSource ? "ShipIt fix session rejected" : "Spawn request rejected";
     case "parent_missing":
       return "Parent session unavailable";
     case "error":
     default:
-      return "Spawn failed";
+      return shipitSource ? "ShipIt fix session failed" : "Spawn failed";
   }
 }
 
@@ -66,9 +83,15 @@ export function SpawnFailedCard({
   message,
   statusCode,
   promptPreview,
+  shipitSource = false,
 }: SpawnFailedCardProps) {
-  const headline = headlineForReason(reason);
-  const displayTitle = title?.trim() || "Spawned session";
+  const headline = headlineForReason(reason, statusCode, shipitSource);
+  const displayTitle = title?.trim() || (shipitSource ? "ShipIt fix session" : "Spawned session");
+  // The orchestrator already appends "Produce a structured incident report…"
+  // to the write-access error body, so we don't duplicate it here — but we do
+  // surface a compact hint for the no-write case so it reads as an expected
+  // degraded path, not a hard error.
+  const showIncidentHint = shipitSource && statusCode === 403;
 
   return (
     <div
@@ -81,7 +104,7 @@ export function SpawnFailedCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-(--color-text-tertiary) text-[10px] uppercase tracking-wide font-medium flex items-center gap-1.5">
-            <span>Spawn failed</span>
+            <span>{shipitSource ? "ShipIt fix failed" : "Spawn failed"}</span>
             <span
               className="font-mono text-(--color-text-tertiary)"
               data-testid="spawn-failed-status"
@@ -120,6 +143,16 @@ export function SpawnFailedCard({
           data-testid="spawn-failed-prompt"
         >
           “{promptPreview}”
+        </div>
+      )}
+
+      {showIncidentHint && (
+        <div
+          className="text-(--color-text-tertiary) text-[11px]"
+          data-testid="spawn-failed-incident-hint"
+        >
+          Ask the Ops agent to produce a structured incident report with source
+          references and a patch outline instead.
         </div>
       )}
     </div>

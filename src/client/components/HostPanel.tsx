@@ -14,11 +14,24 @@ import { ArrowClockwiseIcon, CircleNotchIcon, WarningIcon } from "@phosphor-icon
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { formatRelativeDate } from "../utils/dates.js";
+import { ShipitSourceStatusCard } from "./ShipitSourceStatusCard.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { HostOverview, HostContainerInfo } from "../../server/shared/types.js";
 
 interface HostPanelProps {
   /** True while the tab is visible — gates the background poll. */
   isActiveTab: boolean;
+}
+
+/** Local mirror of the orchestrator's `ShipitSourceStatus` DTO (docs/162). */
+interface SourceStatus {
+  available: boolean;
+  ref?: string;
+  shortRef?: string;
+  exact: boolean;
+  refSource?: "build-id" | "checkout-head";
+  remoteUrl?: string;
+  reason?: string;
 }
 
 const POLL_MS = 5000;
@@ -64,6 +77,12 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
   const [data, setData] = useState<HostOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // docs/162 — the running ShipIt source ref the Ops agent's `shipit source *`
+  // reads run against. Fetched per active ops session (the route is gated on
+  // `kind === "ops"`); changes only on deploy, so no tight poll.
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const [source, setSource] = useState<SourceStatus | null>(null);
+  const [sourceError, setSourceError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -80,6 +99,19 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
     }
   }, []);
 
+  const refreshSource = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/source/status`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as SourceStatus;
+      setSource(json);
+      setSourceError(null);
+    } catch (err) {
+      setSourceError(err instanceof Error ? err.message : String(err));
+    }
+  }, [sessionId]);
+
   // Poll while the tab is open; stop when it's hidden so a background ops
   // session isn't hammering the Docker socket. This is a genuine external-system
   // sync (a polling timer with cleanup), which the rule explicitly permits.
@@ -90,6 +122,14 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
     const t = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(t);
   }, [isActiveTab, refresh]);
+
+  // Source status changes only on deploy — fetch once when the tab opens
+  // (and whenever the active session changes), no interval.
+  // eslint-disable-next-line no-restricted-syntax -- one-shot source-status fetch on tab activation
+  useEffect(() => {
+    if (!isActiveTab) return;
+    void refreshSource();
+  }, [isActiveTab, refreshSource]);
 
   return (
     <div className="absolute inset-0 flex flex-col bg-(--color-bg-primary)">
@@ -120,6 +160,7 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
+        <ShipitSourceStatusCard status={source} error={sourceError} />
         {error && (
           <div className="flex items-center gap-2 px-3 py-2 text-xs text-(--color-error)">
             <WarningIcon size={ICON_SIZE.SM} className="shrink-0" />

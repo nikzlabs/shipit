@@ -29,15 +29,15 @@
 
 ## Client
 
-- [ ] Render ShipIt source ref/status in Ops context.
-- [ ] Render an Ops remediation spawned-session card with source ref and diagnosis summary. (v1 reuses the generic `session_spawned` card.)
-- [ ] Surface source/write-permission failures inline in the Ops transcript. (Reuses the generic `session_spawn_failed` card; a dedicated card is follow-up.)
+- [x] Render ShipIt source ref/status in Ops context. (`ShipitSourceStatusCard` in the Host tab, fed by `GET /api/sessions/:id/source/status`; shows the deployed ref + exact/approximate badge.)
+- [x] Render an Ops remediation spawned-session card with source ref and diagnosis summary. (`SpawnedSessionCard` "ShipIt fix" variant: wrench header, source ref + exact/approximate badge, target repo, diagnosis. `session_spawned` now carries an optional `shipitFix` payload.)
+- [x] Surface source/write-permission failures inline in the Ops transcript. (`SpawnFailedCard` `shipitSource` variant: a 403 reads "No write access to the ShipIt repo" + an incident-report hint instead of a generic rejection. `session_spawn_failed` now carries `shipitSource`.)
 
 ## Docs
 
 - [x] Update `src/server/shipit-docs/ops-session.md`.
 - [x] Update `src/server/shipit-docs/sessions.md`.
-- [ ] Add prompts for source-aided ShipIt diagnosis and targeted fix-session spawn.
+- [x] Add prompts for source-aided ShipIt diagnosis and targeted fix-session spawn. (`prompts/remediate-shipit-bug.md` in the Ops template: inspect host → read deployed source read-only → spawn `--shipit-source` fix session; linked from the Ops README.)
 
 ## Tests
 
@@ -49,3 +49,5 @@
 - [x] Integration test: Ops spawns a writable ShipIt fix child branched from the exact inspected commit against a seeded ShipIt-source repo + stubbed write-access. (`integration_tests/ops-fix-spawn.test.ts`)
 - [x] Integration test: read-only (no write permission) refuses fix-session creation with a clear error. (`ops-fix-spawn.test.ts`)
 - [x] Integration test: read-only source `log`/`blame`/`show` against a real checkout, incl. show-diff redaction + invalid commit-ish. (`ops-source-routes.test.ts`)
+- [x] Integration test: the `session_spawned` event for a fix spawn carries the `shipitFix` packet (exact source ref, target repo, diagnosis first line). (`ops-fix-spawn.test.ts`)
+- [x] Component tests: `SpawnedSessionCard` ShipIt-fix variant, `SpawnFailedCard` write-access/403 variant, `ShipitSourceStatusCard` render states.

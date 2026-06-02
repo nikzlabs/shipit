@@ -1,6 +1,5 @@
 ---
-status: in-progress
-priority: high
+status: done
 description: Give Ops sessions read-only ShipIt source access for diagnosis, then spawn targeted repo-backed fix sessions that can open normal PRs.
 ---
 
@@ -455,8 +454,26 @@ Authorization:
 | `src/server/orchestrator/integration_tests/ops-fix-spawn.test.ts` | New: write-path tests (writable child branched from exact ref; no-write 403; non-ops 403). |
 | `src/server/shipit-docs/ops-session.md`, `sessions.md` | Agent-facing contract. |
 
-Remaining work is tracked in `checklist.md` (notably the Ops remediation chat
-card, which currently reuses the generic `session_spawned` card).
+Inline UX (built):
+
+- The Host tab renders a `ShipitSourceStatusCard` (fed by
+  `GET /api/sessions/:id/source/status`) showing the deployed ref and an
+  exact/approximate badge — the inline counterpart to `shipit source status`.
+- `session_spawned` carries an optional `shipitFix` packet (exact source ref +
+  exact/approximate flag, target `owner/repo`, diagnosis first line). The
+  `SpawnedSessionCard` renders a "ShipIt fix" variant when it's present:
+  a wrench header, the commit the child branched from, the target repo, and the
+  diagnosis. Ordinary fan-out spawns still render the plain card.
+- `session_spawn_failed` carries `shipitSource`. The `SpawnFailedCard` tailors
+  its copy for fix-session failures: a 403 reads "No write access to the ShipIt
+  repo" with an incident-report hint, rather than the generic rejection.
+- The Ops template ships `prompts/remediate-shipit-bug.md`, which walks the
+  agent through inspect-host → read-deployed-source → spawn-fix-session.
+
+The only deferred item is **redacting raw log excerpts** copied into incident
+packets (Open Question 4 / `checklist.md`): the diagnosis prompt is still passed
+through verbatim. It's a self-contained follow-up — the rest of the feature is
+complete.
 
 ## Open Questions
 
