@@ -4,7 +4,11 @@ import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
-import type { AgentAuthManager } from "../../agent-auth-manager.js";
+import type {
+  AgentAuthManager,
+  AgentAuthStartOptions,
+  AgentAuthScopeOptions,
+} from "../../agent-auth-manager.js";
 import type { AgentId } from "../../../shared/types.js";
 import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
 
@@ -175,7 +179,10 @@ export function extractPlanLabel(obj: Record<string, unknown>): string | null {
   return null;
 }
 
-/** Path where Claude CLI stores credentials. */
+/** Legacy singleton HOME the CLI reads/writes when no account scope is set. */
+const CLAUDE_DEFAULT_HOME = "/root";
+
+/** Path where Claude CLI stores credentials (singleton path). */
 const CLAUDE_CONFIG_DIR = "/root/.claude";
 
 /** Path where Claude CLI stores user preferences (onboarding state, theme, etc.). */
@@ -199,12 +206,16 @@ const CODE_PASTE_TRIGGERS = ["Paste code here", "Pastecodehereifprompted"];
  * - `projects` entries with `hasTrustDialogAccepted` skip the "trust this folder?" prompt.
  *
  * See: https://github.com/anthropics/claude-code/issues/4714
+ *
+ * `userConfig` / `configDir` are passed in so the same routine works for the
+ * singleton path (`/root/.claude.json`, `/root/.claude`) and for an
+ * account-scoped flow whose HOME is a provider-account root (docs/150).
  */
-function ensureOnboardingComplete(): void {
+function ensureOnboardingComplete(userConfig: string, configDir: string): void {
   try {
     let config: Record<string, unknown> = {};
-    if (existsSync(CLAUDE_USER_CONFIG)) {
-      const raw = readFileSync(CLAUDE_USER_CONFIG, "utf-8");
+    if (existsSync(userConfig)) {
+      const raw = readFileSync(userConfig, "utf-8");
       config = JSON.parse(raw) as Record<string, unknown>;
     }
 
@@ -228,18 +239,19 @@ function ensureOnboardingComplete(): void {
 
     // Ensure the CLI's config directory exists. In Docker, /root/.claude is a
     // symlink to /credentials/.claude — mkdirSync fails on a broken symlink, so
-    // resolve the target and create that instead.
-    let configDirToCreate = CLAUDE_CONFIG_DIR;
+    // resolve the target and create that instead. (Account-scoped dirs are
+    // real directories, so readlinkSync throws and we use the path directly.)
+    let configDirToCreate = configDir;
     try {
-      configDirToCreate = readlinkSync(CLAUDE_CONFIG_DIR);
+      configDirToCreate = readlinkSync(configDir);
     } catch {
       // Not a symlink or doesn't exist — use the path directly
     }
     mkdirSync(configDirToCreate, { recursive: true });
 
     if (changed) {
-      writeFileSync(CLAUDE_USER_CONFIG, JSON.stringify(config, null, 2));
-      console.log("[auth] Updated", CLAUDE_USER_CONFIG, "— onboarding + trust");
+      writeFileSync(userConfig, JSON.stringify(config, null, 2));
+      console.log("[auth] Updated", userConfig, "— onboarding + trust");
     }
   } catch (err) {
     console.warn("[auth] Failed to pre-create Claude config:", err);
@@ -262,9 +274,38 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
    * on a mid-flow page reload. Mirrors `CodexAuthManager.lastPendingEvent`.
    */
   private lastPendingDetails: AgentAuthPendingDetails | null = null;
+  /**
+   * Credential root (provider-account directory) the in-flight flow is
+   * scoped to, or `null` for the legacy singleton flow. Set at flow start,
+   * cleared after the terminal `complete`/`failed` events fire (docs/150).
+   * The CLI is spawned with `HOME` pointed here; the credentials poll + exit
+   * checks resolve their config dir off it.
+   */
+  private activeCredentialDir: string | null = null;
+  /** Provider-account id for the in-flight flow, or `null` when singleton. */
+  private activeFlowAccountId: string | null = null;
 
   get authenticated(): boolean {
     return this._authenticated;
+  }
+
+  getActiveAccountId(): string | null {
+    return this.activeFlowAccountId;
+  }
+
+  /** HOME the CLI should run under for `dir` (account root) or the singleton. */
+  private homeFor(dir: string | null): string {
+    return dir ?? CLAUDE_DEFAULT_HOME;
+  }
+
+  /** `.claude` config dir for `dir` (account root) or the singleton path. */
+  private claudeConfigDir(dir: string | null): string {
+    return dir ? path.join(dir, ".claude") : CLAUDE_CONFIG_DIR;
+  }
+
+  /** `.claude.json` user-config path for `dir` or the singleton path. */
+  private claudeUserConfig(dir: string | null): string {
+    return dir ? path.join(dir, ".claude.json") : CLAUDE_USER_CONFIG;
   }
 
   /**
@@ -277,16 +318,21 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
    *     PTY before completion is the abort path)
    *   - `isConfigured()` → {@link checkCredentials}
    */
-  start(): void {
-    this.startOAuthFlow();
+  start(opts?: AgentAuthStartOptions): void {
+    this.startOAuthFlow(opts);
   }
 
   cancel(): void {
     this.kill();
   }
 
-  isConfigured(): boolean {
-    return this.checkCredentials();
+  /** {@link AgentAuthManager.submitCode} — alias for {@link sendCode}. */
+  submitCode(code: string): void {
+    this.sendCode(code);
+  }
+
+  isConfigured(opts?: AgentAuthScopeOptions): boolean {
+    return this.checkCredentials(opts?.credentialDir);
   }
 
   getPendingPayload(): AgentAuthPendingDetails | null {
@@ -332,19 +378,25 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
    *   across CLI versions. The provider doesn't trust it
    *   strictly — a stale token is detected at fetch time via 401.
    */
-  async getAccessToken(): Promise<
+  async getAccessToken(credentialDir?: string): Promise<
     | { token: string; source: "file" | "env"; expiresAt: number | null; plan: string | null }
     | { token: null; reason: "api-key" | "not-authenticated" }
   > {
-    const envToken = process.env.ANTHROPIC_AUTH_TOKEN?.trim();
-    if (envToken) {
-      // Env-token path (dogfooding) doesn't carry plan metadata; the
-      // outer orchestrator's token is the canonical source.
-      return { token: envToken, source: "env", expiresAt: null, plan: null };
+    // Account-scoped reads (docs/150) source the token only from the
+    // account's own credential files — env-var auth belongs to reserved
+    // routes, not a stored account row.
+    if (!credentialDir) {
+      const envToken = process.env.ANTHROPIC_AUTH_TOKEN?.trim();
+      if (envToken) {
+        // Env-token path (dogfooding) doesn't carry plan metadata; the
+        // outer orchestrator's token is the canonical source.
+        return { token: envToken, source: "env", expiresAt: null, plan: null };
+      }
     }
 
+    const configDir = this.claudeConfigDir(credentialDir ?? null);
     for (const fileName of CLAUDE_CREDENTIAL_FILES) {
-      const fullPath = path.join(CLAUDE_CONFIG_DIR, fileName);
+      const fullPath = path.join(configDir, fileName);
       if (!existsSync(fullPath)) continue;
       try {
         const raw = readFileSync(fullPath, "utf-8");
@@ -385,10 +437,23 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
    *     `platform:claude_oauth`. The inner container has no
    *     `/root/.claude/.credentials.json` on disk, so env is the only path.
    */
-  checkCredentials(): boolean {
+  checkCredentials(credentialDir?: string): boolean {
     try {
+      // During a scoped flow, a no-arg call (from the exit/poll handlers)
+      // resolves to the active account's dir; an explicit `credentialDir`
+      // always wins. `null` means the legacy singleton path.
+      const scoped = credentialDir ?? this.activeCredentialDir;
+      const configDir = this.claudeConfigDir(scoped);
       // The CLI may store credentials in different files depending on version
-      const hasCredentials = CLAUDE_CREDENTIAL_FILES.some((f) => existsSync(path.join(CLAUDE_CONFIG_DIR, f)));
+      const hasCredentials = CLAUDE_CREDENTIAL_FILES.some((f) => existsSync(path.join(configDir, f)));
+      if (scoped) {
+        // Account-scoped check (docs/150): only on-disk OAuth credentials
+        // count. Env-var auth (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`)
+        // is a reserved route, not a stored account, and must not make a
+        // half-finished or cancelled scoped login look complete. Also leaves
+        // the singleton `_authenticated` flag untouched.
+        return hasCredentials;
+      }
       const hasApiKey = !!process.env.ANTHROPIC_API_KEY?.trim();
       const hasAuthToken = !!process.env.ANTHROPIC_AUTH_TOKEN?.trim();
       this._authenticated = hasCredentials || hasApiKey || hasAuthToken;
@@ -409,7 +474,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
    * Emits "auth_url" when the URL is detected, "auth_complete" when
    * credentials appear on disk, or "auth_failed" on timeout.
    */
-  startOAuthFlow(): void {
+  startOAuthFlow(opts?: AgentAuthStartOptions): void {
     if (this.proc) {
       console.log("[auth] startOAuthFlow() skipped — PTY process already running (pid %d)", this.proc.pid);
       return;
@@ -420,16 +485,25 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     this.authUrlEmitted = false;
     this.wizardEnterCount = 0;
     this.lastPendingDetails = null;
+    // Scope this flow to a provider account (docs/150) — or `null` for the
+    // legacy singleton flow. The CLI runs with HOME pointed at the account
+    // root, so it reads/writes `<root>/.claude` + `<root>/.claude.json`.
+    this.activeCredentialDir = opts?.credentialDir ?? null;
+    this.activeFlowAccountId = opts?.accountId ?? null;
+    const home = this.homeFor(this.activeCredentialDir);
 
     // Skip the first-run onboarding wizard by marking it complete
-    ensureOnboardingComplete();
+    ensureOnboardingComplete(
+      this.claudeUserConfig(this.activeCredentialDir),
+      this.claudeConfigDir(this.activeCredentialDir),
+    );
 
     // Use a wide terminal to minimize URL wrapping
     this.proc = pty.spawn("claude", ["/login"], {
       name: "xterm-256color",
       cols: 200,
       rows: 24,
-      env: { ...process.env, HOME: "/root" } as Record<string, string>,
+      env: { ...process.env, HOME: home } as Record<string, string>,
     });
     console.log("[auth] Spawned claude /login (pid %d)", this.proc.pid);
 
@@ -499,13 +573,17 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       // Check if credentials were written
       if (this.checkCredentials()) {
         console.log("[auth] Authentication successful");
-        this._authenticated = true;
+        // Only the singleton flow owns the global `_authenticated` flag; a
+        // scoped flow's success is reflected on its account row instead.
+        if (!this.activeCredentialDir) this._authenticated = true;
         this.lastPendingDetails = null;
         this.emit("auth_complete");
         // Normalized AgentAuthManager event — listeners that key off the
         // agent-id map (limits-registry rearm, SSE rebroadcast as
         // `agent_auth_complete`, etc.) subscribe here so they don't have to
-        // know which backend's CLI just finished.
+        // know which backend's CLI just finished. The SSE wiring reads
+        // `getActiveAccountId()` synchronously here, so clear the scope
+        // *after* the emit returns.
         this.emit("complete");
       } else {
         console.log("[auth] Authentication may have failed (no credentials found)");
@@ -516,7 +594,19 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
         // tailor the next-step copy. Mirrors `CodexAuthFailedEvent`.
         this.emit("failed", { reason: "error" });
       }
+      this.clearActiveScope();
     });
+  }
+
+  /**
+   * Forget the in-flight flow's account scope. Called after the terminal
+   * `complete`/`failed` events have fired (the SSE wiring reads
+   * {@link getActiveAccountId} synchronously inside those handlers, so
+   * clearing earlier would strand the broadcast with a `null` account).
+   */
+  private clearActiveScope(): void {
+    this.activeCredentialDir = null;
+    this.activeFlowAccountId = null;
   }
 
   /**
@@ -592,12 +682,15 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       attempts++;
       if (this.checkCredentials()) {
         console.log("[auth] Credentials detected on disk after code submission");
-        this._authenticated = true;
+        if (!this.activeCredentialDir) this._authenticated = true;
         this.lastPendingDetails = null;
         this.clearCredentialsPoll();
+        // kill() tears down the PTY/timers but deliberately leaves the active
+        // scope intact so the emit below still reports the right account.
         this.kill();
         this.emit("auth_complete");
         this.emit("complete");
+        this.clearActiveScope();
       } else if (attempts >= 60) {
         // Give up after 30 seconds (60 × 500ms)
         console.log("[auth] Credentials poll timed out — no credentials found in", CLAUDE_CONFIG_DIR);
@@ -605,6 +698,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
         this.clearCredentialsPoll();
         this.emit("auth_failed");
         this.emit("failed", { reason: "timeout", message: "Credentials poll timed out after 30s" });
+        this.clearActiveScope();
       }
     }, 500);
   }
@@ -627,10 +721,11 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
    * we don't own it). After this returns, `checkCredentials()` re-derives the
    * authenticated flag from what's left on disk and in the environment.
    */
-  signOut(): void {
+  signOut(opts?: AgentAuthScopeOptions): void {
     this.kill();
+    const configDir = this.claudeConfigDir(opts?.credentialDir ?? null);
     for (const fileName of CLAUDE_CREDENTIAL_FILES) {
-      const fullPath = path.join(CLAUDE_CONFIG_DIR, fileName);
+      const fullPath = path.join(configDir, fileName);
       try {
         if (existsSync(fullPath)) {
           rmSync(fullPath, { force: true });
@@ -640,7 +735,9 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
         console.warn(`[auth] Failed to remove ${fullPath}:`, err instanceof Error ? err.message : err);
       }
     }
-    this.checkCredentials();
+    // Re-derive the singleton flag only for a singleton sign-out; a scoped
+    // sign-out leaves the global state alone.
+    if (!opts?.credentialDir) this.checkCredentials();
   }
 
   /** Kill the auth process if running. */

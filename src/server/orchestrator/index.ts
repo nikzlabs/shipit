@@ -346,6 +346,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const agentRuntime = buildAgentRuntime({ authManager, codexAuthManager });
   const { authManagers, limitsProviders, runParamsPreps } = agentRuntime;
 
+  // docs/150 — let the provider-account manager drive account-scoped login
+  // flows through the per-provider auth managers (built just above).
+  providerAccountManager.attachAuthManagers(authManagers);
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,

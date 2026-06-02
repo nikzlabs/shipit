@@ -108,6 +108,13 @@ export type AgentAuthPendingDetails =
 export interface WsAgentAuthPending {
   type: "agent_auth_pending";
   agentId: AgentId;
+  /**
+   * Provider-account id this flow authenticates (docs/150). Present when the
+   * flow was started for a specific stored account row; omitted for the
+   * legacy singleton flow. The client uses it to attach the pending state to
+   * the matching Settings account row.
+   */
+  accountId?: string;
   details: AgentAuthPendingDetails;
 }
 
@@ -119,6 +126,8 @@ export interface WsAgentAuthPending {
 export interface WsAgentAuthComplete {
   type: "agent_auth_complete";
   agentId: AgentId;
+  /** Provider-account id that just authenticated (docs/150), when scoped. */
+  accountId?: string;
 }
 
 /**
@@ -130,6 +139,8 @@ export interface WsAgentAuthComplete {
 export interface WsAgentAuthFailed {
   type: "agent_auth_failed";
   agentId: AgentId;
+  /** Provider-account id whose flow failed (docs/150), when scoped. */
+  accountId?: string;
   reason?: "timeout" | "denied" | "error" | "revoked";
   message?: string;
 }

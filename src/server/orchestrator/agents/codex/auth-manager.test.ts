@@ -7,9 +7,12 @@
  * injected so the suite doesn't need to touch /credentials.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import {
   CodexAuthManager,
@@ -364,5 +367,80 @@ describe("CodexAuthManager / cancel + signOut", () => {
     expect(mgr.checkCredentials()).toBe(false);
     v = true;
     expect(mgr.checkCredentials()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Account-scoped flows (docs/150)
+// ---------------------------------------------------------------------------
+
+describe("CodexAuthManager / account-scoped (docs/150)", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-codex-scoped-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  /** Spawn fake that also captures the per-call options (env, etc.). */
+  function makeSpawnWithOpts(): { proc: FakeChildProcess; spawnFn: SpawnFn; opts: Parameters<SpawnFn>[2][] } {
+    const proc = new FakeChildProcess();
+    const opts: Parameters<SpawnFn>[2][] = [];
+    const spawnFn: SpawnFn = (_cmd, _args, options) => {
+      opts.push(options);
+      return proc as unknown as ChildProcess;
+    };
+    return { proc, spawnFn, opts };
+  }
+
+  it("spawns the CLI with HOME pointed at the account credential root", () => {
+    const { spawnFn, opts } = makeSpawnWithOpts();
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
+    mgr.start({ accountId: "acct-1", credentialDir: tmp });
+    expect(opts).toHaveLength(1);
+    expect((opts[0]?.env as Record<string, string>).HOME).toBe(tmp);
+    expect(mgr.getActiveAccountId()).toBe("acct-1");
+  });
+
+  it("checkCredentials reads the account's auth.json, ignoring the injected singleton check", () => {
+    const { spawnFn } = makeSpawnWithOpts();
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => true });
+    // No file yet → scoped check is false even though the singleton check is true.
+    expect(mgr.checkCredentials(tmp)).toBe(false);
+    fs.mkdirSync(path.join(tmp, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, ".codex", "auth.json"), "{}");
+    expect(mgr.checkCredentials(tmp)).toBe(true);
+    // The singleton path is unaffected.
+    expect(mgr.checkCredentials()).toBe(true);
+  });
+
+  it("completes scoped, exposing the account id during the complete event then clearing it", async () => {
+    const { proc, spawnFn } = makeSpawnWithOpts();
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
+    fs.mkdirSync(path.join(tmp, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, ".codex", "auth.json"), "{}");
+
+    let observed: string | null = "unset";
+    mgr.on("complete", () => { observed = mgr.getActiveAccountId(); });
+    mgr.start({ accountId: "acct-9", credentialDir: tmp });
+    proc.emit("close", 0);
+    await new Promise((r) => setImmediate(r));
+
+    expect(observed).toBe("acct-9");
+    // Scope is cleared after the terminal event.
+    expect(mgr.getActiveAccountId()).toBeNull();
+  });
+
+  it("signOut(credentialDir) removes only the account's auth.json", () => {
+    const { spawnFn } = makeSpawnWithOpts();
+    const mgr = new CodexAuthManager({ spawn: spawnFn, checkAuthFile: () => false });
+    fs.mkdirSync(path.join(tmp, ".codex"), { recursive: true });
+    const authPath = path.join(tmp, ".codex", "auth.json");
+    fs.writeFileSync(authPath, "{}");
+    mgr.signOut({ credentialDir: tmp });
+    expect(fs.existsSync(authPath)).toBe(false);
   });
 });

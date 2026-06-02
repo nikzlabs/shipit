@@ -3,6 +3,10 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentId, ProviderAccount, ProviderRouteKind } from "../shared/types.js";
 import type { CredentialStore } from "./credential-store.js";
+import type { AgentAuthManager } from "./agent-auth-manager.js";
+
+/** Persisted, non-derived account statuses (see {@link ProviderAccount}). */
+export type ProviderAccountStatus = ProviderAccount["status"];
 
 const PROVIDER_ACCOUNTS_SUBDIR = "provider-accounts";
 
@@ -36,10 +40,26 @@ export interface ProviderAccountManagerOptions {
 export class ProviderAccountManager {
   private credentialsDir: string;
   private credentialStore: CredentialStore;
+  /**
+   * Per-provider auth managers, attached after construction (the managers are
+   * built in `app-di`/`buildAgentRuntime`, after this manager). Used to drive
+   * account-scoped login/cancel/sign-out flows. `null` until attached — the
+   * scoped-auth methods throw a clear error if invoked before wiring.
+   */
+  private authManagers: Map<AgentId, AgentAuthManager> | null = null;
 
   constructor(opts: ProviderAccountManagerOptions) {
     this.credentialsDir = opts.credentialsDir;
     this.credentialStore = opts.credentialStore;
+  }
+
+  /**
+   * Wire the per-provider auth managers so this manager can start/cancel
+   * account-scoped login flows (docs/150). Called once from `index.ts` after
+   * `buildAgentRuntime`.
+   */
+  attachAuthManagers(authManagers: Map<AgentId, AgentAuthManager>): void {
+    this.authManagers = authManagers;
   }
 
   migrateDefaultAccounts(): void {
@@ -133,6 +153,79 @@ export class ProviderAccountManager {
 
   resolveCredentialRoot(provider: AgentId, accountId: string): string {
     return path.join(this.credentialsDir, PROVIDER_ACCOUNTS_SUBDIR, provider, accountId);
+  }
+
+  /** Overwrite the persisted status of an account (idempotent). */
+  setAccountStatus(provider: AgentId, accountId: string, status: ProviderAccountStatus): ProviderAccount {
+    const account = this.require(provider, accountId);
+    if (account.status === status) return account;
+    this.credentialStore.upsertProviderAccount({ ...account, status });
+    return this.require(provider, accountId);
+  }
+
+  // ---- Account-scoped auth flows (docs/150) ----
+
+  /**
+   * Start the provider's login flow scoped to a specific account row. The
+   * provider CLI is spawned with `HOME` pointed at the account's credential
+   * root, so it writes into `provider-accounts/<provider>/acct_<id>/...`
+   * instead of the singleton path. Marks the row `authenticating`; the
+   * eventual `complete`/`failed` event (handled in `app-lifecycle`) flips it
+   * to `ready`/`auth_failed`.
+   */
+  startAccountAuth(provider: AgentId, accountId: string): ProviderAccount {
+    this.require(provider, accountId);
+    const mgr = this.requireAuthManager(provider);
+    const credentialDir = this.resolveCredentialRoot(provider, accountId);
+    fs.mkdirSync(credentialDir, { recursive: true });
+    const account = this.setAccountStatus(provider, accountId, "authenticating");
+    mgr.start({ accountId, credentialDir });
+    return account;
+  }
+
+  /**
+   * Cancel an in-flight scoped login. Resets the row's status to `ready` when
+   * the account already has on-disk credentials, otherwise `unavailable`.
+   */
+  cancelAccountAuth(provider: AgentId, accountId: string): ProviderAccount {
+    this.require(provider, accountId);
+    const mgr = this.requireAuthManager(provider);
+    mgr.cancel();
+    const credentialDir = this.resolveCredentialRoot(provider, accountId);
+    const status: ProviderAccountStatus = mgr.isConfigured({ credentialDir }) ? "ready" : "unavailable";
+    return this.setAccountStatus(provider, accountId, status);
+  }
+
+  /**
+   * Submit a verification code into an in-flight scoped Claude login. No-op
+   * for providers whose flow has no paste-code step (Codex device-auth).
+   */
+  submitAccountCode(provider: AgentId, accountId: string, code: string): void {
+    this.require(provider, accountId);
+    const mgr = this.requireAuthManager(provider);
+    if (typeof mgr.submitCode !== "function") {
+      throw new Error(`${PROVIDER_LABEL[provider]} login has no code-submission step`);
+    }
+    mgr.submitCode(code);
+  }
+
+  /**
+   * Remove a single account's on-disk credentials (scoped sign-out). Leaves
+   * the account row itself in place; callers decide whether to also delete
+   * the row. Marks the row `unavailable`.
+   */
+  signOutAccount(provider: AgentId, accountId: string): ProviderAccount {
+    this.require(provider, accountId);
+    const mgr = this.requireAuthManager(provider);
+    const credentialDir = this.resolveCredentialRoot(provider, accountId);
+    mgr.signOut({ credentialDir });
+    return this.setAccountStatus(provider, accountId, "unavailable");
+  }
+
+  private requireAuthManager(provider: AgentId): AgentAuthManager {
+    const mgr = this.authManagers?.get(provider);
+    if (!mgr) throw new Error(`No auth manager wired for provider: ${provider}`);
+    return mgr;
   }
 
   private migrateProviderDefault(provider: AgentId, accountId: string, label: string): void {

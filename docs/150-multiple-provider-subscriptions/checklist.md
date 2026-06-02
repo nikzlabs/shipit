@@ -24,10 +24,10 @@
 - [x] Skip token sync for `claude-env-oauth` reserved route.
 - [x] Account-qualify token re-push helper so account X does not update account Y sessions.
 - [x] Persist selected provider route when a session is first pinned.
-- [ ] Make Claude auth manager account-scoped for starting/checking/signing out specific accounts.
-- [ ] Make Codex auth manager account-scoped for starting/checking/signing out specific accounts.
-- [ ] Force auth subprocesses to write to an account-specific HOME/config root.
-- [ ] Add account-qualified auth pending/complete/failed SSE events.
+- [x] Make Claude auth manager account-scoped for starting/checking/signing out specific accounts.
+- [x] Make Codex auth manager account-scoped for starting/checking/signing out specific accounts.
+- [x] Force auth subprocesses to write to an account-specific HOME/config root.
+- [x] Add account-qualified auth pending/complete/failed SSE events.
 - [x] Add Settings endpoints/services for list, create, rename, make primary, and disconnect provider accounts.
 - [x] Render provider account management in Settings.
 - [ ] Block disconnect while an account is pinned to a running session unless replacement is selected.
@@ -87,8 +87,8 @@
 - [x] Unit: session manager persists provider route kind/id.
 - [x] Unit: session credentials provision only the selected provider-account subtree.
 - [x] Unit: account-qualified sync-in/sync-back writes only the matching account source.
-- [ ] Unit: account-scoped Claude auth manager writes to the requested account root.
-- [ ] Unit: account-scoped Codex auth manager writes to the requested account root.
+- [x] Unit: account-scoped Claude auth manager writes to the requested account root.
+- [x] Unit: account-scoped Codex auth manager writes to the requested account root.
 - [ ] Unit: account selection prefers primary, skips exhausted accounts, respects reset times, and ranks quota.
 - [ ] Integration: first Claude turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
 - [ ] Integration: first Codex turn pins `{ agent_id, provider_route_kind, provider_route_id }`.
