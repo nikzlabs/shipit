@@ -518,6 +518,13 @@ export interface WsRebaseConflicts {
 export interface WsRebaseComplete {
   type: "rebase_complete";
   forcePushed: boolean;
+  /**
+   * Set when the branch already contained every commit from the base branch,
+   * so no rebase ran (the ancestry short-circuit in `runRebaseFlow`). Lets the
+   * client confirm a no-op "Sync with main" click — otherwise a manual sync
+   * that had nothing to do would flash the banner and vanish silently.
+   */
+  upToDate?: boolean;
 }
 
 /** Server → Client: rebase was aborted. */
