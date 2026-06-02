@@ -113,6 +113,7 @@ describe("PrDetailPanel", () => {
     // The one-item overflow menu was dropped; the Open badge is itself the
     // GitHub escape-hatch link (docs/133 §2 — inline is the primary surface).
     const link = screen.getByTitle("View on GitHub");
+    expect(link.tagName).toBe("A");
     expect(link).toHaveAttribute("href", "https://github.com/o/r/pull/42");
     expect(link).toHaveTextContent("Open");
   });
