@@ -64,6 +64,7 @@ import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes } from "./disk-janitor.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
+import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import { resolveBuildId, resolveVersion } from "./build-id.js";
 import { readChannel } from "./release-channel.js";
@@ -301,17 +302,32 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // poller exists.
   const prStatusPollerRef: { ref: PrStatusPoller | null } = { ref: null };
 
+  // docs/153 / docs/154 — lazy holders for orchestrator-owned OAuth
+  // refreshers. Constructed below (after `wireEventHandlers` so
+  // `repushTokenToPinnedSessions` is in scope), referenced from the
+  // runner-registry's listener deps (built first) via forward refs so the
+  // auth-required hooks resolve to live instances at runtime. Stay `null` in
+  // test mode / local runtime.
+  //
   // docs/153 — lazy holder for the Claude OAuth refresher. Constructed below
   // (after `wireEventHandlers` so `repushTokenToPinnedSessions` is in scope),
   // referenced from the runner-registry's listener deps (built first) via this
   // forward ref so `nudgeClaudeOAuthRefresh` resolves to the live instance at
   // runtime. Stays `null` in test mode / local runtime.
   const claudeOAuthRefresherRef: { ref: ClaudeOAuthRefresher | null } = { ref: null };
+  const codexOAuthRefresherRef: { ref: CodexOAuthRefresher | null } = { ref: null };
   const nudgeClaudeOAuthRefresh = (): void => {
     const r = claudeOAuthRefresherRef.ref;
     if (!r) return;
     r.refreshNow().catch((err: unknown) => {
       console.error("[claude-oauth-refresh] nudge failed:", err);
+    });
+  };
+  const nudgeCodexOAuthRefresh = (): void => {
+    const r = codexOAuthRefresherRef.ref;
+    if (!r) return;
+    r.refreshNow().catch((err: unknown) => {
+      console.error("[codex-oauth-refresh] nudge failed:", err);
     });
   };
   /**
@@ -323,6 +339,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
    */
   const agentAuthRequiredHooks = new Map<AgentId, () => void>();
   agentAuthRequiredHooks.set("claude", nudgeClaudeOAuthRefresh);
+  agentAuthRequiredHooks.set("codex", nudgeCodexOAuthRefresh);
   const onAgentAuthRequired = (agentId: AgentId): void => {
     agentAuthRequiredHooks.get(agentId)?.();
   };
@@ -447,7 +464,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // for that account via `repushProviderAccountToken` (or
   // `repushAgentToken` for legacy sessions whose `provider_route_*` is null).
   if (!isTestMode) {
-    const repushClaudeAccountToken = (agentId: AgentId, accountId: string): void => {
+    const repushOAuthAccountToken = (logPrefix: string) => (agentId: AgentId, accountId: string): void => {
       let healed = 0;
       for (const session of sessionManager.list()) {
         if (!session.agentPinned || session.agentId !== agentId) continue;
@@ -466,17 +483,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               : repushAgentToken(credentialsDir, session.id, agentId);
           if (wrote) healed++;
         } catch (err) {
-          console.error(`[claude-oauth-refresh] repush failed for session ${session.id}:`, err);
+          console.error(`[${logPrefix}] repush failed for session ${session.id}:`, err);
         }
       }
       if (healed > 0) {
-        console.log(`[claude-oauth-refresh] propagated refreshed ${agentId}/${accountId} token to ${healed} pinned session(s)`);
+        console.log(`[${logPrefix}] propagated refreshed ${agentId}/${accountId} token to ${healed} pinned session(s)`);
       }
     };
     const refresher = new ClaudeOAuthRefresher({
       credentialsDir,
       providerAccountManager,
-      repushAccountToken: repushClaudeAccountToken,
+      repushAccountToken: repushOAuthAccountToken("claude-oauth-refresh"),
       sseBroadcast,
       runtimeMode,
     });
@@ -488,6 +505,21 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     authManager.on("auth_complete", () => {
       refresher.refreshNow().catch((err: unknown) => {
         console.error("[claude-oauth-refresh] post-auth refresh failed:", err);
+      });
+    });
+
+    const codexRefresher = new CodexOAuthRefresher({
+      credentialsDir,
+      providerAccountManager,
+      repushAccountToken: repushOAuthAccountToken("codex-oauth-refresh"),
+      sseBroadcast,
+      runtimeMode,
+    });
+    codexOAuthRefresherRef.ref = codexRefresher;
+    codexRefresher.start();
+    authManagers.get("codex")?.on("complete", () => {
+      codexRefresher.refreshNow().catch((err: unknown) => {
+        console.error("[codex-oauth-refresh] post-auth refresh failed:", err);
       });
     });
   }
@@ -1763,6 +1795,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();
+    codexOAuthRefresherRef.ref?.stop();
   });
   registerShutdownHook(app, {
     startupTimer, authManagers, runnerRegistry,
