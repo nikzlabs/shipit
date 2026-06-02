@@ -204,6 +204,65 @@ function summarizeCodexSubagentPrompt(prompt: unknown): string {
 }
 
 /**
+ * The bare tool name the ShipIt-managed ask bridge exposes (docs/147). The
+ * Codex app-server may surface an MCP tool under a server-qualified name
+ * (`AskUserQuestion`, `shipit-ask__AskUserQuestion`, `shipit-ask.AskUserQuestion`,
+ * `shipit-ask/AskUserQuestion`), so match the bare name or any of those
+ * separator-prefixed forms rather than assuming one shape.
+ */
+const ASK_TOOL_NAME = "AskUserQuestion";
+
+function isAskUserQuestionTool(tool: string | undefined): boolean {
+  if (!tool) return false;
+  if (tool === ASK_TOOL_NAME) return true;
+  return /(?:^|[._/]|__)AskUserQuestion$/.test(tool);
+}
+
+/**
+ * Normalize the bridge tool's `questions` argument into the exact shape the
+ * AskUserQuestion card requires: `{ question, header, options: [{ label,
+ * description }], multiSelect }`. Defensive against omitted fields the model
+ * might leave out (missing `description`, missing `multiSelect`) so the card
+ * always renders. Returns `[]` for a non-array input — the orchestrator's
+ * well-formed gate then declines to interrupt (matching a malformed Claude
+ * call), and the bridge has already rejected it with a validation error.
+ */
+interface NormalizedAskOption {
+  label: string;
+  description: string;
+}
+interface NormalizedAskQuestion {
+  question: string;
+  header: string;
+  options: NormalizedAskOption[];
+  multiSelect: boolean;
+}
+
+function normalizeAskQuestions(raw: unknown): NormalizedAskQuestion[] {
+  if (!Array.isArray(raw)) return [];
+  const out: NormalizedAskQuestion[] = [];
+  for (const q of raw) {
+    if (typeof q !== "object" || q === null) continue;
+    const obj = q as Record<string, unknown>;
+    const rawOptions = Array.isArray(obj.options) ? obj.options : [];
+    const options = rawOptions
+      .filter((o): o is Record<string, unknown> => typeof o === "object" && o !== null)
+      .map((o) => ({
+        label: typeof o.label === "string" ? o.label : "",
+        description: typeof o.description === "string" ? o.description : "",
+      }))
+      .filter((o) => o.label.length > 0);
+    out.push({
+      question: typeof obj.question === "string" ? obj.question : "",
+      header: typeof obj.header === "string" ? obj.header : "",
+      options,
+      multiSelect: obj.multiSelect === true,
+    });
+  }
+  return out;
+}
+
+/**
  * Token usage snapshot from a `thread/tokenUsage/updated` notification.
  * `total` is the cumulative turn rollup (billing); `last` is the most recent
  * API call (real context-window occupancy — see AgentResultEvent.contextTokens).
@@ -242,7 +301,11 @@ export class CodexAdapter
     supportsSystemPrompt: true,
     supportsPermissionModes: false,
     supportedPermissionModes: [],
-    toolNames: ["shell", "file_write", "file_read", "file_edit"],
+    // `AskUserQuestion` isn't a Codex-native tool — it's the ShipIt-managed MCP
+    // bridge (docs/147, registered in writeMcpConfig below) that lets Codex ask
+    // structured questions in any mode. Advertised here so agent_init reports it
+    // and the UI/history recognize it like Claude's native one.
+    toolNames: ["shell", "file_write", "file_read", "file_edit", "AskUserQuestion"],
     // Mirror of agent-registry.ts. Verified against the ChatGPT
     // `/backend-api/codex/models` endpoint — every entry returned for a
     // Plus plan with `visibility: list` and `supported_in_api: true`,
@@ -534,6 +597,19 @@ export class CodexAdapter
         "[mcp_servers.shipit-voice]",
         `command = ${tomlString(ctx.voiceBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.voiceBridge.bridgePath])}`,
+      );
+    }
+
+    if (ctx.askBridge) {
+      lines.push(
+        "",
+        "# docs/147 — structured AskUserQuestion tool bridge. Codex lacks a",
+        "# Default-mode native question tool, so this exposes one whose output",
+        "# the adapter normalizes into an AskUserQuestion tool_use (handleItem),",
+        "# reusing ShipIt's existing question/interrupt/resume flow.",
+        "[mcp_servers.shipit-ask]",
+        `command = ${tomlString(ctx.askBridge.tsxBin)}`,
+        `args = ${tomlArray([ctx.askBridge.bridgePath])}`,
       );
     }
 
@@ -915,6 +991,31 @@ export class CodexAdapter
 
       case "mcpToolCall":
       case "dynamicToolCall": {
+        // docs/147 — the ShipIt-managed `shipit-ask` bridge exposes an
+        // `AskUserQuestion` tool. Re-emit its call under the RAW
+        // `AskUserQuestion` name with normalized `{ questions }` input so the
+        // client renders the standard question card and the orchestrator's
+        // existing interrupt/answer/resume flow (keyed on that tool name) takes
+        // over. The bridge call blocks; the orchestrator interrupts this turn
+        // and resumes the thread with the user's answer, so we never see a
+        // `completed` for it — but guard against one anyway and skip the
+        // tool_result, which would otherwise flip the card to "answered".
+        if (isAskUserQuestionTool(item.tool)) {
+          if (phase !== "started") return;
+          let parsed: Record<string, unknown> = {};
+          if (item.arguments) {
+            try {
+              parsed = JSON.parse(item.arguments) as Record<string, unknown>;
+            } catch {
+              parsed = {};
+            }
+          }
+          const questions = normalizeAskQuestions(parsed.questions);
+          this.emitAssistant([
+            { type: "tool_use", id, name: "AskUserQuestion", input: { questions } },
+          ]);
+          return;
+        }
         if (phase === "started") {
           let input: Record<string, unknown> = {};
           if (item.arguments) {
