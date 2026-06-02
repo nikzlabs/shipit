@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 priority: medium
 description: Two-way voice integration. Input — push-to-talk dictation with an LLM cleanup pass (fixes mis-hearings, fillers, capitalisation) before the transcript lands in the textarea. Mode A targets the current MessageInput, Mode B the quick-capture overlay from doc 145. Output — per-assistant-turn Play button that streams TTS of the response so the user can listen while walking around. Cleanup defaults to the user's Claude subscription, falls back to the OpenAI voice key.
 ---
