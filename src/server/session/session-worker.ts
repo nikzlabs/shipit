@@ -439,6 +439,7 @@ export class SessionWorker extends EventEmitter {
 
     app.get("/agent/status", async () => ({
       running: this.agent !== null,
+      latestSseSeq: this.sse.latestSeq,
     }));
 
     // --- Terminal endpoints ---

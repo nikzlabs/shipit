@@ -93,6 +93,18 @@ export class SseConnectionManager {
   /** Whether an SSE connection is currently established (handle present). */
   get isConnected(): boolean { return this.sseConnection !== null; }
 
+  /**
+   * Advance the worker event cursor before the first SSE connection. Used when
+   * the orchestrator is about to start a fresh agent against an already-idle
+   * worker whose ring buffer may still contain events from a turn that
+   * completed while the orchestrator was down.
+   */
+  fastForwardLastSeenSeq(seq: number): void {
+    if (this.sseConnection) return;
+    if (!Number.isFinite(seq) || seq <= this._lastSeenSeq) return;
+    this._lastSeenSeq = seq;
+  }
+
   /** Timestamp of the most recent SSE byte from the worker (0 = never). */
   get lastActivityAt(): number { return this._lastActivityAt; }
   /** Manually advance the activity gauge (e.g. from a parsed event). */

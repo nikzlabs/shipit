@@ -690,6 +690,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private async _doStartAgentViaProxy(agentId: AgentId, params: AgentRunParams, runToken?: string): Promise<void> {
     await this._workerReady;
 
+    await this.fastForwardStaleWorkerEventsBeforeFreshStart();
+
     // Kick off SSE setup BEFORE waiting on the install gate. The install
     // gate (`_waitForInstallBeforeAgent`) resolves on the SSE-delivered
     // `install_done` event — without an SSE consumer the worker's event
@@ -736,6 +738,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       } else {
         throw err;
       }
+    }
+  }
+
+  private async fastForwardStaleWorkerEventsBeforeFreshStart(): Promise<void> {
+    if (this._workerResourcesStarted || this.sse.isConnected) return;
+    try {
+      const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as {
+        latestSseSeq?: number;
+      };
+      this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
+    } catch {
+      // Best-effort only. If the probe fails, keep the existing since=0 path
+      // so spawned/headless turns still prefer possible replay over event loss.
     }
   }
 

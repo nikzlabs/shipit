@@ -95,3 +95,38 @@ was observed here.)
 - `docs/098-ws-lifecycle-hardening-followups`
 - `docs/144-session-switch-latency`
 - CLAUDE.md "WebSocket lifecycle MUST NOT affect server behavior"
+
+## Follow-up: duplicate after orchestrator restart
+
+PR 908 fixed dirty **runner** replay buffers after terminal error/interrupt
+paths. A second restart-only path remained: the session worker's SSE ring buffer
+survives an orchestrator restart because the worker container can keep running
+while the orchestrator process is replaced. If the previous turn completed while
+the orchestrator was down, the worker is now idle but its `/events` ring still
+contains that completed turn's `agent_event`s.
+
+On the next user turn, `ContainerSessionRunner.createAgent()` installs a fresh
+`ProxyAgentProcess`, then `_startAgentViaProxy()` connects worker SSE before
+posting `/agent/start` (required for spawned/headless sessions that can emit
+immediately). Before this follow-up, that first SSE connection used `since=0`.
+The worker replayed the old completed turn into the fresh proxy, so
+`wireAgentListeners()` treated those events as part of the new turn and could
+persist the previous assistant output again.
+
+Fix: `/agent/status` now includes `latestSseSeq`, and a fresh container runner
+fast-forwards its SSE cursor to that sequence before connecting SSE for a new
+agent start. This discards stale idle-worker replay while preserving the
+load-bearing "connect SSE before `/agent/start`" behavior for newly emitted
+events. If the probe fails, the runner keeps the old `since=0` fallback so
+spawned/headless turns still prefer possible replay over event loss.
+
+Additional key files:
+
+- `src/server/session/session-worker.ts` — exposes `latestSseSeq` on
+  `/agent/status`.
+- `src/server/orchestrator/sse-connection-manager.ts` — cursor fast-forward
+  helper.
+- `src/server/orchestrator/container-session-runner.ts` — fast-forwards stale
+  worker events before the first SSE connect for a fresh start.
+- `src/server/orchestrator/integration_tests/container-agent-wiring.test.ts` —
+  regression test for idle-worker stale replay after orchestrator restart.

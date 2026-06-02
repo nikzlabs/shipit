@@ -256,6 +256,73 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
+  it("proxy.run() does not attach stale idle-worker replay to the fresh turn", async () => {
+    const oldStart = await fetch(`${workerUrl}/agent/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentId: "claude",
+        params: { prompt: "old turn", cwd: "/workspace" },
+      }),
+    });
+    expect(oldStart.status).toBe(200);
+    const oldAgent = lastAgent;
+    oldAgent.emit("event", {
+      type: "agent_init",
+      agentId: "claude",
+      sessionId: "old-agent-session",
+      model: "claude-sonnet-4-6",
+      tools: [],
+    });
+    oldAgent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "STALE_REPLAY_CANARY" }],
+    });
+    oldAgent.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "old-agent-session",
+    });
+    oldAgent.emit("done", 0);
+    await waitFor(() => lastAgent === oldAgent, 500, "old agent still latest");
+
+    const idleStatus = await fetch(`${workerUrl}/agent/status`);
+    const idle = await idleStatus.json() as { running: boolean; latestSseSeq: number };
+    expect(idle.running).toBe(false);
+    expect(idle.latestSseSeq).toBeGreaterThan(0);
+
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-stale-replay",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+
+    const proxy = runner.createAgent("claude");
+    const events: unknown[] = [];
+    proxy.on("event", (event) => events.push(event));
+
+    proxy.run({ prompt: "fresh turn", cwd: "/workspace" });
+    await waitFor(() => lastAgent !== oldAgent && lastAgent?.runCalled, 3000, "fresh agent.run()");
+    expect(lastAgent.lastParams?.prompt).toBe("fresh turn");
+
+    await new Promise((r) => setTimeout(r, 150));
+    expect(JSON.stringify(events)).not.toContain("STALE_REPLAY_CANARY");
+
+    lastAgent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "fresh output" }],
+    });
+    await waitFor(
+      () => JSON.stringify(events).includes("fresh output"),
+      3000,
+      "fresh event delivered",
+    );
+
+    lastAgent.emit("done", 0);
+    runner.dispose();
+  });
+
   // ---- proxy.interrupt() ----
 
   it("proxy.interrupt() POSTs to worker /agent/interrupt", async () => {
