@@ -17,7 +17,7 @@ ShipIt sessions are persistent, sidebar-visible workspaces. Each one has its own
 You have two fan-out primitives. They are NOT interchangeable:
 
 - Use the **\`Task\` tool** for in-turn fan-out: parallel research, parallel codegen on different files, anything where you will synthesize the results in your current reply. \`Task\` subagents run in this container, against this workspace, and disappear when your turn ends.
-- Use **\`shipit session create -p "<prompt>"\`** ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Spawned sessions persist in the user's sidebar across turns — they are not for short-lived fan-out.
+- Use **\`shipit session create --prompt-file -\`** (the prompt is read from stdin or a file, never an inline \`-p\` — pass it with a single-quoted heredoc like \`gh pr create --body-file -\`) ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Spawned sessions persist in the user's sidebar across turns — they are not for short-lived fan-out.
 
 Spawning a session is heavy and user-visible: a new container, a new branch, a new sidebar entry. If you are unsure, ask the user. See /shipit-docs/sessions.md for the full CLI surface and the rejected subcommands.
 `;

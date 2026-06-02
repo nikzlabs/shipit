@@ -65,13 +65,29 @@ override the parent.
 
 | Subcommand | Notes |
 |---|---|
-| `shipit session create -p "PROMPT" [--title T] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | Spawn a sibling session with `PROMPT` as its first user message. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. Returns the child's id, branch, and status on stdout. |
+| `shipit session create --prompt-file FILE [--title T] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. Returns the child's id, branch, and status on stdout. |
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
 | `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available. |
 | `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt; exit is `0` either way and the response prints the queue position. |
 | `shipit session wait <id> [--timeout SECONDS] [--json]` | Long-poll until the child is idle (`running=false && queueLength=0`) or the timeout elapses. Default 5 minutes, capped at 1 hour. Exits non-zero on timeout. |
 | `shipit session archive <id> [--json]` | Archive a child this parent spawned. Refuses with a clear error when the child is still running — use `shipit session wait` first. |
 | `shipit session help` | Print the subcommand reference. |
+
+The prompt is passed via `--prompt-file` — a file path, or `-` to read from
+stdin — never an inline flag. A prompt on the command line gets mangled when it
+contains backticks or `$(...)`, which the shell evaluates before the shim sees
+the value (the same reason `gh pr create` uses `--body-file`). Use a
+single-quoted heredoc so the prompt is preserved verbatim:
+
+```sh
+shipit session create --prompt-file - --title "Port API to TypeScript" <<'EOF'
+Port the API in /server to TypeScript. Land it as a separate PR.
+Keep the public `routes` table and the $(generated) types intact.
+EOF
+```
+
+The `EOF` delimiter must be single-quoted. Passing `-p`/`--prompt`/`-m` exits
+non-zero with a pointer back to `--prompt-file`.
 
 **Ops-only** (`kind: "ops"` sessions — see `ops-session.md`): pass
 `--shipit-source` to `shipit session create` to spawn a fix session that targets
@@ -94,9 +110,9 @@ per-turn cap than generic fan-out children (default 2, env
 
 ```sh
 # User asked: "Spin up a separate session to port the API to TypeScript."
-shipit session create \
-  -p "Port the API in /server to TypeScript. Land it as a separate PR." \
-  --title "Port API to TypeScript"
+shipit session create --prompt-file - --title "Port API to TypeScript" <<'EOF'
+Port the API in /server to TypeScript. Land it as a separate PR.
+EOF
 # session-id: ses_abc123
 # branch:     shipit/k7p2qz
 # status:     running
@@ -139,7 +155,9 @@ didn't spawn.
 
 ```sh
 # Spawn a long-running task on its own branch (branch name is auto-generated).
-shipit session create -p "Migrate the API to Drizzle"
+shipit session create --prompt-file - <<'EOF'
+Migrate the API to Drizzle
+EOF
 # session-id: ses_abc
 
 # Block until the child is idle (or the timeout fires).
@@ -169,8 +187,8 @@ Under the hood, `shipit session create`:
    the parent's working tree.
 3. Persists a parent linkage on the child's session row, so the sidebar can
    group it under the parent and `shipit session list` can scope by parent.
-4. Enqueues `--prompt` as the child's first user message, so the child's
-   agent starts working autonomously the moment its container is ready.
+4. Enqueues the `--prompt-file` contents as the child's first user message, so
+   the child's agent starts working autonomously the moment its container is ready.
 5. Surfaces the new session in the user's sidebar immediately.
 
 The parent's chat shows a system note that a session was spawned. The

@@ -9,9 +9,13 @@ description: CLI shim letting agents create and manage sibling ShipIt sessions f
 
 Phases 1, 2, and 3 are live as of this revision. What works today:
 
-- `shipit session create -p "PROMPT" [...]` spawns a sibling session with
+- `shipit session create --prompt-file FILE [...]` spawns a sibling session with
   parent linkage persisted; the orchestrator clones the workspace, cuts a
-  branch off the parent's HEAD, and enqueues the prompt on the new runner.
+  branch off the parent's HEAD, and enqueues the prompt on the new runner. The
+  prompt is read from a file (or stdin via `--prompt-file -`), never an inline
+  `-p`/`--prompt` — a command-line prompt gets mangled when it contains backticks
+  or `$(...)`, which the shell evaluates first. Same fix as the `gh` shim's
+  `--body-file`; inline prompt flags are rejected with a redirect.
 - `shipit session list` / `shipit session view <id>` return JSON or plain
   text. The orchestrator denies `view` for sessions the calling parent
   didn't spawn (404, no leakage of "wrong parent" vs "not found").
@@ -164,7 +168,7 @@ its request lands under.
 
 | Shim subcommand | Worker route (allowlist) | Orchestrator route | Notes |
 |---|---|---|---|
-| `shipit session create -p "PROMPT" [--title T] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | `POST /agent-ops/session/create` | `POST /api/sessions/:parentId/spawn` | Spawn a sibling. `-p`/`--prompt` is required and `-m` is an alias. Child branch is always auto-generated under `shipit/<slug>` — agents cannot pick it (the `--branch` flag was dropped after agent-supplied names drifted outside the `shipit/` namespace). Returns the child id, branch, and status. |
+| `shipit session create --prompt-file FILE [--title T] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | `POST /agent-ops/session/create` | `POST /api/sessions/:parentId/spawn` | Spawn a sibling. `--prompt-file` (a path, or `-` for stdin) is required — inline `-p`/`--prompt`/`-m` are rejected because shell-evaluated backticks/`$(...)` mangle command-line prompts (same fix as the `gh` shim's `--body-file`). Child branch is always auto-generated under `shipit/<slug>` — agents cannot pick it (the `--branch` flag was dropped after agent-supplied names drifted outside the `shipit/` namespace). Returns the child id, branch, and status. |
 | `shipit session list [--turn ID] [--json]` | `GET /agent-ops/session/list[?turn=ID]` | `GET /api/sessions/:parentId/children[?turn=ID]` | With `--turn`, children spawned in that turn sort to the top; otherwise most-recently-created first. |
 | `shipit session view <id> [--json]` | `GET /agent-ops/session/view/:childId` | `GET /api/sessions/:parentId/children/:childId` | Returns `{ id, title, status, branch?, queueLength, parentSessionId, spawnedAt, spawnedByTurn? }`. **404 if `<id>` is not a direct descendant of the calling parent** — the orchestrator deliberately doesn't disambiguate "wrong parent" from "not found" so the existence of unrelated sessions is never leaked. |
 | `shipit session help` / `-h` / `--help` | (local) | — | Prints the subcommand list. |
