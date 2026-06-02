@@ -142,8 +142,23 @@ export interface WsRewindRestoreRequest {
   sessionId: string;
 }
 
+/**
+ * Client → Server: confirm and file a bug report (docs/164). Sent only when
+ * the user clicks "Submit report" on the inline consent card. Carries the
+ * final, possibly-edited `title` and `body` — what the user confirmed in the
+ * card is exactly what gets filed. The server has the producer/marker context
+ * stashed against `cardId`; the client only round-trips the editable fields.
+ */
+export interface WsSubmitBugReport {
+  type: "submit_bug_report";
+  cardId: string;
+  title: string;
+  body: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
+  | WsSubmitBugReport
   | WsSendReviewMessage
   | WsClearLogs
   | WsAnswerQuestion

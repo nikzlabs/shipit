@@ -45,6 +45,7 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
       presentBridge: null,
       voiceBridge: null,
       askBridge: null,
+      bugBridge: null,
       onServerFailed,
     });
     if (!result.mcpConfigPath) throw new Error("expected mcpConfigPath");
@@ -115,6 +116,7 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
       presentBridge: null,
       voiceBridge: null,
       askBridge: null,
+      bugBridge: null,
       onServerFailed,
     });
     expect(result.mcpConfigPath).toBeDefined();
