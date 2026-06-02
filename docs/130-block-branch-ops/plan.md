@@ -75,7 +75,7 @@ claude.ts → claude CLI
 | File | Role |
 |---|---|
 | `docker/agent-hooks/block-branch-ops.mjs` | New PreToolUse hook. Node, no deps. Blocks branch create/switch. |
-| `docker/agent-hooks/managed-settings.json` | Adds the `PreToolUse` entry (matcher `Bash`) alongside the existing `Stop` entry. |
+| `docker/agent-hooks/managed-settings.json` | Adds the `PreToolUse` entry (matcher `Bash`) alongside the existing `Stop` entry. Also carries `"includeCoAuthoredBy": false` (always-on, ungated) so the Claude CLI drops the `Co-Authored-By: Claude` commit trailer and the `🤖 Generated with Claude Code` PR footer — ShipIt owns the commit/PR surface, so the upstream attribution is noise. Takes effect on the next session-worker image rebuild (the file is `COPY`'d in, not mounted). |
 | `docker/agent-hooks/stop-pr-check.sh` | Early-exits unless `SHIPIT_AUTO_CREATE_PR=1` — PR enforcement stays opt-in now that the settings file is always wired up. |
 | `docker/Dockerfile.session-worker.{prod,dev,dogfood}` | `COPY` + `chmod` the new hook into `/etc/shipit/agent-hooks/`. |
 | `src/server/shared/types/agent-types.ts` | `AgentRunParams.autoCreatePr?: boolean` — new optional field. |
