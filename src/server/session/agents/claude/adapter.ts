@@ -397,6 +397,16 @@ export class ClaudeAdapter
       };
     }
 
+    // docs/164 — `report_shipit_bug` tool. Same stdio→HTTP bridge pattern; the
+    // agent hands a draft, the orchestrator redacts it and posts a consent
+    // card. Nothing is filed without the user's explicit confirmation.
+    if (ctx.bugBridge) {
+      mcpServers["shipit-bug"] = {
+        command: ctx.bugBridge.tsxBin,
+        args: [ctx.bugBridge.bridgePath],
+      };
+    }
+
     // docs/088: merge user-configured MCP servers. Configs arrive UNRESOLVED
     // — `$secret:` placeholders are substituted here against the worker's own
     // process.env (populated by 087's agent-env pipeline). A server that

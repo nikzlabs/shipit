@@ -26,6 +26,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { PlayTurnButton } from "./PlayTurnButton.js";
 import { ChatQuoteReply } from "./ChatQuoteReply.js";
 import { VoiceNoteCard } from "./VoiceNoteCard.js";
+import { BugReportCard } from "./BugReportCard.js";
 import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
@@ -205,6 +206,15 @@ export interface ChatMessage {
     /** Number of comments included in the submission. */
     commentCount: number;
   };
+  /**
+   * docs/164 — when set, this message renders a `BugReportCard` inline in the
+   * chat. Populated from `bug_report_card` WS events. Carries only the stable
+   * `cardId`; the editable payload + lifecycle state live in the bug-report
+   * store so a filed/failed update can swap the card in place.
+   */
+  bugReport?: {
+    cardId: string;
+  };
 }
 
 export interface TextSegment {
@@ -283,6 +293,7 @@ export function MessageList({
   sessionTitle,
   onRequestRewindPreview,
   onRewindAtGap,
+  onSubmitBugReport,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
@@ -294,6 +305,7 @@ export function MessageList({
   sessionTitle?: string;
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
   onRewindAtGap?: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
+  onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
@@ -668,6 +680,19 @@ export function MessageList({
                   headline={msg.voiceNote.headline}
                   needsAttention={msg.voiceNote.needsAttention}
                 />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/164 — bug-report consent card. Carries no chat text of its own;
+        // render the inline `BugReportCard` (which reads its live payload +
+        // lifecycle from the bug-report store) and skip the bubble path.
+        if (msg.bugReport) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <BugReportCard cardId={msg.bugReport.cardId} onSubmit={onSubmitBugReport} />
               </div>
             </div>
           );

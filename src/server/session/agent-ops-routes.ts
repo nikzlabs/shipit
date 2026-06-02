@@ -90,6 +90,16 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/voice-note", request.body ?? {}, reply),
   );
 
+  // POST /agent-ops/bug/report — user bug filing against ShipIt (docs/164).
+  // The mcp-bug-bridge subprocess forwards `report_shipit_bug` here; the
+  // worker relays to the orchestrator with the trusted SESSION_ID injected.
+  // The orchestrator redacts the draft and posts a consent card — nothing is
+  // filed until the user confirms.
+  app.post<{ Body: { title?: string; body?: string } }>(
+    "/agent-ops/bug/report",
+    async (request, reply) => relay("POST", "/bug-report", request.body ?? {}, reply),
+  );
+
   // POST /agent-ops/pr/create — agent-driven PR create
   app.post<{ Body: {
     title?: string; body?: string; base?: string; draft?: boolean; fill?: boolean;

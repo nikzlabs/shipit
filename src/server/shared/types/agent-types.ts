@@ -300,6 +300,17 @@ export interface AgentMcpAskBridge {
 }
 
 /**
+ * Resolved paths to the internal bug-report MCP bridge (docs/164). Same shape
+ * and lifecycle as the review/present/voice bridges — the agent calls the
+ * `report_shipit_bug` tool and the bridge forwards the draft to the worker,
+ * which redacts it and posts a consent card.
+ */
+export interface AgentMcpBugBridge {
+  tsxBin: string;
+  bridgePath: string;
+}
+
+/**
  * Per-spawn context the worker passes into `AgentProcess.writeMcpConfig()`.
  *
  * The adapter owns the CLI-specific wire format (Claude: `--mcp-config` JSON
@@ -339,6 +350,12 @@ export interface AgentMcpWriteContext {
    * tool register it (Codex); Claude ignores it.
    */
   askBridge: AgentMcpAskBridge | null;
+  /**
+   * The internal bug-report bridge (docs/164), or `null` when the worker can't
+   * locate the bridge files. Adapters add it as another MCP entry so the agent
+   * CLI can call the `report_shipit_bug` tool.
+   */
+  bugBridge: AgentMcpBugBridge | null;
   /**
    * Surface a server-level failure to the worker so it can broadcast an
    * `mcp_server_status` SSE event. Called when an entry has to be dropped

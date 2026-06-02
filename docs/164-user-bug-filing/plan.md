@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 priority: medium
 description: Let a regular user file a redacted bug report against ShipIt itself from chat — the agent compiles it, the user confirms an inline card, and ShipIt opens a GitHub issue on the upstream repo under the user's own GitHub identity.
 ---

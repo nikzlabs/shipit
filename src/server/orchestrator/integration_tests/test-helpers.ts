@@ -337,6 +337,28 @@ export class StubGitHubAuthManager extends EventEmitter {
     };
   }
 
+  /** Calls to `createIssue`, in order (docs/164). Inspect from tests. */
+  public createIssueCalls: { owner: string; repo: string; title: string; body: string; labels?: string[] }[] = [];
+  private _createIssueResult:
+    | { success: boolean; url?: string; number?: number; message?: string; scopeError?: boolean }
+    | null = null;
+  /** Override what `createIssue` returns (e.g. a scope error). */
+  setCreateIssueResult(
+    result: { success: boolean; url?: string; number?: number; message?: string; scopeError?: boolean } | null,
+  ) {
+    this._createIssueResult = result;
+  }
+  async createIssue(options: { owner: string; repo: string; title: string; body: string; labels?: string[] }) {
+    this.createIssueCalls.push({ ...options });
+    if (this._createIssueResult) return this._createIssueResult;
+    if (!this._authenticated) return { success: false, message: "Not authenticated with GitHub" };
+    return {
+      success: true,
+      url: `https://github.com/${options.owner}/${options.repo}/issues/1234`,
+      number: 1234,
+    };
+  }
+
   async searchRepos(_query: string) {
     return [
       {

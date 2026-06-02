@@ -1102,6 +1102,9 @@ export default function App() {
             sessionTitle={currentSession?.title}
             onRequestRewindPreview={handleRequestRewindPreview}
             onRewindAtGap={handleRewindAtGap}
+            onSubmitBugReport={(cardId, title, body) =>
+              send({ type: "submit_bug_report", cardId, title, body })
+            }
           />
           {/*
             Bottom stack: thinking indicator, rebase banner, queue indicator.

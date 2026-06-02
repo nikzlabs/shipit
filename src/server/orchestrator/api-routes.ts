@@ -30,6 +30,7 @@ import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import type { SessionLoopDetector } from "./loop-detector.js";
 import type { RuntimeMode } from "../shared/types.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
+import type { ModelRunner } from "./services/redaction.js";
 
 import { ServiceError } from "./services/index.js";
 
@@ -50,6 +51,7 @@ import { registerAgentRoutes } from "./api-routes-agent.js";
 import { registerLimitsRoutes } from "./api-routes-limits.js";
 import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
+import { registerBugReportRoutes } from "./api-routes-bug-report.js";
 import type { SecretStore } from "./secret-store.js";
 import type { FileReviewStore } from "./review-store.js";
 import type { AgentReviewStore } from "./agent-review-store.js";
@@ -115,6 +117,14 @@ export interface ApiDeps {
    * test mode (no `LimitsRegistry`); the route then 503s.
    */
   refreshSubscriptionLimits?: (agentId: AgentId, reason: "manual" | "seed") => Promise<void>;
+  /**
+   * docs/164 — override for the bug-report Stage-2 (LLM) redaction pass. When
+   * set, the bug-report route uses it instead of shelling out to the session's
+   * agent CLI. Wired to a no-op (returns `null` → degrade to the Stage-1 floor)
+   * in test mode so integration tests don't invoke a real CLI; omitted in
+   * production so the route derives the per-session CLI runner.
+   */
+  bugReportModelRunner?: ModelRunner;
   getSharedRepoDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
   // Phase 3 additions
@@ -266,6 +276,7 @@ export async function registerApiRoutes(
   await registerUpdateRoutes(app);
   await registerAgentRoutes(app, deps);
   await registerVoiceRoutes(app, deps);
+  await registerBugReportRoutes(app, deps);
   await registerLimitsRoutes(app, deps);
 
   // Marketplace catalogs (docs/149). Wired only when a store is provided so

@@ -1064,9 +1064,56 @@ export interface WsVoiceNote {
   createdAt: string;
 }
 
+/**
+ * docs/164 — the inline bug-report consent card. Emitted via
+ * `runner.emitMessage` (so it buffers into the turn-event log and survives
+ * reconnects) after the agent's `report_shipit_bug` draft is redacted
+ * server-side. Carries the EXACT redacted payload the user will review: the
+ * `title` and the single editable `body`. `stage2Ran: false` flags that the
+ * deep semantic redaction pass didn't complete, so the card warns the user to
+ * review carefully. Nothing is filed until the user confirms.
+ */
+export interface WsBugReportCard {
+  type: "bug_report_card";
+  sessionId: string;
+  /** Stable id — used to update the card in place (filed / failed). */
+  cardId: string;
+  title: string;
+  body: string;
+  /** False → "deep privacy check didn't run, review carefully" flag. */
+  stage2Ran: boolean;
+  /** Which session produced it — shown for transparency. */
+  producer: "session" | "ops";
+  /** GitHub login the issue will be filed as (the user's own identity). */
+  filedAs?: string;
+  createdAt: string;
+}
+
+/** docs/164 — terminal success state for a bug-report card. */
+export interface WsBugReportFiled {
+  type: "bug_report_filed";
+  sessionId: string;
+  cardId: string;
+  number: number;
+  url: string;
+}
+
+/** docs/164 — terminal failure state for a bug-report card. */
+export interface WsBugReportFailed {
+  type: "bug_report_failed";
+  sessionId: string;
+  cardId: string;
+  message: string;
+  /** True when the failure is a GitHub permission/scope error → reconnect prompt. */
+  scopeError?: boolean;
+}
+
 export type WsServerMessage =
   | WsAgentEvent
   | WsVoiceNote
+  | WsBugReportCard
+  | WsBugReportFiled
+  | WsBugReportFailed
   | WsError
   | WsPreviewStatus
   | WsGitLog
