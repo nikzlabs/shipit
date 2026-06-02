@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 057 — Data Manager Placement (ChatHistory, Threads, Usage)
 

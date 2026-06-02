@@ -1,6 +1,3 @@
----
-status: done
----
 # 032 — AI-Generated PR Description
 
 ## Summary

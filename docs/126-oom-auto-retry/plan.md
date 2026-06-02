@@ -1,6 +1,3 @@
----
-status: done
----
 
 # OOM auto-retry — recover from preview OOM kills without Rescue session
 

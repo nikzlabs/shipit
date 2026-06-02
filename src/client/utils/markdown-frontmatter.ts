@@ -1,15 +1,3 @@
-import type { DocPriority, DocStatus } from "../../server/shared/types.js";
-
-const VALID_STATUSES = new Set<DocStatus>([
-  "planned",
-  "in-progress",
-  "done",
-  "paused",
-  "rejected",
-]);
-
-const VALID_PRIORITIES = new Set<DocPriority>(["high", "medium", "low"]);
-
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n?/;
 
 export interface ParsedFrontmatter {
@@ -17,9 +5,12 @@ export interface ParsedFrontmatter {
   body: string;
   /** True iff a frontmatter block was present and stripped. */
   hasFrontmatter: boolean;
-  status?: DocStatus;
-  customStatus?: string;
-  priority?: DocPriority;
+  /**
+   * docs/168 — pointer to the tracking issue (Linear full URL or
+   * `owner/repo#N`), taken verbatim from the `issue:` field. Rendered as a
+   * jump-to-issue link in the doc modal header.
+   */
+  issue?: string;
   description?: string;
   /** Any other `key: value` lines from frontmatter, preserved for display. */
   extras: { key: string; value: string }[];
@@ -41,9 +32,7 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
   const block = match[1];
   const body = content.slice(match[0].length);
 
-  let status: DocStatus | undefined;
-  let customStatus: string | undefined;
-  let priority: DocPriority | undefined;
+  let issue: string | undefined;
   let description: string | undefined;
   const extras: { key: string; value: string }[] = [];
 
@@ -54,13 +43,8 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
     const value = fieldMatch[2].trim();
     if (!value) continue;
 
-    if (key === "status") {
-      const raw = value.toLowerCase();
-      if (VALID_STATUSES.has(raw as DocStatus)) status = raw as DocStatus;
-      else customStatus = raw;
-    } else if (key === "priority") {
-      const raw = value.toLowerCase();
-      if (VALID_PRIORITIES.has(raw as DocPriority)) priority = raw as DocPriority;
+    if (key === "issue") {
+      issue = value;
     } else if (key === "description") {
       description = value;
     } else if (key === "title") {
@@ -71,5 +55,5 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
     }
   }
 
-  return { body, hasFrontmatter: true, status, customStatus, priority, description, extras };
+  return { body, hasFrontmatter: true, issue, description, extras };
 }

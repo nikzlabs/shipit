@@ -43,8 +43,7 @@ describe("MarkdownSelectionComments", () => {
 
     it("renders YAML frontmatter as a styled header and strips it from the body", () => {
       const content = `---
-status: planned
-priority: high
+issue: https://linear.app/shipit-ai/issue/SHI-28/decouple
 description: Align spawned sessions with the user path.
 ---
 
@@ -53,12 +52,16 @@ description: Align spawned sessions with the user path.
 Context body.
 `;
       render(<MarkdownSelectionComments {...makeProps({ content })} />);
-      expect(screen.getByText("Planned")).toBeInTheDocument();
-      expect(screen.getByText("High priority")).toBeInTheDocument();
+      // The issue pointer renders as a jump-to-issue chip linking to the tracker.
+      const chip = screen.getByText("SHI-28");
+      expect(chip.closest("a")).toHaveAttribute(
+        "href",
+        "https://linear.app/shipit-ai/issue/SHI-28/decouple",
+      );
       expect(
         screen.getByText("Align spawned sessions with the user path."),
       ).toBeInTheDocument();
-      expect(screen.queryByText(/status: planned/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/issue: https/)).not.toBeInTheDocument();
     });
 
     it("does NOT render a per-section + button (selection-driven only)", () => {

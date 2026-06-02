@@ -64,23 +64,47 @@ export function siblingTabLabel(path: string): string {
 }
 
 /**
- * Return true if the doc has any `status:` frontmatter — either one of the
- * known enum values (`status`) or an unrecognized one (`customStatus`).
- * Used to decide whether a doc shows up in the Tracked tab and as a sibling
- * suppressor for unstatused files alongside it.
- *
- * The intent: the author wrote a `status:` line, so they meant to track it,
- * even if the value isn't one we recognize. Compare with the closed enum
- * `DocStatus`, which we keep strict so the UI's status buckets stay typed.
+ * Return true if `path` is a feature-directory `plan.md`. The primary row of a
+ * feature directory is always tracked, regardless of frontmatter.
  */
-export function isTracked(entry: Pick<DocEntry, "status" | "customStatus">): boolean {
-  return entry.status !== undefined || entry.customStatus !== undefined;
+export function isPlanPath(path: string): boolean {
+  return basenameOf(path).toLowerCase() === "plan.md";
+}
+
+/**
+ * Return true when a doc is "tracked" — i.e. a primary work doc that belongs in
+ * the Tracked list, as opposed to incidental markdown (a stray `README.md`,
+ * `notes.md`, etc.).
+ *
+ * docs/168 removed `status`/`priority` frontmatter, so tracking can no longer
+ * key off a `status:` line. The replacement is purely structural and needs no
+ * frontmatter: a doc is tracked if it is a feature-directory `plan.md` or
+ * `checklist.md`, carries an `issue:` pointer, or has a `checklist.md` sibling
+ * in the same directory. This keeps the same docs "tracked" as before (every
+ * feature dir has a plan and/or checklist) without depending on the removed
+ * fields.
+ */
+export function isTracked(
+  entry: Pick<DocEntry, "path" | "issue">,
+  entries: DocEntry[],
+): boolean {
+  if (isPlanPath(entry.path)) return true;
+  if (isChecklistPath(entry.path)) return true;
+  if (entry.issue !== undefined) return true;
+  const dir = dirOf(entry.path);
+  if (dir === "") return false;
+  return entries.some(
+    (e) =>
+      e.path !== entry.path &&
+      dirOf(e.path) === dir &&
+      isChecklistPath(e.path),
+  );
 }
 
 /**
  * Return true if `entries` contains a tracked doc in the same directory as
- * `path` other than `path` itself. Used to hide standalone checklist.md
- * entries in the Other tab when their plan sibling exists.
+ * `path` other than `path` itself. Used to hide incidental files (e.g. a stray
+ * `README.md`) in the Other tab when a tracked doc exists alongside them.
  *
  * Files at the repo root (no directory prefix) are never considered siblings —
  * the "feature directory" concept only applies inside a folder like
@@ -91,25 +115,22 @@ export function hasTrackedSibling(path: string, entries: DocEntry[]): boolean {
   const dir = dirOf(path);
   if (dir === "") return false;
   return entries.some(
-    (e) => e.path !== path && isTracked(e) && dirOf(e.path) === dir,
+    (e) => e.path !== path && isTracked(e, entries) && dirOf(e.path) === dir,
   );
 }
 
 /**
- * Return true when `path` is a checklist with a tracked `plan.md` in the same
- * directory. Feature checklists can carry frontmatter for the modal and
- * scanner, but the docs list should still render the tracked plan as the
- * single primary row.
+ * Return true when `path` is a checklist with a `plan.md` in the same
+ * directory. A feature directory renders its `plan.md` as the single primary
+ * row, so the sibling checklist is suppressed from the list (it stays
+ * reachable via the modal's sibling tabs). Structural test — needs no
+ * frontmatter.
  */
 export function hasTrackedPlanSibling(path: string, entries: DocEntry[]): boolean {
   if (!isChecklistPath(path)) return false;
   const dir = dirOf(path);
   if (dir === "") return false;
   return entries.some(
-    (e) =>
-      e.path !== path &&
-      dirOf(e.path) === dir &&
-      basenameOf(e.path).toLowerCase() === "plan.md" &&
-      isTracked(e),
+    (e) => e.path !== path && dirOf(e.path) === dir && isPlanPath(e.path),
   );
 }

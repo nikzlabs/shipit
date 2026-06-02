@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Auto-Deploy on Push
 

@@ -1,7 +1,6 @@
 ---
-status: done
-priority: medium
 description: Reconcile the auto-fix-CI and auto-resolve-conflicts automations onto a shared state machine and agent-injection path, removing divergence and duplication.
+issue: https://linear.app/shipit-ai/issue/SHI-62/pr-automation-reconciliation
 ---
 
 # PR automation reconciliation

@@ -1,7 +1,3 @@
----
-status: done
-priority: high
----
 
 # Session rescue & diagnostics — surfacing silent failures and giving the user a real escape hatch
 

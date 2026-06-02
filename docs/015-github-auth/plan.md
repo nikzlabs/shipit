@@ -1,6 +1,3 @@
----
-status: done
----
 # GitHub Authentication
 
 Status: **Done** — core server-side auth, credential config, repo/PR management, and auto-push are complete. Remaining client UI items (push/pull buttons in GitHistory, header status indicator) are superseded by doc 064 (PR Lifecycle Flow), which replaces the push/PR flow with inline chat cards and removes PrStatusBar. Device authorization flow split out to doc 030.

@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 051 — Docker-Per-Session Containerization
 

@@ -1,5 +1,4 @@
 ---
-status: done
 description: Fix the broken fork-as-new-session path and overhaul rewind/rollback UX into a single coherent "go back" model anchored to the gaps between turns.
 ---
 

@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: Classifier-gated "guarded" permission mode (CLI --permission-mode auto) as a third ShipIt mode alongside auto and plan.
 ---
 

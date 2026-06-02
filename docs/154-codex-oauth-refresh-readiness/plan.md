@@ -1,6 +1,4 @@
 ---
-status: done
-priority: low
 description: Codex shares the same architectural OAuth-refresh vulnerability as Claude (per-session credentials, copied auth.json files, single shared NAT egress). It refreshes less often than Claude, but current Codex issue reports confirm copied auth.json refresh-token invalidation is real enough to justify orchestrator-owned refresh.
 ---
 

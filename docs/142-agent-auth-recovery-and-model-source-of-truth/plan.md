@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Fix three coupled agent failures — a masked Claude 401, a stuck "Agent already running" state under live steering, and new sessions silently switching the user's model/agent.
 ---
 

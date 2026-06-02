@@ -1,6 +1,3 @@
----
-status: done
----
 # File Browser
 
 The Files tab shows the workspace directory structure as an expandable tree with a read-only file content viewer.

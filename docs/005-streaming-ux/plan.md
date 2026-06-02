@@ -1,6 +1,3 @@
----
-status: done
----
 # Streaming UX
 
 Real-time visual feedback while Claude is working, built on three layers.

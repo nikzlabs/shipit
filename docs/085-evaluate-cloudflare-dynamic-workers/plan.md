@@ -1,6 +1,3 @@
----
-status: paused
----
 
 # Evaluate Cloudflare Dynamic Workers for ShipIt
 

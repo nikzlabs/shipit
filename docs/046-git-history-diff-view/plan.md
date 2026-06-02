@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 046 — Git History Diff View
 

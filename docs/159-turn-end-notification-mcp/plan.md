@@ -1,6 +1,4 @@
 ---
-status: done
-priority: low
 description: Recipe for connecting ShipIt agents to a personal external MCP server that delivers a voice-ready end-of-turn summary. Configuration-only on the ShipIt side.
 ---
 

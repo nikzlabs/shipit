@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Replaced marked + dangerouslySetInnerHTML with react-markdown to fix selection loss during streaming and improve docs-viewer rendering.
 ---
 

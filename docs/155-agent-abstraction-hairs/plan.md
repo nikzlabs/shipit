@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 title: Agent abstraction — hairs to clean up and per-agent folder layout
 description: Catalog of agentId-branching hairs across the codebase and a proposed per-agent folder layout so a new backend (Cursor, Gemini, …) drops in as one package instead of edits in twelve files.
 ---

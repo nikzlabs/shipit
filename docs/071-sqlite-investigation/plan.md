@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Storage Investigation: SQLite vs PostgreSQL vs Plain Files (+ Bun vs Node)
 

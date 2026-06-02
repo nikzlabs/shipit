@@ -60,18 +60,20 @@ Notes:
 - [x] Overturn docs/156's rejection of the in-ShipIt issue picker — confirmed by the user; docs/156 non-goals, rejected-alternative entry, and "Push, not pull" section amended to cross-reference this doc
 
 ## Doc side
-- [ ] `markdown.ts`: stop parsing/validating `status` & `priority`
-- [ ] `markdown.ts`: parse `issue:` pointer; keep checklist aggregation
-- [ ] `domain-types.ts`: drop priority/status from doc surface, add `issue`
-- [ ] DocsViewer: remove priority/status UI + sort
-- [ ] DocsViewer: checklist-state grouping (Active / Done-collapsed)
-- [ ] DocsViewer: linked-issue chip (identifier + priority + status) + jump-to-issue
-- [ ] doc-paths.ts: re-base isTracked/hasTrackedSibling/hasTrackedPlanSibling off doc structure, not status (+ update doc-paths.test.ts)
-- [ ] Audit all DocStatus/DocPriority/customStatus importers (markdown-frontmatter.ts, MarkdownSelectionComments.tsx, DocsViewer, markdown.ts, tests) so client compiles
-- [ ] Delete parseStatusFromFrontmatter + customStatus concept (markdown.ts, domain-types.ts)
-- [ ] Migration: parser/type change + field-stripping land together (or strip first) — never leave a half-migrated repo; add `issue:` where applicable
-- [ ] Update `CLAUDE.md` design-docs/frontmatter sections
-- [ ] Update `src/server/shipit-docs/design-docs.md` frontmatter schema
+- [x] Create a Linear issue per open (planned/in-progress) doc, mirroring priority (SHI-29…SHI-61); wire each via `issue:`; doc 168 → SHI-28
+- [x] `markdown.ts`: stop parsing/validating `status` & `priority`
+- [x] `markdown.ts`: parse `issue:` pointer; keep checklist aggregation
+- [x] `domain-types.ts`: drop priority/status from doc surface, add `issue`
+- [x] DocsViewer: remove priority/status UI + sort
+- [x] DocsViewer: checklist-state grouping (Active / Done-collapsed)
+- [x] DocsViewer: linked-issue chip (identifier) + jump-to-issue _(live priority/status on the chip needs the tracker adapters — deferred with the Issues tab)_
+- [x] doc-paths.ts: re-base isTracked/hasTrackedSibling/hasTrackedPlanSibling off doc structure, not status (+ update doc-paths.test.ts)
+- [x] Audit all DocStatus/DocPriority/customStatus importers (markdown-frontmatter.ts, MarkdownSelectionComments.tsx, DocsViewer, markdown.ts, App.tsx, tests) so client compiles
+- [x] Delete parseStatusFromFrontmatter + customStatus concept (markdown.ts, domain-types.ts)
+- [x] Migration: parser/type change + field-stripping land together; add `issue:` where applicable
+- [x] Update `CLAUDE.md` design-docs/frontmatter sections
+- [x] Update `src/server/shipit-docs/design-docs.md` frontmatter schema
+- [x] Add `issue-ref.ts` pointer parser (Linear URL / GitHub `owner/repo#N`)
 
 ## Issues side
 - [ ] `trackers/tracker.ts` interface (`listIssues`, `getIssue`, id/label)
@@ -85,7 +87,11 @@ Notes:
 - [ ] "Start session" row action → reuse `docs/156` session-from-issue seeding
 
 ## Tests
-- [ ] `markdown.test.ts`: new frontmatter parsing (issue:, no status/priority)
+- [x] `markdown.test.ts`: new frontmatter parsing (issue:, no status/priority)
+- [x] `issue-ref.test.ts`: Linear/GitHub pointer parsing
+- [x] `doc-paths.test.ts`: structural tracking (plan/issue/checklist sibling)
+- [x] Client: DocsViewer checklist-state grouping + issue chip
+- [x] Integration: `docs.test.ts` returns `issue` pointer
 - [ ] Tracker adapter unit tests (Linear, GitHub) with fakes
 - [ ] Integration: `GET /api/issues` listing + auth gating
-- [ ] Client: DocsViewer grouping + chip; IssuesViewer rendering
+- [ ] Client: IssuesViewer rendering

@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Dynamic OAuth client registration (RFC 7591) + metadata discovery for hosted MCP servers, so connecting Notion/Linear needs zero operator env-var config.
 ---
 

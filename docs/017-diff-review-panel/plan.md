@@ -1,6 +1,3 @@
----
-status: done
----
 # 017 — Visual Diff Review Panel
 
 ## Summary

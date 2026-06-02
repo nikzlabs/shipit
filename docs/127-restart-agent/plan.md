@@ -1,7 +1,3 @@
----
-status: done
-priority: high
----
 
 # Restart agent — recover the agent container without nuking the compose stack
 

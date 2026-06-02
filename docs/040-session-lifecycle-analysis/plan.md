@@ -1,6 +1,3 @@
----
-status: done
----
 # 040 — Session Workflow & Lifecycle Analysis
 
 ## Overview

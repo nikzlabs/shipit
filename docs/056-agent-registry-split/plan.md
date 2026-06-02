@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 056 — AgentRegistry Placement
 

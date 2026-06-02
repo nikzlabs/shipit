@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Bare cache resilience — no token leak, self-healing recovery
 

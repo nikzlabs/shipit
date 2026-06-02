@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Surface expired GitHub tokens to the UI
 

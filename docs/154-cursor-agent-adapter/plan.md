@@ -1,8 +1,7 @@
 ---
-status: planned
-priority: medium
 title: Cursor agent adapter
 description: Optional pinned installation of third-party agent CLIs, with Cursor Agent as the first new backend using ShipIt's AgentProcess adapter boundary.
+issue: https://linear.app/shipit-ai/issue/SHI-32/cursor-agent-adapter-and-optional-cli-installation
 ---
 
 # Cursor Agent adapter and optional CLI installation

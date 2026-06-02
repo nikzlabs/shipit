@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Make agent-spawned sessions take the same env-prep and agent-start code path as user-spawned sessions, so they get OAuth, MCP, system prompt, settings, model, and PR lifecycle treatment identically.
 ---
 

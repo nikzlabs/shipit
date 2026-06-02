@@ -1,7 +1,3 @@
----
-status: done
-priority: medium
----
 
 # Tracked doc — easily view the checklist
 

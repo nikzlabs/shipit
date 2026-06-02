@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Compose Stack Cleanup
 

@@ -1,7 +1,6 @@
 ---
-status: planned
-priority: high
 description: Trigger ShipIt sessions from the tracker — delegate-to-ShipIt in Linear (P0) or /shipit slash command in GitHub Issues (P1). Agent reports back on the issue thread, one update per PR. Multi-PR per issue is normal.
+issue: https://linear.app/shipit-ai/issue/SHI-43/tracker-triggered-sessions
 ---
 
 # Tracker-triggered sessions

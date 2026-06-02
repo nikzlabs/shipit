@@ -1,6 +1,3 @@
----
-status: done
----
 
 # ESLint strict gaps
 

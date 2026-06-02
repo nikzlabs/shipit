@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 059 — Simplified Repo & Session Flows
 

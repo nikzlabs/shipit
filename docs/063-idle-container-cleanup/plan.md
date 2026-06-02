@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 063: Idle Container Cleanup (`maxIdleContainers`)
 

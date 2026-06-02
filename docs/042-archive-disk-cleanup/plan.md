@@ -1,6 +1,3 @@
----
-status: done
----
 # 042 — Disk Cleanup
 
 ShipIt's host can fill up from several independent sources: BuildKit cache that grows with every image build, dangling tagged images, orphan compose volumes left behind when sessions get archived, archived workspaces that hold `node_modules`/`.next`/build output forever, and unreferenced `repo-cache`/`dep-cache` bare clones. This doc records the implemented cleanup design — three orthogonal surfaces, split so each prune runs where the leak actually happens.

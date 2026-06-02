@@ -1,6 +1,3 @@
----
-status: done
----
 # 095 — Runner Context Simplification
 
 ## Summary

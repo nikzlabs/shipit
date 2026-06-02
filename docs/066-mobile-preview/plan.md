@@ -1,6 +1,3 @@
----
-status: done
----
 # Mobile Preview (Device Viewport Sizing)
 
 Let users preview their app at common mobile and tablet screen sizes directly in the preview pane, without needing browser DevTools.

@@ -5,59 +5,7 @@ import path from "node:path";
 import {
   findMarkdownFiles,
   parseChecklistProgress,
-  parseStatusFromFrontmatter,
 } from "./markdown.js";
-
-describe("parseStatusFromFrontmatter", () => {
-  it("returns undefined when no frontmatter present", () => {
-    expect(parseStatusFromFrontmatter("# My Feature\n\nSome description")).toBeUndefined();
-  });
-
-  it("returns undefined when frontmatter has no status", () => {
-    expect(parseStatusFromFrontmatter("---\ntitle: Foo\n---\n# My Feature")).toBeUndefined();
-  });
-
-  it("parses 'planned' status", () => {
-    expect(parseStatusFromFrontmatter("---\nstatus: planned\n---\n# Feature")).toBe("planned");
-  });
-
-  it("parses 'in-progress' status", () => {
-    expect(parseStatusFromFrontmatter("---\nstatus: in-progress\n---\n# Feature")).toBe("in-progress");
-  });
-
-  it("parses 'done' status", () => {
-    expect(parseStatusFromFrontmatter("---\nstatus: done\n---\n# Feature")).toBe("done");
-  });
-
-  it("parses 'paused' status", () => {
-    expect(parseStatusFromFrontmatter("---\nstatus: paused\n---\n# Feature")).toBe("paused");
-  });
-
-  it("parses 'rejected' status", () => {
-    expect(parseStatusFromFrontmatter("---\nstatus: rejected\n---\n# Feature")).toBe("rejected");
-  });
-
-  it("handles extra whitespace in status value", () => {
-    expect(parseStatusFromFrontmatter("---\nstatus:   in-progress  \n---")).toBe("in-progress");
-  });
-
-  it("handles mixed case status", () => {
-    expect(parseStatusFromFrontmatter("---\nstatus: Done\n---")).toBe("done");
-  });
-
-  it("returns undefined for unknown status values (caller falls back to customStatus via findMarkdownFiles)", () => {
-    // parseStatusFromFrontmatter intentionally returns ONLY the closed-enum
-    // values — unknown values are reported through DocEntry.customStatus,
-    // not through this helper. See the "customStatus" test block in
-    // findMarkdownFiles below.
-    expect(parseStatusFromFrontmatter("---\nstatus: unknown-value\n---")).toBeUndefined();
-  });
-
-  it("handles frontmatter with multiple fields", () => {
-    const content = "---\ntitle: My Feature\nstatus: in-progress\nauthor: test\n---\n# Feature";
-    expect(parseStatusFromFrontmatter(content)).toBe("in-progress");
-  });
-});
 
 describe("findMarkdownFiles", () => {
   let tmpDir: string;
@@ -131,29 +79,29 @@ describe("findMarkdownFiles", () => {
     expect(docs).toEqual([]);
   });
 
-  it("returns DocEntry with status from frontmatter", async () => {
+  it("returns DocEntry with issue pointer from frontmatter", async () => {
     fs.writeFileSync(
       path.join(tmpDir, "feature.md"),
-      "---\nstatus: in-progress\n---\n# My Feature",
+      "---\nissue: https://linear.app/shipit-ai/issue/SHI-28/decouple\n---\n# My Feature",
     );
 
     const docs = await findMarkdownFiles(tmpDir);
     expect(docs).toHaveLength(1);
     expect(docs[0]).toMatchObject({
       path: "feature.md",
-      status: "in-progress",
+      issue: "https://linear.app/shipit-ai/issue/SHI-28/decouple",
       title: "Feature",
     });
   });
 
-  it("returns DocEntry without status for plain docs", async () => {
+  it("returns DocEntry without issue for plain docs", async () => {
     fs.writeFileSync(path.join(tmpDir, "README.md"), "# Hello World");
 
     const docs = await findMarkdownFiles(tmpDir);
     expect(docs).toHaveLength(1);
     expect(docs[0]).toMatchObject({
       path: "README.md",
-      status: undefined,
+      issue: undefined,
       title: "README",
     });
   });
@@ -246,138 +194,67 @@ describe("findMarkdownFiles", () => {
     });
   });
 
-  describe("customStatus", () => {
-    it("captures unrecognized status values as customStatus", async () => {
+  describe("issue frontmatter", () => {
+    it("parses a Linear issue URL pointer", async () => {
+      const url = "https://linear.app/shipit-ai/issue/SHI-29/native-goal-command";
       fs.writeFileSync(
-        path.join(tmpDir, "experimental.md"),
-        "---\nstatus: experimental\n---\n# Experimental",
+        path.join(tmpDir, "feature.md"),
+        `---\nissue: ${url}\n---\n# Feature`,
       );
       const docs = await findMarkdownFiles(tmpDir);
-      expect(docs[0].status).toBeUndefined();
-      expect(docs[0].customStatus).toBe("experimental");
+      expect(docs[0].issue).toBe(url);
     });
 
-    it("normalizes case and whitespace on custom status", async () => {
+    it("parses a GitHub owner/repo#N pointer", async () => {
       fs.writeFileSync(
-        path.join(tmpDir, "blocked.md"),
-        "---\nstatus:   BLOCKED  \n---",
+        path.join(tmpDir, "feature.md"),
+        "---\nissue: octocat/hello-world#42\n---\n# Feature",
       );
       const docs = await findMarkdownFiles(tmpDir);
-      expect(docs[0].customStatus).toBe("blocked");
+      expect(docs[0].issue).toBe("octocat/hello-world#42");
     });
 
-    it("does not set customStatus when status is one of the known enum values", async () => {
+    it("trims surrounding whitespace from the pointer", async () => {
       fs.writeFileSync(
-        path.join(tmpDir, "planned.md"),
-        "---\nstatus: planned\n---",
+        path.join(tmpDir, "feature.md"),
+        "---\nissue:    octocat/hello-world#7   \n---",
       );
       const docs = await findMarkdownFiles(tmpDir);
-      expect(docs[0].status).toBe("planned");
-      expect(docs[0].customStatus).toBeUndefined();
+      expect(docs[0].issue).toBe("octocat/hello-world#7");
     });
 
-    it("leaves both status and customStatus undefined when frontmatter is absent", async () => {
-      fs.writeFileSync(path.join(tmpDir, "plain.md"), "# Just content");
+    it("leaves issue undefined when absent", async () => {
+      fs.writeFileSync(path.join(tmpDir, "feature.md"), "---\ntitle: Foo\n---\n# Feature");
       const docs = await findMarkdownFiles(tmpDir);
-      expect(docs[0].status).toBeUndefined();
-      expect(docs[0].customStatus).toBeUndefined();
+      expect(docs[0].issue).toBeUndefined();
     });
 
-    it("propagates customStatus from a sibling-aware checklist read", async () => {
-      // Read path is different for `checklist.md` (full read vs. 512-byte
-      // sniff), so cover it explicitly.
+    it("leaves issue undefined when the value is empty", async () => {
+      fs.writeFileSync(path.join(tmpDir, "feature.md"), "---\nissue:   \n---\n# Feature");
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs[0].issue).toBeUndefined();
+    });
+
+    it("reads issue from a checklist.md (full-read path)", async () => {
       fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
       fs.writeFileSync(
         path.join(tmpDir, "docs", "001-feature", "checklist.md"),
-        "---\nstatus: blocked\n---\n- [ ] one",
+        "---\nissue: octocat/hello-world#9\n---\n- [ ] one",
       );
       const docs = await findMarkdownFiles(tmpDir);
-      expect(docs[0].customStatus).toBe("blocked");
+      expect(docs[0].issue).toBe("octocat/hello-world#9");
     });
-  });
 
-  describe("priority frontmatter", () => {
-    it("parses priority on planned docs", async () => {
+    it("does not read status/priority frontmatter (decoupled in docs/168)", async () => {
       fs.writeFileSync(
         path.join(tmpDir, "feature.md"),
         "---\nstatus: planned\npriority: high\n---\n# Feature",
       );
       const docs = await findMarkdownFiles(tmpDir);
-      expect(docs[0]).toMatchObject({ status: "planned", priority: "high" });
-    });
-
-    it("parses priority on in-progress docs", async () => {
-      fs.writeFileSync(
-        path.join(tmpDir, "feature.md"),
-        "---\nstatus: in-progress\npriority: medium\n---\n# Feature",
-      );
-      const docs = await findMarkdownFiles(tmpDir);
-      expect(docs[0]).toMatchObject({ status: "in-progress", priority: "medium" });
-    });
-
-    it("parses each valid priority value", async () => {
-      for (const value of ["high", "medium", "low"] as const) {
-        fs.writeFileSync(
-          path.join(tmpDir, `${value}.md`),
-          `---\nstatus: planned\npriority: ${value}\n---`,
-        );
-      }
-      const docs = await findMarkdownFiles(tmpDir);
-      const byPath = Object.fromEntries(docs.map((d) => [d.path, d]));
-      expect(byPath["high.md"].priority).toBe("high");
-      expect(byPath["medium.md"].priority).toBe("medium");
-      expect(byPath["low.md"].priority).toBe("low");
-    });
-
-    it("normalizes case and whitespace in priority value", async () => {
-      fs.writeFileSync(
-        path.join(tmpDir, "feature.md"),
-        "---\nstatus: planned\npriority:   HIGH  \n---",
-      );
-      const docs = await findMarkdownFiles(tmpDir);
-      expect(docs[0].priority).toBe("high");
-    });
-
-    it("ignores invalid priority values", async () => {
-      fs.writeFileSync(
-        path.join(tmpDir, "feature.md"),
-        "---\nstatus: planned\npriority: urgent\n---",
-      );
-      const docs = await findMarkdownFiles(tmpDir);
-      expect(docs[0].status).toBe("planned");
-      expect(docs[0].priority).toBeUndefined();
-    });
-
-    it("drops priority on non-active statuses (paused, done, rejected, custom)", async () => {
-      fs.writeFileSync(
-        path.join(tmpDir, "done.md"),
-        "---\nstatus: done\npriority: high\n---",
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "paused.md"),
-        "---\nstatus: paused\npriority: high\n---",
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "rejected.md"),
-        "---\nstatus: rejected\npriority: high\n---",
-      );
-      fs.writeFileSync(
-        path.join(tmpDir, "custom.md"),
-        "---\nstatus: blocked\npriority: high\n---",
-      );
-      const docs = await findMarkdownFiles(tmpDir);
-      for (const doc of docs) {
-        expect(doc.priority).toBeUndefined();
-      }
-    });
-
-    it("returns undefined priority when frontmatter omits it", async () => {
-      fs.writeFileSync(
-        path.join(tmpDir, "feature.md"),
-        "---\nstatus: planned\n---",
-      );
-      const docs = await findMarkdownFiles(tmpDir);
-      expect(docs[0].priority).toBeUndefined();
+      const doc = docs[0] as unknown as Record<string, unknown>;
+      expect(doc.status).toBeUndefined();
+      expect(doc.priority).toBeUndefined();
+      expect(doc.customStatus).toBeUndefined();
     });
   });
 

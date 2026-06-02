@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 034 — Multi-Agent CLI Support (Codex, Gemini, etc.)
 

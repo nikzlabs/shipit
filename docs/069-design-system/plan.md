@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 069 — Design System: Tokens, Themes & Iconography
 

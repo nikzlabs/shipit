@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Unify Features and Docs
 

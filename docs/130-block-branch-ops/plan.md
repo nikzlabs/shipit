@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 130 — Keep the agent on the session branch (branch-op block hook)
 

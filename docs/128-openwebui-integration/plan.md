@@ -1,5 +1,4 @@
 ---
-status: rejected
 title: Integrate Open WebUI in place of the custom chat / session UI
 ---
 

@@ -1,5 +1,4 @@
 ---
-status: rejected
 description: Feasibility study for rewriting the ShipIt server in Rust to reduce memory footprint and improve runtime guarantees. Rejected — costs are high, the leak classes Rust prevents aren't the ones we'd hit, and the orchestrator is the smallest memory tenant in the system.
 ---
 

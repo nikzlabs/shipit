@@ -47,10 +47,10 @@ describe("isChecklistPath", () => {
 
 describe("siblingsOf", () => {
   const entries: DocEntry[] = [
-    { path: "docs/095-foo/plan.md", title: "Plan", status: "in-progress" },
+    { path: "docs/095-foo/plan.md", title: "Plan" },
     { path: "docs/095-foo/checklist.md", title: "Checklist" },
     { path: "docs/095-foo/readme.md", title: "Readme" },
-    { path: "docs/096-bar/plan.md", title: "Other plan", status: "planned" },
+    { path: "docs/096-bar/plan.md", title: "Other plan" },
     { path: "README.md", title: "Top readme" },
   ];
 
@@ -115,52 +115,66 @@ describe("siblingTabLabel", () => {
 });
 
 describe("isTracked", () => {
-  it("returns true for entries with a known status", () => {
-    expect(isTracked({ status: "planned" })).toBe(true);
-    expect(isTracked({ status: "in-progress" })).toBe(true);
-    expect(isTracked({ status: "done" })).toBe(true);
-    expect(isTracked({ status: "paused" })).toBe(true);
+  const entries: DocEntry[] = [
+    { path: "docs/095-foo/plan.md", title: "Plan" },
+    { path: "docs/095-foo/checklist.md", title: "Checklist" },
+    { path: "docs/095-foo/notes.md", title: "Notes" },
+    { path: "docs/100-issue/spec.md", title: "Spec", issue: "octo/repo#1" },
+    { path: "docs/orphan/notes.md", title: "Notes" },
+  ];
+
+  it("treats a feature-directory plan.md as tracked", () => {
+    expect(isTracked({ path: "docs/095-foo/plan.md" }, entries)).toBe(true);
   });
 
-  it("returns true for entries with a custom status", () => {
-    expect(isTracked({ customStatus: "experimental" })).toBe(true);
-    expect(isTracked({ customStatus: "blocked" })).toBe(true);
+  it("treats a checklist.md as tracked", () => {
+    expect(isTracked({ path: "docs/095-foo/checklist.md" }, entries)).toBe(true);
   });
 
-  it("returns false when neither status nor customStatus is set", () => {
-    expect(isTracked({})).toBe(false);
+  it("treats a doc with an issue pointer as tracked", () => {
+    expect(
+      isTracked({ path: "docs/100-issue/spec.md", issue: "octo/repo#1" }, entries),
+    ).toBe(true);
+  });
+
+  it("treats a doc with a checklist.md sibling as tracked", () => {
+    expect(isTracked({ path: "docs/095-foo/notes.md" }, entries)).toBe(true);
+  });
+
+  it("returns false for an incidental doc with no plan/issue/checklist", () => {
+    expect(isTracked({ path: "docs/orphan/notes.md" }, entries)).toBe(false);
   });
 });
 
 describe("hasTrackedSibling", () => {
   const entries: DocEntry[] = [
-    { path: "docs/095-foo/plan.md", title: "Plan", status: "in-progress" },
+    { path: "docs/095-foo/plan.md", title: "Plan" },
     { path: "docs/095-foo/checklist.md", title: "Checklist" },
-    { path: "docs/orphan/checklist.md", title: "Orphan checklist" },
-    { path: "docs/096-bar/plan.md", title: "Other plan", status: "planned" },
-    { path: "docs/097-experimental/plan.md", title: "X", customStatus: "experimental" },
-    { path: "docs/097-experimental/notes.md", title: "Notes" },
+    { path: "docs/orphan/notes.md", title: "Orphan notes" },
+    { path: "docs/096-bar/plan.md", title: "Other plan" },
+    { path: "docs/097-feature/plan.md", title: "X" },
+    { path: "docs/097-feature/notes.md", title: "Notes" },
   ];
 
   it("returns true for checklist with a tracked plan sibling", () => {
     expect(hasTrackedSibling("docs/095-foo/checklist.md", entries)).toBe(true);
   });
 
-  it("returns false for checklist with no tracked sibling", () => {
-    expect(hasTrackedSibling("docs/orphan/checklist.md", entries)).toBe(false);
+  it("returns false when the only entry in the dir is the path itself", () => {
+    expect(hasTrackedSibling("docs/orphan/notes.md", entries)).toBe(false);
   });
 
   it("ignores the entry itself when checking", () => {
-    expect(hasTrackedSibling("docs/095-foo/plan.md", entries)).toBe(false);
+    expect(hasTrackedSibling("docs/096-bar/plan.md", entries)).toBe(false);
   });
 
-  it("treats a custom-status sibling as tracked", () => {
-    expect(hasTrackedSibling("docs/097-experimental/notes.md", entries)).toBe(true);
+  it("treats a plan.md sibling as tracked", () => {
+    expect(hasTrackedSibling("docs/097-feature/notes.md", entries)).toBe(true);
   });
 
   it("does not treat root-level files as siblings", () => {
     const rootEntries: DocEntry[] = [
-      { path: "a.md", title: "A", status: "in-progress" },
+      { path: "a.md", title: "A", issue: "octo/repo#1" },
       { path: "README.md", title: "Root readme" },
     ];
     expect(hasTrackedSibling("README.md", rootEntries)).toBe(false);
@@ -169,31 +183,25 @@ describe("hasTrackedSibling", () => {
 
 describe("hasTrackedPlanSibling", () => {
   const entries: DocEntry[] = [
-    { path: "docs/095-foo/plan.md", title: "Plan", status: "in-progress" },
-    { path: "docs/095-foo/checklist.md", title: "Checklist", status: "in-progress" },
-    { path: "docs/096-custom/plan.md", title: "Plan", customStatus: "blocked" },
-    { path: "docs/096-custom/checklist.md", title: "Checklist", customStatus: "blocked" },
-    { path: "docs/orphan/checklist.md", title: "Orphan checklist", status: "planned" },
-    { path: "docs/untracked-plan/plan.md", title: "Plan" },
-    { path: "docs/untracked-plan/checklist.md", title: "Checklist", status: "planned" },
+    { path: "docs/095-foo/plan.md", title: "Plan" },
+    { path: "docs/095-foo/checklist.md", title: "Checklist" },
+    { path: "docs/096-bar/plan.md", title: "Plan" },
+    { path: "docs/096-bar/checklist.md", title: "Checklist" },
+    { path: "docs/orphan/checklist.md", title: "Orphan checklist" },
     { path: "README.md", title: "Root readme" },
   ];
 
-  it("returns true for a checklist with a tracked plan sibling", () => {
+  it("returns true for a checklist with a plan sibling", () => {
     expect(hasTrackedPlanSibling("docs/095-foo/checklist.md", entries)).toBe(true);
-  });
-
-  it("treats a custom-status plan as tracked", () => {
-    expect(hasTrackedPlanSibling("docs/096-custom/checklist.md", entries)).toBe(true);
+    expect(hasTrackedPlanSibling("docs/096-bar/checklist.md", entries)).toBe(true);
   });
 
   it("returns false for non-checklist paths", () => {
     expect(hasTrackedPlanSibling("docs/095-foo/plan.md", entries)).toBe(false);
   });
 
-  it("returns false when there is no tracked plan sibling", () => {
+  it("returns false when there is no plan sibling", () => {
     expect(hasTrackedPlanSibling("docs/orphan/checklist.md", entries)).toBe(false);
-    expect(hasTrackedPlanSibling("docs/untracked-plan/checklist.md", entries)).toBe(false);
   });
 
   it("does not treat root-level files as feature siblings", () => {

@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: Declarative x-shipit-depends-on-install gate that holds compose preview services until agent.install finishes, then starts them exactly once.
 ---
 
