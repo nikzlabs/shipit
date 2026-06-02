@@ -97,6 +97,11 @@ below (redaction pipeline, consent card, filing) is identical for both.
 | Browser / environment | Client-supplied, coarse | UA family, viewport — no fingerprinting. |
 | Author identity | GitHub (the user's own account) | The issue is attributed to the filer's real GitHub identity — same as a hand-filed issue. Expected and fine. |
 
+Every gathered field above (except the author identity, which is inherent to filing
+as the user) is assembled into a **single editable issue body** shown in the card —
+not separate non-editable attachments. The server *stamps* the build and *gathers*
+the rest into that draft body; from there it is fully editable. See "Consent UI."
+
 **Never included:** the user's email (beyond what GitHub already exposes for the
 author), their project's repo URL/name, file contents from their workspace,
 secrets, OAuth tokens, or full chat history. The user's *project* is irrelevant to
@@ -166,21 +171,43 @@ session export; we build it now and un-pause `docs/023` partially.
 A new card type, sibling of `PrLifecycleCard`, emitted into the chat:
 
 ```
-┌─ Report a bug to ShipIt ──────────────────────────────┐
-│ Title:  [ editable ]                                  │
-│ Body:   [ editable, pre-filled with redacted draft ]  │
-│                                                       │
-│ Will be sent (redacted):                              │
-│   • ShipIt build a1b2c3d                              │
-│   • Chrome / 1440×900                                 │
-│   • transcript excerpt (3 turns, secrets removed)     │
-│                                                       │
-│ Nothing is sent until you click Submit.               │
-│            [ Cancel ]            [ Submit report ]    │
-└───────────────────────────────────────────────────────┘
+┌─ Report a bug to ShipIt ───────────────────────────────────┐
+│ Title:  [ editable                                       ]  │
+│                                                            │
+│ Body — this is exactly what gets posted. Edit anything:    │
+│ ┌────────────────────────────────────────────────────────┐│
+│ │ <one-line description>                                 ││
+│ │                                                        ││
+│ │ ## What happened                                       ││
+│ │ <redacted transcript excerpt — 3 turns>                ││
+│ │ <ops only: redacted Docker/journal evidence>           ││
+│ │                                                        ││
+│ │ ---                                                    ││
+│ │ ShipIt build a1b2c3d · Chrome / 1440×900               ││
+│ └────────────────────────────────────────────────────────┘│
+│                                                            │
+│ ⚠ deep privacy check didn't run — review carefully  (cond) │
+│ Filed as @you · public on the ShipIt repo                  │
+│ Nothing is sent until you click Submit.                    │
+│            [ Cancel ]              [ Submit report ]       │
+└────────────────────────────────────────────────────────────┘
 ```
 
-- The card shows the **exact** payload (post-redaction). Title/body are editable.
+- **One editable Body = the entire payload (WYSIWYG).** There is no separate
+  "attachments" or "will be sent" block. The redacted description, the transcript
+  excerpt, the ops Docker/journal evidence, and the build/browser footer are *all*
+  pre-filled into the single editable Body field. What is in that box is exactly
+  what gets filed — nothing is sent outside it. This is load-bearing for consent:
+  if the user spots a redaction miss in the excerpt, they delete it right there
+  before submitting. No field is posted that they couldn't see *and* edit.
+- **Deliberate tradeoff: the build/browser footer is editable too**, so a user can
+  alter or remove it. We accept that — control over the exact payload outranks
+  guaranteed triage metadata, and a mangled build string only makes a report less
+  useful, never unsafe. The **author identity** (`@you`) is the one thing *not* in
+  the Body: it's inherent to filing the issue as the user, shown for transparency.
+- The card surfaces the Stage-2 "deep privacy check didn't run" flag when
+  applicable, and states plainly that the issue is **public and attributed to the
+  user**, so review carries real weight.
 - "Submit" is the only path that files the issue. On success the card swaps to a
   "Filed — #1234" state with a secondary "View on GitHub" escape hatch in an
   overflow (principle §2: inline first, link-out is the escape hatch).

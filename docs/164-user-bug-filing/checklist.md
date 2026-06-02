@@ -29,7 +29,8 @@
 - [ ] `report_shipit_bug` tool wired; agent proposes, never files directly
 
 ## Client
-- [ ] `BugReportCard.tsx` — editable title/body, exact redacted payload preview, Submit/Cancel
+- [ ] `BugReportCard.tsx` — editable Title + a single editable Body that IS the entire payload (description + redacted transcript excerpt + ops evidence + build/browser footer all in one field; WYSIWYG, nothing sent outside it); Submit/Cancel
+- [ ] Show author identity (`@you`) as transparency (not in the editable body); show the Stage-2 "deep privacy check didn't run" flag when set; state the issue is public + attributed
 - [ ] Filed state with secondary "View on GitHub" escape hatch (overflow)
 
 ## Tests & docs
