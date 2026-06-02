@@ -819,7 +819,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
 // Regression: spawn-child install-gate deadlock
 // ---------------------------------------------------------------------------
 //
-// Sessions spawned by an agent (`shipit session create -p "..."`) never get a
+// Sessions spawned by an agent (`shipit session create --prompt-file -`) never get a
 // viewer attached at dispatch time, so nothing on the orchestrator side calls
 // `attachViewer()` — the only other caller of `ensureWorkerResourcesStarted()`.
 // `_startAgentViaProxy` used to await `_waitForInstallBeforeAgent()` BEFORE

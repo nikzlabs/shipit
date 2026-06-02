@@ -3,7 +3,7 @@
  * operations for the inner agent (Claude or Codex).
  *
  * Installed at /usr/local/bin/shipit inside the session worker container so
- * the agent's bash tool can run `shipit session create -p "<prompt>"` to
+ * the agent's bash tool can run `shipit session create --prompt-file -` to
  * spawn sibling sessions. The shim does not touch the orchestrator directly;
  * it POSTs to the worker's `/agent-ops/session/*` router on localhost, which
  * brokers through the orchestrator's session-scoped routes.
@@ -22,6 +22,8 @@
  * For documentation: see /shipit-docs/sessions.md inside the container.
  */
 
+import fsp from "node:fs/promises";
+
 const SHIM_NAME = "shipit (ShipIt)";
 
 const REJECTED_HELP = `${SHIM_NAME} only supports a curated subset of session-management operations.
@@ -30,7 +32,7 @@ See /shipit-docs/sessions.md for the full list.`;
 const HELP = `${SHIM_NAME} — agent-driven session management.
 
 Supported subcommands:
-  shipit session create  -p "PROMPT" [--title T]
+  shipit session create  --prompt-file FILE [--title T]
                           [--base REF] [--agent claude|codex] [--model M]
                           [--turn ID] [--shipit-source] [--approximate] [--json]
   shipit session list    [--turn ID] [--json]
@@ -53,6 +55,16 @@ The shim brokers session operations through the ShipIt orchestrator. The
 parent session is always the session this container belongs to — the agent
 cannot spawn sessions under a different parent, or view/manage sessions it
 didn't spawn.
+
+The new session's first user message is passed via \`--prompt-file\` — a file
+path, or \`-\` to read the prompt from stdin. There is no inline \`-p\`/\`--prompt\`
+flag: a prompt on the command line gets mangled when it contains backticks or
+\`$(...)\`, which the shell evaluates before the shim sees them. Use a
+single-quoted heredoc, exactly like \`gh pr create --body-file -\`:
+
+  shipit session create --prompt-file - --title "Port API" <<'EOF'
+  Port the API in /server to TypeScript. Land it as a separate PR.
+  EOF
 
 Use \`shipit session create\` when the user explicitly asked for a separate
 session / parallel branch / independent workspace. For in-turn fan-out
@@ -270,11 +282,42 @@ const REJECTED_SESSION_SUBCOMMANDS = new Set([
  */
 const MAX_WAIT_TIMEOUT_SECS = 60 * 60; // 1 hour
 
+/**
+ * Inline prompt flags the agent might reach for out of muscle memory. We
+ * intentionally do NOT accept them: a prompt passed on the command line gets
+ * mangled the moment it contains backticks or `$(...)`, which the shell
+ * evaluates before the shim ever sees the value. The prompt must come from a
+ * file (or stdin via `--prompt-file -`), exactly like the `gh` shim's
+ * `--body-file`. Detected here so the agent gets a redirect, not a generic
+ * "unsupported flag" error.
+ */
+const INLINE_PROMPT_FLAGS = ["-p", "--prompt", "-m", "--message"];
+
+const INLINE_PROMPT_REDIRECT = `shipit session create: inline prompt flags (-p/--prompt/-m) are not supported.
+Pass the prompt via --prompt-file FILE, or --prompt-file - to read it from stdin,
+so backticks and $(...) in the prompt are not evaluated by the shell. Use a
+single-quoted heredoc, exactly like \`gh pr create --body-file -\`:
+
+  shipit session create --prompt-file - --title "..." <<'EOF'
+  Your prompt here, with \`backticks\` and $(literal) preserved verbatim.
+  EOF`;
+
 async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void> {
+  // Catch inline prompt flags before generic flag parsing so the agent gets a
+  // targeted redirect to --prompt-file instead of a vague "unsupported flag".
+  const usedInline = args.some(
+    (a) =>
+      INLINE_PROMPT_FLAGS.includes(a) ||
+      a.startsWith("--prompt=") ||
+      a.startsWith("--message="),
+  );
+  if (usedInline) {
+    fail(deps.io, INLINE_PROMPT_REDIRECT);
+  }
+
   const parsed = parseFlags(args, {
     values: {
-      "-p": "prompt", "--prompt": "prompt",
-      "-m": "prompt", // alias for symmetry with `gh pr comment -b`
+      "--prompt-file": "promptFile", "-f": "promptFile", "-F": "promptFile",
       "-t": "title", "--title": "title",
       "-B": "base", "--base": "base",
       "--agent": "agent",
@@ -307,17 +350,24 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
     fail(deps.io, "shipit session create: --approximate only applies with --shipit-source.");
   }
 
-  const prompt = parsed.values.prompt;
-  if (!prompt) {
+  const promptFile = parsed.values.promptFile;
+  if (!promptFile) {
     fail(
       deps.io,
-      "shipit session create: -p/--prompt is required (the initial user message for the new session).",
+      "shipit session create: --prompt-file is required (a file, or `-` for stdin, holding the initial user message for the new session).",
+    );
+  }
+  const prompt = await readPromptFile(promptFile, deps);
+  if (prompt.trim().length === 0) {
+    fail(
+      deps.io,
+      "shipit session create: the prompt is empty. --prompt-file must hold the initial user message for the new session.",
     );
   }
   // Defensive client-side validation — the orchestrator also enforces these,
   // but failing fast on the shim side avoids a network round-trip.
   if (prompt.length > 50_000) {
-    fail(deps.io, "shipit session create: --prompt exceeds 50,000 characters.");
+    fail(deps.io, "shipit session create: the prompt exceeds 50,000 characters.");
   }
 
   const payload: Record<string, unknown> = { prompt };
@@ -347,6 +397,31 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
     `status:     ${asString(res.body.status) || "running"}`,
   ];
   success(deps.io, lines.join("\n"));
+}
+
+/**
+ * Read the new session's prompt from a file path, or from stdin when the path
+ * is `-`. Mirrors the `gh` shim's `resolveBody` so the two shims read external
+ * content the same way. Exits non-zero with a helpful message when the file
+ * can't be read.
+ */
+async function readPromptFile(promptFile: string, deps: RunDeps): Promise<string> {
+  try {
+    return promptFile === "-" ? await readStdin() : await fsp.readFile(promptFile, "utf8");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(deps.io, `shipit session create: could not read prompt file ${promptFile}: ${message}`);
+    throw new Error("__shim_exit__"); // unreachable; fail() exits.
+  }
+}
+
+async function readStdin(): Promise<string> {
+  let out = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) {
+    out += typeof chunk === "string" ? chunk : String(chunk);
+  }
+  return out;
 }
 
 async function handleSessionList(args: string[], deps: RunDeps): Promise<void> {
@@ -930,7 +1005,7 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
     fail(
       io,
       `${SHIM_NAME} does not support \`shipit source ${sub}\` — source access is read-only.\n` +
-        "To change ShipIt source, spawn a fix session: shipit session create --shipit-source -p \"...\".\n" +
+        "To change ShipIt source, spawn a fix session: shipit session create --shipit-source --prompt-file - <<'EOF' ... EOF.\n" +
         "See /shipit-docs/sessions.md.",
     );
   }

@@ -14,7 +14,23 @@
  */
 
 import { describe, it, expect } from "vitest";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { runShim, parseFlags, type ShimIO } from "./shipit.js";
+
+/**
+ * Write `content` to a throwaway temp file and return its path. Used to drive
+ * `shipit session create --prompt-file <path>` in tests — the shim reads the
+ * prompt from disk (or stdin), never from an inline flag, so backticks and
+ * `$(...)` in the prompt survive verbatim.
+ */
+async function promptFile(content: string): Promise<string> {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "shipit-shim-"));
+  const p = path.join(dir, "prompt.txt");
+  await fsp.writeFile(p, content, "utf8");
+  return p;
+}
 
 interface RecordedCall {
   method: "GET" | "POST" | "PATCH";
@@ -180,18 +196,20 @@ describe("runShim — allowlist", () => {
 
   it("rejects --repo / --owner on create", async () => {
     const { run } = makeRunner();
-    const repoOut = await run(["session", "create", "-p", "x", "--repo", "other/r"]);
+    const pf = await promptFile("x");
+    const repoOut = await run(["session", "create", "--prompt-file", pf, "--repo", "other/r"]);
     expect(repoOut.exitCode).not.toBe(0);
     expect(repoOut.stderr).toContain("--repo/--owner");
 
-    const ownerOut = await run(["session", "create", "-p", "x", "--owner", "other"]);
+    const ownerOut = await run(["session", "create", "--prompt-file", pf, "--owner", "other"]);
     expect(ownerOut.exitCode).not.toBe(0);
     expect(ownerOut.stderr).toContain("--repo/--owner");
   });
 
   it("rejects unsupported flags on create", async () => {
     const { run } = makeRunner();
-    const out = await run(["session", "create", "-p", "x", "--bogus"]);
+    const pf = await promptFile("x");
+    const out = await run(["session", "create", "--prompt-file", pf, "--bogus"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("Unsupported flag");
   });
@@ -202,26 +220,71 @@ describe("runShim — allowlist", () => {
 // ---------------------------------------------------------------------------
 
 describe("shipit session create", () => {
-  it("requires -p/--prompt", async () => {
+  it("requires --prompt-file", async () => {
     const { run } = makeRunner();
     const out = await run(["session", "create"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("--prompt is required");
+    expect(out.stderr).toContain("--prompt-file is required");
+  });
+
+  it.each([
+    ["-p", ["-p", "hi"]],
+    ["--prompt", ["--prompt", "hi"]],
+    ["--prompt=", ["--prompt=hi"]],
+    ["-m", ["-m", "hi"]],
+    ["--message", ["--message", "hi"]],
+  ])("rejects inline prompt flag %s and redirects to --prompt-file", async (_label, flagArgs) => {
+    const { run } = makeRunner();
+    const out = await run(["session", "create", ...flagArgs]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("inline prompt flags");
+    expect(out.stderr).toContain("--prompt-file");
+    // The redirect must fire before any broker call.
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("rejects an empty prompt file", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("   \n");
+    const out = await run(["session", "create", "--prompt-file", pf]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("prompt is empty");
+  });
+
+  it("errors clearly when the prompt file does not exist", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "create", "--prompt-file", "/no/such/prompt.txt"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("could not read prompt file");
+  });
+
+  it("reads the prompt from --prompt-file without shell-interpreting backticks", async () => {
+    const { run } = makeRunner();
+    const prompt = "Refactor `parseFlags` and call $(whoami) out — literally.\n";
+    const pf = await promptFile(prompt);
+    const out = await run(
+      ["session", "create", "--prompt-file", pf],
+      { "POST /agent-ops/session/create": { status: 200, body: { sessionId: "s", branch: "b", status: "running" } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ prompt });
   });
 
   it("rejects a >50,000-char prompt before hitting the broker", async () => {
     const { run } = makeRunner();
-    const out = await run(["session", "create", "-p", "x".repeat(50_001)]);
+    const pf = await promptFile("x".repeat(50_001));
+    const out = await run(["session", "create", "--prompt-file", pf]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("exceeds 50,000");
   });
 
   it("posts to /agent-ops/session/create and prints the stable text block", async () => {
     const { run } = makeRunner();
+    const pf = await promptFile("Port API to TS");
     const out = await run(
       [
         "session", "create",
-        "-p", "Port API to TS",
+        "--prompt-file", pf,
         "--title", "Port API",
         "--turn", "turn-123",
       ],
@@ -264,9 +327,10 @@ describe("shipit session create", () => {
 
   it("rejects --branch as an unsupported flag", async () => {
     const { run } = makeRunner();
+    const pf = await promptFile("x");
     const out = await run([
       "session", "create",
-      "-p", "x",
+      "--prompt-file", pf,
       "--branch", "port-api-ts",
     ]);
     expect(out.exitCode).not.toBe(0);
@@ -275,10 +339,11 @@ describe("shipit session create", () => {
 
   it("forwards --agent, --model, --base when supplied", async () => {
     const { run } = makeRunner();
+    const pf = await promptFile("x");
     const out = await run(
       [
         "session", "create",
-        "-p", "x",
+        "--prompt-file", pf,
         "--agent", "codex",
         "--model", "claude-sonnet-4-20250514",
         "--base", "origin/main",
@@ -297,8 +362,9 @@ describe("shipit session create", () => {
 
   it("--json prints the full broker response on stdout", async () => {
     const { run } = makeRunner();
+    const pf = await promptFile("x");
     const out = await run(
-      ["session", "create", "-p", "x", "--json"],
+      ["session", "create", "--prompt-file", pf, "--json"],
       {
         "POST /agent-ops/session/create": {
           status: 200,
@@ -313,8 +379,9 @@ describe("shipit session create", () => {
 
   it("surfaces a quota 429 with a docs pointer", async () => {
     const { run } = makeRunner();
+    const pf = await promptFile("x");
     const out = await run(
-      ["session", "create", "-p", "x"],
+      ["session", "create", "--prompt-file", pf],
       {
         "POST /agent-ops/session/create": {
           status: 429,
@@ -329,8 +396,9 @@ describe("shipit session create", () => {
 
   it("propagates a 400 error verbatim", async () => {
     const { run } = makeRunner();
+    const pf = await promptFile("x");
     const out = await run(
-      ["session", "create", "-p", "x"],
+      ["session", "create", "--prompt-file", pf],
       {
         "POST /agent-ops/session/create": { status: 400, body: { error: "Invalid branch name" } },
       },
@@ -926,8 +994,9 @@ describe("shipit source", () => {
 describe("shipit session create --shipit-source (docs/162)", () => {
   it("forwards shipitSource and approximateSource in the payload", async () => {
     const { run } = makeRunner();
+    const pf = await promptFile("Fix the lifecycle loop");
     const out = await run(
-      ["session", "create", "-p", "Fix the lifecycle loop", "--shipit-source", "--approximate"],
+      ["session", "create", "--prompt-file", pf, "--shipit-source", "--approximate"],
       {
         "POST /agent-ops/session/create": {
           status: 200, body: { sessionId: "ses_fix", branch: "shipit/x", status: "running" },
@@ -944,7 +1013,8 @@ describe("shipit session create --shipit-source (docs/162)", () => {
 
   it("rejects --approximate without --shipit-source", async () => {
     const { run } = makeRunner();
-    const out = await run(["session", "create", "-p", "x", "--approximate"]);
+    const pf = await promptFile("x");
+    const out = await run(["session", "create", "--prompt-file", pf, "--approximate"]);
     expect(out.stderr).toContain("--approximate only applies with --shipit-source");
     expect(out.exitCode).not.toBe(0);
   });
