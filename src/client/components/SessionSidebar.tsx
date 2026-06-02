@@ -833,6 +833,7 @@ export function SessionSidebar({
   // cause mis-clicks. Instead:
   //   - Non-merged sessions sort by `createdAt` desc (newest first) — never changes.
   //   - Merged sessions sink to the bottom, sorted by `mergedAt` desc (most recently merged first).
+  //   - Archived sessions sink below everything (live > merged), within their parent's brood too.
   // Repo order is whatever the server returns — `display_order` first, then
   // `last_used_at` desc for repos the user has never reordered. We deliberately
   // do NOT re-sort here: it would override the user's drag-and-drop choice and
@@ -859,12 +860,22 @@ export function SessionSidebar({
       grouped.get(key)!.push(s);
     }
 
-    // Sort sessions within each group: active first (by createdAt desc), then
-    // recently-merged (by mergedAt desc, falling back to createdAt desc). docs/161 —
-    // "active" includes a *reopened* merged session (worked in since the merge), so
-    // it bubbles back up out of the merged tail; only `isRecentlyMerged` sinks.
+    // Sort sessions within each group: archived sink to the very bottom, then
+    // active first (by createdAt desc), then recently-merged (by mergedAt desc,
+    // falling back to createdAt desc). docs/161 — "active" includes a *reopened*
+    // merged session (worked in since the merge), so it bubbles back up out of
+    // the merged tail; only `isRecentlyMerged` sinks.
+    //
+    // `archived` is the PRIMARY key so a hidden/archived session never sits
+    // above a live one. Because children are bucketed under their parent in this
+    // same sorted order (see the `childrenByParent` build in RepoGroup), making
+    // archived primary also sinks archived children below live siblings within a
+    // parent's brood.
     for (const [, group] of grouped) {
       group.sort((a, b) => {
+        const aArchived = a.archived || a.userArchived ? 1 : 0;
+        const bArchived = b.archived || b.userArchived ? 1 : 0;
+        if (aArchived !== bArchived) return aArchived - bArchived;
         const aMerged = isRecentlyMerged(a) ? 1 : 0;
         const bMerged = isRecentlyMerged(b) ? 1 : 0;
         if (aMerged !== bMerged) return aMerged - bMerged;

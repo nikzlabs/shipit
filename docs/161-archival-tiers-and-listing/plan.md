@@ -147,6 +147,17 @@ Grouping in the sidebar:
   **All Sessions** dialog (`AllSessionsDialog.tsx`, `/api/sessions/all` →
   `listAll()`), which already shows every non-warm session.
 
+Within-group ordering (`SessionSidebar.tsx` `repoGroups` comparator): the
+per-repo sort uses `archived || userArchived` as the **primary** key so an
+archived row never sits above a live one — live > merged > archived. Because the
+parent/child renderer (`childrenByParent` in `RepoGroup`) buckets a parent's
+children in this same sorted order, the archived-primary key also sinks archived
+children below their live siblings *within a parent's brood*. (The Active vs
+Recently-merged visual split is rendered as two separate blocks, so a — rare —
+archived-but-unmerged session still sinks to the bottom of the Active block
+rather than below the Recently-merged block; archived sidebar rows are in
+practice also merged, so they share and sink within the Recently-merged group.)
+
 What changes in code:
 
 - `SessionManager.list()` stops filtering on `archived`; it returns sessions
