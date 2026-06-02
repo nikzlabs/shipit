@@ -92,7 +92,7 @@ below (redaction pipeline, consent card, filing) is identical for both.
 | Field | Source | Notes |
 |---|---|---|
 | Title + description | Agent, from the conversation | The user's own words, summarized. |
-| What happened / repro | Agent, from the redacted transcript excerpt | Recent turns around the failure, scrubbed. |
+| What happened / repro | Agent — it authors the body and chooses what's relevant | No separate excerpt-extraction step; whatever the agent includes is then redacted. |
 | ShipIt platform version / build | **Orchestrator, server-side** | The user can't know the platform commit; the server stamps it. Not from the session container. |
 | Browser / environment | Client-supplied, coarse | UA family, viewport — no fingerprinting. |
 | Author identity | GitHub (the user's own account) | The issue is attributed to the filer's real GitHub identity — same as a hand-filed issue. Expected and fine. |
@@ -137,7 +137,13 @@ floor**: whatever happens next, known-shape secrets are already gone.
 **Stage 2 — LLM redaction pass (last step, best-effort).** Heuristics miss the
 unstructured stuff: a person's name, an internal hostname, a customer's data quoted
 in prose, a secret in a novel format. After Stage 1, send the *already-scrubbed*
-text to the model for a semantic privacy pass. Hard constraints:
+body to the model for a semantic privacy pass, using a **mid-tier (Sonnet-class)
+model** of the session's provider (`claude-sonnet-4-6` for Claude; the provider's
+mid-tier equivalent for Codex) — worth the small extra cost for a safety-critical
+pass that's filed publicly under the user's name. The input is just the
+agent-authored body (the agent already chooses what's relevant when it composes the
+report — there is no separate excerpt-extraction step), with a sanity token ceiling
+as a guard against a pathologically large body. Hard constraints:
 
 - **Span-based, code-applied.** The model returns the **substrings/spans it judges
   sensitive**; our code applies the `[REDACTED]` replacement. The model never
@@ -294,9 +300,6 @@ detection, issue locking, and the maintainers' ability to block an account.
 - **Sending the full session or chat history** — only a redacted, scoped excerpt.
 
 ## Open questions
-
-- **Stage-2 model + token budget.** A small/fast model is fine for span detection;
-  pick one and cap the excerpt size sent. (See Q2.)
 - How "ShipIt build/version" is exposed to the orchestrator in a non-dogfood
   deployment.
 - Exact upstream repo + label convention for incoming user reports.
