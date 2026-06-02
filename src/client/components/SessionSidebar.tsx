@@ -471,17 +471,21 @@ function OpsSessionGroup({
           </span>
         </button>
       </div>
-      {!isCollapsed && sessions.map((session) => (
-        <SessionItem
-          key={session.id}
-          session={session}
-          isCurrent={session.id === currentSessionId}
-          onResume={onResume}
-          onSelectCurrent={onSelectCurrent}
-          onArchive={onArchive}
-          isTouch={isTouch}
-        />
-      ))}
+      {!isCollapsed && (
+        <div className="flex flex-col gap-0.5">
+          {sessions.map((session) => (
+            <SessionItem
+              key={session.id}
+              session={session}
+              isCurrent={session.id === currentSessionId}
+              onResume={onResume}
+              onSelectCurrent={onSelectCurrent}
+              onArchive={onArchive}
+              isTouch={isTouch}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -515,17 +519,19 @@ function OrphanSessionGroup({
           {label}
         </span>
       </div>
-      {sessions.map((session) => (
-        <SessionItem
-          key={session.id}
-          session={session}
-          isCurrent={session.id === currentSessionId}
-          onResume={onResume}
-          onSelectCurrent={onSelectCurrent}
-          onArchive={onArchive}
-          isTouch={isTouch}
-        />
-      ))}
+      <div className="flex flex-col gap-0.5">
+        {sessions.map((session) => (
+          <SessionItem
+            key={session.id}
+            session={session}
+            isCurrent={session.id === currentSessionId}
+            onResume={onResume}
+            onSelectCurrent={onSelectCurrent}
+            onArchive={onArchive}
+            isTouch={isTouch}
+          />
+        ))}
+      </div>
     </div>
   );
 }
