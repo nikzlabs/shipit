@@ -74,11 +74,18 @@ ShipIt" intent in conversation (e.g. "this is broken", "ShipIt keeps doing X",
 This keeps the agent in the loop and the chat history complete (principle
 corollary: "saves an LLM round-trip is not a feature").
 
-The most important non-trivial producer is an **ops session** (`docs/128`) whose
-`--shipit-source` fix-spawn was denied for lack of push access to the ShipIt repo.
-That no-write branch should route *here* — compiling the diagnosis into a redacted
-issue — rather than dead-ending as a written incident report. Same `report_shipit_bug`
-draft → redact → confirm → file path; the ops session just supplies a richer body.
+### Producers: regular sessions *and* ops sessions
+
+Both are first-class. They share one path (`report_shipit_bug` → redact → confirm →
+file) and differ only in the evidence the agent can attach:
+
+| Producer | Typical trigger | Evidence available | Credential |
+|---|---|---|---|
+| **Regular session** (default, common case) | A user building their own project hits a ShipIt bug ("the preview won't reload", "ShipIt keeps killing my container"). | Redacted transcript excerpt + server-stamped platform version + coarse browser/env. **No** Docker/journal — a normal session has no ops privileges. | The user's own GitHub auth (same token they use for their project PRs). |
+| **Ops session** (`docs/128`, privileged) | An ops session diagnosed a host bug but its `--shipit-source` fix-spawn was denied for lack of push access to the ShipIt repo. | Everything above **plus** read-only Docker/journal evidence. That no-write branch routes *here* instead of dead-ending as a written incident report. | Same — the user's own GitHub auth. |
+
+The ops session is the *richer* producer, not a separate mechanism. Everything
+below (redaction pipeline, consent card, filing) is identical for both.
 
 ### What the report contains
 
@@ -97,31 +104,62 @@ a ShipIt bug; only the redacted *interaction with ShipIt* matters. Because the
 issue is **public and carries the user's name**, redaction is the load-bearing
 safety mechanism here.
 
-### Redaction engine (fulfills part of `docs/023`)
+### Redaction pipeline (fulfills part of `docs/023`)
 
-Build a shared `redact(text)` utility. The dangerous field is the agent-composed
-**transcript excerpt** — free text that can quote a token, an email, or workspace
-file contents inline — so this must be genuine **content scrubbing**, not file-path
-matching:
+The dangerous field is the agent-composed **transcript excerpt** (plus, for ops
+sessions, the Docker/journal evidence) — free text that can quote a token, an
+email, workspace file contents, an internal hostname, or a third party's data
+inline. Redaction runs server-side, **before** the payload is ever shown in the
+card, as a two-stage pipeline. The two stages are complementary: the first is a
+deterministic floor, the second is a semantic net for what the first can't see.
 
-- **Content scrubbers (the core).** Scan the text for secret/PII *substrings* and
-  replace with `[REDACTED]`: the patterns from `docs/023` (`sk-…`, `ghp_…`,
-  `Bearer …`, generic long-token heuristics), **email addresses**, and
-  **git/remote URLs** (reuse `stripUrlCredentials` from `git-utils.ts` to strip
-  embedded creds, then drop host/path). This is what makes the public, attributed
-  issue safe; it is the load-bearing part.
-- **Path exclusion (secondary, distinct mechanism).** `REDACTED_PATTERNS` /
-  `isRedactedSourcePath` in `shipit-source.ts` match file *paths* (`.env`, keys,
-  `.git`, …) — they decide whether a whole file may be referenced, and do **not**
-  scrub substrings. Reuse them only to *exclude* sensitive paths from the excerpt
-  and to redact absolute paths under the user's workspace dir; do **not** mistake
-  them for content redaction (lifting them alone yields a no-op redactor).
+**Stage 1 — heuristic content scrubbing (deterministic floor).** Scan the text for
+secret/PII *substrings* and replace with `[REDACTED]`:
 
-New module: `src/server/orchestrator/services/redaction.ts` + `redaction.test.ts`,
-with a test that proves an inline `ghp_…` / email / workspace path in free text is
-scrubbed (not just that a sensitive *filename* is excluded). This is the reusable
-core `docs/023` will later consume for full session export; we build it now, scoped
-to the bug-report payload, and un-pause `docs/023` partially.
+- The patterns from `docs/023` (`sk-…`, `ghp_…`, `Bearer …`, generic long-token
+  heuristics), **email addresses**, and **git/remote URLs** (reuse
+  `stripUrlCredentials` from `git-utils.ts` to strip embedded creds, then drop
+  host/path).
+- Note `REDACTED_PATTERNS` / `isRedactedSourcePath` in `shipit-source.ts` match
+  file *paths*, not content — they decide whether a whole file may be referenced.
+  Reuse them only to *exclude* sensitive paths from the excerpt and to redact
+  absolute workspace paths; do **not** mistake them for content redaction (lifting
+  them alone yields a no-op redactor).
+
+This stage is fully deterministic and unit-testable, and it is the **guaranteed
+floor**: whatever happens next, known-shape secrets are already gone.
+
+**Stage 2 — LLM redaction pass (last step, best-effort).** Heuristics miss the
+unstructured stuff: a person's name, an internal hostname, a customer's data quoted
+in prose, a secret in a novel format. After Stage 1, send the *already-scrubbed*
+text to the model for a semantic privacy pass. Hard constraints:
+
+- **Span-based, code-applied.** The model returns the **substrings/spans it judges
+  sensitive**; our code applies the `[REDACTED]` replacement. The model never
+  returns rewritten text. We verify its output describes deletions only — no
+  additions, no rewrites — so it cannot inject content into a payload filed under
+  the user's name.
+- **Fail safe.** If the call errors or times out, we do **not** silently ship as
+  though it ran. Stage 1's output stands as the floor, and the card is flagged
+  ("deep privacy check didn't complete — review carefully") so the human knows the
+  semantic net didn't run.
+- **No new trust boundary.** The session transcript already passed through the same
+  model provider during the session (the agent *is* Claude), so re-sending the
+  scrubbed text for redaction exposes it to no new third party — *provided the pass
+  runs on that same backend/credential*. Where the call runs (reuse the session
+  agent backend via a constrained structured prompt, vs. a dedicated
+  orchestrator-side model call) is an implementation detail; the constraint is that
+  it stays on the provider that already saw the data. See Open questions.
+- **Not a substitute for consent.** Two redaction layers shrink what the user must
+  catch; they do not replace the user confirming the exact payload in the card. We
+  never present "LLM-redacted" as "safe to ignore."
+
+New module: `src/server/orchestrator/services/redaction.ts` + `redaction.test.ts`
+(Stage 1 deterministic; Stage 2 with a stubbed model). A test proves an inline
+`ghp_…` / email / workspace path in free text is scrubbed by Stage 1, and that a
+Stage-2 failure degrades to the Stage-1 floor with the card flag set rather than
+leaking. Stage 1 is the reusable core `docs/023` will later consume for full
+session export; we build it now and un-pause `docs/023` partially.
 
 ### Consent UI — inline bug-report review card
 
@@ -152,7 +190,8 @@ A new card type, sibling of `PrLifecycleCard`, emitted into the chat:
 
 ```
 agent → report_shipit_bug (draft)
-      → server: redact() → emit bug_report_card (no issue yet)
+      → server: redact() = Stage 1 heuristics → Stage 2 LLM pass (fail-safe to Stage 1)
+              → emit bug_report_card (exact redacted payload; flag if Stage 2 didn't run)
 user  → submit_bug_report (edited title/body + confirm)
       → server: GitHubAuthManager.createIssue(UPSTREAM_REPO, report)  [user's own token]
               → emit bug_report_filed (issue ref) | bug_report_failed (error)
@@ -222,6 +261,21 @@ detection, issue locking, and the maintainers' ability to block an account.
 - **Dedup / similarity-collapse / LLM triage gate** — deferred; revisit if report
   volume warrants it. Not a v1 concern.
 - **Sending the full session or chat history** — only a redacted, scoped excerpt.
+
+## Open questions
+
+- **Where the Stage-2 LLM redaction call runs.** Two options: (a) reuse the session
+  agent backend via a constrained structured prompt (the agent already runs in the
+  container with the provider credential), or (b) a dedicated orchestrator-side
+  model call. The binding constraint is that it stays on the provider that already
+  processed the session, so it introduces no new trust boundary. (a) is simplest if
+  the orchestrator can't make model calls directly; (b) makes it a guaranteed
+  pipeline stage rather than depending on agent diligence. Decide at implementation.
+- **Stage-2 model + token budget.** A small/fast model is fine for span detection;
+  pick one and cap the excerpt size sent.
+- How "ShipIt build/version" is exposed to the orchestrator in a non-dogfood
+  deployment.
+- Exact upstream repo + label convention for incoming user reports.
 
 ## Key files
 
