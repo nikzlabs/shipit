@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 065 — Terminal Improvements
 

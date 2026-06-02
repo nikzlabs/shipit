@@ -1,51 +1,22 @@
 import { useMemo, useRef, useState } from "react";
-import { CaretDownIcon, CaretRightIcon, MagnifyingGlassIcon, XIcon } from "@phosphor-icons/react";
+import {
+  ArrowSquareOutIcon,
+  CaretDownIcon,
+  CaretRightIcon,
+  MagnifyingGlassIcon,
+  XIcon,
+} from "@phosphor-icons/react";
 import { Badge } from "./ui/badge.js";
-import type { BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
-import type { DocEntry, DocPriority, DocStatus } from "../../server/shared/types.js";
+import type { DocEntry } from "../../server/shared/types.js";
 import { hasTrackedPlanSibling, hasTrackedSibling, isTracked } from "../utils/doc-paths.js";
+import { parseIssueRef } from "../utils/issue-ref.js";
 
 export interface DocsViewerProps {
   files: DocEntry[];
   onFileClick: (path: string) => void;
   onRefresh: () => void;
-}
-
-const STATUS_CONFIG: Record<DocStatus, { label: string; variant: BadgeProps["variant"]; order: number }> = {
-  "in-progress": { label: "In Progress", variant: "warning", order: 0 },
-  "planned": { label: "Planned", variant: "info", order: 1 },
-  "paused": { label: "Paused", variant: "default", order: 2 },
-  "done": { label: "Done", variant: "success", order: 4 },
-  "rejected": { label: "Rejected", variant: "error", order: 5 },
-};
-
-/** Sort order for docs that carry a `customStatus` (unrecognized status:
- * value). Sits between Paused (2) and Done (4) so author-tagged-but-unknown
- * docs stay visible above completed work. */
-const CUSTOM_STATUS_ORDER = 3;
-
-/**
- * Statuses that are "archived" — terminal states the user generally doesn't
- * want cluttering the active work list. We collapse them under a single
- * "Archived" group below the active items. Custom-status docs are NOT
- * archived: an unknown status is by definition "I don't know what this
- * means", so we keep it visible alongside active work.
- */
-function isArchivedStatus(status: DocStatus | undefined): boolean {
-  return status === "done" || status === "rejected";
-}
-
-const PRIORITY_CONFIG: Record<DocPriority, { label: string; variant: BadgeProps["variant"]; order: number }> = {
-  high: { label: "High", variant: "error", order: 0 },
-  medium: { label: "Med", variant: "warning", order: 1 },
-  low: { label: "Low", variant: "default", order: 2 },
-};
-
-/** Sort key for priority. Unset priorities sort after all set priorities. */
-function priorityOrder(priority: DocPriority | undefined): number {
-  return priority ? PRIORITY_CONFIG[priority].order : 99;
 }
 
 /**
@@ -56,41 +27,19 @@ function priorityOrder(priority: DocPriority | undefined): number {
  */
 const DOC_BADGE_CLASS = "h-[18px] text-[11px]";
 
-function StatusBadge({ status }: { status: DocStatus }) {
-  const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.planned;
+/** A checklist is "complete" when it has items and all of them are checked. */
+function isChecklistComplete(doc: DocEntry): boolean {
   return (
-    <Badge variant={config.variant} className={DOC_BADGE_CLASS}>
-      {config.label}
-    </Badge>
-  );
-}
-
-/**
- * Renders the raw, unrecognized `customStatus` value (e.g. "experimental",
- * "blocked") with a neutral badge. The doc is still tracked — see
- * `isTracked()` — but doesn't fall into one of our four typed buckets.
- */
-function CustomStatusBadge({ customStatus }: { customStatus: string }) {
-  return (
-    <Badge variant="default" className={DOC_BADGE_CLASS}>
-      {customStatus}
-    </Badge>
-  );
-}
-
-function PriorityBadge({ priority }: { priority: DocPriority }) {
-  const config = PRIORITY_CONFIG[priority];
-  return (
-    <Badge variant={config.variant} className={DOC_BADGE_CLASS}>
-      {config.label}
-    </Badge>
+    doc.checklist !== undefined &&
+    doc.checklist.total > 0 &&
+    doc.checklist.done === doc.checklist.total
   );
 }
 
 /**
  * Renders `done/total` from a sibling `checklist.md`. Uses the `success`
- * variant once everything is checked so a fully-complete plan stands out
- * even before the author flips `status: done` in frontmatter.
+ * variant once everything is checked so a fully-complete plan stands out at a
+ * glance — the checklist is now the docs list's grouping key (docs/168).
  */
 function ChecklistProgressBadge({
   progress,
@@ -110,67 +59,47 @@ function ChecklistProgressBadge({
 }
 
 /**
- * Per-status fill color for the fused progress pill. Mirrors the badge variant
- * each status uses (warning/info/success/error) so the pill is recognizable
- * as that status at a glance. `paused` has no semantic color — we use
- * `border-secondary` so the fill is still visible against the `bg-tertiary`
- * track in both themes.
+ * Jump-to-issue chip for a doc's `issue:` pointer (docs/168). Priority and
+ * work-status now live in the tracker, so the docs list links out to it rather
+ * than rendering a status badge. The chip stops row-click propagation so
+ * clicking it opens the tracker instead of the doc modal.
  */
-const STATUS_FILL_VAR: Record<DocStatus, string> = {
-  "in-progress": "--color-warning-subtle",
-  "planned": "--color-info-subtle",
-  "paused": "--color-border-secondary",
-  "done": "--color-success-subtle",
-  "rejected": "--color-error-subtle",
-};
-
-/**
- * Fuses status and `done/total` checklist count into a single pill whose
- * background doubles as a progress bar: a status-tinted fill spans `done/total`
- * of the pill width, the rest is the neutral `bg-tertiary` track. The fill
- * color *is* the status signal, so we drop the separate status label. Text
- * stays neutral (`text-secondary`) because it sits over both the fill and the
- * track and must read on either. Used for any typed-status doc that has a
- * checklist; custom-status docs keep their separate label since the raw
- * string conveys information we can't fold into a color.
- */
-function ProgressStatusBadge({
-  status,
-  progress,
-}: {
-  status: DocStatus;
-  progress: { total: number; done: number };
-}) {
-  const pct =
-    progress.total > 0
-      ? Math.round((progress.done / progress.total) * 100)
-      : 0;
-  const label = STATUS_CONFIG[status].label;
+function IssueChip({ issue }: { issue: string }) {
+  const ref = parseIssueRef(issue);
+  if (!ref.url) {
+    return (
+      <Badge variant="default" className={DOC_BADGE_CLASS}>
+        {ref.identifier}
+      </Badge>
+    );
+  }
   return (
-    <span
-      className={`${DOC_BADGE_CLASS} relative inline-flex w-20 shrink-0 items-center justify-center overflow-hidden rounded-full border border-(--color-border-secondary)/50 px-2 font-medium tabular-nums bg-(--color-bg-tertiary) text-(--color-text-secondary)`}
-      title={`${label} — ${progress.done} of ${progress.total} checklist items complete`}
+    <a
+      href={ref.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      title={`Open ${ref.identifier} in ${ref.tracker === "unknown" ? "the tracker" : ref.tracker}`}
+      className="inline-flex"
     >
-      <span
-        aria-hidden
-        className="absolute inset-y-0 left-0"
-        style={{ width: `${pct}%`, backgroundColor: `var(${STATUS_FILL_VAR[status]})` }}
-      />
-      <span className="relative">
-        {progress.done}/{progress.total}
-      </span>
-    </span>
+      <Badge
+        variant="info"
+        className={`${DOC_BADGE_CLASS} inline-flex items-center gap-1 hover:brightness-110`}
+      >
+        {ref.identifier}
+        <ArrowSquareOutIcon size={ICON_SIZE.XS} />
+      </Badge>
+    </a>
   );
 }
 
 /**
- * The trailing badge cluster for a doc row. Any typed-status doc that carries
- * checklist progress collapses its count and status into a single
- * {@link ProgressStatusBadge}; everything else renders count and status as
- * separate badges. `compact` (archived rows) omits priority and custom-status
- * badges, matching the reduced cluster those rows showed before.
+ * The trailing badge cluster for a doc row: checklist progress (when present)
+ * and a jump-to-issue chip (when the doc carries an `issue:` pointer).
+ * `compact` (the collapsed Done group) drops the issue chip to keep those
+ * rows quiet.
  */
-function DocStatusBadges({
+function DocBadges({
   doc,
   compact = false,
 }: {
@@ -179,28 +108,10 @@ function DocStatusBadges({
 }) {
   const checklist =
     doc.checklist && doc.checklist.total > 0 ? doc.checklist : null;
-
-  if (doc.status && checklist) {
-    return (
-      <>
-        {!compact && doc.priority && (
-          <PriorityBadge priority={doc.priority} />
-        )}
-        <ProgressStatusBadge status={doc.status} progress={checklist} />
-      </>
-    );
-  }
-
   return (
     <>
       {checklist && <ChecklistProgressBadge progress={checklist} />}
-      {!compact && doc.priority && (
-        <PriorityBadge priority={doc.priority} />
-      )}
-      {doc.status && <StatusBadge status={doc.status} />}
-      {!compact && !doc.status && doc.customStatus && (
-        <CustomStatusBadge customStatus={doc.customStatus} />
-      )}
+      {!compact && doc.issue && <IssueChip issue={doc.issue} />}
     </>
   );
 }
@@ -239,37 +150,14 @@ function DocRowText({ doc, onClick }: { doc: DocEntry; onClick: () => void }) {
   );
 }
 
-/** Sort key for a doc's status: known enum order, then custom-status order, then last. */
-function statusOrder(doc: DocEntry): number {
-  if (doc.status) return STATUS_CONFIG[doc.status]?.order ?? 99;
-  if (doc.customStatus) return CUSTOM_STATUS_ORDER;
-  return 99;
-}
-
 /**
- * Sort tracked docs. Priority is the primary key so high-priority work
- * bubbles to the top regardless of status: a `high` in-progress doc and a
- * `high` planned doc sit together above any unset-priority items. Within a
- * priority bucket we fall back to status (in-progress before planned before
- * paused before custom-status before done before rejected) and then path.
- *
- * Path tiebreaker is descending for prioritized buckets so the most recently
- * added doc (highest `NNN-` prefix) bubbles up — matching the "what's hot
- * right now" intent of having set a priority in the first place. Unset
- * priority keeps the legacy ascending-path order so docs without any author
- * signal stay in stable alphabetical order.
+ * Sort tracked docs. docs/168 removed priority/status from docs, so there's no
+ * longer a "what's hot" signal to sort on — priority lives in the tracker now.
+ * We fall back to a stable alphabetical path order, which keeps feature
+ * directories grouped by their `NNN-` prefix.
  */
 function sortTrackedDocs(docs: DocEntry[]): DocEntry[] {
-  return [...docs].sort((a, b) => {
-    const pA = priorityOrder(a.priority);
-    const pB = priorityOrder(b.priority);
-    if (pA !== pB) return pA - pB;
-    const sA = statusOrder(a);
-    const sB = statusOrder(b);
-    if (sA !== sB) return sA - sB;
-    if (a.priority && b.priority) return b.path.localeCompare(a.path);
-    return a.path.localeCompare(b.path);
-  });
+  return [...docs].sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /**
@@ -312,7 +200,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
         (f) =>
           wasModifiedInSession(f) &&
           !hasTrackedPlanSibling(f.path, files) &&
-          (isTracked(f) || !hasTrackedSibling(f.path, files)),
+          (isTracked(f, files) || !hasTrackedSibling(f.path, files)),
       ),
     [files],
   );
@@ -330,7 +218,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
   );
 
   const tracked = remaining.filter(
-    (f) => isTracked(f) && !hasTrackedPlanSibling(f.path, files),
+    (f) => isTracked(f, files) && !hasTrackedPlanSibling(f.path, files),
   );
   // Hide untracked siblings (e.g. `checklist.md`) when a tracked plan exists
   // in the same directory — they're now reachable via the modal's sibling
@@ -339,7 +227,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
   // group above still suppresses its untracked sibling here.
   const untracked = remaining.filter(
     (f) =>
-      !isTracked(f) &&
+      !isTracked(f, files) &&
       !hasTrackedSibling(f.path, files) &&
       !hasTrackedPlanSibling(f.path, files),
   );
@@ -353,10 +241,10 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
     return hasTracked ? "tracked" : "other";
   }, [userTab, hasTracked]);
 
-  // Archived docs (done + rejected) in the Tracked group are collapsed by
+  // Done docs (checklist 100% complete) in the Tracked group are collapsed by
   // default — they're historical context, not active work, and would otherwise
   // dominate the list as a project ages.
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [doneExpanded, setDoneExpanded] = useState(false);
 
   if (allFiles.length === 0) {
     return (
@@ -364,8 +252,8 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
         <div className="text-center space-y-2">
           <p className="text-lg font-medium text-(--color-text-tertiary)">No docs found</p>
           <p className="text-xs text-(--color-text-tertiary) max-w-xs">
-            Add markdown files to your workspace. Files with <code className="text-xs bg-(--color-bg-secondary) px-1 rounded">status:</code> frontmatter
-            will show status badges.
+            Add markdown files to your workspace. Files with an <code className="text-xs bg-(--color-bg-secondary) px-1 rounded">issue:</code> frontmatter
+            pointer link out to the tracker; a sibling <code className="text-xs bg-(--color-bg-secondary) px-1 rounded">checklist.md</code> shows progress.
           </p>
           <Button
             variant="secondary"
@@ -398,10 +286,13 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
     return a.path.localeCompare(b.path);
   });
   const sortedTracked = sortTrackedDocs(tracked);
-  // Split tracked into active work and archived (done + rejected) so we can
-  // render archived items inside a collapsible group below the active list.
-  const trackedActive = sortedTracked.filter((d) => !isArchivedStatus(d.status));
-  const trackedArchived = sortedTracked.filter((d) => isArchivedStatus(d.status));
+  // Split tracked into active work and done (checklist 100% complete) so we can
+  // render done items inside a collapsible group below the active list. A doc
+  // with no checklist (or an incomplete one) stays Active — see docs/168 for
+  // the known edge case where a finished reference doc with no checklist never
+  // folds into Done.
+  const trackedActive = sortedTracked.filter((d) => !isChecklistComplete(d));
+  const trackedDone = sortedTracked.filter((d) => isChecklistComplete(d));
   const showTabs = hasTracked && hasUntracked;
 
   return (
@@ -479,7 +370,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
                   <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                   <div className="flex items-center gap-2 shrink-0">
                     <Badge variant="info" className={DOC_BADGE_CLASS}>Modified</Badge>
-                    <DocStatusBadges doc={doc} />
+                    <DocBadges doc={doc} />
                   </div>
                 </div>
               );
@@ -528,25 +419,25 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
                 >
                   <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                   <div className="flex items-center gap-2 shrink-0">
-                    <DocStatusBadges doc={doc} />
+                    <DocBadges doc={doc} />
                   </div>
                 </div>
               );
             })}
-            {trackedArchived.length > 0 && (
+            {trackedDone.length > 0 && (
               <>
                 <button
                   type="button"
-                  onClick={() => setArchivedExpanded((v) => !v)}
-                  aria-expanded={archivedExpanded}
+                  onClick={() => setDoneExpanded((v) => !v)}
+                  aria-expanded={doneExpanded}
                   className="flex items-center gap-1.5 w-full text-left px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-(--color-text-tertiary) hover:text-(--color-text-secondary) cursor-pointer"
                 >
-                  {archivedExpanded
+                  {doneExpanded
                     ? <CaretDownIcon size={ICON_SIZE.XS} />
                     : <CaretRightIcon size={ICON_SIZE.XS} />}
-                  <span>Archived ({trackedArchived.length})</span>
+                  <span>Done ({trackedDone.length})</span>
                 </button>
-                {archivedExpanded && trackedArchived.map((doc) => {
+                {doneExpanded && trackedDone.map((doc) => {
                   return (
                     <div
                       key={doc.path}
@@ -554,7 +445,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
                     >
                       <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                       <div className="flex items-center gap-2 shrink-0">
-                        <DocStatusBadges doc={doc} compact />
+                        <DocBadges doc={doc} compact />
                       </div>
                     </div>
                   );

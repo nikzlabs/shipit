@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 053 — Server Code Separation: Session vs Orchestrator
 

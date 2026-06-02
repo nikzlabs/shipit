@@ -1,6 +1,3 @@
----
-status: done
----
 # Rollback System
 
 Replaced the old threads/checkpoints system with a simpler rollback UX. Each assistant message that created a git auto-commit gets a rollback dropdown with three options.

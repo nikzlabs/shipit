@@ -1,7 +1,6 @@
 ---
-status: in-progress
-priority: medium
 description: Inject user input into a running agent turn (native-CLI-style steering), capability-gated, with a settings toggle to fall back to the stable per-turn queue.
+issue: https://linear.app/shipit-ai/issue/SHI-60/live-steering-inserting-user-input-while-an-agent-is-running
 ---
 
 # Live steering: inserting user input while an agent is running

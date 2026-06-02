@@ -1,5 +1,4 @@
 ---
-status: done
 description: Make the programmatic dispatch path honor live steering (and reliably drain) so a mid-turn `shipit session message` is injected, not silently queued.
 ---
 

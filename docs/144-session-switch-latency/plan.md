@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Investigation into the multi-second delay before a user can send a message on a freshly switched/created session, and a plan to unify the new-session and warm-claim code paths.
 ---
 

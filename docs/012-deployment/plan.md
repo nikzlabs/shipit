@@ -1,6 +1,3 @@
----
-status: done
----
 
 > **Superseded by [084-auto-deploy-on-push](../084-auto-deploy-on-push/plan.md).**
 > The manual deploy system described here has been removed. Deployments now happen

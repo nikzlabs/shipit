@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Remove the configurable utility model
 

@@ -1,6 +1,3 @@
----
-status: paused
----
 # 025 — In-Browser Code Editor
 
 ## Design Concern: Scope Creep Risk

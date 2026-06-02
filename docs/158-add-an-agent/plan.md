@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 title: How to add a new agent backend
 description: Step-by-step walkthrough for wiring a new agent (Cursor, Gemini, …) into ShipIt using the per-agent folder layout from docs/155.
 ---

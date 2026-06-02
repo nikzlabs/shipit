@@ -1,6 +1,3 @@
----
-status: done
----
 # 031 — Post-Push Toast with PR Action
 
 ## Summary

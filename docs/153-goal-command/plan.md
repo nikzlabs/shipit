@@ -1,5 +1,4 @@
 ---
-status: rejected
 title: Goal command (ShipIt-managed substrate)
 description: REJECTED — a ShipIt-managed `/goal` substrate that re-implements CLI goal mode on session metadata. Superseded by native CLI support (see docs/154). Kept as reference for a possible future ground-up re-implementation.
 ---

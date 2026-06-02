@@ -1,6 +1,4 @@
 ---
-status: planned
-priority: medium
 description: Drain in-flight agent turns before swapping the orchestrator container so running sessions survive an Update Now without losing mid-turn work.
 ---
 

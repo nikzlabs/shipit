@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: Send system-initiated prompts (Create PR, preview/compose errors, service logs) directly to the agent instead of prefilling the input, and funnel every server-side dispatch through the same send-or-queue primitive.
 ---
 

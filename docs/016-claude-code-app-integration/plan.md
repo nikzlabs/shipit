@@ -1,6 +1,3 @@
----
-status: done
----
 # 016 — Claude Code App Integration
 
 ## Summary

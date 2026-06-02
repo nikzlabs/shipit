@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: One voice-summary primitive the agent emits when it needs the user, with a ShipIt delivery setting (native inline / external webhook / both) — not two separate tools.
 ---
 

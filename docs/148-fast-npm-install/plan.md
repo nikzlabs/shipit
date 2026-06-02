@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Make per-session `npm install` near-instant by sharing a materialized, lockfile-keyed node_modules across sessions for the same repo — not just the download cache.
 ---
 

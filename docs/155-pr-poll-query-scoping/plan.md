@@ -1,5 +1,4 @@
 ---
-status: done
 description: Shrink the PR status poll's GraphQL query so per-session cadence actually reduces GitHub API usage. Phase 0 cost measurement (2026-05-27) ruled out the aliased-per-PR rewrite — bulk shape with capped `first: N` and per-session conversation scoping gets the full win.
 ---
 

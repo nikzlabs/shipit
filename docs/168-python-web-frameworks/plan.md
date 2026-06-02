@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: Support Python web app frameworks (Streamlit, Gradio, Dash, FastAPI/Uvicorn) — fix the session image so pip/venv work, ship Python starter templates, and document the compose patterns. Linear SHI-27.
 ---
 

@@ -1,6 +1,4 @@
 ---
-status: paused
-priority: low
 description: Switch the working branch to a fresh branch off main while preserving chat history and agent context, so users can start a closely-related next feature without losing the agent's re-orientation cost.
 ---
 

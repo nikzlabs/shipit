@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Eliminate the synchronous claim-time git fetch (~650ms, ~95% of claim latency) by keeping repos pre-fetched in the background and skipping the fetch on the claim path.
 ---
 

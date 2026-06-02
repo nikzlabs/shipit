@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: The shipit-review MCP tool gets stuck in a permission-denied loop in subagents and re-invoked agents, with no UI prompt for the user to approve.
 ---
 

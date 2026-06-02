@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: Header badges showing subscription rate-limit usage (5-hour window, weekly cap, reset clock) for Claude and Codex, rendered inline without leaving ShipIt.
 ---
 

@@ -1,5 +1,4 @@
 ---
-status: done
 description: CLI shim letting agents create and manage sibling ShipIt sessions for parallel branch work, with per-turn quotas and sidebar visibility.
 ---
 

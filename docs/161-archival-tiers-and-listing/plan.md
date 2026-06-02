@@ -1,5 +1,4 @@
 ---
-status: done
 description: Decouple session *visibility* in the sidebar from *disk reclamation*, replace the single destructive archive with graduated cleanup tiers, and guarantee a restored session is based on fresh origin/main instead of a stale bare-cache snapshot.
 ---
 

@@ -1,6 +1,3 @@
----
-status: done
----
 # Session Management
 
 ## Two Session IDs

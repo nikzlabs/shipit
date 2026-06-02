@@ -1,5 +1,4 @@
 ---
-status: done
 description: Review comments on design docs and code, anchored to a text selection (markdown) or a line (code).
 ---
 # 049 — Review Comments

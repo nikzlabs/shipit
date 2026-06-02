@@ -1,6 +1,3 @@
----
-status: done
----
 # 041 — Persistent Session Runners
 
 ## Problem

@@ -5,12 +5,12 @@ import remarkGfm from "remark-gfm";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import type { Root, RootContent } from "mdast";
-import { ChatTeardropTextIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
+import { ArrowSquareOutIcon, ChatTeardropTextIcon, PencilSimpleIcon, TrashIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
-import { Badge, type BadgeProps } from "./ui/badge.js";
+import { Badge } from "./ui/badge.js";
 import { parseFrontmatter, type ParsedFrontmatter } from "../utils/markdown-frontmatter.js";
-import type { DocPriority, DocStatus } from "../../server/shared/types.js";
+import { parseIssueRef } from "../utils/issue-ref.js";
 import { markdownComponents } from "./message-markdown.js";
 
 const CONTEXT_CHARS = 50;
@@ -185,37 +185,36 @@ function offsetWithin(root: Node, node: Node, offsetInNode: number): number {
 }
 
 /**
- * Frontmatter header — unchanged from the previous section-anchored layout, since
- * frontmatter rendering is orthogonal to the comment anchoring model.
+ * Frontmatter header. docs/168 removed the status/priority badges — priority
+ * and work-status now live in the issue tracker, not the doc. What remains is
+ * the optional `issue:` pointer, rendered as a jump-to-issue chip, plus the
+ * description and any other extras.
  */
-const STATUS_BADGE: Record<DocStatus, { label: string; variant: BadgeProps["variant"] }> = {
-  "in-progress": { label: "In Progress", variant: "warning" },
-  "planned": { label: "Planned", variant: "info" },
-  "paused": { label: "Paused", variant: "default" },
-  "done": { label: "Done", variant: "success" },
-  "rejected": { label: "Rejected", variant: "error" },
-};
-
-const PRIORITY_BADGE: Record<DocPriority, { label: string; variant: BadgeProps["variant"] }> = {
-  high: { label: "High priority", variant: "error" },
-  medium: { label: "Med priority", variant: "warning" },
-  low: { label: "Low priority", variant: "default" },
-};
-
 function FrontmatterHeader({ fm }: { fm: ParsedFrontmatter }) {
-  const status = fm.status ? STATUS_BADGE[fm.status] : null;
-  const priority = fm.priority ? PRIORITY_BADGE[fm.priority] : null;
-  const hasBadges = !!status || !!priority || !!fm.customStatus;
-  const hasContent = hasBadges || !!fm.description || fm.extras.length > 0;
+  const issueRef = fm.issue ? parseIssueRef(fm.issue) : null;
+  const hasContent = !!issueRef || !!fm.description || fm.extras.length > 0;
   if (!hasContent) return null;
 
   return (
     <div className="mb-4 pb-4 border-b border-(--color-border-secondary) space-y-2">
-      {hasBadges && (
+      {issueRef && (
         <div className="flex flex-wrap items-center gap-2">
-          {status && <Badge variant={status.variant}>{status.label}</Badge>}
-          {!status && fm.customStatus && <Badge variant="default">{fm.customStatus}</Badge>}
-          {priority && <Badge variant={priority.variant}>{priority.label}</Badge>}
+          {issueRef.url ? (
+            <a
+              href={issueRef.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open ${issueRef.identifier} in ${issueRef.tracker === "unknown" ? "the tracker" : issueRef.tracker}`}
+              className="inline-flex"
+            >
+              <Badge variant="info" className="inline-flex items-center gap-1 hover:brightness-110">
+                {issueRef.identifier}
+                <ArrowSquareOutIcon size={ICON_SIZE.XS} />
+              </Badge>
+            </a>
+          ) : (
+            <Badge variant="default">{issueRef.identifier}</Badge>
+          )}
         </div>
       )}
       {fm.description && (

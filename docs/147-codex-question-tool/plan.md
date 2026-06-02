@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: Let Codex ask structured multiple-choice questions in any mode via a ShipIt-managed AskUserQuestion MCP bridge, reusing the existing question/interrupt/resume flow.
 ---
 

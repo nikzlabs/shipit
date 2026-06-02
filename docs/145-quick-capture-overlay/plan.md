@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Global-hotkey overlay that captures a prompt and spawns a new session in the background, without leaving the current view.
 ---
 

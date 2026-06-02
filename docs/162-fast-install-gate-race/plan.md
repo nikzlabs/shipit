@@ -1,5 +1,4 @@
 ---
-status: done
 description: Fix the fast-install path deadlocking a session's first turn by resolving the install gate from the HTTP response instead of a racy SSE event.
 ---
 

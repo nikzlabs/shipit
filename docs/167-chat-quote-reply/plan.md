@@ -1,5 +1,4 @@
 ---
-status: done
 description: Highlight text in a chat message to quote it as a blockquote into the composer (SHI-10).
 ---
 

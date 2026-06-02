@@ -278,21 +278,24 @@ describe("Integration: Phase 1 GET endpoints", () => {
     expect(Array.isArray(body.worktrees)).toBe(true);
   });
 
-  // ---- Docs with status ----
+  // ---- Docs with issue pointer (docs/168) ----
 
-  it("GET /api/sessions/:id/docs includes status from frontmatter", async () => {
+  it("GET /api/sessions/:id/docs includes the issue pointer from frontmatter", async () => {
     const dir = await createSession("s-feat2", "Doc Session");
     const featureDir = path.join(dir, "docs", "001-test-feature");
     fs.mkdirSync(featureDir, { recursive: true });
-    fs.writeFileSync(path.join(featureDir, "plan.md"), "---\nstatus: in-progress\n---\n# Test Feature");
+    fs.writeFileSync(
+      path.join(featureDir, "plan.md"),
+      "---\nissue: https://linear.app/shipit-ai/issue/SHI-28/decouple\n---\n# Test Feature",
+    );
 
     const res = await app.inject({ method: "GET", url: "/api/sessions/s-feat2/docs" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    const tracked = body.docs.find((d: any) => d.status !== undefined);
+    const tracked = body.docs.find((d: any) => d.issue !== undefined);
     expect(tracked).toBeDefined();
     expect(tracked.path).toBe("docs/001-test-feature/plan.md");
-    expect(tracked.status).toBe("in-progress");
+    expect(tracked.issue).toBe("https://linear.app/shipit-ai/issue/SHI-28/decouple");
   });
 
   // ---- GitHub repos search ----

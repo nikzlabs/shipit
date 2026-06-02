@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Rewind & Fork UX Checklist
 

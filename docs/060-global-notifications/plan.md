@@ -1,7 +1,6 @@
 ---
-status: planned
-priority: medium
 description: Unified notification center surfacing tool approvals, session errors, PR events, and deploy results across all sessions with inline actions.
+issue: https://linear.app/shipit-ai/issue/SHI-33/global-notification-system
 ---
 
 # 060 — Global Notification System

@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 105 — Context Window Usage Display
 
