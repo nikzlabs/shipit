@@ -5,9 +5,8 @@ ShipIt is open-core: the code in this repository is released under the
 "enterprise" features on top of it in a separate, closed-source repository.
 
 So that contributions can live in **both** the open-source core and the
-proprietary edition — and so the project retains the freedom to adjust the
-core's license in the future — every contributor must agree to this
-Contributor License Agreement (CLA) before their contribution is merged.
+proprietary edition, every contributor must agree to this Contributor License
+Agreement (CLA) before their contribution is merged.
 
 In plain terms: **you keep ownership and copyright of your contribution**, and
 you grant the maintainer a broad license to use it, including the right to
@@ -141,6 +140,6 @@ above, with an authorized signatory and a list of covered contributors.
 A [Developer Certificate of Origin](https://developercertificate.org/) (a
 `Signed-off-by` line on each commit) only certifies that you had the right to
 submit the contribution under the project's existing license. It does **not**
-grant the project the right to relicense your code or to include it in a
-proprietary edition. Because ShipIt is open-core, those rights are exactly what
-the project needs — so a CLA, not a DCO, is the correct instrument here.
+grant the project the right to include your contribution in the proprietary
+enterprise edition. Because ShipIt is open-core, that right is exactly what the
+project needs — so a CLA, not a DCO, is the correct instrument here.
