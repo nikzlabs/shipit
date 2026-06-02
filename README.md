@@ -13,7 +13,7 @@ Six product choices set ShipIt apart from other AI coding harnesses:
 - **Container-isolated sessions** — each session gets its own Docker container, branch, chat history, and workspace, so concurrent agents can't step on each other's files, processes, or installed dependencies. Sessions can span multiple repos, and an agent can spawn its own follow-up sessions to fan work out in parallel.
 - **Self-hostable on a VPS** — ShipIt is Docker-based end to end. Run it on a remote server and your laptop doesn't need to stay open for agents, previews, or CI-followup work to continue. Session containers recover from crashes and out-of-memory kills with automatic retries, so long-running unattended work survives memory pressure.
 - **Tight GitHub integration** — branches, auto-commits, pushes, PR creation, CI checks, deploy status, review comments, and merge state are rendered inline instead of punting you to GitHub.
-- **Mobile-first, not just responsive** — ShipIt is genuinely good to use from a phone, not a desktop tool that merely survives a small screen. The layout adapts to a focused tab-based view on mobile and resizable split panels on desktop, and there's a thin Android WebView wrapper for native-feeling access. You can kick off, review, steer, and ship work on the go.
+- **Mobile-first, with first-class voice** — ShipIt is genuinely good to use from a phone, not a desktop tool that merely survives a small screen. The layout adapts to a focused tab-based view on mobile and resizable split panels on desktop, and there's a thin Android WebView wrapper for native-feeling access. Voice is a first-class input and output channel: dictate prompts hands-free, and hear spoken summaries when the agent needs you or finishes a turn — so you can kick off, review, steer, and ship work on the go without staring at the screen.
 - **Smooth browser IDE UX** — chat, file tree, Monaco editor, terminal, preview, diffs, session history, and PR lifecycle all live in one interface.
 
 Around that core, ShipIt is the surface: build, review, ship, and debug software inside one chat-shaped IDE. Terminal output, diffs, previews, CI, deploys, PR comments, rollback points, and session history are inline by default. The agent runs the commands, edits the files, reads the logs, opens PRs, watches checks, and fixes failures while the user stays in ShipIt.
@@ -92,6 +92,7 @@ See [`deployment/README.md`](deployment/README.md) for the full guide: sizing re
 
 ### Everywhere
 - **Mobile-first layout** — a focused tab-based view on small screens, resizable split panels on desktop; built and polished for real day-to-day use from a phone
+- **Voice in and out** — dictate prompts with a mobile-friendly voice-recording overlay, and get spoken summaries when the agent finishes a turn or needs your input, so you can work hands-free
 - **Android wrapper** — a thin WebView app under `android/` for native-feeling access on mobile
 - **Background notifications** — tab title change and browser notification when the agent finishes
 - **Self-update from UI** — pull the latest code, rebuild, and restart from Settings → Advanced
