@@ -1,10 +1,17 @@
 # Design Docs
 
-ShipIt has a built-in feature tracking system that reads markdown files from the `docs/` directory in your workspace. The UI displays these as a feature list with status badges, and users can kick off sessions to work on them.
+ShipIt has a built-in feature tracking system that reads markdown files from the `docs/` directory in your workspace. The UI displays these as a list of reference docs, and users can kick off sessions to work on them.
+
+Design docs are **reference material** — what a feature is, why, and how. Priority and work-status no longer live in the doc; they live in the issue tracker (Linear / GitHub Issues). A doc carries an optional `issue:` pointer to the work item that tracks it, and ShipIt renders a jump-to-issue chip from that pointer.
 
 ## How it works
 
-ShipIt scans the entire workspace recursively for `.md` files (skipping `node_modules` and `.git`). Every markdown file found is shown in the feature list. If a file has YAML frontmatter with a `status` field, ShipIt displays a status badge next to it.
+ShipIt scans the entire workspace recursively for `.md` files (skipping `node_modules` and `.git`). Every markdown file found is shown in the list. The docs list is grouped structurally:
+
+- **Tracked** — feature-directory `plan.md`/`checklist.md` files, docs with an `issue:` pointer, and docs that have a `checklist.md` sibling.
+- **Other** — incidental markdown (a stray `README.md`, `notes.md`, etc.).
+
+Within Tracked, docs are grouped by **checklist state**: a doc whose sibling `checklist.md` is 100% complete folds into a collapsed **Done** group; everything else (incomplete checklist, or no checklist at all) stays in the **Active** list.
 
 ## Creating a design doc
 
@@ -21,11 +28,12 @@ But simpler layouts work too — `docs/my-feature.md` is equally valid.
 
 ## Frontmatter
 
-Every design doc **should** start with YAML frontmatter containing a `status` field. Without this, the feature still appears in the UI but has no status badge.
+Frontmatter is optional. A doc with no frontmatter still appears in the list. The recognized fields are `issue`, `title`, and `description`.
 
 ```markdown
 ---
-status: planned
+issue: https://linear.app/your-workspace/issue/SHI-28/decouple-priorities
+description: One-line summary of the feature.
 ---
 
 # Feature Name
@@ -33,62 +41,38 @@ status: planned
 Description of the feature...
 ```
 
-### Valid status values
+> **There is no `status:` or `priority:` field.** Those were removed — work-state and priority live in the issue tracker now, not in the doc. A leftover `status:`/`priority:` line is simply ignored by the scanner, but you should drop it and add an `issue:` pointer instead.
 
-| Status | Meaning |
-|--------|---------|
-| `planned` | Documented but work hasn't started |
-| `in-progress` | Currently being worked on |
-| `done` | Feature is complete |
-| `paused` | Has a design but not actively planned |
-| `rejected` | Proposal considered and declined; kept for the reasoning |
+### The `issue:` pointer
 
-#### Custom statuses
+`issue:` points at the work item that tracks this doc. The tracker is inferred from the pointer's shape — there is no separate `tracker:` field.
 
-Any other value (e.g. `status: experimental`, `status: blocked`) is preserved
-verbatim and rendered as a neutral badge. The doc is still considered
-**tracked** — it shows up in the Tracked tab and suppresses untracked siblings
-the same way a known status does. Custom-status docs sort between `paused`
-and `done`. The five values in the table above are the only ones with typed
-semantics in the UI; everything else is rendered as-is.
+| Tracker | Accepted form | Example |
+|---------|---------------|---------|
+| Linear | **Full URL only** | `https://linear.app/your-workspace/issue/SHI-28/slug` |
+| GitHub | `owner/repo#N` or a full issue URL | `octocat/hello-world#42` |
 
-### Optional frontmatter fields
+A Linear pointer **must** be a full URL — a bare `SHI-28` is not accepted, so the pointer stays unambiguous if a deployment wires up more than one Linear workspace. A doc with **no** `issue:` is pure reference: it still shows up, just without a jump-to-issue chip.
 
-You can also include a `title` field to override the auto-generated title:
+### `title` and `description`
+
+- `title` overrides the auto-generated title. If omitted, ShipIt derives one from the path. For files with generic names like `plan.md`, it uses the parent directory name (e.g. `042-user-auth/plan.md` becomes "User Auth"); otherwise it uses the filename (`my-feature.md` becomes "My Feature").
+- `description` is a single-line summary rendered under the title in the docs list.
 
 ```yaml
 ---
-status: in-progress
+issue: octocat/hello-world#42
 title: Custom Feature Title
+description: A short summary of what this feature is about.
 ---
 ```
-
-If no `title` is provided, ShipIt derives one from the path. For files with generic names like `plan.md`, it uses the parent directory name (e.g., `042-user-auth/plan.md` becomes "User Auth"). Otherwise it uses the filename (e.g., `my-feature.md` becomes "My Feature").
-
-**Priority for active features:** add a `priority` field — `high`, `medium`, or `low` — to indicate which active doc should be focused on next. Honored on `planned` and `in-progress` docs; dropped on `paused`, `done`, `rejected`, and custom-status docs so stale priorities don't leak after a doc moves out of active work. Priority is the **primary** sort key in the docs viewer, so a `high` planned doc bubbles above an unset-priority in-progress doc. Within a priority bucket the viewer falls back to status (in-progress first, then planned), then to path *descending* so the most recently added doc (highest `NNN-` prefix) sorts first.
-
-```yaml
----
-status: in-progress
-priority: high
----
-```
-
-## Updating status
-
-Update the `status` field as work progresses:
-
-1. Set `planned` when first creating the doc
-2. Change to `in-progress` when work begins
-3. Set `done` when the feature is complete
-
-When a feature is done, also mark all checklist items in `checklist.md` as complete (`[x]`).
 
 ## Recommended plan.md structure
 
 ```markdown
 ---
-status: planned
+issue: https://linear.app/your-workspace/issue/SHI-28/slug
+description: One-line summary.
 ---
 
 # NNN — Feature Name
@@ -110,9 +94,9 @@ How the feature works — architecture, data flow, key decisions.
 ## Checklist
 
 Track remaining work in a **separate `checklist.md` file** sitting next to
-`plan.md`, not as a `## Checklist` section inside `plan.md` itself. Keeping it
-in its own file means it can grow, be re-checked, and be marked complete
-independently of the design.
+`plan.md`, not as a `## Checklist` section inside `plan.md` itself. The checklist
+is the docs list's grouping signal: when every item is checked, the doc folds
+into the collapsed **Done** group.
 
 ```
 docs/
@@ -129,13 +113,13 @@ docs/
 - [x] Completed task
 ```
 
-When you set `status: done` on `plan.md`, mark every item in `checklist.md` as
-complete (`[x]`).
+When the work is finished, mark every item in `checklist.md` as complete (`[x]`).
 
 ## Common mistakes
 
-- **Missing frontmatter delimiters**: The `---` lines are required. Don't use ````yaml` fences.
-- **Wrong status value**: Stick to `planned`, `in-progress`, `done`, `paused`, or `rejected` (lowercase) to get the typed UI bucketing — priority sorting, the Archived collapse, and the success-coloured badge are all keyed on these five. A custom value works (the doc stays tracked, and the raw string renders as a neutral badge), but you forfeit those affordances.
+- **Using `status:` or `priority:`**: These fields were removed. Track work-state and priority in the issue tracker and link to it with `issue:`. A stray `status:`/`priority:` line is ignored, not honored.
+- **Bare Linear ID in `issue:`**: Linear pointers must be full URLs (`https://linear.app/.../issue/SHI-28/...`), not bare identifiers like `SHI-28`.
+- **Missing frontmatter delimiters**: The `---` lines are required. Don't use a ` ```yaml ` fence.
 - **Frontmatter not at file start**: The `---` block must be the very first thing in the file — no blank lines or content before it.
-- **Not a `.md` file**: Only files ending in `.md` are scanned. Other formats (`.txt`, `.rst`) won't appear in the feature list.
+- **Not a `.md` file**: Only files ending in `.md` are scanned. Other formats (`.txt`, `.rst`) won't appear in the list.
 - **Checklist embedded in `plan.md`**: Put remaining work in a sibling `checklist.md` file, not as a section inside `plan.md`.

@@ -1,7 +1,6 @@
 ---
-status: planned
-priority: medium
 description: Collapsible table-of-contents pane with auto-generated one-line summaries per turn so users can jump between turns in long sessions.
+issue: https://linear.app/shipit-ai/issue/SHI-46/chat-table-of-contents-and-turn-summaries
 ---
 
 # 104 — Chat Table of Contents & Turn Summaries

@@ -1,5 +1,4 @@
 ---
-status: done
 description: Replace the session file watcher's fs.watch(recursive) with chokidar so ignored subtrees never consume host-wide inotify watches.
 ---
 

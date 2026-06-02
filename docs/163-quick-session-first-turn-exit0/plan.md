@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Quick/warm-standby first turn silently never ran — the dispatch path swallowed a no-result exit-0 instead of retrying or surfacing an error.
 ---
 

@@ -1,5 +1,4 @@
 ---
-status: done
 description: Connect user MCP servers (Linear, Notion, Sentry, etc.) to the inner agent — API-key/token auth (Phase 1) and native OAuth with dynamic client registration (Phase 2).
 ---
 

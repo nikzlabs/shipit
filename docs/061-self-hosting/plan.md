@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 061 — Self-Hosted Docker-Capable Sessions
 

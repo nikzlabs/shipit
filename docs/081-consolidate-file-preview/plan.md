@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Consolidate File Preview
 

@@ -1,6 +1,3 @@
----
-status: done
----
 # Terminal / Logs Panel
 
 The Terminal tab shows Claude CLI output (stderr, non-JSON stdout) in a terminal-like pane for debugging.

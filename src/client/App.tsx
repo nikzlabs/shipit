@@ -79,7 +79,7 @@ import { composeReviewMessage } from "./utils/compose-review-body.js";
 import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
 import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug, shouldAdoptClaimedSession } from "./utils/repo-label.js";
 import { saveAgentId, saveModelId } from "./utils/local-storage.js";
-import { siblingsOf, orderSiblingsForTabs, siblingTabLabel } from "./utils/doc-paths.js";
+import { siblingsOf, orderSiblingsForTabs, siblingTabLabel, isPlanPath } from "./utils/doc-paths.js";
 import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
 import { sendUserMessage } from "./utils/send-user-message.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
@@ -810,7 +810,11 @@ export default function App() {
     (filePath: string, doc?: DocEntry) => {
       const sid = useSessionStore.getState().sessionId;
       if (!sid) return;
-      const actions = doc?.status
+      // docs/168: status was removed from docs, so gate the seed-a-session
+      // action on the structural "this is a work doc" signal instead — a
+      // feature-directory plan.md or a doc carrying an issue: pointer.
+      const isWorkDoc = !!doc && (isPlanPath(doc.path) || doc.issue !== undefined);
+      const actions = isWorkDoc
         ? [{ label: "Start Session", onClick: () => handleDocStartSession(doc), variant: "primary" as const }]
         : undefined;
       void useFileStore.getState().openPreview(sid, filePath, { actions });

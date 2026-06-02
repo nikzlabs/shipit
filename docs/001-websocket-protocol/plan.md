@@ -1,6 +1,3 @@
----
-status: done
----
 # Client-Server Protocol
 
 ShipIt uses a dual-transport architecture: **HTTP REST API** (`/api/*`) for reads and mutations, and **WebSocket** (`/ws`) for streaming events, per-connection state, and real-time push.

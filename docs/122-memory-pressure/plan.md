@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Memory pressure — pressure-aware eviction + visibility
 

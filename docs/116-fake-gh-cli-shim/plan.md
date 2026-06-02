@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 116 — Fake `gh` CLI Shim for Agent-Driven PR Creation
 

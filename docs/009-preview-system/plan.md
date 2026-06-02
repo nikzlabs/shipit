@@ -1,6 +1,3 @@
----
-status: done
----
 # Preview System
 
 The preview pane shows a live iframe of the user's app. Supports Vite (managed) and any other dev server (auto-detected via port scanning).

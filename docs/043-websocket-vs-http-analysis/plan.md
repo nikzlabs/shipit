@@ -1,6 +1,3 @@
----
-status: done
----
 
 # WebSocket vs HTTP Analysis
 

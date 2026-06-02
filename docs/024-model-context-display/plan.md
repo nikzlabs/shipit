@@ -1,6 +1,3 @@
----
-status: done
----
 # 024 — Model & Context Display
 
 ## Summary

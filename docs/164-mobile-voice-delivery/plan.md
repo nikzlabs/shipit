@@ -1,7 +1,6 @@
 ---
-status: planned
-priority: low
 description: Options for delivering voice notes to a backgrounded or closed mobile device, where in-browser delivery and autoplay are impossible — server-push to a channel that survives a dead tab.
+issue: https://linear.app/shipit-ai/issue/SHI-42/mobile-background-voice-delivery
 ---
 
 # Mobile / background voice delivery — options

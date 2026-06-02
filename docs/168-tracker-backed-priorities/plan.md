@@ -1,7 +1,6 @@
 ---
-status: planned
-priority: high
 description: Move priority (and work-status) out of design-doc frontmatter and into issue trackers. Docs become reference material with an issue: pointer; a new inline Issues tab renders Linear and GitHub issues in tracker sub-tabs, sorted by priority, with start-session per row.
+issue: https://linear.app/shipit-ai/issue/SHI-28/decouple-priorities-from-documents
 ---
 
 # Tracker-backed priorities

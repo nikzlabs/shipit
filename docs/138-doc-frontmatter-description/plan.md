@@ -1,5 +1,4 @@
 ---
-status: done
 description: Show a short doc description from frontmatter under the title in the docs panel.
 ---
 

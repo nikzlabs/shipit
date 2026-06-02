@@ -1,7 +1,6 @@
 ---
-status: in-progress
-priority: high
 description: Allow multiple subscription accounts for the same agent provider and automatically fail over when the active subscription is exhausted.
+issue: https://linear.app/shipit-ai/issue/SHI-56/multiple-provider-subscriptions-and-quota-failover
 ---
 
 # 150 — Multiple provider subscriptions and quota failover

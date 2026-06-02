@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 109 — Subagent / Task Tool Transparency
 

@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Render a dedicated "Sent comments" card when the user submits doc/diff comments, and funnel every WS "send to agent" callsite through one shared client helper.
 ---
 

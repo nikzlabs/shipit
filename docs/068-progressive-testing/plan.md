@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Progressive Testing System
 

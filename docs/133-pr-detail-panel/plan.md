@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: Inline PR detail tab (header, description, status, diff link) as a peer of Preview/Docs/Files, opened by clicking the PR lifecycle card.
 ---
 

@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: Comprehensive security audit of the ShipIt codebase covering injection, auth, secrets, XSS, Docker hardening, and SSRF with findings and remediation checklist.
 ---
 

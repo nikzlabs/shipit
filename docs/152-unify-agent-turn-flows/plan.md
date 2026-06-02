@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: Route every agent turn (WS user-typed, system-dispatched, rebase conflict resolution) through one shared event listener so tool calls and message-group boundaries render identically regardless of who started the turn.
 ---
 

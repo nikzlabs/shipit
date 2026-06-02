@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Agent Preview Browser Access
 

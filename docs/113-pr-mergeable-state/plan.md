@@ -1,6 +1,3 @@
----
-status: done
----
 # 113 — Surface PR Mergeable State Inline
 
 ## Summary

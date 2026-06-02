@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 055 — SessionRunner Interface Boundary
 

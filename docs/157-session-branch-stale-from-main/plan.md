@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: ShipIt session branches were created from a stale main because the bare repo cache's `git clone --bare` configured no fetch refspec, so `git fetch --all` only wrote FETCH_HEAD and never advanced refs/heads/main. Fixed by configuring `+refs/heads/*:refs/heads/*` on the cache.
 ---
 

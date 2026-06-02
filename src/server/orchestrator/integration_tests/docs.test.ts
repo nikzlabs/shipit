@@ -69,24 +69,24 @@ describe("Integration: Docs", () => {
     const { docs } = res.json() as { docs: DocEntry[] };
     expect(docs).toHaveLength(1);
     expect(docs[0]).toMatchObject({ path: "README.md", title: "README" });
-    expect(docs[0].status).toBeUndefined();
+    expect(docs[0].issue).toBeUndefined();
   });
 
-  it("returns status from frontmatter", async () => {
+  it("returns the issue pointer from frontmatter", async () => {
     const featureDir = path.join(sessionDir, "docs", "001-my-feature");
     fs.mkdirSync(featureDir, { recursive: true });
     fs.writeFileSync(
       path.join(featureDir, "plan.md"),
-      "---\nstatus: in-progress\n---\n# My Feature\n\nDescription.",
+      "---\nissue: https://linear.app/shipit-ai/issue/SHI-28/decouple\n---\n# My Feature\n\nDescription.",
     );
 
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/docs` });
     expect(res.statusCode).toBe(200);
     const { docs } = res.json() as { docs: DocEntry[] };
-    const tracked = docs.find((d) => d.status !== undefined);
+    const tracked = docs.find((d) => d.issue !== undefined);
     expect(tracked).toMatchObject({
       path: "docs/001-my-feature/plan.md",
-      status: "in-progress",
+      issue: "https://linear.app/shipit-ai/issue/SHI-28/decouple",
       title: "My Feature",
     });
   });

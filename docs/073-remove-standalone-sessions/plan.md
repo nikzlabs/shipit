@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Remove Standalone Session Creation Path
 

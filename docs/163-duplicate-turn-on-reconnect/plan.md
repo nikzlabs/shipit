@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Stop a completed turn from being replayed (and visually duplicated) when the WebSocket reconnects after the turn ended via an error or interrupt.
 ---
 

@@ -1,6 +1,3 @@
----
-status: done
----
 # 098 — WS-Lifecycle Hardening: Follow-ups
 
 ## Summary

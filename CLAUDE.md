@@ -388,34 +388,29 @@ docs/
     checklist.md   — Remaining work items or tracking notes
 ```
 
-Feature docs describe individual features and may include planned-but-not-implemented designs.
+Feature docs describe individual features and may include planned-but-not-implemented designs. Docs are **reference material** — what a feature is, why, and how. Priority and work-status live in the issue tracker (Linear / GitHub Issues), **not** in the doc; see `docs/168-tracker-backed-priorities/`.
 
 Features are numbered by creation order. When implementing or modifying a feature, read its `plan.md` first. When a feature has remaining work, check its `checklist.md`. When adding a new feature, create `docs/NNN-new-feature/plan.md`.
 
-Every `plan.md` must have YAML frontmatter with a `status` field. The five typed values are `planned`, `in-progress`, `done`, `paused`, `rejected` — these drive the UI's status buckets, priority sorting, and the Archived collapse. The markdown scanner (`src/server/orchestrator/markdown.ts`) reads this frontmatter to display feature status in the UI. Any other value (e.g. `status: experimental`) is preserved as a raw `customStatus` string on `DocEntry`: the doc still counts as tracked and gets a neutral badge, but forfeits the typed affordances. Example:
+**There is no `status:` or `priority:` frontmatter (removed in docs/168).** The markdown scanner (`src/server/orchestrator/markdown.ts`) no longer reads them — a leftover `status:`/`priority:` line is silently ignored. The docs list groups structurally: a doc is **tracked** if it is a feature-directory `plan.md`/`checklist.md`, carries an `issue:` pointer, or has a `checklist.md` sibling; within Tracked, docs whose `checklist.md` is 100% complete fold into a collapsed **Done** group, everything else stays **Active**.
+
+The recognized frontmatter fields are `issue`, `title`, and `description` — all optional. A `plan.md` with no frontmatter still appears in the list.
+
+`issue:` points at the work item that tracks the doc; the tracker is inferred from the pointer's shape. **Linear must be a full URL** (`https://linear.app/<workspace>/issue/SHI-28/...`) — a bare `SHI-28` is not accepted. **GitHub** is `owner/repo#123` or a full issue URL. ShipIt renders a jump-to-issue chip from the pointer. A doc with no `issue:` is pure reference.
 
 ```yaml
 ---
-status: in-progress
+issue: https://linear.app/shipit-ai/issue/SHI-28/decouple-priorities-from-documents
 ---
 ```
 
-When creating a new feature doc, set `status: planned`. Update to `in-progress` when work begins and `done` when complete. Set `paused` for features that have a design but are not currently planned for implementation. Set `rejected` for proposals that were considered and explicitly declined — the doc captures the reasoning so the proposal isn't re-litigated later; `rejected` docs render with a red badge and live in the collapsed "Archived" group alongside `done`. A `checklist.md` can exist alongside any status — it tracks remaining work items regardless of whether the feature is actively in progress. When a feature is done, set `status: done` and mark all checklist items as complete (`[x]`).
-
-`plan.md` may also include a `priority` field — `high`, `medium`, or `low` — as a hint for "which active thing should we focus on next." Honored on `planned` and `in-progress` docs; dropped on `paused`, `done`, `rejected`, and custom-status docs so stale priorities don't linger after a doc moves out of active work. Priority is the **primary** sort key in the docs viewer (high → medium → low → unset), so a `high` planned doc bubbles above an unset-priority in-progress doc; within a priority bucket the viewer falls back to status (in-progress before planned) and then to *descending* path so the most recently added doc bubbles up. Leaving `priority` unset is fine — it just sorts after the prioritized items.
-
-```yaml
----
-status: in-progress
-priority: high
----
-```
+A `checklist.md` can exist alongside any doc — it tracks remaining work items and drives the Active/Done grouping. When the work is finished, mark all checklist items complete (`[x]`).
 
 `plan.md` may also include an optional `description` field — a single-line summary of what the feature is about. The docs viewer renders it under the title (wrapping to at most two lines) so a doc's purpose is legible without opening it. Keep it to one sentence; it's parsed as a single line, so no multi-line YAML block scalars. Example:
 
 ```yaml
 ---
-status: in-progress
+issue: octocat/hello-world#42
 description: Show a short doc description from frontmatter under the title in the docs panel.
 ---
 ```

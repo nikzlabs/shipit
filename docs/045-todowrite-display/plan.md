@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 045: TodoWrite Tool Display
 

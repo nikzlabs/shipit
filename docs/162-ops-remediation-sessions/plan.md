@@ -1,5 +1,4 @@
 ---
-status: done
 description: Give Ops sessions read-only ShipIt source access for diagnosis, then spawn targeted repo-backed fix sessions that can open normal PRs.
 ---
 

@@ -1,6 +1,3 @@
----
-status: done
----
 
 # 129 — Stop-hook enforcement of agent-driven PR creation
 

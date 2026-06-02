@@ -2,25 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { WORKSPACE_SKIP_DIRS } from "../shared/fs-constants.js";
-import type { DocEntry, DocPriority, DocStatus } from "../shared/types.js";
-
-/** Valid doc statuses. */
-const VALID_STATUSES = new Set<DocStatus>([
-  "planned",
-  "in-progress",
-  "done",
-  "paused",
-  "rejected",
-]);
-
-/** Valid doc priorities. Meaningful on `planned` and `in-progress` docs —
- * i.e. the active stages where "which should I work on next?" is a question. */
-const VALID_PRIORITIES = new Set<DocPriority>(["high", "medium", "low"]);
-
-/** Statuses where a `priority:` value is honored. Other statuses (paused,
- * done, rejected, custom) drop the field to prevent stale priorities from
- * leaking into the UI after a doc moves out of active work. */
-const PRIORITY_STATUSES = new Set<DocStatus>(["planned", "in-progress"]);
+import type { DocEntry } from "../shared/types.js";
 
 /** Frontmatter regex — matches `---\n...\n---` at start of file. */
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---/;
@@ -34,71 +16,31 @@ function extractFrontmatter(content: string): string | undefined {
 }
 
 /**
- * Extract `status` from a frontmatter block.
- */
-export function parseStatusFromFrontmatter(content: string): DocStatus | undefined {
-  const fm = extractFrontmatter(content);
-  if (!fm) return undefined;
-
-  const statusMatch = /^status:\s*(.+)$/m.exec(fm);
-  if (!statusMatch) return undefined;
-
-  const raw = statusMatch[1].trim().toLowerCase();
-  if (VALID_STATUSES.has(raw as DocStatus)) {
-    return raw as DocStatus;
-  }
-  return undefined;
-}
-
-/**
- * Parse status, priority, title, and description from frontmatter in a single
- * extraction. `description` is an optional single-line summary surfaced under
- * the title in the docs panel.
+ * Parse `issue`, `title`, and `description` from frontmatter in a single
+ * extraction.
  *
- * `priority` is only returned for active-work statuses (`planned` and
- * `in-progress`) — it answers "what should I focus on next?", so we drop it
- * on paused/done/rejected/custom docs to prevent stale priorities from
- * leaking into the UI after a doc moves out of active work.
- *
- * Unrecognized status values (e.g. `status: experimental`) are surfaced as
- * `customStatus` rather than being silently dropped. This keeps the closed
- * enum used for UI bucketing strict while still treating the doc as
- * "tracked" — the author wrote a `status:` line, so they intended to track
- * it. See doc-paths' `isTracked()` for the consumer side.
+ * docs/168 decoupled priority and work-status from docs: they now live in the
+ * issue tracker, so the doc carries only an optional `issue:` pointer to the
+ * work item that tracks it. `description` is an optional single-line summary
+ * surfaced under the title in the docs panel. The pointer is stored verbatim
+ * (trimmed); the client infers the tracker from its shape and renders the
+ * jump-to-issue chip.
  */
 function parseFrontmatterFields(
   content: string,
 ): {
-  status?: DocStatus;
-  customStatus?: string;
-  priority?: DocPriority;
+  issue?: string;
   title?: string;
   description?: string;
 } {
   const fm = extractFrontmatter(content);
   if (!fm) return {};
 
-  let status: DocStatus | undefined;
-  let customStatus: string | undefined;
-  const statusMatch = /^status:\s*(.+)$/m.exec(fm);
-  if (statusMatch) {
-    const raw = statusMatch[1].trim().toLowerCase();
-    if (VALID_STATUSES.has(raw as DocStatus)) {
-      status = raw as DocStatus;
-    } else if (raw.length > 0) {
-      customStatus = raw;
-    }
-  }
-
-  let priority: DocPriority | undefined;
-  if (status && PRIORITY_STATUSES.has(status)) {
-    const priorityMatch = /^priority:\s*(.+)$/m.exec(fm);
-    if (priorityMatch) {
-      const raw = priorityMatch[1].trim().toLowerCase();
-      if (VALID_PRIORITIES.has(raw as DocPriority)) {
-        priority = raw as DocPriority;
-      }
-    }
+  let issue: string | undefined;
+  const issueMatch = /^issue:\s*(.+)$/m.exec(fm);
+  if (issueMatch) {
+    const raw = issueMatch[1].trim();
+    if (raw.length > 0) issue = raw;
   }
 
   let title: string | undefined;
@@ -114,7 +56,7 @@ function parseFrontmatterFields(
     if (raw.length > 0) description = raw;
   }
 
-  return { status, customStatus, priority, title, description };
+  return { issue, title, description };
 }
 
 /** Generic filenames where the parent directory name is more meaningful. */
@@ -181,9 +123,7 @@ async function readMarkdownEntry(
   relativePath: string,
   basename: string,
 ): Promise<DocEntry> {
-  let status: DocStatus | undefined;
-  let customStatus: string | undefined;
-  let priority: DocPriority | undefined;
+  let issue: string | undefined;
   let title: string | undefined;
   let description: string | undefined;
   let modifiedAt: string | undefined;
@@ -197,9 +137,7 @@ async function readMarkdownEntry(
       // 512-byte sniff would undercount on real-world checklists.
       const content = await fs.readFile(fullPath, "utf-8");
       const fields = parseFrontmatterFields(content);
-      status = fields.status;
-      customStatus = fields.customStatus;
-      priority = fields.priority;
+      issue = fields.issue;
       title = fields.title;
       description = fields.description;
       const progress = parseChecklistProgress(content);
@@ -214,9 +152,7 @@ async function readMarkdownEntry(
         const { bytesRead } = await handle.read(buf, 0, 1024, 0);
         const content = buf.toString("utf-8", 0, bytesRead);
         const fields = parseFrontmatterFields(content);
-        status = fields.status;
-        customStatus = fields.customStatus;
-        priority = fields.priority;
+        issue = fields.issue;
         title = fields.title;
         description = fields.description;
         // Capture mtime from the same handle to avoid a second syscall.
@@ -233,9 +169,7 @@ async function readMarkdownEntry(
 
   return {
     path: relativePath,
-    status,
-    customStatus,
-    priority,
+    issue,
     title: title ?? titleFromPath(relativePath),
     description,
     modifiedAt,
@@ -271,7 +205,7 @@ async function scanMarkdownFiles(dir: string, prefix: string): Promise<DocEntry[
  * Recursively find `.md` files in a directory, skipping `node_modules` and `.git`.
  *
  * Returns `DocEntry[]` sorted alphabetically by path. Each entry includes
- * an optional `status` parsed from YAML frontmatter, plus `checklist`
+ * an optional `issue` pointer parsed from YAML frontmatter, plus `checklist`
  * progress aggregated from a sibling `checklist.md` (when present).
  */
 export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEntry[]> {

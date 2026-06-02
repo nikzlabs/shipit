@@ -1,6 +1,4 @@
 ---
-status: done
-priority: high
 description: Quick Capture overlay derives the agent from the selected model so a stale vibe-agent-id can't pin a new session to the wrong agent.
 ---
 

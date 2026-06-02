@@ -1,6 +1,3 @@
----
-status: done
----
 
 # Container resilience — auto-recovery from silent disconnects
 

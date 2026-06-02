@@ -172,36 +172,19 @@ export interface RepoInfo {
 
 // ---- Doc types ----
 
-export type DocStatus = "planned" | "in-progress" | "done" | "paused" | "rejected";
-
-/**
- * Priority hint for `planned` docs — used to answer "which planned feature is
- * up next?" Ignored for any other status. Optional; absence means "unset".
- */
-export type DocPriority = "high" | "medium" | "low";
-
 export interface DocEntry {
   /** Relative path from workspace root, e.g. "docs/001-websocket-protocol/plan.md". */
   path: string;
-  /** Status from YAML frontmatter, if present and one of the known enum values.
-   * Undefined when the frontmatter is absent OR when it carries an unrecognized
-   * value (which is captured in `customStatus` instead). */
-  status?: DocStatus;
   /**
-   * Raw `status:` value from frontmatter when it isn't one of the known enum
-   * values. Lowercased and trimmed. Lets us still consider the doc "tracked"
-   * (the author clearly intended to label it) without leaking unrecognized
-   * values into the closed enum used for UI bucketing.
+   * docs/168 — pointer to the issue that tracks this doc's work, taken
+   * verbatim from the frontmatter `issue:` field. Priority and work-status
+   * now live in the tracker, not the doc, so this is the doc's only link to
+   * its scheduling. A Linear pointer is always a full URL
+   * (`https://linear.app/<workspace>/issue/SHI-28/...`); a GitHub pointer is
+   * `owner/repo#123` or a full issue URL. Absent on pure reference docs. The
+   * tracker is inferred from the pointer's shape by the client.
    */
-  customStatus?: string;
-  /**
-   * Priority from YAML frontmatter, surfaced on the active-work statuses
-   * (`planned` and `in-progress`). Drives sort order in the docs viewer as
-   * the primary key — high-priority docs bubble above unset-priority ones
-   * regardless of status. Dropped on paused/done/rejected/custom to prevent
-   * stale priorities from leaking after a doc moves out of active work.
-   */
-  priority?: DocPriority;
+  issue?: string;
   /** Human-readable title. Derived from frontmatter `title:` field, or from filename. */
   title: string;
   /**

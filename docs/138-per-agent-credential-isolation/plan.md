@@ -1,6 +1,4 @@
 ---
-status: done
-priority: medium
 description: Each session container only carries the credentials of its pinned agent — a Claude session never has .codex on disk, and vice versa.
 ---
 

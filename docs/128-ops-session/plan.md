@@ -1,5 +1,4 @@
 ---
-status: done
 description: Special session type letting operators debug the production ShipIt host (stuck containers, OOM, Docker state) without leaving the ShipIt UI.
 ---
 

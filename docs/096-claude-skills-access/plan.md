@@ -1,6 +1,3 @@
----
-status: done
----
 # 096 — `.claude/skills/` Access: Editor Visibility and Write Permission
 
 ## Summary

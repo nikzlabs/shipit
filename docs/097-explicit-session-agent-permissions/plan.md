@@ -1,7 +1,6 @@
 ---
-status: planned
-priority: low
 description: Bake an explicit Claude CLI settings.json into agent containers declaring allowed and denied tool paths, replacing fragile implicit permission defaults.
+issue: https://linear.app/shipit-ai/issue/SHI-36/explicit-session-agent-permissions
 ---
 # 097 — Explicit Session-Agent Permissions
 

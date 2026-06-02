@@ -1,6 +1,3 @@
----
-status: done
----
 # Project-Level System Prompt
 
 Users can define a persistent system prompt sent to Claude with every message, encoding project conventions and style guidelines.
