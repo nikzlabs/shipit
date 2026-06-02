@@ -153,6 +153,10 @@ ShipIt isn't accepting pull requests right now — if you have a bug report, ide
 please [open an issue](https://github.com/nicolasalt/shipit/issues). For the architecture, dev loop,
 and module layout, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+Found a security vulnerability? Don't open a public issue — follow [SECURITY.md](SECURITY.md).
+
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE) for details.
+Apache 2.0 — see [LICENSE](LICENSE) for details. ShipIt is open-core: contributions are accepted
+under a [Contributor License Agreement](CLA.md) so they can also ship in the proprietary enterprise
+edition.

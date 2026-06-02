@@ -145,6 +145,14 @@ npm run lint
 npm run test:dev
 ```
 
+### Contributor License Agreement
+
+ShipIt is open-core: this repository is Apache-2.0, and the maintainer also builds proprietary enterprise features on top of it. When the project opens to outside contributions, every contributor will be asked to agree to the [Contributor License Agreement](CLA.md) first. You keep ownership of your work; you grant the project a broad license — including the right to sublicense it for the enterprise edition. See [CLA.md](CLA.md) for the full terms and why a CLA (rather than a DCO) is required.
+
+## Security
+
+Found a security vulnerability? **Don't open a public issue.** Follow the private reporting process in [SECURITY.md](SECURITY.md).
+
 ## Code conventions
 
 - **ESM throughout** — use `.js` extensions in relative imports (e.g., `import { foo } from "./bar.js"`)

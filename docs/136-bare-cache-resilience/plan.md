@@ -16,7 +16,7 @@ Looking deeper, the response body — and any other surface that echoed the
 remote URL — also contained the user's GitHub PAT:
 
 ```
-https://x-access-token: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@github.com/owner/repo.git
+https://x-access-token:ghp_REDACTED@github.com/owner/repo.git
 ```
 
 Two distinct bugs, with one common root in how the bare cache is managed:
