@@ -93,7 +93,7 @@ below (redaction pipeline, consent card, filing) is identical for both.
 |---|---|---|
 | Title + description | Agent, from the conversation | The user's own words, summarized. |
 | What happened / repro | Agent — it authors the body and chooses what's relevant | No separate excerpt-extraction step; whatever the agent includes is then redacted. |
-| ShipIt platform version / build | **Orchestrator, server-side** | The user can't know the platform commit; the server stamps it. Not from the session container. |
+| ShipIt build (commit SHA) | **Orchestrator, server-side** | The bare `SHIPIT_BUILD_ID` commit (stamped at image-build from `git rev-parse HEAD`) — the version actually running. `unknown` when unset (dev/local builds). No checkout cross-reference, so no "approximate" state. Not from the session container. |
 | Browser / environment | Client-supplied, coarse | UA family, viewport — no fingerprinting. |
 | Author identity | GitHub (the user's own account) | The issue is attributed to the filer's real GitHub identity — same as a hand-filed issue. Expected and fine. |
 
@@ -300,8 +300,6 @@ detection, issue locking, and the maintainers' ability to block an account.
 - **Sending the full session or chat history** — only a redacted, scoped excerpt.
 
 ## Open questions
-- How "ShipIt build/version" is exposed to the orchestrator in a non-dogfood
-  deployment.
 - Exact upstream repo + label convention for incoming user reports.
 
 ## Key files

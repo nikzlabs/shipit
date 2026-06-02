@@ -21,7 +21,7 @@
 - [ ] WS handler `report_shipit_bug` (draft → emit card, no issue created)
 - [ ] WS handler `submit_bug_report` (confirm → create issue → emit result)
 - [ ] WS message types: `bug_report_card`, `bug_report_filed`, `bug_report_failed`, `submit_bug_report`
-- [ ] Server stamps platform build/version (not from session container)
+- [ ] Server stamps the bare `SHIPIT_BUILD_ID` commit SHA (or `unknown` if unset); not from session container, no checkout cross-reference
 - [ ] No custom rate-limiting — rely on GitHub's native abuse handling
 
 ## Agent
@@ -38,5 +38,4 @@
 - [ ] Update `docs/023` (redaction engine now exists) cross-ref
 
 ## Open questions
-- [ ] How "ShipIt build/version" is exposed to the orchestrator in a non-dogfood deployment
 - [ ] Exact upstream repo + label convention for incoming user reports
