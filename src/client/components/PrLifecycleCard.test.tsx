@@ -411,7 +411,7 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    expect(screen.getByText("Fix CI")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fix CI" })).toHaveAttribute("title", "Fix CI");
   });
 
   it("shows auto-fix toggle in the top-bar overflow whenever the session has a remote, regardless of CI state", async () => {
@@ -1003,7 +1003,9 @@ describe("PrLifecycleCard — open PR details", () => {
     const { container } = render(
       <PrLifecycleCard sessionId="s1" onOpenDetails={onOpenDetails} />,
     );
-    fireEvent.click(container.firstChild as HTMLElement);
+    const card = container.firstChild as HTMLElement;
+    expect(card).not.toHaveAttribute("title", "Open PR details");
+    fireEvent.click(card);
     expect(onOpenDetails).toHaveBeenCalledTimes(1);
   });
 

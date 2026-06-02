@@ -194,6 +194,8 @@ export function FixCIButton({ sessionId }: { sessionId: string }) {
       size="sm"
       onClick={handleFixCI}
       disabled={fixingCI}
+      title={fixingCI ? "Fixing CI" : "Fix CI"}
+      aria-label={fixingCI ? "Fixing CI" : "Fix CI"}
       className="shrink-0 h-6"
     >
       {fixingCI ? "Fixing..." : "Fix CI"}
