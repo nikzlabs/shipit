@@ -75,9 +75,12 @@ installed, which is the blocker below.
    adding Python templates is additive.
 
 3. **`generatePackageLock()` hardcodes npm** (`templates.ts:81` — `npm install
-   --package-lock-only`). It runs for templates that scaffold a `package.json`. A
-   Python template must not trigger it; the call site needs to gate on whether the
-   template is a Node project.
+   --package-lock-only`). It runs for templates that scaffold a `package.json`,
+   and it assumes **npm specifically**: a web template that wants pnpm or yarn
+   still gets a `package-lock.json` generated, which is the wrong lockfile for
+   that project. So this path has two problems we should fix together — it must
+   (a) not fire at all for Python templates, and (b) generate the *correct*
+   lockfile for the JS package manager a web template actually uses.
 
 4. **No shared pip cache.** npm projects get a shared `dep-cache` volume; Python
    would re-download wheels on every fresh session activation. Nice-to-have, not a
@@ -109,17 +112,41 @@ So the template-scaffolded compose service installs into and runs from a
 `.venv`, mirroring how the Node story keeps `node_modules` in the workspace.
 `agent.install` does the same so the agent's own shell can import the deps.
 
-> Open question to validate during implementation: whether to standardize on
-> `python3 -m venv .venv` + `pip`, or adopt `uv` (much faster, single static
-> binary, handles venv + install + lock). `uv` would also give us a real lockfile
-> story (gap #4-adjacent). Leaning toward `uv` baked into the image; see Checklist.
+### The package manager is the project's choice, not ShipIt's
+
+ShipIt should **not** mandate one Python toolchain. The dependency manager is
+determined by what's in the repo, exactly as it is for JS (a `pnpm-lock.yaml`
+means pnpm): a `uv.lock` means `uv`, a `poetry.lock` means Poetry, a bare
+`requirements.txt` means `pip`. A custom project that already standardized on `uv`
+brings its `uv.lock`, and ShipIt must respect it rather than forcing pip — the same
+way it respects yarn/pnpm for web projects (see the lockfile section above).
+
+Two consequences:
+
+- **The image provides the tools, it doesn't pick the winner.** Install `python3-pip`
+  + `python3-venv` so stdlib venv + pip always work, *and* the `uv` binary — `uv` is
+  a single static binary with a trivial footprint, it dramatically speeds up cold
+  installs (the first-install-latency risk below), and shipping it means a repo with
+  a `uv.lock` "just works" without the agent having to bootstrap a package manager.
+  Providing both costs us almost nothing and removes a decision the platform has no
+  business making.
+- **`agent.install` / compose just run whatever the repo implies.** The agent (or a
+  template's `shipit.yaml`) picks the command — `uv sync`, `pip install -r
+  requirements.txt`, `poetry install` — based on the project's own lockfile. ShipIt
+  doesn't enforce one.
+
+This only leaves a default-for-our-own-templates choice (what the *scaffolded*
+Streamlit/FastAPI starters use). That's a much smaller decision than a global
+standard — leaning `uv` for the templates because it's fastest and gives them a
+real lockfile out of the box, but it does not constrain user projects.
 
 ### Image changes
 
-Add to both `docker/Dockerfile.session-worker.dev` and `.prod` the packages needed
-for Python web apps: `python3-pip` and `python3-venv` (and, if we adopt it, the
-`uv` binary). Keep the layer in the existing apt line to avoid an extra cache
-layer. This is the single required change that unblocks everything else.
+Add to both `docker/Dockerfile.session-worker.dev` and `.prod` the tools that let
+any Python project install: `python3-pip` and `python3-venv` via the existing apt
+line, plus the `uv` binary (so repos with a `uv.lock` work without bootstrapping).
+Per the section above, the goal is to *provide* the toolchain, not pick one for the
+user. This is the single required change that unblocks everything else.
 
 ### Templates
 
@@ -144,13 +171,26 @@ Initial set (ordered by leverage):
 Ship Streamlit + FastAPI first (highest demand, covers "data app" and "API
 service"); Gradio and Dash follow the same pattern.
 
-### `generatePackageLock()` gating
+### Lockfile generation — generalize beyond `npm`
 
-Gate the call so it only runs for templates that actually scaffold a
-`package.json`. Simplest: have the template-creation service check for a
-`package.json` key in `template.files` (or a `language`/`runtime` field added to
-`ProjectTemplate`) before calling `generatePackageLock()`. Python templates skip
-it. If we adopt `uv`, a follow-up can generate a `uv.lock` analogously.
+`generatePackageLock()` is the one genuinely npm-coupled spot, and the fix has two
+halves:
+
+- **Skip for non-JS templates.** Gate on whether the template scaffolds a
+  `package.json` (check for the key in `template.files`, or read a `runtime`/
+  `language` discriminator added to `ProjectTemplate`). Python templates never call
+  it.
+- **Pick the right tool for JS templates.** Today it always runs `npm install
+  --package-lock-only` even for a template that uses pnpm or yarn, producing the
+  wrong lockfile. Detect the package manager from the template — most robustly from
+  a `packageManager` field in the scaffolded `package.json` (the corepack
+  convention, e.g. `"packageManager": "pnpm@9.x"`), falling back to npm — and run
+  the matching lockfile-only command: `npm install --package-lock-only`,
+  `pnpm install --lockfile-only`, or `yarn install --mode update-lockfile`. If a
+  template already ships its own lockfile, skip regeneration entirely.
+
+For Python, lockfile generation is **not** ShipIt's job to impose — see the next
+section; the project brings its own (`requirements.txt`, `uv.lock`, `poetry.lock`).
 
 ### Docs
 
@@ -162,8 +202,9 @@ projects work reliably.
 
 ## Scope
 
-**In scope:** image fix (pip/venv), Streamlit + FastAPI templates (Gradio/Dash to
-follow), `generatePackageLock()` gating, platform docs.
+**In scope:** image fix (pip/venv + uv), Streamlit + FastAPI templates (Gradio/Dash
+to follow), generalizing `generatePackageLock()` (skip for Python, pick the right
+lockfile for npm/pnpm/yarn), platform docs.
 
 **Out of scope (follow-ups):** shared pip/uv cache volume, fast-install path
 optimization for Python (today it falls back to a full install — correct, just
@@ -173,8 +214,9 @@ non-web Python (notebooks, CLI tools).
 ## Key files
 
 - `docker/Dockerfile.session-worker.dev:5`, `docker/Dockerfile.session-worker.prod:26`
-  — add `python3-pip`, `python3-venv` (+ optional `uv`).
-- `src/server/orchestrator/templates.ts:81` — `generatePackageLock()`; gate its call site.
+  — add `python3-pip`, `python3-venv`, and the `uv` binary.
+- `src/server/orchestrator/templates.ts:81` — `generatePackageLock()`; gate its call
+  site for non-JS templates **and** make it package-manager-aware (npm/pnpm/yarn).
 - `src/server/orchestrator/templates-python.ts` — **new**, Python starter templates.
 - `src/server/orchestrator/templates.ts:23` — register the Python templates array.
 - `src/server/orchestrator/services/templates.ts` — template-creation service; gate lock generation.
@@ -183,8 +225,10 @@ non-web Python (notebooks, CLI tools).
 
 ## Risks / open questions
 
-- **`uv` vs stdlib `venv`+`pip`** — decide before writing templates; it changes the
-  image, the `agent.install` lines, and the lockfile story.
+- **Default toolchain for our own templates** — the image ships pip+venv *and* uv,
+  and user projects pick their own manager from their lockfile, so this is no longer
+  a platform-wide standardization decision. The only thing left to settle is what the
+  *scaffolded* starters default to (leaning `uv`); it doesn't constrain user repos.
 - **Streamlit/Gradio behind the preview proxy** — both use websockets for live
   updates. The proxy's Vite-targeted HMR patch shouldn't touch them, but this needs
   a real browser-preview smoke test, not just "it returns 200."

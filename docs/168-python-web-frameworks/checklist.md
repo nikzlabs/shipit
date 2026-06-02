@@ -1,12 +1,14 @@
 # Python web app frameworks — checklist
 
 ## Decisions
-- [ ] Decide `uv` vs stdlib `venv`+`pip` (affects image, templates, install lines, lockfile story)
+- [ ] Decide default toolchain for our *own* scaffolded templates (leaning `uv`) — does NOT constrain user repos; the image ships pip+venv+uv and projects pick via their lockfile
 
 ## Image
-- [ ] Add `python3-pip` + `python3-venv` (and optional `uv`) to `Dockerfile.session-worker.dev`
-- [ ] Same to `Dockerfile.session-worker.prod`
+- [ ] Add `python3-pip` + `python3-venv` to `Dockerfile.session-worker.dev`
+- [ ] Add the `uv` binary to `Dockerfile.session-worker.dev`
+- [ ] Same two changes to `Dockerfile.session-worker.prod`
 - [ ] Verify a venv `pip install` succeeds in a session (PEP 668 no longer blocks)
+- [ ] Verify a repo with `uv.lock` installs via `uv sync`
 
 ## Templates
 - [ ] New `templates-python.ts` with Streamlit starter (app + requirements + compose + shipit.yaml)
@@ -18,7 +20,9 @@
 
 ## Lock generation
 - [ ] Gate `generatePackageLock()` so it only runs for `package.json`-bearing templates
-- [ ] Confirm Python templates skip npm lock generation
+- [ ] Confirm Python templates skip JS lock generation
+- [ ] Make lock generation package-manager-aware: detect npm/pnpm/yarn (via `packageManager` field) and run the matching lockfile-only command
+- [ ] Skip regeneration when a template already ships its own lockfile
 
 ## Docs
 - [ ] Add Python section to `shipit-docs/compose.md` (venv pattern, 0.0.0.0, ports, Streamlit headless)
