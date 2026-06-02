@@ -43,6 +43,18 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
     const nonSubagentTools = msg.toolUse?.filter((t) => !SUBAGENT_TOOLS.has(t.name)) ?? [];
     const groupableTools = nonSubagentTools.filter((t) => !STANDALONE_TOOLS.has(t.name));
     const canGroupTools = msg.role === "assistant" && groupableTools.length > 0;
+    // Inline cards (docs/151 review, docs/163 voice note, docs/164 bug report,
+    // session spawn success/failure, fork child) ride on a message whose `text`
+    // is empty and which carries no tools — the card field IS the content. Such
+    // a message must still emit a `message` element, otherwise the grouping
+    // layer silently drops it and the card never renders.
+    const hasCardContent =
+      msg.agentReview !== undefined
+      || msg.voiceNote !== undefined
+      || msg.bugReport !== undefined
+      || msg.spawnedSession !== undefined
+      || msg.spawnFailed !== undefined
+      || msg.forkChild !== undefined;
 
     if (canGroupTools) {
       // Emit a bubble only if the message has visible non-tool content.
@@ -76,7 +88,7 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
           elements.push({ kind: "standalone-tool", tool, result, streaming: !!msg.streaming, messageIndex: i });
         }
       }
-    } else if (nonSubagentTools.length > 0 || msg.text.trim() || msg.images?.length || msg.files?.length || msg.role === "user") {
+    } else if (nonSubagentTools.length > 0 || msg.text.trim() || msg.images?.length || msg.files?.length || msg.role === "user" || hasCardContent) {
       flushTools();
       const hasVisibleContent = !!msg.text.trim() || !!msg.images?.length || !!msg.files?.length;
       // When a message has ONLY standalone tools (ExitPlanMode, AskUserQuestion)

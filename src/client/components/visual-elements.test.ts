@@ -37,6 +37,66 @@ describe("buildVisualElements", () => {
     });
   });
 
+  describe("inline cards on empty-text messages", () => {
+    // Cards (review, voice note, bug report, session spawn, fork child) ride on
+    // an assistant message whose `text` is empty and which carries no tools —
+    // the card field IS the content. The grouping layer must still emit a
+    // `message` element for them, or the card silently never renders.
+    const card = (over: Partial<ChatMessage>): ChatMessage => ({
+      role: "assistant",
+      text: "",
+      ...over,
+    });
+
+    const cases: { name: string; msg: ChatMessage }[] = [
+      {
+        name: "voiceNote",
+        msg: card({
+          voiceNote: {
+            id: "voice-1",
+            headline: "Done — want me to open a PR?",
+            needsAttention: true,
+            kind: "authored",
+            createdAt: "2026-06-01T00:00:00.000Z",
+          },
+        }),
+      },
+      {
+        name: "agentReview",
+        msg: card({
+          agentReview: {
+            reviewId: "r1",
+            filePath: "a.ts",
+            fileType: "code",
+            findingCount: 2,
+            snapshotHash: "abc",
+            createdAt: "2026-06-01T00:00:00.000Z",
+          },
+        }),
+      },
+      { name: "bugReport", msg: card({ bugReport: { cardId: "b1" } }) },
+      {
+        name: "spawnFailed",
+        msg: card({
+          spawnFailed: { reason: "error", message: "boom", statusCode: 500, failedAt: "2026-06-01T00:00:00.000Z" },
+        }),
+      },
+    ];
+
+    for (const { name, msg } of cases) {
+      it(`emits a message element for an empty-text ${name} card`, () => {
+        const elements = buildVisualElements([msg]);
+        expect(elements).toEqual([{ kind: "message", index: 0, hideTools: false }]);
+      });
+    }
+
+    it("still emits no element for a genuinely empty assistant message", () => {
+      // Guard the fix: empty text + no tools + no card must remain dropped.
+      const elements = buildVisualElements([{ role: "assistant", text: "" }]);
+      expect(elements).toEqual([]);
+    });
+  });
+
   describe("basic tool grouping", () => {
     it("groups a single tool-only message into a tool-group", () => {
       const elements = buildVisualElements([toolMsg([tool("t1", "Bash")])]);

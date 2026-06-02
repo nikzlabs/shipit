@@ -120,11 +120,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         isError: true,
       };
     }
+    // Report the orchestrator's real delivery outcome. The route always returns
+    // an explicit `delivered` boolean on its 2xx path; treat a missing field as
+    // NOT delivered rather than defaulting to true, so a genuine no-sink /
+    // torn-down-runner case isn't masked as success (this masking made a native
+    // render bug hard to diagnose — see docs/163).
+    const delivered = body.delivered === true;
     return {
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify({ status: "delivered", delivered: body.delivered ?? true }),
+          text: JSON.stringify({ status: delivered ? "delivered" : "not_delivered", delivered }),
         },
       ],
     };
