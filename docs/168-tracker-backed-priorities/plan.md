@@ -72,6 +72,9 @@ These were settled in the design conversation that produced this doc:
 | Docs list grouping (no status) | **By checklist state** — Active (incomplete or no checklist) vs Done (100%), Done collapsed | Checklist is local and needs no tracker round-trip to group; the issue pointer is for navigation/chips, not grouping. |
 | Issues view scope (v1) | **Read + start session** | Smaller, faster; write-back is a follow-up. |
 | Tracker layout | **A top-level "Issues" tab with one sub-tab per tracker** (Linear, GitHub) | Mirrors SHI-28's split between internal planning and external bugs, and lets new trackers register and appear as sub-tabs with no UI rework. |
+| Repo → tracker mapping | **Hybrid**: GitHub repo defaults to the repo's own git remote (shipit.yaml override optional); Linear workspace/team binding in ShipIt settings | Each binding lives at its natural scope. GitHub's "which repo" is already a fact of the checkout, so it needs no config by default; a Linear workspace is deployment-wide, not a per-repo fact. |
+| Issue refresh | **Fetch on open + manual refresh button** (no background poller in v1) | Zero background load; the list is as fresh as the last open/click. Webhooks/polling are a possible follow-up. |
+| Linear `issue:` pointer | **Full URL / fully-qualified always** | Unambiguous across any number of Linear workspaces a deployment might wire up; no single-workspace assumption to break later. |
 
 ## The doc side
 
@@ -86,9 +89,14 @@ issue: SHI-28                            # NEW — pointer to the tracking issue
 ```
 
 - **Removed:** `status`, `priority`.
-- **`issue:`** accepts a tracker-qualified identifier. Linear: `SHI-28` (or a
-  full Linear URL). GitHub: `owner/repo#123` (or a full issue URL). The tracker
-  is inferred from the shape; an explicit `tracker:` is unnecessary for v1.
+- **`issue:`** accepts a tracker-qualified pointer.
+  - **Linear: always a full URL** (e.g.
+    `https://linear.app/shipit-ai/issue/SHI-28/...`). Bare `SHI-28` is *not*
+    accepted — the full URL keeps the pointer unambiguous if a deployment ever
+    wires up more than one Linear workspace.
+  - **GitHub:** `owner/repo#123` or a full issue URL.
+  - The tracker is inferred from the shape; an explicit `tracker:` is
+    unnecessary.
 - ShipIt resolves the pointer against the configured trackers and renders the
   linked issue's **priority + status as a chip** on the doc card, plus
   **jump-to-issue** and **start-session** affordances.
@@ -152,9 +160,16 @@ src/server/orchestrator/trackers/
 - **Auth + app registration** reuse `docs/156`'s per-deployment app
   registration and the user's own OAuth token (no server-held credential).
   Linear via GraphQL; GitHub via `GitHubAuthManager`.
-- **Repo → tracker mapping** (this repo uses Linear team X + GitHub repo Y)
-  reuses `156`'s per-team/repo resolution; exact config location (shipit.yaml
-  vs settings) is an open detail below.
+- **Repo → tracker mapping (hybrid):**
+  - **GitHub** defaults to the **repo's own git remote** — the session already
+    knows its `owner/repo`, so no config is needed in the common case. An
+    optional `shipit.yaml` key can override it (e.g. issues live in a different
+    repo than the code).
+  - **Linear** workspace/team binding lives in **ShipIt settings**, since a
+    Linear workspace is deployment-wide, not a per-repo fact.
+- **Refresh model:** issues are **fetched when the Issues tab opens**, with a
+  **manual refresh button** — no background poller in v1. Keeps background load
+  at zero; webhooks or polling are a possible follow-up if staleness bites.
 
 ### Client
 
@@ -217,18 +232,21 @@ Docs/config:
 - **`docs/080-unify-features-docs`**, **`docs/138-doc-frontmatter-description`**
   (done) — the current frontmatter/doc-discovery system being amended.
 
+## Resolved (was open)
+
+1. **Repo → tracker mapping** — *hybrid.* GitHub repo is deduced from the
+   session's own git remote with an optional `shipit.yaml` override; Linear
+   workspace/team binding lives in ShipIt settings.
+2. **Issue refresh cadence** — *fetch on tab open + manual refresh button*; no
+   background poller in v1. Webhooks/polling are a deferred follow-up.
+3. **Linear `issue:` pointer format** — *always a full Linear URL*; bare IDs are
+   not accepted, so the pointer stays unambiguous across workspaces.
+
 ## Open questions
 
-1. **Repo → tracker mapping config location** — `shipit.yaml` (in-repo, travels
-   with the project) vs ShipIt settings (per-deployment). Leaning `shipit.yaml`
-   for the GitHub-repo binding; Linear team binding may need settings since it's
-   workspace-scoped. Needs a decision before the adapter config is built.
-2. **Issue refresh cadence** — poll vs webhook vs SSE push. `pr-status-poller`
-   is a precedent for polling; webhooks need the per-deployment app to register
-   them.
-3. **Linear `issue:` pointer format** — bare `SHI-28` is ambiguous across
-   multiple Linear teams/workspaces if a deployment ever has more than one.
-   v1 assumes a single configured Linear workspace per repo.
-4. **`status: done` for *this* doc** — once shipped, doc priority/status no
+1. **`status: done` for *this* doc** — once shipped, doc priority/status no
    longer exists, so this very doc's `status`/`priority` frontmatter becomes
    inert under its own feature. Handle in the migration cleanup pass.
+2. **Webhook follow-up trigger** — decide later whether "fetch on open" staleness
+   is acceptable long-term or whether the per-deployment app should register
+   webhooks for push updates.

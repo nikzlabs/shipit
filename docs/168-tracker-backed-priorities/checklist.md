@@ -8,11 +8,12 @@
 - [x] Docs list grouped by checklist state (Active vs Done-collapsed)
 - [x] Issues view v1 = read + start session (no write-back)
 - [x] Top-level Issues tab with one sub-tab per tracker (Linear, GitHub)
+- [x] Repo → tracker mapping: hybrid (GitHub from git remote + optional shipit.yaml override; Linear in settings)
+- [x] Refresh model: fetch on tab open + manual refresh button (no v1 poller)
+- [x] Linear `issue:` pointer: always a full Linear URL
 
-## Open decisions (before build)
-- [ ] Repo → tracker mapping config location (shipit.yaml vs settings)
-- [ ] Issue refresh cadence (poll vs webhook vs SSE)
-- [ ] Linear `issue:` pointer disambiguation across teams/workspaces
+## Open decisions (deferred)
+- [ ] Webhook/polling follow-up if fetch-on-open staleness proves insufficient
 
 ## Doc side
 - [ ] `markdown.ts`: stop parsing/validating `status` & `priority`
@@ -30,7 +31,8 @@
 - [ ] `trackers/registry.ts` (drives sub-tabs)
 - [ ] Linear adapter (user OAuth + GraphQL)
 - [ ] GitHub Issues adapter (reuse `GitHubAuthManager`)
-- [ ] `GET /api/issues?tracker=...` route + per-repo mapping resolution
+- [ ] `GET /api/issues?tracker=...` route: GitHub repo from git remote (+ shipit.yaml override), Linear workspace from settings
+- [ ] Manual refresh action + fetch-on-tab-open (no background poller)
 - [ ] `IssuesViewer.tsx` (tab + sub-tab switcher + priority-sorted list)
 - [ ] `issues-store.ts` (per-tracker lists, HTTP + SSE refresh)
 - [ ] "Start session" row action → reuse `docs/156` session-from-issue seeding
