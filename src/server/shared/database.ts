@@ -405,6 +405,13 @@ const MIGRATIONS: Migration[] = [
       "UPDATE sessions SET user_archived = 0, disk_tier = 'evicted' WHERE archived = 1 AND merged_at IS NOT NULL",
     );
   },
+  // docs/163 — persist voice-note cards so they survive a history reload.
+  // Without this the inline card renders live but vanishes on the next
+  // loadSessionHistory (WS reconnect / refresh / restart), which rebuilds the
+  // transcript from the DB.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN voice_note TEXT");
+  },
 ];
 
 export class DatabaseManager {
