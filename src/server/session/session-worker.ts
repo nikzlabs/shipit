@@ -28,6 +28,7 @@ import type {
   AgentMcpReviewBridge,
   AgentMcpPresentBridge,
   AgentMcpVoiceBridge,
+  AgentMcpAskBridge,
   AgentMcpWriteResult,
   McpServerConfig,
 } from "./agents/agent-process.js";
@@ -202,6 +203,7 @@ export class SessionWorker extends EventEmitter {
       reviewBridge: this.reviewBridgePaths(),
       presentBridge: this.presentBridgePaths(),
       voiceBridge: this.voiceBridgePaths(),
+      askBridge: this.askBridgePaths(),
       onServerFailed: (name, reason) => {
         this.broadcastSSE({
           type: "mcp_server_status",
@@ -251,6 +253,21 @@ export class SessionWorker extends EventEmitter {
   private voiceBridgePaths(): AgentMcpVoiceBridge | null {
     const sessionDir = path.dirname(fileURLToPath(import.meta.url));
     const bridgePath = path.join(sessionDir, "mcp-voice-bridge.ts");
+    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
+    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
+    return { tsxBin, bridgePath };
+  }
+
+  /**
+   * Resolve the absolute paths needed to launch the ask-user MCP bridge
+   * (docs/147). Same lifecycle and graceful-degradation rules as the other
+   * bridges — if the bridge or `tsx` is missing, return null and the adapter
+   * omits the entry rather than failing agent start. Only Codex registers it;
+   * Claude has a native `AskUserQuestion` tool and ignores this.
+   */
+  private askBridgePaths(): AgentMcpAskBridge | null {
+    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
+    const bridgePath = path.join(sessionDir, "mcp-ask-bridge.ts");
     const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
     if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
     return { tsxBin, bridgePath };

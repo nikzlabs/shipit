@@ -287,6 +287,19 @@ export interface AgentMcpVoiceBridge {
 }
 
 /**
+ * Resolved paths to the internal ask-user MCP bridge (docs/147). Same shape and
+ * lifecycle as the other bridges. Registered only by adapters that LACK a
+ * native structured-question tool (Codex): it exposes a normalized
+ * `AskUserQuestion` tool so the orchestrator's existing question/interrupt/
+ * resume flow can be reused. Claude ignores it — it has `AskUserQuestion`
+ * natively.
+ */
+export interface AgentMcpAskBridge {
+  tsxBin: string;
+  bridgePath: string;
+}
+
+/**
  * Per-spawn context the worker passes into `AgentProcess.writeMcpConfig()`.
  *
  * The adapter owns the CLI-specific wire format (Claude: `--mcp-config` JSON
@@ -320,6 +333,12 @@ export interface AgentMcpWriteContext {
    * CLI can call the built-in `voice_note` tool.
    */
   voiceBridge: AgentMcpVoiceBridge | null;
+  /**
+   * The internal ask-user bridge (docs/147), or `null` when the worker can't
+   * locate the bridge files. Only adapters without a native structured-question
+   * tool register it (Codex); Claude ignores it.
+   */
+  askBridge: AgentMcpAskBridge | null;
   /**
    * Surface a server-level failure to the worker so it can broadcast an
    * `mcp_server_status` SSE event. Called when an entry has to be dropped

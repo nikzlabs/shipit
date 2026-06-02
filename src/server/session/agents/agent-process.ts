@@ -20,6 +20,7 @@ export type {
   AgentMcpReviewBridge,
   AgentMcpPresentBridge,
   AgentMcpVoiceBridge,
+  AgentMcpAskBridge,
   AgentMcpWriteContext,
   AgentMcpWriteResult,
 } from "../../shared/types/agent-types.js";
