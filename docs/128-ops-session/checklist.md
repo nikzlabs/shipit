@@ -111,5 +111,5 @@
 
 ## Remaining
 
-- [ ] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
-      in a live environment (the gate is unit-tested; live verification pending).
+- [x] Confirm `kind: "ops"` server-side creation path is wired to the Settings button end-to-end
+      in a live environment (live re-audit on the branch-deployed host passed — see "Live re-audit").
