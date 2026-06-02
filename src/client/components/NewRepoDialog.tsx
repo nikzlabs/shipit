@@ -31,6 +31,10 @@ const ICON_MAP: Record<string, string> = {
   hono: "\uD83D\uDD36",
   fastify: "\u26A1",
   node: "\uD83D\uDCBB",
+  streamlit: "\uD83C\uDF88",
+  fastapi: "\uD83D\uDE84",
+  gradio: "\uD83C\uDF9B\uFE0F",
+  dash: "\uD83D\uDCC8",
 };
 
 export interface NewRepoDialogProps {

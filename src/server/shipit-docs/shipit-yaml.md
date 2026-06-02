@@ -67,6 +67,13 @@ values fall back to defaults.
   the marker.
 - When `install` is a string, it's treated as a single-element list.
 
+> **Python projects usually have no `install` step.** A Python virtualenv is
+> pinned to the interpreter that creates it, so deps must be installed by the
+> `python:3.12` preview service, not the agent container. The preview service
+> installs its own deps in its compose `command`; `shipit.yaml` is just
+> `compose: docker-compose.yml`. See
+> [compose.md](compose.md) → "Python: the preview service owns its install".
+
 ### `compose` (optional)
 
 Path to a Docker Compose file, relative to workspace root. Accepts a string

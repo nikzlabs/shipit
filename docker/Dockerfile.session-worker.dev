@@ -2,7 +2,18 @@ FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45ef
 
 # bubblewrap (bwrap): Codex probes for it on PATH at startup and logs an
 # ERROR + configWarning when it's missing (falling back to its bundled copy).
-RUN apt-get update && apt-get install -y git curl python3 make g++ zip unzip ripgrep bubblewrap && rm -rf /var/lib/apt/lists/*
+# python3-pip + python3-venv let Python web projects (Streamlit, FastAPI, Gradio,
+# Dash — see docs/168) create a venv and install deps; on Debian bookworm these
+# are separate packages from python3, and PEP 668 means a global pip install is
+# refused outside a venv, so a venv is the supported path.
+RUN apt-get update && apt-get install -y git curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap && rm -rf /var/lib/apt/lists/*
+
+# uv (Astral) — a single static binary that resolves/installs Python deps far
+# faster than pip and reads uv.lock natively, so a repo standardized on uv "just
+# works" without the agent bootstrapping a package manager. ShipIt provides the
+# tool but never picks the winner: the project's lockfile decides. See docs/168.
+# TODO: pin like the agent CLIs once a Renovate policy covers it.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 # Agent CLIs: lockfile-pinned, integrity-verified install (docs/141). See the
 # canonical comment in Dockerfile.session-worker.prod. `--ignore-scripts` blocks
