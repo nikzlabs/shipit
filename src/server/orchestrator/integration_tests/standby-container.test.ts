@@ -535,7 +535,7 @@ describe("standby container pre-warming", () => {
 // Regression: warm-pool standby containers were created via
 // `containerManager.buildConfig(...)` without passing `memoryLimit` /
 // `cpuQuota` / `pidsLimit`, so they silently fell back to the manager's
-// defaults (1 GiB / 0.5 CPU / 256 pids). A workspace declaring
+// defaults (1 GiB / 0.5 CPU / 4096 pids). A workspace declaring
 // `agent.memory: 3072` in shipit.yaml would still get a 1 GiB container
 // from the warm pool, OOMing on first turn (npm install + claude
 // competing inside the under-provisioned cgroup — see the field report

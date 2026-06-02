@@ -15,7 +15,7 @@ version: 1
 agent:
   memory: 2048
   cpu: 1.0
-  pids: 512
+  pids: 4096
   install:
     - npm install
     - npx prisma generate
@@ -42,7 +42,7 @@ Configures the agent container (runs the AI coding agent — Claude Code or Code
 agent:
   memory: 2048        # Memory in MB (default: 1536, max: 4096)
   cpu: 1.0            # CPU cores as float (default: 0.5, max: 4)
-  pids: 512           # Max processes (default: 256, max: 2048)
+  pids: 4096          # Max processes (default: 4096, max: 4096)
   install:            # Install commands, run sequentially
     - npm install
     - npx prisma generate
@@ -52,7 +52,7 @@ agent:
 |-------|------|---------|-------------|
 | `memory` | integer | 1536 | Memory limit in MB |
 | `cpu` | float | 0.5 | CPU cores |
-| `pids` | integer | 256 | Max processes |
+| `pids` | integer | 4096 | Max processes |
 | `install` | string or string[] | none | Install commands, run sequentially |
 
 Resource values are capped at deployment-level maximums. Invalid or negative

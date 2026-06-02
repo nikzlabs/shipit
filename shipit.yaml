@@ -6,7 +6,7 @@ agent:
   # OOM-killing one of them mid-run. The extra 2 GiB gives that headroom.
   memory: 6144
   cpu: 2.0
-  pids: 2048
+  pids: 4096
   # Keep this as a bare package-manager command so the session worker's
   # lockfile-keyed node_modules cache can materialize deps instead of
   # re-running the install. Shell wrappers intentionally bypass that fast path.
