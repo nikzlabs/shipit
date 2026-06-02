@@ -1,5 +1,5 @@
 ---
-status: planned
+status: done
 priority: low
 description: Codex shares the same architectural OAuth-refresh vulnerability as Claude (per-session credentials, single shared NAT egress). It's not currently manifest, but if OpenAI changes its policies the symptom would mirror docs/153. Track the readiness work so we can flip the switch quickly when needed.
 ---
@@ -170,9 +170,32 @@ clear until both implementations exist.
 ## Pointer
 
 - docs/153 plan: `../153-orchestrator-owned-claude-oauth-refresh/plan.md`
-- Claude refresher implementation: `src/server/orchestrator/claude-oauth-refresher.ts`
+- Claude refresher implementation: `src/server/orchestrator/agents/claude/oauth-refresher.ts`
+- Codex refresher implementation: `src/server/orchestrator/agents/codex/oauth-refresher.ts`
 - Codex sync code (already in place):
   - `readCodexTokenFreshness` in `src/server/orchestrator/session-credentials.ts`
   - `syncProviderAccountTokenIn` / `syncProviderAccountTokenBack` /
     `repushProviderAccountToken` — already account-aware for Codex
 - Codex CLI install: `docker/agent-cli/package.json`
+
+## Implemented notes
+
+The Codex refresher now mirrors docs/153's scheduler/single-flight/backoff
+shape and is wired in `src/server/orchestrator/index.ts` beside the Claude
+refresher. It runs only in containerized runtime, iterates Codex provider
+accounts, refreshes with `HOME=<accountRoot>`, repushes rotated account tokens
+to pinned Codex sessions, and emits:
+
+- `codex_account_unauthenticated` / `codex_account_authenticated`
+- unified `agent_auth_failed` with `{ agentId: "codex", reason: "revoked" }`
+
+The dev container used for implementation did not have `codex` on `PATH`, so
+live CLI inventory was not possible in-session. The chosen commands use shapes
+already documented or used elsewhere in ShipIt:
+
+- Tier 1: `codex login status`
+- Tier 2: `codex exec --skip-git-repo-check "ok"`
+
+Unlike Claude, the Codex refresher does not append Claude-specific
+`--debug api --debug-file ...` flags. Failure classification is based on
+captured stdout/stderr plus the authoritative auth-file freshness delta.
