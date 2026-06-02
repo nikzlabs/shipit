@@ -28,7 +28,7 @@ import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
-import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, AgentDispatchOptions } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedVoiceNote, AgentDispatchOptions } from "./session-runner.js";
 import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
 import { trySteerDispatch } from "./dispatch-steering.js";
 import type { SSEEvent } from "./sse-client.js";
@@ -263,6 +263,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get steeredMessages(): SteeredMessage[] { return this.turn.steeredMessages; }
   set steeredMessages(m: SteeredMessage[]) { this.turn.steeredMessages = m; }
+
+  get voiceNotes(): RecordedVoiceNote[] { return this.turn.voiceNotes; }
+  set voiceNotes(m: RecordedVoiceNote[]) { this.turn.voiceNotes = m; }
 
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }

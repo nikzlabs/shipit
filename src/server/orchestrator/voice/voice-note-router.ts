@@ -23,8 +23,7 @@
  */
 
 import type { CredentialStore } from "../credential-store.js";
-import type { ChatHistoryManager } from "../chat-history.js";
-import type { SessionRunnerInterface } from "../session-runner.js";
+import type { SessionRunnerInterface, RecordedVoiceNote } from "../session-runner.js";
 import type {
   VoiceNotePayload,
   VoiceNoteSource,
@@ -74,16 +73,29 @@ export function hasAuthoredVoiceNoteThisTurn(runner: object): boolean {
   return turnStates.get(runner)?.authored ?? false;
 }
 
+/**
+ * docs/163 — record a voice note on the runner for in-band turn persistence,
+ * anchored after the persistable assistant groups produced so far. The anchor
+ * lets `buildTurnMessages` re-interleave the card at its true transcript
+ * position on every `replaceInProgress` rebuild — mirroring
+ * `recordSteeredMessage`. This replaces the old out-of-band `append`, which
+ * gave the card an early row id that the next rebuild reordered behind every
+ * reborn assistant row, floating the card above the whole turn on reload (see
+ * `RecordedVoiceNote`). Lives here (not with `recordSteeredMessage` in
+ * `agent-listeners`) to avoid a value import cycle with this module.
+ */
+export function recordVoiceNote(
+  runner: Pick<SessionRunnerInterface, "chatMessageGroups" | "voiceNotes">,
+  note: RecordedVoiceNote["note"],
+): void {
+  const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
+  runner.voiceNotes = [...runner.voiceNotes, { afterGroupIndex, note }];
+}
+
 export interface RouteVoiceNoteDeps {
   runner: SessionRunnerInterface;
   sessionId: string;
   credentialStore: CredentialStore;
-  /**
-   * Persists the native card so it survives a history reload (WS reconnect /
-   * refresh / restart). Optional: tests and minimal setups omit it, in which
-   * case the card still renders live but isn't durable.
-   */
-  chatHistoryManager?: ChatHistoryManager;
   /** Where this note came from (authored / derived). */
   source: VoiceNoteSource;
   /** Injectable for tests; defaults to the global fetch. */
@@ -173,10 +185,14 @@ export async function routeVoiceNote(
     result.native = true;
 
     // Persist the card so it survives a history reload. Voice notes arrive off
-    // the agent-event stream, so `buildTurnMessages` never captures them — the
-    // live append would otherwise be wiped by the next loadSessionHistory.
-    // Finalized (not in_progress) so the turn-end `replaceInProgress` keeps it.
-    deps.chatHistoryManager?.append(sessionId, { role: "assistant", text: "", voiceNote });
+    // the agent-event stream, so `buildTurnMessages` never captures them on its
+    // own. Recording the note on the runner — anchored after the persistable
+    // groups produced so far — folds it into the turn's rebuilt batch, so it
+    // lands where the tool was issued (typically end-of-turn) instead of
+    // floating above the whole turn on reload. An out-of-band `append` kept an
+    // early row id that `replaceInProgress` then reordered behind every
+    // reborn assistant row (see `RecordedVoiceNote` / docs/163).
+    recordVoiceNote(runner, voiceNote);
   }
 
   // ---- External (webhook) sink ----

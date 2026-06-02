@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { SessionRunner } from "../session-runner.js";
-import { wireAgentListeners, type AgentListenerDeps } from "./agent-listeners.js";
+import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import type { ChatMessageGroup, RecordedVoiceNote } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentCapabilities, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentProcess } from "../../shared/types.js";
@@ -185,6 +186,51 @@ describe("wireAgentListeners", () => {
 
       expect(deliverVoiceNote).not.toHaveBeenCalled();
       runner.dispose({ force: true });
+    });
+  });
+
+  describe("buildTurnMessages voice-note interleaving (docs/163)", () => {
+    const group = (text: string): ChatMessageGroup => ({ text, toolUse: [] });
+    const card = (id: string, afterGroupIndex: number): RecordedVoiceNote => ({
+      afterGroupIndex,
+      note: { id, headline: `note-${id}`, needsAttention: true, kind: "authored", createdAt: "2026-06-01T00:00:00.000Z" },
+    });
+
+    it("places an end-of-turn voice card AFTER the assistant content, not above the turn", () => {
+      // Anchored at 2 == the two persistable groups produced so far, so the card
+      // lands last — exactly where the tool was issued. This is the regression:
+      // an out-of-band append kept an early id and floated the card to the top.
+      const out = buildTurnMessages(
+        [group("doing work"), group("almost done")],
+        [],
+        [card("v1", 2)],
+        { inProgress: false },
+      );
+      expect(out.map((m) => m.text || (m.voiceNote ? `card:${m.voiceNote.id}` : ""))).toEqual([
+        "doing work",
+        "almost done",
+        "card:v1",
+      ]);
+      // The card carries the in-band voiceNote payload, finalized (no inProgress).
+      expect(out[2]).toMatchObject({ role: "assistant", text: "", voiceNote: { id: "v1" } });
+      expect(out[2].inProgress).toBeUndefined();
+    });
+
+    it("interleaves a mid-turn card between the groups it sits between", () => {
+      const out = buildTurnMessages(
+        [group("first"), group("second")],
+        [],
+        [card("mid", 1)],
+        { inProgress: true },
+      );
+      expect(out.map((m) => m.text || (m.voiceNote ? `card:${m.voiceNote.id}` : ""))).toEqual([
+        "first",
+        "card:mid",
+        "second",
+      ]);
+      // In-progress rebuild flags every row so the next replaceInProgress cycle
+      // deletes and reinserts them together — the card included.
+      expect(out.every((m) => m.inProgress)).toBe(true);
     });
   });
 });

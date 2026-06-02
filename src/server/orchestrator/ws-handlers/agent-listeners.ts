@@ -1,7 +1,7 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, WsLogEntry } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
+import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, RecordedVoiceNote, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
@@ -158,16 +158,18 @@ export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
 
 /**
  * Build the ordered list of in-progress messages for a turn, interleaving any
- * live-steered user messages (docs/140) at their true position among the
- * assistant message groups.
+ * live-steered user messages (docs/140) and voice-note cards (docs/163) at
+ * their true position among the assistant message groups.
  *
  * `replaceInProgress` deletes every `in_progress=1` row and re-inserts this
  * list, so the assistant rows are reborn with fresh (higher) ids on every
- * call. A steered user message persisted out-of-band (via `append`) keeps its
- * original early id and therefore collapses up next to the turn's first user
- * message on reload. Folding the steers into the same rebuilt batch — anchored
- * by `afterGroupIndex` (the count of persistable groups when the steer
- * arrived) — keeps them at the exact spot the user sent them.
+ * call. A steered user message — or a voice-note card — persisted out-of-band
+ * (via `append`) keeps its original early id and therefore collapses up next
+ * to the turn's first user message on reload. Folding both into the same
+ * rebuilt batch — anchored by `afterGroupIndex` (the count of persistable
+ * groups when the steer / note arrived) — keeps them at the exact spot they
+ * occurred. The voice card lands where the tool was issued (typically the end
+ * of the turn) instead of floating above the whole turn.
  *
  * When `inProgress` is true the rows participate in the next delete/reinsert
  * cycle; the final (agent_result) call passes false so the rows are written
@@ -176,6 +178,7 @@ export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
 export function buildTurnMessages(
   groups: ChatMessageGroup[],
   steered: SteeredMessage[],
+  voiceNotes: RecordedVoiceNote[],
   opts: { inProgress: boolean },
 ): PersistedMessage[] {
   const persistable = groups.filter((g) => g.text || g.toolUse.length > 0);
@@ -191,14 +194,26 @@ export function buildTurnMessages(
     ...flag,
   });
 
-  const emitSteersAt = (index: number) => {
+  const persistedVoiceNote = (v: RecordedVoiceNote): PersistedMessage => ({
+    role: "assistant",
+    text: "",
+    voiceNote: v.note,
+    ...flag,
+  });
+
+  // At a given anchor, emit steered user messages first, then voice cards — so
+  // a card authored after the user's last steer renders below it.
+  const emitAnchoredAt = (index: number) => {
     for (const s of steered) {
       if (s.afterGroupIndex === index) out.push(persistedSteer(s));
+    }
+    for (const v of voiceNotes) {
+      if (v.afterGroupIndex === index) out.push(persistedVoiceNote(v));
     }
   };
 
   for (let i = 0; i < persistable.length; i++) {
-    emitSteersAt(i);
+    emitAnchoredAt(i);
     const g = persistable[i];
     out.push({
       role: "assistant",
@@ -209,11 +224,15 @@ export function buildTurnMessages(
       ...flag,
     });
   }
-  // Steers anchored at or beyond the final group count land after everything.
-  // The `>=` clamp guards against an anchor that outran the persistable groups
-  // (e.g. the anchoring group never produced persistable content).
+  // Steers / cards anchored at or beyond the final group count land after
+  // everything. The `>=` clamp guards against an anchor that outran the
+  // persistable groups (e.g. the anchoring group never produced persistable
+  // content). This is the common case for an end-of-turn voice note.
   for (const s of steered) {
     if (s.afterGroupIndex >= persistable.length) out.push(persistedSteer(s));
+  }
+  for (const v of voiceNotes) {
+    if (v.afterGroupIndex >= persistable.length) out.push(persistedVoiceNote(v));
   }
   return out;
 }
@@ -256,12 +275,12 @@ export function recordSteeredMessage(
  */
 export function persistTurnInProgress(
   chatHistoryManager: { replaceInProgress(sessionId: string, messages: PersistedMessage[]): void },
-  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
+  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[]; voiceNotes: RecordedVoiceNote[] },
   sessionId: string,
 ): void {
   chatHistoryManager.replaceInProgress(
     sessionId,
-    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, { inProgress: true }),
+    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.voiceNotes, { inProgress: true }),
   );
 }
 
@@ -966,6 +985,7 @@ export function wireAgentListeners(
         const inProgressMessages = buildTurnMessages(
           runner?.chatMessageGroups ?? [],
           runner?.steeredMessages ?? [],
+          runner?.voiceNotes ?? [],
           { inProgress: true },
         );
         deps.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
@@ -1117,6 +1137,7 @@ export function wireAgentListeners(
       const finalMessages = buildTurnMessages(
         runner?.chatMessageGroups ?? [],
         runner?.steeredMessages ?? [],
+        runner?.voiceNotes ?? [],
         { inProgress: false },
       );
       deps.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);
@@ -1240,15 +1261,16 @@ export function wireAgentListeners(
       // called clearInProgress() here, which deleted the entire in-progress
       // turn — so a crash mid-turn wiped all of the agent's work from the UI
       // on the next history load.
-      const groups = runner?.chatMessageGroups ?? [];
-      const persistableGroups = groups.filter((g) => g.text || g.toolUse.length > 0);
-      const partialMessages = persistableGroups.map((g) => ({
-        role: "assistant" as const,
-        text: g.text,
-        toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
-        toolResults: g.toolResults?.length ? g.toolResults : undefined,
-        subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
-      }));
+      // Pass empty steers (this path historically drops them) but keep
+      // docs/163 voice cards so a note authored before the crash isn't lost on
+      // reload — the card is folded in at its true position, same as a clean
+      // finalize.
+      const partialMessages = buildTurnMessages(
+        runner?.chatMessageGroups ?? [],
+        [],
+        runner?.voiceNotes ?? [],
+        { inProgress: false },
+      );
       deps.chatHistoryManager.replaceInProgress(turnSessionId, partialMessages);
       deps.chatHistoryManager.finalizeInProgress(turnSessionId);
       deps.chatHistoryManager.append(turnSessionId, {
