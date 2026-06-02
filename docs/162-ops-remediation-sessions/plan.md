@@ -175,7 +175,7 @@ The write path should use the existing agent-spawned session system from doc
 117, with an Ops-specific target:
 
 ```bash
-shipit session create --shipit-source -p "PROMPT" [--title T] [--agent A] [--model M] [--json]
+shipit session create --shipit-source --prompt-file FILE [--title T] [--agent A] [--model M] [--json]
 ```
 
 Equivalent naming could be `--repo shipit`, but the important behavior is that
@@ -302,7 +302,7 @@ Rejected:
 Extend the existing session shim:
 
 ```bash
-shipit session create --shipit-source -p "PROMPT" [--title T] [--agent A] [--model M] [--json]
+shipit session create --shipit-source --prompt-file FILE [--title T] [--agent A] [--model M] [--json]
 ```
 
 Behavior:
