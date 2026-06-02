@@ -1,4 +1,8 @@
-# ShipIt
+<p align="center">
+  <img src="src/client/public/favicon.svg" alt="ShipIt logo" width="120" height="120">
+</p>
+
+<h1 align="center">ShipIt</h1>
 
 A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see
 results live. Use the AI subscription you already pay for, or bring an API key. ShipIt has a
