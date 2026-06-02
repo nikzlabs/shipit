@@ -74,6 +74,12 @@ ShipIt" intent in conversation (e.g. "this is broken", "ShipIt keeps doing X",
 This keeps the agent in the loop and the chat history complete (principle
 corollary: "saves an LLM round-trip is not a feature").
 
+The most important non-trivial producer is an **ops session** (`docs/128`) whose
+`--shipit-source` fix-spawn was denied for lack of push access to the ShipIt repo.
+That no-write branch should route *here* — compiling the diagnosis into a redacted
+issue — rather than dead-ending as a written incident report. Same `report_shipit_bug`
+draft → redact → confirm → file path; the ops session just supplies a richer body.
+
 ### What the report contains
 
 | Field | Source | Notes |
@@ -195,7 +201,7 @@ detection, issue locking, and the maintainers' ability to block an account.
 |---|---|
 | `docs/156` tracker→session | **Conceptually mirror, not code-shared.** 156 = issue→session (inbound) via a per-deployment app credential; this = session→issue (outbound) via the *user's own* GitHub auth. The credential owners differ, so the outbound call lives on `GitHubAuthManager`, not 156's `IssueTrackerProvider`. |
 | `docs/023` session sharing | **Partially un-paused.** We build the shared redaction engine now; 023's full HTML/JSON export consumes it later. |
-| `docs/128` ops session | **Closes the loop.** User files a redacted, consented report → issue → operator (on the upstream ShipIt deployment) triages and uses 156's inbound path to spin an ops/fix session. The user never gets ops privileges; the operator does. |
+| `docs/128` ops session | **Forked producer + loop close.** A ShipIt deployment is one human per box, and that human may or may not have push access to the ShipIt repo. An ops session diagnosing a host bug forks on exactly that, via `checkRepoWriteAccess`: **with** push, it spawns a fix PR (`--shipit-source`); **without**, the spawn 403s and the diagnosis is filed as a redacted issue **through this flow** instead of dead-ending as text. The ops session is the *highest-quality* producer here — it has real Docker/journal evidence to redact and attach. Downstream, a developer with push picks the issue up via 156's inbound path. |
 
 ## Rejected / deferred
 

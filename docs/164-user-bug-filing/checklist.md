@@ -25,10 +25,13 @@
 - [ ] `BugReportCard.tsx` — editable title/body, exact redacted payload preview, Submit/Cancel
 - [ ] Filed state with secondary "View on GitHub" escape hatch (overflow)
 
+## Ops-session producer (docs/128 connection)
+- [ ] Re-point the `--shipit-source` no-write 403 fallback (`api-routes-session.ts`: "produce a structured incident report instead") at this filing flow
+- [ ] Update `src/server/shipit-docs/ops-session.md` so the ops agent files an issue (instead of a text-only report) when it lacks push access
+
 ## Tests & docs
 - [ ] `user-bug-filing.test.ts` integration: redaction applied, issue only after confirm, scope-missing path
 - [ ] Update `docs/023` (redaction engine now exists) cross-ref
-- [ ] Update `src/server/shipit-docs/` if any agent-facing behavior changes
 
 ## Open questions
 - [ ] How "ShipIt build/version" is exposed to the orchestrator in a non-dogfood deployment
