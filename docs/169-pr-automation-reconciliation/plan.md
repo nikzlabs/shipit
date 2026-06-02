@@ -52,9 +52,17 @@ Worse than the copy, they've drifted in **behavior**:
    restart), toggled on the PR card. Conflicts = global per-user, persisted in
    `credentialStore`, no per-PR control. A user reasonably expects both "auto-fix my
    PR" switches to live in the same place and persist the same way.
-2. **No cooldown on CI autofix.** If a fix turn finishes and CI is still red, the next
-   poll re-fires immediately, burning all 3 attempts in quick succession. The conflict
-   manager added cooldowns specifically to avoid this; CI never got them.
+2. **CI autofix never re-arms within a head SHA — it fires at most once.** `markRunning`
+   sets `status = "running"` (`auto-fix-manager.ts:69`), and the only thing that flips
+   it back is CI turning green (`status === "running" && checks.state === "success"`,
+   line 101) or a head-SHA change resetting to `idle` (line 92). There is no
+   turn-completion reset and no `onRunnerIdle` re-eval wired for auto-fix (only the
+   conflict manager gets one, `runner-registry-factory.ts:233`). So when a fix turn
+   finishes and CI is *still* red on the same head, status stays `"running"`, the
+   failure branch's `state.status !== "running"` gate (line 109) is false, and the loop
+   wedges — it never reaches attempts 2 or 3. The advertised 3-attempt budget is
+   effectively a 1-attempt budget. (Note: this means a cooldown alone does NOT fix
+   anything — the loop must first be able to re-arm after a turn; see Workstream B.)
 3. **No `resetForUserActivity` for CI autofix.** Conflicts refreshes the attempt budget
    when the user types; CI only resets on a new push. Inconsistent.
 
@@ -99,10 +107,32 @@ Give `runner.dispatch()` a way to opt out of post-turn auto-commit/auto-push and
 hand control back to a caller between turns, so the rebase driver can stop forking the
 turn lifecycle.
 
-1. Extend `AgentDispatchOptions` (and the `SystemTurnDeps` post-turn hook consumed by
-   `runDispatchedTurn`) with an explicit `postTurn` policy:
+1. Extend `AgentDispatchOptions` with an explicit `postTurn` policy and thread it down
+   to the shared turn runner. The post-turn commit/push/drain does NOT live in the
+   dispatch adapter — it lives in `executeAgentTurn` (`turn-executor.ts`), through which
+   BOTH the WS path and the dispatch path (`dispatched-turn.ts` is a thin adapter that
+   just calls `executeAgentTurn`) funnel. The policy must gate `runCommitAndPr`
+   (`turn-executor.ts:249`), `scheduleAutoPush` (line 222), and the `tryDrain` calls
+   (lines 284-285, 364-365) inside `executeAgentTurn`:
    - `postTurn: "commit-push"` (default — today's behavior, used by CI fix).
    - `postTurn: "none"` (skip auto-commit / auto-push / queue-drain — for rebase).
+1a. **Carry `systemTurnInProgress` into the dispatch path.** This flag is the *sole*
+    mechanism that suppresses live-steering during a system turn: `shouldSteerMessage`
+    returns false only when it is set (`dispatch-steering.ts:45,70`), and today it is
+    set/cleared *exclusively* inside `runRebaseResolutionTurn` (`rebase-driver.ts:269`
+    + the done/error/timeout clears). The dispatch path (`dispatch` → `runDispatchedTurn`)
+    does **not** set it. So if Workstream A moves the rebase turn onto `dispatch()` and
+    deletes its flag management (step 3), a concurrent user `send_message` during conflict
+    resolution would become steer-eligible and inject into the rebase turn, derailing it.
+    Therefore `dispatch()` must set `runner.systemTurnInProgress = true` on entry and
+    clear it on completion for system turns — gated by an explicit `systemTurn: true`
+    dispatch option (cleaner than overloading `postTurn`, since a future caller could want
+    one without the other). Set the flag synchronously, in the same tick as the
+    `_isRunning = true` flip, so a `send_message` arriving in the gap sees it. Audit the
+    existing CI-fix dispatch turns: today they run without `systemTurnInProgress` set, so
+    a user message mid-CI-fix is steer-eligible — decide whether CI fix should also be a
+    `systemTurn: true` (almost certainly yes, for consistency) and note any behavior
+    change.
 2. Add a completion signal to a dispatched turn (a `Promise<void>` resolved on the
    turn's `done`, or an `onTurnComplete` callback) so a multi-turn driver like the
    rebase loop can `await` one resolution turn, run its git step, then dispatch the
@@ -136,8 +166,15 @@ grouping all live in exactly one place; the rebase driver shrinks to git plumbin
    `lastKnownMergeable` flap-suppression, `pendingReset`, deferred-emit dedup,
    `onRunnerIdle` re-eval) become **opt-in capabilities of the base**, not bespoke code
    — so CI fix can adopt the ones that make sense for it.
-3. **Give CI autofix a cooldown** (adopt `AUTO_FIX_COOLDOWN_MS`) so a sticky red CI
-   doesn't burn 3 attempts in seconds.
+3. **Make CI autofix re-arm after a turn, then add a cooldown.** This is two changes
+   and the ordering matters:
+   (a) Add a **post-turn status transition** so the loop leaves `"running"` once a fix
+   turn completes (the analog of the conflict manager's `writeBack`). Without this the
+   loop wedges after one attempt and the 3-attempt budget is never spent (see Problem
+   B2). The shared base owns this transition for all automations.
+   (b) Only *then* does a cooldown make sense: add `AUTO_FIX_COOLDOWN_MS` so that once
+   the loop can re-arm, a still-red CI doesn't immediately re-fire and burn the
+   remaining attempts in seconds.
 4. **Give CI autofix `resetForUserActivity`** wiring in `index.ts` alongside the
    conflict reset (`send_message` / `answer_question` / `send_review_message`).
 5. **Move the auto-fix toggle to global + persisted** (decision 1): add an
@@ -183,7 +220,8 @@ acts and pushes, the other stays suppressed until fresh code (a new head SHA) la
 - `src/server/orchestrator/auto-merge-manager.ts` — route through shared attach-state helper; consult arbiter as a cheap precondition; otherwise unchanged.
 - `src/server/orchestrator/auto-remediation-arbiter.ts` (new) — per-session claim/release + await-fresh-signal, owned by the shared base (Workstream C).
 - `src/server/orchestrator/session-runner.ts` — `dispatch()` + `AgentDispatchOptions` gain `postTurn` policy + completion signal.
-- `src/server/orchestrator/ws-handlers/dispatched-turn.ts` — honor `postTurn: "none"`.
+- `src/server/orchestrator/turn-executor.ts` — `executeAgentTurn`: where `postTurn: "none"` actually gates `runCommitAndPr` / `scheduleAutoPush` / `tryDrain`. The real touchpoint for Workstream A.
+- `src/server/orchestrator/dispatched-turn.ts` — thin dispatch adapter over `executeAgentTurn`; thread the `postTurn` / `systemTurn` options through.
 - `src/server/orchestrator/services/rebase-driver.ts` — `runRebaseResolutionTurn` rewritten on top of `dispatch()`; git plumbing unchanged.
 - `src/server/orchestrator/pr-status-poller.ts` — `attachAutomationState` (712), `handleTransition` call sites (992, 1003); construct managers via the shared base.
 - `src/server/orchestrator/app-lifecycle.ts` — callback wiring for both managers.

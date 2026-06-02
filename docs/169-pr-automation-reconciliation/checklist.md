@@ -8,18 +8,23 @@
 - [ ] Finer call: settings UI grouping ("PR automations" group)
 
 ## Workstream A — unify agent-injection path
-- [ ] Add `postTurn: "commit-push" | "none"` to `AgentDispatchOptions` + `SystemTurnDeps`
-- [ ] `dispatched-turn.ts` honors `postTurn: "none"` (skip commit/push/drain)
+- [ ] Add `postTurn: "commit-push" | "none"` to `AgentDispatchOptions`; thread through `dispatched-turn.ts` adapter
+- [ ] Gate `runCommitAndPr` / `scheduleAutoPush` / `tryDrain` in `turn-executor.ts` `executeAgentTurn` on `postTurn: "none"`
+- [ ] Add `systemTurn: true` dispatch option that sets/clears `systemTurnInProgress` (synchronous with `_isRunning` flip)
 - [ ] Add turn-completion signal (Promise/callback) to a dispatched turn
-- [ ] Rewrite `runRebaseResolutionTurn` on top of `dispatch()`; delete hand-rolled lifecycle
+- [ ] Rewrite `runRebaseResolutionTurn` on top of `dispatch({ systemTurn: true, postTurn: "none" })`; delete hand-rolled lifecycle (incl. its `systemTurnInProgress` management)
+- [ ] Audit CI-fix dispatch: make it `systemTurn: true` and note any steering behavior change
 - [ ] Port wall-clock timeout teardown to the shared path
 - [ ] Test: assert NO commit/push happens during a conflict-resolution turn (all exit paths)
+- [ ] Test: a user `send_message` during a system turn is queued, NOT steered into it
 
 ## Workstream B — unify state machine + toggle
 - [ ] Extract shared remediation base / helpers (SHA-reset, cooldown, attach-state, resetForUserActivity)
 - [ ] Reimplement `AutoFixManager` on the shared base
 - [ ] Reimplement `AutoConflictResolveManager` on the shared base (preserve race ordering)
-- [ ] Add cooldown to CI autofix
+- [ ] Add post-turn status re-arm for CI autofix (base-owned `writeBack`-equivalent) so the loop reaches attempts 2 & 3
+- [ ] Add cooldown to CI autofix (only meaningful after re-arm)
+- [ ] Test: a still-red CI after a fix turn re-fires up to MAX attempts (not just once)
 - [ ] Wire `resetForUserActivity` for CI autofix in `index.ts`
 - [ ] Move auto-fix toggle to global+persisted (`credentialStore` + settings), remove per-session card toggle
 - [ ] Migration: default off, no surprise re-enables
