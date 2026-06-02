@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
-import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents } from "../utils/local-storage.js";
+import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedOpsCollapsed, saveOpsCollapsed } from "../utils/local-storage.js";
 
 /** Buffers SSE status updates that arrive before addRepo stores the repo. */
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
@@ -17,6 +17,8 @@ interface RepoState {
    * the rest. Persisted to localStorage — see [[collapse-spawned-sessions]].
    */
   collapsedParents: Set<string>;
+  /** Whether the "Host / Ops" sidebar group is collapsed. Persisted to localStorage. */
+  opsCollapsed: boolean;
 
   // Actions
   setRepos: (repos: RepoInfo[]) => void;
@@ -27,6 +29,7 @@ interface RepoState {
   updateRepoWarmSession: (url: string, sessionId: string) => void;
   toggleRepoCollapsed: (url: string) => void;
   toggleParentCollapsed: (parentId: string) => void;
+  toggleOpsCollapsed: () => void;
   reset: () => void;
 
   // Async actions
@@ -50,6 +53,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   newRepoDialogOpen: false,
   collapsedRepos: getSavedCollapsedRepos(),
   collapsedParents: getSavedCollapsedParents(),
+  opsCollapsed: getSavedOpsCollapsed(),
 
   setRepos: (repos) => {
     const { activeRepoUrl } = get();
@@ -106,6 +110,13 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       else next.add(parentId);
       saveCollapsedParents(next);
       return { collapsedParents: next };
+    }),
+
+  toggleOpsCollapsed: () =>
+    set((state) => {
+      const next = !state.opsCollapsed;
+      saveOpsCollapsed(next);
+      return { opsCollapsed: next };
     }),
 
   reset: () => set({ repos: [], activeRepoUrl: undefined, addRepoDialogOpen: false, newRepoDialogOpen: false }),
