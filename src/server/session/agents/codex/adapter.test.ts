@@ -751,6 +751,94 @@ describe("CodexAdapter", () => {
     expect(fakeProc.killed).toBe(true);
   });
 
+  it("interrupts gracefully via turn/interrupt instead of killing the process", async () => {
+    // docs/140 — a graceful interrupt asks the app-server to end the active
+    // turn (which it does with turn/completed status:"interrupted") rather than
+    // SIGTERMing the process. Killing here would lose the clean turn boundary
+    // the AskUserQuestion answer flow depends on.
+    await createAndInit("Hello");
+    fakeProc.stdin.written.length = 0;
+
+    adapter.interrupt();
+
+    const req = fakeProc.getLastRequest();
+    expect(req?.method).toBe("turn/interrupt");
+    expect((req!.params as any).threadId).toBe("thread-abc-123");
+    expect((req!.params as any).turnId).toBe("turn-001");
+    // Must be a JSON-RPC request (has an id) so the rejection fallback can
+    // observe an older app-server that lacks the method.
+    expect(req!.id).toBeDefined();
+    // The process stays alive — the app-server tears it down at turn/completed.
+    expect(fakeProc.killed).toBe(false);
+  });
+
+  it("falls back to kill() when turn/interrupt is rejected (older app-server)", async () => {
+    await createAndInit("Hello");
+
+    adapter.interrupt();
+    const req = fakeProc.getRequests().find((r) => r.method === "turn/interrupt");
+    expect(req).toBeDefined();
+    expect(fakeProc.killed).toBe(false);
+
+    // An app-server without the method rejects the request → we must kill so
+    // the process doesn't linger resident waiting for input.
+    fakeProc.sendErrorResponse(req!.id!, -32601, "Method not found: turn/interrupt");
+
+    await vi.waitFor(() => expect(fakeProc.killed).toBe(true));
+  });
+
+  it("falls back to kill() on interrupt when no turn is active", async () => {
+    // No active turn to cancel — interrupt degrades to a hard kill.
+    adapter = new CodexAdapter(() => false);
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+    await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+    // Never completed the handshake, so currentTurnId is null.
+
+    adapter.interrupt();
+
+    expect(fakeProc.getRequests().some((r) => r.method === "turn/interrupt")).toBe(false);
+    expect(fakeProc.killed).toBe(true);
+  });
+
+  it("emits agent_steer_rejected when turn/steer is rejected (ActiveTurnNotSteerable)", async () => {
+    // docs/140 — a steer the app-server refuses (review/compaction turns) must
+    // not vanish. The adapter surfaces the rejection so the orchestrator can
+    // re-queue the message instead of dropping it.
+    await createAndInit("Hello");
+    events.length = 0;
+
+    adapter.writeStdin("change course\n");
+    const steer = fakeProc.getRequests().find((r) => r.method === "turn/steer");
+    expect(steer).toBeDefined();
+
+    fakeProc.sendErrorResponse(steer!.id!, -32600, "ActiveTurnNotSteerable");
+
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_steer_rejected")).toBe(true);
+    });
+    // Carries the trimmed steer text so the orchestrator can re-queue it.
+    expect(events.find((e) => e.type === "agent_steer_rejected")).toEqual({
+      type: "agent_steer_rejected",
+      text: "change course",
+    });
+  });
+
+  it("does not emit agent_steer_rejected when turn/steer succeeds", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    adapter.writeStdin("keep going\n");
+    const steer = fakeProc.getRequests().find((r) => r.method === "turn/steer");
+    expect(steer).toBeDefined();
+
+    // Accepted steer returns a turnId — no rejection event.
+    fakeProc.sendResponse(steer!.id!, { turnId: "turn-001" });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events.some((e) => e.type === "agent_steer_rejected")).toBe(false);
+  });
+
   it("sends turn/steer on writeStdin()", async () => {
     await createAndInit("Hello");
 

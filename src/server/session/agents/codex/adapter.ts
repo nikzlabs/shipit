@@ -461,17 +461,22 @@ export class CodexAdapter
     // shape as `turn/start` (see `initializeAndRun`); a string is rejected
     // with -32600 "invalid type: string, expected a sequence".
     if (this.proc && this.threadId && this.currentTurnId) {
+      const steerText = data.trim();
       this.sendRequest("turn/steer", {
         threadId: this.threadId,
         expectedTurnId: this.currentTurnId,
-        input: [{ type: "text", text: data.trim() }],
+        input: [{ type: "text", text: steerText }],
       }).catch((err: unknown) => {
         // A rejection here (e.g. ActiveTurnNotSteerable during a
         // review/compaction turn, or the turn ending as we send) means the
-        // steer didn't land. Surface it for diagnostics; the orchestrator
-        // already optimistically rendered the message. Falling back to the
-        // queue on rejection is tracked in docs/140.
-        this.emit("log", "codex", `turn/steer rejected: ${err instanceof Error ? err.message : String(err)}`);
+        // steer didn't land. The orchestrator already optimistically rendered
+        // the message, so emit `agent_steer_rejected` (docs/140) — the
+        // listener removes the optimistic bubble and re-queues the text so it
+        // runs as the next turn instead of silently vanishing. Also log for
+        // diagnostics.
+        const reason = err instanceof Error ? err.message : String(err);
+        this.emit("log", "codex", `turn/steer rejected: ${reason}`);
+        this.emit("event", { type: "agent_steer_rejected", text: steerText } as AgentEvent);
       });
     }
   }
@@ -482,7 +487,30 @@ export class CodexAdapter
   }
 
   interrupt(): void {
-    // Codex doesn't have a graceful interrupt — just kill the process
+    // Graceful interrupt (docs/140): ask the app-server to abort the in-flight
+    // turn via `turn/interrupt` rather than SIGTERMing the process. The server
+    // ends the turn with `turn/completed status:"interrupted"`, which
+    // `handleTurnCompleted` maps to an `agent_result` (error) and then tears
+    // the process down — same teardown the hard kill produced, but the model
+    // stops cleanly and the transcript records a real turn boundary instead of
+    // a process death (which is what the AskUserQuestion interrupt flow needs:
+    // the turn must END so the answer can start a fresh one).
+    //
+    // Fall back to `kill()` when there's no active turn to cancel, or if the
+    // request is rejected (older app-server without the method) — in both cases
+    // the graceful path can't complete and we must not leave the process
+    // resident waiting for input that never comes.
+    if (this.proc && this.threadId && this.currentTurnId) {
+      this.sendRequest("turn/interrupt", {
+        threadId: this.threadId,
+        turnId: this.currentTurnId,
+      }).catch((err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.emit("log", "codex", `turn/interrupt rejected, killing: ${reason}`);
+        this.kill();
+      });
+      return;
+    }
     this.kill();
   }
 
