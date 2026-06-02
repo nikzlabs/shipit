@@ -13,20 +13,31 @@ import type { Handler } from "./types.js";
  */
 export const handleVoiceNote: Handler<WsVoiceNote> = (_ctx, data) => {
   const session = useSessionStore.getState();
-  session.setMessages((prev) => [
-    ...prev,
-    {
-      role: "assistant" as const,
-      text: "",
-      voiceNote: {
-        id: data.id,
-        headline: data.headline,
-        needsAttention: data.needsAttention,
-        kind: data.kind,
-        createdAt: data.createdAt,
-      },
-    },
-  ]);
+
+  // Idempotent by id: the note is both persisted to chat history and buffered
+  // into the turn-event log, so a reconnect can deliver it twice (once from
+  // loadSessionHistory, once from the buffer replay). Skip the duplicate append
+  // — and the re-autoplay — when a card with this id is already present.
+  if (session.messages.some((m) => m.voiceNote?.id === data.id)) return;
+
+  session.setMessages((prev) =>
+    prev.some((m) => m.voiceNote?.id === data.id)
+      ? prev
+      : [
+          ...prev,
+          {
+            role: "assistant" as const,
+            text: "",
+            voiceNote: {
+              id: data.id,
+              headline: data.headline,
+              needsAttention: data.needsAttention,
+              kind: data.kind,
+              createdAt: data.createdAt,
+            },
+          },
+        ],
+  );
 
   autoplayVoiceNote({
     id: data.id,

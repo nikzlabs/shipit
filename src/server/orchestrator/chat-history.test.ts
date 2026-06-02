@@ -74,6 +74,25 @@ describe("ChatHistoryManager", () => {
     expect(loaded[0].toolUse![0].name).toBe("Edit");
   });
 
+  it("persists a voice-note card so it survives a reload (docs/163)", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    const msg: PersistedMessage = {
+      role: "assistant",
+      text: "",
+      voiceNote: {
+        id: "voice-1",
+        headline: "Done — want me to open a PR?",
+        needsAttention: true,
+        kind: "authored",
+        createdAt: "2026-06-02T00:00:00.000Z",
+      },
+    };
+
+    mgr.append("sess-1", msg);
+    const loaded = mgr.load("sess-1");
+    expect(loaded[0].voiceNote).toEqual(msg.voiceNote);
+  });
+
   it("persists error messages with isError flag", () => {
     const mgr = new ChatHistoryManager(dbManager);
     mgr.append("sess-1", { role: "assistant", text: "Error: something broke", isError: true });

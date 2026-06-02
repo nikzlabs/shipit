@@ -51,6 +51,30 @@ ran. The same latent gap affected every empty-text inline card —
 Fixed by adding a `hasCardContent` guard so a card-bearing message always emits
 its `message` element; covered by `visual-elements.test.ts`.
 
+### Post-ship fix — card persistence (survives reload)
+
+With the render fix in place the card appeared live but vanished a moment later:
+voice notes arrive on a side channel, not the agent-event stream, so
+`buildTurnMessages` never captured them and they were never written to the
+`messages` table. Any `loadSessionHistory` (WS reconnect / refresh / ShipIt
+restart) rebuilds the transcript from the DB and dropped the live-only card; the
+turn-event buffer only bridges a same-turn reconnect before it's cleared. Fixed
+by persisting the card like any other transcript content:
+
+- New `voice_note` column on `messages` (additive migration in `database.ts`);
+  `PersistedMessage.voiceNote` + `toRow`/`fromRow` in `chat-history.ts`.
+- `routeVoiceNote` appends a finalized `{ role: "assistant", text: "",
+  voiceNote }` row whenever the native sink fires, via a new optional
+  `chatHistoryManager` dep wired at all three call sites (authored route +
+  the two derived `deliverVoiceNote` paths).
+- `handleVoiceNote` is now idempotent by `id` — the note is both persisted and
+  buffered into the turn-event log, so a reconnect can deliver it twice (history
+  load + buffer replay); the dedup skips the second append and the re-autoplay.
+
+Note: the sibling empty-text cards (`agentReview`, `bugReport`, `spawnedSession`,
+`spawnFailed`) share the same non-persistence gap and remain ephemeral across a
+reload — out of scope here, tracked as follow-up.
+
 ## Problem
 
 ShipIt has two voice mechanisms today, and neither is the right surface for

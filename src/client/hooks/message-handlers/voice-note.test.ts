@@ -45,6 +45,16 @@ describe("handleVoiceNote (docs/163)", () => {
     });
   });
 
+  it("is idempotent by id — a duplicate delivery (reconnect replay) appends once", () => {
+    useSettingsStore.setState({ voiceHandsFree: true });
+    armAutoplay();
+    handleVoiceNote(ctx, note());
+    handleVoiceNote(ctx, note()); // same id, e.g. history load + buffer replay
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+    // And the duplicate must not re-trigger autoplay.
+    expect(playSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("does NOT autoplay when hands-free is off", () => {
     handleVoiceNote(ctx, note());
     expect(playSpy).not.toHaveBeenCalled();
