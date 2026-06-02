@@ -15,6 +15,9 @@
 ## Open decisions (deferred)
 - [ ] Webhook/polling follow-up if fetch-on-open staleness proves insufficient
 
+## Blocking pre-build decision
+- [ ] Overturn docs/156's rejection of the in-ShipIt issue picker (amend 156's non-goal + rejected-alternative entries to cross-reference this doc)
+
 ## Doc side
 - [ ] `markdown.ts`: stop parsing/validating `status` & `priority`
 - [ ] `markdown.ts`: parse `issue:` pointer; keep checklist aggregation
@@ -22,7 +25,10 @@
 - [ ] DocsViewer: remove priority/status UI + sort
 - [ ] DocsViewer: checklist-state grouping (Active / Done-collapsed)
 - [ ] DocsViewer: linked-issue chip (identifier + priority + status) + jump-to-issue
-- [ ] Migration: strip inert `status`/`priority` from existing docs, add `issue:` where applicable
+- [ ] doc-paths.ts: re-base isTracked/hasTrackedSibling/hasTrackedPlanSibling off doc structure, not status (+ update doc-paths.test.ts)
+- [ ] Audit all DocStatus/DocPriority/customStatus importers (markdown-frontmatter.ts, MarkdownSelectionComments.tsx, DocsViewer, markdown.ts, tests) so client compiles
+- [ ] Delete parseStatusFromFrontmatter + customStatus concept (markdown.ts, domain-types.ts)
+- [ ] Migration: parser/type change + field-stripping land together (or strip first) — never leave a half-migrated repo; add `issue:` where applicable
 - [ ] Update `CLAUDE.md` design-docs/frontmatter sections
 - [ ] Update `src/server/shipit-docs/design-docs.md` frontmatter schema
 

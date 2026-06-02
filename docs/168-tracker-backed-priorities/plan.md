@@ -84,7 +84,9 @@ These were settled in the design conversation that produced this doc:
 ---
 title: Tracker-backed priorities        # unchanged (optional; defaults to filename)
 description: One-line summary.           # unchanged (docs/138)
-issue: SHI-28                            # NEW — pointer to the tracking issue
+# NEW — pointer to the tracking issue. Linear MUST be a full URL (see below);
+# GitHub may use owner/repo#N or a full URL.
+issue: https://linear.app/shipit-ai/issue/SHI-28/decouple-priorities-from-documents
 ---
 ```
 
@@ -104,11 +106,26 @@ issue: SHI-28                            # NEW — pointer to the tracking issue
 
 ### Migration of existing docs
 
-The ~100 existing docs all carry `status:` and (some) `priority:`. The parser
-**ignores** these fields after this change — they become inert, not an error.
-A follow-up cleanup pass strips them and adds `issue:` pointers where a tracking
-issue exists. CLAUDE.md and `src/server/shipit-docs/design-docs.md` must be
-updated to describe the new frontmatter (this is agent-facing behavior).
+The ~100 existing docs all carry `status:` and (some) `priority:`. "Inert" must
+be specified precisely, because `status` today is load-bearing across both
+layers and a half-migrated repo would render wrong:
+
+- **Server:** `parseStatusFromFrontmatter` and the entire `customStatus`
+  concept (`markdown.ts`, `domain-types.ts`) are **deleted**, not left dangling.
+  Every `status`/`priority` reader is removed in the same change as the parser,
+  so no caller is left expecting a value the parser no longer produces.
+- **Field stripping vs parser change — ordering.** The parser/type change and
+  the field-stripping cleanup pass must land **together** (one PR), or the
+  stripping must come **first**. The forbidden order is "parser stops reading
+  status while docs still carry it AND code still keys off it" — that's the
+  half-migrated state where the docs list mis-buckets every doc at once.
+- A doc that still physically contains a `status:`/`priority:` line after the
+  change is harmless: the new parser simply doesn't read those keys. The cleanup
+  pass removes the dead lines and adds `issue:` pointers where a tracking issue
+  exists.
+
+CLAUDE.md and `src/server/shipit-docs/design-docs.md` must be updated to
+describe the new frontmatter (this is agent-facing behavior).
 
 ### Docs list (DocsViewer) after this change
 
@@ -124,6 +141,28 @@ updated to describe the new frontmatter (this is agent-facing behavior).
   refinement is to fold docs whose linked issue is *closed* into Done, but that
   reintroduces a tracker dependency into grouping and is deferred.
 
+### The tracking/sibling-suppression key must be re-based off status
+
+This is a correctness trap, not a cosmetic change. `src/client/utils/doc-paths.ts`
+decides three things — whether a doc is "tracked," and whether a `checklist.md`
+row is suppressed because its `plan.md` sibling exists (`isTracked`,
+`hasTrackedSibling`, `hasTrackedPlanSibling`) — and **all three key solely off
+`status`/`customStatus`**. If status is removed without changing this, `isTracked()`
+returns `false` for every doc: checklist rows stop being suppressed (every
+feature dir renders `plan.md` *and* `checklist.md` as two rows) and any
+tracked-vs-other split collapses.
+
+The replacement key must not depend on `status`. Re-base "tracked"/sibling
+suppression on **doc structure** instead:
+
+- a doc is "tracked" if it is a `plan.md` (the feature-directory primary), or
+  carries an `issue:` pointer, or has a `checklist.md` sibling; and
+- a `checklist.md` is suppressed when a `plan.md` exists in the same directory
+  — a structural test (`basename`/`dir`) that needs no frontmatter at all.
+
+`doc-paths.ts` and its test `doc-paths.test.ts` must be updated in the same
+change; this is **not** optional cleanup.
+
 ## The issues side
 
 ### New top-level "Issues" tab
@@ -132,12 +171,58 @@ A peer to Docs, not nested inside it. Contains **one sub-tab per configured
 tracker** (Linear, GitHub Issues to start). Each sub-tab is a **read-only list
 sorted by priority**, showing identifier / title / priority / status /
 assignee. Per-row action: **Start session** — seeds a ShipIt session from the
-issue, reusing the seeding logic designed in `docs/156-issue-to-session`.
+issue.
 
-Because the trigger here lives *inside* ShipIt, this is the in-app
-complement to `docs/156`, whose trigger lives in the tracker's own UI (Linear
-delegate / `/shipit` comment). Both paths converge on the same
-session-from-issue seeding code.
+**What's actually reused vs new.** `docs/156`'s session-from-issue path is a
+webhook handler (`IssueTrackerProvider.handleTrigger()`) that builds an
+`IssueRef` from the inbound payload and calls
+`headless-sessions.create({ issueRef })`. Only the **downstream**
+`headless-sessions.create()` (branch derivation + initial prompt from an
+`IssueRef`) is shared. There is **no** in-app, user-initiated "start from a
+fetched issue object" entry point today — this feature must add one: a new
+caller that turns a fetched issue (from the list) into an `IssueRef` and invokes
+`headless-sessions.create()`. So this is new work that *reuses* 156's seeding
+primitive, not a free ride on an existing trigger.
+
+Because the trigger here lives *inside* ShipIt (a list-row click) rather than in
+the tracker's own UI (Linear delegate / `/shipit` comment), this is the in-app
+**pull** counterpart to `docs/156`'s **push** trigger — see the explicit
+reconciliation below, since 156 declined a pull-based picker.
+
+### Reconciling with docs/156's rejected "Issue picker"
+
+**This must be called out, because `docs/156` explicitly rejects exactly this
+surface.** 156's non-goals say "Not pulling lists of assigned issues into a
+ShipIt sidebar. Push from tracker, don't pull," and its *Rejected alternatives*
+lists "Issue picker in ShipIt (list issues, click to start)" — declined because
+"the user's job in the tracker is to triage and pick what to work on next; doing
+that *also* in ShipIt with worse filtering would be a strict loss." This doc
+builds a pull-based picker, so it **overturns** that decision rather than
+complementing it. The overturn is legitimate only because the *premise changed*:
+
+- **156's premise:** docs still carry `priority`, so ShipIt already has an
+  internal "what's next" surface (the prioritized docs list). A picker would be
+  a redundant second triage surface with worse filtering — a strict loss.
+- **SHI-28 changes that premise:** priority *leaves* the docs. After this change
+  ShipIt has **no** internal "what's next" surface at all. Per CLAUDE.md §1/§2,
+  leaving that hole would force the user into another tab to decide what to work
+  on — the exact failure 156 itself invokes §1/§2 to avoid. So an inline surface
+  is now *required*, not redundant.
+
+To stay faithful to 156's *valid* concern (don't lose to the tracker's own
+filtering, don't chase per-tracker query UIs), this picker is deliberately
+narrow and is **not** a triage tool:
+
+- read-only, **sorted by priority**, no board view, no JQL/Linear-view/GitHub-
+  query filter UI, no custom-field editing, no "create issue" flow;
+- it surfaces the *already-prioritized* list so the user can act
+  (start a session) without leaving — it does not try to replace triage, which
+  still happens in the tracker.
+
+If 156's author disagrees, this is the decision to litigate before build — two
+high-priority planned docs cannot ship with opposite stances on the same
+surface. `docs/156`'s non-goal and rejected-alternative entries should be
+amended to point here once this is accepted.
 
 ### Tracker abstraction (extensibility)
 
@@ -198,21 +283,44 @@ docs/NNN/plan.md (issue: SHI-28)
 
 ## Key files
 
+> **Type-removal blast radius.** Dropping `DocStatus`/`DocPriority` and
+> `customStatus` from `domain-types.ts` breaks *every* importer. The full set
+> (audit before declaring the migration done): `markdown.ts`,
+> `doc-paths.ts` (+ `doc-paths.test.ts`), `markdown-frontmatter.ts`,
+> `MarkdownSelectionComments.tsx`, `DocsViewer.tsx` (+ `DocsViewer.test.tsx`),
+> `markdown.test.ts`, and `domain-types.ts` itself. CLAUDE.md and `docs/080`
+> also reference the fields (prose only). Each must be handled in the same
+> change, or the client won't compile.
+
 Server:
-- `src/server/orchestrator/markdown.ts` — stop parsing/validating `status` &
-  `priority`; parse `issue:`; keep checklist aggregation.
-- `src/server/shared/types/domain-types.ts` — drop `DocPriority` /
-  `DocEntry.priority` / `DocEntry.status` usage from the doc surface; add
-  `DocEntry.issue`. Add issue/tracker domain types.
+- `src/server/orchestrator/markdown.ts` — delete `parseStatusFromFrontmatter` +
+  the `customStatus` path; stop parsing `status`/`priority`; parse `issue:`;
+  keep checklist aggregation.
+- `src/server/shared/types/domain-types.ts` — remove `DocStatus`,
+  `DocPriority`, `DocEntry.status`, `DocEntry.priority`, `DocEntry.customStatus`;
+  add `DocEntry.issue`. Add issue/tracker domain types.
 - `src/server/orchestrator/trackers/**` — new tracker abstraction + adapters.
 - `src/server/orchestrator/api-routes-*.ts` — `GET /api/issues` route.
+- `src/server/orchestrator/services/headless-sessions.ts` — reuse
+  `create({ issueRef })`; this feature adds the in-app caller that builds an
+  `IssueRef` from a fetched issue (the entry point 156 doesn't provide).
 - `src/server/orchestrator/github-auth*.ts` — GitHub Issues listing.
 - `src/server/shipit-docs/design-docs.md` — update frontmatter schema (drop
   status/priority, document `issue:`).
 
 Client:
-- `src/client/components/DocsViewer.tsx` — remove priority/status UI + sort;
-  checklist-state grouping; linked-issue chip + jump-to-issue.
+- `src/client/components/DocsViewer.tsx` (+ `DocsViewer.test.tsx`) — remove
+  priority/status UI + sort; checklist-state grouping; linked-issue chip +
+  jump-to-issue.
+- `src/client/utils/doc-paths.ts` (+ `doc-paths.test.ts`) — re-base
+  `isTracked`/`hasTrackedSibling`/`hasTrackedPlanSibling` off doc structure
+  instead of `status`/`customStatus` (see "tracking/sibling-suppression key"
+  above).
+- `src/client/utils/markdown-frontmatter.ts` — stop surfacing
+  `status`/`priority`/`customStatus` in the doc modal (it imports the removed
+  types and renders the status badge).
+- `src/client/components/MarkdownSelectionComments.tsx` — imports the removed
+  types; update accordingly.
 - `src/client/components/IssuesViewer.tsx` — new.
 - `src/client/stores/issues-store.ts` — new.
 - `src/client/stores/file-store.ts` — `DocEntry` shape change.
@@ -222,9 +330,13 @@ Docs/config:
 
 ## Relationship to existing docs
 
-- **`docs/156-issue-to-session`** (planned, high) — inbound trigger *from* the
-  tracker. This feature is the inline in-app counterpart and shares the
-  session-from-issue seeding + auth/app-registration foundation.
+- **`docs/156-issue-to-session`** (planned, high) — inbound **push** trigger
+  *from* the tracker. This feature adds an inline **pull** picker that 156
+  explicitly rejected; see "Reconciling with docs/156's rejected 'Issue picker'"
+  above for why the changed premise (priority leaving docs) reopens that
+  decision. Shares 156's `headless-sessions.create()` seeding primitive and its
+  auth/app-registration foundation. **156's non-goal/rejected-alternative
+  entries must be amended to cross-reference this doc once accepted.**
 - **`docs/164-user-bug-filing`** (planned) — outbound: user files a GitHub
   issue against upstream ShipIt. Complementary; same GitHub auth model.
 - **`docs/114-tracked-doc-checklist`** (done) — the checklist badge this
