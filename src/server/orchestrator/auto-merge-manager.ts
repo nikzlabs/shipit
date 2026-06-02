@@ -102,8 +102,12 @@ export class AutoMergeManager {
     const mergeState = this.states.get(sessionId);
     if (!mergeState?.enabled || !mergeState.managed) return;
 
-    // Only merge when CI passes
-    if (summary.checks.state !== "success") return;
+    // Merge when CI passes, or when there are no required checks at all.
+    // Mirrors the client's `isCiPassed || isCiNone` mergeability rule
+    // (docs/113) so a docs-only PR with path-filtered CI ("none") isn't left
+    // stuck: native auto-merge falls back to managed, the manual button hides,
+    // and this executor must finish the merge. `pending`/`failure` stay excluded.
+    if (summary.checks.state !== "success" && summary.checks.state !== "none") return;
 
     if (summary.mergeable === "conflicting") {
       mergeState.error = {
