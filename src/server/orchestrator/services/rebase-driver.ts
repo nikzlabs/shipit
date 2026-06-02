@@ -131,7 +131,7 @@ export async function runRebaseFlow(
   // 3. Check ancestry — already up-to-date?
   const isAncestor = await git.isAncestor(baseRef, "HEAD");
   if (isAncestor) {
-    runner.emitMessage({ type: "rebase_complete", forcePushed: false });
+    runner.emitMessage({ type: "rebase_complete", forcePushed: false, upToDate: true });
     return { status: "up_to_date" };
   }
 
