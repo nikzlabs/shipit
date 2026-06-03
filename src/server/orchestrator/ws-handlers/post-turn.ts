@@ -76,6 +76,13 @@ export async function postTurnCommit(
     }
 
     opts.emit({ type: "git_committed", hash: commitHash, message: firstLine });
+    // docs/171 — release carve-out: auto-push pushes the session BRANCH only and
+    // MUST NOT push tags. `scheduleAutoPush` → `GitManager.push(remote, branch)`
+    // never passes `--tags` or a tag refspec, so a version-bump commit rides the
+    // normal branch push while the release TAG is pushed separately and only
+    // after explicit confirmation (the agent's `git push origin vX.Y.Z`, see
+    // /shipit-docs/release.md). A published tag is outward-facing and effectively
+    // irreversible, so it is never an automatic side-effect of a turn.
     ctx.scheduleAutoPush(git, opts.sessionId);
 
     if (opts.sessionId && parentHash) {

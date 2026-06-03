@@ -435,6 +435,20 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._checkStatus ?? { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 };
   }
 
+  /** docs/171 — release read for the release lifecycle card. */
+  private _releaseByTag: {
+    name: string; body: string; htmlUrl: string; prerelease: boolean; publishedAt: string | null; tagName: string;
+  } | null = null;
+  /** Set what getReleaseByTag returns for tests (null = no Release yet). */
+  setReleaseByTag(release: {
+    name: string; body: string; htmlUrl: string; prerelease: boolean; publishedAt: string | null; tagName: string;
+  } | null) {
+    this._releaseByTag = release;
+  }
+  async getReleaseByTag(_owner: string, _repo: string, _tag: string) {
+    return this._releaseByTag;
+  }
+
   // ---- Test control methods ----
 
   private _prData: { url: string; number: number; base: string; title: string; body: string } | null = null;

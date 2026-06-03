@@ -6,6 +6,7 @@ export * from "./attachment-types.js";
 export * from "./github-types.js";
 export * from "./terminal-types.js";
 export * from "./deployment-types.js";
+export * from "./release-types.js";
 export * from "./usage-types.js";
 export * from "./usage-limits-types.js";
 export * from "./voice-note-types.js";

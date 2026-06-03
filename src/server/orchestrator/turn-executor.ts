@@ -304,6 +304,15 @@ export async function executeAgentTurn(
         console.error("[turn] pr-lifecycle flow failed:", err);
       }
     }
+    // docs/171 — react to release markers in the turn text. Fires regardless of
+    // whether the turn committed: a release *proposal* turn makes no commit.
+    if (runner && deps.postTurnReleaseFlow) {
+      try {
+        await deps.postTurnReleaseFlow(sessionId, runner.sessionDir, runner.accumulatedText, emit);
+      } catch (err) {
+        console.error("[turn] release flow failed:", err);
+      }
+    }
   };
 
   const emitFinishedIfIdle = (): void => {

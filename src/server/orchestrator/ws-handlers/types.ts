@@ -13,6 +13,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
+import type { ReleaseStatusPoller } from "../release-status-poller.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
@@ -131,6 +132,9 @@ export interface AppCtx {
 
   // PR lifecycle
   prStatusPoller: PrStatusPoller;
+
+  // Release lifecycle (docs/171)
+  releaseStatusPoller: ReleaseStatusPoller;
 
   /**
    * Push a fresh rate-limit snapshot for any agent (from an
