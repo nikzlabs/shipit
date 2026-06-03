@@ -47,6 +47,7 @@ function makeSummary(opts: Partial<PrStatusSummary> & { mergeable: PrStatusSumma
     insertions: 0,
     deletions: 0,
     checks: { state: "pending", total: 0, passed: 0, failed: 0, pending: 0 },
+    reviewDecision: "none",
     autoMergeEnabled: false,
     ...opts,
   };

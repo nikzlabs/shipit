@@ -608,6 +608,16 @@ export async function registerGitHubRoutes(
           if (prStatus.checks.state === "pending" && prStatus.checks.total === 0) {
             return { success: false, message: "Waiting for CI checks to start" };
           }
+          // Block merge when the base branch requires a review that hasn't been
+          // satisfied. The client hides the button, but a stale tab could still
+          // POST here — and a merge GitHub would reject is worth catching with a
+          // clear message rather than a raw 405. docs/174.
+          if (
+            prStatus.reviewDecision === "review_required" ||
+            prStatus.reviewDecision === "changes_requested"
+          ) {
+            return { success: false, message: "Waiting for required review approval" };
+          }
         }
 
         const git = createGitManager(dir);

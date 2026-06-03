@@ -125,6 +125,7 @@ export interface WsPrStatus {
     };
     autoMergeEnabled: boolean;
     mergeable: PrMergeableState;
+    reviewDecision: PrReviewDecision;
   } | null;
 }
 
@@ -137,6 +138,22 @@ export interface WsPrStatus {
  * computes mergeability, and we don't want to gate UI on that transient state.
  */
 export type PrMergeableState = "mergeable" | "conflicting" | "unknown";
+
+/**
+ * GitHub-reported review/approval status for a PR.
+ *
+ * Mirrors GitHub's GraphQL `PullRequestReviewDecision` enum, lower-cased, with
+ * the API's `null` collapsed to `"none"`. GitHub returns a non-null decision
+ * ONLY when the base branch has a review-requirement branch-protection rule, so
+ * `"none"` means "no review is required" — the common ShipIt solo-repo case —
+ * and is treated as non-blocking. `"review_required"` and `"changes_requested"`
+ * block the merge; `"approved"` and `"none"` allow it. See docs/174.
+ */
+export type PrReviewDecision =
+  | "approved"
+  | "changes_requested"
+  | "review_required"
+  | "none";
 
 export interface WsMergePrResult {
   type: "merge_pr_result";
@@ -293,6 +310,12 @@ export interface PrStatusSummary {
     failedChecks?: { name: string; summary: string }[];
   };
   mergeable: PrMergeableState;
+  /**
+   * GitHub review/approval status. `"none"` when the base branch requires no
+   * review (the merge gate treats it as non-blocking). `"review_required"` and
+   * `"changes_requested"` block the merge button and managed auto-merge. docs/174.
+   */
+  reviewDecision: PrReviewDecision;
   autoMergeEnabled: boolean;
   /**
    * Auto-fix state — present when the auto-fix loop (or a manual "Fix CI") has

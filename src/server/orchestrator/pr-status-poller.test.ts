@@ -268,6 +268,26 @@ describe("parsePrNode", () => {
     expect(result.mergeable).toBe("unknown");
   });
 
+  // docs/174 — review decision mapping. `null` (no review requirement) and any
+  // unexpected value collapse to "none" so the merge gate treats them as
+  // non-blocking.
+  it.each([
+    ["APPROVED", "approved"],
+    ["CHANGES_REQUESTED", "changes_requested"],
+    ["REVIEW_REQUIRED", "review_required"],
+    [null, "none"],
+    ["SOMETHING_NEW", "none"],
+  ] as const)("maps GraphQL reviewDecision %s to \"%s\"", (input, expected) => {
+    const node = makeGraphQLPrNode({ reviewDecision: input });
+    const result = parsePrNode(node as never, "session-1");
+    expect(result.reviewDecision).toBe(expected);
+  });
+
+  it("defaults reviewDecision to \"none\" when the field is absent", () => {
+    const result = parsePrNode(makeGraphQLPrNode() as never, "session-1");
+    expect(result.reviewDecision).toBe("none");
+  });
+
   it("handles StatusContext nodes (legacy status API)", () => {
     const node = makeGraphQLPrNode({
       commits: {
@@ -482,6 +502,12 @@ describe("prStatusEqual conversation comparison (docs/133 Phase 4)", () => {
       reviewThreads: base.reviewThreads!.map((t) => ({ ...t, isResolved: true })),
     };
     expect(prStatusEqual(base, resolved)).toBe(false);
+  });
+
+  it("detects a reviewDecision change so a fresh approval rebroadcasts (docs/174)", () => {
+    const required = parsePrNode(makeGraphQLPrNode({ reviewDecision: "REVIEW_REQUIRED" }) as never, "s1");
+    const approved = parsePrNode(makeGraphQLPrNode({ reviewDecision: "APPROVED" }) as never, "s1");
+    expect(prStatusEqual(required, approved)).toBe(false);
   });
 
   it("is equal when conversation is unchanged", () => {

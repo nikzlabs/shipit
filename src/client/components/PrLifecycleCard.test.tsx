@@ -8,7 +8,7 @@ import { AUTO_MERGE_ICON_CLASS } from "../design-tokens.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
-import type { PrMergeableState, SessionInfo } from "../../server/shared/types.js";
+import type { PrMergeableState, PrReviewDecision, SessionInfo } from "../../server/shared/types.js";
 
 function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionInfo {
   return {
@@ -45,7 +45,11 @@ afterEach(() => {
  * Seed a minimal `statusBySession` entry with the given mergeable value.
  * The PR card reads `mergeable` directly from this slice, not from `cardBySession`.
  */
-function setMergeable(sessionId: string, mergeable: PrMergeableState) {
+function setMergeable(
+  sessionId: string,
+  mergeable: PrMergeableState,
+  reviewDecision: PrReviewDecision = "none",
+) {
   usePrStore.setState((s) => ({
     statusBySession: {
       ...s.statusBySession,
@@ -62,6 +66,7 @@ function setMergeable(sessionId: string, mergeable: PrMergeableState) {
         deletions: 5,
         checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
         mergeable,
+        reviewDecision,
         autoMergeEnabled: false,
       },
     },
@@ -99,6 +104,7 @@ function setStatus(sessionId: string, prState: "open" | "merged", checksState?: 
           pending: 0,
         },
         mergeable: "mergeable",
+        reviewDecision: "none",
         autoMergeEnabled: false,
       },
     },
@@ -857,6 +863,68 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Sign in to GitHub")).toBeInTheDocument();
   });
 
+  // ---- 174: Review/approval gating ----
+
+  describe("review approval gating", () => {
+    const greenCard = {
+      ...openPrCard,
+      checks: { state: "success" as const, total: 1, passed: 1, failed: 0, pending: 0 },
+    };
+
+    it.each(["review_required", "changes_requested"] as const)(
+      "hides the merge button when reviewDecision is %s",
+      (reviewDecision) => {
+        setCard("s1", greenCard);
+        setMergeable("s1", "mergeable", reviewDecision);
+
+        render(<PrLifecycleCard sessionId="s1" />);
+
+        expect(screen.queryByText("Squash and merge")).toBeNull();
+      },
+    );
+
+    it.each(["approved", "none"] as const)(
+      "shows the merge button when reviewDecision is %s",
+      (reviewDecision) => {
+        setCard("s1", greenCard);
+        setMergeable("s1", "mergeable", reviewDecision);
+
+        render(<PrLifecycleCard sessionId="s1" />);
+
+        expect(screen.getByText("Squash and merge")).toBeInTheDocument();
+      },
+    );
+
+    it("renders the review indicator label for each non-none state", () => {
+      setCard("s1", greenCard);
+
+      setMergeable("s1", "mergeable", "approved");
+      const approved = render(<PrLifecycleCard sessionId="s1" />);
+      expect(screen.getByText("Approved")).toBeInTheDocument();
+      approved.unmount();
+
+      setMergeable("s1", "mergeable", "changes_requested");
+      const changes = render(<PrLifecycleCard sessionId="s1" />);
+      expect(screen.getByText("Changes requested")).toBeInTheDocument();
+      changes.unmount();
+
+      setMergeable("s1", "mergeable", "review_required");
+      render(<PrLifecycleCard sessionId="s1" />);
+      expect(screen.getByText("Review required")).toBeInTheDocument();
+    });
+
+    it("renders no review indicator when reviewDecision is none", () => {
+      setCard("s1", greenCard);
+      setMergeable("s1", "mergeable", "none");
+
+      render(<PrLifecycleCard sessionId="s1" />);
+
+      expect(screen.queryByText("Approved")).toBeNull();
+      expect(screen.queryByText("Changes requested")).toBeNull();
+      expect(screen.queryByText("Review required")).toBeNull();
+    });
+  });
+
   // ---- 113: Inline merge-conflict UI ----
 
   describe("merge-conflict UI", () => {
@@ -1035,6 +1103,7 @@ describe("PrStateBadge", () => {
           deletions: 5,
           checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
           mergeable: "unknown",
+          reviewDecision: "none",
           autoMergeEnabled: false,
         },
       },

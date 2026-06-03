@@ -1221,6 +1221,7 @@ export class PrStatusPoller {
         deletions: pr.deletions,
         checks: { state: checksState, total: 0, passed: 0, failed: 0, pending: 0 },
         mergeable: "unknown",
+        reviewDecision: "none",
         autoMergeEnabled: false,
       };
       this.lastKnown.set(sessionId, summary);
@@ -1246,6 +1247,7 @@ export class PrStatusPoller {
       deletions: pr.deletions,
       checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
       mergeable: "unknown",
+      reviewDecision: "none",
       autoMergeEnabled: false,
     };
 
