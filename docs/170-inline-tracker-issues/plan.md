@@ -143,9 +143,13 @@ registration / OAuth.
 ## Client
 
 - `src/client/components/IssuesViewer.tsx` (new) — the tab + sub-tab switcher +
-  list.
+  list. **(Superseded layout: docs/173)** the original stacked "card per row"
+  list became a responsive table (Issue / Title / Priority / Status / Assignee /
+  action) with a filter bar; below the `md` breakpoint it collapses back to
+  stacked cards. See `docs/173-issue-tracker-filters`.
 - `src/client/stores/issues-store.ts` (new) — issue lists per tracker, fed over
-  the global SSE/HTTP channel like the docs list.
+  the global SSE/HTTP channel like the docs list. **(docs/173)** also holds the
+  client-side `filters` state (query + priority/status/assignee facets).
 
 ## Data flow
 
