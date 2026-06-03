@@ -1,7 +1,7 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, WsLogEntry } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, RecordedVoiceNote, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
+import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, RecordedVoiceNote, RecordedBugReportCard, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
@@ -179,6 +179,7 @@ export function buildTurnMessages(
   groups: ChatMessageGroup[],
   steered: SteeredMessage[],
   voiceNotes: RecordedVoiceNote[],
+  bugReportCards: RecordedBugReportCard[],
   opts: { inProgress: boolean },
 ): PersistedMessage[] {
   const persistable = groups.filter((g) => g.text || g.toolUse.length > 0);
@@ -201,14 +202,25 @@ export function buildTurnMessages(
     ...flag,
   });
 
-  // At a given anchor, emit steered user messages first, then voice cards — so
-  // a card authored after the user's last steer renders below it.
+  const persistedBugReport = (b: RecordedBugReportCard): PersistedMessage => ({
+    role: "assistant",
+    text: "",
+    bugReport: b.card,
+    ...flag,
+  });
+
+  // At a given anchor, emit steered user messages first, then voice cards, then
+  // bug-report cards — so a card authored after the user's last steer renders
+  // below it.
   const emitAnchoredAt = (index: number) => {
     for (const s of steered) {
       if (s.afterGroupIndex === index) out.push(persistedSteer(s));
     }
     for (const v of voiceNotes) {
       if (v.afterGroupIndex === index) out.push(persistedVoiceNote(v));
+    }
+    for (const b of bugReportCards) {
+      if (b.afterGroupIndex === index) out.push(persistedBugReport(b));
     }
   };
 
@@ -233,6 +245,9 @@ export function buildTurnMessages(
   }
   for (const v of voiceNotes) {
     if (v.afterGroupIndex >= persistable.length) out.push(persistedVoiceNote(v));
+  }
+  for (const b of bugReportCards) {
+    if (b.afterGroupIndex >= persistable.length) out.push(persistedBugReport(b));
   }
   return out;
 }
@@ -269,18 +284,34 @@ export function recordSteeredMessage(
 }
 
 /**
+ * docs/164 — record a bug-report consent card on the runner, anchored after the
+ * assistant groups that have produced persistable content so far. Same anchor
+ * mechanism as `recordSteeredMessage` / `recordVoiceNote`: `buildTurnMessages`
+ * re-interleaves the card at its true transcript position on every in-progress
+ * rebuild, so the card lands where the agent's `report_shipit_bug` tool fired
+ * instead of floating above the whole turn on reload.
+ */
+export function recordBugReportCard(
+  runner: { chatMessageGroups: ChatMessageGroup[]; bugReportCards: RecordedBugReportCard[] },
+  card: RecordedBugReportCard["card"],
+): void {
+  const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
+  runner.bugReportCards = [...runner.bugReportCards, { afterGroupIndex, card }];
+}
+
+/**
  * Persist the current turn's groups + steered messages as the in-progress set.
  * Shared by the steer handler (so a mid-turn injection is saved immediately)
  * and the tool-result boundary in `wireAgentListeners`.
  */
 export function persistTurnInProgress(
   chatHistoryManager: { replaceInProgress(sessionId: string, messages: PersistedMessage[]): void },
-  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[]; voiceNotes: RecordedVoiceNote[] },
+  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[]; voiceNotes: RecordedVoiceNote[]; bugReportCards: RecordedBugReportCard[] },
   sessionId: string,
 ): void {
   chatHistoryManager.replaceInProgress(
     sessionId,
-    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.voiceNotes, { inProgress: true }),
+    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.voiceNotes, runner.bugReportCards, { inProgress: true }),
   );
 }
 
@@ -986,6 +1017,7 @@ export function wireAgentListeners(
           runner?.chatMessageGroups ?? [],
           runner?.steeredMessages ?? [],
           runner?.voiceNotes ?? [],
+          runner?.bugReportCards ?? [],
           { inProgress: true },
         );
         deps.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
@@ -1138,6 +1170,7 @@ export function wireAgentListeners(
         runner?.chatMessageGroups ?? [],
         runner?.steeredMessages ?? [],
         runner?.voiceNotes ?? [],
+        runner?.bugReportCards ?? [],
         { inProgress: false },
       );
       deps.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);
@@ -1269,6 +1302,7 @@ export function wireAgentListeners(
         runner?.chatMessageGroups ?? [],
         [],
         runner?.voiceNotes ?? [],
+        runner?.bugReportCards ?? [],
         { inProgress: false },
       );
       deps.chatHistoryManager.replaceInProgress(turnSessionId, partialMessages);

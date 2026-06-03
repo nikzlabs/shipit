@@ -8,6 +8,12 @@ import type { Handler } from "./types.js";
  * the bug-report store (keyed by cardId so a later filed/failed update can swap
  * it in place) and append a marker chat message so it renders inline at the
  * point in the transcript where the agent proposed the report.
+ *
+ * Idempotent by cardId: the card is both persisted to chat history and buffered
+ * into the turn-event log, so a reconnect can deliver it twice (once from
+ * `loadSessionHistory`, once from the buffer replay). Skip the duplicate append
+ * when a card with this id is already present. The store `upsertCard` is itself
+ * non-clobbering so it can't reset a card already rehydrated as `filed`.
  */
 export const handleBugReportCard: Handler<WsBugReportCard> = (_ctx, data) => {
   useBugReportStore.getState().upsertCard({
@@ -20,12 +26,18 @@ export const handleBugReportCard: Handler<WsBugReportCard> = (_ctx, data) => {
   });
 
   const session = useSessionStore.getState();
-  session.setMessages((prev) => [
-    ...prev,
-    {
-      role: "assistant" as const,
-      text: "",
-      bugReport: { cardId: data.cardId },
-    },
-  ]);
+  if (session.messages.some((m) => m.bugReport?.cardId === data.cardId)) return;
+
+  session.setMessages((prev) =>
+    prev.some((m) => m.bugReport?.cardId === data.cardId)
+      ? prev
+      : [
+          ...prev,
+          {
+            role: "assistant" as const,
+            text: "",
+            bugReport: { cardId: data.cardId },
+          },
+        ],
+  );
 };

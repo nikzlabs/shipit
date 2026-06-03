@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { SessionRunner } from "../session-runner.js";
 import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
-import type { ChatMessageGroup, RecordedVoiceNote } from "../session-runner.js";
+import type { ChatMessageGroup, RecordedVoiceNote, RecordedBugReportCard } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentCapabilities, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentProcess } from "../../shared/types.js";
@@ -204,6 +204,7 @@ describe("wireAgentListeners", () => {
         [group("doing work"), group("almost done")],
         [],
         [card("v1", 2)],
+        [],
         { inProgress: false },
       );
       expect(out.map((m) => m.text || (m.voiceNote ? `card:${m.voiceNote.id}` : ""))).toEqual([
@@ -221,6 +222,7 @@ describe("wireAgentListeners", () => {
         [group("first"), group("second")],
         [],
         [card("mid", 1)],
+        [],
         { inProgress: true },
       );
       expect(out.map((m) => m.text || (m.voiceNote ? `card:${m.voiceNote.id}` : ""))).toEqual([
@@ -230,6 +232,54 @@ describe("wireAgentListeners", () => {
       ]);
       // In-progress rebuild flags every row so the next replaceInProgress cycle
       // deletes and reinserts them together — the card included.
+      expect(out.every((m) => m.inProgress)).toBe(true);
+    });
+  });
+
+  describe("buildTurnMessages bug-report-card interleaving (docs/164)", () => {
+    const group = (text: string): ChatMessageGroup => ({ text, toolUse: [] });
+    const bugCard = (id: string, afterGroupIndex: number): RecordedBugReportCard => ({
+      afterGroupIndex,
+      card: {
+        cardId: id,
+        phase: "draft",
+        title: `bug-${id}`,
+        body: "redacted body",
+        stage2Ran: false,
+        producer: "session",
+      },
+    });
+
+    it("places an end-of-turn bug card AFTER the assistant content, not above the turn", () => {
+      const out = buildTurnMessages(
+        [group("looking into it"), group("here is a card")],
+        [],
+        [],
+        [bugCard("b1", 2)],
+        { inProgress: false },
+      );
+      expect(out.map((m) => m.text || (m.bugReport ? `card:${m.bugReport.cardId}` : ""))).toEqual([
+        "looking into it",
+        "here is a card",
+        "card:b1",
+      ]);
+      expect(out[2]).toMatchObject({ role: "assistant", text: "", bugReport: { cardId: "b1", phase: "draft" } });
+      expect(out[2].inProgress).toBeUndefined();
+    });
+
+    it("interleaves a mid-turn bug card between the groups it sits between", () => {
+      const out = buildTurnMessages(
+        [group("first"), group("second")],
+        [],
+        [],
+        [bugCard("mid", 1)],
+        { inProgress: true },
+      );
+      expect(out.map((m) => m.text || (m.bugReport ? `card:${m.bugReport.cardId}` : ""))).toEqual([
+        "first",
+        "card:mid",
+        "second",
+      ]);
       expect(out.every((m) => m.inProgress)).toBe(true);
     });
   });

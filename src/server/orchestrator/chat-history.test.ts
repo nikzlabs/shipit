@@ -93,6 +93,75 @@ describe("ChatHistoryManager", () => {
     expect(loaded[0].voiceNote).toEqual(msg.voiceNote);
   });
 
+  describe("bug-report card persistence (docs/164)", () => {
+    const draftCard = (cardId: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      bugReport: {
+        cardId,
+        phase: "draft",
+        title: "Preview won't reload",
+        body: "redacted body",
+        stage2Ran: false,
+        producer: "session",
+        filedAs: "octocat",
+        createdAt: "2026-06-03T00:00:00.000Z",
+      },
+    });
+
+    it("(a) persists a bug-report card so it replays on session attach", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const msg = draftCard("bug-card-1");
+      mgr.append("sess-1", msg);
+
+      // A fresh manager (mirrors a reload rebuilding from the DB) sees the card.
+      const loaded = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(loaded[0].bugReport).toEqual(msg.bugReport);
+    });
+
+    it("(b) updateBugReportCard flips a card to filed with its issue link", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "report this" });
+      mgr.append("sess-1", draftCard("bug-card-1"));
+
+      const found = mgr.updateBugReportCard("sess-1", "bug-card-1", {
+        phase: "filed",
+        issueNumber: 1234,
+        issueUrl: "https://github.com/nicolasalt/shipit/issues/1234",
+      });
+      expect(found).toBe(true);
+
+      const card = mgr.load("sess-1")[1].bugReport;
+      expect(card?.phase).toBe("filed");
+      expect(card?.issueNumber).toBe(1234);
+      expect(card?.issueUrl).toContain("issues/1234");
+      // Original draft fields are preserved through the merge.
+      expect(card?.title).toBe("Preview won't reload");
+    });
+
+    it("(d) updateBugReportCard records a failure as an editable draft", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", draftCard("bug-card-1"));
+
+      mgr.updateBugReportCard("sess-1", "bug-card-1", {
+        phase: "draft",
+        errorMessage: "Your GitHub token can't file issues. Reconnect GitHub.",
+        scopeError: true,
+      });
+
+      const card = mgr.load("sess-1")[0].bugReport;
+      expect(card?.phase).toBe("draft");
+      expect(card?.scopeError).toBe(true);
+      expect(card?.errorMessage).toContain("Reconnect GitHub");
+    });
+
+    it("returns false when no card matches the given id", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", draftCard("bug-card-1"));
+      expect(mgr.updateBugReportCard("sess-1", "missing", { phase: "filed" })).toBe(false);
+    });
+  });
+
   it("persists error messages with isError flag", () => {
     const mgr = new ChatHistoryManager(dbManager);
     mgr.append("sess-1", { role: "assistant", text: "Error: something broke", isError: true });

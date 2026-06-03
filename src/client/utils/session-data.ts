@@ -12,6 +12,7 @@ import { usePreviewStore } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
+import { useBugReportStore, type BugReportCardState } from "../stores/bug-report-store.js";
 
 interface PreviewStatusResponse {
   known: boolean;
@@ -96,6 +97,18 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
       streaming: m.inProgress ?? false,
     } as unknown as ChatMessage)),
   );
+
+  // docs/164 — rehydrate the bug-report store from persisted cards so each
+  // `BugReportCard` renders with its correct phase (a filed card comes back
+  // "filed" with its issue link; a failed one as an editable draft). Seeding is
+  // authoritative — it overwrites any draft a turn-event-buffer replay may have
+  // created first on reconnect.
+  const persistedCards = data.messages
+    .map((m) => (m as { bugReport?: BugReportCardState }).bugReport)
+    .filter((b): b is BugReportCardState => !!b && typeof b.cardId === "string" && !!b.phase);
+  if (persistedCards.length > 0) {
+    useBugReportStore.getState().seedCards(persistedCards);
+  }
   if (data.agentRunning) {
     session.setIsLoading(true);
   } else {

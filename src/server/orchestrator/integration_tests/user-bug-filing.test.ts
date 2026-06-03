@@ -16,6 +16,7 @@ import {
   createTestSession,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
+import type { ChatHistoryManager, PersistedBugReport } from "../chat-history.js";
 import type { FastifyInstance } from "fastify";
 import type { CredentialStore } from "../credential-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -153,6 +154,71 @@ describe("Integration: user bug filing", () => {
     const failed = (await client.receiveType("bug_report_failed")) as WsBugReportFailed;
     expect(failed.scopeError).toBe(true);
     expect(failed.message).toContain("Reconnect GitHub");
+
+    client.close();
+  });
+
+  it("(a) records the card in-band so it persists at its transcript position", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    // The card is recorded on the runner (anchored by afterGroupIndex) so
+    // `buildTurnMessages` folds it into chat history at the spot the agent's
+    // `report_shipit_bug` tool fired — the same mechanism voice notes use.
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): { bugReportCards: { afterGroupIndex: number; card: { cardId: string; phase: string } }[] } | undefined } }).runnerRegistry.get(sessionId);
+    expect(runner?.bugReportCards).toHaveLength(1);
+    expect(runner?.bugReportCards[0].card.cardId).toBe(card.cardId);
+    expect(runner?.bugReportCards[0].card.phase).toBe("draft");
+
+    client.close();
+  });
+
+  it("(b/d) a submission patches the persisted card so a reload shows its terminal state", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    // Simulate the proposing turn finalizing the recorded card into chat history
+    // (in production `buildTurnMessages` does this at the tool-result boundary).
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): { bugReportCards: { card: PersistedBugReport }[] } | undefined } }).runnerRegistry.get(sessionId);
+    histMgr.append(sessionId, { role: "assistant", text: "", bugReport: runner!.bugReportCards[0].card });
+
+    // It replays on attach (reload rebuilds from this history).
+    const historyBefore = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsBefore = (historyBefore.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    expect(cardsBefore).toHaveLength(1);
+    expect(cardsBefore[0]?.phase).toBe("draft");
+
+    // User confirms → filed. The terminal state is patched into the same record.
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    // No duplicate card — the single record is updated in place.
+    expect(cardsAfter).toHaveLength(1);
+    expect(cardsAfter[0]?.phase).toBe("filed");
+    expect(cardsAfter[0]?.issueNumber).toBe(1234);
+    expect(cardsAfter[0]?.issueUrl).toContain("nicolasalt/shipit/issues/1234");
 
     client.close();
   });

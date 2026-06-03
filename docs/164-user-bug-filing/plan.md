@@ -335,6 +335,29 @@ labels). One follow-up emerged, tracked separately:
   can't set labels on a repo it can't push to). Lives in the upstream repo, not this
   codebase; not a blocker for the in-product flow.
 
+## Persistence & replay
+
+The consent card and its lifecycle are persisted to chat history so they survive
+a session switch and a full page reload — not just a WS reconnect. The card is a
+side-channel artifact (it arrives via the `report_shipit_bug` HTTP relay, not the
+agent-event stream), so it follows the **voice-note precedent** (`docs/163`):
+
+- The proposing turn records the card on the runner via `recordBugReportCard`
+  (anchored by `afterGroupIndex`). `buildTurnMessages` re-interleaves it at its
+  true transcript position on every in-progress rebuild, so it lands where the
+  tool fired instead of floating above the whole turn on reload.
+- `PersistedMessage.bugReport` (a `PersistedBugReport`) carries the full payload
+  + phase; a new `bug_report` column (`database.ts` migration) stores it.
+- `filed`/`failed` transitions patch the persisted record in place via
+  `ChatHistoryManager.updateBugReportCard(sessionId, cardId, patch)` — safe
+  because the proposing-turn row is finalized (`in_progress=0`) by the time the
+  user clicks Submit.
+- On the client, `loadSessionHistory` seeds `bug-report-store` from persisted
+  cards (`seedCards`, authoritative). The live `bug_report_card` handler's marker
+  append and the store's `upsertCard` are both idempotent/non-clobbering, so the
+  reconnect turn-event-buffer replay and the reload history replay never render
+  two cards or reset a filed card to draft.
+
 ## Key files
 
 - `src/server/orchestrator/services/redaction.ts` (new) + test — shared redaction.

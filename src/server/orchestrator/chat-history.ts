@@ -4,6 +4,35 @@ import type { SubagentEvent } from "./session-runner.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
+/**
+ * docs/164 — the persisted state of an inline bug-report consent card. Mirrors
+ * the client `BugReportCardState` (plus `createdAt`) so a card can be rehydrated
+ * straight from chat history on a session switch / full reload, and so its
+ * lifecycle (filed / failed) survives — the card and its terminal state were
+ * previously client-only and vanished on reload. The card is recorded in-band
+ * with the turn that proposed it (see `RecordedBugReportCard`) so it lands at
+ * its true transcript position; `filed`/`failed` transitions patch this record
+ * in place via `updateBugReportCard`.
+ */
+export interface PersistedBugReport {
+  cardId: string;
+  phase: "draft" | "filing" | "filed" | "failed";
+  title: string;
+  body: string;
+  /** False → the deep semantic redaction pass didn't run; the card warns. */
+  stage2Ran: boolean;
+  producer: "session" | "ops";
+  /** GitHub login the issue is filed as. */
+  filedAs?: string;
+  createdAt?: string;
+  /** Set in the `filed` phase. */
+  issueNumber?: number;
+  issueUrl?: string;
+  /** Set when a failed attempt dropped the card back to an editable draft. */
+  errorMessage?: string;
+  scopeError?: boolean;
+}
+
 export type RewindSnapshotPayload =
   | { action: "chat"; messages: PersistedMessage[] }
   | { action: "code"; headHash: string; flippedMessageIds: number[] }
@@ -84,6 +113,15 @@ export interface PersistedMessage {
     createdAt: string;
   };
   /**
+   * docs/164 — when set, this message renders an inline `BugReportCard`. Like
+   * voice notes, the consent card arrives off the agent-event stream (the
+   * `report_shipit_bug` HTTP relay) so `buildTurnMessages` doesn't capture it on
+   * its own; it is recorded in-band with the proposing turn and persisted here
+   * so the card — and its filed/failed terminal state — survives a history
+   * reload like any other transcript content.
+   */
+  bugReport?: PersistedBugReport;
+  /**
    * Events emitted by subagents (Claude's Task tool) whose parent Task tool is
    * in this message's `toolUse`. Stored as a flat ordered list keyed by
    * `parentToolUseId` so the client can render the subagent's prompt, work,
@@ -112,6 +150,7 @@ interface MessageRow {
   fork_child: string | null;
   code_rollback_hash: string | null;
   voice_note: string | null;
+  bug_report: string | null;
   /**
    * Legacy column — older rows may carry a serialized per-turn usage record
    * here. The canonical per-turn series is now owned by `UsageManager`
@@ -125,8 +164,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report)
 `;
 
 const UPDATE_SQL = `
@@ -135,7 +174,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note
+    voice_note=@voice_note, bug_report=@bug_report
   WHERE id = @id
 `;
 
@@ -193,6 +232,7 @@ export class ChatHistoryManager {
       fork_child: msg.forkChild ? JSON.stringify(msg.forkChild) : null,
       code_rollback_hash: msg.codeRollbackHash ?? null,
       voice_note: msg.voiceNote ? JSON.stringify(msg.voiceNote) : null,
+      bug_report: msg.bugReport ? JSON.stringify(msg.bugReport) : null,
     };
   }
 
@@ -218,6 +258,7 @@ export class ChatHistoryManager {
     if (row.fork_child) msg.forkChild = JSON.parse(row.fork_child) as PersistedMessage["forkChild"];
     if (row.code_rollback_hash) msg.codeRollbackHash = row.code_rollback_hash;
     if (row.voice_note) msg.voiceNote = JSON.parse(row.voice_note) as PersistedMessage["voiceNote"];
+    if (row.bug_report) msg.bugReport = JSON.parse(row.bug_report) as PersistedBugReport;
     return msg;
   }
 
@@ -263,6 +304,35 @@ export class ChatHistoryManager {
       const row = this.toRow(sessionId, last);
       this.stmtUpdate.run({ ...row, id: lastRow.id });
       return lastRow.id;
+    })();
+  }
+
+  /**
+   * docs/164 — patch a persisted bug-report card's lifecycle fields in place,
+   * keyed by `cardId`. Used by the `submit_bug_report` WS handler so a `filed`
+   * (issue number + url) or `failed` (error / scope flag) transition survives a
+   * reload — the proposing-turn row was already finalized (in_progress=0) by the
+   * time the user clicks Submit, so a direct update is safe and won't be undone
+   * by a later `replaceInProgress`. Returns true if a matching card was found.
+   */
+  updateBugReportCard(
+    sessionId: string,
+    cardId: string,
+    patch: Partial<PersistedBugReport>,
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        if (!row.bug_report) continue;
+        const card = JSON.parse(row.bug_report) as PersistedBugReport;
+        if (card.cardId !== cardId) continue;
+        const merged: PersistedBugReport = { ...card, ...patch };
+        const msg = this.fromRow(row);
+        msg.bugReport = merged;
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
     })();
   }
 
