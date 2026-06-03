@@ -24,7 +24,6 @@ export interface IssuesViewerProps {
   info?: TrackerInfo;
   loading: boolean;
   error: string | null;
-  startingIds: Set<string>;
   /** Whether a repo is available to start a session on. */
   canStart: boolean;
   onSelectTracker: (id: TrackerId) => void;
@@ -54,12 +53,10 @@ function PriorityBadge({ priority }: { priority: TrackerIssue["priority"] }) {
 
 function IssueRow({
   issue,
-  starting,
   canStart,
   onStartSession,
 }: {
   issue: TrackerIssue;
-  starting: boolean;
   canStart: boolean;
   onStartSession: (issue: TrackerIssue) => void;
 }) {
@@ -94,13 +91,13 @@ function IssueRow({
       <Button
         variant="secondary"
         size="sm"
-        disabled={starting || !canStart}
-        title={canStart ? "Start a ShipIt session from this issue" : "Add a repo first to start a session"}
+        disabled={!canStart}
+        title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
         onClick={() => onStartSession(issue)}
         className="shrink-0 inline-flex items-center gap-1.5"
       >
         <RocketLaunchIcon size={ICON_SIZE.SM} />
-        {starting ? "Starting…" : "Start session"}
+        Start session
       </Button>
     </div>
   );
@@ -113,7 +110,6 @@ export function IssuesViewer({
   info,
   loading,
   error,
-  startingIds,
   canStart,
   onSelectTracker,
   onRefresh,
@@ -201,7 +197,6 @@ export function IssuesViewer({
               <IssueRow
                 key={issue.id}
                 issue={issue}
-                starting={startingIds.has(issue.id)}
                 canStart={canStart}
                 onStartSession={onStartSession}
               />

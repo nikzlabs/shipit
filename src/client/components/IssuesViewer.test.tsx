@@ -32,7 +32,6 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     info: LINEAR_CONFIGURED,
     loading: false,
     error: null,
-    startingIds: new Set(),
     canStart: true,
     onSelectTracker: vi.fn(),
     onRefresh: vi.fn(),
@@ -80,12 +79,6 @@ describe("IssuesViewer", () => {
     const props = defaultProps({ issues: [makeIssue()], canStart: false });
     render(<IssuesViewer {...props} />);
     expect(screen.getByRole("button", { name: /Start session/i })).toBeDisabled();
-  });
-
-  it("shows a per-row starting state", () => {
-    const props = defaultProps({ issues: [makeIssue({ id: "i1" })], startingIds: new Set(["i1"]) });
-    render(<IssuesViewer {...props} />);
-    expect(screen.getByRole("button", { name: /Starting/i })).toBeDisabled();
   });
 
   it("renders one sub-tab per configured tracker and switches on click", () => {

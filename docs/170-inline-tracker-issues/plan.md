@@ -156,8 +156,25 @@ Linear / GitHub  ──(user OAuth)──▶  Tracker adapter  ──▶  GET /a
                                                               │
                                                       IssuesViewer (sub-tabs, priority sort)
                                                               │
-                                              "Start session" ──▶ headless-sessions.create({ issueRef })
+                                              "Start session" ──▶ setPrefillText(issue prompt)
+                                                                  (seeds chat input; user sends)
 ```
+
+### Start session seeds the input — it does not auto-send
+
+"Start session" mirrors the docs "Start Session" flow (`handleDocStartSession`):
+instead of POSTing to `/api/sessions/headless` and auto-dispatching the first
+turn, it switches to a fresh session (when the current one already has messages)
+and **prefills the chat input** with the issue's context (`identifier`, `title`,
+`description`, link — the same text `seedFromIssueRef` would have sent). The user
+can then edit/augment the prompt before sending. The prefill + fresh-session
+handling lives in `App.tsx#handleIssueStartSession` (where
+`handleNewSessionForRepo` and `setPrefillText` are available); `IssuesPanel` only
+resolves the repo for the `canStart` gate and delegates the click upward.
+
+The server-side `seedFromIssueRef()` / `createHeadlessSession({ issueRef })`
+seeding primitive is retained for the **push** trigger (docs/156) — only the
+in-app **pull** path stopped calling it.
 
 ## Key files
 
@@ -228,10 +245,15 @@ Actual key files (server):
 
 Actual key files (client):
 - `src/client/components/IssuesViewer.tsx` (presentational) +
-  `IssuesPanel.tsx` (store-connected wrapper that resolves the repo + navigates
-  on Start session) + `SettingsTrackers.tsx` (Linear connect/bind).
+  `IssuesPanel.tsx` (store-connected wrapper that resolves the repo for the
+  `canStart` gate and delegates Start session upward) + `SettingsTrackers.tsx`
+  (Linear connect/bind).
+- `src/client/App.tsx` — `handleIssueStartSession` seeds the chat input from the
+  issue (prefill, not auto-send), reusing `handleNewSessionForRepo` +
+  `setPrefillText`.
 - `src/client/stores/issues-store.ts` — per-tracker lists, fetch-on-open +
-  manual refresh, `startSession()`.
+  manual refresh. (The earlier `startSession()` action that POSTed to
+  `/api/sessions/headless` was removed when Start session moved to prefill.)
 
 ## Open questions
 

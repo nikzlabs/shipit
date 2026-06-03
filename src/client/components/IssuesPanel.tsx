@@ -1,4 +1,3 @@
-import { useNavigate } from "react-router-dom";
 import { IssuesViewer } from "./IssuesViewer.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -8,19 +7,26 @@ import type { TrackerId, TrackerIssue } from "../../server/shared/types.js";
 /**
  * Connected wrapper around {@link IssuesViewer} (docs/170). Resolves the repo
  * to start a session on (the current session's remote, falling back to the
- * active sidebar repo), wires the store actions, and navigates to the new
- * session when "Start session" succeeds. Kept separate so IssuesViewer stays a
+ * active sidebar repo) to gate the Start-session action, and delegates the
+ * action itself to the parent. "Start session" seeds the chat input with the
+ * issue's context (it does NOT auto-send) — mirroring the docs "Start Session"
+ * flow — so the actual prefill + fresh-session handling lives in App.tsx where
+ * handleNewSessionForRepo is available. Kept separate so IssuesViewer stays a
  * pure presentational component (easy to render in tests).
  */
-export function IssuesPanel({ onConnect }: { onConnect: () => void }) {
-  const navigate = useNavigate();
+export function IssuesPanel({
+  onStartSession,
+  onConnect,
+}: {
+  onStartSession: (issue: TrackerIssue) => void;
+  onConnect: () => void;
+}) {
   const trackers = useIssuesStore((s) => s.trackers);
   const activeTracker = useIssuesStore((s) => s.activeTracker);
   const issues = useIssuesStore((s) => s.issuesByTracker[s.activeTracker] ?? []);
   const info = useIssuesStore((s) => s.infoByTracker[s.activeTracker]);
   const loading = useIssuesStore((s) => s.loading);
   const error = useIssuesStore((s) => s.error);
-  const startingIds = useIssuesStore((s) => s.startingIds);
 
   // Repo to seed the session on: prefer the current session's remote so the
   // issue lands in the repo the user is already looking at; fall back to the
@@ -37,10 +43,9 @@ export function IssuesPanel({ onConnect }: { onConnect: () => void }) {
     void useIssuesStore.getState().fetchIssues(id);
   };
 
-  const handleStartSession = async (issue: TrackerIssue) => {
+  const handleStartSession = (issue: TrackerIssue) => {
     if (!effectiveRepoUrl) return;
-    const sessionId = await useIssuesStore.getState().startSession(issue, effectiveRepoUrl);
-    if (sessionId) void navigate(`/session/${sessionId}`);
+    onStartSession(issue);
   };
 
   return (
@@ -51,7 +56,6 @@ export function IssuesPanel({ onConnect }: { onConnect: () => void }) {
       info={info}
       loading={loading}
       error={error}
-      startingIds={startingIds}
       canStart={Boolean(effectiveRepoUrl)}
       onSelectTracker={handleSelectTracker}
       onRefresh={() => void useIssuesStore.getState().fetchIssues()}
