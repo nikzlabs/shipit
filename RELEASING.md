@@ -19,6 +19,10 @@ ShipIt ships in two **release channels** (see `docs/162-release-channels/plan.md
 - A **GitHub Release** hangs auto-generated notes (PR titles since the previous
   tag) off each tag. Those notes are the changelog ShipIt surfaces inline in the
   update panel.
+- The notes are **grouped into sections** (Features, Fixes, Docs, Dependencies,
+  Maintenance) by PR label, configured in `.github/release.yml`. Label your PRs
+  so they land in the right section — an unlabeled PR falls through to *Other
+  Changes*, so nothing is dropped, but the notes read better when labeled.
 
 Never force-push `stable`. If a fast-forward fails, the tag was cut off a commit
 that isn't an ancestor of current `stable` — that's the intended loud failure,
