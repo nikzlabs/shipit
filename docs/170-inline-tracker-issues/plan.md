@@ -233,6 +233,17 @@ Actual key files (client):
 - `src/client/stores/issues-store.ts` — per-tracker lists, fetch-on-open +
   manual refresh, `startSession()`.
 
+### Gotcha: Zustand selectors must return stable references
+
+`IssuesPanel` selects the active tracker's list as
+`s.issuesByTracker[s.activeTracker] ?? EMPTY_ISSUES` using a module-level
+`EMPTY_ISSUES` constant. The earlier `?? []` form returned a **fresh array on
+every render**, which makes Zustand v5's `useSyncExternalStore` see a changed
+snapshot each render and loop into React error #185 ("Maximum update depth
+exceeded"). It triggered exactly on tab open, before the first fetch populates
+`issuesByTracker`. Any `?? []`/`?? {}` fallback inside a selector here must use a
+shared stable constant. Regression: `IssuesPanel.test.tsx`.
+
 ## Open questions
 
 1. **Webhook follow-up trigger** — decide later whether "fetch on open"
