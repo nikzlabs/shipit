@@ -21,13 +21,10 @@ interface IssuesState {
   infoByTracker: Record<string, TrackerInfo>;
   loading: boolean;
   error: string | null;
-  /** Issue ids with a Start-session request in flight (per-row spinner). */
-  startingIds: Set<string>;
 
   setActiveTracker: (id: TrackerId) => void;
   fetchTrackers: () => Promise<void>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
-  startSession: (issue: TrackerIssue, repoUrl: string) => Promise<string | null>;
   reset: () => void;
 }
 
@@ -38,7 +35,6 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   infoByTracker: {},
   loading: false,
   error: null,
-  startingIds: new Set(),
 
   setActiveTracker: (id) => set({ activeTracker: id }),
 
@@ -87,47 +83,10 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     }
   },
 
-  startSession: async (issue, repoUrl) => {
-    set((state) => ({ startingIds: new Set(state.startingIds).add(issue.id) }));
-    try {
-      const activeTracker = get().activeTracker;
-      const res = await fetch("/api/sessions/headless", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
-          repoUrl,
-          issueRef: {
-            tracker: activeTracker,
-            identifier: issue.identifier,
-            title: issue.title,
-            url: issue.url,
-            ...(issue.description ? { description: issue.description } : {}),
-          },
-        }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { error?: string; sessionId?: string };
-      if (!res.ok || !body.sessionId) {
-        set({ error: body.error ?? `Failed to start session (${res.status})` });
-        return null;
-      }
-      return body.sessionId;
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-      return null;
-    } finally {
-      set((state) => {
-        const next = new Set(state.startingIds);
-        next.delete(issue.id);
-        return { startingIds: next };
-      });
-    }
-  },
-
   reset: () =>
     set({
       issuesByTracker: {},
       loading: false,
       error: null,
-      startingIds: new Set(),
     }),
 }));
