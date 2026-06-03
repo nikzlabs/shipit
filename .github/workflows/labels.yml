@@ -1,0 +1,36 @@
+name: Sync labels
+
+# Keep the repo's labels in sync with `.github/labels.yml` (the source of
+# truth). Those labels drive the section grouping in auto-generated GitHub
+# Release notes — see `.github/release.yml` and RELEASING.md. Runs whenever the
+# label definitions change on `main`, or on manual dispatch.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/labels.yml"
+      - ".github/workflows/labels.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write        # create/update repository labels
+  pull-requests: write # labels live on the shared label set used by PRs too
+
+jobs:
+  labeler:
+    name: Sync labels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # skip-delete: true so labels not listed in labels.yml (e.g. GitHub's
+      # default "good first issue", "help wanted") are left untouched rather
+      # than deleted out from under the repo.
+      - uses: crazy-max/ghaction-github-labeler@v5.3.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          yaml-file: .github/labels.yml
+          skip-delete: true
+          dry-run: false

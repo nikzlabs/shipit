@@ -28,6 +28,36 @@ Never force-push `stable`. If a fast-forward fails, the tag was cut off a commit
 that isn't an ancestor of current `stable` — that's the intended loud failure,
 not something to override.
 
+## Labels
+
+The auto-generated GitHub Release notes are **grouped into sections by PR
+label**. `.github/release.yml` maps labels to sections:
+
+| Section | Labels |
+|---|---|
+| 🚀 Features | `feature`, `enhancement` |
+| 🐛 Fixes | `bug`, `fix` |
+| 📝 Documentation | `documentation`, `docs` |
+| ⬆️ Dependencies | `dependencies` |
+| 🧰 Maintenance | `chore`, `refactor`, `ci`, `test` |
+| Other Changes | everything else (`*`) |
+
+PRs labeled `ignore-for-release` are excluded from the notes entirely. An
+unlabeled PR lands in **Other Changes**.
+
+- **`.github/labels.yml` is the source of truth** for the label set (name,
+  color, description). The `Sync labels` workflow (`.github/workflows/labels.yml`)
+  creates/updates these labels in the repo on every push to `main` that touches
+  `labels.yml`, and on manual `workflow_dispatch`. It runs with `skip-delete`,
+  so GitHub's default labels are left untouched.
+- **The auto-labeler applies best-effort labels.** On every PR, the labeler
+  workflow (`.github/workflows/labeler.yml`, using `actions/labeler`) maps
+  changed file paths to labels via `.github/labeler.yml` (e.g. `docs/**` →
+  `documentation`, `.github/workflows/**` → `ci`). This is advisory only:
+  **maintainers can add or remove labels by hand before merge**, and an
+  unlabeled PR never fails CI. Hand-label anything the path rules miss so it
+  lands in the right release-notes section.
+
 ## Cutting a normal release
 
 1. Decide the version and bump `package.json`:
