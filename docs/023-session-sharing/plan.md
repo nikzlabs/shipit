@@ -148,6 +148,14 @@ export async function exportSession(
 
 **Secret redaction**: Scan tool_use inputs and outputs for patterns like `sk-`, `ghp_`, `Bearer `, API keys, tokens. Replace with `[REDACTED]`.
 
+> **Cross-ref (docs/164):** The deterministic Stage-1 redactor this doc specced
+> now exists, built for user bug filing — `src/server/orchestrator/services/redaction.ts`
+> (`redact()` / the Stage-1 heuristic scrubbers). It covers `sk-`/`ghp_`/`Bearer`/
+> long-token, email addresses, git/remote URLs (via `stripUrlCredentials`), and
+> absolute workspace paths, with `redaction.test.ts` proving each. When 023's full
+> HTML/JSON export is picked up, consume that shared module rather than
+> re-implementing the scan — this partially un-pauses 023.
+
 #### New Types
 
 ```typescript

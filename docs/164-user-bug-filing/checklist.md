@@ -10,8 +10,8 @@
 
 ## Producers (regular + ops)
 - [x] Regular session: agent recognizes intent, attaches redacted transcript + platform version + browser/env (no Docker/journal)
-- [ ] Ops session (`docs/128`): re-point the `--shipit-source` no-write 403 fallback (`api-routes-session.ts`: "produce a structured incident report instead") into this flow, attaching Docker/journal evidence — same draft→redact→confirm→file path
-- [ ] Update `src/server/shipit-docs/ops-session.md` so the ops agent files an issue (instead of a text-only report) when it lacks push access
+- [x] Ops session (`docs/128`): re-point the `--shipit-source` no-write 403 fallback (`api-routes-session.ts`) into this flow — the message now directs the agent to `report_shipit_bug` with redacted Docker/journal evidence; producer is derived server-side from `session.kind === "ops"` so the existing draft→redact→confirm→file path already marks it `source:ops`
+- [x] Update `src/server/shipit-docs/ops-session.md` so the ops agent files an issue (instead of a text-only report) when it lacks push access
 
 ## GitHub issue filing (user's own identity)
 - [x] `GitHubAuthManager.createIssue(repo, { title, body })` against the hard-coded `nicolasalt/shipit` (no env override), using the user's existing token
@@ -40,7 +40,7 @@
 - [x] `user-bug-filing.test.ts` integration: redaction applied, issue only after confirm, scope-missing path, empty-body rejected
 - [x] `BugReportCard.test.tsx` component test: consent gate, Stage-2 flag, filed state, scope-error banner, Cancel, unknown-card no-op
 - [x] `shipit-docs/bug-filing.md` agent-facing doc + README index entry
-- [ ] Update `docs/023` (redaction engine now exists) cross-ref
+- [x] Update `docs/023` (redaction engine now exists) cross-ref
 
 ## Follow-ups (not blockers for the in-product flow)
 - [ ] Maintainer-side GitHub Action on `nicolasalt/shipit` to apply real `user-reported` / `source:*` labels from the `<!-- shipit-report … -->` body marker (lives in the upstream repo, not this codebase)
