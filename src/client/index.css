@@ -302,6 +302,23 @@ html, body {
   animation: spin-slow 1s linear infinite;
 }
 
+/* Monaco line highlight when the preview is opened at a specific line
+   (e.g. from a `path:line` link in chat). Fades on its own after the
+   decoration is cleared. */
+@keyframes preview-line-flash {
+  from {
+    background-color: rgb(250 204 21 / 0.35);
+  }
+  to {
+    background-color: rgb(250 204 21 / 0.12);
+  }
+}
+
+.shipit-preview-line-highlight {
+  background-color: rgb(250 204 21 / 0.12);
+  animation: preview-line-flash 0.6s ease-out;
+}
+
 /* Resize handle — vertical divider between panels */
 .resize-handle {
   width: 8px;
