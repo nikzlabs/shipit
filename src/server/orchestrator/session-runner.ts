@@ -255,6 +255,18 @@ export interface SystemTurnDeps {
     emit: (msg: WsServerMessage) => void,
   ) => Promise<void>;
   /**
+   * docs/171 — react to release markers in the turn's assistant text after the
+   * turn ends. Unlike `postTurnPrFlow` this fires on EVERY turn (commit or not),
+   * because a release *proposal* turn makes no commit. Optional; only the WS
+   * adapter wires it (releases are user-driven chat, not system turns).
+   */
+  postTurnReleaseFlow?: (
+    sessionId: string,
+    sessionDir: string,
+    turnText: string,
+    emit: (msg: WsServerMessage) => void,
+  ) => Promise<void>;
+  /**
    * docs/149 — write a CLI-rotated OAuth token back to the orchestrator source
    * after a system turn. Optional; production wires it to
    * `finalizeSessionAgentEnvironment` so the agent-spawned and CI-auto-fix

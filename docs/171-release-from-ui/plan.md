@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-71/release-from-shipit-cut-a-release-for-any-repo-from-chat
 title: Release from ShipIt — cut a software release for any repo from chat
 description: Generalize ShipIt's own release automation into a chat-initiated, agent-driven flow that cuts a versioned release for any open repo and renders the result as an inline release lifecycle card.
 ---

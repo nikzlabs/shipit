@@ -57,6 +57,7 @@ const EMPTY_TURN_USAGE: TurnUsage[] = [];
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
+import { ReleaseLifecycleCard } from "./components/ReleaseLifecycleCard.js";
 import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { PresentPane } from "./components/PresentPane.js";
 import { HostPanel } from "./components/HostPanel.js";
@@ -651,6 +652,42 @@ export default function App() {
     [send],
   );
 
+  // docs/171 — confirm/cancel a proposed release. These send a chat message
+  // (answering the agent's proposal) through the same user-message surface as
+  // any other reply — NOT a shell command (CLAUDE.md §5). The agent's follow-up
+  // turn performs the bump/tag/push and the release flow advances the card.
+  const handleReleaseConfirm = useCallback(
+    (version: string) => {
+      const session = useSessionStore.getState();
+      const pm = useSettingsStore.getState().getPermissionMode(session.sessionId);
+      const text = `Yes — confirm and publish the ${version} release: bump the version, commit, create the annotated tag, and push the tag.`;
+      sendUserMessage({
+        bubble: { role: "user", text },
+        activity: "Publishing release...",
+        dispatch: () => send({
+          type: "send_message",
+          text,
+          sessionId: session.sessionId,
+          permissionMode: pm !== "auto" ? pm : undefined,
+        }),
+      });
+    },
+    [send],
+  );
+
+  const handleReleaseCancel = useCallback(
+    (version: string) => {
+      const session = useSessionStore.getState();
+      const text = `Cancel the ${version} release — do not bump, tag, or push anything.`;
+      sendUserMessage({
+        bubble: { role: "user", text },
+        activity: "Thinking...",
+        dispatch: () => send({ type: "send_message", text, sessionId: session.sessionId ?? undefined }),
+      });
+    },
+    [send],
+  );
+
   const handleNewSessionForRepo = useCallback(
     async (repoUrl: string) => {
       // Abort any in-flight claim from a previous "New Session" click
@@ -1086,6 +1123,13 @@ export default function App() {
           onDownloadChat={handleDownloadChat}
           recoverRewindAvailable={recoverRewindAvailable}
           onRecoverRewind={() => { if (currentSession) window.dispatchEvent(new CustomEvent("shipit:restore-rewind", { detail: { sessionId: currentSession.id } })); }}
+        />
+      )}
+      {!showHomeScreen && !showNewSessionView && wsSessionId && (
+        <ReleaseLifecycleCard
+          sessionId={wsSessionId}
+          onConfirm={handleReleaseConfirm}
+          onCancel={handleReleaseCancel}
         />
       )}
       {!showHomeScreen && !showNewSessionView && wsSessionId && isMobile && (
