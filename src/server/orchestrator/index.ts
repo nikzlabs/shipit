@@ -14,6 +14,7 @@ import { getGitIdentity } from "./git-config.js";
 import { pushToOrigin, isGitAuthError } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
+import { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
@@ -443,6 +444,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // hook closes over.
   prStatusPollerRef.ref = prStatusPoller;
 
+  // ---- Release Status Poller (docs/171) ----
+  // Reflects the inline release lifecycle card: gate/CI status + the published
+  // GitHub Release, off the agent-pushed tag. Reuses the PR poller's global gate
+  // shape (viewers / detach grace / active release).
+  const releaseStatusPoller = new ReleaseStatusPoller({
+    githubAuth: githubAuthManager,
+    sseBroadcast,
+    runnerRegistry,
+  });
+
   // ---- Event wiring (deployment + auth) ----
   // `authManagers` map is built above the runner-registry construction (see
   // docs/155 Phase 2) so system-turn listeners can pick it up.
@@ -657,6 +668,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // reconnect can clear everything if the server now knows of no PRs.
     const prStatuses = prStatusPoller.getAllStatuses();
     client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses, isSnapshot: true })}\n\n`);
+
+    // docs/171 — current release lifecycle cards so an inline release card
+    // survives a reconnect. Snapshot semantics mirror pr_status.
+    const releaseStatuses = releaseStatusPoller.getAllStatuses();
+    client.write(`event: release_status\ndata: ${JSON.stringify({ updates: releaseStatuses, isSnapshot: true })}\n\n`);
 
     // GitHub rate-limit state — emit the banner immediately so a refreshed
     // tab knows polling is paused. The poller's normal transition broadcast
@@ -1193,6 +1209,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // immediate — this just keeps the supervisor running for subsequent
         // ticks. See docs/064 "Polling budget."
         prStatusPoller.notifyViewerAttached();
+        releaseStatusPoller.notifyViewerAttached();
         // Replay only the part of the turn buffer that has not already been
         // folded into HTTP chat history. Codex can stream assistant text for a
         // long stretch before a tool-result/final persistence boundary; when a
@@ -1304,6 +1321,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           // The poller decides — it knows whether any other viewer / runner /
           // autonomous flow keeps the gate open.
           prStatusPoller.notifyViewerDetached();
+          releaseStatusPoller.notifyViewerDetached();
         }
         attachedRunner = null;
         runnerMessageListener = null;
@@ -1493,6 +1511,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         repoStore, warmSessionForRepo, generateText,
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
+        releaseStatusPoller,
         recordAgentRateLimits,
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},
         nudgeClaudeOAuthRefresh,
@@ -1813,6 +1832,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
   // / DI. Adding them here just lets tests stop reaching through
   // module-private state.
   app.decorate("prStatusPoller", prStatusPoller);
+  app.decorate("releaseStatusPoller", releaseStatusPoller);
   app.decorate("runnerRegistry", runnerRegistry);
   app.decorate("sessionManager", sessionManager);
   app.decorate("chatHistoryManager", chatHistoryManager);
@@ -1825,6 +1845,8 @@ declare module "fastify" {
   interface FastifyInstance {
     /** docs/146 — test-surface decoration. See `index.ts`. */
     prStatusPoller?: PrStatusPoller;
+    /** docs/171 — test-surface decoration for the release lifecycle poller. */
+    releaseStatusPoller?: ReleaseStatusPoller;
     runnerRegistry: SessionRunnerRegistry;
     sessionManager: SessionManager;
     chatHistoryManager: ChatHistoryManager;

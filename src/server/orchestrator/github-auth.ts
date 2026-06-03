@@ -6,6 +6,7 @@ import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper 
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
+import { getReleaseByTag as getReleaseByTagImpl, type ReleaseByTag } from "./github-auth-releases.js";
 import { createIssue as createIssueImpl } from "./github-auth-issues.js";
 import type { CreateIssueResult } from "./github-auth-issues.js";
 import { addReviewThreadReply as addReviewThreadReplyImpl, resolveReviewThread as resolveReviewThreadImpl, unresolveReviewThread as unresolveReviewThreadImpl, submitPullRequestReview as submitPullRequestReviewImpl } from "./github-auth-review-threads.js";
@@ -574,6 +575,16 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * docs/171 — read a published GitHub Release by tag for the inline release
+   * lifecycle card. Read-only; the write-side `createRelease` is Phase 4.
+   * Returns null when no Release exists for the tag yet.
+   */
+  async getReleaseByTag(owner: string, repo: string, tag: string): Promise<ReleaseByTag | null> {
+    if (!this._token) return null;
+    return getReleaseByTagImpl(this._token, owner, repo, tag);
+  }
+
+  /**
    * Get check run annotations (structured failure details with file paths and line numbers).
    * Returns empty array if not authenticated or if the API call fails.
    */
@@ -789,5 +800,6 @@ export class GitHubAuthManager extends EventEmitter {
 export { createRepo, listUserRepos, searchRepos } from "./github-auth-repos.js";
 export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, addLabelsToPullRequest, markPullRequestReady, listPullRequests, viewPullRequest, getPullRequestNodeId } from "./github-auth-prs.js";
 export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
+export { getReleaseByTag, type ReleaseByTag } from "./github-auth-releases.js";
 export { createIssue } from "./github-auth-issues.js";
 export { addReviewThreadReply, resolveReviewThread, unresolveReviewThread, submitPullRequestReview } from "./github-auth-review-threads.js";

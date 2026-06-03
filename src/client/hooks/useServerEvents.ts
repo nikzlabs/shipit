@@ -4,10 +4,11 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
+import { useReleaseStore } from "../stores/release-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, ReleaseStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId } from "../../server/shared/types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 
 let reloadingForClientUpdate = false;
@@ -265,6 +266,17 @@ export function useServerEvents(): void {
         isSnapshot?: boolean;
       };
       usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals, data.isSnapshot);
+    });
+
+    // docs/171 — release lifecycle card updates. Same snapshot/removal
+    // semantics as pr_status; drives the inline ReleaseLifecycleCard.
+    es.addEventListener("release_status", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as {
+        updates: ReleaseStatusSummary[];
+        removals?: string[];
+        isSnapshot?: boolean;
+      };
+      useReleaseStore.getState().applyReleaseStatusUpdates(data.updates, data.removals, data.isSnapshot);
     });
 
     // GitHub API rate-limit state. The server pauses GraphQL polling while

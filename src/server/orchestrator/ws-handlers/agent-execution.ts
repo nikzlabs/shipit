@@ -16,6 +16,7 @@ import {
 } from "../session-agent-env.js";
 import { buildAgentRunParams } from "../session-agent-run-params.js";
 import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
+import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
 
 // docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
@@ -427,6 +428,17 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionDir,
         commitHash,
         emit,
+      });
+    },
+    postTurnReleaseFlow: async (sessionId, sessionDir, turnText) => {
+      await reactToReleaseMarkers({
+        deps: {
+          releaseStatusPoller: ctx.releaseStatusPoller,
+          sessionManager: ctx.sessionManager,
+        },
+        sessionId,
+        sessionDir,
+        turnText,
       });
     },
   };

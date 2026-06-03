@@ -1,36 +1,64 @@
 # Release from ShipIt — checklist
 
-This tracks the implementation work the design implies. Nothing here is built yet;
-this doc is reference + plan only.
+This tracks the implementation work the design implies.
+
+**Phase 1 (MVP) is implemented** — see the key files added below. Phases 2–5
+remain.
 
 ## Phase 1 — MVP (tag-triggered, Node repo with existing workflow)
 
 - [ ] Product sign-off on the §5 stance (chat-initiated, agent-actor, inline card,
-      confirmation control is not a shell-shaped affordance).
-- [ ] `ReleaseStatusPoller` (new) modeled on `pr-status-poller.ts`: supervisor
+      confirmation control is not a shell-shaped affordance). *(Process item — the
+      implementation follows the stance; explicit sign-off is still pending.)*
+- [x] `ReleaseStatusPoller` (new) modeled on `pr-status-poller.ts`: supervisor
       tick, fast/slow cadence, global poll gate reuse, `release_status` SSE event.
-- [ ] `release-store.ts` (new) on the client, modeled on `pr-store.ts`; card state
+      → `src/server/orchestrator/release-status-poller.ts`, constructed in
+      `buildApp()` and snapshotted on `/api/events`.
+- [x] `release-store.ts` (new) on the client, modeled on `pr-store.ts`; card state
       machine `proposed | tagging | gating | published | deploying | released | failed`.
-- [ ] Release lifecycle card UI: version, bump type, gate/CI checks, tag, grouped
+      → `src/client/stores/release-store.ts`, wired to the `release_status` SSE
+      event in `useServerEvents.ts`.
+- [x] Release lifecycle card UI: version, bump type, gate/CI checks, tag, grouped
       notes, prerelease badge, deploy status, overflow "View on GitHub".
-- [ ] Confirmation control on the card (`Confirm & publish` / `Cancel`) + chat
+      → `src/client/components/ReleaseLifecycleCard.tsx` (Phosphor icons +
+      `ICON_SIZE` tokens), rendered in `App.tsx` next to the PR card.
+- [x] Confirmation control on the card (`Confirm & publish` / `Cancel`) + chat
       "yes ship it" path; wire to the same answer-question surface as PR confirms.
-- [ ] Agent instruction block "How to cut a release" in `agent-instructions.ts`
+      → card buttons send a chat message via `sendUserMessage` (App.tsx
+      `handleReleaseConfirm`/`handleReleaseCancel`) — answers the agent's
+      proposal, not a shell command (CLAUDE.md §5).
+- [x] Agent instruction block "How to cut a release" in `agent-instructions.ts`
       (shared section): read version source, compute next version, **never push a
       tag without confirmation**, use `git tag -a`, never run `gh release`.
-- [ ] Carve-out in `ws-handlers/post-turn.ts`: auto-push must never push a **tag**;
-      tag push is always confirmation-gated.
-- [ ] `package.json` version-source detection + next-version (semver) computation.
-- [ ] Idempotency: existing-tag check (local + remote) before tagging; "already
-      released" card state; poller dedup per `{repo, tag}`.
-- [ ] Reuse `getCheckStatus()` against the tag commit SHA for gate status.
-- [ ] Read the published Release via tag (`GET …/releases/tags/{tag}`) and render
-      grouped notes inline.
-- [ ] `/shipit-docs/release.md` baked into the session image; referenced from the
+- [x] Carve-out in `ws-handlers/post-turn.ts`: auto-push must never push a **tag**;
+      tag push is always confirmation-gated (auto-push is branch-only via
+      `GitManager.push(remote, branch)`; documented carve-out at the
+      `scheduleAutoPush` call).
+- [x] `package.json` version-source detection + next-version (semver) computation.
+      → `src/server/orchestrator/release-version.ts`.
+- [x] Idempotency: existing-tag check (local + remote) before tagging (agent-side,
+      per `/shipit-docs/release.md`); "already released" card state; poller dedup
+      per `{repo, tag}` (`releasedByKey`).
+- [x] Reuse `getCheckStatus()` against the tag commit SHA for gate status.
+- [x] Read the published Release via tag (`GET …/releases/tags/{tag}`) and render
+      grouped notes inline. → read-only `getReleaseByTag` in new
+      `github-auth-releases.ts` (NO write-side `createRelease` — that's Phase 4).
+- [x] `/shipit-docs/release.md` baked into the session image; referenced from the
       platform-docs section of the instructions.
-- [ ] Tests: poller unit tests (cadence, dedup, state transitions), card store
+- [x] Tests: poller unit tests (cadence, dedup, state transitions), card store
       tests, integration test for the confirm → tag → publish flow with a fake
-      GitHub auth manager.
+      GitHub auth manager. → `release-status-poller.test.ts`,
+      `release-markers.test.ts`, `release-version.test.ts`,
+      `release-store.test.ts`, `integration_tests/release-flow.test.ts`.
+
+### How the agent ↔ orchestrator seam works (Phase 1)
+
+The MVP needs **no** new agent tool or `gh` shim change (docs/171 "Agent
+backends"). The agent emits a small HTML-comment **release marker** in its turn
+text (`<!--shipit:release {…}-->`); the shared turn executor's post-turn step
+(`postTurnReleaseFlow`, fired every turn — a proposal turn makes no commit)
+parses it (`release-markers.ts`) and drives the poller via
+`services/release-flow.ts`. Confirmation is a normal chat reply from the card.
 
 ## Phase 2 — Multi-ecosystem detection + `release:` block
 
