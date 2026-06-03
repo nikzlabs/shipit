@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Issues tab — filters & table mock (docs/173)</title>
+<!--
+  Static, self-contained visual reference for docs/173-issue-tracker-filters.
+  Not wired to anything — it exists so the design's layout decisions (merged top
+  bar, tabular desktop layout, 2-line title, status/priority/assignee facets, and
+  the mobile card collapse) survive alongside plan.md instead of living only in
+  an ephemeral Present-tab artifact. Open in a browser to view.
+-->
+<style>
+  :root{
+    --bg:#0a0a0b; --bg-2:#111114; --bg-3:#17171b; --bg-hover:#1c1c21;
+    --border:#26262c; --border-2:#1d1d22;
+    --text-1:#e7e7ea; --text-2:#a8a8b0; --text-3:#6f6f78;
+    --accent:#6d7cff;
+    --err:#f0506e; --err-bg:#3a1620;
+    --warn:#f5a623; --warn-bg:#3a2a12;
+    --info:#4aa3ff; --info-bg:#10283f;
+    --def-bg:#1f1f25;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg);color:var(--text-1);
+    font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    display:flex;align-items:flex-start;justify-content:center;
+    padding:28px 20px;gap:30px;flex-wrap:wrap;
+  }
+  .col{display:flex;flex-direction:column;gap:24px}
+  .panel{
+    width:800px;max-width:100%;
+    background:var(--bg);border:1px solid var(--border);border-radius:10px;
+    overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.45);
+  }
+  .caption{color:var(--text-3);font-size:12px;margin:0 2px 8px}
+  /* merged top bar */
+  .topbar{display:flex;align-items:stretch;background:var(--bg-2);border-bottom:1px solid var(--border-2)}
+  .tab{padding:8px 12px;font-size:12px;font-weight:600;color:var(--text-3);border:0;border-bottom:2px solid transparent;cursor:pointer;background:transparent;white-space:nowrap}
+  .tab.active{color:var(--text-1);border-bottom-color:var(--accent)}
+  .tab .bind{color:var(--text-3);font-weight:500}
+  .topbar .spacer{flex:1}
+  .topbar .meta{display:flex;align-items:center;gap:8px;padding:0 10px;color:var(--text-2);font-size:12px}
+  .meta .count{font-weight:600}
+  .meta .count b{color:var(--text-1)}
+  .ghost-btn{display:inline-flex;align-items:center;gap:6px;color:var(--text-2);background:transparent;border:0;cursor:pointer;font-size:12px;padding:4px 6px;border-radius:6px}
+  .ghost-btn:hover{background:var(--bg-hover)}
+  /* filter bar */
+  .filterbar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg);border-bottom:1px solid var(--border-2)}
+  .search{flex:1;display:flex;align-items:center;gap:7px;background:var(--bg-3);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text-2);min-width:0}
+  .search input{flex:1;background:transparent;border:0;outline:0;color:var(--text-1);font-size:13px;min-width:0}
+  .search input::placeholder{color:var(--text-3)}
+  .facet{position:relative}
+  .facet-btn{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;background:var(--bg-3);border:1px solid var(--border);border-radius:7px;padding:6px 10px;color:var(--text-2);cursor:pointer;font-size:12.5px}
+  .facet-btn.active{border-color:var(--accent);color:var(--text-1)}
+  .facet-btn .pill{background:var(--accent);color:#fff;border-radius:999px;font-size:10px;min-width:16px;height:16px;padding:0 4px;display:inline-flex;align-items:center;justify-content:center;font-weight:700}
+  .caret{color:var(--text-3);font-size:10px}
+  .pop{position:absolute;top:calc(100% + 6px);right:0;z-index:5;background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:5px;min-width:200px;box-shadow:0 14px 36px rgba(0,0,0,.5)}
+  .pop .opt{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;cursor:pointer;color:var(--text-2)}
+  .pop .opt:hover{background:var(--bg-hover);color:var(--text-1)}
+  .cb{width:15px;height:15px;border-radius:4px;border:1.5px solid var(--border);flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:10px;color:#fff}
+  .cb.on{background:var(--accent);border-color:var(--accent)}
+  .opt .spacer{flex:1}
+  .opt .n{color:var(--text-3);font-size:11px}
+  /* badges */
+  .badge{display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:5px;font-size:11px;font-weight:600;line-height:1;white-space:nowrap}
+  .b-err{background:var(--err-bg);color:var(--err)}
+  .b-warn{background:var(--warn-bg);color:var(--warn)}
+  .b-info{background:var(--info-bg);color:var(--info)}
+  .b-def{background:var(--def-bg);color:var(--text-2)}
+  /* table */
+  .thead,.trow{display:grid;grid-template-columns:72px minmax(0,1fr) 92px 112px 96px 116px;gap:10px;padding:0 12px}
+  .thead{height:30px;align-items:center;background:var(--bg-2);border-bottom:1px solid var(--border-2);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);font-weight:600}
+  .thead .r,.trow .r{justify-self:end}
+  .trow{align-items:start;padding-top:11px;padding-bottom:11px;border-bottom:1px solid var(--border-2)}
+  .trow:hover{background:var(--bg-hover)}
+  .trow > div, .trow > button{margin-top:1px}
+  .c-id a{display:inline-flex;align-items:center;gap:4px;color:var(--text-3);font-size:11.5px;text-decoration:none}
+  .c-id a:hover{color:var(--text-2)}
+  .ext{font-size:10px;opacity:.8}
+  .c-title{min-width:0}
+  .c-title .t{color:var(--text-1);font-size:13px;font-weight:500;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.35}
+  .c-title .sub{color:var(--text-3);font-size:11.5px;margin-top:2px;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+  .c-status{color:var(--text-2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .c-assignee{display:inline-flex;align-items:center;gap:6px;color:var(--text-2);font-size:12px;white-space:nowrap;overflow:hidden}
+  .av{width:18px;height:18px;border-radius:999px;background:#3a3a52;color:#cfd0ff;font-size:9px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:none}
+  .av.b{background:#173a2c;color:#9ff0c4}
+  .start{display:inline-flex;align-items:center;gap:6px;justify-self:end;background:var(--bg-3);border:1px solid var(--border);border-radius:7px;padding:5px 10px;color:var(--text-1);font-size:12px;cursor:pointer;white-space:nowrap}
+  .start:hover{background:var(--bg-hover)}
+  .rocket{font-size:11px}
+  .muted{color:var(--text-3)}
+  .ftr{padding:11px 12px;color:var(--text-3);font-size:12px;border-top:1px dashed var(--border-2)}
+  .ftr a{color:var(--accent);cursor:pointer}
+
+  /* ---- mobile phone frame ---- */
+  .phone{width:380px;max-width:100%;border:1px solid var(--border);border-radius:22px;overflow:hidden;background:var(--bg);box-shadow:0 12px 40px rgba(0,0,0,.5)}
+  .notch{height:26px;background:var(--bg-2);display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--border-2)}
+  .notch::after{content:"";width:90px;height:5px;border-radius:999px;background:#2c2c33}
+  .m-topbar{display:flex;align-items:center;background:var(--bg-2);border-bottom:1px solid var(--border-2)}
+  .m-topbar .tab{padding:9px 12px}
+  .m-topbar .spacer{flex:1}
+  .m-topbar .meta{padding:0 10px;color:var(--text-2);display:flex;align-items:center;gap:8px;font-size:12px}
+  .m-topbar .meta .count{font-weight:600}
+  .m-topbar .meta .count b{color:var(--text-1)}
+  .m-filter{padding:8px 10px;border-bottom:1px solid var(--border-2);display:flex;flex-direction:column;gap:8px}
+  .chips{display:flex;gap:7px;overflow-x:auto;padding-bottom:1px}
+  .chips::-webkit-scrollbar{display:none}
+  .chip{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;background:var(--bg-3);border:1px solid var(--border);border-radius:999px;padding:5px 11px;color:var(--text-2);font-size:12px;cursor:pointer}
+  .chip.active{border-color:var(--accent);color:var(--text-1)}
+  .chip .pill{background:var(--accent);color:#fff;border-radius:999px;font-size:10px;min-width:15px;height:15px;padding:0 4px;display:inline-flex;align-items:center;justify-content:center;font-weight:700}
+  /* mobile = stacked cards (table degrades) */
+  .card{padding:11px 12px;border-bottom:1px solid var(--border-2)}
+  .card .l1{display:flex;align-items:center;gap:8px}
+  .card .l1 a{display:inline-flex;align-items:center;gap:4px;color:var(--text-3);font-size:11px;text-decoration:none}
+  .card .ttl{color:var(--text-1);font-size:13.5px;font-weight:500;margin-top:5px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .card .meta2{display:flex;align-items:center;gap:8px;margin-top:6px;color:var(--text-3);font-size:11.5px}
+  .card .start{width:100%;justify-content:center;justify-self:stretch;margin-top:10px}
+  .m-pop{margin:0 0 2px;background:var(--bg-2);border:1px solid var(--border);border-radius:9px;padding:5px}
+</style>
+</head>
+<body>
+
+  <!-- ============ DESKTOP ============ -->
+  <div class="col">
+    <div>
+      <div class="caption">Desktop — Assignee facet (popover open: assignees derived from the list, with avatars + counts)</div>
+      <div class="panel">
+        <div class="topbar">
+          <button class="tab active">Linear <span class="bind">· SHI</span></button>
+          <button class="tab">GitHub</button>
+          <div class="spacer"></div>
+          <div class="meta"><span class="count"><b>3</b> of 7 issues</span><button class="ghost-btn">⟳ Refresh</button></div>
+        </div>
+        <div class="filterbar">
+          <label class="search"><span class="muted">🔍</span><input placeholder="Search issues…" /></label>
+          <div class="facet"><button class="facet-btn">Priority <span class="caret">▾</span></button></div>
+          <div class="facet"><button class="facet-btn">Status <span class="caret">▾</span></button></div>
+          <div class="facet">
+            <button class="facet-btn active">Assignee <span class="pill">1</span> <span class="caret">▾</span></button>
+            <div class="pop">
+              <div class="opt"><span class="cb on">✓</span><span class="av">NZ</span> Nik <span class="spacer"></span><span class="n">3</span></div>
+              <div class="opt"><span class="cb"></span><span class="av b">AM</span> Ana <span class="spacer"></span><span class="n">3</span></div>
+              <div class="opt"><span class="cb"></span><span class="av" style="background:#3a2a12;color:#f5d76e">JP</span> Jo <span class="spacer"></span><span class="n">1</span></div>
+              <div class="opt"><span class="cb"></span><span class="muted" style="width:18px;text-align:center">—</span> Unassigned <span class="spacer"></span><span class="n">1</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="thead"><div>Issue</div><div>Title</div><div>Priority</div><div>Status</div><div>Assignee</div><div class="r">Action</div></div>
+
+        <div class="trow">
+          <div class="c-id"><a href="#">SHI-67 <span class="ext">↗</span></a></div>
+          <div class="c-title">
+            <div class="t">Inline tracker Issues tab (Linear + GitHub) with start-session action</div>
+            <div class="sub">Read-only, priority-sorted list with a per-row Start session button.</div>
+          </div>
+          <div><span class="badge b-err">Urgent</span></div>
+          <div class="c-status">In Progress</div>
+          <div class="c-assignee"><span class="av">NZ</span>Nik</div>
+          <button class="start"><span class="rocket">🚀</span> Start session</button>
+        </div>
+        <div class="trow">
+          <div class="c-id"><a href="#">SHI-72 <span class="ext">↗</span></a></div>
+          <div class="c-title">
+            <div class="t">Filters &amp; search for the Issues tab — status / priority / assignee facets</div>
+            <div class="sub">Tracker-agnostic, client-side over the normalized issue list.</div>
+          </div>
+          <div><span class="badge b-warn">High</span></div>
+          <div class="c-status">Todo</div>
+          <div class="c-assignee"><span class="av">NZ</span>Nik</div>
+          <button class="start"><span class="rocket">🚀</span> Start session</button>
+        </div>
+        <div class="trow">
+          <div class="c-id"><a href="#">SHI-31 <span class="ext">↗</span></a></div>
+          <div class="c-title">
+            <div class="t">Warm-pool session occasionally boots without a repo bound</div>
+          </div>
+          <div><span class="badge b-info">Medium</span></div>
+          <div class="c-status">Todo</div>
+          <div class="c-assignee"><span class="av">NZ</span>Nik</div>
+          <button class="start"><span class="rocket">🚀</span> Start session</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ MOBILE ============ -->
+  <div class="col">
+    <div>
+      <div class="caption">Mobile — table collapses to stacked cards; count stays in the top bar (consistent with desktop); facets are a scrollable chip row</div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="m-topbar">
+          <button class="tab active">Linear <span class="bind">· SHI</span></button>
+          <button class="tab">GitHub</button>
+          <div class="spacer"></div>
+          <div class="meta"><span class="count">7 issues</span><button class="ghost-btn">⟳</button></div>
+        </div>
+        <div class="m-filter">
+          <label class="search"><span class="muted">🔍</span><input placeholder="Search issues…" /></label>
+          <div class="chips">
+            <button class="chip">Priority ▾</button>
+            <button class="chip">Status ▾</button>
+            <button class="chip">Assignee ▾</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="l1"><a href="#">SHI-67 ↗</a><span class="badge b-err">Urgent</span></div>
+          <div class="ttl">Inline tracker Issues tab (Linear + GitHub) with start-session action</div>
+          <div class="meta2"><span>In Progress</span><span>·</span><span class="c-assignee"><span class="av">NZ</span>Nik</span></div>
+          <button class="start"><span class="rocket">🚀</span> Start session</button>
+        </div>
+        <div class="card">
+          <div class="l1"><a href="#">SHI-72 ↗</a><span class="badge b-warn">High</span></div>
+          <div class="ttl">Filters &amp; search for the Issues tab — status / priority / assignee facets</div>
+          <div class="meta2"><span>Todo</span><span>·</span><span class="c-assignee"><span class="av">NZ</span>Nik</span></div>
+          <button class="start"><span class="rocket">🚀</span> Start session</button>
+        </div>
+        <div class="card">
+          <div class="l1"><a href="#">SHI-44 ↗</a><span class="badge b-info">Medium</span></div>
+          <div class="ttl">Terminal resize race on reconnect corrupts xterm rendering</div>
+          <div class="meta2"><span>Todo</span><span>·</span><span class="muted">Unassigned</span></div>
+          <button class="start"><span class="rocket">🚀</span> Start session</button>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="caption">Mobile — filters active (Assignee popover open, chips show active counts, "N of M" in the top bar)</div>
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="m-topbar">
+          <button class="tab active">Linear <span class="bind">· SHI</span></button>
+          <button class="tab">GitHub</button>
+          <div class="spacer"></div>
+          <div class="meta"><span class="count"><b>2</b> of 7</span><button class="ghost-btn">⟳</button></div>
+        </div>
+        <div class="m-filter">
+          <label class="search"><span class="muted">🔍</span><input placeholder="Search issues…" /></label>
+          <div class="chips">
+            <button class="chip active">Priority <span class="pill">2</span></button>
+            <button class="chip">Status ▾</button>
+            <button class="chip active">Assignee <span class="pill">1</span></button>
+          </div>
+          <div class="m-pop">
+            <div class="opt"><span class="cb on">✓</span><span class="av">NZ</span> Nik <span class="spacer"></span><span class="n">2</span></div>
+            <div class="opt"><span class="cb"></span><span class="av b">AM</span> Ana <span class="spacer"></span><span class="n">2</span></div>
+            <div class="opt"><span class="cb"></span><span class="muted" style="width:18px;text-align:center">—</span> Unassigned <span class="spacer"></span><span class="n">1</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="l1"><a href="#">SHI-67 ↗</a><span class="badge b-err">Urgent</span></div>
+          <div class="ttl">Inline tracker Issues tab (Linear + GitHub) with start-session action</div>
+          <div class="meta2"><span>In Progress</span><span>·</span><span class="c-assignee"><span class="av">NZ</span>Nik</span></div>
+          <button class="start"><span class="rocket">🚀</span> Start session</button>
+        </div>
+        <div class="card">
+          <div class="l1"><a href="#">SHI-72 ↗</a><span class="badge b-warn">High</span></div>
+          <div class="ttl">Filters &amp; search for the Issues tab — status / priority / assignee facets</div>
+          <div class="meta2"><span>Todo</span><span>·</span><span class="c-assignee"><span class="av">NZ</span>Nik</span></div>
+          <button class="start"><span class="rocket">🚀</span> Start session</button>
+        </div>
+        <div class="ftr">2 of 7 shown for the active filters. <a>Clear filters</a></div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

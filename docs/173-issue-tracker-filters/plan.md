@@ -93,6 +93,14 @@ issues" with more upstream is the existing behavior, unchanged).
 
 ## UX
 
+> **Visual reference:** [`mockup.html`](./mockup.html) is a static,
+> self-contained prototype of every state described below — desktop table with
+> the three facets and the assignee popover, plus the two mobile (card-collapse)
+> states. Open it in a browser. It's committed alongside this doc on purpose: the
+> Present-tab artifact it was built in is ephemeral, so the prototype is preserved
+> here as reference, not just described in prose. The ASCII sketches below are the
+> quick-glance version of it.
+
 A **filter bar** sits directly below the merged top bar (see "Top bar" below) in
 `IssuesViewer`, above the table:
 
@@ -201,12 +209,10 @@ branch:
 
 ```
 ┌───────────────────────────────┐
-│ Linear · SHI   GitHub        ⟳ │  ← top bar (count moves down)
+│ Linear · SHI  GitHub  7 issues ⟳│  ← top bar (count stays here, as on desktop)
 ├───────────────────────────────┤
 │ [🔍 Search issues…           ] │  ← search on its own row
 │ Priority▾  Status▾  Assignee▾  │  ← facets as a horizontally-scrollable chip row
-├───────────────────────────────┤
-│ 7 issues                       │  ← count row
 ├───────────────────────────────┤
 │ SHI-67 ↗            [Urgent]   │
 │ Inline tracker Issues tab…     │  (title, up to 2 lines)
@@ -217,8 +223,10 @@ branch:
 
 Mobile-specific behavior:
 
-- **Top bar** keeps the sub-tabs and Refresh; the issue count moves to its own
-  thin row above the list so the tab row doesn't crowd.
+- **Top bar is identical in structure to desktop:** sub-tabs left, the "N of M
+  issues" count + Refresh right. The count deliberately **stays in the top bar**
+  (not a separate row) so the count's position is consistent across breakpoints;
+  on the narrowest widths Refresh collapses to an icon-only button to make room.
 - **Filter bar wraps to two rows:** the search box gets a full-width row, and the
   three facets become a **horizontally-scrollable chip row** beneath it (chips,
   not dropdown buttons, so they're touch-sized and never overflow the viewport).
