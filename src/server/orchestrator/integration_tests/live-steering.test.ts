@@ -426,6 +426,66 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("pushes setPermissionMode before a steered message that changes the mode (plan → auto, plan-approval fix)", async () => {
+    // Regression: approving a plan ("Accept & Execute") sets permissionMode→auto
+    // and sends "Execute the plan you just described." While live steering is on
+    // that message is steered into the still-running plan turn — a path that
+    // bypasses turn-executor's reuseExistingAgent setPermissionMode push. So the
+    // CLI stayed pinned to its spawn-time `--permission-mode plan` and the
+    // agent's Write/Edit/Bash were blocked. The steer branch must push exactly
+    // one setPermissionMode(undefined) before the steered sendUserMessage.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Turn 1: open in plan mode → spawn streaming agent pinned to "plan".
+    client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("steer-mode-change-session");
+    expect(claude.lastPermissionMode).toBe("plan");
+    expect(claude.permissionModeCalls).toEqual([]);
+
+    // Mid-turn: the plan-approval message is steered in with permissionMode
+    // omitted (the client's "auto" convention). The orchestrator must push
+    // setPermissionMode(undefined) before injecting the text.
+    client.send({ type: "send_message", text: "Execute the plan you just described." });
+    const steered = await drainUntil(client, (m) => m.type === "message_steered");
+    expect(steered).toMatchObject({ type: "message_steered", text: "Execute the plan you just described." });
+
+    expect(claude.stdinData).toContain("Execute the plan you just described.");
+    // Exactly one push — plan → undefined (auto) — before the steered send.
+    expect(claude.permissionModeCalls).toEqual([undefined]);
+    // No respawn: the steer reuses the resident streaming process.
+    expect(claude.killed).toBe(false);
+
+    client.close();
+  });
+
+  it("does NOT push setPermissionMode for a steered message when the mode is unchanged", async () => {
+    // Sending another message mid-turn in the same mode must not spam the CLI
+    // with a redundant set_permission_mode control_request (mirrors the
+    // docs/138 no-redundant-push guard on the between-turns path).
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Turn 1 opens in the CLI's default "auto" (no permissionMode), so
+    // appliedPermissionMode is undefined.
+    client.send({ type: "send_message", text: "First message" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("steer-mode-stable-session");
+    expect(claude.permissionModeCalls).toEqual([]);
+
+    // Mid-turn steer, also with no permissionMode — mode is unchanged.
+    client.send({ type: "send_message", text: "Steer me" });
+    const steered = await drainUntil(client, (m) => m.type === "message_steered");
+    expect(steered).toMatchObject({ type: "message_steered", text: "Steer me" });
+
+    expect(claude.stdinData).toContain("Steer me");
+    // No control_request — the requested mode already matches what's applied.
+    expect(claude.permissionModeCalls).toEqual([]);
+
+    client.close();
+  });
+
   it("interrupts the agent when it emits an ExitPlanMode tool_use under live steering", async () => {
     // Regression (this fix): in live-steering (streaming) mode the persistent
     // CLI auto-resolves ExitPlanMode — there's no human to approve the plan
