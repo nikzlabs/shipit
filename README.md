@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="src/client/public/favicon.svg" alt="ShipIt logo" width="32" height="32" valign="middle">
+  <img src="src/client/public/favicon.svg" alt="ShipIt logo" width="40" height="40" valign="middle">
   &nbsp;ShipIt
 </h1>
 
