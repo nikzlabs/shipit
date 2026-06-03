@@ -595,6 +595,16 @@ export class FakeClaudeProcess extends EventEmitter {
   public stdinData: string[] = [];
   public readonly isStreaming = false;
   /**
+   * docs/140 Phase 6.7 — model the STREAMING interrupt when set true: a
+   * `control_request` that ends the turn WITHOUT exiting the process (no
+   * `done`, no force-kill / exit-143). The turn instead ends when the test
+   * emits a subsequent `result`, and the persistent process stays resident so
+   * the next turn can reuse it via `sendUserMessage`. Default `false` keeps the
+   * PTY one-shot behavior (interrupt → process exits → `done`) that the
+   * disconnect-resilience and one-shot tests rely on.
+   */
+  public streamingInterrupt = false;
+  /**
    * docs/138 — every `setPermissionMode` call the orchestrator made on this
    * agent, in order. Lets tests assert that a mid-stream mode toggle
    * actually pushes a control_request instead of being silently swallowed.
@@ -650,7 +660,11 @@ export class FakeClaudeProcess extends EventEmitter {
 
   interrupt() {
     this.interrupted = true;
-    // Simulate the process exiting after interrupt (non-zero exit code)
+    // docs/140 Phase 6.7 — a streaming interrupt is graceful: the
+    // `control_request` ends the turn (the test emits a `result`) but the
+    // persistent process does NOT exit, so no `done` and no force-kill.
+    if (this.streamingInterrupt) return;
+    // Simulate the PTY process exiting after interrupt (non-zero exit code)
     setTimeout(() => super.emit("done", 1), 10);
   }
 
