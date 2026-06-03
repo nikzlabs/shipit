@@ -25,6 +25,7 @@
     "lint:dev": "tsx scripts/lint-dev.ts",
     "typecheck": "NODE_OPTIONS=--max-old-space-size=3072 tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsc/.tsbuildinfo",
     "check-deps": "tsx scripts/check-dependency-age.ts",
+    "release": "tsx scripts/release.ts",
     "measure-pr-poll-cost": "tsx scripts/measure-pr-poll-cost.ts"
   },
   "dependencies": {
