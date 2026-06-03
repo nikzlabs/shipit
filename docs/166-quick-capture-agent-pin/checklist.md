@@ -9,3 +9,9 @@
 - [x] Server test: Claude model + conflicting `agent: "codex"` pins `agentId: "claude"`
 - [x] Plan doc captures root cause and references docs/142 + `agent-for-model.ts`
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck` pass
+
+## Follow-up: overlay picker inherited a background session's agent lock
+
+- [x] `ModelAgentSelector` gates the cross-agent lock on `hasActiveSession` so the new-session overlay never inherits a background session's `agentPinned`
+- [x] `hasActiveSession` is now consumed (was `_hasActiveSession`, read-but-unused)
+- [x] Client test: pinned background session + `hasActiveSession={false}` keeps other agents' rows enabled
