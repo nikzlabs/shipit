@@ -2,9 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { GitHubAuthManager, validateGitHubToken } from "./github-auth.js";
 import { CredentialStore } from "./credential-store.js";
-import { getGitIdentity, initGlobalGitConfig } from "./git-config.js";
+import {
+  getGitIdentity,
+  initGlobalGitConfig,
+  clearGlobalCredentialHelper,
+  CONTAINER_CREDENTIAL_HELPER,
+} from "./git-config.js";
 
 /** Create a mock GitHub API response for fetch. */
 function mockGitHubUserResponse(data: { login: string; avatar_url: string; id: number; name: string | null }): void {
@@ -244,6 +250,111 @@ describe("GitHubAuthManager", () => {
       expect(did).toBe(false);
       expect(events).toEqual([]);
     });
+  });
+});
+
+describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / SHI-72)", () => {
+  let tmpDir: string;
+  let workspaceDir: string;
+  let credentialStore: CredentialStore;
+  let origGitConfigGlobal: string | undefined;
+  let origGithubToken: string | undefined;
+
+  const TOKEN = "ghp_super_secret_workspace_token";
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-cfg-git-creds-"));
+    credentialStore = new CredentialStore(tmpDir);
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGithubToken = process.env.GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    // Point the global git config at a fresh, token-free file in tmpDir.
+    initGlobalGitConfig(tmpDir);
+
+    // A real git repo whose LOCAL .git/config we configure.
+    workspaceDir = path.join(tmpDir, "workspace");
+    fs.mkdirSync(workspaceDir);
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: workspaceDir });
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGithubToken !== undefined) process.env.GITHUB_TOKEN = origGithubToken;
+    else delete process.env.GITHUB_TOKEN;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Run `git credential fill` in the workspace; return combined stdout+stderr. */
+  function credentialFill(host: string): string {
+    try {
+      return execFileSync("git", ["credential", "fill"], {
+        cwd: workspaceDir,
+        input: `protocol=https\nhost=${host}\n\n`,
+        encoding: "utf-8",
+        // Disable interactive prompts and the system gitconfig so the test
+        // observes only the global + local helpers we control.
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1" },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (err) {
+      // With no helper able to supply a password and prompts disabled, git
+      // exits non-zero — capture whatever it emitted so the test can assert
+      // the token never appears in any output channel.
+      const e = err as { stdout?: Buffer | string; stderr?: Buffer | string };
+      return `${String(e.stdout ?? "")}${String(e.stderr ?? "")}`;
+    }
+  }
+
+  it("never writes the PAT in plaintext into the workspace .git/config", () => {
+    credentialStore.setGithubToken(TOKEN);
+    const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
+    mgr.checkCredentials();
+
+    mgr.configureGitCredentials(workspaceDir);
+
+    const config = fs.readFileSync(path.join(workspaceDir, ".git", "config"), "utf-8");
+    expect(config).not.toContain(TOKEN);
+    expect(config).not.toContain("ghp_");
+    // The workspace is routed through the brokering helper instead of an
+    // inline token echo.
+    const helper = execFileSync("git", ["config", "--local", "credential.helper"], {
+      cwd: workspaceDir,
+      encoding: "utf-8",
+    }).trim();
+    expect(helper).toBe(CONTAINER_CREDENTIAL_HELPER);
+  });
+
+  it("git credential fill for a non-GitHub host returns no credentials (no token leak)", () => {
+    credentialStore.setGithubToken(TOKEN);
+    const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
+    mgr.checkCredentials();
+    // `checkCredentials` installs the orchestrator's global inline helper.
+    // Clear it so this test isolates the *workspace* config: pre-fix, the
+    // inline local helper echoed the token for ANY host straight from
+    // .git/config. With the brokering helper (whose binary is absent on the
+    // orchestrator/test host, and which is host-scoped anyway), no token is
+    // ever produced for an attacker host.
+    clearGlobalCredentialHelper();
+    mgr.configureGitCredentials(workspaceDir);
+
+    const out = credentialFill("attacker.example.com");
+    expect(out).not.toContain(TOKEN);
+    expect(out).not.toContain("password=ghp_");
+  });
+
+  it("git credential fill for github.com still resolves the token via the global helper (push/pull unaffected)", () => {
+    credentialStore.setGithubToken(TOKEN);
+    const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
+    mgr.checkCredentials(); // installs the global inline helper (orchestrator side)
+    mgr.configureGitCredentials(workspaceDir); // local broker helper
+
+    // The global inline helper is consulted first and fills the credential, so
+    // the (orchestrator-side) push/pull path is unaffected even though the
+    // local config now points at the broker.
+    const out = credentialFill("github.com");
+    expect(out).toContain("username=x-access-token");
+    expect(out).toContain(`password=${TOKEN}`);
   });
 });
 
