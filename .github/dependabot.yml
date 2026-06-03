@@ -1,0 +1,25 @@
+# Dependabot version-update config.
+#
+# Scope: the root npm manifest (package.json) only. The agent-CLI manifest
+# under docker/agent-cli/ is owned by Renovate (see renovate.json), which
+# already holds those bumps for a 7-day cooldown — Dependabot must not also
+# touch that path, so `directory: "/"` keeps it to the root manifest.
+#
+# Cooldown mirrors the repo's dependency-age policy: scripts/check-dependency-age.ts
+# enforces MIN_AGE_DAYS = 7 as a CI gate (`npm run check-deps`). Without a
+# cooldown, Dependabot opens a bump PR the moment a release lands, and that PR
+# sits red until the version ages past 7 days. `default-days: 7` makes
+# Dependabot wait those 7 days before opening the PR, so by the time it exists
+# `check-deps` already passes. Keep this number in sync with MIN_AGE_DAYS.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    # Versions must be exact pins (dependency policy in CLAUDE.md); Dependabot
+    # edits the existing exact version in place, so this keeps it from widening
+    # to a range.
+    versioning-strategy: increase
