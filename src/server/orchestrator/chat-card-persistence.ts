@@ -28,7 +28,7 @@
  */
 
 import type { WsServerMessage } from "../shared/types.js";
-import type { SessionRunnerInterface, RecordedChatCard } from "./session-runner.js";
+import type { SessionRunnerInterface } from "./session-runner.js";
 import type { PersistedMessage } from "./chat-history.js";
 
 /**
