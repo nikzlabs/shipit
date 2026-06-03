@@ -387,6 +387,34 @@ require users to configure GitHub webhooks. The agent-internal signals
 `notifyViewerAttached/Detached`) replace what a webhook would carry, and
 the gate + cadence keep the polling budget bounded.
 
+**Fresh-PR surfacing from REST (eventual-consistency fix).** Right after the
+agent runs `gh pr create` (→ `/pr/agent-create` → `trackSession` +
+`forceRefreshSession`), GitHub's bulk `pullRequests` GraphQL view often hasn't
+indexed the new PR yet. The forced poll therefore finds the branch *missing*
+from the bulk result and falls through to the per-session REST verify
+(`verifyMissingPr` → `findPullRequestAnyState`). That path used to broadcast
+**only** a removal (for stuck merged/closed recovery) and `return` for a
+genuinely-open PR — so a freshly created PR's card didn't appear until a later
+GraphQL poll happened to include it (up to a full 120 s slow tick). The symptom
+users reported was "I create a PR and ShipIt doesn't show it; it recovers after
+a couple of minutes." `verifyMissingPr` now, when REST confirms the PR is
+**open** and there is no fresher GraphQL-derived open snapshot, builds a minimal
+open summary from the REST result (number/url/title/body/base/+−, `checks`
+seeded via the `CiGraceTracker` so the merge button isn't prematurely enabled,
+`mergeable: "unknown"`), persists and broadcasts it immediately, then lets the
+next GraphQL poll enrich it. A GraphQL-derived open snapshot is never clobbered.
+
+**Post-turn recovery backstop.** As belt-and-suspenders for the case where the
+creation route's `trackSession`/`forceRefreshSession` never ran at all (HTTP
+blip to the orchestrator, restart mid-create, `remoteUrl` not yet persisted at
+startup, or a PR opened out-of-band), `emitPrLifecycleAfterCommit`
+(`services/pr-lifecycle.ts`) now — when the poller has no status for the
+session — tracks + force-refreshes once per turn so the poller discovers the
+existing PR by branch name and recovers. It is bounded to branches that have
+actually been pushed (checked via the local remote-tracking ref, no network),
+so un-pushed / no-PR sessions add zero GitHub calls; once a PR is known, the
+early `getStatus` return short-circuits before this runs.
+
 ## Implementation Order
 
 1. **Phase 1** (inline card + CI status poller + conversation-aware descriptions) — the foundation. See [phase-1.md](./phase-1.md).
