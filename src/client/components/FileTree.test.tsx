@@ -121,6 +121,21 @@ describe("FileTree", () => {
     expect(onFileClick).toHaveBeenCalledWith("package.json");
   });
 
+  it("calls onEdit when a file edit button is clicked", () => {
+    const onEdit = vi.fn();
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} onEdit={onEdit} />);
+    fireEvent.click(screen.getByLabelText("Edit index.ts"));
+    expect(onEdit).toHaveBeenCalledWith("src/index.ts");
+  });
+
+  it("does not render edit buttons for uploads", () => {
+    const uploads = [
+      { id: "1", name: "data.csv", status: "ready" as const, path: "/uploads/data.csv", size: 100, progress: 100 },
+    ];
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} uploads={uploads} onEdit={() => {}} />);
+    expect(screen.queryByLabelText("Edit data.csv")).not.toBeInTheDocument();
+  });
+
   it("highlights selected file", () => {
     render(
       <FileTree tree={sampleTree} onRefresh={() => {}} selectedFile="src/index.ts" />

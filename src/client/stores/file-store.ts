@@ -99,6 +99,15 @@ interface FileState {
    */
   previewLine: number | null;
 
+  // Secondary manual file editing dialog state (docs/174).
+  editFile: string | null;
+  editContent: string;
+  editOriginalContent: string;
+  editType: FilePreviewType | null;
+  editLoading: boolean;
+  editSaving: boolean;
+  editError: string | null;
+
   setTree: (tree: FileTreeNode[]) => void;
   setViewingFile: (path: string | null) => void;
   closeViewer: () => void;
@@ -129,6 +138,11 @@ interface FileState {
   openAgentReview: (sessionId: string, reviewId: string) => Promise<void>;
   closePreview: () => void;
 
+  openEditor: (sessionId: string, filePath: string) => Promise<void>;
+  closeEditor: () => void;
+  setEditContent: (content: string) => void;
+  saveEditor: (sessionId: string) => Promise<void>;
+
   fetchTree: (sessionId: string) => Promise<void>;
   fetchFile: (sessionId: string, filePath: string) => Promise<void>;
   fetchFileWithTree: (sessionId: string, filePath: string) => Promise<void>;
@@ -158,9 +172,23 @@ const initialState = {
   previewMode: "live" as FilePreviewMode,
   previewAgentReview: null as AgentReview | null,
   previewLine: null as number | null,
+  editFile: null as string | null,
+  editContent: "",
+  editOriginalContent: "",
+  editType: null as FilePreviewType | null,
+  editLoading: false,
+  editSaving: false,
+  editError: null as string | null,
 };
 
-export const useFileStore = create<FileState>((set) => ({
+function errorMessageFromResponse(status: number, fallback: string, body: unknown): string {
+  if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
+    return body.error;
+  }
+  return `${fallback}: ${status}`;
+}
+
+export const useFileStore = create<FileState>((set, get) => ({
   ...initialState,
 
   setTree: (tree) => set({ tree }),
@@ -388,6 +416,95 @@ export const useFileStore = create<FileState>((set) => ({
       previewAgentReview: null,
       previewLine: null,
     });
+  },
+
+  openEditor: async (sessionId, filePath) => {
+    const detectedType = detectFilePreviewType(filePath);
+    set({
+      previewFile: null,
+      previewContent: null,
+      previewType: null,
+      previewLoading: false,
+      previewActions: [],
+      previewMode: "live",
+      previewAgentReview: null,
+      previewLine: null,
+      editFile: filePath,
+      editContent: "",
+      editOriginalContent: "",
+      editType: detectedType,
+      editLoading: true,
+      editSaving: false,
+      editError: null,
+    });
+
+    const urlPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/files/${urlPath}`);
+      const data = await res.json().catch(() => null) as { content?: string | null; isBinary?: boolean; isImage?: boolean; error?: string } | null;
+      if (!res.ok) {
+        throw new Error(errorMessageFromResponse(res.status, "Failed to load file", data));
+      }
+      if (!data || typeof data.content !== "string" || data.isBinary || data.isImage) {
+        throw new Error("This file cannot be edited as text.");
+      }
+      set({
+        editContent: data.content,
+        editOriginalContent: data.content,
+        editType: detectedType,
+        editLoading: false,
+        editError: null,
+      });
+    } catch (err) {
+      set({
+        editLoading: false,
+        editError: err instanceof Error ? err.message : "Failed to load file",
+      });
+    }
+  },
+
+  closeEditor: () => {
+    set({
+      editFile: null,
+      editContent: "",
+      editOriginalContent: "",
+      editType: null,
+      editLoading: false,
+      editSaving: false,
+      editError: null,
+    });
+  },
+
+  setEditContent: (content) => set({ editContent: content, editError: null }),
+
+  saveEditor: async (sessionId) => {
+    const { editFile, editContent } = get();
+    if (!editFile) return;
+    set({ editSaving: true, editError: null });
+    const urlPath = editFile.startsWith("/") ? editFile.slice(1) : editFile;
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/files/${urlPath}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: editContent }),
+      });
+      const data = await res.json().catch(() => null) as { error?: string } | null;
+      if (!res.ok) {
+        throw new Error(errorMessageFromResponse(res.status, "Failed to save file", data));
+      }
+      set({
+        editOriginalContent: editContent,
+        editSaving: false,
+        editError: null,
+      });
+      await get().fetchTree(sessionId).catch(() => {});
+    } catch (err) {
+      set({
+        editSaving: false,
+        editError: err instanceof Error ? err.message : "Failed to save file",
+      });
+      throw err;
+    }
   },
 
   fetchTree: async (sessionId) => {

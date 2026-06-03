@@ -36,6 +36,7 @@ import { IssuesPanel } from "./components/IssuesPanel.js";
 import { useIssuesStore } from "./stores/issues-store.js";
 import { FileTree } from "./components/FileTree.js";
 import { FilePreviewModal } from "./components/FilePreviewModal.js";
+import { FileEditModal } from "./components/FileEditModal.js";
 import { TerminalPanel } from "./components/TerminalPanel.js";
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "./components/InteractiveTerminal.js";
 import { ServicesPanel } from "./components/ServicesPanel.js";
@@ -50,6 +51,7 @@ import { UsageModal } from "./components/UsageModal.js";
 import type { TurnDiffData } from "./components/DiffPanel.js";
 import type { TurnUsage } from "../server/shared/types.js";
 import { deriveEffectivePreviewStatus } from "./utils/preview-status.js";
+import { isEditableFilePath } from "./utils/file-preview-type.js";
 
 /** Stable empty fallback so the zustand selector never returns a fresh array. */
 const EMPTY_TURN_USAGE: TurnUsage[] = [];
@@ -148,6 +150,12 @@ export default function App() {
   const previewAgentReview = useFileStore((s) => s.previewAgentReview);
   const previewLine = useFileStore((s) => s.previewLine);
   const previewLoading = useFileStore((s) => s.previewLoading);
+  const editFile = useFileStore((s) => s.editFile);
+  const editContent = useFileStore((s) => s.editContent);
+  const editOriginalContent = useFileStore((s) => s.editOriginalContent);
+  const editLoading = useFileStore((s) => s.editLoading);
+  const editSaving = useFileStore((s) => s.editSaving);
+  const editError = useFileStore((s) => s.editError);
 
   const previewStatus = usePreviewStore((s) => s.status);
   const selectedPort = usePreviewStore((s) => s.selectedPort);
@@ -873,7 +881,7 @@ export default function App() {
     (filePath: string) => {
       const sid = useSessionStore.getState().sessionId;
       if (sid) {
-        const actions = [{
+        const downloadAction = {
           label: "Download",
           onClick: () => {
             const a = document.createElement("a");
@@ -883,7 +891,18 @@ export default function App() {
             a.click();
             a.remove();
           },
-        }];
+        };
+        const actions = isEditableFilePath(filePath)
+          ? [
+              {
+                label: "Edit",
+                onClick: () => {
+                  void useFileStore.getState().openEditor(sid, filePath);
+                },
+              },
+              downloadAction,
+            ]
+          : [downloadAction];
         void useFileStore.getState().openPreview(sid, filePath, { actions });
       }
     },
@@ -1119,7 +1138,7 @@ export default function App() {
         ) : rightTab === "pr" && hasPr && wsSessionId ? (
           <PrDetailPanel sessionId={wsSessionId} />
         ) : rightTab === "files" ? (
-          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
+          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onEdit={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) void useFileStore.getState().openEditor(sid, f); }} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
         ) : rightTab === "present" ? (
           <PresentPane isActiveTab={rightTab === "present"} />
         ) : rightTab === "host" ? (
@@ -1279,6 +1298,22 @@ export default function App() {
                 }
               : undefined
           }
+        />
+      )}
+      {editFile && (
+        <FileEditModal
+          filePath={editFile}
+          content={editContent}
+          originalContent={editOriginalContent}
+          loading={editLoading}
+          saving={editSaving}
+          error={editError}
+          onChange={(content) => useFileStore.getState().setEditContent(content)}
+          onSave={async () => {
+            const sid = useSessionStore.getState().sessionId;
+            if (sid) await useFileStore.getState().saveEditor(sid);
+          }}
+          onClose={() => useFileStore.getState().closeEditor()}
         />
       )}
       {settingsOpen && (

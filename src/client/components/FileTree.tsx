@@ -1,9 +1,10 @@
 import { useState, useCallback } from "react";
-import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon, UploadSimpleIcon, DownloadSimpleIcon, TrashIcon } from "@phosphor-icons/react";
+import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon, UploadSimpleIcon, DownloadSimpleIcon, TrashIcon, PencilSimpleIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
+import { isEditableFilePath } from "../utils/file-preview-type.js";
 
 export type { FileTreeNode };
 
@@ -14,6 +15,7 @@ export interface FileTreeProps {
   selectedFile?: string | null;
   onAddToChat?: (filePath: string) => void;
   onDownload?: (filePath: string) => void;
+  onEdit?: (filePath: string) => void;
   uploads?: UploadItem[];
   onDeleteUpload?: (upload: UploadItem) => void;
 }
@@ -25,6 +27,7 @@ function TreeNode({
   selectedFile,
   onAddToChat,
   onDownload,
+  onEdit,
 }: {
   node: FileTreeNode;
   depth: number;
@@ -32,6 +35,7 @@ function TreeNode({
   selectedFile?: string | null;
   onAddToChat?: (filePath: string) => void;
   onDownload?: (filePath: string) => void;
+  onEdit?: (filePath: string) => void;
 }) {
   const [expanded, setExpanded] = useState(depth < 1);
 
@@ -60,7 +64,7 @@ function TreeNode({
         {expanded && node.children && (
           <div>
             {node.children.map((child) => (
-              <TreeNode key={child.path} node={child} depth={depth + 1} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} onDownload={onDownload} />
+              <TreeNode key={child.path} node={child} depth={depth + 1} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} onDownload={onDownload} onEdit={onEdit} />
             ))}
           </div>
         )}
@@ -94,6 +98,21 @@ function TreeNode({
         <FileIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
         <span className="truncate">{node.name}</span>
       </button>
+      {onEdit && isEditableFilePath(node.path) && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit(node.path);
+          }}
+          className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
+          title="Edit file"
+          aria-label={`Edit ${node.name}`}
+        >
+          <PencilSimpleIcon size={ICON_SIZE.MD} className="shrink-0" />
+        </Button>
+      )}
       {onDownload && (
         <Button
           variant="ghost"
@@ -128,7 +147,7 @@ function TreeNode({
   );
 }
 
-export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToChat, onDownload, uploads, onDeleteUpload }: FileTreeProps) {
+export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToChat, onDownload, onEdit, uploads, onDeleteUpload }: FileTreeProps) {
   if (tree.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
@@ -170,7 +189,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
       {/* Tree content */}
       <div className="flex-1 overflow-y-auto py-1">
         {tree.map((node) => (
-          <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} onDownload={onDownload} />
+          <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} onDownload={onDownload} onEdit={onEdit} />
         ))}
 
         {/* Uploads section */}

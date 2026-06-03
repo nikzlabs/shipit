@@ -14,6 +14,7 @@ import {
   getFileTree,
   getFileContent,
   getRawFilePath,
+  writeFileContent,
   listDocs,
   getSessionChangedPaths,
   listSkills,
@@ -104,6 +105,33 @@ export async function registerFileRoutes(
           return;
         }
         reply.code(404).send({ error: `File not found: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // PUT /api/sessions/:id/files/* — write UTF-8 file content
+  app.put<{ Params: { id: string; "*": string }; Body: { content?: unknown } }>(
+    "/api/sessions/:id/files/*",
+    async (request, reply) => {
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      const filePath = request.params["*"];
+      if (!filePath) {
+        reply.code(400).send({ error: "File path is required" });
+        return;
+      }
+      if (typeof request.body?.content !== "string") {
+        reply.code(400).send({ error: "content is required and must be a string" });
+        return;
+      }
+      try {
+        return await writeFileContent(dir, filePath, request.body.content);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `File save failed: ${getErrorMessage(err)}` });
       }
     },
   );
