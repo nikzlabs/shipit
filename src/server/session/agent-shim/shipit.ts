@@ -32,7 +32,7 @@ See /shipit-docs/sessions.md for the full list.`;
 const HELP = `${SHIM_NAME} — agent-driven session management.
 
 Supported subcommands:
-  shipit session create  --prompt-file FILE [--title T]
+  shipit session create  --prompt-file FILE --title T
                           [--base REF] [--agent claude|codex] [--model M]
                           [--turn ID] [--shipit-source] [--approximate] [--json]
   shipit session list    [--turn ID] [--json]
@@ -66,6 +66,9 @@ single-quoted heredoc, exactly like \`gh pr create --body-file -\`:
   Port the API in /server to TypeScript. Land it as a separate PR.
   EOF
 
+\`--title\` is REQUIRED: you are naming the session, so give it a short,
+human-readable name describing what it's for. It appears in the sidebar.
+
 Use \`shipit session create\` when the user explicitly asked for a separate
 session / parallel branch / independent workspace. For in-turn fan-out
 under Claude, prefer the built-in \`Task\` tool.
@@ -73,8 +76,8 @@ under Claude, prefer the built-in \`Task\` tool.
 In an Ops session, use \`shipit source *\` to read the ShipIt source code that
 runs this host, then \`shipit session create --shipit-source --title "..."\` to
 spawn a repo-backed fix session branched from the exact inspected commit.
-\`--title\` is REQUIRED with \`--shipit-source\`: the diagnosis is wrapped in an
-incident packet and can't name the session, so pass a short human-readable name.
+With \`--shipit-source\` the diagnosis is wrapped in an incident packet and
+can't name the session, so the \`--title\` describes what the fix is for.
 
 See /shipit-docs/sessions.md for the full reference, including allowed
 flags and the list of intentionally-rejected operations
@@ -351,18 +354,6 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
   if (parsed.booleans.has("approximate") && !parsed.booleans.has("shipitSource")) {
     fail(deps.io, "shipit session create: --approximate only applies with --shipit-source.");
   }
-  // docs/162 — a ShipIt fix spawn wraps the diagnosis in a verbose incident
-  // packet, so the prompt can't be used to name the session. Require an
-  // explicit, human-readable title so the spawned fix is identifiable in the
-  // sidebar. (Fail fast here; the orchestrator enforces this too.)
-  if (parsed.booleans.has("shipitSource") && !(parsed.values.title ?? "").trim()) {
-    fail(
-      deps.io,
-      "shipit session create --shipit-source requires --title: give the fix session a short, " +
-        "human-readable name describing what it fixes.",
-    );
-  }
-
   const promptFile = parsed.values.promptFile;
   if (!promptFile) {
     fail(
@@ -381,6 +372,23 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
   // but failing fast on the shim side avoids a network round-trip.
   if (prompt.length > 50_000) {
     fail(deps.io, "shipit session create: the prompt exceeds 50,000 characters.");
+  }
+  // A title is REQUIRED for every spawn: the spawning agent already knows what
+  // the session is for and is the best-placed namer, so it must name the
+  // session explicitly rather than leaning on an AI naming round-trip. Fail
+  // fast here with a clear message; the orchestrator (`spawnChildSession`)
+  // enforces this authoritatively too. The `--shipit-source` path gets a
+  // fix-specific message because its diagnosis is wrapped in a verbose incident
+  // packet (docs/162) and can never double as the session name.
+  if (!(parsed.values.title ?? "").trim()) {
+    fail(
+      deps.io,
+      parsed.booleans.has("shipitSource")
+        ? "shipit session create --shipit-source requires --title: give the fix session a short, " +
+            "human-readable name describing what it fixes."
+        : "shipit session create requires --title: give the session a short, " +
+            "human-readable name describing what it's for.",
+    );
   }
 
   const payload: Record<string, unknown> = { prompt };

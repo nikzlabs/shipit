@@ -196,9 +196,11 @@ export async function spawnChildSession(
   // The child's branch is always a generated `shipit/<slug>` — the agent
   // cannot pick it (dropping `--branch` is intentional: agent-supplied names
   // drifted outside the `shipit/` namespace and broke our branch conventions).
-  // Title precedence: explicit `opts.title` wins; otherwise the AI naming
-  // flow inside `graduateSession` picks one. We don't pre-set a slice here —
-  // graduateSession's placeholder logic does that.
+  // A title is REQUIRED: the spawning (parent) agent already knows what the
+  // session is for and is the best-placed namer, so it must name the session
+  // explicitly. This also avoids spending a separate `generateSessionName`
+  // agent-CLI call per spawn — AI naming earns its keep on the home-screen
+  // first-message path (a human typed it, no agent in the loop), not here.
   const explicitTitle = opts.title?.trim();
 
   // Spawn requires the parent to be backed by a registered, ready remote.
@@ -216,6 +218,18 @@ export async function spawnChildSession(
     throw new ServiceError(
       400,
       "Cannot spawn a child session: the parent has no remote URL. Spawn requires the parent's repo to be registered.",
+    );
+  }
+
+  // Require a title before any disk work. The spawning agent names the session
+  // (see the `explicitTitle` note above) — without one the session would be
+  // unidentifiable in the sidebar, and falling back to an AI naming call would
+  // both cost a model round-trip and ignore the parent's superior context.
+  if (!explicitTitle) {
+    throw new ServiceError(
+      400,
+      "A session title is required when spawning a session (pass --title). " +
+        "Give it a short, human-readable name describing what the session is for.",
     );
   }
   // `forceFetch: true` bypasses the docs/145 prefetch-skip optimization so the

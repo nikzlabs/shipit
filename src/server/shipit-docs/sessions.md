@@ -65,7 +65,7 @@ override the parent.
 
 | Subcommand | Notes |
 |---|---|
-| `shipit session create --prompt-file FILE [--title T] [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. Returns the child's id, branch, and status on stdout. |
+| `shipit session create --prompt-file FILE --title T [--base REF] [--agent claude\|codex] [--model M] [--turn ID] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. Returns the child's id, branch, and status on stdout. |
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
 | `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available. |
 | `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt; exit is `0` either way and the response prints the queue position. |
@@ -89,6 +89,11 @@ EOF
 The `EOF` delimiter must be single-quoted. Passing `-p`/`--prompt`/`-m` exits
 non-zero with a pointer back to `--prompt-file`.
 
+`--title` is **required** for every spawn. You — the spawning agent — already
+know what the session is for, so you name it: pass a short, human-readable title
+(e.g. `--title "Port API to TypeScript"`) that identifies the session in the
+sidebar. A spawn with no title exits non-zero before any session is created.
+
 **Ops-only** (`kind: "ops"` sessions — see `ops-session.md`): pass
 `--shipit-source` to `shipit session create` to spawn a fix session that targets
 the **ShipIt repository itself**, branched from the exact deployed commit you
@@ -99,11 +104,11 @@ and otherwise behaves like a normal spawn — the child owns all edits, tests,
 commits, push, and the PR. Add `--approximate` to acknowledge a non-exact source
 ref. `--shipit-source` is rejected outside Ops sessions.
 
-`--title` is **required** with `--shipit-source`. The diagnosis is wrapped in
-the incident packet, so it can't name the session — pass a short, human-readable
+`--title` is **required** for every spawn (above), and it matters doubly here:
+the diagnosis is wrapped in the incident packet, so it could never name the
+session even if title naming fell back to the prompt. Pass a short, human-readable
 title describing the fix (e.g. `--title "Fix container recreate loop"`) so the
-spawned session is identifiable in the sidebar. A `--shipit-source` spawn with
-no title exits non-zero.
+spawned session is identifiable in the sidebar.
 
 The child branch *starts* at the inspected deployed commit (so it can reproduce
 the production bug), which is usually behind the repo's default branch; the
