@@ -17,7 +17,7 @@ Tracking Tier 1 (inline artifacts). Tier 2 (scratch dir) is deferred.
 - [x] Declare the bridge in `claude-adapter.ts` `writeMcpConfig`
 - [x] Declare the bridge in `codex-adapter.ts` MCP writer
 - [x] Updates to `claude-mcp-writer.test.ts` and `codex-mcp-writer.test.ts` for the new `presentBridge` context slot
-- [ ] **Co-located bridge test `mcp-present-bridge.test.ts` — deferred.** See "Deferred follow-ups" below.
+- [x] **Co-located bridge test `mcp-present-bridge.test.ts`.** See "Deferred follow-ups" below.
 
 ## Worker
 
@@ -61,7 +61,7 @@ Tracking Tier 1 (inline artifacts). Tier 2 (scratch dir) is deferred.
 
 - [x] Unit tests for the present buffer (LRU eviction, byte cap, replaceId, delete, clear)
 - [x] Unit tests for the present-store reducer (append/replace/clear/setActiveIndex/markSeen)
-- [ ] **End-to-end integration test — deferred.** See "Deferred follow-ups" below.
+- [x] **End-to-end integration test.** See "Deferred follow-ups" below.
 - [ ] Manual: oversize content (>1 MB) is rejected with a clear error to the agent
 - [ ] Manual: sandboxed iframe cannot read parent cookies/storage or navigate the top frame
 - [x] `npm run lint:dev` and `npm run typecheck` clean
@@ -107,45 +107,39 @@ POST body, and dismiss behavior.
 
 ### `mcp-present-bridge.test.ts`
 
+Status: done.
+
 Importance: low. Implementation cost: small.
 
-**What's missing.** A unit test that drives the bridge subprocess's MCP
-request handlers (`ListTools`, `CallTool`) with `fetch` mocked.
-
-**Why deferred.** The bridge is ~30 lines of pure transport (forward args to
-`/agent-ops/present/submit`, relay the response). Its contract is exercised
-end-to-end by the worker route + the buffer tests, so a co-located test would
-mostly assert that the JSON shape on either side matches — which is also
-caught at typecheck if the bridge or worker route diverge.
-
-**Pickup.** Same harness as `mcp-review-bridge` would use if it had one
-(neither does today). Wire the bridge's `server` instance to an in-process
-transport pair, send `CallTool` requests, stub `globalThis.fetch`, assert the
-forwarded body and the relayed text response.
+Landed `src/server/session/mcp-present-bridge.test.ts`. The bridge was refactored
+minimally — its handler wiring extracted into an exported
+`createPresentBridgeServer()` factory and the stdio `connect` guarded behind an
+`import.meta.url.endsWith(process.argv[1])` entry check (mirrors
+session-worker.ts) so importing the module in a test doesn't touch stdin/stdout.
+The test wires that server to an `InMemoryTransport` pair, drives `ListTools` /
+`CallTool` through a real MCP `Client`, and stubs `globalThis.fetch` to assert:
+the single `present` tool schema (required `content`, optional
+`mimeType`/`title`/`replaceId`); the forwarded JSON body + worker URL; the
+relayed `{ status, presentId, title?, replaceId? }` (title/replaceId only when
+passed); the non-OK → `isError` path (worker error text + HTTP-status fallback);
+the fetch-throws "could not reach the worker" path; and the unknown-tool guard.
 
 ### End-to-end integration test (agent → SSE → store → tab)
 
+Status: done.
+
 Importance: medium. Implementation cost: medium.
 
-**What's missing.** A test that drives the full pipeline: a fake worker
-accepts `POST /agent-ops/present/submit`, the SSE broadcaster fans out, the
-orchestrator's `ContainerSessionRunner.handleSSEEvent` translates the worker
-event into a WS message, and a `TestClient` receives it as
-`WsPresentContentMessage`.
-
-**Why deferred.** The integration harness in
-`src/server/orchestrator/integration_tests/` is built around `TestClient`
-(WebSocket fixture) and `FakeClaudeProcess` (agent stub). Driving the present
-path properly needs a fake worker the orchestrator's container runner can
-connect SSE to — that infra doesn't exist today. The unit tests on each link
-(buffer, reducer, SSE event union typing) cover the individual hops; the
-integration test would mostly verify wiring, but the kind of wiring that a
-future refactor could silently break.
-
-**Pickup.** Either (a) build a small in-process fake worker that registers
-the `/agent-ops/present/submit` + `/events` routes on a local Fastify and
-have `ContainerSessionRunner` point its SSE at that, or (b) add a worker-side
-test mode that lets the orchestrator skip the container layer entirely and
-drive the SSE broadcaster directly. Option (a) is more honest, option (b) is
-cheaper. Check whether the existing harness has a similar hook for the review
-flow (docs/151's tests touched related infrastructure).
+Landed `src/server/orchestrator/integration_tests/present-flow.test.ts`. Rather
+than build a fake worker (option a) or add a worker test hook (option b), the
+test reuses the real-worker harness already proven by
+`container-agent-wiring.test.ts`: a live in-process `SessionWorker` (which
+already registers `/agent-ops/present/submit` + `/events` and the SSE
+broadcaster) wired to a `ContainerSessionRunner`. This is the most honest option
+and needed zero new infra. The test POSTs submissions to the worker and asserts
+on the WS messages the runner broadcasts to viewers (captured via
+`runner.on("message")` — the exact `WsServerMessage` a `TestClient` would
+receive): the `present_content` translation + field mapping (sessionId is the
+runner's, mimeType defaults to text/html); the `presentations` cache that the
+`present_state` replay reads on attach; the `replaceId` revision flow; and the
+`present_cleared` path driven through a real 21-entry LRU eviction.
