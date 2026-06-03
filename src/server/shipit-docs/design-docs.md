@@ -22,6 +22,7 @@ docs/
   NNN-feature-name/
     plan.md          # Feature design and description
     checklist.md     # Optional — remaining work items
+    mockup.html      # Optional — committed UI prototype (or mockup.svg, or a mocks/ subdir)
 ```
 
 But simpler layouts work too — `docs/my-feature.md` is equally valid.
@@ -115,6 +116,24 @@ docs/
 
 When the work is finished, mark every item in `checklist.md` as complete (`[x]`).
 
+## Committing UI prototypes
+
+When a design doc describes UI whose layout is load-bearing — filters, tables, responsive breakpoints — prose plus ASCII sketches isn't enough; reviewers want to see it. Commit the prototype into the feature folder as a sibling of `plan.md`:
+
+```
+docs/
+  NNN-feature-name/
+    plan.md
+    mockup.html      # single self-contained file
+    # or mockup.svg, or a mocks/ subdir if there are several
+```
+
+- **Prefer self-contained, static artifacts** — one HTML file with inline CSS, or an SVG — so the mock opens with no build step and stays diffable in PRs. A `.png` screenshot is an acceptable supplement, but it isn't diffable, so keep the HTML/SVG as the source of truth.
+- **Link the mock from `plan.md`** with a short "Visual reference" note so a reader of the design lands on the picture. `docs/173-issue-tracker-filters/` is the canonical example: `docs/173-issue-tracker-filters/mockup.html` is a static, self-contained prototype, and `plan.md` links to it from a "Visual reference" callout.
+- **Keep the asset inside the `docs/NNN-*` folder** so it travels with the doc — it's reference material, same as `plan.md`.
+
+The `present` tool renders a mock in an ephemeral Present tab, but that artifact never touches the repo, so the prototype vanishes and only the prose survives. A committed mock is reviewable in PRs, renders in the file tree, and survives across sessions.
+
 ## Common mistakes
 
 - **Using `status:` or `priority:`**: These fields were removed. Track work-state and priority in the issue tracker and link to it with `issue:`. A stray `status:`/`priority:` line is ignored, not honored.
@@ -123,3 +142,4 @@ When the work is finished, mark every item in `checklist.md` as complete (`[x]`)
 - **Frontmatter not at file start**: The `---` block must be the very first thing in the file — no blank lines or content before it.
 - **Not a `.md` file**: Only files ending in `.md` are scanned. Other formats (`.txt`, `.rst`) won't appear in the list.
 - **Checklist embedded in `plan.md`**: Put remaining work in a sibling `checklist.md` file, not as a section inside `plan.md`.
+- **Leaving a UI prototype only in the Present tab**: That artifact is ephemeral and never reaches the repo. Commit a static `mockup.html`/`mockup.svg` into the feature folder and link it from `plan.md`.
