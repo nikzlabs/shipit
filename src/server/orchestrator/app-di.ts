@@ -154,6 +154,11 @@ export interface AppDeps {
    * behavior without touching the network.
    */
   mcpOAuthFetchImpl?: typeof fetch;
+  /**
+   * docs/170 — override for the `fetch` used to reach issue trackers (Linear
+   * GraphQL). Tests inject a stub; production leaves it undefined.
+   */
+  trackerFetchImpl?: typeof fetch;
 }
 
 /** Return type of `initializeManagers()` — all instantiated managers and helpers. */

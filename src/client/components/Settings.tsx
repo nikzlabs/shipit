@@ -10,6 +10,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
 import { GitHubTokenForm } from "./GitHubTokenForm.js";
+import { SettingsTrackers } from "./SettingsTrackers.js";
 import { McpServerSettings } from "./McpServerSettings.js";
 import { SkillsTab } from "./SkillsTab.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -34,7 +35,7 @@ const MAX_LENGTH = 50_000;
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "skills" | "mcp" | "voice" | "advanced";
+type Tab = "agent-claude" | "agent-codex" | "github" | "trackers" | "git" | "instructions" | "skills" | "mcp" | "voice" | "advanced";
 
 /** Shape of the /api/updates/check and /api/updates/channel responses. */
 interface UpdateStatusResult {
@@ -1352,12 +1353,13 @@ export function Settings({
   const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
 
-  const generalTabs = ["github", "git", "instructions", "skills", "mcp", "voice", "advanced"] as const;
+  const generalTabs = ["github", "trackers", "git", "instructions", "skills", "mcp", "voice", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "agent-claude": return "Claude";
       case "agent-codex": return "Codex";
       case "github": return "GitHub";
+      case "trackers": return "Trackers";
       case "git": return "Git";
       case "instructions": return "Instructions";
       case "skills": return "Skills";
@@ -1614,6 +1616,10 @@ export function Settings({
                 <GitHubTokenForm onSubmit={async (t) => { await onGitHubTokenSubmit(t); return undefined; }} />
               )}
             </div>
+          </TabsContent>
+
+          <TabsContent value="trackers">
+            <SettingsTrackers />
           </TabsContent>
 
           <TabsContent value="git">

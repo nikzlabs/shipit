@@ -322,6 +322,39 @@ describe("createHeadlessSession", () => {
     expect(result.session.branchRenamed).toBeUndefined();
   });
 
+  it("seeds branch, title, and first prompt from an issueRef (docs/170)", async () => {
+    const result = await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        issueRef: {
+          tracker: "linear",
+          identifier: "SHI-67",
+          title: "Inline tracker Issues tab",
+          url: "https://linear.app/acme/issue/SHI-67",
+          description: "Build the Issues tab.",
+        },
+      },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+    );
+
+    // Branch derived from the identifier + title slug; title prefixed by id.
+    expect(result.branch).toBe("shi-67-inline-tracker-issues-tab");
+    expect(result.session.title).toBe("SHI-67: Inline tracker Issues tab");
+    expect(result.session.branch).toBe("shi-67-inline-tracker-issues-tab");
+    // The first dispatched prompt carries the issue context.
+    const text = registry.get(result.sessionId)?.dispatch.mock.calls[0][0].text as string;
+    expect(text).toContain("SHI-67: Inline tracker Issues tab");
+    expect(text).toContain("Build the Issues tab.");
+    expect(text).toContain("https://linear.app/acme/issue/SHI-67");
+  });
+
   it("propagates claim failures as service errors", async () => {
     await expect(createHeadlessSession(
       sessionManager,
