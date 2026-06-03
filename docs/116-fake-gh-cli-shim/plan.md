@@ -70,8 +70,8 @@ The cost is one new HTTP client (worker → orchestrator), and a small `/agent-o
 
 | Subcommand | Maps to | Notes |
 |---|---|---|
-| `gh pr create` | `POST /api/sessions/:id/pr/quick` (existing) or new `POST .../pr` | Title and body are the agent's input. Falls back to the existing description generator only if `--fill` is passed and body is empty. |
-| `gh pr edit [<n>]` | new `PATCH /api/sessions/:id/pr/:number` | Updates title/body. `<n>` defaults to current branch's PR. |
+| `gh pr create` | `POST /api/sessions/:id/pr/quick` (existing) or new `POST .../pr` | Title and body are the agent's input. Falls back to the existing description generator only if `--fill` is passed and body is empty. `-l`/`--label` (repeatable / comma-separated) applies labels best-effort after the PR opens. |
+| `gh pr edit [<n>]` | new `PATCH /api/sessions/:id/pr/:number` | Updates title/body and/or adds labels (`-l`/`--label`, may be given alone). `<n>` defaults to current branch's PR. |
 | `gh pr view [<n>] [--json …]` | existing PR status data via `prStatusPoller` | Read-only; returns JSON when `--json` requested. |
 | `gh pr list [--json …]` | existing GitHub auth + Octokit list | Read-only; scoped to session's repo. |
 | `gh pr status` | derived from `prStatusPoller` for current branch | Convenience read. |
@@ -128,6 +128,8 @@ The workspace's git config still uses the user's identity (`/credentials/.gitcon
 We pick (1). `gh pr create` behind the shim does push-then-create, just like `quickCreatePr` already does. The agent doesn't need a separate push affordance.
 
 **Commit flush (added later):** since the agent calls `gh pr create` *mid-turn* — before the normal end-of-turn `postTurnCommit` has fired — the working tree typically still has uncommitted edits when the shim hits `/pr/agent-create`. Without a flush, the new PR would be opened against the branch's previously-committed state and the agent's just-made edits would not appear on the PR. The route now resolves the session's runner from the registry, commits any pending changes via `flushPendingTurnCommit` (using `runner.turnSummary` as the commit message), and clears any pending auto-push debounce before pushing synchronously. The "don't commit yourself" rule in the agent's system prompt stays intact — the shim handles it. Implementation: `services/github.ts` (`flushPendingTurnCommit`, `agentCreatePr`).
+
+**Labels (added later):** `gh pr create`/`gh pr edit` accept `-l`/`--label` (repeatable and comma-separated, normalized to a string array in the payload). Labels are threaded shim → `/agent-ops/pr/*` worker route → orchestrator route → `agentCreatePr`/`editPullRequest`, then applied by the orchestrator via `GitHubAuthManager.addLabelsToPullRequest` (the issues `labels` endpoint, additive) — the GitHub token never reaches the container, same as PR creation. This is the *agent-driven* labeling path: the agent picks one primary label by semantic intent so the repo's `.github/release.yml` groups release notes correctly. It is complementary to — not a replacement for — the server-side **path-based** auto-labeler (a sibling effort): path heuristics catch what the agent forgets, the agent's intent catches what paths can't infer. Labeling is **best-effort**: a label name that doesn't exist on the repo (422), a token without label-write (403), etc. degrade to a non-fatal `labelWarning` on the result — the shim prints it on stderr while still printing the PR URL and exiting 0. A wrong label must never block opening a PR. Implementation: `github-auth-prs.ts` (`addLabelsToPullRequest`), `services/github.ts` (`applyPrLabels`).
 
 ### Interaction with the harness fallback
 

@@ -295,6 +295,67 @@ describe("agent-driven PR creation (Phase 2)", () => {
     },
   );
 
+  it(
+    "applies agent-supplied labels to the new PR",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/agent-create`,
+        payload: {
+          title: "Add the widget",
+          body: "## Summary\nAdd a widget.",
+          labels: ["feature", "enhancement"],
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const result = res.json();
+      expect(result.number).toBe(1);
+      // The label was applied to the freshly-created PR (#1).
+      expect(githubAuth.addLabelsCalls).toHaveLength(1);
+      expect(githubAuth.addLabelsCalls[0]).toMatchObject({
+        pullNumber: 1,
+        labels: ["feature", "enhancement"],
+      });
+      // No warning when labeling succeeded.
+      expect(result.labelWarning).toBeUndefined();
+    },
+  );
+
+  it(
+    "a label that can't be applied is non-fatal — the PR is still created and a warning is surfaced",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      // Simulate GitHub rejecting the label (e.g. the name doesn't exist on the repo).
+      githubAuth.setAddLabelsResult({ success: false, message: "Label does not exist" });
+      const { sessionId } = await setupPrimedSession();
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/agent-create`,
+        payload: {
+          title: "Add the widget",
+          body: "## Summary\nAdd a widget.",
+          labels: ["nonexistent-label"],
+        },
+      });
+
+      // The PR creation itself still succeeded.
+      expect(res.statusCode).toBe(200);
+      const result = res.json();
+      expect(result.number).toBe(1);
+      expect(result.url).toContain("/pull/1");
+      expect(githubAuth.createPullRequestCalls).toHaveLength(1);
+      // ...but the label failure came back as a non-fatal warning.
+      expect(result.labelWarning).toContain("could not apply label(s) nonexistent-label");
+    },
+  );
+
   // Regression test for the ordering bug described in CLAUDE.md note about
   // gh pr create: the agent calls `gh pr create` mid-turn, *before* the
   // end-of-turn `postTurnCommit` has fired. Without the flush, the new PR

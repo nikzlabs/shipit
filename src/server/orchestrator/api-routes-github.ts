@@ -154,6 +154,7 @@ export async function registerGitHubRoutes(
       base?: string;
       draft?: boolean;
       fill?: boolean;
+      labels?: string[];
     };
   }>(
     "/api/sessions/:id/pr/agent-create",
@@ -173,6 +174,7 @@ export async function registerGitHubRoutes(
           base: request.body?.base,
           draft: request.body?.draft,
           fill: request.body?.fill,
+          labels: request.body?.labels,
           sessionTitle: session.title,
           remoteUrl: session.remoteUrl,
           // Pass session + runner context so the service can flush any
@@ -233,7 +235,7 @@ export async function registerGitHubRoutes(
   // PATCH /api/sessions/:id/pr/:number — edit an existing PR
   app.patch<{
     Params: { id: string; number: string };
-    Body: { title?: string; body?: string };
+    Body: { title?: string; body?: string; labels?: string[] };
   }>(
     "/api/sessions/:id/pr/:number",
     async (request, reply) => {
@@ -251,6 +253,7 @@ export async function registerGitHubRoutes(
           number: num,
           title: request.body?.title,
           body: request.body?.body,
+          labels: request.body?.labels,
           remoteUrl: session?.remoteUrl,
         });
       } catch (err) {

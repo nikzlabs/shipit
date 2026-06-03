@@ -35,8 +35,8 @@ See /shipit-docs/github.md for the full list.`;
 const HELP = `${SHIM_NAME} — pull-request operations brokered through the ShipIt orchestrator.
 
 Supported subcommands:
-  gh pr create   [-t TITLE] [-b BODY|--body-file FILE] [-B BASE] [-d|--draft] [--fill]
-  gh pr edit     [<number>] [-t TITLE] [-b BODY|--body-file FILE]
+  gh pr create   [-t TITLE] [-b BODY|--body-file FILE] [-B BASE] [-d|--draft] [--fill] [-l|--label LABEL]
+  gh pr edit     [<number>] [-t TITLE] [-b BODY|--body-file FILE] [-l|--label LABEL]
   gh pr view     [<number>] [--json FIELDS] [-w|--web]
   gh pr list     [--state STATE] [--json FIELDS]
   gh pr status
@@ -63,6 +63,12 @@ interface ParsedFlags {
   positional: string[];
   /** Map flag name → string value (last value wins). */
   values: Record<string, string>;
+  /**
+   * Repeatable value flags collected into arrays, in the order seen. e.g.
+   * `--label a --label b` → `{ label: ["a", "b"] }`. Used for flags like
+   * `--label` that real gh accepts more than once.
+   */
+  arrays: Record<string, string[]>;
   /** Boolean flags that were present. */
   booleans: Set<string>;
   /** Tracks unsupported flags so we can reject them with a helpful error. */
@@ -72,6 +78,11 @@ interface ParsedFlags {
 interface FlagSpec {
   /** Flag → output key. e.g. { "--title": "title", "-t": "title" } */
   values?: Record<string, string>;
+  /**
+   * Repeatable value flags → output key. e.g. { "--label": "label", "-l": "label" }.
+   * Each occurrence is appended to an array rather than overwriting.
+   */
+  arrays?: Record<string, string>;
   /** Boolean flags → output key. e.g. { "--draft": "draft", "-d": "draft" } */
   booleans?: Record<string, string>;
 }
@@ -83,10 +94,12 @@ interface FlagSpec {
  */
 export function parseFlags(args: string[], spec: FlagSpec): ParsedFlags {
   const valueSpec = spec.values ?? {};
+  const arraySpec = spec.arrays ?? {};
   const booleanSpec = spec.booleans ?? {};
   const out: ParsedFlags = {
     positional: [],
     values: {},
+    arrays: {},
     booleans: new Set(),
     unsupported: [],
   };
@@ -119,6 +132,23 @@ export function parseFlags(args: string[], spec: FlagSpec): ParsedFlags {
       continue;
     }
 
+    if (token in arraySpec) {
+      const key = arraySpec[token];
+      const target = (out.arrays[key] ??= []);
+      if (inlineValue !== undefined) {
+        target.push(inlineValue);
+      } else {
+        const next = args[i + 1];
+        if (next === undefined) {
+          out.unsupported.push(`${token} requires a value`);
+        } else {
+          target.push(next);
+          i++;
+        }
+      }
+      continue;
+    }
+
     if (token in booleanSpec) {
       out.booleans.add(booleanSpec[token]);
       continue;
@@ -130,6 +160,23 @@ export function parseFlags(args: string[], spec: FlagSpec): ParsedFlags {
     }
 
     out.positional.push(token);
+  }
+  return out;
+}
+
+/**
+ * Normalize repeated `--label`/`-l` occurrences into a flat, de-duped string
+ * array. Matches real gh semantics: `--label a --label b` and `--label a,b`
+ * both yield `["a", "b"]`. Whitespace is trimmed and empty entries dropped.
+ */
+function normalizeLabels(raw: string[] | undefined): string[] {
+  if (!raw || raw.length === 0) return [];
+  const out: string[] = [];
+  for (const entry of raw) {
+    for (const part of entry.split(",")) {
+      const label = part.trim();
+      if (label && !out.includes(label)) out.push(label);
+    }
   }
   return out;
 }
@@ -263,6 +310,9 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
       "-B": "base", "--base": "base",
       "--repo": "repo", "-R": "repo",
     },
+    arrays: {
+      "--label": "label", "-l": "label",
+    },
     booleans: {
       "-d": "draft", "--draft": "draft",
       "--fill": "fill",
@@ -280,6 +330,7 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, "ShipIt's gh shim does not support --web. The PR URL is printed on stdout.");
   }
   const body = await resolveBody(parsed.values.body, parsed.values.bodyFile, deps, "gh pr create");
+  const labels = normalizeLabels(parsed.arrays.label);
 
   const payload = {
     title: parsed.values.title,
@@ -287,6 +338,7 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
     base: parsed.values.base,
     draft: parsed.booleans.has("draft"),
     fill: parsed.booleans.has("fill"),
+    ...(labels.length > 0 ? { labels } : {}),
   };
   const res = await deps.call("POST", "/agent-ops/pr/create", payload, deps.env);
   if (res.status >= 200 && res.status < 300) {
@@ -296,6 +348,9 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
       // what they expect), but note the dedup on stderr for logs.
       deps.io.stderr(`Existing PR for this branch — printing its URL.\n`);
     }
+    // Labeling is best-effort: a bad label name never blocks the PR. When the
+    // orchestrator couldn't apply a label it returns a non-fatal warning here.
+    emitLabelWarning(deps.io, res.body.labelWarning);
     success(deps.io, url);
     return;
   }
@@ -310,6 +365,9 @@ async function handlePrEdit(args: string[], deps: RunDeps): Promise<void> {
       "--body-file": "bodyFile", "-F": "bodyFile",
       "--repo": "repo", "-R": "repo",
     },
+    arrays: {
+      "--label": "label", "-l": "label",
+    },
   });
   if ("repo" in parsed.values) {
     fail(deps.io, "ShipIt's gh shim does not support the --repo flag.");
@@ -319,18 +377,21 @@ async function handlePrEdit(args: string[], deps: RunDeps): Promise<void> {
   }
   const num = await resolvePrNumber(parsed.positional, deps);
   const body = await resolveBody(parsed.values.body, parsed.values.bodyFile, deps, "gh pr edit");
+  const labels = normalizeLabels(parsed.arrays.label);
 
   const payload = {
     title: parsed.values.title,
     body,
+    ...(labels.length > 0 ? { labels } : {}),
   };
-  if (payload.title === undefined && payload.body === undefined) {
-    fail(deps.io, "gh pr edit: provide a title (-t) or body (-b) to update.");
+  if (payload.title === undefined && payload.body === undefined && labels.length === 0) {
+    fail(deps.io, "gh pr edit: provide a title (-t), body (-b), or label (--label) to update.");
   }
 
   const res = await deps.call("PATCH", `/agent-ops/pr/${num}`, payload, deps.env);
   if (res.status >= 200 && res.status < 300) {
     const url = typeof res.body.url === "string" ? res.body.url : "";
+    emitLabelWarning(deps.io, res.body.labelWarning);
     success(deps.io, url);
     return;
   }
@@ -551,6 +612,18 @@ async function resolvePrNumber(
     fail(deps.io, "No open PR for the current branch — pass a PR number explicitly.");
   }
   return pr.number;
+}
+
+/**
+ * Print a best-effort label warning to stderr, if the orchestrator returned
+ * one. Labeling never blocks the PR operation (the URL is still printed and
+ * the exit code stays 0) — a missing label or a token without label-write just
+ * surfaces this note for the agent/user.
+ */
+function emitLabelWarning(io: ShimIO, warning: unknown): void {
+  if (typeof warning === "string" && warning.trim()) {
+    io.stderr(warning.endsWith("\n") ? warning : `${warning}\n`);
+  }
 }
 
 /** Format a broker/orchestrator error response as a single-line message. */

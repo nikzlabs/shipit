@@ -337,6 +337,43 @@ export async function addPullRequestComment(
 }
 
 /**
+ * Add one or more labels to a pull request. PRs are issues on GitHub, so this
+ * uses the issues `labels` endpoint. The operation is **additive** — GitHub
+ * merges these with any existing labels rather than replacing them.
+ *
+ * Best-effort by contract: callers treat a failure (a label name that doesn't
+ * exist on the repo → 422, a token without Issues:write → 403, etc.) as a
+ * non-fatal warning, never an error that blocks opening/editing the PR. We
+ * never throw — failures come back as `{ success: false, message }`.
+ */
+export async function addLabelsToPullRequest(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  labels: string[],
+): Promise<{ success: boolean; message?: string }> {
+  if (labels.length === 0) return { success: true };
+  try {
+    const res = await fetchGitHub(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${pullNumber}/labels`,
+      token,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ labels }),
+      },
+    );
+    if (!res.ok) {
+      return { success: false, message: await parseGitHubError(res) };
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: getErrorMessage(err) };
+  }
+}
+
+/**
  * Mark a draft pull request as ready for review.
  * Uses the GraphQL API since REST does not expose this transition.
  */
