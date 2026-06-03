@@ -260,6 +260,16 @@ function CommentInput({
   quotedText?: string;
 }) {
   const [text, setText] = useState(initialText ?? "");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Focus the textarea on mount without the browser scrolling it into view.
+  // The new-comment input renders at the bottom of the document, so the native
+  // `autoFocus` attribute would jump the scroll position to the bottom and lose
+  // the user's place. `focus({ preventScroll: true })` focuses in place.
+  // eslint-disable-next-line no-restricted-syntax -- focus the input without auto-scroll
+  useEffect(() => {
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -291,12 +301,12 @@ function CommentInput({
         </blockquote>
       )}
       <textarea
+        ref={textareaRef}
         className="w-full bg-transparent text-sm text-(--color-text-primary) outline-none resize-none min-h-[60px] placeholder:text-(--color-text-tertiary)"
         placeholder="Add a comment... (Cmd+Enter to submit, Escape to cancel)"
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={handleKeyDown}
-        autoFocus
       />
       <div className="flex justify-end gap-2 mt-2">
         <Button variant="ghost" size="sm" onClick={onCancel}>
@@ -465,6 +475,19 @@ export function MarkdownSelectionComments({
     return { commentsByBlock: byBlock, orphaned: orphans };
   }, [comments, blocks]);
 
+  // Which block the pending comment input should render under. We anchor the
+  // input to the block whose visible text contains the selection so it appears
+  // right at the selection point instead of at the bottom of the document.
+  // `-1` means the selection didn't resolve to a single block (e.g. it spans
+  // multiple top-level blocks) — those fall back to the bottom.
+  const pendingBlockIndex = useMemo(() => {
+    if (!pendingSelection) return null;
+    for (let i = 0; i < blocks.length; i++) {
+      if (locateInBlock(blocks[i].textContent, pendingSelection) >= 0) return i;
+    }
+    return -1;
+  }, [pendingSelection, blocks]);
+
   // Floating "Comment" button positioning. Tracks the live selection inside
   // the markdown body and surfaces a tiny button near it. The selection data
   // (quoted text + context + rects) is resolved eagerly on every change so
@@ -604,6 +627,22 @@ export function MarkdownSelectionComments({
     el.style.left = `${left}px`;
   }, [snapshot]);
 
+  const pendingInput = pendingSelection ? (
+    <CommentInput
+      quotedText={pendingSelection.quotedText}
+      onSubmit={(text) => {
+        onAddComment(
+          pendingSelection.quotedText,
+          pendingSelection.contextBefore,
+          pendingSelection.contextAfter,
+          text,
+        );
+        setPendingSelection(null);
+      }}
+      onCancel={() => setPendingSelection(null)}
+    />
+  ) : null;
+
   return (
     <div className="relative" ref={containerRef}>
       {fm.hasFrontmatter && <FrontmatterHeader fm={fm} />}
@@ -628,6 +667,7 @@ export function MarkdownSelectionComments({
                 readOnly={readOnly}
               />
             ))}
+            {pendingBlockIndex === idx && pendingInput}
           </div>
         );
       })}
@@ -653,21 +693,9 @@ export function MarkdownSelectionComments({
         </div>
       )}
 
-      {pendingSelection && (
-        <CommentInput
-          quotedText={pendingSelection.quotedText}
-          onSubmit={(text) => {
-            onAddComment(
-              pendingSelection.quotedText,
-              pendingSelection.contextBefore,
-              pendingSelection.contextAfter,
-              text,
-            );
-            setPendingSelection(null);
-          }}
-          onCancel={() => setPendingSelection(null)}
-        />
-      )}
+      {/* Fallback: render the input at the bottom only when the selection
+          didn't resolve to a single block (e.g. it spans multiple blocks). */}
+      {pendingBlockIndex === -1 && pendingInput}
 
       {snapshot && !pendingSelection && !readOnly && (
         <button
