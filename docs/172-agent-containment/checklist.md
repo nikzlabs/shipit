@@ -5,10 +5,13 @@ tracker as separate issues. None implemented yet.
 
 ## P0
 
-- [ ] **Gap 2 — host-scope the git credential helper.** Make the helper at
-      `github-auth.ts:225` read `host=` from stdin and emit the GitHub token only for the
-      configured GitHub host(s); echo nothing otherwise. Add a test that a push to a
-      non-GitHub HTTPS remote gets no credentials.
+- [ ] **Gap 2 — fix the GitHub token leak (verified live).** (a) Stop writing the inline
+      `password=<token>` helper into the workspace `.git/config` (`github-auth.ts:219-227`)
+      — it puts the `ghp_…` token in plaintext on disk; route the workspace through the
+      brokered `shipit-git-credential` helper instead. (b) Make that broker host-aware:
+      read `host=` from stdin, emit the token only for the configured GitHub host(s), echo
+      nothing otherwise. Add a test that `git credential fill` for a non-GitHub host
+      returns no credentials, and that no plaintext token lands in `.git/config`.
 - [ ] **Gap 1 — outbound egress allowlist.** Default-deny egress for session containers
       via an orchestrator-controlled proxy or `internal` network + NAT gateway; inject
       and enforce `HTTP_PROXY`/`HTTPS_PROXY`; allow only known hosts (agent APIs, git

