@@ -627,6 +627,32 @@ export class PrStatusPoller {
   }
 
   /**
+   * Collect PR numbers for the `coverage${i}` aliases on this poll — one per
+   * tracked, non-merged session on this repo whose PR number we already know.
+   *
+   * These light-field aliases guarantee a known tracked PR is always in the
+   * query result regardless of the bulk `first: N` window: on a busy repo the
+   * window can be smaller than the open-PR set, and even with `UPDATED_AT DESC`
+   * ordering a tracked PR that hasn't been pushed to recently can sort below
+   * the window. Aliasing by number makes windowing-out impossible for any PR
+   * we've seen at least once. (A never-yet-seen PR has no known number yet; it
+   * is discovered through the ordered bulk window, then sustained here.)
+   *
+   * See docs/155-pr-poll-query-scoping/plan.md Phase 1a.
+   */
+  private collectCoveragePrNumbers(repoKey: string): number[] {
+    const numbers: number[] = [];
+    for (const [sessionId, key] of this.sessionRepos) {
+      if (key !== repoKey) continue;
+      if (this.mergedSessions.has(sessionId)) continue;
+      const prNumber = this.lastKnown.get(sessionId)?.prNumber;
+      if (typeof prNumber !== "number") continue;
+      numbers.push(prNumber);
+    }
+    return numbers;
+  }
+
+  /**
    * Seed in-memory `lastKnown` from persisted snapshots so archived sessions
    * appear in `getAllStatuses()` immediately after server restart. Called
    * once during app startup, before any clients connect.
@@ -908,7 +934,8 @@ export class PrStatusPoller {
     //     bulk view as it was pre-Phase-1.
     const first = this.computeBulkFirst(repoKey);
     const focusedPrNumbers = this.collectFocusedPrNumbers(repoKey);
-    const query = buildPrStatusQuery({ first, focusedPrNumbers });
+    const coveragePrNumbers = this.collectCoveragePrNumbers(repoKey);
+    const query = buildPrStatusQuery({ first, focusedPrNumbers, coveragePrNumbers });
     const result = await this.githubAuth.graphqlQuery<GraphQLResponse>(
       query,
       { owner, name: repo },
@@ -939,6 +966,19 @@ export class PrStatusPoller {
         const contexts = node.commits.nodes[0]?.commit?.statusCheckRollup?.contexts?.nodes;
         if (contexts && contexts.length > 0) observedChecksThisPoll = true;
       }
+    }
+
+    // Fold the per-number aliases (focused + coverage) into the branch map so a
+    // tracked session's known PR is matched even when it fell outside the bulk
+    // `first: N` window. Only OPEN aliases are surfaced this way: a known PR
+    // that has since merged or closed is fetched by number regardless of state,
+    // and parsePrNode always reports "open" — so treating it as a bulk match
+    // would resurrect a merged card. Leaving merged/closed PRs absent here
+    // routes them through verifyMissingPr, which owns terminal-state promotion.
+    // A bulk node always wins (it is guaranteed OPEN by the connection filter).
+    for (const node of focusedByPrNumber.values()) {
+      if (node.state !== "OPEN") continue;
+      if (!prByBranch.has(node.headRefName)) prByBranch.set(node.headRefName, node);
     }
     if (observedChecksThisPoll) {
       this.graceTracker.markRepoHasChecks(repoKey);

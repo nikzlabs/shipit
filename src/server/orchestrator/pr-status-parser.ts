@@ -125,25 +125,41 @@ const CONVERSATION_FIELDS = `
  * Build the PR status GraphQL query.
  *
  * Emits one bulk `pullRequests(first: N)` connection with light fields only,
- * followed by one `focused${i}: pullRequest(number: ...)` alias per number in
- * `focusedPrNumbers` carrying light + conversation fields. See
- * docs/155-pr-poll-query-scoping/plan.md Phase 1 for the rationale.
+ * followed by:
+ *   - one `focused${i}: pullRequest(number: ...)` alias per number in
+ *     `focusedPrNumbers`, carrying light + conversation fields (the PR the
+ *     user's tab is open on), and
+ *   - one `coverage${i}: pullRequest(number: ...)` alias per number in
+ *     `coveragePrNumbers`, carrying light fields only.
+ * See docs/155-pr-poll-query-scoping/plan.md Phase 1 for the rationale.
+ *
+ * The bulk connection is ordered `UPDATED_AT DESC` so the `first: N` window is
+ * biased toward recently-active PRs — the ones backing the sessions a user is
+ * working on — instead of GitHub's default (roughly oldest-open-first), which
+ * pushed a busy repo's active session PRs out of a small window entirely.
+ *
+ * `coveragePrNumbers` is the hard guarantee on top of ordering: a tracked
+ * session's *known* PR is aliased by number so it can never be windowed out of
+ * the bulk view, regardless of how many other PRs are open on the repo. The
+ * caller passes every tracked session's last-known PR number here. Light fields
+ * only — conversation is reserved for the focused (PR-tab-active) alias to keep
+ * the per-poll payload bounded.
  *
  * The connection sizes (`first: N` PRs, `first: 10` contexts, `last: 3`
  * deployments) are intentionally bounded to keep the query cost down. The
  * caller computes `first` as `min(30, max(trackedSessionCount, DISCOVERY_FLOOR))`
  * so the cost scales with the actual number of sessions being watched on this
- * repo, plus a small floor for out-of-band-PR discovery. If a session's PR is
- * past the `first: N` cap it gets a per-session REST verify instead (see
- * `verifyMissingPr` in the poller). Status rollups beyond the first 10
- * contexts are an extreme edge case; if it bites, increase here rather than
- * dropping back to a paginated GraphQL.
+ * repo, plus a small floor for out-of-band-PR discovery. Status rollups beyond
+ * the first 10 contexts are an extreme edge case; if it bites, increase here
+ * rather than dropping back to a paginated GraphQL.
  */
 export function buildPrStatusQuery(opts: {
   first: number;
   focusedPrNumbers?: readonly number[];
+  coveragePrNumbers?: readonly number[];
 }): string {
-  const { first, focusedPrNumbers = [] } = opts;
+  const { first, focusedPrNumbers = [], coveragePrNumbers = [] } = opts;
+  const focusedSet = new Set(focusedPrNumbers);
   const focusedAliases = focusedPrNumbers
     .map((n, i) => `
     focused${i}: pullRequest(number: ${n}) {
@@ -151,14 +167,23 @@ export function buildPrStatusQuery(opts: {
       ${CONVERSATION_FIELDS}
     }`)
     .join("");
+  // A PR-tab-active session already gets a conversation-carrying focused alias;
+  // don't emit a second light alias for the same PR number.
+  const coverageAliases = coveragePrNumbers
+    .filter((n) => !focusedSet.has(n))
+    .map((n, i) => `
+    coverage${i}: pullRequest(number: ${n}) {
+      ${PR_LIGHT_FIELDS}
+    }`)
+    .join("");
   return `
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
-    pullRequests(first: ${first}, states: [OPEN]) {
+    pullRequests(first: ${first}, states: [OPEN], orderBy: { field: UPDATED_AT, direction: DESC }) {
       nodes {
         ${PR_LIGHT_FIELDS}
       }
-    }${focusedAliases}
+    }${focusedAliases}${coverageAliases}
   }
 }
 `;
@@ -242,9 +267,12 @@ export interface GraphQLResponse {
 }
 
 /**
- * Walk the `focused${i}` aliases off a GraphQL response and return a map of
- * PR number → node. The poller uses this to patch heavy conversation data
- * onto summaries built from the bulk view (which is always light).
+ * Walk the per-number aliases off a GraphQL response and return a map of PR
+ * number → node. Both `focused${i}` (PR-tab-active, light + conversation) and
+ * `coverage${i}` (tracked-session guarantee, light only) aliases are collected.
+ * The poller uses this map both to patch heavy conversation data onto bulk-view
+ * summaries and to surface tracked PRs that fell outside the bulk `first: N`
+ * window (matched back to a session by branch in `pollRepo`).
  *
  * Takes `unknown` because the alias keys are dynamic and don't fit cleanly into
  * the `GraphQLResponse` interface — the parser owns the response-shape knowledge.
@@ -254,7 +282,7 @@ export function extractFocusedPrNodes(result: unknown): Map<number, GraphQLPrNod
   const repository = (result as { data?: { repository?: Record<string, unknown> } })?.data?.repository;
   if (!repository) return out;
   for (const [key, value] of Object.entries(repository)) {
-    if (!key.startsWith("focused")) continue;
+    if (!key.startsWith("focused") && !key.startsWith("coverage")) continue;
     if (!value || typeof value !== "object") continue;
     const candidate = value as { number?: unknown };
     if (typeof candidate.number !== "number") continue;
