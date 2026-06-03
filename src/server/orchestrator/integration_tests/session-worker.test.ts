@@ -42,6 +42,7 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
   killed = false;
   interrupted = false;
   stdinData: string[] = [];
+  sentMessages: string[] = [];
   readonly isStreaming = false;
 
   run(params: AgentRunParams): void {
@@ -54,7 +55,7 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
   }
 
   sendUserMessage(text: string): void {
-    this.writeStdin(text);
+    this.sentMessages.push(text);
   }
 
   interrupt(): void {
@@ -68,6 +69,20 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
 
   writeMcpConfig(): { mcpConfigPath?: string; runtimeEnv?: Record<string, string>; cleanup?: () => void } {
     return {};
+  }
+}
+
+/**
+ * A steering-capable fake that also implements the optional
+ * `setPermissionMode` control method. The base `FakeWorkerAgent` deliberately
+ * omits it so the "agent does not support mid-stream permission-mode changes"
+ * 400 path stays covered.
+ */
+class FakeSteeringWorkerAgent extends FakeWorkerAgent {
+  permissionModeCalls: (PermissionMode | undefined)[] = [];
+
+  setPermissionMode(mode?: PermissionMode): void {
+    this.permissionModeCalls.push(mode);
   }
 }
 
@@ -235,6 +250,98 @@ describe("Integration: Session Worker IPC", () => {
 
     expect(res.statusCode).toBe(200);
     expect(lastAgent.stdinData).toEqual(["yes\n"]);
+  });
+
+  // ---- Live steering: POST /agent/message (docs/140) ----
+
+  it("rejects /agent/message when no agent is running", async () => {
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/message",
+      payload: { text: "steer me" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("No agent running");
+  });
+
+  it("rejects /agent/message with a non-string text", async () => {
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Work" } },
+    });
+
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/message",
+      payload: { text: 42 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("text is required");
+    expect(lastAgent.sentMessages).toEqual([]);
+  });
+
+  it("rejects /agent/message with empty text", async () => {
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Work" } },
+    });
+
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/message",
+      payload: { text: "" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("text is required");
+    expect(lastAgent.sentMessages).toEqual([]);
+  });
+
+  it("forwards /agent/message to agent.sendUserMessage on the happy path", async () => {
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Work" } },
+    });
+
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/message",
+      payload: { text: "change course" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ success: true });
+    expect(lastAgent.sentMessages).toEqual(["change course"]);
+  });
+
+  // ---- Live steering: POST /agent/permission-mode (docs/138 / docs/140) ----
+
+  it("returns 404 on /agent/permission-mode when no agent is running", async () => {
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/permission-mode",
+      payload: { mode: "plan" },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toContain("No agent running");
+  });
+
+  it("returns 400 on /agent/permission-mode when the agent lacks setPermissionMode", async () => {
+    // The base FakeWorkerAgent does not implement the optional control method.
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Work" } },
+    });
+
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/permission-mode",
+      payload: { mode: "plan" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("does not support");
   });
 
   // ---- SSE event streaming ----
@@ -707,6 +814,93 @@ describe("Integration: Session Worker IPC", () => {
     expect(res.statusCode).toBe(400);
   });
 
+});
+
+// ---- Live steering: /agent/permission-mode mode mapping (docs/138 / docs/140) ----
+//
+// A dedicated worker whose factory produces a steering-capable agent (one that
+// implements the optional `setPermissionMode`), so we can exercise the
+// valid/invalid mode-mapping paths the base FakeWorkerAgent can't reach.
+describe("Integration: Session Worker permission-mode mapping", () => {
+  let worker: SessionWorker;
+  let lastAgent: FakeSteeringWorkerAgent;
+
+  async function startAgent(): Promise<void> {
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Work" } },
+    });
+  }
+
+  beforeEach(async () => {
+    lastAgent = null as unknown as FakeSteeringWorkerAgent;
+    worker = new SessionWorker({
+      agentFactory: () => {
+        lastAgent = new FakeSteeringWorkerAgent();
+        return lastAgent;
+      },
+      port: 0,
+      host: "127.0.0.1",
+    });
+    await worker.start();
+  });
+
+  afterEach(async () => {
+    await worker.stop();
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  it("returns 400 for a mode outside the allowed set", async () => {
+    await startAgent();
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/permission-mode",
+      payload: { mode: "bogus" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("Invalid mode");
+    expect(lastAgent.permissionModeCalls).toEqual([]);
+  });
+
+  it("returns 400 for a non-string, non-null mode", async () => {
+    await startAgent();
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/permission-mode",
+      payload: { mode: 7 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("Invalid mode");
+    expect(lastAgent.permissionModeCalls).toEqual([]);
+  });
+
+  it.each(["plan", "guarded", "auto"] as const)(
+    "maps the %s mode through to setPermissionMode",
+    async (mode) => {
+      await startAgent();
+      const res = await worker.getApp().inject({
+        method: "POST",
+        url: "/agent/permission-mode",
+        payload: { mode },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ success: true });
+      expect(lastAgent.permissionModeCalls).toEqual([mode]);
+    },
+  );
+
+  it("maps a null mode to setPermissionMode(undefined) — the ShipIt 'auto' wire encoding", async () => {
+    await startAgent();
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/permission-mode",
+      payload: { mode: null },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ success: true });
+    expect(lastAgent.permissionModeCalls).toEqual([undefined]);
+  });
 });
 
 // ---- Install endpoint and SSE-reconnect resync (fix for "Installing
