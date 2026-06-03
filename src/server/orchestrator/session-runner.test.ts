@@ -288,6 +288,35 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  it("dispose tears down a streaming turn: kills the agent, drops the buffered steer, resets the gate (docs/140)", () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+
+    let killed = 0;
+    runner.setAgent({ sendUserMessage: () => {}, kill: () => { killed++; } } as any);
+    runner.running = true;
+    runner.isStreamingActive = true;
+
+    // A review-turn dispatch queues rather than steers (docs/125), giving us a
+    // buffered-but-unsent message to assert the teardown drop semantics on.
+    runner.dispatch({ text: "buffered note", reviewFilePath: "src/foo.ts" });
+    expect(runner.queueLength).toBe(1);
+
+    runner.dispose({ force: true });
+
+    // Defined teardown semantics (docs/140 lifecycle): the resident streaming
+    // process is killed, the buffered steer is dropped (not silently delivered
+    // to a dead process), and the streaming gate resets so any later respawn
+    // takes the fresh-spawn path instead of writing to closed stdin.
+    expect(killed).toBe(1);
+    expect(runner.queueLength).toBe(0);
+    expect(runner.isStreamingActive).toBe(false);
+  });
+
   it("dispatch starts agent turn when idle with deps set", async () => {
     const runner = new SessionRunner({
       sessionId: "s1",
