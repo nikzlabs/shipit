@@ -108,7 +108,40 @@ that still sends a mismatch.
 
 Reverting either fix makes the matching test bite.
 
+## Follow-up — overlay picker inherited a background session's lock
+
+A second, distinct symptom of the same "overlay reuses session-scoped UI"
+class: in the quick-capture overlay the agent/model selector was sometimes
+**locked to a single agent** (every other agent's rows disabled) even though the
+new session hadn't started. Most visible on mobile, where quick-capture is the
+primary way to start a session.
+
+**Root cause.** `ModelAgentSelector` computes its cross-agent lock from the
+*globally-active* session in the session store
+(`currentSession?.agentPinned ? currentSession.agentId : undefined`). That is
+correct for the in-session composer, but the overlay reuses the same picker to
+start a **new** session and reads the same store. When a background session was
+already pinned (it took its first turn on Claude/Codex), the overlay picker
+inherited that pin and locked all other agents — for a session that didn't
+exist yet. This is the *lock/disabled-rows* sibling of the *wrong-agent-sent*
+bug above; the earlier fix corrected what got submitted, not the picker's
+interactivity.
+
+**Fix.** Gate the lock on `hasActiveSession`
+(`src/client/components/ModelAgentSelector.tsx`). The overlay already passes
+`hasActiveSession={false}`, the in-session composer passes `!!sessionId`. The
+`pinnedAgentId` is now `hasActiveSession && currentSession?.agentPinned ? … :
+undefined`, so a new-session picker never inherits a background pin while the
+in-session `agentPinned`-based lock (other agents only, mid-session model
+changes within the pinned agent still allowed) is unchanged. `hasActiveSession`
+was previously read-but-unused (`_hasActiveSession`); it now drives the lock.
+
+**Test.** `src/client/components/ModelAgentSelector.test.tsx` — with a pinned
+background session in the store but `hasActiveSession={false}`, the other
+agent's rows stay enabled.
+
 ## Related
 
 - docs/142 — agent-auth-recovery-and-model-source-of-truth (Problem C).
+- docs/138 — per-agent-credential-isolation (the `agentPinned` lock this gates).
 - `shipit/qttory` — the separate quick-session spawn-flow fix (not touched here).

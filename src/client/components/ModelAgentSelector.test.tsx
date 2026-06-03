@@ -114,6 +114,29 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     expect(screen.getByTestId("model-option-gpt-5.4")).toHaveAttribute("aria-disabled", "true");
   });
 
+  it("does NOT lock agents in a new-session picker even when a background session is pinned (docs/166)", async () => {
+    // Reproduces the quick-capture overlay bug: a background session is pinned
+    // to Claude, but the overlay (hasActiveSession=false) is starting a brand-new
+    // session. The picker must NOT inherit the background pin — every agent's
+    // rows stay selectable because the new session hasn't picked an agent yet.
+    setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
+    const user = userEvent.setup();
+    render(
+      <ModelAgentSelector
+        agents={agents}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={sonnet}
+        hasActiveSession={false}
+      />,
+    );
+    await user.click(screen.getByTestId("model-agent-trigger"));
+    // Codex rows must be enabled — the overlay starts a fresh session.
+    expect(screen.getByTestId("model-option-gpt-5.5")).not.toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByTestId("model-option-gpt-5.4")).not.toHaveAttribute("aria-disabled", "true");
+  });
+
   it("picking a model in the pinned agent emits onModelChange but NOT onAgentChange", async () => {
     setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
     const onAgentChange = vi.fn();
