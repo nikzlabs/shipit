@@ -1,8 +1,17 @@
 {
   "name": "shipit",
   "version": "0.1.0",
+  "description": "Browser-based AI editor for building, reviewing, and shipping software through chat.",
   "private": false,
   "license": "Apache-2.0",
+  "homepage": "https://github.com/nicolasalt/shipit#readme",
+  "bugs": {
+    "url": "https://github.com/nicolasalt/shipit/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nicolasalt/shipit.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server/orchestrator/index.ts",
