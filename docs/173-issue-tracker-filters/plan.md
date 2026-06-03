@@ -1,6 +1,6 @@
 ---
 title: Issue tracker filters & search
-description: Tracker-agnostic status/priority filters (multi-select), free-text search, and a tabular layout (status, priority, and issue-link as columns) for the inline Issues tab — applied client-side over the normalized issue list so every current and future tracker gets them for free.
+description: Tracker-agnostic status/priority/assignee filters (multi-select), free-text search, a tabular desktop layout (status, priority, assignee, issue-link as columns), and a card-based mobile layout for the inline Issues tab — all applied client-side over the normalized issue list so every current and future tracker gets them for free.
 ---
 
 # Issue tracker filters & search
@@ -49,12 +49,15 @@ type:
 |---|---|---|
 | **Priority** | `priority.level` — fixed enum `urgent\|high\|medium\|low\|none` | Every adapter maps its native priority into this 5-value enum (`mapLinearPriority` does it for Linear). So priority filter options are a **fixed, hardcoded** set of chips that mean the same thing across trackers. |
 | **Status** | `status.name` (freeform) + optional `status.type` | Status *names* are tracker-specific strings ("In Review", "Triage", "Blocked"). We can't hardcode them. So status filter options are **derived at runtime** from the distinct `status.name` values present in the loaded list — whatever the tracker returns shows up automatically. |
+| **Assignee** | `assignee.name` (+ a synthetic "Unassigned" bucket) | Like status, assignee names are data, not a fixed enum — the options are **derived** from the distinct `assignee.name` values in the loaded list, plus an explicit **Unassigned** option for issues with no `assignee`. Avatars (`assignee.avatarUrl`) render in the option rows when present. |
 | **Search** | `identifier` + `title` (+ `description`) | Plain substring match on fields every issue has. |
 
-The asymmetry — priority chips are fixed, status chips are derived — is the
-mechanism that keeps this generic. A future Jira adapter that returns statuses
-like "To Do / In Progress / Done" needs zero filter changes; those names just
-appear as derived status chips.
+The asymmetry — priority chips are fixed, status/assignee chips are derived — is
+the mechanism that keeps this generic. A future Jira adapter that returns
+statuses like "To Do / In Progress / Done" and its own set of assignees needs
+zero filter changes; those values just appear as derived chips. **Unassigned**
+is the one synthetic option we add, because "no assignee" is a filter users want
+and isn't a value the tracker enumerates.
 
 ### Where `status.type` fits
 
@@ -90,17 +93,17 @@ issues" with more upstream is the existing behavior, unchanged).
 
 ## UX
 
-A **filter bar** sits between the sub-tab switcher and the list in
-`IssuesViewer`:
+A **filter bar** sits directly below the merged top bar (see "Top bar" below) in
+`IssuesViewer`, above the table:
 
 ```
-┌─────────────────────────────────────────────┐
-│  [🔍 Search issues…        ]  Priority ▾  Status ▾ │   ← filter bar (new)
-├─────────────────────────────────────────────┤
-│  SHI-67  [Urgent]                            │
-│  Inline tracker Issues tab                   │
-│  In Progress · Nik                           │
-│  …                                           │
+┌──────────────────────────────────────────────────────────┐
+│  Linear · SHI   GitHub            3 of 7 issues   ⟳ Refresh │  ← merged top bar
+├──────────────────────────────────────────────────────────┤
+│  [🔍 Search issues…   ]  Priority ▾  Status ▾  Assignee ▾   │  ← filter bar (new)
+├──────────────────────────────────────────────────────────┤
+│  ISSUE   TITLE                  PRIORITY  STATUS  ASSIGNEE  │  ← table header
+│  SHI-67  Inline tracker Issues… [Urgent]  In Prog.  Nik   ⟶ │
 ```
 
 - **Search input** — a debounced (~150ms) text box, case-insensitive substring
@@ -110,11 +113,22 @@ A **filter bar** sits between the sub-tab switcher and the list in
   High / Medium / Low / No priority), multi-select. The trigger shows a count
   badge when any are active ("Priority · 2").
 - **Status ▾** — a popover with a checklist of the **distinct status names found
-  in the current list**, multi-select. Same count-badge treatment. Disabled/empty
-  when the loaded issues carry no status.
-- **Header count** updates to **"N of M issues"** when any filter is active (M =
-  loaded total, N = after filtering), falling back to the existing "M issues"
-  when no filter is active.
+  in the current list**, multi-select, each with a per-status count. Same
+  count-badge treatment. Disabled/empty when the loaded issues carry no status.
+- **Assignee ▾** — a popover with a checklist of the **distinct assignees found
+  in the current list** (avatar + name + count), plus an explicit **Unassigned**
+  row, multi-select. Same count-badge treatment.
+
+### Top bar
+
+The tracker sub-tabs, the issue count, and Refresh were recently merged into a
+**single top bar** (sub-tabs left-aligned, count + Refresh right-aligned) — the
+two-row header/sub-tab split in the original docs/170 build is gone. The filter
+bar is its own row beneath that merged bar; the table follows.
+
+- **The count** in the top bar updates to **"N of M issues"** when any filter is
+  active (M = loaded total, N = after filtering), falling back to the existing
+  "M issues" when no filter is active.
 - **Empty-filtered state** — when filters exclude everything, show "No issues
   match your filters" with a **Clear filters** button, distinct from the
   existing "No open issues in this team" empty state (which means the *list* is
@@ -125,9 +139,10 @@ A **filter bar** sits between the sub-tab switcher and the list in
 Standard faceted-search semantics:
 
 - **Within a facet: OR.** Selecting Urgent + High shows issues that are Urgent
-  *or* High. Selecting two statuses shows either.
+  *or* High. Selecting two statuses (or two assignees) shows either.
 - **Across facets: AND.** Priority ∈ {Urgent, High} **and** Status ∈ {In
-  Progress} **and** title/identifier matches the search text.
+  Progress} **and** Assignee ∈ {Nik} **and** title/identifier matches the search
+  text.
 - **Empty facet = no constraint.** No priorities selected means "any priority,"
   not "no issues."
 
@@ -144,10 +159,10 @@ The list becomes a table with these columns:
 | Column | Source | Notes |
 |---|---|---|
 | **Issue** | `identifier` → `url` | The existing external link (opens the issue in the tracker, `ArrowSquareOutIcon`). Becomes its own narrow, monospace column instead of sharing a line with priority. This is the "linked to the original issue" column. |
-| **Title** | `title` | Flex-grow column, truncates with ellipsis; the row's primary content. |
+| **Title** | `title` (+ `description`) | The **widest** column — the only flex-grow one, all others fixed-width. The title **wraps to two lines** instead of truncating, with an optional dim one-line `description` preview beneath it; the extra room makes a row scannable without opening the issue. |
 | **Priority** | `priority` | The existing `PriorityBadge`, now its own fixed-width column so badges align vertically and the priority filter maps to a visible column. |
 | **Status** | `status.name` | Promoted from the third-line metadata into its own column. |
-| **Assignee** | `assignee` | Name + `UserIcon` (or avatar), its own column; hidden on narrow widths before Title. |
+| **Assignee** | `assignee` | Avatar + name, its own column and a filterable facet; the first column to drop on narrow widths. |
 | **(action)** | — | The per-row **Start session** button, right-aligned in a trailing column. |
 
 Design constraints, to stay consistent with the codebase:
@@ -165,15 +180,61 @@ Design constraints, to stay consistent with the codebase:
   natural fast-follow but out of scope here (the list is already
   priority-sorted, and adding sortable headers reopens the sort model). Listed in
   Non-goals.
-- **Responsive degradation.** On narrow panel widths (the Issues tab can be a
-  side panel), drop the Assignee column first, then Status, collapsing back
-  toward the identifier + title + priority + action core. Title never drops.
-- **The filter bar's "N of M" count and empty-filtered state** sit above the
-  table, unchanged by the columnar layout.
+- **Responsive degradation (intermediate widths).** As the panel narrows (the
+  Issues tab can be a side panel), drop the Assignee column first, then Status,
+  collapsing back toward the identifier + title + priority + action core. Title
+  never drops. Below a breakpoint the table collapses entirely to the mobile card
+  layout (next section).
+- **The filter bar's empty-filtered state** sits above the table, unchanged by
+  the columnar layout.
 
 `IssueRow` is restructured from a stacked flexbox into a grid row;
 `IssuesViewer` gains the header row. No prop/data changes — same `TrackerIssue`
 in, table out.
+
+## Mobile / narrow layout
+
+Below a width breakpoint (≈640px — phone, or a tight side panel), a six-column
+grid stops being legible, so the layout **collapses back to a stacked card per
+issue** — essentially the original docs/170 `IssueRow`, kept as the small-screen
+branch:
+
+```
+┌───────────────────────────────┐
+│ Linear · SHI   GitHub        ⟳ │  ← top bar (count moves down)
+├───────────────────────────────┤
+│ [🔍 Search issues…           ] │  ← search on its own row
+│ Priority▾  Status▾  Assignee▾  │  ← facets as a horizontally-scrollable chip row
+├───────────────────────────────┤
+│ 7 issues                       │  ← count row
+├───────────────────────────────┤
+│ SHI-67 ↗            [Urgent]   │
+│ Inline tracker Issues tab…     │  (title, up to 2 lines)
+│ In Progress · 🧑 Nik           │
+│ [      🚀 Start session      ] │  (full-width)
+└───────────────────────────────┘
+```
+
+Mobile-specific behavior:
+
+- **Top bar** keeps the sub-tabs and Refresh; the issue count moves to its own
+  thin row above the list so the tab row doesn't crowd.
+- **Filter bar wraps to two rows:** the search box gets a full-width row, and the
+  three facets become a **horizontally-scrollable chip row** beneath it (chips,
+  not dropdown buttons, so they're touch-sized and never overflow the viewport).
+  Each chip opens the same multi-select popover (rendered inline/sheet-style on
+  mobile) and shows its active-count pill.
+- **Rows are cards, not grid rows.** Identifier + priority on the first line,
+  title (up to two lines) below, a `status · assignee` meta line, and a
+  **full-width Start session** button — easy to tap.
+- **Same filter engine.** Mobile reuses the identical `filterIssues` /
+  `distinctStatuses` / `distinctAssignees` helpers and store state; only the
+  presentational shell differs (Tailwind responsive `max-md:` variants on one
+  `IssuesViewer`, not a separate component). The "N of M" count and Clear-filters
+  affordance carry over.
+
+This is the responsive endpoint of the column-dropping ladder above: drop
+Assignee → drop Status → collapse to cards.
 
 ## State & data flow
 
@@ -183,7 +244,7 @@ sort is unchanged — the list stays priority-sorted; filtering only removes row
 ```
 issuesByTracker[tracker]  (normalized TrackerIssue[], priority-sorted)
         │
-        ├── filters: { query, priorities:Set<level>, statuses:Set<name> }   (new store state)
+        ├── filters: { query, priorities:Set<level>, statuses:Set<name>, assignees:Set<name|UNASSIGNED> }  (new store state)
         │
         ▼
   selectFilteredIssues(issues, filters)   (pure selector — the tracker-agnostic core)
@@ -197,18 +258,20 @@ issuesByTracker[tracker]  (normalized TrackerIssue[], priority-sorted)
 - **Search text** and **priority** selections are normalized/universal, so they
   **persist across sub-tab switches** (switching Linear → GitHub keeps your
   "Urgent only" view).
-- **Status** selections are tracker-specific names, so on a sub-tab switch the
-  status set is **pruned to names that exist in the newly-active list** (stale
-  names from another tracker silently drop). Simplest correct behavior; avoids a
-  status chip that matches nothing.
-- A single top-level **Clear filters** resets all three.
+- **Status** and **assignee** selections are tracker-specific (freeform names),
+  so on a sub-tab switch each set is **pruned to values that exist in the
+  newly-active list** (stale names from another tracker silently drop; the
+  synthetic **Unassigned** value always survives). Simplest correct behavior;
+  avoids a chip that matches nothing.
+- A single top-level **Clear filters** resets all four facets + search.
 
-The derived status options and the filtered list are computed with **stable
-memoized selectors** — note the docs/170 gotcha (`IssuesPanel.test.tsx`):
+The derived status/assignee options and the filtered list are computed with
+**stable memoized selectors** — note the docs/170 gotcha (`IssuesPanel.test.tsx`):
 Zustand selectors here must return stable references or they loop into React
-error #185. Any derived array (filtered issues, distinct status names) must be
-memoized (`useMemo` in the panel, or a cached selector) and fall back to a
-shared module-level constant when empty, exactly like `EMPTY_ISSUES`.
+error #185. Any derived array (filtered issues, distinct status names, distinct
+assignees) must be memoized (`useMemo` in the panel, or a cached selector) and
+fall back to a shared module-level constant when empty, exactly like
+`EMPTY_ISSUES`.
 
 ## Key files
 
@@ -216,21 +279,27 @@ Client (all changes are client-side — this is the point):
 
 - `src/client/stores/issues-store.ts` — add `filters` state
   (`query: string`, `priorities: Set<IssuePriorityLevel>`,
-  `statuses: Set<string>`) + actions (`setQuery`, `togglePriority`,
-  `toggleStatus`, `clearFilters`); prune `statuses` on `setActiveTracker` /
-  after `fetchIssues`.
+  `statuses: Set<string>`, `assignees: Set<string>` with a sentinel for
+  Unassigned) + actions (`setQuery`, `togglePriority`, `toggleStatus`,
+  `toggleAssignee`, `clearFilters`); prune `statuses`/`assignees` on
+  `setActiveTracker` / after `fetchIssues`.
 - `src/client/components/issues-filter.ts` (new) — pure
-  `filterIssues(issues, filters)` and `distinctStatuses(issues)` helpers. The
-  tracker-agnostic core; unit-tested in isolation.
-- `src/client/components/IssuesFilterBar.tsx` (new) — the search box + two
-  multi-select popovers + count badges (presentational).
-- `src/client/components/IssuesViewer.tsx` — render the filter bar, the "N of M"
-  count, the empty-filtered state, and the **table** (sticky column-header row +
-  grid rows); restructure `IssueRow` from a stacked card into a grid row with
-  Issue / Title / Priority / Status / Assignee / action columns; accept filter
-  props/handlers.
+  `filterIssues(issues, filters)`, `distinctStatuses(issues)`, and
+  `distinctAssignees(issues)` helpers. The tracker-agnostic core; unit-tested in
+  isolation.
+- `src/client/components/IssuesFilterBar.tsx` (new) — the search box + three
+  multi-select popovers (Priority / Status / Assignee) + count badges
+  (presentational). Renders as a single row on desktop and a search-row +
+  scrollable chip-row on mobile (`max-md:` variants).
+- `src/client/components/IssuesViewer.tsx` — render the merged top bar with the
+  "N of M" count, the filter bar, the empty-filtered state, and the **table**
+  (sticky column-header row + grid rows) that **collapses to stacked cards below
+  the mobile breakpoint**; restructure `IssueRow` into a grid row (desktop) /
+  card (mobile) with Issue / Title / Priority / Status / Assignee / action;
+  accept filter props/handlers.
 - `src/client/components/IssuesPanel.tsx` — select filter state, compute the
-  memoized filtered list + distinct statuses (stable refs!), wire handlers.
+  memoized filtered list + distinct statuses + distinct assignees (stable refs!),
+  wire handlers.
 
 Server: **none.** No route, type, or adapter change. The existing
 `GET /api/issues` and the normalized `TrackerIssue` are sufficient. (This is the
@@ -241,21 +310,23 @@ Tests:
 
 - `src/client/components/issues-filter.test.ts` (new) — the filter/search/derive
   helpers: OR-within / AND-across semantics, case-insensitive search across
-  identifier+title+description, empty-facet = no constraint, distinct-status
-  derivation, priority enum coverage.
-- `src/client/components/IssuesViewer.test.tsx` — filter bar renders, count
-  shows "N of M", empty-filtered state + Clear button.
-- `src/client/components/IssuesPanel.test.tsx` — status pruning on tracker
-  switch; stable-reference regression (no React #185 with filters active).
+  identifier+title+description, empty-facet = no constraint, distinct-status and
+  distinct-assignee derivation (incl. the synthetic Unassigned bucket), priority
+  enum coverage.
+- `src/client/components/IssuesViewer.test.tsx` — filter bar renders (three
+  facets), count shows "N of M", empty-filtered state + Clear button.
+- `src/client/components/IssuesPanel.test.tsx` — status/assignee pruning on
+  tracker switch; stable-reference regression (no React #185 with filters
+  active).
 
 ## Non-goals (v1)
 
 - **No server-side / upstream-query filtering.** No Linear `filter:`, no GitHub
   search syntax — that's the per-tracker query sprawl docs/170 rejects.
-- **No label / assignee / custom-field facets (yet).** `TrackerIssue` has no
-  `labels` field today; adding label filtering means extending the normalized
-  type *and* every adapter. Deferred — assignee filtering is the most likely
-  fast-follow since `assignee.name` is already on the type.
+- **No label / custom-field facets (yet).** `TrackerIssue` has no `labels` field
+  today; adding label filtering means extending the normalized type *and* every
+  adapter. Deferred. (Assignee filtering **is** in scope here — `assignee.name`
+  is already on the normalized type, so it needs no adapter change.)
 - **No saved filters / shareable filter URLs.** Filter state is ephemeral
   session UI state, not persisted.
 - **No sortable column headers.** The table is display-only; the list stays
