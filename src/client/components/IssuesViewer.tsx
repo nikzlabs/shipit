@@ -125,34 +125,15 @@ export function IssuesViewer({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
-        <span className="font-medium">
-          {configured
-            ? `${issues.length} issue${issues.length !== 1 ? "s" : ""}`
-            : "Not connected"}
-        </span>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onRefresh}
-          disabled={loading}
-          title="Refresh issues"
-          className="inline-flex items-center gap-1.5"
-        >
-          <ArrowClockwiseIcon size={ICON_SIZE.SM} className={loading ? "animate-spin" : ""} />
-          Refresh
-        </Button>
-      </div>
-
-      {/* Sub-tab switcher — one per configured tracker (only Linear in v1). */}
-      {trackers.length > 0 && (
-        <div className="flex border-b border-(--color-border-secondary)">
+      {/* Single top bar: tracker sub-tabs · spacer · issue count · refresh */}
+      <div className="flex items-stretch border-b border-(--color-border-secondary) bg-(--color-bg-secondary)">
+        {/* Sub-tab switcher — one per configured tracker (only Linear in v1). */}
+        <div className="flex items-stretch">
           {trackers.map((t) => (
             <button
               key={t.id}
               onClick={() => onSelectTracker(t.id)}
-              className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 ${
+              className={`px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer border-b-2 ${
                 activeTracker === t.id
                   ? "text-(--color-text-primary) border-(--color-accent)"
                   : "text-(--color-text-tertiary) border-transparent hover:text-(--color-text-secondary)"
@@ -165,7 +146,30 @@ export function IssuesViewer({
             </button>
           ))}
         </div>
-      )}
+
+        {/* Empty space */}
+        <div className="flex-1" />
+
+        {/* Issue count + refresh */}
+        <div className="flex items-center gap-2 px-3 text-xs text-(--color-text-secondary)">
+          <span className="font-medium">
+            {configured
+              ? `${issues.length} issue${issues.length !== 1 ? "s" : ""}`
+              : "Not connected"}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onRefresh}
+            disabled={loading}
+            title="Refresh issues"
+            className="inline-flex items-center gap-1.5"
+          >
+            <ArrowClockwiseIcon size={ICON_SIZE.SM} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </Button>
+        </div>
+      </div>
 
       <div className="flex-1 overflow-y-auto">
         {error && (
