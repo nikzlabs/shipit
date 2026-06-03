@@ -162,6 +162,37 @@ describe("ChatHistoryManager", () => {
     });
   });
 
+  it("round-trips a message carrying every optional field (serialization contract)", () => {
+    // Contract guard: if you add a field to PersistedMessage, wire it through
+    // toRow/fromRow (and a migration) AND add it here. A field that serializes
+    // one way but not the other — the recurring "card renders live but vanishes
+    // on reload" bug class — fails this deep-equal.
+    const mgr = new ChatHistoryManager(dbManager);
+    const msg: PersistedMessage = {
+      role: "assistant",
+      text: "everything",
+      toolUse: [{ type: "tool_use", id: "t1", name: "Edit", input: { path: "a.ts" } }],
+      images: [{ data: "abc", mediaType: "image/png" }],
+      files: [{ path: "a.ts", contentPreview: "x", startLine: 1, endLine: 2 }],
+      isError: true,
+      toolResults: [{ toolUseId: "t1", content: "ok", isError: false }],
+      commitHash: "abc123",
+      parentCommitHash: "def456",
+      uploadPaths: ["/uploads/x.png"],
+      notice: true,
+      noticeLevel: "warn",
+      rolledBack: true,
+      forkChild: { childSessionId: "child", title: "T", branch: "b" },
+      codeRollbackHash: "c0ffee",
+      voiceNote: { id: "v1", headline: "h", needsAttention: true, kind: "authored", createdAt: "t" },
+      bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
+      subagentEvents: [],
+    };
+
+    mgr.append("sess-1", msg);
+    expect(mgr.load("sess-1")[0]).toEqual(msg);
+  });
+
   it("persists error messages with isError flag", () => {
     const mgr = new ChatHistoryManager(dbManager);
     mgr.append("sess-1", { role: "assistant", text: "Error: something broke", isError: true });

@@ -323,12 +323,12 @@ The dividing line: **transient** signals (spinners, `preview_status`, queue coun
 
 The established pattern for a **side-channel card** (one that arrives outside the agent-event stream — an HTTP relay or a post-turn WS message, so `buildTurnMessages` doesn't capture it on its own):
 
-1. **Record it in-band with the turn**, anchored by `afterGroupIndex` (see `recordVoiceNote` / `recordBugReportCard`), so `buildTurnMessages` interleaves it at its true transcript position instead of an out-of-band `append` floating it above the whole turn on reload.
+1. **Emit it via `emitChatCard` (`chat-card-persistence.ts`), never bare `emitMessage`.** That single primitive both emits the live WS message AND records the card in-band with the turn — anchored by `afterGroupIndex` so `buildTurnMessages` interleaves it at its true transcript position instead of an out-of-band `append` floating it above the whole turn. It is the one supported way to add a transcript card, so a card can't ship emit-only.
 2. **Add a typed field on `PersistedMessage`** (e.g. `voiceNote`, `bugReport`) plus the column + `toRow`/`fromRow` (and a `database.ts` migration). Lifecycle transitions patch that record in place (e.g. `updateBugReportCard`) — the proposing-turn row is finalized by then, so a direct update is safe.
 3. **Rehydrate on the client** in `loadSessionHistory` (seed any store the card reads from), and make the **live append + any store upsert idempotent by id** so the reconnect buffer replay and the reload history replay never double-render or clobber a terminal state.
-4. **Add a history round-trip test** (persist → `load()` → assert) and a no-duplicate-on-replay test.
+4. **Add a history round-trip test** (persist → `load()` → assert) and a no-duplicate-on-replay test. The serialization round-trip contract in `chat-history.test.ts` must include any new `PersistedMessage` field.
 
-If you find yourself reaching for `emitMessage` to put a card in the chat, that's the signal to also wire steps 1–4. Key files: `chat-history.ts`, `agent-listeners.ts` (`buildTurnMessages`), `session-data.ts` (`loadSessionHistory`).
+If you find yourself reaching for `emitMessage` to put a card in the chat, reach for `emitChatCard` instead and wire steps 2–4. Key files: `chat-card-persistence.ts` (`emitChatCard`), `chat-history.ts`, `agent-listeners.ts` (`buildTurnMessages`), `session-data.ts` (`loadSessionHistory`).
 
 ### Preview routing
 

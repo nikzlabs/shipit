@@ -1,7 +1,7 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, WsLogEntry } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, RecordedVoiceNote, RecordedBugReportCard, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
+import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, RecordedChatCard, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
@@ -158,18 +158,19 @@ export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
 
 /**
  * Build the ordered list of in-progress messages for a turn, interleaving any
- * live-steered user messages (docs/140) and voice-note cards (docs/163) at
- * their true position among the assistant message groups.
+ * live-steered user messages (docs/140) and recorded chat cards (voice notes
+ * docs/163, bug-report cards docs/164, …) at their true position among the
+ * assistant message groups.
  *
  * `replaceInProgress` deletes every `in_progress=1` row and re-inserts this
  * list, so the assistant rows are reborn with fresh (higher) ids on every
- * call. A steered user message — or a voice-note card — persisted out-of-band
+ * call. A steered user message — or a recorded card — persisted out-of-band
  * (via `append`) keeps its original early id and therefore collapses up next
  * to the turn's first user message on reload. Folding both into the same
  * rebuilt batch — anchored by `afterGroupIndex` (the count of persistable
- * groups when the steer / note arrived) — keeps them at the exact spot they
- * occurred. The voice card lands where the tool was issued (typically the end
- * of the turn) instead of floating above the whole turn.
+ * groups when the steer / card arrived) — keeps them at the exact spot they
+ * occurred. An end-of-turn card lands where the tool was issued instead of
+ * floating above the whole turn.
  *
  * When `inProgress` is true the rows participate in the next delete/reinsert
  * cycle; the final (agent_result) call passes false so the rows are written
@@ -178,8 +179,7 @@ export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
 export function buildTurnMessages(
   groups: ChatMessageGroup[],
   steered: SteeredMessage[],
-  voiceNotes: RecordedVoiceNote[],
-  bugReportCards: RecordedBugReportCard[],
+  recordedCards: RecordedChatCard[],
   opts: { inProgress: boolean },
 ): PersistedMessage[] {
   const persistable = groups.filter((g) => g.text || g.toolUse.length > 0);
@@ -195,32 +195,19 @@ export function buildTurnMessages(
     ...flag,
   });
 
-  const persistedVoiceNote = (v: RecordedVoiceNote): PersistedMessage => ({
-    role: "assistant",
-    text: "",
-    voiceNote: v.note,
+  const persistedCard = (c: RecordedChatCard): PersistedMessage => ({
+    ...c.message,
     ...flag,
   });
 
-  const persistedBugReport = (b: RecordedBugReportCard): PersistedMessage => ({
-    role: "assistant",
-    text: "",
-    bugReport: b.card,
-    ...flag,
-  });
-
-  // At a given anchor, emit steered user messages first, then voice cards, then
-  // bug-report cards — so a card authored after the user's last steer renders
-  // below it.
+  // At a given anchor, emit steered user messages first, then chat cards — so a
+  // card recorded after the user's last steer renders below it.
   const emitAnchoredAt = (index: number) => {
     for (const s of steered) {
       if (s.afterGroupIndex === index) out.push(persistedSteer(s));
     }
-    for (const v of voiceNotes) {
-      if (v.afterGroupIndex === index) out.push(persistedVoiceNote(v));
-    }
-    for (const b of bugReportCards) {
-      if (b.afterGroupIndex === index) out.push(persistedBugReport(b));
+    for (const c of recordedCards) {
+      if (c.afterGroupIndex === index) out.push(persistedCard(c));
     }
   };
 
@@ -239,15 +226,12 @@ export function buildTurnMessages(
   // Steers / cards anchored at or beyond the final group count land after
   // everything. The `>=` clamp guards against an anchor that outran the
   // persistable groups (e.g. the anchoring group never produced persistable
-  // content). This is the common case for an end-of-turn voice note.
+  // content). This is the common case for an end-of-turn card.
   for (const s of steered) {
     if (s.afterGroupIndex >= persistable.length) out.push(persistedSteer(s));
   }
-  for (const v of voiceNotes) {
-    if (v.afterGroupIndex >= persistable.length) out.push(persistedVoiceNote(v));
-  }
-  for (const b of bugReportCards) {
-    if (b.afterGroupIndex >= persistable.length) out.push(persistedBugReport(b));
+  for (const c of recordedCards) {
+    if (c.afterGroupIndex >= persistable.length) out.push(persistedCard(c));
   }
   return out;
 }
@@ -284,34 +268,18 @@ export function recordSteeredMessage(
 }
 
 /**
- * docs/164 — record a bug-report consent card on the runner, anchored after the
- * assistant groups that have produced persistable content so far. Same anchor
- * mechanism as `recordSteeredMessage` / `recordVoiceNote`: `buildTurnMessages`
- * re-interleaves the card at its true transcript position on every in-progress
- * rebuild, so the card lands where the agent's `report_shipit_bug` tool fired
- * instead of floating above the whole turn on reload.
- */
-export function recordBugReportCard(
-  runner: { chatMessageGroups: ChatMessageGroup[]; bugReportCards: RecordedBugReportCard[] },
-  card: RecordedBugReportCard["card"],
-): void {
-  const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
-  runner.bugReportCards = [...runner.bugReportCards, { afterGroupIndex, card }];
-}
-
-/**
- * Persist the current turn's groups + steered messages as the in-progress set.
- * Shared by the steer handler (so a mid-turn injection is saved immediately)
- * and the tool-result boundary in `wireAgentListeners`.
+ * Persist the current turn's groups + steered messages + recorded cards as the
+ * in-progress set. Shared by the steer handler (so a mid-turn injection is saved
+ * immediately) and the tool-result boundary in `wireAgentListeners`.
  */
 export function persistTurnInProgress(
   chatHistoryManager: { replaceInProgress(sessionId: string, messages: PersistedMessage[]): void },
-  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[]; voiceNotes: RecordedVoiceNote[]; bugReportCards: RecordedBugReportCard[] },
+  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[]; recordedCards: RecordedChatCard[] },
   sessionId: string,
 ): void {
   chatHistoryManager.replaceInProgress(
     sessionId,
-    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.voiceNotes, runner.bugReportCards, { inProgress: true }),
+    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.recordedCards, { inProgress: true }),
   );
 }
 
@@ -1016,8 +984,7 @@ export function wireAgentListeners(
         const inProgressMessages = buildTurnMessages(
           runner?.chatMessageGroups ?? [],
           runner?.steeredMessages ?? [],
-          runner?.voiceNotes ?? [],
-          runner?.bugReportCards ?? [],
+          runner?.recordedCards ?? [],
           { inProgress: true },
         );
         deps.chatHistoryManager.replaceInProgress(usageSessionId, inProgressMessages);
@@ -1169,8 +1136,7 @@ export function wireAgentListeners(
       const finalMessages = buildTurnMessages(
         runner?.chatMessageGroups ?? [],
         runner?.steeredMessages ?? [],
-        runner?.voiceNotes ?? [],
-        runner?.bugReportCards ?? [],
+        runner?.recordedCards ?? [],
         { inProgress: false },
       );
       deps.chatHistoryManager.replaceInProgress(usageSessionId, finalMessages);
@@ -1294,15 +1260,14 @@ export function wireAgentListeners(
       // called clearInProgress() here, which deleted the entire in-progress
       // turn — so a crash mid-turn wiped all of the agent's work from the UI
       // on the next history load.
-      // Pass empty steers (this path historically drops them) but keep
-      // docs/163 voice cards so a note authored before the crash isn't lost on
-      // reload — the card is folded in at its true position, same as a clean
-      // finalize.
+      // Pass empty steers (this path historically drops them) but keep recorded
+      // cards so a voice note / bug-report card recorded before the crash isn't
+      // lost on reload — the card is folded in at its true position, same as a
+      // clean finalize.
       const partialMessages = buildTurnMessages(
         runner?.chatMessageGroups ?? [],
         [],
-        runner?.voiceNotes ?? [],
-        runner?.bugReportCards ?? [],
+        runner?.recordedCards ?? [],
         { inProgress: false },
       );
       deps.chatHistoryManager.replaceInProgress(turnSessionId, partialMessages);

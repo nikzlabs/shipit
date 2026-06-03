@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { SessionRunner } from "../session-runner.js";
 import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
-import type { ChatMessageGroup, RecordedVoiceNote, RecordedBugReportCard } from "../session-runner.js";
+import type { ChatMessageGroup, RecordedChatCard } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentCapabilities, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentProcess } from "../../shared/types.js";
@@ -189,22 +189,33 @@ describe("wireAgentListeners", () => {
     });
   });
 
-  describe("buildTurnMessages voice-note interleaving (docs/163)", () => {
+  describe("buildTurnMessages chat-card interleaving (docs/163, docs/164)", () => {
     const group = (text: string): ChatMessageGroup => ({ text, toolUse: [] });
-    const card = (id: string, afterGroupIndex: number): RecordedVoiceNote => ({
+    const voiceCard = (id: string, afterGroupIndex: number): RecordedChatCard => ({
       afterGroupIndex,
-      note: { id, headline: `note-${id}`, needsAttention: true, kind: "authored", createdAt: "2026-06-01T00:00:00.000Z" },
+      message: {
+        role: "assistant",
+        text: "",
+        voiceNote: { id, headline: `note-${id}`, needsAttention: true, kind: "authored", createdAt: "2026-06-01T00:00:00.000Z" },
+      },
+    });
+    const bugCard = (id: string, afterGroupIndex: number): RecordedChatCard => ({
+      afterGroupIndex,
+      message: {
+        role: "assistant",
+        text: "",
+        bugReport: { cardId: id, phase: "draft", title: `bug-${id}`, body: "redacted body", stage2Ran: false, producer: "session" },
+      },
     });
 
-    it("places an end-of-turn voice card AFTER the assistant content, not above the turn", () => {
+    it("places an end-of-turn card AFTER the assistant content, not above the turn", () => {
       // Anchored at 2 == the two persistable groups produced so far, so the card
       // lands last — exactly where the tool was issued. This is the regression:
       // an out-of-band append kept an early id and floated the card to the top.
       const out = buildTurnMessages(
         [group("doing work"), group("almost done")],
         [],
-        [card("v1", 2)],
-        [],
+        [voiceCard("v1", 2)],
         { inProgress: false },
       );
       expect(out.map((m) => m.text || (m.voiceNote ? `card:${m.voiceNote.id}` : ""))).toEqual([
@@ -221,8 +232,7 @@ describe("wireAgentListeners", () => {
       const out = buildTurnMessages(
         [group("first"), group("second")],
         [],
-        [card("mid", 1)],
-        [],
+        [voiceCard("mid", 1)],
         { inProgress: true },
       );
       expect(out.map((m) => m.text || (m.voiceNote ? `card:${m.voiceNote.id}` : ""))).toEqual([
@@ -234,53 +244,22 @@ describe("wireAgentListeners", () => {
       // deletes and reinserts them together — the card included.
       expect(out.every((m) => m.inProgress)).toBe(true);
     });
-  });
 
-  describe("buildTurnMessages bug-report-card interleaving (docs/164)", () => {
-    const group = (text: string): ChatMessageGroup => ({ text, toolUse: [] });
-    const bugCard = (id: string, afterGroupIndex: number): RecordedBugReportCard => ({
-      afterGroupIndex,
-      card: {
-        cardId: id,
-        phase: "draft",
-        title: `bug-${id}`,
-        body: "redacted body",
-        stage2Ran: false,
-        producer: "session",
-      },
-    });
-
-    it("places an end-of-turn bug card AFTER the assistant content, not above the turn", () => {
+    it("interleaves bug-report and voice cards generically via recordedCards", () => {
       const out = buildTurnMessages(
         [group("looking into it"), group("here is a card")],
         [],
-        [],
-        [bugCard("b1", 2)],
+        [bugCard("b1", 2), voiceCard("v1", 2)],
         { inProgress: false },
       );
-      expect(out.map((m) => m.text || (m.bugReport ? `card:${m.bugReport.cardId}` : ""))).toEqual([
+      expect(out.map((m) => m.text || (m.bugReport ? `bug:${m.bugReport.cardId}` : m.voiceNote ? `voice:${m.voiceNote.id}` : ""))).toEqual([
         "looking into it",
         "here is a card",
-        "card:b1",
+        "bug:b1",
+        "voice:v1",
       ]);
       expect(out[2]).toMatchObject({ role: "assistant", text: "", bugReport: { cardId: "b1", phase: "draft" } });
       expect(out[2].inProgress).toBeUndefined();
-    });
-
-    it("interleaves a mid-turn bug card between the groups it sits between", () => {
-      const out = buildTurnMessages(
-        [group("first"), group("second")],
-        [],
-        [],
-        [bugCard("mid", 1)],
-        { inProgress: true },
-      );
-      expect(out.map((m) => m.text || (m.bugReport ? `card:${m.bugReport.cardId}` : ""))).toEqual([
-        "first",
-        "card:mid",
-        "second",
-      ]);
-      expect(out.every((m) => m.inProgress)).toBe(true);
     });
   });
 });
