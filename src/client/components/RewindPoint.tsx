@@ -1,7 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { ArrowCounterClockwiseIcon, GitForkIcon } from "@phosphor-icons/react";
 import type { RewindAtGapAction, WsRewindPreview } from "../../server/shared/types.js";
-import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import {
   Dialog,
@@ -131,25 +129,27 @@ export function RewindPoint({
   const interactive = !disabled;
   return (
     <div
-      className={`group/rewind relative flex h-6 items-center gap-0 transition-[gap] duration-0 delay-200 ${
-        interactive ? "hover:gap-24 hover:delay-0 data-[menu-open=true]:gap-24 data-[menu-open=true]:delay-0" : ""
-      }`}
+      className="group/rewind relative flex h-2.5 items-center justify-center"
       data-testid="rewind-point"
       data-menu-open={menuOpen}
     >
-      <div className={`h-px flex-1 bg-(--color-border-secondary) opacity-15 transition-opacity duration-200 ${interactive ? "group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" : ""}`} />
-      <div className={`h-px flex-1 bg-(--color-border-secondary) opacity-15 transition-opacity duration-200 ${interactive ? "group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" : ""}`} />
       <DropdownMenu onOpenChange={requestPreviews}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
             disabled={disabled}
-            className={`absolute left-1/2 top-1/2 inline-flex h-6 -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 text-xs font-medium text-(--color-text-secondary) opacity-0 transition-opacity hover:bg-(--color-bg-tertiary) hover:text-(--color-text-primary) focus:opacity-100 focus:outline-none ${interactive ? "group-hover/rewind:opacity-100 group-data-[menu-open=true]/rewind:opacity-100" : "pointer-events-none"}`}
+            className={`flex h-2.5 w-8 items-center justify-center focus:outline-none ${interactive ? "cursor-pointer" : "pointer-events-none"}`}
             title={disabled ? "Wait for the current turn to finish" : currentState ? "Fork current state" : "Rewind options"}
             aria-label={currentState ? "Fork current state" : "Rewind options"}
           >
-            {currentState ? <GitForkIcon size={ICON_SIZE.SM} /> : <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />}
-            {currentState ? "Fork" : "Rewind"}
+            <span
+              aria-hidden="true"
+              className={`h-[3px] w-[18px] rounded-full bg-(--color-border-secondary) transition-[width,opacity] duration-150 ${
+                interactive
+                  ? "opacity-40 group-hover/rewind:w-6 group-hover/rewind:opacity-90 group-focus-within/rewind:opacity-90 group-data-[menu-open=true]/rewind:w-6 group-data-[menu-open=true]/rewind:opacity-90"
+                  : "opacity-20"
+              }`}
+            />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="center" side="top" className="w-64">
