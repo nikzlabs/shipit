@@ -271,9 +271,11 @@ export async function spawnChildSession(
   //
   // skipBranchRename: true because `POST /spawn`'s response body returns
   // `branch` synchronously to the CLI shim — a delayed AI branch rename
-  // would make the printed value stale. AI naming still runs (when the
-  // agent didn't pass `--title`) and updates the title; the branch row
-  // keeps the claim-time `shipit/<random>` value.
+  // would make the printed value stale. A title is always supplied here
+  // (required above), so `graduateSession` takes its `explicitTitle` path
+  // and does NOT fire AI naming (`generateSessionName`) — no extra model
+  // round-trip per spawn. The branch row keeps the claim-time
+  // `shipit/<random>` value.
   graduateSession(graduationDeps, {
     sessionId: newSessionId,
     userText: trimmedPrompt,
