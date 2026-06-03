@@ -1,19 +1,26 @@
+<h1 align="center">
+  <img src="src/client/public/favicon.svg" alt="ShipIt logo" width="36" height="36" valign="bottom">
+  <span>&nbsp;ShipIt</span>
+</h1>
+
+**Describe products into existence — on your own Git, containers, and server.** Chat-driven
+development that still ships the way real software does: branches, reviews, CI, and deploys.
+
+<!-- TODO: hero screenshot or GIF — one frame showing chat + live preview + the inline PR card.
+     Drop it at docs/assets/hero.png (or .gif for the describe → preview → PR loop) and uncomment:
 <p align="center">
-  <img src="src/client/public/favicon.svg" alt="ShipIt logo" width="120" height="120">
+  <img src="docs/assets/hero.png" alt="ShipIt: chat, live preview, and the inline PR card in one screen" width="900">
 </p>
+-->
 
-<h1 align="center">ShipIt</h1>
-
-A browser-based AI editor — describe what you want in chat, the agent writes the code, and you see
-results live. Use the AI subscription you already pay for, or bring an API key. ShipIt has a
-pluggable agent backend:
-
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or
-  an Anthropic API key
-- [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
-- More to come — the backend is agent-agnostic by design, so new runtimes can slot in
-
-A few product choices set ShipIt apart from other AI coding harnesses:
+ShipIt is a browser-based AI dev environment — describe what you want in chat, the agent writes the
+code, and you see results live. It has the chat-driven ease of the prompt-to-app builders, but the
+work runs through a real engineering loop — branches, pull requests, CI, deploys — on _your_ repo,
+_your_ terminal, _your_ infrastructure. Where most AI coding tools stop at writing code, ShipIt is
+built so you can just **ship**: it runs the isolated environments and live previews, drives the Git
+and pull-request plumbing, and pulls CI and deploy results back into the chat — so you describe
+products into existence instead of wiring up the infrastructure to support them. A few choices make
+that possible:
 
 - **Container-isolated sessions** — each session gets its own Docker container, branch, chat
   history, and workspace, so concurrent agents can't step on each other's files, processes, or
@@ -26,17 +33,49 @@ A few product choices set ShipIt apart from other AI coding harnesses:
 - **Tight GitHub integration** — branches, auto-commits, pushes, PR creation, CI checks, deploy
   status, review comments, and merge state are rendered inline instead of punting you to GitHub.
 - **Mobile-first, with first-class voice** — ShipIt is genuinely good from a phone, not a desktop
-  tool that merely survives a small screen: a focused tab-based view on mobile, resizable split
-  panels on desktop, and a thin Android WebView wrapper for native-feeling access. Voice runs both
-  ways — dictate prompts hands-free and hear spoken summaries when the agent finishes a turn or needs
-  you, so you can kick off, review, and ship on the go.
-- **Smooth browser IDE UX** — chat, file tree, Monaco editor, terminal, preview, diffs, session
-  history, and PR lifecycle all live in one interface.
+  tool that merely survives a small screen: a focused tab-based view on mobile and resizable split
+  panels on desktop. Voice runs both ways — dictate prompts hands-free and hear spoken summaries
+  when the agent finishes a turn or needs you, so you can kick off, review, and ship on the go.
+- **One surface — you never leave it** — chat, file tree, terminal, live preview, diffs, CI logs,
+  deploy status, session history, and the full PR lifecycle all render inline. Reviewing, shipping,
+  and debugging happen here, not in a GitHub tab, a CI dashboard, or a local terminal.
 
-Around that core, ShipIt is the surface: you build, review, ship, and debug inside one chat-shaped
-IDE. The agent runs the commands, edits the files, reads the logs, opens PRs, watches checks, and
-fixes failures — and you stay in the conversation, never bounced out to a GitHub tab, a CI
-dashboard, or a local terminal to do your job.
+That adds up to one promise: **everything you need to ship lives inside ShipIt.** You stay in the
+conversation — describing intent, watching the result render live in the preview, and refining it
+with the agent turn by turn — while it runs the commands, edits the files, reads the logs, opens
+PRs, watches checks, and fixes failures. The build, review, ship, and debug loop never leaves the
+chat.
+
+## Why not just use the Claude or Codex app?
+
+You probably already have Claude Code or Codex. ShipIt runs them as its backend — and wraps them in
+everything the bare CLIs and their desktop/web apps leave out:
+
+- **Many agents, fully isolated.** The CLIs run a single agent in your working tree. ShipIt gives
+  every session its own container, branch, and chat history, so you fan work out in parallel without
+  agents stepping on each other's files, processes, or installed dependencies.
+- **It's not your laptop's problem.** The desktop and web apps tie the work to the machine in front
+  of you. ShipIt is self-hosted on a VPS — start a change, close the lid, and previews, CI, and
+  follow-up work keep running.
+- **Real previews, not a throwaway sandbox.** ShipIt boots your actual Compose stack — dev server,
+  database, queues — and renders the live app inline with HMR, instead of an environment you can't
+  shape.
+- **GitHub comes to you.** PRs, CI checks, review threads, diffs, and deploy status all render in
+  the chat. The web apps send you off to a GitHub tab; ShipIt keeps the whole loop in one place.
+- **Built for the phone.** Dictate a prompt, hear a spoken summary when the turn lands, review and
+  merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile.
+- **Your tools stay familiar.** Git, a real terminal, file browsing, inline diffs — exposed, not
+  hidden. You keep the control an engineer expects while the boring orchestration is automated away.
+
+## Agents
+
+Use the AI subscription you already pay for, or bring an API key. ShipIt has a pluggable agent
+harness:
+
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or
+  an Anthropic API key
+- [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
+- More to come — the backend is agent-agnostic by design, so new runtimes can slot in
 
 ## Installation
 
@@ -111,7 +150,8 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
 - **File upload & image input** — drop files into the chat; the agent reads them as context
 - **Interactive terminal** — full PTY (xterm.js) inside the session container for ad-hoc debugging
-- **Monaco code editor** — read and edit files with syntax highlighting and diff view
+- **File viewer with diffs** — browse files with syntax highlighting and review changes as inline
+  diffs
 - **MCP integration** — connect Model Context Protocol servers to extend the agent's tools
 
 ### Review & ship
