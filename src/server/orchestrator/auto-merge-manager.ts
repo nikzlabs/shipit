@@ -109,6 +109,18 @@ export class AutoMergeManager {
     // and this executor must finish the merge. `pending`/`failure` stay excluded.
     if (summary.checks.state !== "success" && summary.checks.state !== "none") return;
 
+    // Wait for required review approval. `review_required`/`changes_requested`
+    // mean the base branch's protection rule isn't satisfied — GitHub's REST
+    // merge would reject every tick, so bail and re-evaluate next poll once an
+    // approval lands. Unlike the conflict case we set no sticky error: awaiting
+    // approval is a normal transient wait, not a misconfiguration. docs/174.
+    if (
+      summary.reviewDecision === "review_required" ||
+      summary.reviewDecision === "changes_requested"
+    ) {
+      return;
+    }
+
     if (summary.mergeable === "conflicting") {
       mergeState.error = {
         code: "no_branch_protection",

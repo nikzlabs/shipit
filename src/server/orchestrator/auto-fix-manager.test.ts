@@ -42,6 +42,7 @@ function makeSummary(state: PrStatusSummary["checks"]["state"]): PrStatusSummary
     deletions: 0,
     checks: { state, total: 1, passed: 0, failed: state === "failure" ? 1 : 0, pending: 0 },
     mergeable: "mergeable",
+    reviewDecision: "none",
     autoMergeEnabled: false,
   };
 }
