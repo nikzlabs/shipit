@@ -222,12 +222,26 @@ export interface ChatMessage {
   };
   /**
    * docs/164 — when set, this message renders a `BugReportCard` inline in the
-   * chat. Populated from `bug_report_card` WS events. Carries only the stable
-   * `cardId`; the editable payload + lifecycle state live in the bug-report
-   * store so a filed/failed update can swap the card in place.
+   * chat. The live `bug_report_card` WS handler appends a `{ cardId }`-only
+   * marker; a message rehydrated from persisted chat history additionally
+   * carries the full payload + lifecycle so `loadSessionHistory` can seed the
+   * bug-report store (the card's editable payload + phase live in that store so
+   * a filed/failed update can swap the card in place). `BugReportCard` itself
+   * only reads `cardId` and pulls the rest from the store.
    */
   bugReport?: {
     cardId: string;
+    phase?: "draft" | "filing" | "filed" | "failed";
+    title?: string;
+    body?: string;
+    stage2Ran?: boolean;
+    producer?: "session" | "ops";
+    filedAs?: string;
+    createdAt?: string;
+    issueNumber?: number;
+    issueUrl?: string;
+    errorMessage?: string;
+    scopeError?: boolean;
   };
 }
 

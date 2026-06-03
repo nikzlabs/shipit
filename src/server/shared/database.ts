@@ -412,6 +412,13 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN voice_note TEXT");
   },
+  // docs/164 — persist bug-report consent cards (and their filed/failed terminal
+  // state) so they survive a session switch / full reload. Without this the
+  // inline card renders live but vanishes on the next loadSessionHistory, which
+  // rebuilds the transcript from the DB.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN bug_report TEXT");
+  },
 ];
 
 export class DatabaseManager {
