@@ -1178,17 +1178,54 @@ export class PrStatusPoller {
     const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
 
     if (prState === "open") {
-      // Stuck-merged recovery: a previous (likely rate-limit-induced) false
-      // promotion left lastKnown pinned to merged/closed. Clear it so the
-      // UI drops the card; the next successful GraphQL poll will repopulate.
       const prev = this.lastKnown.get(sessionId);
-      if (prev && (prev.prState === "merged" || prev.prState === "closed")) {
-        this.lastKnown.delete(sessionId);
-        this.mergedSessions.delete(sessionId);
-        this.lastPrNodes.delete(sessionId);
-        this.sessionManager.setPrStatus(sessionId, null);
-        this.sseBroadcast("pr_status", { updates: [], removals: [sessionId] });
-      }
+      // A GraphQL-derived open snapshot is strictly richer than anything REST
+      // gives us here (real check rollup, mergeable, conversation, files), so
+      // never clobber it — the next GraphQL poll keeps it fresh.
+      if (prev?.prState === "open") return;
+
+      // Either a brand-new PR that the bulk GraphQL view hasn't indexed yet
+      // (GitHub's eventual consistency right after `gh pr create` — the forced
+      // refresh that PR creation kicks off lands here BEFORE the PR shows up in
+      // the bulk query), or recovery from a past false merged/closed promotion.
+      // Surface the open PR immediately from the REST result so the card
+      // appears within ~1s instead of waiting up to a full slow poll (120s) for
+      // GraphQL to catch up. The next GraphQL poll enriches checks / mergeable /
+      // files / conversation and replaces this placeholder summary.
+      this.mergedSessions.delete(sessionId);
+      this.lastPrNodes.delete(sessionId);
+
+      // Suppress a premature "mergeable" reading (and the merge button) while CI
+      // is expected to register, mirroring the GraphQL path's grace override. We
+      // don't have the head SHA from REST, so grace falls back to its time-based
+      // window; the next GraphQL poll supplies the real SHA and reconciles.
+      const checksState: PrStatusSummary["checks"]["state"] = this.graceTracker.shouldForcePending({
+        sessionId,
+        repoKey: `${owner}/${repo}`,
+        repoUrl: this.sessionManager.get(sessionId)?.remoteUrl,
+        headSha: "",
+      })
+        ? "pending"
+        : "none";
+
+      const summary: PrStatusSummary = {
+        sessionId,
+        prNumber: pr.number,
+        prUrl: pr.url,
+        prTitle: pr.title,
+        prBody: pr.body,
+        prState: "open",
+        baseBranch: pr.base,
+        headBranch: branch,
+        insertions: pr.additions,
+        deletions: pr.deletions,
+        checks: { state: checksState, total: 0, passed: 0, failed: 0, pending: 0 },
+        mergeable: "unknown",
+        autoMergeEnabled: false,
+      };
+      this.lastKnown.set(sessionId, summary);
+      this.sessionManager.setPrStatus(sessionId, summary);
+      this.sseBroadcast("pr_status", { updates: [this.attachAutomationState(summary)] });
       return;
     }
 

@@ -63,6 +63,29 @@ export async function emitPrLifecycleAfterCommit(args: {
 
     const git = deps.createGitManager(sessionDir);
 
+    // Recovery: the poller has no PR for this session, but one may already
+    // exist on GitHub — the agent ran `gh pr create` and the route's track /
+    // force-refresh didn't stick (HTTP blip, orchestrator restart mid-create,
+    // remoteUrl not yet persisted at startup), or the PR was opened
+    // out-of-band. Track the session and force a single refresh so the poller
+    // discovers the PR by branch name and broadcasts it. Bounded to branches
+    // that have actually been pushed (checked via the local remote-tracking
+    // ref — no network) so un-pushed / no-PR sessions add zero GitHub calls.
+    // If a PR surfaces, return: the poller now drives the card over SSE.
+    if (deps.githubAuthManager.authenticated) {
+      try {
+        const branch = session.branch || await git.getCurrentBranch();
+        const remoteBranches = await git.listRemoteBranches();
+        if (branch && remoteBranches.includes(branch)) {
+          deps.prStatusPoller.trackSession(sessionId, session.remoteUrl);
+          await deps.prStatusPoller.forceRefreshSession(sessionId);
+          if (deps.prStatusPoller.getStatus(sessionId)) return;
+        }
+      } catch {
+        // Best-effort recovery — fall through to the normal ready/create flow.
+      }
+    }
+
     const shouldAutoCreate = deps.credentialStore.getAutoCreatePr()
       && deps.githubAuthManager.authenticated;
 
