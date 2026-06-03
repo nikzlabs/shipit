@@ -52,6 +52,7 @@ import { ServiceRequestQueue } from "./service-request-queue.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
 import { PresentBuffer, PresentBufferError } from "./present-buffer.js";
+import { registerPresentFilesRoutes } from "./present-view.js";
 import {
   computeStoreKey,
   fastInstallDisabled,
@@ -873,8 +874,21 @@ export class SessionWorker extends EventEmitter {
         });
       }
 
-      return { presentId, status: "presented" };
+      // The agent's in-container browser can navigate to this worker-local URL
+      // to screenshot the rendered artifact and iterate (docs/170). Handing
+      // back the concrete URL means the agent never has to guess the worker
+      // port — it just navigates and screenshots.
+      const viewUrl = `http://127.0.0.1:${this.port}/present-files/${presentId}`;
+      return { presentId, status: "presented", viewUrl };
     });
+
+    // docs/170 — serve buffered artifacts at a worker-local URL so the agent's
+    // own Playwright browser can render and screenshot them. Worker-local by
+    // design: only the in-container agent browser (which already reaches
+    // 127.0.0.1:${WORKER_PORT}) consumes this; it does NOT route through the
+    // orchestrator preview proxy, keeping ephemeral artifacts off any publicly
+    // routable URL. Registration lives in present-view.ts so it stays unit-testable.
+    registerPresentFilesRoutes(app, this.presentBuffer);
 
     app.post<{
       Body: { presentId?: string; destPath?: string };

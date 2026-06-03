@@ -559,5 +559,10 @@ return.
 - `src/client/AppLayout.tsx` — add Present tab to right panel, conditional visibility
 
 ### Tier 2 (future)
-- `src/server/session/session-worker.ts` — `GET /present-files/*` static serving
+- `src/server/session/session-worker.ts` — `GET /present-files/*` static serving.
+  **Partially realized by docs/170** (`docs/170-present-artifact-screenshot-loop/`,
+  SHI-68): the single-entry serving path now exists so the agent can navigate
+  its own browser to a worker-local `viewUrl` and screenshot the rendered
+  artifact. Multi-file (`files`/`entry`) and orchestrator preview-proxy routing
+  for the *user's* browser remain future work.
 - `src/server/orchestrator/preview-proxy.ts` — proxy route for scratch-dir files
