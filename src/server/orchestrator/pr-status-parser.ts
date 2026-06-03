@@ -9,6 +9,7 @@
 
 import type {
   PrStatusSummary,
+  PrReviewDecision,
   PrIssueComment,
   PrReviewThread,
   PrReviewThreadComment,
@@ -33,6 +34,7 @@ const PR_LIGHT_FIELDS = `
         url
         state
         mergeable
+        reviewDecision
         autoMergeRequest { mergeMethod }
         headRefName
         baseRefName
@@ -199,6 +201,7 @@ export interface GraphQLPrNode {
   url: string;
   state: string;
   mergeable: string; // MERGEABLE, CONFLICTING, UNKNOWN
+  reviewDecision: string | null; // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or null
   autoMergeRequest: { mergeMethod: string } | null;
   headRefName: string;
   baseRefName: string;
@@ -289,6 +292,20 @@ export function extractFocusedPrNodes(result: unknown): Map<number, GraphQLPrNod
     out.set(candidate.number, value as GraphQLPrNode);
   }
   return out;
+}
+
+/**
+ * Map GitHub GraphQL `reviewDecision` to our typed state. GitHub returns `null`
+ * when the base branch requires no review — collapse that to `"none"` so the
+ * merge gate can treat it as non-blocking. docs/174.
+ */
+export function mapReviewDecision(decision: string | null | undefined): PrReviewDecision {
+  switch (decision) {
+    case "APPROVED": return "approved";
+    case "CHANGES_REQUESTED": return "changes_requested";
+    case "REVIEW_REQUIRED": return "review_required";
+    default: return "none";
+  }
 }
 
 /** Map GitHub GraphQL deployment state string to our typed state. */
@@ -427,6 +444,7 @@ export function parsePrNode(
       node.mergeable === "MERGEABLE" ? "mergeable" :
       node.mergeable === "CONFLICTING" ? "conflicting" :
       "unknown",
+    reviewDecision: mapReviewDecision(node.reviewDecision),
     autoMergeEnabled: node.autoMergeRequest !== null,
     deployments,
     ...parseConversation(node),
@@ -532,6 +550,7 @@ export function prStatusEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
     a.checks.failed === b.checks.failed &&
     a.checks.pending === b.checks.pending &&
     a.mergeable === b.mergeable &&
+    a.reviewDecision === b.reviewDecision &&
     a.autoMergeEnabled === b.autoMergeEnabled &&
     a.insertions === b.insertions &&
     a.deletions === b.deletions &&

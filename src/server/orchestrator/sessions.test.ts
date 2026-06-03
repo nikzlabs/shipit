@@ -227,6 +227,7 @@ describe("SessionManager", () => {
         deletions: 2,
         checks: { state: "success" as const, total: 1, passed: 1, failed: 0, pending: 0 },
         mergeable: "mergeable" as const,
+        reviewDecision: "none" as const,
         autoMergeEnabled: false,
       };
     }

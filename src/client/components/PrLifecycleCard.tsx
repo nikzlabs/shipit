@@ -42,8 +42,10 @@ import {
   GlobeIcon,
   MagnifyingGlassIcon,
   PaperPlaneTiltIcon,
+  SealCheckIcon,
+  EyeIcon,
 } from "@phosphor-icons/react";
-import type { GitHubDeploymentStatus } from "../../server/shared/types.js";
+import type { GitHubDeploymentStatus, PrReviewDecision } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
 
 // ---- Shared ----
@@ -217,6 +219,37 @@ function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   return (
     <span className="h-6 text-(--color-warning) text-xs flex items-center gap-1 shrink-0 animate-pulse" title={pendingTitle}>
       <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" /> {pendingLabel}
+    </span>
+  );
+}
+
+/**
+ * docs/174 — GitHub review/approval status. Renders nothing for "none" (the
+ * base branch requires no review — the common solo-repo case), so the card
+ * looks identical to before for unprotected repos. The other three states
+ * explain the merge button's presence/absence inline, without a GitHub tab.
+ */
+function ReviewIndicator({ reviewDecision }: { reviewDecision: PrReviewDecision | undefined }) {
+  if (!reviewDecision || reviewDecision === "none") return null;
+
+  if (reviewDecision === "approved") {
+    return (
+      <span className="h-6 text-(--color-success) text-xs flex items-center gap-1 shrink-0" title="PR approved">
+        <SealCheckIcon size={ICON_SIZE.SM} /> Approved
+      </span>
+    );
+  }
+  if (reviewDecision === "changes_requested") {
+    return (
+      <span className="h-6 text-(--color-error) text-xs flex items-center gap-1 shrink-0" title="A reviewer requested changes">
+        <XCircleIcon size={ICON_SIZE.SM} /> Changes requested
+      </span>
+    );
+  }
+  // review_required
+  return (
+    <span className="h-6 text-(--color-warning) text-xs flex items-center gap-1 shrink-0" title="This branch requires a review before merging">
+      <EyeIcon size={ICON_SIZE.SM} /> Review required
     </span>
   );
 }
@@ -411,6 +444,7 @@ function OpenPhase({
   const pr = card.pr;
   const deployments = usePrStore((s) => s.statusBySession[sessionId]?.deployments);
   const mergeable = usePrStore((s) => s.statusBySession[sessionId]?.mergeable);
+  const reviewDecision = usePrStore((s) => s.statusBySession[sessionId]?.reviewDecision);
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const pendingReviewCount = useCommentStore((s) => s.getCommentCount(sessionId));
   const autoFixCi = useSettingsStore((s) => s.autoFixCi);
@@ -434,12 +468,18 @@ function OpenPhase({
   // legitimately becomes "none" and the merge button appears.
   const isCiNone = card.checks?.state === "none";
   const isConflicting = mergeable === "conflicting";
+  // docs/174 — also gate on GitHub's review decision. A base branch with a
+  // required-review protection rule reports "review_required" until approved
+  // and "changes_requested" when a reviewer blocks; both mean GitHub would
+  // reject the merge, so hide the button. "approved"/"none" allow it ("none" =
+  // no review requirement, the common solo-repo case).
+  const isReviewBlocked = reviewDecision === "review_required" || reviewDecision === "changes_requested";
   // Merge button visibility: gate on CI state AND on GitHub-reported
   // mergeability. Don't gate on `mergeable === "unknown"` — that's the brief
   // window after each push while GitHub computes mergeability, and gating
   // would flicker the button off-on every push. The cost of a stale click
   // during that window is bounded (the merge attempt fails with a toast).
-  const canMerge = (isCiPassed || isCiNone) && !isConflicting;
+  const canMerge = (isCiPassed || isCiNone) && !isConflicting && !isReviewBlocked;
   // docs/169 — auto-fix is now a global setting, not a per-card toggle. Show the
   // manual "Fix CI" button when CI failed and the auto-loop isn't actively
   // handling it (global auto-fix off, or its budget exhausted).
@@ -481,6 +521,7 @@ function OpenPhase({
               <PendingReviewButton sessionId={sessionId} count={pendingReviewCount} />
             )}
             <CiIndicator checks={card.checks} />
+            <ReviewIndicator reviewDecision={reviewDecision} />
             {canAutoMerge && (
               <span className="md:hidden shrink-0">
                 <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />

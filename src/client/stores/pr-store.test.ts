@@ -37,6 +37,7 @@ function makePrStatus(overrides: Partial<PrStatusSummary> = {}): PrStatusSummary
     files: [{ path: "src/index.ts", status: "M", insertions: 10, deletions: 5 }],
     checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
     mergeable: "mergeable",
+    reviewDecision: "none",
     autoMergeEnabled: false,
     ...overrides,
   };

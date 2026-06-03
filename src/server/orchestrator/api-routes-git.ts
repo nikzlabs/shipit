@@ -372,6 +372,7 @@ export async function registerGitRoutes(
           deletions: 0,
           checks: { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 },
           mergeable,
+          reviewDecision: "none" as const,
           autoMergeEnabled: false,
         };
         manager.handleTransition(sessionId, pollSummary, baseBranch, headSha).catch((err: unknown) => {

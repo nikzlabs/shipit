@@ -132,6 +132,7 @@ function makeConflictingSummary(sessionId: string): PrStatusSummary {
     deletions: 0,
     checks: { state: "success", total: 0, passed: 0, failed: 0, pending: 0 },
     mergeable: "conflicting",
+    reviewDecision: "none",
     autoMergeEnabled: false,
   };
 }

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 
 import { AutoMergeManager } from "./auto-merge-manager.js";
 import type { GitHubAuthManager } from "./github-auth.js";
-import type { PrMergeableState, PrStatusSummary } from "../shared/types/github-types.js";
+import type { PrMergeableState, PrReviewDecision, PrStatusSummary } from "../shared/types/github-types.js";
 
 /**
  * Unit tests for the ShipIt-managed auto-merge executor. The regression these
@@ -19,6 +19,7 @@ type ChecksState = PrStatusSummary["checks"]["state"];
 function makeSummary(
   checksState: ChecksState,
   mergeable: PrMergeableState,
+  reviewDecision: PrReviewDecision = "none",
 ): PrStatusSummary {
   return {
     prNumber: 42,
@@ -32,6 +33,7 @@ function makeSummary(
     deletions: 0,
     checks: { state: checksState, total: 0, passed: 0, failed: 0, pending: 0 },
     mergeable,
+    reviewDecision,
     autoMergeEnabled: false,
   } as PrStatusSummary;
 }
@@ -100,6 +102,36 @@ describe("AutoMergeManager.handleManaged", () => {
     manager.setManaged("s1", true);
 
     await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+
+    expect(mergePullRequest).toHaveBeenCalledTimes(1);
+    expect(manager.get("s1")?.enabled).toBe(false);
+  });
+
+  // docs/174 — review gate. A protected base branch reports review_required /
+  // changes_requested until satisfied; merging would be rejected every tick, so
+  // bail without a sticky error (awaiting approval is a normal transient wait).
+  it.each(["review_required", "changes_requested"] as const)(
+    "does NOT merge when reviewDecision is %s, even with CI green",
+    async (reviewDecision) => {
+      const { manager, mergePullRequest } = makeManager();
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", makeSummary("success", "mergeable", reviewDecision), "o", "r");
+
+      expect(mergePullRequest).not.toHaveBeenCalled();
+      // No sticky error — re-evaluated next poll once an approval lands.
+      expect(manager.get("s1")?.error).toBeUndefined();
+      expect(manager.get("s1")?.enabled).toBe(true);
+    },
+  );
+
+  it("merges when reviewDecision is 'approved' and CI passes", async () => {
+    const { manager, mergePullRequest } = makeManager();
+    manager.setEnabled("s1", true);
+    manager.setManaged("s1", true);
+
+    await manager.handleManaged("s1", makeSummary("success", "mergeable", "approved"), "o", "r");
 
     expect(mergePullRequest).toHaveBeenCalledTimes(1);
     expect(manager.get("s1")?.enabled).toBe(false);
