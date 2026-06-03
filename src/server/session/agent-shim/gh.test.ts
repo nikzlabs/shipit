@@ -105,6 +105,20 @@ describe("parseFlags", () => {
     const out = parseFlags(["--mystery", "value"], { values: {} });
     expect(out.unsupported).toContain("--mystery");
   });
+
+  it("collects repeated array flags in order", () => {
+    const out = parseFlags(["--label", "a", "--label", "b"], {
+      arrays: { "--label": "label" },
+    });
+    expect(out.arrays.label).toEqual(["a", "b"]);
+  });
+
+  it("supports --label=value form for array flags", () => {
+    const out = parseFlags(["--label=feature", "-l", "bug"], {
+      arrays: { "--label": "label", "-l": "label" },
+    });
+    expect(out.arrays.label).toEqual(["feature", "bug"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -265,6 +279,69 @@ describe("gh pr create", () => {
     expect(out.calls[0].body).toMatchObject({ body });
   });
 
+  it("forwards a single --label as a labels array", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "--label", "feature"],
+      { "POST /agent-ops/pr/create": { status: 200, body: { url: "u" } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ labels: ["feature"] });
+  });
+
+  it("forwards repeated --label/-l flags as a labels array", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "--label", "feature", "-l", "enhancement"],
+      { "POST /agent-ops/pr/create": { status: 200, body: { url: "u" } } },
+    );
+    expect(out.calls[0].body).toMatchObject({ labels: ["feature", "enhancement"] });
+  });
+
+  it("splits comma-separated --label values and de-dupes", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "--label", "feature,bug", "--label", "bug"],
+      { "POST /agent-ops/pr/create": { status: 200, body: { url: "u" } } },
+    );
+    expect(out.calls[0].body).toMatchObject({ labels: ["feature", "bug"] });
+  });
+
+  it("omits labels from the payload when none are given", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T"],
+      { "POST /agent-ops/pr/create": { status: 200, body: { url: "u" } } },
+    );
+    expect(out.calls[0].body).not.toHaveProperty("labels");
+  });
+
+  it("prints a best-effort label warning on stderr but still exits 0 with the URL", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "--label", "nope"],
+      {
+        "POST /agent-ops/pr/create": {
+          status: 200,
+          body: {
+            url: "https://github.com/x/y/pull/1",
+            labelWarning: "Warning: could not apply label(s) nope: not found. The PR was still created/updated.",
+          },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout.trim()).toBe("https://github.com/x/y/pull/1");
+    expect(out.stderr).toContain("could not apply label(s) nope");
+  });
+
+  it("still rejects a genuinely unsupported flag", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "create", "-t", "T", "--assignee", "octocat"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Unsupported flag for gh pr create");
+  });
+
   it("rejects using both --body and --body-file", async () => {
     const { run } = makeRunner();
     const out = await run(["pr", "create", "-t", "T", "-b", "Body", "--body-file", "body.md"]);
@@ -351,6 +428,23 @@ describe("gh pr edit", () => {
     );
     expect(out.exitCode).toBe(0);
     expect(out.calls.find((c) => c.method === "PATCH")?.path).toBe("/agent-ops/pr/7");
+  });
+
+  it("forwards --label without requiring a title or body", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "edit", "5", "--label", "documentation"],
+      { "PATCH /agent-ops/pr/5": { status: 200, body: { url: "u", number: 5 } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ labels: ["documentation"] });
+  });
+
+  it("still errors when neither title, body, nor label is given", async () => {
+    const { run } = makeRunner();
+    const out = await run(["pr", "edit", "5"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("provide a title");
   });
 });
 

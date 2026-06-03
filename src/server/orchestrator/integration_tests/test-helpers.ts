@@ -391,6 +391,24 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._prData;
   }
 
+  /** Calls to `addLabelsToPullRequest`, in order. Inspect from tests. */
+  public addLabelsCalls: { owner: string; repo: string; pullNumber: number; labels: string[] }[] = [];
+  private _addLabelsResult: { success: boolean; message?: string } | null = null;
+  /**
+   * Override what `addLabelsToPullRequest` returns — e.g. simulate a label name
+   * that doesn't exist on the repo (best-effort labeling must still leave the
+   * PR created).
+   */
+  setAddLabelsResult(result: { success: boolean; message?: string } | null) {
+    this._addLabelsResult = result;
+  }
+  async addLabelsToPullRequest(owner: string, repo: string, pullNumber: number, labels: string[]) {
+    this.addLabelsCalls.push({ owner, repo, pullNumber, labels });
+    if (this._addLabelsResult) return this._addLabelsResult;
+    if (!this._authenticated) return { success: false, message: "Not authenticated with GitHub" };
+    return { success: true };
+  }
+
   /** Records the last issue comment posted (docs/133 Phase 4). */
   lastIssueComment: { pullNumber: number; body: string } | null = null;
   async addPullRequestComment(_owner: string, _repo: string, pullNumber: number, body: string) {

@@ -78,6 +78,34 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toMatchObject({ title: "T", body: "B" });
   });
 
+  it("POST /agent-ops/pr/create forwards labels through to the orchestrator", async () => {
+    client.setResponse("POST", "/pr/agent-create", {
+      ok: true, status: 200,
+      body: { number: 1, url: "https://github.com/x/y/pull/1", labelWarning: "" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/pr/create",
+      payload: { title: "T", body: "B", labels: ["feature", "enhancement"] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/pr/agent-create");
+    expect(client.calls[0].body).toMatchObject({ title: "T", labels: ["feature", "enhancement"] });
+  });
+
+  it("PATCH /agent-ops/pr/:number forwards labels", async () => {
+    client.setResponse("PATCH", "/pr/8", { ok: true, status: 200, body: { url: "u", number: 8 } });
+    await app.inject({
+      method: "PATCH",
+      url: "/agent-ops/pr/8",
+      payload: { labels: ["bug"] },
+    });
+    expect(client.calls[0].path).toBe("/pr/8");
+    expect(client.calls[0].body).toEqual({ labels: ["bug"] });
+  });
+
   it("PATCH /agent-ops/pr/:number forwards body and number", async () => {
     client.setResponse("PATCH", "/pr/42", { ok: true, status: 200, body: { url: "u", number: 42 } });
 
