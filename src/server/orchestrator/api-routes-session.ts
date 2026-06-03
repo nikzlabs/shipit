@@ -535,6 +535,17 @@ export async function registerSessionRoutes(
           if (!(effectivePrompt ?? "").trim()) {
             throw new ServiceError(400, "A diagnosis prompt is required to spawn a ShipIt fix session.");
           }
+          // The diagnosis is rewritten into a verbose incident packet below, so
+          // it can't double as the session name (every fix session would read
+          // `# Ops remediation — ShipIt fix session`). Require the Ops agent to
+          // name the session explicitly so the sidebar identifies the fix.
+          if (!(body.title ?? "").trim()) {
+            throw new ServiceError(
+              400,
+              "A session title is required when spawning a ShipIt fix session (pass --title). " +
+                "Give it a short, human-readable name describing the fix.",
+            );
+          }
           const target = await resolveShipitFixTarget(body.approximateSource === true);
           const parsed = parseGitHubRemote(target.repoUrl);
           if (!parsed) {

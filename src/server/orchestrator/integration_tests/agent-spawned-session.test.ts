@@ -251,6 +251,22 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(res.json().error).toContain("50,000");
   });
 
+  it("POST /spawn requires a title and rejects a spawn without one (400)", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Port API to TS" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/title is required/i);
+
+    // No child was created.
+    const children = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/children` });
+    expect((children.json().children as unknown[]).length).toBe(0);
+  });
+
   it("POST /spawn returns 404 for a nonexistent parent", async () => {
     const res = await app.inject({
       method: "POST",
@@ -274,7 +290,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       const ok = await app.inject({
         method: "POST",
         url: `/api/sessions/${parentId}/spawn`,
-        payload: { prompt: `child-${i}`, spawnedByTurn: "turn-1" },
+        payload: { prompt: `child-${i}`, title: `Child ${i}`, spawnedByTurn: "turn-1" },
       });
       expect(ok.statusCode).toBe(200);
     }
@@ -297,13 +313,13 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const r1 = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "first" },
+      payload: { prompt: "first", title: "First child" },
     });
     expect(r1.statusCode).toBe(200);
     const r2 = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "second" },
+      payload: { prompt: "second", title: "Second child" },
     });
     expect(r2.statusCode).toBe(200);
 
@@ -328,7 +344,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const spawn = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentAId}/spawn`,
-      payload: { prompt: "child" },
+      payload: { prompt: "child", title: "Child under A" },
     });
     const childId = (spawn.json() as { sessionId: string }).sessionId;
 
@@ -408,7 +424,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
         const ok = await app.inject({
           method: "POST",
           url: `/api/sessions/${parentId}/spawn`,
-          payload: { prompt: `child-${i}`, spawnedByTurn: "turn-1" },
+          payload: { prompt: `child-${i}`, title: `Child ${i}`, spawnedByTurn: "turn-1" },
         });
         expect(ok.statusCode).toBe(200);
       }
@@ -479,7 +495,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const ok1 = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "ok-1", spawnedByTurn: "turn-1" },
+      payload: { prompt: "ok-1", title: "OK one", spawnedByTurn: "turn-1" },
     });
     expect(ok1.statusCode).toBe(200);
 
@@ -521,6 +537,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       url: `/api/sessions/${parentId}/spawn`,
       payload: {
         prompt: opts.prompt ?? "child task",
+        title: "Child task",
       },
     });
     expect(res.statusCode).toBe(200);
@@ -775,7 +792,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x" },
+      payload: { prompt: "x", title: "Inherit model" },
     });
     expect(res.statusCode).toBe(200);
 
@@ -892,7 +909,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const spawnRes = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "do the thing" },
+      payload: { prompt: "do the thing", title: "Do the thing" },
     });
     expect(spawnRes.statusCode).toBe(200);
     const { sessionId: childId } = spawnRes.json() as { sessionId: string };
@@ -944,7 +961,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const spawnRes = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", base: baseSha },
+      payload: { prompt: "x", title: "Base reset", base: baseSha },
     });
     expect(spawnRes.statusCode).toBe(200);
     const { sessionId: childId } = spawnRes.json() as { sessionId: string };

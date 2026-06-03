@@ -263,7 +263,7 @@ describe("shipit session create", () => {
     const prompt = "Refactor `parseFlags` and call $(whoami) out — literally.\n";
     const pf = await promptFile(prompt);
     const out = await run(
-      ["session", "create", "--prompt-file", pf],
+      ["session", "create", "--prompt-file", pf, "--title", "Refactor parseFlags"],
       { "POST /agent-ops/session/create": { status: 200, body: { sessionId: "s", branch: "b", status: "running" } } },
     );
     expect(out.exitCode).toBe(0);
@@ -344,6 +344,7 @@ describe("shipit session create", () => {
       [
         "session", "create",
         "--prompt-file", pf,
+        "--title", "Forwarded flags",
         "--agent", "codex",
         "--model", "claude-sonnet-4-20250514",
         "--base", "origin/main",
@@ -364,7 +365,7 @@ describe("shipit session create", () => {
     const { run } = makeRunner();
     const pf = await promptFile("x");
     const out = await run(
-      ["session", "create", "--prompt-file", pf, "--json"],
+      ["session", "create", "--prompt-file", pf, "--title", "JSON output", "--json"],
       {
         "POST /agent-ops/session/create": {
           status: 200,
@@ -381,7 +382,7 @@ describe("shipit session create", () => {
     const { run } = makeRunner();
     const pf = await promptFile("x");
     const out = await run(
-      ["session", "create", "--prompt-file", pf],
+      ["session", "create", "--prompt-file", pf, "--title", "Quota probe"],
       {
         "POST /agent-ops/session/create": {
           status: 429,
@@ -398,13 +399,23 @@ describe("shipit session create", () => {
     const { run } = makeRunner();
     const pf = await promptFile("x");
     const out = await run(
-      ["session", "create", "--prompt-file", pf],
+      ["session", "create", "--prompt-file", pf, "--title", "Error passthrough"],
       {
         "POST /agent-ops/session/create": { status: 400, body: { error: "Invalid branch name" } },
       },
     );
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("Invalid branch name");
+  });
+
+  it("requires --title and fails before any broker call", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("Port the API to TypeScript");
+    const out = await run(["session", "create", "--prompt-file", pf]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("requires --title");
+    // The requirement is enforced before the broker is hit.
+    expect(out.calls).toHaveLength(0);
   });
 });
 
@@ -996,7 +1007,7 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     const { run } = makeRunner();
     const pf = await promptFile("Fix the lifecycle loop");
     const out = await run(
-      ["session", "create", "--prompt-file", pf, "--shipit-source", "--approximate"],
+      ["session", "create", "--prompt-file", pf, "--title", "Fix lifecycle loop", "--shipit-source", "--approximate"],
       {
         "POST /agent-ops/session/create": {
           status: 200, body: { sessionId: "ses_fix", branch: "shipit/x", status: "running" },
@@ -1005,10 +1016,21 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     );
     expect(out.calls[0].body).toMatchObject({
       prompt: "Fix the lifecycle loop",
+      title: "Fix lifecycle loop",
       shipitSource: true,
       approximateSource: true,
     });
     expect(out.stdout).toContain("session-id: ses_fix");
+  });
+
+  it("requires --title with --shipit-source and fails before any broker call", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("Fix the lifecycle loop");
+    const out = await run(["session", "create", "--prompt-file", pf, "--shipit-source"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--shipit-source requires --title");
+    // The requirement is enforced before the broker is hit.
+    expect(out.calls).toHaveLength(0);
   });
 
   it("rejects --approximate without --shipit-source", async () => {

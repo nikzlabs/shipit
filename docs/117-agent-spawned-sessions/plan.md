@@ -192,7 +192,7 @@ Exit codes:
 ```ts
 {
   prompt: string;            // required, the child's first user message (≤ 50,000 chars)
-  title?: string;            // session title; defaults to a slug derived from `prompt`
+  title: string;             // required — the spawning agent names the session (no AI-naming fallback). 400 if empty.
   base?: string;             // git ref to branch off (commit hash, `origin/main`, tag, …); defaults to parent's HEAD
   agent?: AgentId;           // child's agent id; defaults to `defaultAgentId`
   model?: string;            // child's model; defaults to the parent's model
@@ -308,7 +308,7 @@ reads/mutations.
    Neither cap reads from `shipit.yaml` today — the constants live in `services/child-sessions.ts`. Self-hosters can patch the constants; a future env-var override (`MAX_SPAWNED_SESSIONS_PER_PARENT`, `MAX_SPAWNED_SESSIONS_PER_TURN`) is tracked in the checklist.
 3. **Get the child's workspace.** Spawn is a thin wrapper around `claimSessionService.claim(parent.remoteUrl)` — the exact same warm-pool-aware service the home-screen `POST /api/repos/:url/claim-session` route uses. The child gets a workspace branched off freshly-fetched `origin/main`. There is no local-clone fallback: keeping the two code paths unified means the child looks like a regular new session by construction, and any change to claim semantics flows through both surfaces.
 4. **Branch off `base`** — if `base` is provided, hard-reset the claimed workspace to that ref (`git reset --hard`). When `base` is omitted, the child stays on the claim's freshly-fetched `origin/main`. The previous default — "parent's HEAD" — was changed because spawned children inherited the parent's committed-but-not-merged WIP, making their "Changes vs main" diff include work that was already on main. Honoring the user's expectation that a spawned session looks like any other new session was the goal.
-5. **Graduate the warm session.** The claim path created the session with `warm = true` and a `shipit/<random>` branch prefix; the spawn renames the branch to the user-supplied (or generated) name, calls `setBranchRenamed(true)`, flips `warm = false`, overrides the title via `rename`, and stamps parent linkage via `setParentSession(newSessionId, parentSessionId, spawnedByTurn)` plus `setModel`.
+5. **Graduate the warm session.** The claim path created the session with `warm = true` and a `shipit/<random>` branch prefix; the spawn keeps the auto-generated branch, calls `setBranchRenamed(true)`, flips `warm = false`, sets the title via `rename` to the **required** agent-supplied `title` (there is no AI-naming fallback on this path — see `child-sessions.ts`), and stamps parent linkage via `setParentSession(newSessionId, parentSessionId, spawnedByTurn)` plus `setModel`.
 6. **Enqueue the prompt** — `runnerRegistry.getOrCreate(...).sendSystemMessage(prompt)`. The runner picks the prompt up as soon as it starts.
 7. **Broadcast `session_list`** — the route emits the updated session list via SSE so the child appears in every connected sidebar immediately. (No parent-chat `SpawnedSessionCard` event is broadcast in Phase 1; that's Phase 2.)
 
