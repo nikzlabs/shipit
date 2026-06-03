@@ -30,7 +30,7 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 - [x] Turn-scoped inactivity watchdog (arm on send, clear on `result`) — not process-scoped
 - [x] Move auth-detection + ANSI/non-JSON heuristics to the separated stderr pipe (no longer PTY-merged)
 - [x] Move process teardown to explicit dispose / idle-eviction (not per-turn)
-- [ ] Tests: NDJSON framing, `result`-as-turn-end, replay-echo handling, control-message round-trip — basic streaming path is exercised in `live-steering.test.ts`; deeper unit coverage of the StreamingClaudeProcess internals (NDJSON framing, control round-trip) is a follow-up
+- [x] Tests: NDJSON framing, `result`-as-turn-end, replay-echo handling, control-message round-trip — unit-covered in `process.test.ts` (`StreamingClaudeProcess` describe: NDJSON framing incl. escaping + image-option parity, `result`-as-turn-end with process staying alive across turns, replay-echo `isReplay:true` surfacing, control_request↔control_response correlation by `request_id`, turn-scoped watchdog arm/clear/re-arm). Basic streaming path also exercised end-to-end in `live-steering.test.ts`
 
 ## Phase 3 — Codex adapter
 

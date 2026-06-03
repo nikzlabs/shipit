@@ -802,6 +802,328 @@ describe("StreamingClaudeProcess", () => {
     });
   });
 
+  describe("NDJSON framing (sendUserMessage)", () => {
+    it("serializes the initial prompt as a type:user NDJSON line on run()", () => {
+      // run() feeds the first prompt via sendUserMessage rather than a CLI arg
+      // (streaming mode: the prompt is the first stdin message, not -p).
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "build me a thing" });
+
+      expect(mockProc.stdinWrites).toHaveLength(1);
+      const line = mockProc.stdinWrites[0];
+      expect(line.endsWith("\n")).toBe(true);
+      // Exactly one NDJSON record — no embedded newlines before the trailing one.
+      expect(line.slice(0, -1).includes("\n")).toBe(false);
+      const parsed = JSON.parse(line) as {
+        type: string;
+        message: { role: string; content: { type: string; text: string }[] };
+      };
+      expect(parsed).toEqual({
+        type: "user",
+        message: { role: "user", content: [{ type: "text", text: "build me a thing" }] },
+      });
+    });
+
+    it("serializes a steered message as a type:user NDJSON line", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first" });
+      mockProc.stdinWrites.length = 0;
+
+      streaming.sendUserMessage("actually, use TypeScript");
+
+      expect(mockProc.stdinWrites).toHaveLength(1);
+      const parsed = JSON.parse(mockProc.stdinWrites[0]) as {
+        type: string;
+        message: { role: string; content: { type: string; text: string }[] };
+      };
+      expect(parsed).toEqual({
+        type: "user",
+        message: { role: "user", content: [{ type: "text", text: "actually, use TypeScript" }] },
+      });
+    });
+
+    it("preserves special characters (quotes, newlines, unicode) via JSON escaping", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first" });
+      mockProc.stdinWrites.length = 0;
+
+      const tricky = 'line1\n"quoted" \\ backslash 你好 🚀';
+      streaming.sendUserMessage(tricky);
+
+      // The serialized record is still a single line (the inner newline is
+      // escaped as \n, not a literal framing newline).
+      const line = mockProc.stdinWrites[0];
+      expect(line.slice(0, -1).includes("\n")).toBe(false);
+      const parsed = JSON.parse(line) as { message: { content: { text: string }[] } };
+      expect(parsed.message.content[0].text).toBe(tricky);
+    });
+
+    it("accepts an images option without throwing and still frames a text-only user message", () => {
+      // Image embedding is not yet wired into the streaming serializer — the
+      // option is accepted (interface parity with the orchestrator) but the
+      // NDJSON line carries only the text block. This pins current behavior so a
+      // future image implementation is a deliberate, test-visible change.
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first" });
+      mockProc.stdinWrites.length = 0;
+
+      streaming.sendUserMessage("look at this", {
+        images: [{ data: "base64data", mediaType: "image/png" }],
+      });
+
+      expect(mockProc.stdinWrites).toHaveLength(1);
+      const parsed = JSON.parse(mockProc.stdinWrites[0]) as {
+        message: { content: { type: string; text: string }[] };
+      };
+      expect(parsed.message.content).toEqual([{ type: "text", text: "look at this" }]);
+    });
+  });
+
+  describe("result as turn-end (process stays alive)", () => {
+    it("surfaces a result event but does NOT emit done or kill the process", () => {
+      // The defining streaming behavior: a `result` ends the *turn*, not the
+      // process. `done` is reserved for an actual process exit (kill/dispose).
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      const events: { type: string }[] = [];
+      let doneCalls = 0;
+      streaming.on("event", (e) => events.push(e));
+      streaming.on("done", () => { doneCalls += 1; });
+
+      streaming.run({ prompt: "first" });
+
+      const result = { type: "result", subtype: "success", session_id: "abc" };
+      mockProc.stdout.emit("data", Buffer.from(`${JSON.stringify(result)}\n`));
+
+      expect(events).toContainEqual(result);
+      expect(doneCalls).toBe(0);
+      expect(mockProc.kill).not.toHaveBeenCalled();
+    });
+
+    it("can run multiple turns on the same process (result → send → result)", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      const results: unknown[] = [];
+      let doneCalls = 0;
+      streaming.on("event", (e: { type: string }) => { if (e.type === "result") results.push(e); });
+      streaming.on("done", () => { doneCalls += 1; });
+
+      streaming.run({ prompt: "turn one" });
+      mockProc.stdout.emit("data", Buffer.from(`${JSON.stringify({ type: "result", subtype: "success", session_id: "abc" })}\n`));
+
+      // Second turn on the SAME persistent process.
+      streaming.sendUserMessage("turn two");
+      mockProc.stdout.emit("data", Buffer.from(`${JSON.stringify({ type: "result", subtype: "success", session_id: "abc" })}\n`));
+
+      expect(results).toHaveLength(2);
+      expect(doneCalls).toBe(0);
+    });
+
+    it("emits done only when the process actually closes", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      const doneCodes: (number | null)[] = [];
+      streaming.on("done", (code: number | null) => doneCodes.push(code));
+
+      streaming.run({ prompt: "first" });
+
+      // A result alone must not produce a done.
+      mockProc.stdout.emit("data", Buffer.from(`${JSON.stringify({ type: "result", subtype: "success", session_id: "abc" })}\n`));
+      expect(doneCodes).toHaveLength(0);
+
+      // Real process exit → done with the exit code.
+      mockProc.emit("close", 0);
+      expect(doneCodes).toEqual([0]);
+    });
+  });
+
+  describe("replay-echo handling (--replay-user-messages)", () => {
+    it("surfaces a replayed user message (isReplay:true) as an event", () => {
+      // --replay-user-messages re-emits injected user messages on stdout with
+      // isReplay:true so the orchestrator can reconcile its optimistic insert.
+      // The process must parse and surface it like any other event.
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      const events: { type: string; isReplay?: boolean }[] = [];
+      streaming.on("event", (e) => events.push(e));
+
+      streaming.run({ prompt: "first" });
+
+      const echo = {
+        type: "user",
+        message: { role: "user", content: [{ type: "text", text: "steered text" }] },
+        isReplay: true,
+      };
+      mockProc.stdout.emit("data", Buffer.from(`${JSON.stringify(echo)}\n`));
+
+      const replay = events.find((e) => e.type === "user" && e.isReplay === true);
+      expect(replay).toBeDefined();
+      expect(replay).toEqual(echo);
+    });
+
+    it("does not emit a replay echo as a log line", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      const logs: { source: string; text: string }[] = [];
+      streaming.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      streaming.run({ prompt: "first" });
+      mockProc.stdout.emit("data", Buffer.from(`${JSON.stringify({ type: "user", message: { role: "user", content: [] }, isReplay: true })}\n`));
+
+      expect(logs).toHaveLength(0);
+    });
+  });
+
+  describe("control-message round-trip", () => {
+    it("correlates a control_response to its control_request by request_id", () => {
+      // setPermissionMode writes a control_request stamped with a unique
+      // request_id; the CLI's matching control_response arrives on stdout and
+      // surfaces as an event carrying the same request_id, so the orchestrator
+      // can pair the two.
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      const events: { type: string; request_id?: string }[] = [];
+      streaming.on("event", (e) => events.push(e));
+
+      streaming.run({ prompt: "first" });
+      mockProc.stdinWrites.length = 0;
+
+      streaming.setPermissionMode("plan");
+      const request = JSON.parse(mockProc.stdinWrites[0]) as { request_id: string };
+      expect(request.request_id).toMatch(/^set-mode-/);
+
+      // The CLI replies with a control_response carrying the same id.
+      const response = {
+        type: "control_response",
+        response: { subtype: "success", request_id: request.request_id },
+      };
+      mockProc.stdout.emit("data", Buffer.from(`${JSON.stringify(response)}\n`));
+
+      const surfaced = events.find((e) => e.type === "control_response");
+      expect(surfaced).toEqual(response);
+    });
+
+    it("stamps each control_request with a distinct request_id", () => {
+      // Distinct ids are what make response correlation unambiguous.
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first" });
+      mockProc.stdinWrites.length = 0;
+
+      streaming.setPermissionMode("plan");
+      streaming.interrupt();
+      streaming.setPermissionMode("auto");
+
+      const ids = mockProc.stdinWrites.map((line: string) => {
+        return (JSON.parse(line) as { request_id: string }).request_id;
+      });
+      expect(new Set(ids).size).toBe(ids.length);
+    });
+  });
+
+  describe("turn-scoped inactivity watchdog", () => {
+    it("arms on send and warns after 30s of no output within a turn", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      const logs: { source: string; text: string }[] = [];
+      streaming.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      // run() sends the initial message, which arms the watchdog.
+      streaming.run({ prompt: "first" });
+      vi.advanceTimersByTime(30_000);
+
+      const warn = logs.find((l) => l.text.includes("No output from Claude CLI"));
+      expect(warn).toBeDefined();
+      expect(warn!.source).toBe("server");
+    });
+
+    it("clears the watchdog when the turn ends (result), and stays cleared while idle between turns", () => {
+      // The streaming watchdog is turn-scoped: a persistent process sitting idle
+      // *between* turns must not trip the 30s warning.
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      const logs: { source: string; text: string }[] = [];
+      streaming.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      streaming.run({ prompt: "first" });
+
+      // Turn ends well before the 30s window.
+      vi.advanceTimersByTime(10_000);
+      mockProc.stdout.emit("data", Buffer.from(`${JSON.stringify({ type: "result", subtype: "success", session_id: "abc" })}\n`));
+
+      // Now sit idle (alive but no turn in flight) past the window.
+      vi.advanceTimersByTime(60_000);
+
+      const warn = logs.find((l) => l.text.includes("No output from Claude CLI"));
+      expect(warn).toBeUndefined();
+    });
+
+    it("re-arms on the next turn's send after a prior turn cleared it", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      const logs: { source: string; text: string }[] = [];
+      streaming.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      streaming.run({ prompt: "first" });
+      mockProc.stdout.emit("data", Buffer.from(`${JSON.stringify({ type: "result", subtype: "success", session_id: "abc" })}\n`));
+
+      // Second turn arms a fresh watchdog.
+      streaming.sendUserMessage("turn two");
+      vi.advanceTimersByTime(30_000);
+
+      const warn = logs.find((l) => l.text.includes("No output from Claude CLI"));
+      expect(warn).toBeDefined();
+    });
+
+    it("clears the watchdog on kill", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      const logs: { source: string; text: string }[] = [];
+      streaming.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      streaming.run({ prompt: "first" });
+      streaming.kill();
+      vi.advanceTimersByTime(30_000);
+
+      const warn = logs.find((l) => l.text.includes("No output from Claude CLI"));
+      expect(warn).toBeUndefined();
+    });
+  });
+
   describe("setPermissionMode", () => {
     it("writes a set_permission_mode control_request NDJSON line to stdin (docs/138)", () => {
       const mockProc = createMockChildProcess();
