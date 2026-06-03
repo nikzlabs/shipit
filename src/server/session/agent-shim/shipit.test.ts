@@ -996,7 +996,7 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     const { run } = makeRunner();
     const pf = await promptFile("Fix the lifecycle loop");
     const out = await run(
-      ["session", "create", "--prompt-file", pf, "--shipit-source", "--approximate"],
+      ["session", "create", "--prompt-file", pf, "--title", "Fix lifecycle loop", "--shipit-source", "--approximate"],
       {
         "POST /agent-ops/session/create": {
           status: 200, body: { sessionId: "ses_fix", branch: "shipit/x", status: "running" },
@@ -1005,10 +1005,21 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     );
     expect(out.calls[0].body).toMatchObject({
       prompt: "Fix the lifecycle loop",
+      title: "Fix lifecycle loop",
       shipitSource: true,
       approximateSource: true,
     });
     expect(out.stdout).toContain("session-id: ses_fix");
+  });
+
+  it("requires --title with --shipit-source and fails before any broker call", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("Fix the lifecycle loop");
+    const out = await run(["session", "create", "--prompt-file", pf, "--shipit-source"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--shipit-source requires --title");
+    // The requirement is enforced before the broker is hit.
+    expect(out.calls).toHaveLength(0);
   });
 
   it("rejects --approximate without --shipit-source", async () => {

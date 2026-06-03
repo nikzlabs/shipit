@@ -99,6 +99,12 @@ and otherwise behaves like a normal spawn — the child owns all edits, tests,
 commits, push, and the PR. Add `--approximate` to acknowledge a non-exact source
 ref. `--shipit-source` is rejected outside Ops sessions.
 
+`--title` is **required** with `--shipit-source`. The diagnosis is wrapped in
+the incident packet, so it can't name the session — pass a short, human-readable
+title describing the fix (e.g. `--title "Fix container recreate loop"`) so the
+spawned session is identifiable in the sidebar. A `--shipit-source` spawn with
+no title exits non-zero.
+
 The child branch *starts* at the inspected deployed commit (so it can reproduce
 the production bug), which is usually behind the repo's default branch; the
 incident packet tells the child to rebase onto the latest default branch before

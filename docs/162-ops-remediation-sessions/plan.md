@@ -197,16 +197,13 @@ Behavior:
   only when the user/agent explicitly requested approximate-source remediation.
 - The child prompt is seeded with a structured incident packet from the Ops
   parent.
-- The child is *named* after the Ops agent's human-written diagnosis, not the
-  incident packet. `buildShipitFixPrompt` wraps the diagnosis in a verbose
-  `# Ops remediation — ShipIt fix session` header before dispatch, so naming the
-  session off the dispatched prompt would yield a useless "Ops remediation…"
-  title for every fix. The spawn route captures the raw diagnosis and passes it
-  as `namingText` through `spawnChildSession` → `graduateSession`, which uses it
-  for both the placeholder slice and the AI-naming prompt while the agent still
-  runs the full packet. An explicit `--title` still wins. (`namingText` is a
-  generic `graduateSession` option, not Ops-specific — any surface whose
-  dispatched prompt is a machine wrapper can use it.)
+- `--title` is **required** for a `--shipit-source` spawn. `buildShipitFixPrompt`
+  wraps the diagnosis in a verbose `# Ops remediation — ShipIt fix session`
+  header before dispatch, so the prompt can't double as the session name —
+  without an explicit title, every fix session would read "Ops remediation…" in
+  the sidebar. Both the shim (fast, local error) and the orchestrator spawn
+  route (authoritative) reject a `--shipit-source` spawn that has no non-empty
+  title. The Ops agent must name the session after the fix.
 
 The incident packet should include:
 

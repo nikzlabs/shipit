@@ -155,7 +155,7 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "Fix the container recreate loop", shipitSource: true, spawnedByTurn: "turn-1" },
+      payload: { prompt: "Fix the container recreate loop", title: "Fix container recreate loop", shipitSource: true, spawnedByTurn: "turn-1" },
     });
 
     expect(res.statusCode).toBe(200);
@@ -178,7 +178,7 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
     expect(childHead).toBe(buildSha);
   });
 
-  it("names the fix child after the diagnosis, not the incident-packet boilerplate", { timeout: 20_000 }, async () => {
+  it("requires an explicit --title and uses it verbatim (not the incident-packet header)", { timeout: 20_000 }, async () => {
     const parentId = await createOpsParent();
     github.setRepoWriteAccess(true);
 
@@ -187,6 +187,7 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
       url: `/api/sessions/${parentId}/spawn`,
       payload: {
         prompt: "Preview pane never reloads after editing shipit.yaml\n\nrepro steps...",
+        title: "Fix preview reload on shipit.yaml edit",
         shipitSource: true,
         spawnedByTurn: "turn-1",
       },
@@ -194,15 +195,32 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
     expect(res.statusCode).toBe(200);
     const { sessionId } = res.json() as { sessionId: string };
 
-    // generateSessionName is mocked to null here, so the title stays at the
-    // placeholder. It must be the agent's diagnosis (first 60 chars) — NOT the
+    // The session is named by the agent-supplied title — NOT the
     // `# Ops remediation — ShipIt fix session` header that `buildShipitFixPrompt`
-    // prepends to the dispatched prompt.
+    // prepends to the dispatched prompt. (generateSessionName is mocked to null,
+    // so an explicit title would otherwise be left at the placeholder anyway —
+    // here graduate uses the explicit title as the placeholder verbatim.)
     const child = sessionManager.get(sessionId);
-    expect(child?.title).toBe(
-      "Preview pane never reloads after editing shipit.yaml\n\nrepro steps...".slice(0, 60),
-    );
+    expect(child?.title).toBe("Fix preview reload on shipit.yaml edit");
     expect(child?.title).not.toMatch(/Ops remediation/);
+  });
+
+  it("rejects a ShipIt fix spawn with no title (400) before creating a child", { timeout: 20_000 }, async () => {
+    const parentId = await createOpsParent();
+    github.setRepoWriteAccess(true);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Fix the container recreate loop", shipitSource: true },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/title is required/i);
+
+    // No child was created.
+    const children = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/children` });
+    expect((children.json().children as unknown[]).length).toBe(0);
   });
 
   it("emits a session_spawned event carrying the Ops fix metadata (source ref, target repo, diagnosis)", { timeout: 20_000 }, async () => {
@@ -215,7 +233,7 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
       const res = await app.inject({
         method: "POST",
         url: `/api/sessions/${parentId}/spawn`,
-        payload: { prompt: "Fix the container recreate loop\nmore detail", shipitSource: true, spawnedByTurn: "turn-1" },
+        payload: { prompt: "Fix the container recreate loop\nmore detail", title: "Fix container recreate loop", shipitSource: true, spawnedByTurn: "turn-1" },
       });
       expect(res.statusCode).toBe(200);
 
@@ -249,7 +267,7 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "Fix the bug", shipitSource: true },
+      payload: { prompt: "Fix the bug", title: "Fix the bug", shipitSource: true },
     });
 
     expect(res.statusCode).toBe(403);

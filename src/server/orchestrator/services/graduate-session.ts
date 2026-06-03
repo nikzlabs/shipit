@@ -62,17 +62,6 @@ export interface GraduateSessionOpts {
    * `explicitBranch` is set.
    */
   userText: string;
-  /**
-   * Optional override for the text that drives the placeholder title and AI
-   * naming. Defaults to `userText`. Set this when the dispatched prompt
-   * (`userText`) is a machine-wrapped packet whose boilerplate header would
-   * otherwise produce a useless session name — e.g. the Ops ShipIt-fix
-   * incident packet, whose first line is `# Ops remediation — ShipIt fix
-   * session`. Pass the human-written diagnosis here so the session is named
-   * after the actual bug, while `userText` (the full packet) stays what the
-   * agent runs. Ignored when `explicitTitle` / `explicitBranch` pins the name.
-   */
-  namingText?: string;
   /** Effective agent id for the AI-naming CLI call. */
   agentId: AgentId;
   /**
@@ -120,13 +109,7 @@ export interface GraduateSessionOpts {
  */
 export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSessionOpts): void {
   const { sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast } = deps;
-  const { sessionId, userText, namingText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, parentSessionId, spawnedByTurn } = opts;
-
-  // Text that drives both the placeholder slice and AI naming. Defaults to
-  // the dispatched prompt, but a caller may override it when the prompt is a
-  // machine-wrapped packet whose header would name the session after the
-  // wrapper instead of the work (Ops ShipIt-fix; see `namingText`).
-  const nameSource = namingText?.trim() || userText;
+  const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, parentSessionId, spawnedByTurn } = opts;
 
   // 1. Activation — flip warm to false (no-op when already active, e.g. fork).
   sessionManager.setWarm(sessionId, false);
@@ -134,8 +117,8 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
   // 2. Persistence — refresh last_used_at; idempotent on existing rows.
   sessionManager.track(sessionId);
 
-  // 3. Placeholder title (explicit caller value wins; otherwise name-source slice).
-  const placeholderTitle = explicitTitle?.trim() || nameSource.slice(0, 60) || "New session";
+  // 3. Placeholder title (explicit caller value wins; otherwise prompt slice).
+  const placeholderTitle = explicitTitle?.trim() || userText.slice(0, 60) || "New session";
   sessionManager.rename(sessionId, placeholderTitle);
 
   // 4. Optional model + parent linkage (child + quick concerns).
@@ -151,7 +134,7 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
   if (shouldAutoName) {
     scheduleSessionNaming(
       { sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast },
-      { sessionId, userText: nameSource, agentId, skipBranchRename: skipBranchRename ?? false },
+      { sessionId, userText, agentId, skipBranchRename: skipBranchRename ?? false },
     );
   } else {
     sessionManager.setBranchRenamed(sessionId, true);

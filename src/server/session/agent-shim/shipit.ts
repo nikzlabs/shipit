@@ -71,8 +71,10 @@ session / parallel branch / independent workspace. For in-turn fan-out
 under Claude, prefer the built-in \`Task\` tool.
 
 In an Ops session, use \`shipit source *\` to read the ShipIt source code that
-runs this host, then \`shipit session create --shipit-source\` to spawn a
-repo-backed fix session branched from the exact inspected commit.
+runs this host, then \`shipit session create --shipit-source --title "..."\` to
+spawn a repo-backed fix session branched from the exact inspected commit.
+\`--title\` is REQUIRED with \`--shipit-source\`: the diagnosis is wrapped in an
+incident packet and can't name the session, so pass a short human-readable name.
 
 See /shipit-docs/sessions.md for the full reference, including allowed
 flags and the list of intentionally-rejected operations
@@ -348,6 +350,17 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
   }
   if (parsed.booleans.has("approximate") && !parsed.booleans.has("shipitSource")) {
     fail(deps.io, "shipit session create: --approximate only applies with --shipit-source.");
+  }
+  // docs/162 — a ShipIt fix spawn wraps the diagnosis in a verbose incident
+  // packet, so the prompt can't be used to name the session. Require an
+  // explicit, human-readable title so the spawned fix is identifiable in the
+  // sidebar. (Fail fast here; the orchestrator enforces this too.)
+  if (parsed.booleans.has("shipitSource") && !(parsed.values.title ?? "").trim()) {
+    fail(
+      deps.io,
+      "shipit session create --shipit-source requires --title: give the fix session a short, " +
+        "human-readable name describing what it fixes.",
+    );
   }
 
   const promptFile = parsed.values.promptFile;
