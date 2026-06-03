@@ -38,7 +38,8 @@
 - [ ] Below the breakpoint, table collapses to stacked cards (`max-md:` variants,
       one `IssuesViewer`, not a separate component)
 - [ ] Filter bar wraps: full-width search row + horizontally-scrollable facet
-      chip row; count moves to its own row
+      chip row; count stays in the top bar (consistent with desktop; Refresh
+      collapses to icon-only on the narrowest widths)
 - [ ] Card: identifier + priority on line 1, 2-line title, status · assignee meta,
       full-width Start session button
 
