@@ -259,6 +259,36 @@ exited":
 - **Interrupt semantics** — `interrupt()` becomes a `control_request`, not PTY
   Ctrl+C. Confirm the existing interrupt UI/flow maps onto turn-end-without-kill.
 
+### Lifecycle semantics — resolved
+
+All four paths are handled by existing machinery; the defined behavior is:
+
+- **Dispose.** `SessionRunner.dispose()` (`session-runner.ts`) kills the resident
+  agent, clears the message queue **and** the turn-event buffer, and resets
+  `isStreamingActive = false`. So a buffered-but-unsent steer (a dispatch that
+  landed in the queue rather than steering — e.g. during a review turn) is
+  **dropped**, not silently delivered to a dying process; this is consistent
+  with dropping the in-flight turn's assistant output. `ContainerSessionRunner`
+  mirrors the reset. Covered by `session-runner.test.ts` ("dispose tears down a
+  streaming turn …").
+- **`restartAgent` (docs/127).** A streaming session restarted mid-turn drops the
+  in-flight turn and resumes **cold** via `--resume <session_id>` — the same
+  idle-start contract a non-streaming session has. The `done`/exit handler in
+  `turn-executor.ts` clears the resident agent ref + `isStreamingActive`, so the
+  drained/next turn spawns a fresh process instead of writing to closed stdin.
+- **Agent-container OOM.** Owned by the OOM circuit breaker (`oom-circuit-breaker.ts`,
+  docs/122/124), unchanged by steering — a persistent process dying to OOM is
+  observed as a process exit (the `done` path above) and recovery is re-spawn +
+  `--resume`. (Not docs/126, which is preview-compose OOM.)
+- **Reconnection / orchestrator restart.** `session_id` is persisted on
+  `agent_init` (fires once for the persistent process) and reused by steered
+  turns; recovery is re-spawn + `--resume`. A reconnecting or second viewer
+  re-reads post-turn messages — including steered echoes — from the turn-event
+  buffer, because steers broadcast via `runner.emitMessage()`.
+
+Disconnect/reconnect, steer-during-session-switch, and interrupt-during-steer
+have dedicated integration coverage in the Phase 5 resilience suite.
+
 ## Implementation order (suggested)
 
 1. Add `supportsSteering` capability + the `AgentProcess.sendUserMessage`
@@ -382,10 +412,24 @@ suppressed, and the off-toggle one-shot path does NOT interrupt).
 
 ## Open questions to resolve during build
 
-- Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.
-  "interrupted" vs. "error" for the post-turn flow (auto-commit, PR card).
-- Whether to also adopt `--include-partial-messages` for token-level streaming
-  or keep message-granularity to limit blast radius.
+- ~~Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.
+  "interrupted" vs. "error" for the post-turn flow (auto-commit, PR card).~~
+  **Resolved.** Keep the shipped behavior: `result subtype:"success"` is a
+  normal turn-end and runs the full post-turn flow (auto-commit, PR card,
+  `scheduleAutoPush`, `session_agent_finished`, queue drain) on `agent_result`.
+  `error` / `error_during_execution` (the subtype an interrupted streaming turn
+  ends with) routes into the error handler and skips the commit/PR side effects,
+  while still flipping `running=false` and persisting the partial turn. No new
+  subtype gating is warranted — an interrupted turn is treated as "ended, don't
+  ship side effects," which is the correct conservative default.
+- ~~Whether to also adopt `--include-partial-messages` for token-level streaming
+  or keep message-granularity to limit blast radius.~~ **Resolved (deferred).**
+  Keep **message-granularity** for now — the steering contract and post-turn
+  remap are message-boundary-based, and token-level partials would widen the
+  blast radius (echo dedupe, persistence ordering, group boundaries) for a
+  cosmetic streaming-smoothness win. Revisit as a separate enhancement if
+  finer-grained streaming is requested; it composes additively and needs no
+  steering-protocol change.
 - ~~How to detect/surface a `turn/steer` rejection (review/compaction turn) so
   the message falls back to the queue instead of vanishing.~~ **Resolved
   (Phase 3).** `turn/steer` is now a `sendRequest` (with id), so the
