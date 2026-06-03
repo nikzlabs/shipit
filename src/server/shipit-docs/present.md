@@ -51,6 +51,28 @@ fidelity with what they saw).
 - Markdown renders with the same renderer used elsewhere in ShipIt.
 - Images render as `<img>` with the data URI directly.
 
+## Iterating on visual artifacts (screenshot loop)
+
+`present` returns `{ presentId, viewUrl }`. `viewUrl` is a worker-local URL
+(e.g. `http://127.0.0.1:9100/present-files/pres_abc...`) that serves the exact
+rendered artifact. Use it to *see your own output* and fix it before the user
+has to:
+
+1. Call `present({ content, mimeType, title })`.
+2. `browser_navigate` to the returned `viewUrl`, then `browser_take_screenshot`.
+3. Look for layout breaks, clipped SVG `viewBox`, overflow, low contrast, or a
+   chart that rendered empty because its inline JS threw — defects you only
+   catch by looking at the pixels.
+4. Edit the content and call `present` again with `replaceId` set to the same
+   `presentId` to revise in place. The user sees each revision land in the
+   Present tab as you iterate.
+5. Re-navigate to the same `viewUrl` and screenshot again to confirm the fix.
+
+This is the same browser you use for live previews — nothing new to set up. The
+artifact renders in real Chromium, so what you screenshot is what the user sees.
+If a navigate returns 404, the presentation was evicted (the buffer keeps a
+bounded most-recent set) — just call `present` again to get a fresh URL.
+
 ## Limits
 
 - Single presentation: ~1 MB. Larger payloads are rejected with a clear
@@ -69,7 +91,7 @@ present({
   mimeType: "image/svg+xml",
   title: "Component graph"
 })
-// → { presentId: "pres_abc...", status: "presented" }
+// → { presentId: "pres_abc...", status: "presented", viewUrl: "http://127.0.0.1:9100/present-files/pres_abc..." }
 ```
 
 ```

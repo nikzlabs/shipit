@@ -36,7 +36,10 @@ const TOOL_DESCRIPTION = [
   "— the workspace is for deliverables, the Present tab is for scratch visuals.",
   "Pass `replaceId` with a prior call's `presentId` to revise an existing",
   "presentation in-place (e.g. mockup v1 → v2); omit it for a brand-new entry.",
-  "Returns `{ presentId }` so you can reference the presentation later.",
+  "Returns `{ presentId, viewUrl }`. To verify how the artifact actually",
+  "renders, navigate your browser to `viewUrl` and take a screenshot — then",
+  "fix any layout/contrast/clipping defects and call `present` again with",
+  "`replaceId` set to the same `presentId` to revise it in place.",
   "Content is capped at ~1 MB; larger artifacts will be rejected.",
 ].join(" ");
 
@@ -120,6 +123,7 @@ export function createPresentBridgeServer() {
         error?: string;
         presentId?: string;
         status?: string;
+        viewUrl?: string;
       };
       if (!res.ok) {
         const reason = body.error || `present service returned HTTP ${res.status}`;
@@ -135,6 +139,7 @@ export function createPresentBridgeServer() {
             text: JSON.stringify({
               status: body.status ?? "presented",
               presentId: body.presentId,
+              ...(body.viewUrl !== undefined ? { viewUrl: body.viewUrl } : {}),
               ...(args.title !== undefined ? { title: args.title } : {}),
               ...(args.replaceId !== undefined ? { replaceId: args.replaceId } : {}),
             }),
