@@ -315,6 +315,21 @@ After the agent finishes a turn (`agent_result` event in `agent-execution.ts`):
 
 Agent events are grouped into chat history entries based on tool-result boundaries. Each `agent_tool_result` sets a `needsNewMessageGroup` flag so the next `agent_assistant` event starts a fresh group. This preserves the visual message structure when reloading — groups map 1:1 to message bubbles in the UI. Key file: `agent-listeners.ts`.
 
+### Chat transcript content MUST be persisted, not just emitted
+
+Anything that renders **inline in the chat transcript** — a message bubble or a card (`MessageList.tsx`) — must be written to **persisted chat history**, not merely emitted over WS. `runner.emitMessage()` is *transport only*: it broadcasts to attached viewers and buffers into the per-turn **turn-event log**, which a WS **reconnect** replays. It does **not** persist anything. A session **switch** and a full **page reload** rehydrate the transcript from persisted chat history (`ChatHistoryManager` → `GET /history`), so an emit-only card renders live, survives a reconnect, and then **vanishes** on switch/reload. This bug class has recurred (voice notes `docs/163`, bug-report cards `docs/164`).
+
+The dividing line: **transient** signals (spinners, `preview_status`, queue counts, live activity) are emit-only and correctly disappear. **Transcript content** (any card the user expects to still be there tomorrow, and any terminal state like "filed"/"failed") must persist. If it has a place in the scrollback, it has a row in the DB.
+
+The established pattern for a **side-channel card** (one that arrives outside the agent-event stream — an HTTP relay or a post-turn WS message, so `buildTurnMessages` doesn't capture it on its own):
+
+1. **Emit it via `emitChatCard` (`chat-card-persistence.ts`), never bare `emitMessage`.** That single primitive both emits the live WS message AND records the card in-band with the turn — anchored by `afterGroupIndex` so `buildTurnMessages` interleaves it at its true transcript position instead of an out-of-band `append` floating it above the whole turn. It is the one supported way to add a transcript card, so a card can't ship emit-only.
+2. **Add a typed field on `PersistedMessage`** (e.g. `voiceNote`, `bugReport`) plus the column + `toRow`/`fromRow` (and a `database.ts` migration). Lifecycle transitions patch that record in place (e.g. `updateBugReportCard`) — the proposing-turn row is finalized by then, so a direct update is safe.
+3. **Rehydrate on the client** in `loadSessionHistory` (seed any store the card reads from), and make the **live append + any store upsert idempotent by id** so the reconnect buffer replay and the reload history replay never double-render or clobber a terminal state.
+4. **Add a history round-trip test** (persist → `load()` → assert) and a no-duplicate-on-replay test. The serialization round-trip contract in `chat-history.test.ts` must include any new `PersistedMessage` field.
+
+If you find yourself reaching for `emitMessage` to put a card in the chat, reach for `emitChatCard` instead and wire steps 2–4. Key files: `chat-card-persistence.ts` (`emitChatCard`), `chat-history.ts`, `agent-listeners.ts` (`buildTurnMessages`), `session-data.ts` (`loadSessionHistory`).
+
 ### Preview routing
 
 Browser previews reach containers through a reverse proxy (`preview-proxy.ts`):

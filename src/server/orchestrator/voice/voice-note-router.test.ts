@@ -11,8 +11,8 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import type { CredentialStore } from "../credential-store.js";
 
 // Minimal fake runner: emitMessage + the turn-accumulation fields the native
-// sink records onto (`recordVoiceNote` reads chatMessageGroups for the anchor
-// and pushes onto voiceNotes). Identity is what the WeakMap keys on, so a fresh
+// sink records onto (`emitChatCard` reads chatMessageGroups for the anchor and
+// pushes onto recordedCards). Identity is what the WeakMap keys on, so a fresh
 // object per test is an isolated "turn".
 function fakeRunner(
   groups: { text: string; toolUse: unknown[] }[] = [],
@@ -21,7 +21,7 @@ function fakeRunner(
   const runner = {
     emitMessage: (m: WsServerMessage) => emitted.push(m),
     chatMessageGroups: groups,
-    voiceNotes: [],
+    recordedCards: [],
   } as unknown as SessionRunnerInterface;
   return { runner, emitted };
 }
@@ -90,15 +90,19 @@ describe("routeVoiceNote", () => {
       idFactory: deterministicId,
       now: fixedNow,
     });
-    expect(runner.voiceNotes).toHaveLength(1);
-    expect(runner.voiceNotes[0]).toMatchObject({
+    expect(runner.recordedCards).toHaveLength(1);
+    expect(runner.recordedCards[0]).toMatchObject({
       afterGroupIndex: 2,
-      note: {
-        id: "voice-test-1",
-        headline: base().summary,
-        needsAttention: true,
-        kind: "authored",
-        createdAt: "2026-06-01T00:00:00.000Z",
+      message: {
+        role: "assistant",
+        text: "",
+        voiceNote: {
+          id: "voice-test-1",
+          headline: base().summary,
+          needsAttention: true,
+          kind: "authored",
+          createdAt: "2026-06-01T00:00:00.000Z",
+        },
       },
     });
   });
@@ -114,7 +118,7 @@ describe("routeVoiceNote", () => {
       runner, sessionId: "s1", credentialStore,
       source: "authored", fetchImpl, idFactory: deterministicId, now: fixedNow,
     });
-    expect(runner.voiceNotes).toHaveLength(0);
+    expect(runner.recordedCards).toHaveLength(0);
   });
 
   it("external mode posts to the webhook with bearer auth and v:1 body, no native note", async () => {

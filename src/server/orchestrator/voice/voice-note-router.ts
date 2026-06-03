@@ -23,7 +23,8 @@
  */
 
 import type { CredentialStore } from "../credential-store.js";
-import type { SessionRunnerInterface, RecordedVoiceNote } from "../session-runner.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
+import { emitChatCard } from "../chat-card-persistence.js";
 import type {
   VoiceNotePayload,
   VoiceNoteSource,
@@ -71,25 +72,6 @@ export function resetVoiceNoteTurnState(runner: object): void {
  */
 export function hasAuthoredVoiceNoteThisTurn(runner: object): boolean {
   return turnStates.get(runner)?.authored ?? false;
-}
-
-/**
- * docs/163 — record a voice note on the runner for in-band turn persistence,
- * anchored after the persistable assistant groups produced so far. The anchor
- * lets `buildTurnMessages` re-interleave the card at its true transcript
- * position on every `replaceInProgress` rebuild — mirroring
- * `recordSteeredMessage`. This replaces the old out-of-band `append`, which
- * gave the card an early row id that the next rebuild reordered behind every
- * reborn assistant row, floating the card above the whole turn on reload (see
- * `RecordedVoiceNote`). Lives here (not with `recordSteeredMessage` in
- * `agent-listeners`) to avoid a value import cycle with this module.
- */
-export function recordVoiceNote(
-  runner: Pick<SessionRunnerInterface, "chatMessageGroups" | "voiceNotes">,
-  note: RecordedVoiceNote["note"],
-): void {
-  const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
-  runner.voiceNotes = [...runner.voiceNotes, { afterGroupIndex, note }];
 }
 
 export interface RouteVoiceNoteDeps {
@@ -181,18 +163,18 @@ export async function routeVoiceNote(
       kind: source,
       createdAt: nowIso,
     };
-    runner.emitMessage({ type: "voice_note", sessionId, ...voiceNote });
+    // Emit AND persist in one call (docs/163). Voice notes arrive off the
+    // agent-event stream, so `buildTurnMessages` never captures them on its own;
+    // `emitChatCard` records the card on the runner (anchored after the
+    // persistable groups so far) so it folds into the turn's rebuilt batch and
+    // lands where the tool was issued instead of floating above the whole turn
+    // on reload — and it can't be emit-only (the recurring ephemeral-card bug).
+    emitChatCard(
+      runner,
+      { type: "voice_note", sessionId, ...voiceNote },
+      { role: "assistant", text: "", voiceNote },
+    );
     result.native = true;
-
-    // Persist the card so it survives a history reload. Voice notes arrive off
-    // the agent-event stream, so `buildTurnMessages` never captures them on its
-    // own. Recording the note on the runner — anchored after the persistable
-    // groups produced so far — folds it into the turn's rebuilt batch, so it
-    // lands where the tool was issued (typically end-of-turn) instead of
-    // floating above the whole turn on reload. An out-of-band `append` kept an
-    // early row id that `replaceInProgress` then reordered behind every
-    // reborn assistant row (see `RecordedVoiceNote` / docs/163).
-    recordVoiceNote(runner, voiceNote);
   }
 
   // ---- External (webhook) sink ----

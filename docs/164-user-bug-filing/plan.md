@@ -342,10 +342,14 @@ a session switch and a full page reload — not just a WS reconnect. The card is
 side-channel artifact (it arrives via the `report_shipit_bug` HTTP relay, not the
 agent-event stream), so it follows the **voice-note precedent** (`docs/163`):
 
-- The proposing turn records the card on the runner via `recordBugReportCard`
-  (anchored by `afterGroupIndex`). `buildTurnMessages` re-interleaves it at its
-  true transcript position on every in-progress rebuild, so it lands where the
-  tool fired instead of floating above the whole turn on reload.
+- The proposing turn emits the card via the shared `emitChatCard`
+  (`chat-card-persistence.ts`), which emits the live WS message AND records it on
+  the runner (anchored by `afterGroupIndex`) in one call — the single primitive
+  that makes a transcript card impossible to ship emit-only. `buildTurnMessages`
+  re-interleaves the runner's `recordedCards` at their true transcript position
+  on every in-progress rebuild, so the card lands where the tool fired instead
+  of floating above the whole turn on reload. (Voice notes, `docs/163`, use the
+  same primitive — the two previously-parallel implementations were unified.)
 - `PersistedMessage.bugReport` (a `PersistedBugReport`) carries the full payload
   + phase; a new `bug_report` column (`database.ts` migration) stores it.
 - `filed`/`failed` transitions patch the persisted record in place via
