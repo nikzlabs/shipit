@@ -16,7 +16,7 @@ import {
   createTestSession,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
-import type { ChatHistoryManager, PersistedBugReport } from "../chat-history.js";
+import type { ChatHistoryManager, PersistedBugReport, PersistedMessage } from "../chat-history.js";
 import type { FastifyInstance } from "fastify";
 import type { CredentialStore } from "../credential-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -169,13 +169,14 @@ describe("Integration: user bug filing", () => {
     });
     const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
 
-    // The card is recorded on the runner (anchored by afterGroupIndex) so
-    // `buildTurnMessages` folds it into chat history at the spot the agent's
-    // `report_shipit_bug` tool fired — the same mechanism voice notes use.
-    const runner = (app as unknown as { runnerRegistry: { get(id: string): { bugReportCards: { afterGroupIndex: number; card: { cardId: string; phase: string } }[] } | undefined } }).runnerRegistry.get(sessionId);
-    expect(runner?.bugReportCards).toHaveLength(1);
-    expect(runner?.bugReportCards[0].card.cardId).toBe(card.cardId);
-    expect(runner?.bugReportCards[0].card.phase).toBe("draft");
+    // The card is recorded on the runner (anchored by afterGroupIndex) via the
+    // shared `emitChatCard` primitive, so `buildTurnMessages` folds it into chat
+    // history at the spot the agent's `report_shipit_bug` tool fired — the same
+    // mechanism voice notes use.
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): { recordedCards: { afterGroupIndex: number; message: { bugReport?: { cardId: string; phase: string } } }[] } | undefined } }).runnerRegistry.get(sessionId);
+    expect(runner?.recordedCards).toHaveLength(1);
+    expect(runner?.recordedCards[0].message.bugReport?.cardId).toBe(card.cardId);
+    expect(runner?.recordedCards[0].message.bugReport?.phase).toBe("draft");
 
     client.close();
   });
@@ -195,8 +196,8 @@ describe("Integration: user bug filing", () => {
 
     // Simulate the proposing turn finalizing the recorded card into chat history
     // (in production `buildTurnMessages` does this at the tool-result boundary).
-    const runner = (app as unknown as { runnerRegistry: { get(id: string): { bugReportCards: { card: PersistedBugReport }[] } | undefined } }).runnerRegistry.get(sessionId);
-    histMgr.append(sessionId, { role: "assistant", text: "", bugReport: runner!.bugReportCards[0].card });
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): { recordedCards: { message: PersistedMessage }[] } | undefined } }).runnerRegistry.get(sessionId);
+    histMgr.append(sessionId, runner!.recordedCards[0].message);
 
     // It replays on attach (reload rebuilds from this history).
     const historyBefore = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });

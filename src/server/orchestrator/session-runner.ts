@@ -12,7 +12,7 @@ import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, Permi
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
-import type { PersistedBugReport } from "./chat-history.js";
+import type { PersistedMessage } from "./chat-history.js";
 
 // `runDispatchedTurn` lives in a separate module because it depends on
 // `wireAgentListeners` at runtime, which would otherwise create an import
@@ -95,43 +95,29 @@ export interface SteeredMessage {
 }
 
 /**
- * docs/163 — a voice note recorded for in-band turn persistence.
+ * A chat card recorded for in-band turn persistence (docs/163 voice notes,
+ * docs/164 bug-report cards, and any future inline card).
  *
- * Voice notes arrive on a side channel (the `voice_note` tool bridge / the
- * derived AskUserQuestion·ExitPlanMode observer), not the agent-event stream,
- * so they aren't captured by `buildTurnMessages`. Persisting them out-of-band
- * via `append` reproduces the exact bug `SteeredMessage` documents: the card
- * row keeps its early id while the turn's assistant rows are deleted+reinserted
- * at higher ids on every `replaceInProgress`, so on reload the card floats up
- * above the whole turn instead of landing where the tool was issued.
+ * Such cards arrive on a side channel (the `voice_note` tool bridge, the derived
+ * AskUserQuestion·ExitPlanMode observer, the `report_shipit_bug` HTTP relay),
+ * NOT the agent-event stream, so `buildTurnMessages` doesn't capture them on its
+ * own. Persisting them out-of-band via `append` reproduces the exact bug
+ * `SteeredMessage` documents: the card row keeps its early id while the turn's
+ * assistant rows are deleted+reinserted at higher ids on every
+ * `replaceInProgress`, so on reload the card floats up above the whole turn
+ * instead of landing where the tool was issued.
  *
  * `afterGroupIndex` records how many persistable assistant groups existed when
- * the note fired, so `buildTurnMessages` can re-interleave the card at its true
- * transcript position on every in-progress rebuild — same mechanism as steers.
- */
-export interface RecordedVoiceNote {
-  afterGroupIndex: number;
-  note: {
-    id: string;
-    headline: string;
-    needsAttention: boolean;
-    kind: "authored" | "ask" | "plan";
-    createdAt: string;
-  };
-}
-
-/**
- * docs/164 — a bug-report consent card recorded for in-band turn persistence.
+ * the card fired, so `buildTurnMessages` re-interleaves it at its true transcript
+ * position on every in-progress rebuild — same mechanism as steers. `message` is
+ * the exact `PersistedMessage` row to interleave (`{ role, text: "", <field>: … }`).
  *
- * Same shape and rationale as `RecordedVoiceNote`: the card arrives off the
- * agent-event stream (the `report_shipit_bug` HTTP relay) while the proposing
- * turn is still running, so `buildTurnMessages` re-interleaves it at its true
- * transcript position — anchored by `afterGroupIndex` — instead of letting an
- * out-of-band `append` float it above the whole turn on reload.
+ * Use `emitChatCard` (chat-card-persistence.ts) to emit + record in one call —
+ * that is the single supported way to add a card so it can't be emit-only.
  */
-export interface RecordedBugReportCard {
+export interface RecordedChatCard {
   afterGroupIndex: number;
-  card: PersistedBugReport;
+  message: PersistedMessage;
 }
 
 export interface QueuedMessage {
@@ -347,8 +333,7 @@ export function resetRunnerTurnState(
   runner.chatMessageGroups = [];
   runner.needsNewMessageGroup = true;
   runner.steeredMessages = [];
-  runner.voiceNotes = [];
-  runner.bugReportCards = [];
+  runner.recordedCards = [];
   runner.wasInterrupted = false;
   runner.activeReviewFilePath = opts?.reviewFilePath ?? null;
   runner.pendingCommitLink = null;
@@ -444,12 +429,10 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   chatMessageGroups: ChatMessageGroup[];
   needsNewMessageGroup: boolean;
   steeredMessages: SteeredMessage[];
-  /** docs/163 — voice notes recorded this turn, folded into chat history by
-   * `buildTurnMessages` so the card persists at its true transcript position. */
-  voiceNotes: RecordedVoiceNote[];
-  /** docs/164 — bug-report consent cards recorded this turn, folded into chat
-   * history by `buildTurnMessages` (same mechanism as `voiceNotes`). */
-  bugReportCards: RecordedBugReportCard[];
+  /** Inline chat cards recorded this turn (voice notes, bug-report cards, …),
+   * folded into chat history by `buildTurnMessages` so each card persists at its
+   * true transcript position. Populated via `emitChatCard` / `recordChatCard`. */
+  recordedCards: RecordedChatCard[];
   agentId: AgentId;
   /**
    * Commit info captured by `postTurnCommit` that couldn't be linked
@@ -637,8 +620,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _chatMessageGroups: ChatMessageGroup[] = [];
   private _needsNewMessageGroup = true;
   private _steeredMessages: SteeredMessage[] = [];
-  private _voiceNotes: RecordedVoiceNote[] = [];
-  private _bugReportCards: RecordedBugReportCard[] = [];
+  private _recordedCards: RecordedChatCard[] = [];
   private _messageQueue: QueuedMessage[] = [];
   private _terminal: TerminalProcess | null = null;
   private _terminalOutputBuffer = "";
@@ -690,10 +672,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set needsNewMessageGroup(v: boolean) { this._needsNewMessageGroup = v; }
   get steeredMessages(): SteeredMessage[] { return this._steeredMessages; }
   set steeredMessages(m: SteeredMessage[]) { this._steeredMessages = m; }
-  get voiceNotes(): RecordedVoiceNote[] { return this._voiceNotes; }
-  set voiceNotes(m: RecordedVoiceNote[]) { this._voiceNotes = m; }
-  get bugReportCards(): RecordedBugReportCard[] { return this._bugReportCards; }
-  set bugReportCards(m: RecordedBugReportCard[]) { this._bugReportCards = m; }
+  get recordedCards(): RecordedChatCard[] { return this._recordedCards; }
+  set recordedCards(m: RecordedChatCard[]) { this._recordedCards = m; }
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
   getAgent(): AgentProcess | null { return this.agent; }

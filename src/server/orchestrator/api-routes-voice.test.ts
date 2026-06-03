@@ -50,12 +50,12 @@ function makeCredentialStore() {
 /** Fake runner registry capturing emitted WS messages for one session. */
 function makeRunnerRegistry(sessionId: string) {
   const emitted: { type: string; [k: string]: unknown }[] = [];
-  // The native sink records the card on the runner (docs/163): `recordVoiceNote`
-  // reads chatMessageGroups for the anchor and pushes onto voiceNotes.
+  // The native sink records the card on the runner (docs/163): `emitChatCard`
+  // reads chatMessageGroups for the anchor and pushes onto recordedCards.
   const runner = {
     emitMessage: (m: { type: string }) => emitted.push(m),
     chatMessageGroups: [] as { text: string; toolUse: unknown[] }[],
-    voiceNotes: [] as unknown[],
+    recordedCards: [] as unknown[],
   };
   return {
     emitted,
@@ -512,7 +512,7 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
     });
     // docs/163 — the card is recorded on the runner for in-band persistence so
     // it reloads where the tool was issued, not above the turn.
-    expect(runner.voiceNotes).toHaveLength(1);
+    expect(runner.recordedCards).toHaveLength(1);
     await app.close();
   });
 

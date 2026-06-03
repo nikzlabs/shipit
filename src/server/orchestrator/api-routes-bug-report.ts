@@ -20,7 +20,7 @@ import { resolveSessionDir } from "./api-routes.js";
 import { getErrorMessage } from "./validation.js";
 import { resolveBuildId } from "./build-id.js";
 import { compileBugReport, type BugReportProducer } from "./services/bug-report.js";
-import { recordBugReportCard } from "./ws-handlers/agent-listeners.js";
+import { emitChatCard } from "./chat-card-persistence.js";
 import type { PersistedBugReport } from "./chat-history.js";
 
 export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
@@ -75,24 +75,13 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
         const filedAs = deps.githubAuthManager.getStatus().username;
         const createdAt = new Date().toISOString();
 
-        runner.emitMessage({
-          type: "bug_report_card",
-          sessionId,
-          cardId: compiled.cardId,
-          title: compiled.title,
-          body: compiled.body,
-          stage2Ran: compiled.stage2Ran,
-          producer: compiled.producer,
-          ...(filedAs ? { filedAs } : {}),
-          createdAt,
-        });
-
         // Persist the card in-band with the proposing turn so it survives a
-        // session switch / full reload (the emit above only buffers into the
-        // turn-event log, which a reconnect replays but a reload rebuilds from
-        // chat history). Anchored by `recordBugReportCard` so `buildTurnMessages`
-        // lands it where the `report_shipit_bug` tool fired — not floating above
-        // the whole turn. Filed/failed transitions patch this record in place.
+        // session switch / full reload, not just a WS reconnect. `emitChatCard`
+        // emits the live card AND records it (anchored so `buildTurnMessages`
+        // lands it where the `report_shipit_bug` tool fired, not floating above
+        // the whole turn) — the single primitive that makes a transcript card
+        // impossible to ship emit-only. Filed/failed transitions later patch
+        // this record in place via `updateBugReportCard`.
         const persistedCard: PersistedBugReport = {
           cardId: compiled.cardId,
           phase: "draft",
@@ -103,7 +92,21 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
           createdAt,
           ...(filedAs ? { filedAs } : {}),
         };
-        recordBugReportCard(runner, persistedCard);
+        emitChatCard(
+          runner,
+          {
+            type: "bug_report_card",
+            sessionId,
+            cardId: compiled.cardId,
+            title: compiled.title,
+            body: compiled.body,
+            stage2Ran: compiled.stage2Ran,
+            producer: compiled.producer,
+            ...(filedAs ? { filedAs } : {}),
+            createdAt,
+          },
+          { role: "assistant", text: "", bugReport: persistedCard },
+        );
 
         return {
           ok: true,
