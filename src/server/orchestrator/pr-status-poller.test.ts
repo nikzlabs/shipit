@@ -1220,10 +1220,58 @@ describe("PrStatusPoller", () => {
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledTimes(1);
   });
 
-  it("REST verify unsticks lastKnown when it is stale-merged but the PR is actually open", async () => {
+  it("surfaces a brand-new open PR from REST when the bulk GraphQL view hasn't indexed it yet", async () => {
+    // The exact failure users hit: the agent runs `gh pr create`, the route
+    // force-refreshes, but GitHub's bulk GraphQL view hasn't indexed the new
+    // PR yet (eventual consistency). The forced poll falls through to the REST
+    // verify, which confirms the PR is open. Previously this returned without
+    // broadcasting, so the card only appeared on a later poll (up to 120s).
+    // Now the open PR is surfaced immediately.
+    const withoutPr = {
+      data: { repository: { pullRequests: { nodes: [] } } },
+    };
+    const freshlyCreatedPr = {
+      url: "https://github.com/owner/repo/pull/99",
+      number: 99,
+      base: "main",
+      title: "Add the widget",
+      body: "## Summary\nAdds a widget.",
+      state: "open" as const,
+      merged_at: null,
+      additions: 42,
+      deletions: 3,
+    };
+    githubAuth = makeGitHubAuth(withoutPr, freshlyCreatedPr);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The PR is surfaced immediately — persisted and broadcast — without
+    // waiting for GraphQL to index it.
+    expect(sessionManager.setPrStatus).toHaveBeenCalledWith(
+      "s1",
+      expect.objectContaining({ sessionId: "s1", prNumber: 99, prState: "open" }),
+    );
+    expect(sseBroadcast).toHaveBeenCalledWith(
+      "pr_status",
+      expect.objectContaining({
+        updates: [expect.objectContaining({ prNumber: 99, prState: "open" })],
+      }),
+    );
+    expect(poller.getStatus("s1")).toMatchObject({ prNumber: 99, prState: "open" });
+  });
+
+  it("REST verify surfaces the open PR when lastKnown is stale-merged but the PR is actually open", async () => {
     // Setup: persisted snapshot says "merged" (the bug we're recovering
-    // from), but REST verify confirms the PR is still open. The poller
-    // should clear the snapshot and broadcast a removal.
+    // from), but REST verify confirms the PR is still open. The poller now
+    // surfaces the open PR directly from the REST result (no remove-then-
+    // repopulate flicker) — the next GraphQL poll enriches it.
     const persistedMerged = {
       sessionId: "s1",
       prNumber: 42,
@@ -1275,11 +1323,20 @@ describe("PrStatusPoller", () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sessionManager.setPrStatus).toHaveBeenCalledWith("s1", null);
+    // The stale "merged" snapshot is replaced by an "open" summary built from
+    // the REST result, persisted, and broadcast immediately.
+    expect(sessionManager.setPrStatus).toHaveBeenCalledWith(
+      "s1",
+      expect.objectContaining({ sessionId: "s1", prNumber: 42, prState: "open" }),
+    );
     expect(sseBroadcast).toHaveBeenCalledWith(
       "pr_status",
-      expect.objectContaining({ updates: [], removals: ["s1"] }),
+      expect.objectContaining({
+        updates: [expect.objectContaining({ sessionId: "s1", prNumber: 42, prState: "open" })],
+      }),
     );
+    // The false-merged promotion is cleared so the session is polled again.
+    expect(poller.getStatus("s1")).toMatchObject({ prState: "open" });
   });
 
   describe("PR snapshot persistence", () => {

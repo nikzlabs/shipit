@@ -387,6 +387,39 @@ require users to configure GitHub webhooks. The agent-internal signals
 `notifyViewerAttached/Detached`) replace what a webhook would carry, and
 the gate + cadence keep the polling budget bounded.
 
+**Fresh-PR surfacing from REST (creation-lag fix).** This is the narrow
+companion to the docs/155 Phase 1d *discovery* fix (`orderBy: UPDATED_AT DESC` +
+light coverage aliases), which is what keeps a tracked, already-indexed PR
+inside the bulk window — that fix owns the steady-state "PR shows nothing for
+many minutes" case. This note covers the remaining sliver: the moments right
+after the agent runs `gh pr create` (→ `/pr/agent-create` → `trackSession` +
+`forceRefreshSession`) when GitHub's bulk `pullRequests` GraphQL view hasn't
+indexed the new PR *at all* yet — ordering can't rescue a row that isn't in the
+result set. The forced poll finds the branch *missing* and falls through to the
+per-session REST verify (`verifyMissingPr` → `findPullRequestAnyState`). That
+path used to broadcast **only** a removal (for stuck merged/closed recovery) and
+`return` for a genuinely-open PR, so the card waited for the next poll that
+finally saw the PR. `verifyMissingPr` now, when REST confirms the PR is **open**
+and there is no fresher GraphQL-derived open snapshot, builds a minimal open
+summary from the REST result (number/url/title/body/base/+−, `checks` seeded via
+the `CiGraceTracker` so the merge button isn't prematurely enabled,
+`mergeable: "unknown"`), persists and broadcasts it immediately, then lets the
+next GraphQL poll enrich it. A GraphQL-derived open snapshot is never clobbered,
+and merged/closed promotion is unchanged — so this composes with the coverage
+aliases (which fold only `OPEN` alias nodes into the branch map) rather than
+overlapping them.
+
+**Post-turn recovery backstop.** As belt-and-suspenders for the case where the
+creation route's `trackSession`/`forceRefreshSession` never ran at all (HTTP
+blip to the orchestrator, restart mid-create, `remoteUrl` not yet persisted at
+startup, or a PR opened out-of-band), `emitPrLifecycleAfterCommit`
+(`services/pr-lifecycle.ts`) now — when the poller has no status for the
+session — tracks + force-refreshes once per turn so the poller discovers the
+existing PR by branch name and recovers. It is bounded to branches that have
+actually been pushed (checked via the local remote-tracking ref, no network),
+so un-pushed / no-PR sessions add zero GitHub calls; once a PR is known, the
+early `getStatus` return short-circuits before this runs.
+
 ## Implementation Order
 
 1. **Phase 1** (inline card + CI status poller + conversation-aware descriptions) — the foundation. See [phase-1.md](./phase-1.md).
