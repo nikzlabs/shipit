@@ -65,7 +65,7 @@ import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import type { AgentOption } from "./agent-types.js";
-import type { AgentId, DocEntry, ProviderAccount } from "../server/shared/types.js";
+import type { AgentId, DocEntry, ProviderAccount, TrackerIssue } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
@@ -915,6 +915,33 @@ export default function App() {
     [handleNewSessionForRepo],
   );
 
+  // Issues tab "Start session" (docs/170) mirrors handleDocStartSession: rather
+  // than firing a headless session that auto-sends, it seeds the chat input with
+  // the issue's context so the user can edit/augment the prompt before sending.
+  const handleIssueStartSession = useCallback(
+    async (issue: TrackerIssue) => {
+      const { messages, sessions, sessionId } = useSessionStore.getState();
+      const repoUrl =
+        sessions.find((s) => s.id === sessionId)?.remoteUrl ??
+        useRepoStore.getState().activeRepoUrl;
+
+      // If the current session already has messages, switch to a fresh session
+      // first so the prefilled prompt doesn't append to an unrelated thread.
+      if (messages.length > 0 && repoUrl) {
+        await handleNewSessionForRepo(repoUrl);
+      }
+
+      // Same prompt the server's seedFromIssueRef would have sent — now editable
+      // in the input instead of dispatched immediately.
+      const lines = [`You are working on issue ${issue.identifier}: ${issue.title}`];
+      if (issue.description?.trim()) lines.push("", issue.description.trim());
+      if (issue.url?.trim()) lines.push("", `Issue link: ${issue.url.trim()}`);
+      useSessionStore.getState().setPrefillText(lines.join("\n"));
+      useUiStore.getState().setMobilePanel("chat");
+    },
+    [handleNewSessionForRepo],
+  );
+
   const handleFileSendComments = useCallback(
     (payload: SendCommentsPayload) => {
       const { prompt, filePaths, commentCount } = payload;
@@ -1078,7 +1105,7 @@ export default function App() {
         {rightTab === "docs" ? (
           <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
         ) : rightTab === "issues" ? (
-          <IssuesPanel onConnect={() => { void handleSettingsOpen("trackers"); }} />
+          <IssuesPanel onStartSession={handleIssueStartSession} onConnect={() => { void handleSettingsOpen("trackers"); }} />
         ) : rightTab === "terminal" ? (
           <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} sessionId={wsSessionId} onReconnectWs={reconnect} shellContent={
             (shellStarted || terminalMode === "shell") ? (
