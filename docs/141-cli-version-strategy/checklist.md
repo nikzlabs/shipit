@@ -59,7 +59,10 @@ Tracks the four-axis rollout from `plan.md`. Order follows the plan's
 
 ## Axis 1 / Option C — tested pin + auto-bump (Renovate)
 
-- [ ] Install the Mend-hosted Renovate GitHub App (out-of-band admin action).
+- [x] Install the Mend-hosted Renovate GitHub App (out-of-band admin action).
+      Confirmed live: it opened the grouped bump PR #961 ("Update agent CLIs to
+      v0.134.0", branch `renovate/agent-clis`) with `automerge: false`, awaiting
+      a manual merge.
 - [x] Commit `renovate.json` targeting `docker/agent-cli/package.json` as a
       dependency target. Scoped with `includePaths: ["docker/agent-cli/**"]` so
       Renovate ignores the root repo deps and only bumps the three agent CLIs;
