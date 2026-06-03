@@ -55,6 +55,18 @@ See `docs/001-websocket-protocol/plan.md` for the full endpoint and message refe
 - Access app-level managers directly from `ctx` (`ctx.sessionManager`, `ctx.deploymentStore`, etc.).
 - Import `getErrorMessage` from `./validation.js` for consistent error formatting (within orchestrator).
 
+### Server → client messages that render in the chat MUST be persisted
+
+If your new server-to-client message renders **inline in the chat transcript** (a bubble or a card in `MessageList.tsx`), emitting it is **not enough**. `runner.emitMessage()` is transport only: it broadcasts to viewers and buffers into the per-turn turn-event log (replayed on a WS **reconnect**), but it does **not** write to persisted chat history. A session **switch** and a full **page reload** rebuild the transcript from `ChatHistoryManager` (`GET /history`), so an emit-only card renders live, survives a reconnect, then **vanishes** on switch/reload. This has bitten us repeatedly (voice notes `docs/163`, bug-report cards `docs/164`) — see the "Chat transcript content MUST be persisted, not just emitted" pattern in `CLAUDE.md` for the full checklist.
+
+For a card that arrives off the agent-event stream (HTTP relay or post-turn WS):
+1. Emit it with `emitChatCard` (`chat-card-persistence.ts`) — never bare `emitMessage` — so it's emitted AND recorded in-band (anchored by `afterGroupIndex`) in one call and `buildTurnMessages` lands it at its true transcript position.
+2. Add a typed field on `PersistedMessage` + column + `toRow`/`fromRow` + a `database.ts` migration; patch lifecycle transitions in place (e.g. `updateBugReportCard`).
+3. Rehydrate on the client in `loadSessionHistory`; make the live append + store upsert idempotent by id so reconnect-buffer and reload-history replays don't double-render or clobber a terminal state.
+4. Add a history round-trip test and a no-duplicate-on-replay test.
+
+Transient signals (spinners, `preview_status`, queue counts) are correctly emit-only — only persist what belongs in the scrollback.
+
 ## Adding a new deploy target
 
 1. Create a new file in `src/server/orchestrator/deploy-targets/` implementing the `DeployTarget` interface
