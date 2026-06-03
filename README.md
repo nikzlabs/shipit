@@ -1,6 +1,6 @@
 <h1 align="center">
-  <img src="src/client/public/favicon.svg" alt="ShipIt logo" width="36" height="36" valign="middle">
-  &nbsp;ShipIt
+  <img src="src/client/public/favicon.svg" alt="ShipIt logo" width="48" height="48" valign="middle">
+  <span valign="middle">&nbsp;ShipIt</span>
 </h1>
 
 **Describe products into existence — on your own Git, containers, and server.** Chat-driven
