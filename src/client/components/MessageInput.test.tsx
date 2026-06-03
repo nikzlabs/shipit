@@ -94,6 +94,97 @@ describe("MessageInput", () => {
     });
   });
 
+  describe("live steering (docs/140)", () => {
+    // `liveSteeringActive` is the already-resolved gate the parent passes down:
+    // supportsSteering capability AND the liveSteering setting AND the agent
+    // running. When true, the running composer shows BOTH Stop and Send so the
+    // user can inject a message mid-turn. When false it follows the legacy
+    // behavior — only Stop renders while running, and mid-turn input rides the
+    // per-turn queue instead.
+    it("renders both Stop and Send while running when steering is active", () => {
+      render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          isLoading={true}
+          onInterrupt={vi.fn()}
+          liveSteeringActive={true}
+        />,
+      );
+      expect(screen.getByTestId("stop-button")).toBeInTheDocument();
+      expect(screen.getByTestId("send-button")).toBeInTheDocument();
+    });
+
+    it("enables the send button while running once text is typed (steer mid-turn)", () => {
+      render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          isLoading={true}
+          onInterrupt={vi.fn()}
+          liveSteeringActive={true}
+        />,
+      );
+      const sendButton = screen.getByTestId("send-button");
+      // Empty input → send stays disabled even though the agent is running.
+      expect(sendButton).toBeDisabled();
+
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "also update the README" } });
+      // With text present and the turn in flight, send is enabled — this is the
+      // enabled-while-running behavior that distinguishes steering from the queue.
+      expect(sendButton).not.toBeDisabled();
+    });
+
+    it("sends the steered message while running without stopping the agent", () => {
+      const onSend = vi.fn();
+      const onInterrupt = vi.fn();
+      render(
+        <MessageInput
+          onSend={onSend}
+          disabled={false}
+          isLoading={true}
+          onInterrupt={onInterrupt}
+          liveSteeringActive={true}
+        />,
+      );
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "steer this in" } });
+      fireEvent.click(screen.getByTestId("send-button"));
+
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ text: "steer this in" }));
+      // Sending a steer must NOT interrupt the running turn.
+      expect(onInterrupt).not.toHaveBeenCalled();
+    });
+
+    it("shows only Stop (no Send) while running when steering is OFF — legacy queue path", () => {
+      // Default: liveSteeringActive is false (capability false or setting off).
+      render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          isLoading={true}
+          onInterrupt={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId("stop-button")).toBeInTheDocument();
+      expect(screen.queryByTestId("send-button")).not.toBeInTheDocument();
+    });
+
+    it("does not render Send mid-turn when steering is explicitly disabled", () => {
+      render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          isLoading={true}
+          onInterrupt={vi.fn()}
+          liveSteeringActive={false}
+        />,
+      );
+      expect(screen.queryByLabelText("Send message")).not.toBeInTheDocument();
+    });
+  });
+
   describe("permission mode selector", () => {
     const claudeWithModes = [{
       id: "claude", name: "Claude Code", installed: true, authConfigured: true,

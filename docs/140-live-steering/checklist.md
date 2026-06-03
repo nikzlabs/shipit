@@ -74,7 +74,7 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 - [x] Enable send button while running when steering active (capability + setting gated) — `MessageInput` shows both Stop and Send when `liveSteeringActive`
 - [x] Render steered messages inline in the live transcript (confirmed by echo / accepted turnId) — `handleMessageSteered` reconciles against the optimistic insert
 - [x] Keep `QueueIndicator` for the non-steering path (gated) — only the steering path skips the queue; the indicator renders queued messages as before
-- [ ] Component tests: input enabled-while-running, inline steered message render, queue path unchanged when off
+- [x] Component tests: input enabled-while-running, inline steered message render, queue path unchanged when off
 
 ## Phase 7 — post-stabilization cleanup (deferred until after Phase 6 soaks)
 
