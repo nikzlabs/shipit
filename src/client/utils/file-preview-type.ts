@@ -10,3 +10,10 @@ export function detectFilePreviewType(filePath: string): FilePreviewType {
   if (IMAGE_EXTENSIONS.has(ext)) return "image";
   return "code";
 }
+
+/** True when the file path should expose the manual text-edit affordance. */
+export function isEditableFilePath(filePath: string): boolean {
+  if (filePath.startsWith("/uploads/") || filePath.startsWith("uploads/")) return false;
+  const type = detectFilePreviewType(filePath);
+  return type === "code" || type === "markdown";
+}

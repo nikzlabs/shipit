@@ -17,7 +17,7 @@ export async function getFileTree(dir: string) {
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 const MAX_IMAGE_SIZE = 10 * 1_048_576; // 10 MB
-const MAX_TEXT_SIZE = 1_048_576; // 1 MB
+export const MAX_TEXT_SIZE = 1_048_576; // 1 MB
 
 function getMimeType(ext: string): string {
   if (ext === "svg") return "image/svg+xml";
@@ -77,6 +77,53 @@ export async function getFileContent(
     return { content: "Binary file — cannot display.", isBinary: true };
   }
   return { content: buf.toString("utf-8") };
+}
+
+/** Write UTF-8 content to an existing workspace text file. */
+export async function writeFileContent(
+  dir: string,
+  filePath: string,
+  content: string,
+): Promise<{ path: string; size: number }> {
+  if (filePath.startsWith("uploads/") || filePath.startsWith("/uploads/")) {
+    throw new ServiceError(400, "Uploads cannot be edited");
+  }
+  if (Buffer.byteLength(content, "utf8") > MAX_TEXT_SIZE) {
+    throw new ServiceError(413, `File content is too large to save (maximum ${(MAX_TEXT_SIZE / 1_048_576).toFixed(0)} MB)`);
+  }
+
+  const safePath = path.resolve(dir, filePath);
+  if (!safePath.startsWith(`${dir}/`)) {
+    throw new ServiceError(400, "Invalid path");
+  }
+
+  let stat;
+  try {
+    stat = await fs.stat(safePath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") throw new ServiceError(404, "File not found");
+    throw err;
+  }
+  if (!stat.isFile()) {
+    throw new ServiceError(400, "Path is not a file");
+  }
+  if (stat.size > MAX_TEXT_SIZE) {
+    throw new ServiceError(413, `File is too large to edit (${(stat.size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`);
+  }
+
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  if (IMAGE_EXTENSIONS.has(ext)) {
+    throw new ServiceError(415, "Image files cannot be edited as text");
+  }
+
+  const current = await fs.readFile(safePath);
+  if (current.includes(0)) {
+    throw new ServiceError(415, "Binary files cannot be edited as text");
+  }
+
+  await fs.writeFile(safePath, content, "utf-8");
+  return { path: filePath, size: Buffer.byteLength(content, "utf8") };
 }
 
 /** List markdown documentation files with optional status metadata. */
