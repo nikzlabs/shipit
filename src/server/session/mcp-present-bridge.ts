@@ -67,84 +67,101 @@ const inputSchema = {
   required: ["content"],
 };
 
-// Use the low-level Server (not McpServer) so we can pass a plain JSON Schema
-// rather than a zod schema — keeps zod transitive instead of a direct dep on
-// both runtimes. Mirrors the rationale documented in mcp-review-bridge.ts.
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-const server = new Server(
-  { name: "shipit-present", version: "1.0.0" },
-  { capabilities: { tools: {} } },
-);
+/**
+ * Build the MCP `Server` with the `present` tool's `ListTools` / `CallTool`
+ * handlers wired. Factored out of the module top-level so tests can connect it
+ * to an in-process transport pair without spawning stdio (the live entry point
+ * below still connects a `StdioServerTransport`). Pure construction — no I/O
+ * happens until the returned server is connected to a transport.
+ */
+export function createPresentBridgeServer() {
+  // Use the low-level Server (not McpServer) so we can pass a plain JSON Schema
+  // rather than a zod schema — keeps zod transitive instead of a direct dep on
+  // both runtimes. Mirrors the rationale documented in mcp-review-bridge.ts.
+  // eslint-disable-next-line @typescript-eslint/no-deprecated
+  const server = new Server(
+    { name: "shipit-present", version: "1.0.0" },
+    { capabilities: { tools: {} } },
+  );
 
-server.setRequestHandler(ListToolsRequestSchema, () =>
-  Promise.resolve({
-    tools: [{ name: TOOL_NAME, description: TOOL_DESCRIPTION, inputSchema }],
-  }),
-);
+  server.setRequestHandler(ListToolsRequestSchema, () =>
+    Promise.resolve({
+      tools: [{ name: TOOL_NAME, description: TOOL_DESCRIPTION, inputSchema }],
+    }),
+  );
 
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  if (req.params.name !== TOOL_NAME) {
-    return {
-      content: [{ type: "text" as const, text: `Unknown tool: ${req.params.name}` }],
-      isError: true,
-    };
-  }
-
-  const args = (req.params.arguments ?? {}) as {
-    content?: string;
-    mimeType?: string;
-    title?: string;
-    replaceId?: string;
-  };
-
-  try {
-    const res = await fetch(`${WORKER_URL}/agent-ops/present/submit`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content: args.content,
-        mimeType: args.mimeType,
-        title: args.title,
-        replaceId: args.replaceId,
-      }),
-    });
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: string;
-      presentId?: string;
-      status?: string;
-    };
-    if (!res.ok) {
-      const reason = body.error || `present service returned HTTP ${res.status}`;
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    if (req.params.name !== TOOL_NAME) {
       return {
-        content: [{ type: "text" as const, text: `present failed: ${reason}` }],
+        content: [{ type: "text" as const, text: `Unknown tool: ${req.params.name}` }],
         isError: true,
       };
     }
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify({
-            status: body.status ?? "presented",
-            presentId: body.presentId,
-            ...(args.title !== undefined ? { title: args.title } : {}),
-            ...(args.replaceId !== undefined ? { replaceId: args.replaceId } : {}),
-          }),
-        },
-      ],
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `present could not reach the worker: ${message}`,
-        },
-      ],
-      isError: true,
-    };
-  }
-});
 
-await server.connect(new StdioServerTransport());
+    const args = (req.params.arguments ?? {}) as {
+      content?: string;
+      mimeType?: string;
+      title?: string;
+      replaceId?: string;
+    };
+
+    try {
+      const res = await fetch(`${WORKER_URL}/agent-ops/present/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: args.content,
+          mimeType: args.mimeType,
+          title: args.title,
+          replaceId: args.replaceId,
+        }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        presentId?: string;
+        status?: string;
+      };
+      if (!res.ok) {
+        const reason = body.error || `present service returned HTTP ${res.status}`;
+        return {
+          content: [{ type: "text" as const, text: `present failed: ${reason}` }],
+          isError: true,
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              status: body.status ?? "presented",
+              presentId: body.presentId,
+              ...(args.title !== undefined ? { title: args.title } : {}),
+              ...(args.replaceId !== undefined ? { replaceId: args.replaceId } : {}),
+            }),
+          },
+        ],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `present could not reach the worker: ${message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  return server;
+}
+
+// Connect over stdio only when run as the entry point (the agent CLI spawns
+// this file directly via `tsx`). Importing the module — e.g. from a test —
+// must NOT touch stdin/stdout. Mirrors the `import.meta.url.endsWith(argv[1])`
+// guard used by session-worker.ts.
+if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
+  await createPresentBridgeServer().connect(new StdioServerTransport());
+}
