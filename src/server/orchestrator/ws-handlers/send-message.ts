@@ -200,6 +200,22 @@ export async function handleSendMessage(
             fileContext,
             imageContext,
           });
+          // docs/138 + docs/140 — the streaming CLI keeps its spawn-time
+          // `--permission-mode` for life, so a steered message inherits plan
+          // mode unless we push a `set_permission_mode` control_request first.
+          // This mirrors turn-executor's reuseExistingAgent branch: it's the
+          // path that lets "Accept & Execute" actually leave plan mode while
+          // live steering is on (the approval is steered into the running
+          // turn, never through executeAgentTurn). `undefined` is honored too
+          // (toggling back to the CLI's no-flag "auto" default). Skip the push
+          // when the mode already matches so we don't spam redundant requests.
+          if (
+            runnerForQueue.appliedPermissionMode !== msg.permissionMode &&
+            steeringAgent.setPermissionMode
+          ) {
+            steeringAgent.setPermissionMode(msg.permissionMode);
+            runnerForQueue.appliedPermissionMode = msg.permissionMode;
+          }
           steeringAgent.sendUserMessage(steerPrompt);
 
           // Shapes match PersistedMessage so the same payload feeds chat

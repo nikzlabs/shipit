@@ -110,6 +110,18 @@ export function trySteerDispatch(
   const agent = runner.getAgent();
   if (!agent) return false;
 
+  // docs/138 + docs/140 — mirror turn-executor's reuseExistingAgent branch:
+  // the persistent streaming CLI keeps its spawn-time `--permission-mode` for
+  // life, so push a `set_permission_mode` control_request before the steered
+  // send when the requested mode differs from what's applied. Without this a
+  // dispatch-steered message (e.g. a plan-approval relayed programmatically)
+  // stays pinned to plan mode. `undefined` is the CLI's no-flag "auto"
+  // default; skip the push when the mode already matches.
+  if (runner.appliedPermissionMode !== opts.permissionMode && agent.setPermissionMode) {
+    agent.setPermissionMode(opts.permissionMode);
+    runner.appliedPermissionMode = opts.permissionMode;
+  }
+
   agent.sendUserMessage(opts.text);
 
   // Record + persist the steered message so it survives a reload at the spot
