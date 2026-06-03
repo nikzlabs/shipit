@@ -53,6 +53,11 @@ export interface FilePreviewModalProps {
   filePath: string;
   content: string | null;
   fileType: FilePreviewType;
+  /**
+   * 1-based line to reveal and highlight when the code view mounts (e.g. from a
+   * `path:line` link). Ignored for markdown/image/binary. `null` opens at the top.
+   */
+  line?: number | null;
   actions?: FilePreviewAction[];
   /**
    * Optional sibling docs in the same directory. When more than one is
@@ -140,12 +145,15 @@ function CodeEditor({
   sessionId,
   comments,
   readOnly = false,
+  revealLine,
 }: {
   filePath: string;
   content: string;
   sessionId: string;
   comments: { id: string; kind: "line" | "selection"; line?: number; text: string }[];
   readOnly?: boolean;
+  /** 1-based line to scroll to and briefly highlight once the editor mounts. */
+  revealLine?: number;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
   const managerRef = useRef<CommentWidgetManager | null>(null);
@@ -206,6 +214,29 @@ function CodeEditor({
       });
 
       managerRef.current.setComments(lineComments);
+
+      // Jump to (and briefly highlight) the requested line, e.g. when opened
+      // from a `path:line` link in chat. Clamp to the document so an out-of-range
+      // line from a stale reference still lands somewhere sensible.
+      if (revealLine && revealLine > 0) {
+        const lineCount = editor.getModel()?.getLineCount() ?? revealLine;
+        const target = Math.min(revealLine, lineCount);
+        editor.revealLineInCenter(target);
+        editor.setPosition({ lineNumber: target, column: 1 });
+        const decorations = editor.createDecorationsCollection([
+          {
+            range: new monaco.Range(target, 1, target, 1),
+            options: {
+              isWholeLine: true,
+              className: "shipit-preview-line-highlight",
+            },
+          },
+        ]);
+        // Fade the highlight after a moment so it draws the eye without sticking.
+        setTimeout(() => {
+          if (!disposed) decorations.clear();
+        }, 2400);
+      }
     });
 
     return () => {
@@ -217,7 +248,7 @@ function CodeEditor({
     };
     // The lineComments dep is intentionally omitted: we sync via the
     // separate effect below to avoid tearing down the editor on every change.
-  }, [filePath, content, sessionId, addLineComment, editComment, deleteComment, readOnly]);
+  }, [filePath, content, sessionId, addLineComment, editComment, deleteComment, readOnly, revealLine]);
 
   // Sync comments without rebuilding the editor.
   // eslint-disable-next-line no-restricted-syntax -- syncing widget state with store updates
@@ -355,6 +386,7 @@ export function FilePreviewModal({
   filePath,
   content,
   fileType,
+  line,
   actions,
   siblings,
   onSwitchSibling,
@@ -635,6 +667,7 @@ export function FilePreviewModal({
               sessionId={sessionId}
               comments={codeComments}
               readOnly={isAgentReviewMode}
+              revealLine={line ?? undefined}
             />
           )}
         </div>
