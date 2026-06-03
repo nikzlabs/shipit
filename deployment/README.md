@@ -26,13 +26,11 @@ Self-host ShipIt on any Linux VPS with optional Cloudflare Tunnel and/or Tailsca
 
 ```bash
 ssh root@<server-ip>
-
-apt-get update -qq && apt-get install -y -qq git
-git clone https://github.com/nicholasalt/shipit.git /opt/shipit
-bash /opt/shipit/deployment/vps/setup.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/main/deployment/vps/setup.sh)
 ```
 
 The script will ask whether to install Cloudflare, Tailscale, both, or neither, then automatically:
+- Install git and clone ShipIt to `/opt/shipit` (installing a fork? set `SHIPIT_REPO_URL=https://github.com/you/shipit.git` before the command)
 - Install Docker
 - Configure host limits needed for session containers and file watching
 - Install the selected access path:
