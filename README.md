@@ -56,15 +56,16 @@ If you want to hack on ShipIt itself instead of just running it, see
 ### Local (Docker)
 
 ```bash
-git clone https://github.com/nicolasalt/shipit.git
-cd shipit
-docker/local/prod.sh
+curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/main/install.sh | sh
 ```
 
-This builds the orchestrator + session-worker images and starts ShipIt with Docker Compose at
-[http://localhost:4123](http://localhost:4123). On first run, ShipIt prompts you to authenticate
-with the agent provider you've chosen via an OAuth flow in the browser. Credentials are stored in a
-persistent Docker volume so you only need to do this once per provider.
+This clones ShipIt, builds the orchestrator + session-worker images, and starts it with Docker
+Compose at [http://localhost:4123](http://localhost:4123). On first run, ShipIt prompts you to
+authenticate with the agent provider you've chosen via an OAuth flow in the browser. Credentials are
+stored in a persistent Docker volume so you only need to do this once per provider.
+
+Prefer to clone it yourself? `git clone https://github.com/nicolasalt/shipit.git`, then run
+`docker/local/prod.sh` from inside the checkout.
 
 ### VPS
 
