@@ -534,6 +534,29 @@ describe("ClaudeProcess", () => {
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).toContain("Skill");
     });
+
+    // The agent stalls in plan mode under live steering when `ExitPlanMode` is
+    // gated behind a headless permission prompt the worker can't answer
+    // (docs/149): the model never surfaces a clean ExitPlanMode tool_use, so
+    // the PlanApproval card never becomes interactive and file edits stay
+    // blocked. It must be allowlisted in every mode — especially plan, where it
+    // matters most. ExitPlanMode is read-only/safe (it only signals plan
+    // completion), so it's safe under plan mode too.
+    it.each([
+      ["auto", undefined],
+      ["plan", "plan"],
+      ["guarded", "guarded"],
+    ] as const)("allowlists ExitPlanMode in %s mode", (_label, permissionMode) => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", permissionMode: permissionMode as any });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools.split(",")).toContain("ExitPlanMode");
+    });
   });
 
   describe("kill", () => {
@@ -730,6 +753,28 @@ describe("StreamingClaudeProcess", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  // The streaming process is the live-steering path where the ExitPlanMode bug
+  // actually bit: a gated ExitPlanMode left the session stranded in plan mode.
+  // It must be in the allowlist in every mode, especially plan. See the
+  // ClaudeProcess counterpart and docs/149 / docs/140 §6.8.
+  describe("allowlist", () => {
+    it.each([
+      ["auto", undefined],
+      ["plan", "plan"],
+      ["guarded", "guarded"],
+    ] as const)("allowlists ExitPlanMode in %s mode", (_label, permissionMode) => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "first", permissionMode: permissionMode as any });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools.split(",")).toContain("ExitPlanMode");
+    });
   });
 
   describe("interrupt", () => {

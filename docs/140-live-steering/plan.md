@@ -410,6 +410,20 @@ left untouched (interrupting there would set `wasInterrupted` and drop queued
 messages). Coverage in `live-steering.test.ts` (interrupt fires, tool_result
 suppressed, and the off-toggle one-shot path does NOT interrupt).
 
+**Prerequisite: `ExitPlanMode` must be allowlisted.** This guard only fires when
+the CLI surfaces a clean `ExitPlanMode` tool_use. `ExitPlanMode` was originally
+absent from both `AUTO_TOOLS` and `PLAN_TOOLS` in
+`src/server/session/agents/claude/process.ts`, so under headless
+`--input-format stream-json` the CLI gated the call behind an interactive
+permission prompt the worker can't answer (the docs/149 class of bug). The
+model then never emitted a clean `ExitPlanMode` tool_use, the guard never fired,
+and a live-steering plan-mode session was stranded — no working PlanApproval
+card and no file edits, with the agent complaining it "can't exit plan mode."
+`ExitPlanMode` is read-only/safe (it only signals the plan is complete), so it
+is now allowlisted in **every** mode, including plan. Coverage in
+`process.test.ts` asserts it is present in the allowlist across auto/plan/guarded
+for both `ClaudeProcess` and `StreamingClaudeProcess`.
+
 ## Open questions to resolve during build
 
 - ~~Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.
