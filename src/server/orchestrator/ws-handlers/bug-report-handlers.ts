@@ -18,7 +18,7 @@ import type { WsSubmitBugReport } from "../../shared/types/ws-client-messages.js
 import { resolveRunner } from "./resolve-runner.js";
 import { fileBugReport, type BugReportProducer } from "../services/bug-report.js";
 
-type BugReportCtx = ConnectionCtx & RunnerCtx & Pick<AppCtx, "sessionManager" | "githubAuthManager">;
+type BugReportCtx = ConnectionCtx & RunnerCtx & Pick<AppCtx, "sessionManager" | "githubAuthManager" | "chatHistoryManager">;
 
 export async function handleSubmitBugReport(
   ctx: BugReportCtx,
@@ -58,14 +58,38 @@ export async function handleSubmitBugReport(
       number: result.number,
       url: result.url,
     });
+    // Persist the terminal state so the card comes back as "filed" (with its
+    // issue link) on reload — the proposing-turn row is finalized by now, so a
+    // direct patch is safe. We also persist the user-edited title/body that was
+    // actually filed.
+    ctx.chatHistoryManager.updateBugReportCard(sessionId, msg.cardId, {
+      phase: "filed",
+      title,
+      body,
+      issueNumber: result.number,
+      issueUrl: result.url,
+      errorMessage: undefined,
+      scopeError: undefined,
+    });
     return;
   }
 
+  const failureMessage = result.message ?? "Failed to file the bug report.";
   runner.emitMessage({
     type: "bug_report_failed",
     sessionId,
     cardId: msg.cardId,
-    message: result.message ?? "Failed to file the bug report.",
+    message: failureMessage,
     ...(result.scopeError ? { scopeError: true } : {}),
+  });
+  // Persist the failure as an editable draft (mirrors the client `setFailed`
+  // → draft behavior) so a reload brings the card back ready for retry rather
+  // than losing the error context entirely.
+  ctx.chatHistoryManager.updateBugReportCard(sessionId, msg.cardId, {
+    phase: "draft",
+    title,
+    body,
+    errorMessage: failureMessage,
+    scopeError: Boolean(result.scopeError),
   });
 }

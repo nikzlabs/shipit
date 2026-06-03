@@ -12,6 +12,7 @@ import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, Permi
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
+import type { PersistedBugReport } from "./chat-history.js";
 
 // `runDispatchedTurn` lives in a separate module because it depends on
 // `wireAgentListeners` at runtime, which would otherwise create an import
@@ -117,6 +118,20 @@ export interface RecordedVoiceNote {
     kind: "authored" | "ask" | "plan";
     createdAt: string;
   };
+}
+
+/**
+ * docs/164 — a bug-report consent card recorded for in-band turn persistence.
+ *
+ * Same shape and rationale as `RecordedVoiceNote`: the card arrives off the
+ * agent-event stream (the `report_shipit_bug` HTTP relay) while the proposing
+ * turn is still running, so `buildTurnMessages` re-interleaves it at its true
+ * transcript position — anchored by `afterGroupIndex` — instead of letting an
+ * out-of-band `append` float it above the whole turn on reload.
+ */
+export interface RecordedBugReportCard {
+  afterGroupIndex: number;
+  card: PersistedBugReport;
 }
 
 export interface QueuedMessage {
@@ -333,6 +348,7 @@ export function resetRunnerTurnState(
   runner.needsNewMessageGroup = true;
   runner.steeredMessages = [];
   runner.voiceNotes = [];
+  runner.bugReportCards = [];
   runner.wasInterrupted = false;
   runner.activeReviewFilePath = opts?.reviewFilePath ?? null;
   runner.pendingCommitLink = null;
@@ -431,6 +447,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** docs/163 — voice notes recorded this turn, folded into chat history by
    * `buildTurnMessages` so the card persists at its true transcript position. */
   voiceNotes: RecordedVoiceNote[];
+  /** docs/164 — bug-report consent cards recorded this turn, folded into chat
+   * history by `buildTurnMessages` (same mechanism as `voiceNotes`). */
+  bugReportCards: RecordedBugReportCard[];
   agentId: AgentId;
   /**
    * Commit info captured by `postTurnCommit` that couldn't be linked
@@ -619,6 +638,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _needsNewMessageGroup = true;
   private _steeredMessages: SteeredMessage[] = [];
   private _voiceNotes: RecordedVoiceNote[] = [];
+  private _bugReportCards: RecordedBugReportCard[] = [];
   private _messageQueue: QueuedMessage[] = [];
   private _terminal: TerminalProcess | null = null;
   private _terminalOutputBuffer = "";
@@ -672,6 +692,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set steeredMessages(m: SteeredMessage[]) { this._steeredMessages = m; }
   get voiceNotes(): RecordedVoiceNote[] { return this._voiceNotes; }
   set voiceNotes(m: RecordedVoiceNote[]) { this._voiceNotes = m; }
+  get bugReportCards(): RecordedBugReportCard[] { return this._bugReportCards; }
+  set bugReportCards(m: RecordedBugReportCard[]) { this._bugReportCards = m; }
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
   getAgent(): AgentProcess | null { return this.agent; }

@@ -45,4 +45,4 @@
 ## Follow-ups (not blockers for the in-product flow)
 - [ ] Maintainer-side GitHub Action on `nicolasalt/shipit` to apply real `user-reported` / `source:*` labels from the `<!-- shipit-report … -->` body marker (lives in the upstream repo, not this codebase)
 - [ ] docs/023 full session export consumes the shared Stage-1 redactor (un-pause that doc when picked up)
-- [ ] Optional: persist the card payload to chat history so it survives a mid-review reload (currently store-backed and transient)
+- [x] Persist the card payload + lifecycle to chat history so it survives a session switch / full reload (recorded in-band with the proposing turn via `recordBugReportCard` → `buildTurnMessages`, like voice notes; filed/failed patched in place via `ChatHistoryManager.updateBugReportCard`; `loadSessionHistory` seeds the store; client append + store `upsertCard` are idempotent against the reconnect buffer replay)

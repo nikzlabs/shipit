@@ -32,8 +32,20 @@ export interface BugReportCardState {
 
 interface BugReportStore {
   cards: Record<string, BugReportCardState>;
-  /** Seed a new draft card from a `bug_report_card` event. */
+  /**
+   * Seed a new draft card from a live `bug_report_card` event. Idempotent and
+   * non-clobbering: if a card with this id already exists (seeded from persisted
+   * history, or re-delivered by a turn-event-buffer replay on reconnect) it is
+   * left untouched, so a re-delivered *draft* can't reset a card that has since
+   * been filed.
+   */
   upsertCard: (card: Omit<BugReportCardState, "phase">) => void;
+  /**
+   * Authoritative hydration from persisted chat history (docs/164). Overwrites
+   * any existing entry so the final persisted phase (e.g. `filed` with its issue
+   * link) wins over a draft a buffer replay may have created first.
+   */
+  seedCards: (cards: BugReportCardState[]) => void;
   /** Mark a card as filing (optimistic) on submit. */
   setFiling: (cardId: string) => void;
   /** Terminal success. */
@@ -46,9 +58,17 @@ interface BugReportStore {
 export const useBugReportStore = create<BugReportStore>((set) => ({
   cards: {},
   upsertCard: (card) =>
-    set((s) => ({
-      cards: { ...s.cards, [card.cardId]: { ...card, phase: "draft" } },
-    })),
+    set((s) =>
+      s.cards[card.cardId]
+        ? s
+        : { cards: { ...s.cards, [card.cardId]: { ...card, phase: "draft" } } },
+    ),
+  seedCards: (cards) =>
+    set((s) => {
+      const next = { ...s.cards };
+      for (const c of cards) next[c.cardId] = c;
+      return { cards: next };
+    }),
   setFiling: (cardId) =>
     set((s) =>
       s.cards[cardId]

@@ -20,6 +20,8 @@ import { resolveSessionDir } from "./api-routes.js";
 import { getErrorMessage } from "./validation.js";
 import { resolveBuildId } from "./build-id.js";
 import { compileBugReport, type BugReportProducer } from "./services/bug-report.js";
+import { recordBugReportCard } from "./ws-handlers/agent-listeners.js";
+import type { PersistedBugReport } from "./chat-history.js";
 
 export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   app.post<{
@@ -70,6 +72,9 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
               : {}),
         });
 
+        const filedAs = deps.githubAuthManager.getStatus().username;
+        const createdAt = new Date().toISOString();
+
         runner.emitMessage({
           type: "bug_report_card",
           sessionId,
@@ -78,11 +83,27 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
           body: compiled.body,
           stage2Ran: compiled.stage2Ran,
           producer: compiled.producer,
-          ...(deps.githubAuthManager.getStatus().username
-            ? { filedAs: deps.githubAuthManager.getStatus().username }
-            : {}),
-          createdAt: new Date().toISOString(),
+          ...(filedAs ? { filedAs } : {}),
+          createdAt,
         });
+
+        // Persist the card in-band with the proposing turn so it survives a
+        // session switch / full reload (the emit above only buffers into the
+        // turn-event log, which a reconnect replays but a reload rebuilds from
+        // chat history). Anchored by `recordBugReportCard` so `buildTurnMessages`
+        // lands it where the `report_shipit_bug` tool fired — not floating above
+        // the whole turn. Filed/failed transitions patch this record in place.
+        const persistedCard: PersistedBugReport = {
+          cardId: compiled.cardId,
+          phase: "draft",
+          title: compiled.title,
+          body: compiled.body,
+          stage2Ran: compiled.stage2Ran,
+          producer: compiled.producer,
+          createdAt,
+          ...(filedAs ? { filedAs } : {}),
+        };
+        recordBugReportCard(runner, persistedCard);
 
         return {
           ok: true,
