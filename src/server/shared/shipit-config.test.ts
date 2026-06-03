@@ -283,6 +283,84 @@ describe("parseShipitConfig", () => {
     const config = parseShipitConfig({ "x-shipit-host-mounts": ["/var/log/journal"] });
     expect(config.warnings).toEqual([]);
   });
+
+  // ---- release: block (docs/171 Phase 2) ----
+
+  describe("release: block", () => {
+    it("returns undefined when absent", () => {
+      const config = parseShipitConfig({});
+      expect(config.release).toBeUndefined();
+    });
+
+    it("parses a full valid release block", () => {
+      const config = parseShipitConfig({
+        release: {
+          "version-source": "Cargo.toml",
+          "tag-pattern": "v{version}",
+          "prerelease-pattern": "v{version}-rc.{n}",
+          notes: "github-generated",
+          gate: "cargo test",
+          mechanism: "tag-triggered",
+          workflow: ".github/workflows/release.yml",
+        },
+      });
+      expect(config.release).toEqual({
+        versionSource: "Cargo.toml",
+        tagPattern: "v{version}",
+        prereleasePattern: "v{version}-rc.{n}",
+        notes: "github-generated",
+        gate: "cargo test",
+        mechanism: "tag-triggered",
+        workflow: ".github/workflows/release.yml",
+      });
+    });
+
+    it("accepts a partial release block (only version-source)", () => {
+      const config = parseShipitConfig({ release: { "version-source": "VERSION" } });
+      expect(config.release?.versionSource).toBe("VERSION");
+      expect(config.release?.tagPattern).toBeUndefined();
+    });
+
+    it("throws for non-object release block", () => {
+      expect(() => parseShipitConfig({ release: "tag-only" })).toThrow(ShipitConfigError);
+    });
+
+    it("throws for unknown version-source value", () => {
+      expect(() => parseShipitConfig({ release: { "version-source": "lerna.json" } })).toThrow(ShipitConfigError);
+    });
+
+    it("throws for tag-pattern without {version}", () => {
+      expect(() => parseShipitConfig({ release: { "tag-pattern": "release-{tag}" } })).toThrow(ShipitConfigError);
+    });
+
+    it("throws for unknown mechanism", () => {
+      expect(() => parseShipitConfig({ release: { mechanism: "auto-push" } })).toThrow(ShipitConfigError);
+    });
+
+    it("warns for unknown release keys", () => {
+      const config = parseShipitConfig({ release: { "auto-publish": true } });
+      expect(config.warnings.some((w) => w.includes("release.auto-publish"))).toBe(true);
+    });
+
+    it("accepts all valid version-source values", () => {
+      for (const vs of ["package.json", "Cargo.toml", "pyproject.toml", "VERSION", "tag"]) {
+        const config = parseShipitConfig({ release: { "version-source": vs } });
+        expect(config.release?.versionSource).toBe(vs);
+      }
+    });
+
+    it("accepts all valid mechanism values", () => {
+      for (const mech of ["tag-triggered", "brokered"]) {
+        const config = parseShipitConfig({ release: { mechanism: mech } });
+        expect(config.release?.mechanism).toBe(mech);
+      }
+    });
+
+    it("does not warn on the release top-level key", () => {
+      const config = parseShipitConfig({ release: {} });
+      expect(config.warnings).toEqual([]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

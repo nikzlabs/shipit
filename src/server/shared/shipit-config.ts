@@ -43,6 +43,37 @@ export interface ComposeConfig {
   dockerSocket: boolean;
 }
 
+/** Allowed version-source identifiers for the `release:` block (docs/171 Phase 2). */
+export type ReleaseVersionSource = "package.json" | "Cargo.toml" | "pyproject.toml" | "VERSION" | "tag";
+
+/** Release mechanism: tag-triggered (option a) or orchestrator-brokered (option b, Phase 4). */
+export type ReleaseMechanism = "tag-triggered" | "brokered";
+
+/**
+ * Optional `release:` block in shipit.yaml — overrides auto-detection for
+ * multi-ecosystem repos (docs/171 Phase 2). All fields are optional; absent
+ * fields fall back to auto-detection or documented defaults.
+ */
+export interface ReleaseConfig {
+  /** Which file holds the authoritative version. Auto-detected when absent. */
+  versionSource?: ReleaseVersionSource;
+  /** Tag name pattern. Must contain `{version}`. Default: `"v{version}"`. */
+  tagPattern?: string;
+  /** Tag pattern for release candidates. Default: `"v{version}-rc.{n}"`. */
+  prereleasePattern?: string;
+  /**
+   * How release notes are sourced. One of: `"github-generated"` (default),
+   * `"commits"`, or `"changelog:<path>"` (e.g. `"changelog:CHANGELOG.md"`).
+   */
+  notes?: string;
+  /** Optional local gate command the agent runs before tagging (e.g. `"npm test"`). */
+  gate?: string;
+  /** Release mechanism. Default: `"tag-triggered"`. */
+  mechanism?: ReleaseMechanism;
+  /** Path to the release workflow file (for existence checks and scaffolding). */
+  workflow?: string;
+}
+
 /**
  * docs/128 — a single allow-listed read-only host path mounted into the agent
  * container. Only used by privileged "ops" sessions; the container-creation
@@ -72,6 +103,8 @@ export interface ShipitConfig {
    * to the agent container when the session's server-side `kind === "ops"`.
    */
   hostMounts: HostMount[];
+  /** Optional release configuration block (docs/171 Phase 2). */
+  release?: ReleaseConfig;
   /** Warnings emitted during parsing (unknown keys, migration hints). */
   warnings: string[];
 }
@@ -98,7 +131,7 @@ export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
 // Known keys for validation
 // ---------------------------------------------------------------------------
 
-const KNOWN_TOP_LEVEL_KEYS = new Set(["version", "agent", "compose", "x-shipit-host-mounts"]);
+const KNOWN_TOP_LEVEL_KEYS = new Set(["version", "agent", "compose", "release", "x-shipit-host-mounts"]);
 const KNOWN_AGENT_KEYS = new Set(["memory", "cpu", "pids", "install"]);
 
 /**
@@ -174,10 +207,13 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
   // ---- compose ----
   const compose = parseComposeConfig(raw.compose);
 
+  // ---- release (docs/171) ----
+  const release = parseReleaseConfig(raw.release, warnings);
+
   // ---- x-shipit-host-mounts (docs/128) ----
   const hostMounts = parseHostMounts(raw["x-shipit-host-mounts"]);
 
-  return { version, agent, compose, hostMounts, warnings };
+  return { version, agent, compose, release, hostMounts, warnings };
 }
 
 /**
@@ -273,6 +309,101 @@ function parseInstallList(val: unknown): string[] {
   }
 
   throw new ShipitConfigError("`agent.install` must be a string or array of strings");
+}
+
+const KNOWN_RELEASE_KEYS = new Set([
+  "version-source",
+  "tag-pattern",
+  "prerelease-pattern",
+  "notes",
+  "gate",
+  "mechanism",
+  "workflow",
+]);
+const RELEASE_VERSION_SOURCES: ReadonlySet<string> = new Set([
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "VERSION",
+  "tag",
+]);
+const RELEASE_MECHANISMS: ReadonlySet<string> = new Set(["tag-triggered", "brokered"]);
+
+function parseReleaseConfig(raw: unknown, warnings: string[]): ReleaseConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ShipitConfigError("`release` must be a mapping (object)");
+  }
+
+  const obj = raw as Record<string, unknown>;
+
+  for (const key of Object.keys(obj)) {
+    if (!KNOWN_RELEASE_KEYS.has(key)) {
+      warnings.push(`Unknown key \`release.${key}\` in shipit.yaml.`);
+    }
+  }
+
+  const result: ReleaseConfig = {};
+
+  if ("version-source" in obj) {
+    const vs = obj["version-source"];
+    if (typeof vs !== "string" || !RELEASE_VERSION_SOURCES.has(vs)) {
+      const allowed = [...RELEASE_VERSION_SOURCES].join(", ");
+      throw new ShipitConfigError(`\`release.version-source\` must be one of: ${allowed}`);
+    }
+    result.versionSource = vs as ReleaseVersionSource;
+  }
+
+  if ("tag-pattern" in obj) {
+    const tp = obj["tag-pattern"];
+    if (typeof tp !== "string" || !tp.includes("{version}")) {
+      throw new ShipitConfigError("`release.tag-pattern` must be a string containing `{version}`");
+    }
+    result.tagPattern = tp;
+  }
+
+  if ("prerelease-pattern" in obj) {
+    const pp = obj["prerelease-pattern"];
+    if (typeof pp !== "string") {
+      throw new ShipitConfigError("`release.prerelease-pattern` must be a string");
+    }
+    result.prereleasePattern = pp;
+  }
+
+  if ("notes" in obj) {
+    const n = obj.notes;
+    if (typeof n !== "string") {
+      throw new ShipitConfigError("`release.notes` must be a string");
+    }
+    result.notes = n;
+  }
+
+  if ("gate" in obj) {
+    const g = obj.gate;
+    if (typeof g !== "string") {
+      throw new ShipitConfigError("`release.gate` must be a string");
+    }
+    result.gate = g;
+  }
+
+  if ("mechanism" in obj) {
+    const m = obj.mechanism;
+    if (typeof m !== "string" || !RELEASE_MECHANISMS.has(m)) {
+      const allowed = [...RELEASE_MECHANISMS].join(", ");
+      throw new ShipitConfigError(`\`release.mechanism\` must be one of: ${allowed}`);
+    }
+    result.mechanism = m as ReleaseMechanism;
+  }
+
+  if ("workflow" in obj) {
+    const w = obj.workflow;
+    if (typeof w !== "string") {
+      throw new ShipitConfigError("`release.workflow` must be a string");
+    }
+    result.workflow = w;
+  }
+
+  return result;
 }
 
 function parseComposeConfig(raw: unknown): ComposeConfig | undefined {

@@ -62,14 +62,19 @@ parses it (`release-markers.ts`) and drives the poller via
 
 ## Phase 2 — Multi-ecosystem detection + `release:` block
 
-- [ ] Detection for `Cargo.toml`, `pyproject.toml`, `VERSION`, tag-only schemes.
-- [ ] `ReleaseConfig` type on `ShipitConfig` + `release` added to
+- [x] Detection for `Cargo.toml`, `pyproject.toml`, `VERSION`, tag-only schemes.
+      → `readCargoTomlVersion`, `readPyprojectVersion`, `readVersionFile`,
+      `detectAllVersionSources` in `release-version.ts`.
+- [x] `ReleaseConfig` type on `ShipitConfig` + `release` added to
       `KNOWN_TOP_LEVEL_KEYS`; parser + validation in `shipit-config.ts`.
+      → `ReleaseConfig`, `ReleaseVersionSource`, `ReleaseMechanism`,
+      `parseReleaseConfig` in `shipit-config.ts`.
 - [ ] `prerelease-pattern` / `-rc.N` auto-increment from highest existing rc tag.
-- [ ] Agent-guided clarification for monorepo / ambiguous version sources; offer
+- [x] Agent-guided clarification for monorepo / ambiguous version sources; offer
       to persist the resolved choice into `shipit.yaml`.
-- [ ] Surface ("log"/card) what could not be auto-detected — never silently pick a
-      wrong scheme.
+      → `agent-instructions.ts` + `shipit-docs/release.md` updated.
+- [x] Surface ("log"/card) what could not be auto-detected — never silently pick a
+      wrong scheme. → agent instructions now require surfacing ambiguity vs. guessing.
 - [ ] Update `shipit-yaml.md` with the `release:` schema.
 
 ## Phase 3 — Scaffold a release workflow

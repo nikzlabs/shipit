@@ -1,11 +1,12 @@
 /**
  * Release version-source detection + next-version (semver) computation
- * (docs/171 Phase 1). Pure, dependency-free helpers — the project pins exact
- * versions and enforces a dependency age policy, so rather than add `semver`
- * we implement the small slice we need (parse, compare-free bump, format).
+ * (docs/171). Pure, dependency-free helpers — the project pins exact versions
+ * and enforces a dependency age policy, so rather than add `semver` we
+ * implement the small slice we need (parse, compare-free bump, format).
  *
- * Phase 1 detects only `package.json` `version`. Cargo.toml / pyproject.toml /
- * VERSION / tag-only schemes are Phase 2.
+ * Detects package.json (Node), Cargo.toml (Rust), pyproject.toml (Python),
+ * and VERSION files. Tag-only detection (no version file) is signalled by an
+ * empty detectAllVersionSources() result — the caller falls back to git tags.
  */
 
 import fs from "node:fs";
@@ -89,11 +90,13 @@ export function computeNextVersion(current: string, bump: ReleaseBumpType): stri
   }
 }
 
+export type VersionSourceType = "package.json" | "Cargo.toml" | "pyproject.toml" | "VERSION" | "tag";
+
 export interface DetectedVersionSource {
-  /** Phase 1: always "package.json". */
-  source: "package.json";
-  /** Absolute path to the version-source file. */
-  path: string;
+  /** The type of file the version was read from. "tag" = no version file, inferred from git. */
+  source: VersionSourceType;
+  /** Absolute path to the version-source file. Undefined for the "tag" scheme. */
+  path?: string;
   /** The current version read from the source. */
   version: string;
 }
@@ -111,12 +114,93 @@ export function readPackageJsonVersion(dir: string): string | null {
 }
 
 /**
- * Detect the version source for a workspace. Phase 1 only inspects
- * `package.json`; returns null when there is no usable version field (the
- * caller falls back to the tag-only scheme or asks the user — Phase 2).
+ * Read the version from a Cargo.toml `[package]` section via regex.
+ * Returns null when the file is absent or has no `version` in `[package]`.
+ */
+export function readCargoTomlVersion(dir: string): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(dir, "Cargo.toml"), "utf8");
+    const packageSection = /\[package\]([\s\S]*?)(?=\n\[|\s*$)/.exec(raw);
+    if (!packageSection) return null;
+    const m = /^\s*version\s*=\s*"([^"]+)"/m.exec(packageSection[1] ?? "");
+    return m ? (m[1]?.trim() ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the version from a pyproject.toml file.
+ * Tries the PEP 621 `[project]` section first, then Poetry's `[tool.poetry]`.
+ */
+export function readPyprojectVersion(dir: string): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(dir, "pyproject.toml"), "utf8");
+    for (const sectionRe of [/\[project\]([\s\S]*?)(?=\n\[|\s*$)/, /\[tool\.poetry\]([\s\S]*?)(?=\n\[|\s*$)/]) {
+      const section = sectionRe.exec(raw);
+      if (!section) continue;
+      const m = /^\s*version\s*=\s*"([^"]+)"/m.exec(section[1] ?? "");
+      if (m) return m[1]?.trim() ?? null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the version from a top-level `VERSION` file (plain semver, first line).
+ */
+export function readVersionFile(dir: string): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(dir, "VERSION"), "utf8");
+    const line = raw.split("\n")[0]?.trim() ?? "";
+    return line || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detect ALL version sources present in a workspace directory, in priority order:
+ * package.json → Cargo.toml → pyproject.toml → VERSION.
+ *
+ * Multiple results indicate an ambiguous/monorepo situation — callers should
+ * surface the ambiguity to the user rather than guessing (docs/171 Phase 2).
+ * An empty result means no version file was found (tag-only scheme).
+ */
+export function detectAllVersionSources(dir: string): DetectedVersionSource[] {
+  const sources: DetectedVersionSource[] = [];
+
+  const pkgVersion = readPackageJsonVersion(dir);
+  if (pkgVersion) {
+    sources.push({ source: "package.json", path: path.join(dir, "package.json"), version: pkgVersion });
+  }
+
+  const cargoVersion = readCargoTomlVersion(dir);
+  if (cargoVersion) {
+    sources.push({ source: "Cargo.toml", path: path.join(dir, "Cargo.toml"), version: cargoVersion });
+  }
+
+  const pyVersion = readPyprojectVersion(dir);
+  if (pyVersion) {
+    sources.push({ source: "pyproject.toml", path: path.join(dir, "pyproject.toml"), version: pyVersion });
+  }
+
+  const vfVersion = readVersionFile(dir);
+  if (vfVersion) {
+    sources.push({ source: "VERSION", path: path.join(dir, "VERSION"), version: vfVersion });
+  }
+
+  return sources;
+}
+
+/**
+ * Detect the primary version source for a workspace.
+ * Returns the highest-priority source found (package.json > Cargo.toml >
+ * pyproject.toml > VERSION), or null when the workspace has no version file.
+ * Use `detectAllVersionSources` when you need to detect ambiguity.
  */
 export function detectVersionSource(dir: string): DetectedVersionSource | null {
-  const version = readPackageJsonVersion(dir);
-  if (!version) return null;
-  return { source: "package.json", path: path.join(dir, "package.json"), version };
+  return detectAllVersionSources(dir)[0] ?? null;
 }
