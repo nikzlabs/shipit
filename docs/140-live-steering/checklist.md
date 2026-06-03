@@ -47,9 +47,9 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 ## Phase 4 — worker + proxy
 
 - [x] `POST /agent/message` (`{text, images}`) on session worker (`session-worker.ts` / `worker-http.ts`)
-- [ ] `POST /agent/control` (`{subtype, …}`) for interrupt / set-permission-mode (control requests beyond interrupt are not yet proxied; interrupt uses the existing `/agent/interrupt`)
+- [x] `POST /agent/control` (`{subtype, …}`) for interrupt / set-permission-mode — implemented as the **named endpoints** `POST /agent/message` + `POST /agent/permission-mode` (plus the pre-existing `POST /agent/interrupt`), not one unified `/agent/control` dispatch. Each is proxied: `ProxyAgentProcess.sendUserMessage` → `sendAgentMessage` → worker `/agent/message`; `ProxyAgentProcess.setPermissionMode` → `setAgentPermissionModeOnWorker` → worker `/agent/permission-mode`; interrupt rides the existing `/agent/interrupt`.
 - [x] Proxy `sendUserMessage` through `ProxyAgentProcess` + `container-session-runner.ts` (mirror `writeAgentStdin`)
-- [ ] Tests: worker endpoint validation; proxy delegation
+- [x] Tests: worker endpoint validation (`/agent/message`: no agent → 400, non-string/empty text → 400, happy path → `agent.sendUserMessage`; `/agent/permission-mode`: no agent → 404, no `setPermissionMode` → 400, invalid mode → 400, `plan`/`guarded`/`auto`/`null` map through to `setPermissionMode`) in `session-worker.test.ts`; proxy delegation (`sendUserMessage` → `/agent/message`, `setPermissionMode` → permission-mode call, plus error-surfacing paths) in `proxy-agent-process.test.ts`
 
 ## Phase 5 — WS routing + turn lifecycle
 

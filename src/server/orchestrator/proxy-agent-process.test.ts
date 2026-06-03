@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { ProxyAgentProcess, type ProxyAgentRunner } from "./proxy-agent-process.js";
 import { WorkerTimeoutError } from "./worker-http.js";
+import type { PermissionMode } from "../shared/types.js";
+
+/** Flush the microtask queue so fire-and-forget delegations settle. */
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 function makeRunner(overrides: Partial<ProxyAgentRunner> = {}): ProxyAgentRunner {
   return {
@@ -67,5 +71,63 @@ describe("ProxyAgentProcess WorkerTimeoutError translation", () => {
     proxy.run({ initialPrompt: "x" } as never);
     const err = await errorPromise;
     expect(err).toBe(original);
+  });
+});
+
+describe("ProxyAgentProcess live-steering delegation (docs/140)", () => {
+  it("sendUserMessage POSTs through the runner's sendAgentMessage (/agent/message)", async () => {
+    const sent: string[] = [];
+    const runner = makeRunner({
+      sendAgentMessage: (text: string) => {
+        sent.push(text);
+        return Promise.resolve();
+      },
+    });
+    const proxy = new ProxyAgentProcess("claude", runner);
+    proxy.sendUserMessage("steer this");
+    await flush();
+    expect(sent).toEqual(["steer this"]);
+  });
+
+  it("sendUserMessage failure surfaces via the error event (not a thrown rejection)", async () => {
+    const runner = makeRunner({
+      sendAgentMessage: () => Promise.reject(new WorkerTimeoutError("/agent/message", 10_000)),
+    });
+    const proxy = new ProxyAgentProcess("claude", runner);
+    const errorPromise = once<Error>(proxy, "error");
+    proxy.sendUserMessage("steer this");
+    const err = await errorPromise;
+    expect(err.message).toContain("Failed to send input");
+    expect(err.cause).toBeInstanceOf(WorkerTimeoutError);
+  });
+
+  it("setPermissionMode delegates to the runner's setAgentPermissionModeOnWorker", async () => {
+    const modes: (PermissionMode | undefined)[] = [];
+    const runner = makeRunner({
+      setAgentPermissionModeOnWorker: (mode: PermissionMode | undefined) => {
+        modes.push(mode);
+        return Promise.resolve();
+      },
+    });
+    const proxy = new ProxyAgentProcess("claude", runner);
+    proxy.setPermissionMode("plan");
+    proxy.setPermissionMode(undefined);
+    await flush();
+    expect(modes).toEqual(["plan", undefined]);
+  });
+
+  it("setPermissionMode failure surfaces on the Logs panel, not as a turn-killing error", async () => {
+    const runner = makeRunner({
+      setAgentPermissionModeOnWorker: () => Promise.reject(new Error("worker refused")),
+    });
+    const proxy = new ProxyAgentProcess("claude", runner);
+    const logPromise = once<[string, string]>(proxy, "log");
+    let errored = false;
+    proxy.once("error", () => { errored = true; });
+    proxy.setPermissionMode("guarded");
+    const [source, text] = await logPromise;
+    expect(source).toBe("server");
+    expect(text).toContain("Failed to change permission mode");
+    expect(errored).toBe(false);
   });
 });
