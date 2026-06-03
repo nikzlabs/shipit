@@ -8,6 +8,46 @@ import type { Element as HastElement, Text as HastText } from "hast";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { MessageSegment } from "./MessageList.js";
+import { parseRepoFileLink } from "../utils/repo-file-link.js";
+import { useFileStore } from "../stores/file-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+
+/**
+ * Renders a markdown link. Links that point at a repository file (relative
+ * paths, optionally `:line` suffixed) open the in-app file preview modal
+ * instead of navigating — a bare `target="_blank"` would resolve the relative
+ * href against the current `/sessions/<id>` URL and 404. External links and
+ * in-page anchors keep the default new-tab behaviour.
+ */
+function MarkdownLink({
+  href,
+  title,
+  children,
+}: {
+  href?: string;
+  title?: string;
+  children?: React.ReactNode;
+}) {
+  const repoLink = parseRepoFileLink(href);
+  if (repoLink) {
+    const openPreview = (e: React.MouseEvent) => {
+      e.preventDefault();
+      const sessionId = useSessionStore.getState().sessionId;
+      if (!sessionId) return;
+      void useFileStore.getState().openPreview(sessionId, repoLink.path, { line: repoLink.line });
+    };
+    return (
+      <a href={href} title={title} onClick={openPreview} className="cursor-pointer">
+        {children}
+      </a>
+    );
+  }
+  return (
+    <a href={href} title={title} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  );
+}
 
 /**
  * Parse message text into alternating text and fenced code block segments.
@@ -86,6 +126,7 @@ function extractCodeFromPreNode(node: HastElement | undefined): { code: string; 
  * Component overrides shared by every markdown surface. They centralise:
  * - Fenced code blocks → React `CodeBlock` (Copy button + hljs styling). We
  *   intercept at `pre` so inline `<code>` keeps its lightweight inline render.
+ * - Repo file links → open the in-app file preview modal (see `MarkdownLink`).
  * - External links → `target="_blank"` with `rel="noopener noreferrer"`.
  * `react-markdown`'s default `urlTransform` already filters dangerous protocols
  * (`javascript:`, `data:`, etc.), so we don't need to repeat that check here.
@@ -100,9 +141,9 @@ export const markdownComponents: Components = {
   },
   a({ href, title, children }) {
     return (
-      <a href={href} title={title} target="_blank" rel="noopener noreferrer">
+      <MarkdownLink href={href} title={title}>
         {children}
-      </a>
+      </MarkdownLink>
     );
   },
   // Wide tables (often produced by code-analysis prompts) would otherwise push

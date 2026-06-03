@@ -92,6 +92,12 @@ interface FileState {
   previewMode: FilePreviewMode;
   /** The agent review being viewed when `previewMode === "agent-review"`. */
   previewAgentReview: AgentReview | null;
+  /**
+   * 1-based line to reveal/highlight when opening a code file (e.g. from a
+   * `path:line` link in chat). `null` opens at the top. Markdown is rendered,
+   * not source, so this only affects the code (Monaco) view.
+   */
+  previewLine: number | null;
 
   setTree: (tree: FileTreeNode[]) => void;
   setViewingFile: (path: string | null) => void;
@@ -112,7 +118,7 @@ interface FileState {
   hydrateUploads: (sessionId: string) => Promise<void>;
 
   // Unified preview actions
-  openPreview: (sessionId: string, filePath: string, opts?: { actions?: FilePreviewAction[] }) => Promise<void>;
+  openPreview: (sessionId: string, filePath: string, opts?: { actions?: FilePreviewAction[]; line?: number }) => Promise<void>;
   openPreviewWithContent: (filePath: string, content: string, type: FilePreviewType, actions?: FilePreviewAction[]) => void;
   /**
    * docs/151 — open the modal in agent-review snapshot mode. Fetches the
@@ -151,6 +157,7 @@ const initialState = {
   previewActions: [] as FilePreviewAction[],
   previewMode: "live" as FilePreviewMode,
   previewAgentReview: null as AgentReview | null,
+  previewLine: null as number | null,
 };
 
 export const useFileStore = create<FileState>((set) => ({
@@ -288,6 +295,7 @@ export const useFileStore = create<FileState>((set) => ({
       previewActions: opts?.actions ?? [],
       previewMode: "live",
       previewAgentReview: null,
+      previewLine: opts?.line ?? null,
     });
 
     // Normalize path for URL construction (strip leading slash from upload paths)
@@ -331,6 +339,7 @@ export const useFileStore = create<FileState>((set) => ({
       previewActions: actions ?? [],
       previewMode: "live",
       previewAgentReview: null,
+      previewLine: null,
     });
   },
 
@@ -343,6 +352,7 @@ export const useFileStore = create<FileState>((set) => ({
       previewActions: [],
       previewMode: "agent-review",
       previewAgentReview: null,
+      previewLine: null,
     });
     try {
       const res = await fetch(`/api/sessions/${sessionId}/agent-reviews/${reviewId}`);
@@ -376,6 +386,7 @@ export const useFileStore = create<FileState>((set) => ({
       previewActions: [],
       previewMode: "live",
       previewAgentReview: null,
+      previewLine: null,
     });
   },
 

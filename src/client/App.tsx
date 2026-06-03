@@ -146,6 +146,7 @@ export default function App() {
   const previewActions = useFileStore((s) => s.previewActions);
   const previewMode = useFileStore((s) => s.previewMode);
   const previewAgentReview = useFileStore((s) => s.previewAgentReview);
+  const previewLine = useFileStore((s) => s.previewLine);
   const previewLoading = useFileStore((s) => s.previewLoading);
 
   const previewStatus = usePreviewStore((s) => s.status);
@@ -1230,6 +1231,7 @@ export default function App() {
           filePath={previewFile ?? ""}
           content={previewContent}
           fileType={previewType}
+          line={previewLine}
           actions={previewMode === "agent-review" ? [] : previewActions}
           {...(previewMode === "agent-review"
             ? {}
