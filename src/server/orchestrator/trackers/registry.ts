@@ -4,8 +4,8 @@
  * Holds the set of trackers ShipIt knows about and drives the Issues tab's
  * sub-tabs. v1 always registers Linear (the only supported tracker); each
  * tracker reports `isConfigured()` so the client can render either the list or
- * a "Connect" empty state. A GitHub adapter (deferred per SHI-67 scope) would
- * register here too.
+ * a "Connect" empty state. A GitHub adapter (deferred per SHI-67 scope, now
+ * tracked by SHI-80) would register here too.
  *
  * The registry is rebuilt per request from `CredentialStore` rather than cached
  * as a singleton: a Linear token/team binding can change at runtime (the user
@@ -48,6 +48,7 @@ export function buildTrackerRegistry(
     team: credentialStore.getLinearTeam(),
     ...(fetchImpl ? { fetchImpl } : {}),
   });
-  // GitHub Issues adapter is deferred (docs/170 scope) — register it here when built.
+  // GitHub Issues adapter is deferred (docs/170 scope; tracked by SHI-80) —
+  // register it here when built.
   return new TrackerRegistry([linear]);
 }

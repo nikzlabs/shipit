@@ -224,8 +224,10 @@ Client:
 ## Implementation status (v1 — Linear only, SHI-67)
 
 Shipped the **Linear** path; the **GitHub** sub-tab/adapter is deliberately
-deferred (the user tracks everything in Linear). The tracker abstraction is
-built so a GitHub adapter slots in by registering one more `Tracker`.
+deferred (the user tracks everything in Linear) — now tracked on its own as
+**SHI-80** (so SHI-28's "both trackers simultaneously" mandate isn't lost when
+SHI-28 closed under its migration framing). The tracker abstraction is built so a
+GitHub adapter slots in by registering one more `Tracker`.
 
 - **Auth (v1):** simplest read-only path — a Linear **API token** stored in
   `CredentialStore` (mirrors the GitHub-token pattern), plus a workspace/team
