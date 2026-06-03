@@ -4,9 +4,13 @@
 # the titled sections below — the result is the changelog shown on the GitHub
 # Releases page and surfaced inline in ShipIt's update panel.
 #
-# Categorization is by PR label. The final "*" category is a catch-all so a PR
-# with no matching label still appears under "Other Changes" — nothing is ever
-# silently dropped. See RELEASING.md and docs/162-release-channels/plan.md.
+# Categorization is by PR label. The label set is defined as code in
+# `.github/labels.yml` and synced by `.github/workflows/labels.yml`; the
+# path-based auto-labeler (`.github/workflows/labeler.yml`) applies best-effort
+# labels so these sections populate without manual triage. The final "*"
+# category is a catch-all so a PR with no matching label still appears under
+# "Other Changes" — nothing is ever silently dropped. See RELEASING.md and
+# docs/162-release-channels/plan.md.
 
 changelog:
   exclude:

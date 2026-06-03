@@ -1,0 +1,59 @@
+# Source of truth for the repo's PR/issue labels.
+#
+# These labels drive the section grouping in auto-generated GitHub Release
+# notes — see `.github/release.yml` and the "Labels" section of RELEASING.md.
+# The `.github/workflows/labels.yml` workflow syncs this file to the repo
+# (create/update) whenever it changes on `main`, or on manual dispatch.
+#
+# Format is consumed by crazy-max/ghaction-github-labeler:
+#   - name:        label name (must match the names referenced in release.yml)
+#     color:       hex color (with or without leading '#')
+#     description: one-line description shown in the GitHub UI
+
+# 🚀 Features
+- name: "feature"
+  color: "#a2eeef"
+  description: "New user-facing functionality"
+- name: "enhancement"
+  color: "#a2eeef"
+  description: "Improvement to an existing feature"
+
+# 🐛 Fixes
+- name: "bug"
+  color: "#d73a4a"
+  description: "Something isn't working"
+- name: "fix"
+  color: "#d73a4a"
+  description: "Bug fix"
+
+# 📝 Documentation
+- name: "documentation"
+  color: "#0075ca"
+  description: "Documentation changes"
+- name: "docs"
+  color: "#0075ca"
+  description: "Documentation changes (alias)"
+
+# ⬆️ Dependencies
+- name: "dependencies"
+  color: "#0366d6"
+  description: "Dependency updates"
+
+# 🧰 Maintenance
+- name: "chore"
+  color: "#fef2c0"
+  description: "Routine maintenance, no user-facing change"
+- name: "refactor"
+  color: "#fbca04"
+  description: "Code restructuring without behavior change"
+- name: "ci"
+  color: "#c5def5"
+  description: "CI/CD and GitHub Actions changes"
+- name: "test"
+  color: "#bfdadc"
+  description: "Test additions or changes"
+
+# Excluded from release notes
+- name: "ignore-for-release"
+  color: "#ededed"
+  description: "Exclude this PR from auto-generated release notes"
