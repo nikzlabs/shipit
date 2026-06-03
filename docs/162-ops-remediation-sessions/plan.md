@@ -197,6 +197,13 @@ Behavior:
   only when the user/agent explicitly requested approximate-source remediation.
 - The child prompt is seeded with a structured incident packet from the Ops
   parent.
+- `--title` is **required** for a `--shipit-source` spawn. `buildShipitFixPrompt`
+  wraps the diagnosis in a verbose `# Ops remediation — ShipIt fix session`
+  header before dispatch, so the prompt can't double as the session name —
+  without an explicit title, every fix session would read "Ops remediation…" in
+  the sidebar. Both the shim (fast, local error) and the orchestrator spawn
+  route (authoritative) reject a `--shipit-source` spawn that has no non-empty
+  title. The Ops agent must name the session after the fix.
 
 The incident packet should include:
 
