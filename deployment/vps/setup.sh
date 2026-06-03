@@ -15,16 +15,17 @@ if [ -f "$CONFIG_FILE" ]; then
   source "$CONFIG_FILE"
 fi
 
-# --- Detect repo URL from existing clone, or ask ---
+# --- Resolve repo URL ---
+# Precedence: SHIPIT_REPO_URL env (lets a fork override on the one-liner) >
+# saved config from a previous run > the origin of an existing /opt/shipit
+# clone > the public repo default. This keeps the curl|bash install prompt-free.
+DEFAULT_REPO_URL="https://github.com/nicolasalt/shipit.git"
+REPO_URL="${SHIPIT_REPO_URL:-$REPO_URL}"
 if [ -z "$REPO_URL" ] && [ -d /opt/shipit/.git ]; then
   REPO_URL=$(git -C /opt/shipit remote get-url origin 2>/dev/null || true)
 fi
 if [ -z "$REPO_URL" ]; then
-  read -rp "GitHub repo URL (e.g. https://github.com/you/shipit.git): " REPO_URL
-  if [ -z "$REPO_URL" ]; then
-    echo "Error: repo URL is required" >&2
-    exit 1
-  fi
+  REPO_URL="$DEFAULT_REPO_URL"
 fi
 
 echo "==========================================="
