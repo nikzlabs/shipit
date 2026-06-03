@@ -6,6 +6,14 @@ import { useRepoStore } from "../stores/repo-store.js";
 import type { TrackerId, TrackerIssue } from "../../server/shared/types.js";
 
 /**
+ * Stable empty-array reference. Returning a fresh `[]` literal from a Zustand
+ * selector makes `useSyncExternalStore` see a new snapshot on every render,
+ * which loops into React error #185 ("Maximum update depth exceeded") — exactly
+ * the state on tab open, before the first fetch populates `issuesByTracker`.
+ */
+const EMPTY_ISSUES: TrackerIssue[] = [];
+
+/**
  * Connected wrapper around {@link IssuesViewer} (docs/170). Resolves the repo
  * to start a session on (the current session's remote, falling back to the
  * active sidebar repo), wires the store actions, and navigates to the new
@@ -16,7 +24,7 @@ export function IssuesPanel({ onConnect }: { onConnect: () => void }) {
   const navigate = useNavigate();
   const trackers = useIssuesStore((s) => s.trackers);
   const activeTracker = useIssuesStore((s) => s.activeTracker);
-  const issues = useIssuesStore((s) => s.issuesByTracker[s.activeTracker] ?? []);
+  const issues = useIssuesStore((s) => s.issuesByTracker[s.activeTracker] ?? EMPTY_ISSUES);
   const info = useIssuesStore((s) => s.infoByTracker[s.activeTracker]);
   const loading = useIssuesStore((s) => s.loading);
   const error = useIssuesStore((s) => s.error);
