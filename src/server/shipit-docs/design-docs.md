@@ -129,7 +129,7 @@ docs/
 ```
 
 - **Prefer self-contained, static artifacts** — one HTML file with inline CSS, or an SVG — so the mock opens with no build step and stays diffable in PRs. A `.png` screenshot is an acceptable supplement, but it isn't diffable, so keep the HTML/SVG as the source of truth.
-- **Link the mock from `plan.md`** with a short "Visual reference" note so a reader of the design lands on the picture. `docs/173-issue-tracker-filters/` is the canonical example: `docs/173-issue-tracker-filters/mockup.html` is a static, self-contained prototype, and `plan.md` links to it from a "Visual reference" callout.
+- **Link the mock from `plan.md`** with a short "Visual reference" note so a reader of the design lands on the picture.
 - **Keep the asset inside the `docs/NNN-*` folder** so it travels with the doc — it's reference material, same as `plan.md`.
 
 The `present` tool renders a mock in an ephemeral Present tab, but that artifact never touches the repo, so the prototype vanishes and only the prose survives. A committed mock is reviewable in PRs, renders in the file tree, and survives across sessions.
