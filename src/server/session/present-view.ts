@@ -12,16 +12,20 @@
  * Everything is wrapped into an HTML document (except raw image bytes) so a
  * screenshot captures the full artifact edge-to-edge rather than a
  * default-sized element. The renderer is pure and async only because the
- * markdown path awaits `marked`; it has no I/O and is unit-tested in
- * present-view.test.ts.
+ * markdown path renders React to a static HTML string; it has no I/O and is
+ * unit-tested in present-view.test.ts.
  *
- * NOTE: this is the *agent's* screenshot view. The user-facing Present tab
- * still renders markdown via `react-markdown` client-side, so the two paths
- * use different renderers — acceptable for a fidelity check (docs/170).
+ * Markdown is rendered with the SAME `react-markdown` + `remark-gfm` +
+ * `remark-breaks` stack the user-facing Present tab uses
+ * (`src/client/components/message-markdown.tsx`), via `react-dom/server`'s
+ * `renderToStaticMarkup`. The only difference from the client is the
+ * interactive code-block chrome (copy buttons, syntax highlighting) the client
+ * layers on — none of which affects a screenshot. React + react-markdown are
+ * imported lazily so the worker only pays for them when an artifact is markdown.
  */
 
+import { createElement } from "react";
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { marked } from "marked";
 import type { PresentBuffer, PresentEntry } from "./present-buffer.js";
 
 export interface RenderedPresentDocument {
@@ -53,6 +57,26 @@ function escapeHtml(text: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+/**
+ * Render markdown to a static HTML string using the same `react-markdown` +
+ * remark plugin stack as the client (message-markdown.tsx). Imports are lazy so
+ * a worker that never serves a markdown artifact never loads React. `react`,
+ * `react-dom`, and the remark plugins are all runtime dependencies, so they
+ * survive `npm prune --omit=dev` into the session-worker image.
+ */
+async function renderMarkdownToHtml(markdown: string): Promise<string> {
+  const [{ renderToStaticMarkup }, { default: Markdown }, { default: remarkGfm }, { default: remarkBreaks }] =
+    await Promise.all([
+      import("react-dom/server"),
+      import("react-markdown"),
+      import("remark-gfm"),
+      import("remark-breaks"),
+    ]);
+  return renderToStaticMarkup(
+    createElement(Markdown, { remarkPlugins: [remarkGfm, remarkBreaks] }, markdown),
+  );
 }
 
 /** Parse a `data:` URI into its mime and raw bytes. Returns null if malformed. */
@@ -95,10 +119,9 @@ export async function renderPresentDocument(
   }
 
   if (mime === "text/markdown") {
-    const html = await marked.parse(entry.content);
     return {
       contentType: "text/html; charset=utf-8",
-      body: markdownShell(html),
+      body: markdownShell(await renderMarkdownToHtml(entry.content)),
     };
   }
 
