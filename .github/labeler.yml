@@ -1,0 +1,33 @@
+# Path-based auto-labeler config, consumed by actions/labeler (v5 schema).
+#
+# Maps changed file paths to labels so PRs get a best-effort label without
+# manual triage. This is best-effort only — maintainers can add or remove
+# labels by hand before merge, and an unlabeled PR never fails CI.
+#
+# The labels assigned here must exist in `.github/labels.yml` (the source of
+# truth) so they line up with the release-note sections in `.github/release.yml`.
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "**/*.md"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
+          - ".github/*.yml"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "package.json"
+          - "package-lock.json"
+          - "docker/agent-cli/package-lock.json"
+
+test:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.test.ts"
+          - "**/*.test.tsx"

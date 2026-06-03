@@ -1,0 +1,27 @@
+name: Pull request labeler
+
+# Best-effort path-based labeling: maps a PR's changed files to labels via
+# `.github/labeler.yml` so release-note sections (see `.github/release.yml`)
+# populate without manual triage. Labels added here are advisory — maintainers
+# can adjust them before merge, and an unlabeled PR never fails CI.
+
+on:
+  pull_request_target:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  labeler:
+    name: Label PR by changed paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5.0.0
+        with:
+          repo-token: ${{ github.token }}
+          configuration-path: .github/labeler.yml
+          # Don't strip labels a maintainer added by hand; only ever add.
+          sync-labels: false
+          # Match dotfile paths like `.github/**`.
+          dot: true
