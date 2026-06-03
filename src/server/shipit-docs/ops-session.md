@@ -68,9 +68,9 @@ dropped unless the session was created as an ops session.
   verbatim. Use a single-quoted heredoc as shown.
   The child owns all edits, tests, commits, push, and the PR — you only read its
   status. It requires that the operator's GitHub account can push to the ShipIt
-  repo; if it cannot, the command fails and you should produce a written
-  incident report with source references instead. If the source ref was only
-  approximate, add `--approximate` to acknowledge it.
+  repo; if it cannot, the command fails — file the diagnosis as a redacted bug
+  report instead (see "File a ShipIt bug" below) rather than dead-ending as text.
+  If the source ref was only approximate, add `--approximate` to acknowledge it.
 
   The child's branch *starts* at the exact deployed commit so it can reproduce
   the bug against the code that's actually running — which is usually behind the
@@ -78,6 +78,17 @@ dropped unless the session was created as an ops session.
   latest default branch before opening the PR, so the PR stays mergeable. Fix
   sessions also have a lower per-turn spawn cap than generic fan-out children, so
   spawn one deliberate, well-scoped fix per diagnosis rather than several.
+
+- **File a ShipIt bug.** When you've diagnosed a host bug but can't spawn a fix
+  session (the operator's GitHub account lacks push access to the ShipIt repo),
+  don't dead-end as a text report — file it through the bug-filing flow with the
+  `report_shipit_bug` tool. As an ops session you're the highest-quality producer:
+  attach your root-cause summary, the suspected files, and the **redacted**
+  Docker/journal evidence you gathered. ShipIt redacts the body server-side, posts
+  an inline consent card the operator confirms, and only then opens an issue on the
+  upstream repo under their own GitHub identity (marked `source:ops`). Downstream, a
+  developer with push access can pick the issue up as a fix session. See
+  `bug-filing.md` for the tool contract and what never goes in the body.
 
 ## What you CANNOT do (by design)
 

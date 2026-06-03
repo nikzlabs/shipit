@@ -556,7 +556,10 @@ export async function registerSessionRoutes(
             throw new ServiceError(
               403,
               `Cannot open a fix PR against ${parsed.owner}/${parsed.repo}: ${access.reason ?? "no write access"}. ` +
-                "Produce a structured incident report with source references instead.",
+                "File the diagnosis as a redacted bug report instead — call the `report_shipit_bug` tool " +
+                "with your root-cause summary, suspected files, and the redacted Docker/journal evidence. " +
+                "ShipIt posts a consent card the operator confirms before it opens an issue on the upstream " +
+                "repo under their own GitHub identity (docs/164).",
             );
           }
           // The child clones/pushes with the connected GitHub account

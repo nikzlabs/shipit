@@ -271,7 +271,9 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
     });
 
     expect(res.statusCode).toBe(403);
-    expect(res.json().error).toMatch(/incident report/i);
+    // No push access → route the ops agent into the bug-filing flow (docs/164)
+    // instead of dead-ending as a text-only incident report.
+    expect(res.json().error).toMatch(/report_shipit_bug/i);
 
     // No child was created.
     const children = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/children` });
