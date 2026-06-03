@@ -132,4 +132,96 @@ describe("Integration: File content viewer", () => {
     expect(body.isBinary).toBe(true);
     expect(body.content).toContain("too large");
   });
+
+  it("writes text file content", async () => {
+    fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 1;\n");
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/sessions/${sessionId}/files/hello.ts`,
+      payload: { content: "const x = 2;\n" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ path: "hello.ts", size: 13 });
+    expect(fs.readFileSync(path.join(sessionDir, "hello.ts"), "utf8")).toBe("const x = 2;\n");
+  });
+
+  it("writes nested text file content", async () => {
+    fs.mkdirSync(path.join(sessionDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, "src", "app.ts"), "old");
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/sessions/${sessionId}/files/src/app.ts`,
+      payload: { content: "new" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(fs.readFileSync(path.join(sessionDir, "src", "app.ts"), "utf8")).toBe("new");
+  });
+
+  it("rejects write path traversal", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/sessions/${sessionId}/files/..%2F..%2Fetc%2Fpasswd`,
+      payload: { content: "nope" },
+    });
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+  });
+
+  it("rejects writes without string content", async () => {
+    fs.writeFileSync(path.join(sessionDir, "hello.ts"), "old");
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/sessions/${sessionId}/files/hello.ts`,
+      payload: { content: 123 },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(fs.readFileSync(path.join(sessionDir, "hello.ts"), "utf8")).toBe("old");
+  });
+
+  it("rejects writing missing files", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/sessions/${sessionId}/files/missing.ts`,
+      payload: { content: "new" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("rejects writing directories", async () => {
+    fs.mkdirSync(path.join(sessionDir, "src"), { recursive: true });
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/sessions/${sessionId}/files/src`,
+      payload: { content: "new" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects writing binary files", async () => {
+    fs.writeFileSync(path.join(sessionDir, "data.bin"), Buffer.from([0x00, 0x01, 0x02]));
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/sessions/${sessionId}/files/data.bin`,
+      payload: { content: "new" },
+    });
+    expect(res.statusCode).toBe(415);
+  });
+
+  it("rejects oversized write payloads", async () => {
+    fs.writeFileSync(path.join(sessionDir, "big.txt"), "old");
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/sessions/${sessionId}/files/big.txt`,
+      payload: { content: "x".repeat(1_048_577) },
+    });
+    expect(res.statusCode).toBe(413);
+  });
 });
