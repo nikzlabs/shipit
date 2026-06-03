@@ -120,6 +120,69 @@ describe("graduateSession", () => {
     expect(state.title).toBe("Fix the flaky test");
   });
 
+  it("uses namingText (not userText) for the placeholder slice when supplied", async () => {
+    vi.doMock("../session-namer.js", () => ({ generateSessionName: vi.fn(async () => null) }));
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({ id: "s1", title: "old", branch: "shipit/abc", workspaceDir: "/tmp/ws", remoteUrl: "x" });
+
+    graduateSession(deps, {
+      sessionId: "s1",
+      // Dispatched prompt is a verbose machine wrapper...
+      userText: "# Ops remediation — ShipIt fix session\n\nYou were spawned by...",
+      // ...but the session should be named after the diagnosis.
+      namingText: "Preview pane never reloads after editing shipit.yaml",
+      agentId: "claude",
+    });
+
+    expect(state.title).toBe("Preview pane never reloads after editing shipit.yaml".slice(0, 60));
+  });
+
+  it("feeds namingText (not userText) to AI naming when supplied", async () => {
+    const generateSpy = vi.fn(async () => ({ slug: "preview-reload", title: "Fix preview reload" }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName: generateSpy }));
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1",
+      title: "placeholder",
+      branch: "shipit/abc123",
+      workspaceDir: "/tmp/ws",
+      remoteUrl: "https://github.com/x/y.git",
+    });
+
+    graduateSession(deps, {
+      sessionId: "s1",
+      userText: "# Ops remediation — ShipIt fix session\n\nboilerplate...",
+      namingText: "Preview pane never reloads after editing shipit.yaml",
+      agentId: "claude",
+      skipBranchRename: true,
+    });
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(generateSpy).toHaveBeenCalledWith(
+      "Preview pane never reloads after editing shipit.yaml",
+      "claude",
+    );
+    expect(state.title).toBe("Fix preview reload");
+  });
+
+  it("falls back to userText when namingText is blank", async () => {
+    const generateSpy = vi.fn(async () => null);
+    vi.doMock("../session-namer.js", () => ({ generateSessionName: generateSpy }));
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({ id: "s1", title: "old", branch: "shipit/abc", workspaceDir: "/tmp/ws", remoteUrl: "x" });
+
+    graduateSession(deps, {
+      sessionId: "s1",
+      userText: "Fix the flaky test",
+      namingText: "   ",
+      agentId: "claude",
+    });
+
+    expect(state.title).toBe("Fix the flaky test");
+    expect(generateSpy).toHaveBeenCalledWith("Fix the flaky test", "claude");
+  });
+
   it("uses explicitTitle when supplied and skips AI naming", async () => {
     const generateSpy = vi.fn(async () => ({ slug: "should-not-run", title: "Should Not Run" }));
     vi.doMock("../session-namer.js", () => ({ generateSessionName: generateSpy }));

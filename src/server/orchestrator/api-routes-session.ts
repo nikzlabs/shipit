@@ -513,6 +513,13 @@ export async function registerSessionRoutes(
         let effectivePrompt = body.prompt ?? "";
         let sourceBase = body.base;
         let repoUrlOverride: string | undefined;
+        // docs/162 — text used to NAME the spawned session. For a ShipIt-fix
+        // spawn `effectivePrompt` is rewritten into a verbose incident packet
+        // below, which would name the session after its own boilerplate
+        // header. Capture the agent's human-written diagnosis so the session
+        // is named after the bug being fixed instead. Undefined for ordinary
+        // fan-out spawns (they name off the prompt directly).
+        let namingText: string | undefined;
         // docs/162 — metadata for the Ops remediation card, captured here so the
         // `session_spawned` emit below can render the "ShipIt fix" variant
         // (source ref, target repo, diagnosis summary). Undefined for ordinary
@@ -574,6 +581,9 @@ export async function registerSessionRoutes(
             targetRepo: `${parsed.owner}/${parsed.repo}`,
             ...(diagnosisSummary ? { diagnosis: diagnosisSummary } : {}),
           };
+          // Name the fix session after the agent's diagnosis, not the packet
+          // wrapper `buildShipitFixPrompt` produces.
+          namingText = effectivePrompt.trim();
           effectivePrompt = buildShipitFixPrompt({
             ref: target.ref,
             exact: target.exact,
@@ -590,6 +600,7 @@ export async function registerSessionRoutes(
           {
             prompt: effectivePrompt,
             ...(body.title !== undefined ? { title: body.title } : {}),
+            ...(namingText !== undefined ? { namingText } : {}),
             ...(sourceBase !== undefined ? { base: sourceBase } : {}),
             ...(body.agent !== undefined ? { agent: body.agent } : {}),
             ...(body.model !== undefined ? { model: body.model } : {}),

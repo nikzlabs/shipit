@@ -178,6 +178,33 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
     expect(childHead).toBe(buildSha);
   });
 
+  it("names the fix child after the diagnosis, not the incident-packet boilerplate", { timeout: 20_000 }, async () => {
+    const parentId = await createOpsParent();
+    github.setRepoWriteAccess(true);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: {
+        prompt: "Preview pane never reloads after editing shipit.yaml\n\nrepro steps...",
+        shipitSource: true,
+        spawnedByTurn: "turn-1",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const { sessionId } = res.json() as { sessionId: string };
+
+    // generateSessionName is mocked to null here, so the title stays at the
+    // placeholder. It must be the agent's diagnosis (first 60 chars) — NOT the
+    // `# Ops remediation — ShipIt fix session` header that `buildShipitFixPrompt`
+    // prepends to the dispatched prompt.
+    const child = sessionManager.get(sessionId);
+    expect(child?.title).toBe(
+      "Preview pane never reloads after editing shipit.yaml\n\nrepro steps...".slice(0, 60),
+    );
+    expect(child?.title).not.toMatch(/Ops remediation/);
+  });
+
   it("emits a session_spawned event carrying the Ops fix metadata (source ref, target repo, diagnosis)", { timeout: 20_000 }, async () => {
     const parentId = await createOpsParent();
     github.setRepoWriteAccess(true);

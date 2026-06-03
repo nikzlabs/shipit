@@ -68,6 +68,14 @@ export interface SpawnChildSessionOptions {
   /** Session title. Defaults to a slug derived from `prompt`. */
   title?: string;
   /**
+   * Optional override for the text used to name the session (placeholder slice
+   * + AI naming) when no explicit `title` is given. Defaults to `prompt`. Set
+   * this when `prompt` is a machine-wrapped packet (e.g. the Ops ShipIt-fix
+   * incident packet) so the session is named after the actual work rather than
+   * the wrapper's boilerplate header. The agent still runs the full `prompt`.
+   */
+  namingText?: string;
+  /**
    * Git ref to branch off. When omitted, the child is branched off the
    * freshly-fetched `origin/main` (or `origin/HEAD` / `origin/master`) of
    * the parent's repo — matching what a manual new session would do — so
@@ -260,9 +268,14 @@ export async function spawnChildSession(
   // would make the printed value stale. AI naming still runs (when the
   // agent didn't pass `--title`) and updates the title; the branch row
   // keeps the claim-time `shipit/<random>` value.
+  // Name the session after `namingText` (the human diagnosis) when supplied,
+  // so an Ops fix spawn isn't named after the incident-packet boilerplate it
+  // dispatches. Empty/whitespace falls back to `trimmedPrompt` in graduate.
+  const namingText = opts.namingText?.trim();
   graduateSession(graduationDeps, {
     sessionId: newSessionId,
     userText: trimmedPrompt,
+    ...(namingText ? { namingText } : {}),
     agentId: opts.agent ?? parent.agentId ?? defaultAgentId,
     skipBranchRename: true,
     ...(explicitTitle ? { explicitTitle } : {}),
