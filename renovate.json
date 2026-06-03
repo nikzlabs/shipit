@@ -15,7 +15,8 @@
       ],
       "groupName": "agent CLIs",
       "minimumReleaseAge": "7 days",
-      "automerge": false
+      "automerge": false,
+      "assignees": ["nicolasalt"]
     }
   ]
 }
