@@ -48,7 +48,11 @@ import { ICON_SIZE } from "../design-tokens.js";
 
 // ---- Shared ----
 
-const linkClass = "h-6 inline-flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors border border-(--color-border-secondary) rounded px-1.5";
+// NB: block-level `flex` (not `inline-flex`) so the chip renders at exactly
+// h-6 regardless of its parent. As an inline-flex element it would be
+// baseline-aligned inside a non-flex parent's line box, rounding the line up
+// to 25px and making any containing row 1px taller (the merged PR card bug).
+const linkClass = "h-6 flex items-center gap-1 text-xs text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors border border-(--color-border-secondary) rounded px-1.5";
 const MAX_VISIBLE_FAILURES = 5;
 
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
