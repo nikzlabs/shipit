@@ -52,6 +52,7 @@ import { registerLimitsRoutes } from "./api-routes-limits.js";
 import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
 import { registerBugReportRoutes } from "./api-routes-bug-report.js";
+import { registerIssueRoutes } from "./api-routes-issues.js";
 import type { SecretStore } from "./secret-store.js";
 import type { FileReviewStore } from "./review-store.js";
 import type { AgentReviewStore } from "./agent-review-store.js";
@@ -210,6 +211,12 @@ export interface ApiDeps {
    * undefined and the OAuth service uses the global `fetch`.
    */
   mcpOAuthFetchImpl?: typeof fetch;
+  /**
+   * docs/170 — override for the `fetch` used to reach issue trackers (Linear
+   * GraphQL). Integration tests inject a stub; production leaves it undefined
+   * and the tracker adapters use the global `fetch`.
+   */
+  trackerFetchImpl?: typeof fetch;
 }
 
 /**
@@ -277,6 +284,7 @@ export async function registerApiRoutes(
   await registerAgentRoutes(app, deps);
   await registerVoiceRoutes(app, deps);
   await registerBugReportRoutes(app, deps);
+  await registerIssueRoutes(app, deps);
   await registerLimitsRoutes(app, deps);
 
   // Marketplace catalogs (docs/149). Wired only when a store is provided so

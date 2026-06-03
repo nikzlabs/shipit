@@ -32,6 +32,8 @@ import { Settings } from "./components/Settings.js";
 import { ProjectSettings } from "./components/ProjectSettings.js";
 import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
+import { IssuesPanel } from "./components/IssuesPanel.js";
+import { useIssuesStore } from "./stores/issues-store.js";
 import { FileTree } from "./components/FileTree.js";
 import { FilePreviewModal } from "./components/FilePreviewModal.js";
 import { TerminalPanel } from "./components/TerminalPanel.js";
@@ -728,12 +730,19 @@ export default function App() {
   });
 
   const handleTabChange = useCallback(
-    (tab: "preview" | "docs" | "files" | "terminal" | "history" | "services" | "pr" | "host" | "present") => {
+    (tab: "preview" | "docs" | "issues" | "files" | "terminal" | "history" | "services" | "pr" | "host" | "present") => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
       if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); }
       if (tab === "history" && sid) useGitStore.getState().fetchLog(sid).catch(() => {});
+      if (tab === "issues") {
+        // Fetch-on-open (docs/170) — trackers (for sub-tabs) then the active list.
+        void (async () => {
+          await useIssuesStore.getState().fetchTrackers();
+          await useIssuesStore.getState().fetchIssues();
+        })();
+      }
       if (tab === "present") usePresentStore.getState().markSeen();
     },
     [],
@@ -755,7 +764,7 @@ export default function App() {
     };
   }, [rightTab, hasPr, wsSessionId, status, send]);
 
-  const handleSettingsOpen = useCallback(async (tab?: "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "advanced") => {
+  const handleSettingsOpen = useCallback(async (tab?: "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "advanced" | "trackers") => {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
@@ -1005,6 +1014,7 @@ export default function App() {
           <button onClick={() => handleTabChange("services")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "services" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Services</button>
         )}
         <button onClick={() => handleTabChange("docs")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "docs" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Docs</button>
+        <button onClick={() => handleTabChange("issues")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "issues" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Issues</button>
         <button onClick={() => handleTabChange("files")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "files" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Files</button>
         {!isLocalMode && (
           <button onClick={() => handleTabChange("terminal")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "terminal" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Terminal</button>
@@ -1029,6 +1039,8 @@ export default function App() {
         </div>
         {rightTab === "docs" ? (
           <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
+        ) : rightTab === "issues" ? (
+          <IssuesPanel onConnect={() => { void handleSettingsOpen("trackers"); }} />
         ) : rightTab === "terminal" ? (
           <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} sessionId={wsSessionId} onReconnectWs={reconnect} shellContent={
             (shellStarted || terminalMode === "shell") ? (

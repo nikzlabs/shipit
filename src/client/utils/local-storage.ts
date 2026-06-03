@@ -25,7 +25,7 @@ export function saveSidebarCollapsed(collapsed: boolean): void {
   }
 }
 
-const VALID_RIGHT_TABS = ["preview", "docs", "files", "terminal", "history", "services", "pr", "host", "present"] as const;
+const VALID_RIGHT_TABS = ["preview", "docs", "issues", "files", "terminal", "history", "services", "pr", "host", "present"] as const;
 export type SavedRightTab = typeof VALID_RIGHT_TABS[number];
 
 export function getSavedRightTab(): SavedRightTab {

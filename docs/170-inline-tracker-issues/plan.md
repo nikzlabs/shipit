@@ -200,6 +200,39 @@ Client:
 3. **Linear `issue:` pointer format** — *always a full Linear URL*; bare IDs are
    not accepted, so the pointer stays unambiguous across workspaces.
 
+## Implementation status (v1 — Linear only, SHI-67)
+
+Shipped the **Linear** path; the **GitHub** sub-tab/adapter is deliberately
+deferred (the user tracks everything in Linear). The tracker abstraction is
+built so a GitHub adapter slots in by registering one more `Tracker`.
+
+- **Auth (v1):** simplest read-only path — a Linear **API token** stored in
+  `CredentialStore` (mirrors the GitHub-token pattern), plus a workspace/team
+  binding, configured in **Settings → Trackers**. The full per-deployment
+  Linear OAuth app registration / webhook machinery from `docs/156` is *not*
+  built here — that's for the push trigger, not this read surface.
+- **Empty state:** when no token/team is bound the Issues tab renders a
+  "Connect Linear" empty state (no error) that deep-links to settings.
+
+Actual key files (server):
+- `src/server/orchestrator/trackers/{tracker.ts,registry.ts,index.ts}` +
+  `trackers/linear/adapter.ts` (GraphQL list, priority mapping/sort).
+- `src/server/orchestrator/services/issues.ts` — list trackers/issues + Linear
+  connect/team/disconnect.
+- `src/server/orchestrator/api-routes-issues.ts` — `GET /api/trackers`,
+  `GET /api/issues?tracker=`, `POST /api/trackers/linear/{token,team,disconnect}`,
+  `GET /api/trackers/linear/teams`.
+- `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef()`
+  (branch + title + first prompt) and `createHeadlessSession({ issueRef })`.
+- `src/server/orchestrator/credential-store.ts` — Linear token + team binding.
+
+Actual key files (client):
+- `src/client/components/IssuesViewer.tsx` (presentational) +
+  `IssuesPanel.tsx` (store-connected wrapper that resolves the repo + navigates
+  on Start session) + `SettingsTrackers.tsx` (Linear connect/bind).
+- `src/client/stores/issues-store.ts` — per-tracker lists, fetch-on-open +
+  manual refresh, `startSession()`.
+
 ## Open questions
 
 1. **Webhook follow-up trigger** — decide later whether "fetch on open"
