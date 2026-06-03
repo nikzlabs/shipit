@@ -22,12 +22,15 @@ interface ModelAgentSelectorProps {
   onModelChange?: (model: string) => void;
   modelInfo: ModelInfo | null;
   /**
-   * Whether the picker is being shown inside an active session view. Kept for
-   * call-site symmetry with the rest of the composer (which uses the same
-   * flag to gate other affordances). The picker itself no longer derives any
-   * behavior from it — the cross-agent lock is driven by the session's
-   * persisted `agentPinned` flag so that mid-session model changes within
-   * the pinned agent stay available.
+   * Whether the picker is bound to an active session (the in-session composer)
+   * rather than composing a brand-new session (the quick-capture overlay). The
+   * cross-agent lock is driven by the *current* session's persisted
+   * `agentPinned` flag — but only when this flag is true. In a new-session
+   * context the picker reads the same global session store, so without this
+   * gate it would inherit a background session's pin and lock the agent for a
+   * session that hasn't even started. Within an active session the
+   * `agentPinned`-based lock (other agents only) keeps mid-session model
+   * changes inside the pinned agent available.
    */
   hasActiveSession?: boolean;
   disabled?: boolean;
@@ -39,7 +42,7 @@ export function ModelAgentSelector({
   onAgentChange,
   onModelChange,
   modelInfo,
-  hasActiveSession: _hasActiveSession = false,
+  hasActiveSession = false,
   disabled,
 }: ModelAgentSelectorProps) {
   const [pendingModel, setPendingModel] = useState<string | undefined>(getSavedModelId);
@@ -58,10 +61,15 @@ export function ModelAgentSelector({
 
   // docs/138: once the session has taken its first turn the agent is locked
   // for life (per-agent credential isolation). The model, however, can still
-  // change across turns within the same agent. We use `agentPinned` from the
-  // session record — not `hasActiveSession`, which is just "the picker has
-  // ever shown a session" — to decide which rows are locked.
-  const pinnedAgentId = currentSession?.agentPinned ? currentSession.agentId : undefined;
+  // change across turns within the same agent — so we lock by `agentPinned`
+  // from the session record (other agents' rows only), not the whole picker.
+  // The lock applies ONLY when this picker is bound to the active session
+  // (`hasActiveSession`). The quick-capture overlay reuses this picker to start
+  // a *new* session but reads the same global session store; without the gate
+  // it would inherit whatever background session is pinned and lock the agent
+  // for a session that hasn't started yet (docs/166).
+  const pinnedAgentId =
+    hasActiveSession && currentSession?.agentPinned ? currentSession.agentId : undefined;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
 
