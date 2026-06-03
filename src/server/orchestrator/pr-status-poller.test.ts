@@ -493,10 +493,16 @@ describe("prStatusEqual conversation comparison (docs/133 Phase 4)", () => {
 describe("buildPrStatusQuery (docs/155 Phase 1)", () => {
   it("emits a bulk pullRequests connection with light fields only", () => {
     const query = buildPrStatusQuery({ first: 7 });
-    expect(query).toContain("pullRequests(first: 7, states: [OPEN])");
+    expect(query).toContain("pullRequests(first: 7, states: [OPEN]");
     // Conversation fields live on focused aliases, never in the bulk view.
     expect(query).not.toContain("reviewThreads");
     expect(query).not.toContain("focused");
+    expect(query).not.toContain("coverage");
+  });
+
+  it("orders the bulk connection by UPDATED_AT DESC so the window is biased to active PRs", () => {
+    const query = buildPrStatusQuery({ first: 7 });
+    expect(query).toContain("orderBy: { field: UPDATED_AT, direction: DESC }");
   });
 
   it("appends one focused alias per focusedPrNumber, each carrying conversation", () => {
@@ -507,6 +513,26 @@ describe("buildPrStatusQuery (docs/155 Phase 1)", () => {
     // selection appears twice — once per alias).
     const reviewThreadOccurrences = query.match(/reviewThreads/g)?.length ?? 0;
     expect(reviewThreadOccurrences).toBe(2);
+  });
+
+  it("appends one light coverage alias per coveragePrNumber, no conversation", () => {
+    const query = buildPrStatusQuery({ first: 5, coveragePrNumbers: [7, 8] });
+    expect(query).toContain("coverage0: pullRequest(number: 7)");
+    expect(query).toContain("coverage1: pullRequest(number: 8)");
+    // Coverage aliases are light-only — conversation stays on focused aliases.
+    expect(query).not.toContain("reviewThreads");
+  });
+
+  it("does not emit a duplicate coverage alias for a PR already focused", () => {
+    // A PR-tab-active session is both focused (conversation) and tracked
+    // (coverage). It must get exactly one alias — the conversation-carrying
+    // focused one — not a redundant light coverage alias.
+    const query = buildPrStatusQuery({ first: 5, focusedPrNumbers: [42], coveragePrNumbers: [42, 99] });
+    expect(query).toContain("focused0: pullRequest(number: 42)");
+    expect(query).toContain("coverage0: pullRequest(number: 99)");
+    // Only one alias mentions number 42 (the focused one), not a coverage dup.
+    const occurrences42 = query.match(/pullRequest\(number: 42\)/g)?.length ?? 0;
+    expect(occurrences42).toBe(1);
   });
 });
 
@@ -688,7 +714,7 @@ describe("PrStatusPoller", () => {
     // Initial poll: PR tab is closed, query is light-only.
     await vi.advanceTimersByTimeAsync(0);
     const initialQuery = calls.mock.calls.at(-1)?.[0] as string;
-    expect(initialQuery).toMatch(/pullRequests\(first: \d+, states: \[OPEN\]\)/);
+    expect(initialQuery).toMatch(/pullRequests\(first: \d+, states: \[OPEN\]/);
     expect(initialQuery).not.toContain("focused");
     expect(initialQuery).not.toContain("reviewThreads");
 
@@ -725,7 +751,7 @@ describe("PrStatusPoller", () => {
 
     const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
     const query = calls.mock.calls.at(-1)?.[0] as string;
-    expect(query).toMatch(/pullRequests\(first: 5, states: \[OPEN\]\)/);
+    expect(query).toMatch(/pullRequests\(first: 5, states: \[OPEN\]/);
   });
 
   it("scales bulk first:N up with tracked-session count (docs/155 Phase 1a)", async () => {
@@ -745,7 +771,7 @@ describe("PrStatusPoller", () => {
 
     const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
     const query = calls.mock.calls.at(-1)?.[0] as string;
-    expect(query).toMatch(/pullRequests\(first: 10, states: \[OPEN\]\)/);
+    expect(query).toMatch(/pullRequests\(first: 10, states: \[OPEN\]/);
   });
 
   it("caps bulk first:N at 30 even when tracked sessions exceed it (docs/155 Phase 1a)", async () => {
@@ -765,7 +791,140 @@ describe("PrStatusPoller", () => {
 
     const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
     const query = calls.mock.calls.at(-1)?.[0] as string;
-    expect(query).toMatch(/pullRequests\(first: 30, states: \[OPEN\]\)/);
+    expect(query).toMatch(/pullRequests\(first: 30, states: \[OPEN\]/);
+  });
+
+  it("aliases every tracked session's known PR by number for coverage (discovery fix)", async () => {
+    // Two tracked sessions whose PRs have both been observed once. Every
+    // subsequent poll must alias them by number so neither can be windowed
+    // out of the bulk view on a busy repo.
+    githubAuth = makeGitHubAuth({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [
+              makeGraphQLPrNode({ number: 42, headRefName: "shipit/abc-feature" }),
+              makeGraphQLPrNode({ number: 43, headRefName: "shipit/def-feature" }),
+            ],
+          },
+        },
+      },
+    });
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      { id: "s2", branch: "shipit/def-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    poller.trackSession("s2", "https://github.com/owner/repo");
+
+    // Poll 1 learns both PR numbers.
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Poll 2 must carry coverage aliases for both known PRs.
+    await poller.forceRefreshSession("s1");
+    const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
+    const secondQuery = calls.mock.calls.at(-1)?.[0] as string;
+    expect(secondQuery).toContain("pullRequest(number: 42)");
+    expect(secondQuery).toContain("pullRequest(number: 43)");
+  });
+
+  it("surfaces a tracked open PR via its coverage alias when it falls outside the bulk window (discovery fix)", async () => {
+    // Poll 1: s1's PR is in the bulk view, so its number (42) is learned.
+    githubAuth = makeGitHubAuth({
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    });
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sseBroadcast).toHaveBeenCalledWith("pr_status", expect.objectContaining({
+      updates: expect.arrayContaining([expect.objectContaining({ sessionId: "s1", prNumber: 42 })]),
+    }));
+
+    const calls = githubAuth.graphqlQuery as ReturnType<typeof vi.fn>;
+
+    // Poll 2: the repo now has more open PRs than the window, and s1's PR
+    // sorts out of the bulk `first: N` view entirely. It comes back ONLY as a
+    // coverage alias (a different, more-recently-updated PR fills the bulk
+    // view). The title changes so a successful match produces a broadcast.
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [makeGraphQLPrNode({ number: 7, headRefName: "shipit/other", title: "Unrelated PR" })],
+          },
+          coverage0: makeGraphQLPrNode({ title: "Still open on a busy repo" }),
+        },
+      },
+    });
+
+    await poller.forceRefreshSession("s1");
+
+    // The forced poll aliased s1's known PR by number...
+    const secondQuery = calls.mock.calls.at(-1)?.[0] as string;
+    expect(secondQuery).toContain("coverage0: pullRequest(number: 42)");
+
+    // ...and s1 stays open: never routed to the REST merged/closed verify,
+    // never promoted, and re-broadcast from the coverage node.
+    expect(githubAuth.findPullRequestAnyState).not.toHaveBeenCalled();
+    expect(sseBroadcast).toHaveBeenLastCalledWith("pr_status", expect.objectContaining({
+      updates: expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: "s1",
+          prNumber: 42,
+          prState: "open",
+          prTitle: "Still open on a busy repo",
+        }),
+      ]),
+    }));
+  });
+
+  it("does not surface a merged PR through its coverage alias — merged detection still owns terminal state (discovery fix)", async () => {
+    // Poll 1: s1's PR is open and in the bulk view → number learned.
+    githubAuth = makeGitHubAuth({
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    });
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Poll 2: the PR merged. It's gone from the OPEN bulk view, and the
+    // coverage alias (fetched by number, any state) reports state MERGED. The
+    // coverage path must NOT treat a non-OPEN alias as a live match — the PR
+    // must fall through to verifyMissingPr, which owns terminal promotion.
+    (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      number: 42,
+      url: "https://github.com/owner/repo/pull/42",
+      title: "Add feature",
+      body: "Original description",
+      state: "closed",
+      merged_at: "2026-05-21T10:00:00Z",
+      base: "main",
+      additions: 100,
+      deletions: 20,
+    });
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        repository: {
+          pullRequests: { nodes: [] },
+          coverage0: makeGraphQLPrNode({ state: "MERGED" }),
+        },
+      },
+    });
+
+    await poller.forceRefreshSession("s1", { waitForMissingVerify: true });
+
+    // The merged alias did NOT short-circuit the verify path...
+    expect(githubAuth.findPullRequestAnyState).toHaveBeenCalled();
+    // ...and the session was promoted to merged, not left/re-broadcast as open.
+    expect(poller.getStatus("s1")?.prState).toBe("merged");
   });
 
   it("preserves cached conversation when the PR tab loses focus mid-cycle (docs/155 Phase 1b)", async () => {
