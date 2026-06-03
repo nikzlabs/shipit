@@ -915,8 +915,16 @@ describe("MessageList", () => {
           input: { title: "Sales Chart" },
         },
       ];
+      // Real shape: the MCP bridge returns a content-block array, which
+      // agent-event.ts JSON-stringifies into result.content. Use that exact
+      // shape (not a bare object) so this test exercises the production path.
       const results: ToolResultBlock[] = [
-        { toolUseId: "t1", content: JSON.stringify({ status: "presented", presentId: "pres_chart", title: "Sales Chart" }) },
+        {
+          toolUseId: "t1",
+          content: JSON.stringify([
+            { type: "text", text: JSON.stringify({ status: "presented", presentId: "pres_chart", title: "Sales Chart" }) },
+          ]),
+        },
       ];
 
       render(
@@ -931,6 +939,35 @@ describe("MessageList", () => {
       expect(usePresentStore.getState().activePresentIndex).toBe(0);
       expect(useUiStore.getState().rightTab).toBe("present");
       expect(screen.queryByLabelText("Show output")).toBeNull();
+    });
+
+    it("renders a view chip when the bridge payload is a bare JSON object", () => {
+      usePresentStore.getState().hydrate([
+        {
+          presentId: "pres_bare",
+          content: "<h1>bare</h1>",
+          mimeType: "text/html",
+          title: "Bare Object",
+          createdAt: "2026-05-31T00:00:00.000Z",
+        },
+      ]);
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "mcp__shipit-present__present", input: { title: "Bare Object" } },
+      ];
+      const results: ToolResultBlock[] = [
+        { toolUseId: "t1", content: JSON.stringify({ status: "presented", presentId: "pres_bare", title: "Bare Object" }) },
+      ];
+
+      render(
+        <MessageList
+          messages={[{ role: "assistant", text: "Presented", toolUse: tools, toolResults: results }]}
+          isLoading={false}
+        />
+      );
+
+      expect(screen.getByText("Bare Object")).toBeInTheDocument();
+      fireEvent.click(screen.getByLabelText("View presentation"));
+      expect(useUiStore.getState().rightTab).toBe("present");
     });
   });
 
