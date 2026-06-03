@@ -274,18 +274,57 @@ function parsePresentToolResult(tool: ToolUseBlock, result: ToolResultBlock | un
   if (!result) return null;
 
   const fallbackTitle = typeof tool.input.title === "string" ? tool.input.title : undefined;
-  try {
-    const parsed = JSON.parse(result.content) as { presentId?: unknown; title?: unknown };
-    if (typeof parsed.presentId !== "string" || parsed.presentId.length === 0) return null;
+
+  // The bridge returns `{ presentId, title? }`, but the agent's tool_result
+  // wraps it: MCP results arrive as a content-block array
+  // (`[{ type: "text", text: "<json>" }]`) which agent-event.ts JSON-stringifies
+  // into `result.content`. So the raw string is usually the stringified array,
+  // not the bare object — unwrap it before reading `presentId`.
+  const payload = extractPresentPayload(result.content);
+  if (payload && typeof payload.presentId === "string" && payload.presentId.length > 0) {
     return {
-      presentId: parsed.presentId,
-      title: typeof parsed.title === "string" ? parsed.title : fallbackTitle,
+      presentId: payload.presentId,
+      title: typeof payload.title === "string" ? payload.title : fallbackTitle,
     };
-  } catch {
-    const match = /\bpres_[A-Za-z0-9_-]+\b/.exec(result.content);
-    if (!match) return null;
-    return { presentId: match[0], title: fallbackTitle };
   }
+
+  // Last resort: scan for a bare presentId token (e.g. inner text wasn't valid
+  // JSON, or the content was a plain string).
+  const match = /\bpres_[A-Za-z0-9_-]+\b/.exec(result.content);
+  if (match) return { presentId: match[0], title: fallbackTitle };
+  return null;
+}
+
+/**
+ * Pull the `{ presentId, title? }` payload out of a tool_result content string,
+ * tolerating both the bare-object shape and the MCP content-block-array shape
+ * (`[{ type: "text", text: "<json>" }]`) that the real agent pipeline produces.
+ */
+function extractPresentPayload(raw: string): { presentId?: unknown; title?: unknown } | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    const textBlock = value.find(
+      (b): b is { type: string; text: string } =>
+        !!b && typeof b === "object"
+        && (b as { type?: unknown }).type === "text"
+        && typeof (b as { text?: unknown }).text === "string",
+    );
+    if (!textBlock) return null;
+    try {
+      return JSON.parse(textBlock.text) as { presentId?: unknown; title?: unknown };
+    } catch {
+      return null;
+    }
+  }
+  if (value && typeof value === "object") {
+    return value as { presentId?: unknown; title?: unknown };
+  }
+  return null;
 }
 
 function isPresentTool(name: string): boolean {
