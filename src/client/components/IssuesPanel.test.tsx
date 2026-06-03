@@ -19,7 +19,7 @@ describe("IssuesPanel", () => {
     expect(() =>
       render(
         <MemoryRouter>
-          <IssuesPanel onConnect={() => {}} />
+          <IssuesPanel onStartSession={() => {}} onConnect={() => {}} />
         </MemoryRouter>,
       ),
     ).not.toThrow();
@@ -34,7 +34,7 @@ describe("IssuesPanel", () => {
     expect(() =>
       render(
         <MemoryRouter>
-          <IssuesPanel onConnect={() => {}} />
+          <IssuesPanel onStartSession={() => {}} onConnect={() => {}} />
         </MemoryRouter>,
       ),
     ).not.toThrow();
