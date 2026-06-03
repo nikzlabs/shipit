@@ -113,6 +113,23 @@ Expected savings on heavy polls (when at least one PR tab is active): bulk N=5 a
 - `pr-status-poller.test.ts`: assert that conversation fields are pulled only for sessions in `prTabActiveSessions`, not the whole bulk view.
 - `pr-status-parser.test.ts`: assert `buildPrStatusQuery({ first, focusedPrNumbers })` emits the correct shape.
 
+#### Phase 1d — Discovery correctness fix (steady-state "no PR" regression)
+
+**Status update (2026-06-03):** Phase 1 shipped a latent discovery bug. The plan's premise — *"If a session's PR is past the `first: N` cap it gets a per-session REST verify instead (see `verifyMissingPr`)"* — was false in the deployed code. `verifyMissingPr`'s `open` branch only recovers a stuck `merged`/`closed` `lastKnown`; when `lastKnown` is `undefined` it returns without building a summary, and the `verifiedAbsent` debounce then suppresses re-verification. So a tracked session's open PR that fell outside the bulk window showed **"no PR" persistently**, and re-activation (`forceRefreshSession`) re-ran the same capped query + the same no-op verify.
+
+Two composing facts made the window miss tracked PRs on a busy repo:
+
+1. **The bulk connection lost its `orderBy`.** The pre-Phase-1 query ordered `pullRequests` by `UPDATED_AT DESC` (see the historical Phase 2 snippet below). The Phase 1 rewrite of `buildPrStatusQuery` dropped it, so the `first: N` window fell back to GitHub's default (roughly oldest-open-first) — exactly the PRs a user is *not* working on.
+2. **The window collapsed toward the floor.** `computeBulkFirst` sizes `first` to `max(trackedCount, DISCOVERY_FLOOR)`. As sessions merge, `trackedCount` drops toward 5 while the repo still has 30+ open PRs — window smaller than the open-PR set, holding the wrong PRs.
+
+**Fix — keep tracked PRs IN the bulk view, in discovery (not in `verifyMissingPr`):**
+
+- **Restore `orderBy: { field: UPDATED_AT, direction: DESC }`** on the bulk `pullRequests` connection in `buildPrStatusQuery`. Biases the `first: N` window toward recently-active PRs (the session PRs). Zero points cost.
+- **Light coverage aliases.** `collectCoveragePrNumbers(repoKey)` returns the last-known PR number for every tracked, non-merged session; `buildPrStatusQuery` emits a `coverage${i}: pullRequest(number: N)` alias (light fields only) for each, deduped against the conversation-carrying `focused${i}` aliases. `pollRepo` folds these alias nodes into the branch-match map so a known PR can never be windowed out. **Cost-respecting:** the cost-measurements show light aliased lookups stay at ~1 point regardless of K (only the heavy conversation fields scale), so coverage is effectively free; conversation stays scoped to the focused PR.
+- **Merged/closed detection preserved.** Coverage aliases fetch by number regardless of state, but `parsePrNode` always reports `prState: "open"`. So `pollRepo` only folds an alias node into the branch map when `node.state === "OPEN"`; a known PR that has since merged/closed is left absent from the map and routes through `verifyMissingPr`, which still owns terminal-state promotion.
+
+This is complementary to PR #1007 (`shipit/refresh-pr-status-on-session-40kxk4`), which addresses the ~1–2 min GitHub creation-lag case by surfacing open PRs from the REST verify path. #1007 = creation-lag verify surfacing; this = steady-state bulk discovery. They touch different paths (REST `verifyMissingPr` vs. the GraphQL discovery query) and do not conflict.
+
 ### ~~Phase 2 — Aliased per-PR query~~ [REJECTED — see Phase 0 outcome]
 
 The remaining subsections (PR-number caching, per-session `lastPolledAt`, dynamic aliased queries, discovery aliases) are preserved below as historical context but are NOT implemented. They produce identical points cost to Phase 1 while requiring substantial structural changes (parser refactor, response-shape changes, per-session due-time tracking). Phase 1 is the fix.
