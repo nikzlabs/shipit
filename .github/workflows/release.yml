@@ -4,7 +4,11 @@ name: Release
 # workflow gates it on a green build, fast-forwards the `stable` branch to the
 # tagged commit, and publishes a GitHub Release with auto-generated notes.
 # Those notes are the changelog ShipIt surfaces inline in the update panel.
-# See docs/162-release-channels/plan.md and RELEASING.md.
+#
+# A prerelease tag (`vX.Y.Z-rc.N` — any semver with a `-prerelease` suffix) is
+# published as a GitHub *prerelease* and does NOT fast-forward `stable`, so it
+# never reaches conservative operators. See docs/162-release-channels/plan.md
+# and RELEASING.md.
 
 on:
   push:
@@ -18,6 +22,29 @@ permissions:
   contents: write
 
 jobs:
+  # 0. The tag must match package.json — a release tag is only ever cut via
+  # `npm run release`, which bumps package.json and tags in lockstep. This guard
+  # fails loudly if a tag is ever pushed without the matching bump, so the
+  # human-facing version and the tag can never silently drift.
+  version-guard:
+    name: Tag matches package.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Verify package.json version equals the tag
+        run: |
+          set -euo pipefail
+          PKG="v$(node -p "require('./package.json').version")"
+          TAG="${{ github.ref_name }}"
+          if [ "$PKG" != "$TAG" ]; then
+            echo "::error::package.json version ($PKG) does not match tag ($TAG). Cut releases with 'npm run release -- <version>' — see RELEASING.md."
+            exit 1
+          fi
+          echo "OK: package.json $PKG matches tag $TAG"
+
   # 1. A release must be green — reuse the same gates as ci.yml.
   check:
     name: Lint, Type Check & Build
@@ -46,10 +73,11 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  # 2. On success, fast-forward `stable` and publish the Release.
+  # 2. On success, fast-forward `stable` (stable releases only) and publish the
+  # Release.
   promote:
     name: Promote to stable
-    needs: [check, test]
+    needs: [version-guard, check, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -57,11 +85,27 @@ jobs:
           # Full history so the FF check can verify ancestry.
           fetch-depth: 0
 
+      # A semver prerelease suffix (the `-` in `vX.Y.Z-rc.N`) marks a release
+      # candidate: publish it, but never promote it to `stable`.
+      - name: Classify release
+        id: classify
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG is a prerelease — will publish as a GitHub prerelease and skip the stable fast-forward."
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Fast-forward `stable` to the tagged commit. `--ff-only` semantics are
       # enforced by pushing the SHA to refs/heads/stable: GitHub rejects a
       # non-fast-forward push, so tagging off a commit that isn't an ancestor
       # of current `stable` fails loudly here (never force-push stable).
+      # Skipped for prereleases — they must not move the stable pointer.
       - name: Fast-forward stable to ${{ github.ref_name }}
+        if: steps.classify.outputs.prerelease == 'false'
         run: |
           set -euo pipefail
           SHA="$(git rev-parse "${{ github.ref_name }}^{commit}")"
@@ -69,13 +113,20 @@ jobs:
           git push origin "$SHA:refs/heads/stable"
 
       # Publish a GitHub Release with auto-generated notes (PR titles since the
-      # previous tag). These notes are the inline changelog.
+      # previous tag). These notes are the inline changelog. Prereleases get the
+      # `--prerelease` flag so the updater and operators can tell them apart.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.classify.outputs.prerelease }}
         run: |
           set -euo pipefail
+          PRERELEASE_FLAG=""
+          if [ "$PRERELEASE" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes \
-            --verify-tag
+            --verify-tag \
+            $PRERELEASE_FLAG
