@@ -348,7 +348,7 @@ function PresentToolChip({
   };
 
   return (
-    <div className="min-w-0 overflow-hidden">
+    <div className="min-w-0 overflow-hidden py-1">
       <div className="inline-flex max-w-full items-center gap-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2.5 py-1.5 text-xs text-(--color-text-secondary)">
         {inProgress ? <ToolSpinner /> : <PresentationChartIcon size={14} className="shrink-0 text-(--color-accent)" />}
         <span className="truncate text-(--color-text-primary)">
