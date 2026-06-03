@@ -99,9 +99,19 @@ Handler:
      same path when requested as an image, if simplest is to always wrap — TBD
      during implementation; wrapping is the safe default for the screenshot use
      case.
-   - **`text/markdown`** — render to HTML with the same renderer the client uses
-     (or a minimal server-side pass) so the screenshot shows formatted output,
-     not raw markdown source.
+   - **`text/markdown`** — must be converted to HTML by a **server-side**
+     markdown pass. The client's `react-markdown` renderer
+     (`src/client/components/message-markdown.tsx`) is a client-only React
+     component and is **not reachable from the worker** (a Fastify server with no
+     markdown library bundled). Serving the buffered markdown as-is with
+     `Content-Type: text/markdown` would make the browser show raw source, so the
+     agent's screenshot would capture unformatted markdown — defeating the loop
+     for this mime type. The implementation must add a lightweight markdown→HTML
+     library to the worker (e.g. `marked`) and serve the rendered HTML in a
+     minimal HTML wrapper. Note this is purely for the agent's screenshot view;
+     the user-facing Present tab still renders markdown via `react-markdown`
+     client-side, so the two paths will use different renderers — acceptable for
+     a screenshot-fidelity check, but worth keeping in mind.
    - **`image/png` / `image/jpeg` / `image/gif`** — the content is a `data:`
      URI; decode to bytes and serve with the matching content type (or embed in
      a zero-margin HTML wrapper — wrapper is fine, the agent only screenshots).
@@ -145,6 +155,9 @@ write the exact URL the agent should hit.
   route reading from the `PresentBuffer`.
 - `src/server/session/present-buffer.ts` — no change expected; `get(presentId)`
   already exposes the entry. Confirm the byte/mime data is sufficient to serve.
+- `package.json` — add a server-side markdown→HTML library (e.g. `marked`) for
+  the `text/markdown` path. Follow the dependency policy in CLAUDE.md: pin an
+  exact version, ≥7 days old, refresh the lockfile, run `npm run check-deps`.
 - `src/server/shipit-docs/present.md` — document the screenshot-and-iterate loop.
 - `docs/093-agent-present/plan.md` / `checklist.md` — cross-reference this doc as
   the realization of the Tier 2 serving path.
