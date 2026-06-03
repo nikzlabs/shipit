@@ -148,6 +148,8 @@ Write a clear, descriptive title and a markdown body with the following sections
 - \`## Changes\` — bullet list of the key changes, grouped by behavior/module. For each meaningful behavior change, include the reason it was needed and the user request, bug, or tradeoff it traces back to.
 - \`## Test plan\` — how to verify the change works.
 
+Set one primary \`--label\` on \`gh pr create\` that matches the change's intent (e.g. \`feature\`, \`enhancement\`, \`bug\`, \`fix\`, \`documentation\`, \`chore\`, \`refactor\`, \`ci\`, \`test\`, \`dependencies\`) so release notes group it correctly: \`gh pr create -t "<title>" --label feature --body-file - <<'EOF' … EOF\`. Pick the single best-fitting label, not several. Labeling is best-effort — the repo's label set varies, so an unknown label name is skipped without blocking the PR, and a server-side path labeler still runs as a fallback.
+
 Do not only describe what changed. Explain why the change was made. After creating a PR, or when continuing work in a session that already has one, keep the PR body current with \`gh pr edit\` whenever the turn materially changes behavior or rationale. Maintain a stable rationale section instead of appending raw logs.
 
 Always pass PR markdown through \`--body-file - <<'EOF'\` rather than \`-b "..." \`. Shells evaluate backticks and \`$(...)\` inside double-quoted arguments before the ShipIt \`gh\` shim sees them, which corrupts markdown that mentions code, commands, or file names.

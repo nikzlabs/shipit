@@ -365,6 +365,33 @@ async function resolveSessionPr(
 }
 
 /**
+ * Apply agent-requested labels to a PR, best-effort. Labeling must NEVER block
+ * the PR create/edit: a label name that doesn't exist on the repo, a token
+ * without label-write scope, etc. all degrade to a non-fatal warning string the
+ * caller surfaces on the shim's stderr while the PR URL is still printed and
+ * the command exits 0.
+ *
+ * Labels are normalized (trimmed, empties dropped) here so callers can forward
+ * the agent's raw array. Returns `undefined` when there is nothing to warn
+ * about (no labels requested, or all applied cleanly).
+ */
+async function applyPrLabels(
+  githubAuthManager: GitHubAuthManager,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  labels: string[] | undefined,
+): Promise<string | undefined> {
+  const normalized = (labels ?? []).map((l) => l.trim()).filter(Boolean);
+  if (normalized.length === 0) return undefined;
+  const result = await githubAuthManager.addLabelsToPullRequest(owner, repo, prNumber, normalized);
+  if (!result.success) {
+    return `Warning: could not apply label(s) ${normalized.join(", ")}: ${result.message ?? "unknown error"}. The PR was still created/updated.`;
+  }
+  return undefined;
+}
+
+/**
  * Flush any pending working-tree changes into a commit before a synchronous
  * push/PR operation. The agent calls `gh pr create` mid-turn, *before* the
  * normal end-of-turn `postTurnCommit` has run — without this flush, the new
@@ -447,6 +474,12 @@ export async function agentCreatePr(
     draft?: boolean;
     /** When true and body is empty/missing, fall back to a basic git-log description. */
     fill?: boolean;
+    /**
+     * Labels to apply to the PR (e.g. `["feature"]`). Applied best-effort after
+     * the PR is opened — a label that doesn't exist on the repo surfaces a
+     * non-fatal `labelWarning` rather than failing the create.
+     */
+    labels?: string[];
     sessionTitle?: string;
     remoteUrl?: string;
     /** Session id for resolving the runner (to flush pending commits + cancel auto-push). */
@@ -463,6 +496,8 @@ export async function agentCreatePr(
   insertions: number;
   deletions: number;
   alreadyExisted: boolean;
+  /** Non-fatal warning when one or more labels could not be applied. */
+  labelWarning?: string;
 }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
@@ -495,6 +530,10 @@ export async function agentCreatePr(
       throw new ServiceError(500, `Push failed: ${msg}`);
     }
     const stats = await git.diffStatVsBranch(existingPr.base);
+    // Apply any requested labels additively to the existing PR — best-effort.
+    const labelWarning = await applyPrLabels(
+      githubAuthManager, resolved.owner, resolved.repo, existingPr.number, options.labels,
+    );
     return {
       number: existingPr.number,
       url: existingPr.url,
@@ -504,6 +543,7 @@ export async function agentCreatePr(
       insertions: stats.insertions,
       deletions: stats.deletions,
       alreadyExisted: true,
+      labelWarning,
     };
   }
 
@@ -566,6 +606,12 @@ export async function agentCreatePr(
     throw new ServiceError(500, result.message ?? "Failed to create pull request");
   }
 
+  // Apply requested labels after the PR exists — best-effort so a bad label
+  // name never turns a successful create into a failure.
+  const labelWarning = await applyPrLabels(
+    githubAuthManager, resolved.owner, resolved.repo, result.number, options.labels,
+  );
+
   const stats = await git.diffStatVsBranch(baseBranch);
   return {
     number: result.number,
@@ -576,6 +622,7 @@ export async function agentCreatePr(
     insertions: stats.insertions,
     deletions: stats.deletions,
     alreadyExisted: false,
+    labelWarning,
   };
 }
 
@@ -586,8 +633,8 @@ export async function agentCreatePr(
 export async function editPullRequest(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
-  options: { number?: number; title?: string; body?: string; remoteUrl?: string },
-): Promise<{ number: number; url: string }> {
+  options: { number?: number; title?: string; body?: string; labels?: string[]; remoteUrl?: string },
+): Promise<{ number: number; url: string; labelWarning?: string }> {
   const resolved = await resolveSessionPr(git, githubAuthManager, options.remoteUrl);
 
   let prNumber = options.number;
@@ -596,18 +643,35 @@ export async function editPullRequest(
     prNumber = resolved.pr.number;
   }
 
-  if (typeof options.title !== "string" && typeof options.body !== "string") {
-    throw new ServiceError(400, "Provide a title or body to update");
+  const labels = (options.labels ?? []).map((l) => l.trim()).filter(Boolean);
+  const hasTitleOrBody = typeof options.title === "string" || typeof options.body === "string";
+  if (!hasTitleOrBody && labels.length === 0) {
+    throw new ServiceError(400, "Provide a title, body, or label to update");
   }
 
-  const update = await githubAuthManager.updatePullRequest(
-    resolved.owner, resolved.repo, prNumber,
-    { title: options.title, body: options.body },
-  );
-  if (!update.success || !update.url || !update.number) {
-    throw new ServiceError(500, update.message ?? "Failed to update PR");
+  let url: string;
+  let number: number;
+  if (hasTitleOrBody) {
+    const update = await githubAuthManager.updatePullRequest(
+      resolved.owner, resolved.repo, prNumber,
+      { title: options.title, body: options.body },
+    );
+    if (!update.success || !update.url || !update.number) {
+      throw new ServiceError(500, update.message ?? "Failed to update PR");
+    }
+    url = update.url;
+    number = update.number;
+  } else {
+    // Labels-only edit: there's no title/body PATCH to make, but we still need
+    // a URL to print. Prefer the resolved PR's URL; fall back to the canonical
+    // github.com URL when the number was passed explicitly for a PR that isn't
+    // the current branch's.
+    url = resolved.pr?.url ?? `https://github.com/${resolved.owner}/${resolved.repo}/pull/${prNumber}`;
+    number = prNumber;
   }
-  return { number: update.number, url: update.url };
+
+  const labelWarning = await applyPrLabels(githubAuthManager, resolved.owner, resolved.repo, prNumber, labels);
+  return { number, url, labelWarning };
 }
 
 /** Comment on an existing PR. */

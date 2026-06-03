@@ -103,6 +103,7 @@ export function registerAgentOpsRoutes(
   // POST /agent-ops/pr/create — agent-driven PR create
   app.post<{ Body: {
     title?: string; body?: string; base?: string; draft?: boolean; fill?: boolean;
+    labels?: string[];
   } }>(
     "/agent-ops/pr/create",
     async (request, reply) => relay("POST", "/pr/agent-create", request.body ?? {}, reply),
@@ -134,7 +135,7 @@ export function registerAgentOpsRoutes(
   );
 
   // PATCH /agent-ops/pr/:number — edit an existing PR
-  app.patch<{ Params: { number: string }; Body: { title?: string; body?: string } }>(
+  app.patch<{ Params: { number: string }; Body: { title?: string; body?: string; labels?: string[] } }>(
     "/agent-ops/pr/:number",
     async (request, reply) =>
       relay("PATCH", `/pr/${encodeURIComponent(request.params.number)}`, request.body ?? {}, reply),

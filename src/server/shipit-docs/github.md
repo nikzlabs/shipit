@@ -35,7 +35,7 @@ create or switch branches first, you are already on the session branch and
 `gh pr create` pushes it for you:
 
 ```sh
-gh pr create -t "Short clear title" --body-file - <<'EOF'
+gh pr create -t "Short clear title" --label feature --body-file - <<'EOF'
 ## Summary
 The user goal and why this change exists.
 
@@ -56,6 +56,21 @@ The `EOF` delimiter must be single-quoted. Do not put markdown containing
 backticks in `-b "..."`: the shell evaluates backticks and `$(...)` inside
 double quotes before the ShipIt `gh` shim receives the body.
 
+### Labeling a PR
+
+Set **one** primary `--label` that matches the change's intent so the repo's
+release notes group it correctly — e.g. `feature`, `enhancement`, `bug`, `fix`,
+`documentation`, `chore`, `refactor`, `ci`, `test`, or `dependencies`. `--label`
+is repeatable and accepts comma-separated values (`--label a,b`), and works on
+both `gh pr create` and `gh pr edit`.
+
+Labeling is **best-effort**: the repo's label set varies, so if a label name
+doesn't exist on the repo the PR is still created/updated — the shim prints the
+PR URL, exits 0, and notes the skipped label on stderr. ShipIt also runs a
+server-side path-based auto-labeler as a fallback, so your `--label` is a
+semantic hint, not the only mechanism. Pick the single label that best describes
+the change rather than guessing several.
+
 Do not only describe what changed. Explain why the change was made, what user
 request or bug it traces back to, and any tradeoff made. After creating a PR,
 or when continuing work in a session that already has one, keep the PR body
@@ -74,8 +89,8 @@ The shim:
 
 | Subcommand | Notes |
 |---|---|
-| `gh pr create [-t TITLE] [-b BODY\|--body-file FILE] [-B BASE] [-d/--draft] [--fill]` | Push current branch and open a PR. Use `--body-file -` with a quoted heredoc for markdown bodies. With `--fill`, an empty body is filled from recent commits. |
-| `gh pr edit [<n>] [-t TITLE] [-b BODY\|--body-file FILE]` | Update title/body. `<n>` defaults to the current branch's PR. |
+| `gh pr create [-t TITLE] [-b BODY\|--body-file FILE] [-B BASE] [-d/--draft] [--fill] [-l/--label LABEL]` | Push current branch and open a PR. Use `--body-file -` with a quoted heredoc for markdown bodies. With `--fill`, an empty body is filled from recent commits. `--label` is repeatable / comma-separated and best-effort. |
+| `gh pr edit [<n>] [-t TITLE] [-b BODY\|--body-file FILE] [-l/--label LABEL]` | Update title/body and/or add labels. `<n>` defaults to the current branch's PR. `--label` may be given alone (no title/body needed). |
 | `gh pr view [<n>] [--json FIELDS]` | Read a PR. With `--json title,body,state,…` returns just those fields. |
 | `gh pr list [--state open\|closed\|all] [--json …]` | List PRs in the session's repo. |
 | `gh pr status` | Print the current branch's PR (or "No PR"). |
