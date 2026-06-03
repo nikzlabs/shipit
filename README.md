@@ -80,15 +80,14 @@ server), so headroom matters once you have a few sessions open at once.
 
 ```bash
 ssh root@<server-ip>
-
-apt-get update -qq && apt-get install -y -qq git
-git clone https://github.com/nicolasalt/shipit.git /opt/shipit
-bash /opt/shipit/deployment/vps/setup.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/main/deployment/vps/setup.sh)
 ```
 
 The script asks whether you want Cloudflare, Tailscale, both, or neither, then takes care of
-everything else: installing Docker, configuring host limits, building the images, installing the
-self-updater + restarter systemd units, and bringing ShipIt up.
+everything else: installing git and Docker, cloning ShipIt to `/opt/shipit`, configuring host
+limits, building the images, installing the self-updater + restarter systemd units, and bringing
+ShipIt up. Installing a fork instead? Set `SHIPIT_REPO_URL=https://github.com/you/shipit.git` before
+the command.
 
 Once it's running, updates happen from inside the UI — **Settings → Advanced → Software Updates** —
 or via `bash /opt/shipit/deployment/vps/deploy.sh` on the host.
