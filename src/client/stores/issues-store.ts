@@ -1,10 +1,17 @@
 import { create } from "zustand";
 import type {
+  IssuePriorityLevel,
   ListIssuesResult,
   TrackerId,
   TrackerInfo,
   TrackerIssue,
 } from "../../server/shared/types.js";
+import {
+  UNASSIGNED,
+  distinctAssignees,
+  distinctStatuses,
+  type IssueFilters,
+} from "../components/issues-filter.js";
 
 /**
  * Issues-tab store (docs/170). Per-tracker issue lists, fetched on tab open and
@@ -22,10 +29,52 @@ interface IssuesState {
   loading: boolean;
   error: string | null;
 
+  /**
+   * Client-side list filters (docs/173). `query` + `priorities` are
+   * normalized/universal so they persist across sub-tab switches; `statuses` +
+   * `assignees` are freeform per-tracker values, pruned to the active list on
+   * tracker switch / after a fetch (the `UNASSIGNED` sentinel always survives).
+   */
+  filters: IssueFilters;
+
   setActiveTracker: (id: TrackerId) => void;
   fetchTrackers: () => Promise<void>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
+  setQuery: (query: string) => void;
+  togglePriority: (level: IssuePriorityLevel) => void;
+  toggleStatus: (name: string) => void;
+  toggleAssignee: (value: string) => void;
+  clearFilters: () => void;
   reset: () => void;
+}
+
+function emptyFilters(): IssueFilters {
+  return { query: "", priorities: new Set(), statuses: new Set(), assignees: new Set() };
+}
+
+function toggleInSet<T>(set: Set<T>, value: T): Set<T> {
+  const next = new Set(set);
+  if (next.has(value)) next.delete(value);
+  else next.add(value);
+  return next;
+}
+
+/**
+ * Prune freeform status/assignee selections to the values present in the given
+ * list. The `UNASSIGNED` sentinel is preserved unconditionally — it's a
+ * synthetic option that isn't enumerated by the tracker.
+ */
+function pruneFilters(filters: IssueFilters, issues: TrackerIssue[]): IssueFilters {
+  const validStatuses = new Set(distinctStatuses(issues).map((s) => s.name));
+  const validAssignees = new Set(distinctAssignees(issues).map((a) => a.value));
+  return {
+    query: filters.query,
+    priorities: filters.priorities,
+    statuses: new Set([...filters.statuses].filter((s) => validStatuses.has(s))),
+    assignees: new Set(
+      [...filters.assignees].filter((a) => a === UNASSIGNED || validAssignees.has(a)),
+    ),
+  };
 }
 
 export const useIssuesStore = create<IssuesState>((set, get) => ({
@@ -35,8 +84,15 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   infoByTracker: {},
   loading: false,
   error: null,
+  filters: emptyFilters(),
 
-  setActiveTracker: (id) => set({ activeTracker: id }),
+  setActiveTracker: (id) =>
+    set((state) => ({
+      activeTracker: id,
+      // Prune freeform facets against the newly-active list (it may be empty
+      // until fetchIssues lands, which prunes again with fresh data).
+      filters: pruneFilters(state.filters, state.issuesByTracker[id] ?? []),
+    })),
 
   fetchTrackers: async () => {
     try {
@@ -70,23 +126,51 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         set({ loading: false, error: body.error ?? `Failed to load issues (${res.status})` });
         return;
       }
-      set((state) => ({
-        loading: false,
-        error: null,
-        issuesByTracker: { ...state.issuesByTracker, [id]: body.issues ?? [] },
-        infoByTracker: body.tracker
-          ? { ...state.infoByTracker, [id]: body.tracker }
-          : state.infoByTracker,
-      }));
+      set((state) => {
+        const issues = body.issues ?? [];
+        // Only re-prune when the freshly-loaded list belongs to the active
+        // sub-tab — a background fetch for another tracker shouldn't disturb
+        // the facets the user is currently looking at.
+        const filters = id === state.activeTracker ? pruneFilters(state.filters, issues) : state.filters;
+        return {
+          loading: false,
+          error: null,
+          filters,
+          issuesByTracker: { ...state.issuesByTracker, [id]: issues },
+          infoByTracker: body.tracker
+            ? { ...state.infoByTracker, [id]: body.tracker }
+            : state.infoByTracker,
+        };
+      });
     } catch (err) {
       set({ loading: false, error: err instanceof Error ? err.message : String(err) });
     }
   },
+
+  setQuery: (query) => set((state) => ({ filters: { ...state.filters, query } })),
+
+  togglePriority: (level) =>
+    set((state) => ({
+      filters: { ...state.filters, priorities: toggleInSet(state.filters.priorities, level) },
+    })),
+
+  toggleStatus: (name) =>
+    set((state) => ({
+      filters: { ...state.filters, statuses: toggleInSet(state.filters.statuses, name) },
+    })),
+
+  toggleAssignee: (value) =>
+    set((state) => ({
+      filters: { ...state.filters, assignees: toggleInSet(state.filters.assignees, value) },
+    })),
+
+  clearFilters: () => set({ filters: emptyFilters() }),
 
   reset: () =>
     set({
       issuesByTracker: {},
       loading: false,
       error: null,
+      filters: emptyFilters(),
     }),
 }));
