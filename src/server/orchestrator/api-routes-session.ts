@@ -49,7 +49,7 @@ import {
 } from "./services/index.js";
 import { ensureBareCache } from "./repo-git.js";
 import { parseGitHubRemote } from "./git-utils.js";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, IssueRef } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerSessionRoutes(
@@ -381,6 +381,12 @@ export async function registerSessionRoutes(
       branch?: string;
       agent?: AgentId;
       model?: string;
+      /**
+       * docs/170 — when present, the new session is seeded from a tracker
+       * issue (branch + title + first prompt derived from it). Sent by the
+       * Issues tab's "Start session" row action. JSON path only.
+       */
+      issueRef?: IssueRef;
     };
   }>(
     "/api/sessions/headless",
@@ -390,6 +396,7 @@ export async function registerSessionRoutes(
       let branch: string | undefined;
       let agent: AgentId | undefined;
       let model: string | undefined;
+      let issueRef: IssueRef | undefined;
       const uploadInputs: { filename: string; data: Buffer }[] = [];
 
       if (request.isMultipart()) {
@@ -432,6 +439,7 @@ export async function registerSessionRoutes(
         branch = body.branch;
         agent = body.agent;
         model = body.model;
+        issueRef = body.issueRef;
       }
 
       try {
@@ -442,6 +450,7 @@ export async function registerSessionRoutes(
           {
             repoUrl,
             prompt: initialPrompt,
+            ...(issueRef !== undefined ? { issueRef } : {}),
             ...(branch !== undefined ? { branch } : {}),
             ...(agent !== undefined ? { agent } : {}),
             ...(model !== undefined ? { model } : {}),

@@ -218,6 +218,84 @@ export interface DocEntry {
   checklist?: { total: number; done: number };
 }
 
+// ---- Issue tracker types (docs/170 — inline tracker Issues tab) ----
+
+/**
+ * Identifier for a configured issue tracker. Drives the Issues tab's sub-tab
+ * switcher. v1 ships Linear only; `"github"` is reserved so a GitHub Issues
+ * adapter can slot in later without a type change (see docs/170 non-goals).
+ */
+export type TrackerId = "linear" | "github";
+
+/**
+ * Normalized priority bucket, tracker-agnostic. Linear maps its 0–4 priority
+ * field onto these; a future GitHub adapter can derive them from labels. The
+ * Issues list sorts by `sortOrder` ascending (urgent first, none last).
+ */
+export type IssuePriorityLevel = "urgent" | "high" | "medium" | "low" | "none";
+
+export interface IssuePriority {
+  level: IssuePriorityLevel;
+  /** Ascending sort key: urgent=0 … none=4. Drives the priority-sorted list. */
+  sortOrder: number;
+  /** Human label, e.g. "Urgent", "No priority". */
+  label: string;
+}
+
+/** A single issue row returned by a tracker's `listIssues()`. */
+export interface TrackerIssue {
+  /** Tracker-internal node id (Linear GraphQL id). Used for `getIssue()`. */
+  id: string;
+  /** Human-facing identifier, e.g. "SHI-67". */
+  identifier: string;
+  title: string;
+  /** Deep link to the issue in the tracker (escape hatch — not the happy path). */
+  url: string;
+  /** Issue body / description (markdown). Used to seed the session prompt. */
+  description?: string;
+  priority: IssuePriority;
+  /** Workflow state, e.g. { name: "In Progress", type: "started" }. */
+  status?: { name: string; type?: string };
+  assignee?: { name: string; avatarUrl?: string };
+}
+
+/**
+ * Per-tracker metadata + configuration state. Drives the sub-tab switcher and
+ * the "Connect Linear" empty state. `configured` is false until the user has
+ * supplied both an API token and a team binding.
+ */
+export interface TrackerInfo {
+  id: TrackerId;
+  label: string;
+  configured: boolean;
+  /** Bound workspace/team context, when configured (Linear team key/name). */
+  binding?: { key: string; name: string };
+}
+
+/** Response shape for `GET /api/issues?tracker=...`. */
+export interface ListIssuesResult {
+  tracker: TrackerInfo;
+  issues: TrackerIssue[];
+}
+
+/**
+ * A pointer to a tracker issue used to seed a ShipIt session (docs/156 +
+ * docs/170). The downstream `headless-sessions.create({ issueRef })` derives
+ * the branch and the first agent prompt from this. Kept deliberately small so
+ * both the in-app "Start session" path (pull, docs/170) and the future webhook
+ * trigger (push, docs/156) can build one.
+ */
+export interface IssueRef {
+  tracker: TrackerId;
+  /** Human-facing identifier, e.g. "SHI-67" or "owner/repo#123". */
+  identifier: string;
+  title: string;
+  url?: string;
+  description?: string;
+  /** Tracker-specific extras (e.g. Linear `agentSessionId`). */
+  providerData?: Record<string, string>;
+}
+
 // ---- Skill types ----
 
 /**

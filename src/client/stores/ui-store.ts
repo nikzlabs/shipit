@@ -19,6 +19,7 @@ import {
 type RightTab =
   | "preview"
   | "docs"
+  | "issues"
   | "files"
   | "terminal"
   | "history"
@@ -33,6 +34,7 @@ type SettingsTab =
   | "agent-claude"
   | "agent-codex"
   | "github"
+  | "trackers"
   | "git"
   | "instructions"
   | "skills"

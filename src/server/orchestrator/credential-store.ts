@@ -10,9 +10,23 @@ import type { AgentId, ProviderAccount } from "../shared/types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 
+/**
+ * docs/170 — Linear issue-tracker binding. `token` is a read-only Linear API
+ * key (personal API key); `team` is the workspace/team the Issues tab queries.
+ * Server-side only — the token is never echoed back to the browser (status
+ * reports configured-or-not). A Linear workspace is deployment-wide, so this
+ * lives here rather than as a per-repo fact (see docs/170 repo→tracker mapping).
+ */
+interface LinearTrackerConfig {
+  token?: string;
+  team?: { id: string; key: string; name: string };
+}
+
 interface CredentialData {
   agentEnv?: Record<string, string>;
   githubToken?: string;
+  /** docs/170 — Linear Issues-tab binding. */
+  linear?: LinearTrackerConfig;
   maxIdleContainers?: number;
   agentSystemInstructionsEnabled?: boolean;
   autoCreatePr?: boolean;
@@ -346,6 +360,46 @@ export class CredentialStore {
   clearGithubToken(): void {
     delete this.data.githubToken;
     this.save();
+  }
+
+  // ---- Linear issue tracker (docs/170) ----
+
+  /** The stored Linear API token, or null when none is set. */
+  getLinearToken(): string | null {
+    const token = this.data.linear?.token;
+    if (typeof token === "string" && token.trim()) {
+      return token;
+    }
+    return null;
+  }
+
+  setLinearToken(token: string): void {
+    this.data.linear ??= {};
+    this.data.linear.token = token;
+    this.save();
+  }
+
+  /** The bound Linear team, or null when none is set. */
+  getLinearTeam(): { id: string; key: string; name: string } | null {
+    const team = this.data.linear?.team;
+    if (team && typeof team.id === "string" && team.id.trim()) {
+      return { ...team };
+    }
+    return null;
+  }
+
+  setLinearTeam(team: { id: string; key: string; name: string }): void {
+    this.data.linear ??= {};
+    this.data.linear.team = team;
+    this.save();
+  }
+
+  /** Clear the Linear token and team binding ("Disconnect Linear"). */
+  clearLinear(): void {
+    if (this.data.linear) {
+      delete this.data.linear;
+      this.save();
+    }
   }
 
   // ---- Voice provider API keys (docs/144) ----

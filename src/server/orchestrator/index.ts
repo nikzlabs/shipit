@@ -952,6 +952,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     ...(deps.mcpOAuthFetchImpl !== undefined
       ? { mcpOAuthFetchImpl: deps.mcpOAuthFetchImpl }
       : {}),
+    ...(deps.trackerFetchImpl !== undefined
+      ? { trackerFetchImpl: deps.trackerFetchImpl }
+      : {}),
   });
 
   // ---- Marketplace pre-clone (docs/149) ----

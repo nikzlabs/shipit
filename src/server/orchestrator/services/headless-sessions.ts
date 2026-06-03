@@ -2,7 +2,7 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { SessionInfo, AgentId, UploadRef } from "../../shared/types.js";
+import type { SessionInfo, AgentId, UploadRef, IssueRef } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { agentIdForModel } from "../../shared/agent-registry.js";
@@ -40,9 +40,54 @@ export interface HeadlessUploadInput {
   data: Buffer;
 }
 
+/**
+ * docs/170 — turn a fetched tracker issue into a branch slug + seed prompt.
+ * Shared seeding primitive: the in-app "Start session" path (pull, docs/170)
+ * and the future webhook trigger (push, docs/156) both build an `IssueRef` and
+ * route through here, so the branch/prompt derivation stays in one place.
+ */
+export function seedFromIssueRef(issueRef: IssueRef): {
+  prompt: string;
+  branch: string;
+  title: string;
+} {
+  const identifier = issueRef.identifier.trim();
+  const titleText = issueRef.title.trim();
+
+  // Branch: "<identifier>-<title-slug>", lowercased, kebab, capped so it stays
+  // a valid, readable git ref (assertValidBranchName rejects spaces/specials).
+  const slugify = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  const idSlug = slugify(identifier);
+  const titleSlug = slugify(titleText).split("-").slice(0, 8).join("-");
+  const branch = [idSlug, titleSlug].filter(Boolean).join("-").slice(0, 60).replace(/-+$/g, "")
+    || generateBranchPrefix();
+
+  // Seed prompt: identifier + title + description + link, so the first agent
+  // turn has the full issue context without the user re-typing it.
+  const lines = [`You are working on issue ${identifier}: ${titleText}`];
+  if (issueRef.description?.trim()) {
+    lines.push("", issueRef.description.trim());
+  }
+  if (issueRef.url?.trim()) {
+    lines.push("", `Issue link: ${issueRef.url.trim()}`);
+  }
+  return { prompt: lines.join("\n"), branch, title: `${identifier}: ${titleText}` };
+}
+
 export interface CreateHeadlessSessionOptions {
   repoUrl: string;
-  prompt: string;
+  /** Required unless `issueRef` is supplied (then the prompt is seeded from it). */
+  prompt?: string;
+  /**
+   * docs/170 — when present, the branch, title, and (absent an explicit
+   * `prompt`) the first agent prompt are derived from the issue. Explicit
+   * `prompt`/`branch`/`title` still win so callers can override.
+   */
+  issueRef?: IssueRef;
   title?: string;
   branch?: string;
   base?: string;
@@ -79,7 +124,11 @@ export async function createHeadlessSession(
   const repoUrl = opts.repoUrl?.trim();
   if (!repoUrl) throw new ServiceError(400, "Add a repo first.");
 
-  const trimmedPrompt = opts.prompt?.trim();
+  // docs/170 — derive branch/title/prompt from a tracker issue when supplied.
+  // Explicit options still win (a caller may pre-fill the prompt or branch).
+  const seed = opts.issueRef ? seedFromIssueRef(opts.issueRef) : undefined;
+
+  const trimmedPrompt = (opts.prompt?.trim() || seed?.prompt)?.trim();
   if (!trimmedPrompt) throw new ServiceError(400, "prompt is required");
   if (trimmedPrompt.length > 50_000) {
     throw new ServiceError(400, "prompt exceeds 50,000 characters");
@@ -102,8 +151,8 @@ export async function createHeadlessSession(
     );
   }
 
-  const explicitBranch = opts.branch?.trim();
-  const explicitTitle = opts.title?.trim();
+  const explicitBranch = opts.branch?.trim() || seed?.branch;
+  const explicitTitle = opts.title?.trim() || seed?.title;
   const branchName = explicitBranch || generateBranchPrefix();
   assertValidBranchName(branchName);
 
