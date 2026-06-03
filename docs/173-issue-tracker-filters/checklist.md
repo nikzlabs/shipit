@@ -21,6 +21,11 @@
       popovers + active-count badges
 - [ ] `IssuesViewer.tsx` — render filter bar, "N of M issues" count, empty-filtered
       state with Clear-filters button
+- [ ] `IssuesViewer.tsx` — table layout: sticky column-header row + grid rows;
+      restructure `IssueRow` into Issue / Title / Priority / Status / Assignee /
+      action columns (Issue column links to the original issue)
+- [ ] Responsive degradation: drop Assignee then Status on narrow widths; Title
+      and the action never drop
 - [ ] `IssuesPanel.tsx` — memoized filtered list + distinct statuses (stable refs,
       no React #185), wire handlers
 

@@ -1,6 +1,6 @@
 ---
 title: Issue tracker filters & search
-description: Tracker-agnostic status/priority filters (multi-select) and free-text search for the inline Issues tab, applied client-side over the normalized issue list so every current and future tracker gets them for free.
+description: Tracker-agnostic status/priority filters (multi-select), free-text search, and a tabular layout (status, priority, and issue-link as columns) for the inline Issues tab — applied client-side over the normalized issue list so every current and future tracker gets them for free.
 ---
 
 # Issue tracker filters & search
@@ -131,6 +131,50 @@ Standard faceted-search semantics:
 - **Empty facet = no constraint.** No priorities selected means "any priority,"
   not "no issues."
 
+## Table layout
+
+Today each row is a stacked "card" (identifier + priority badge on one line,
+title below, status/assignee on a third line — see `IssueRow` in
+`IssuesViewer.tsx`). With filters added, a **tabular** layout reads better: it
+aligns the facets you're filtering on into scannable columns and pairs naturally
+with the filter bar (filter a column → scan that column).
+
+The list becomes a table with these columns:
+
+| Column | Source | Notes |
+|---|---|---|
+| **Issue** | `identifier` → `url` | The existing external link (opens the issue in the tracker, `ArrowSquareOutIcon`). Becomes its own narrow, monospace column instead of sharing a line with priority. This is the "linked to the original issue" column. |
+| **Title** | `title` | Flex-grow column, truncates with ellipsis; the row's primary content. |
+| **Priority** | `priority` | The existing `PriorityBadge`, now its own fixed-width column so badges align vertically and the priority filter maps to a visible column. |
+| **Status** | `status.name` | Promoted from the third-line metadata into its own column. |
+| **Assignee** | `assignee` | Name + `UserIcon` (or avatar), its own column; hidden on narrow widths before Title. |
+| **(action)** | — | The per-row **Start session** button, right-aligned in a trailing column. |
+
+Design constraints, to stay consistent with the codebase:
+
+- **Tracker-agnostic columns.** Every column reads a field on the normalized
+  `TrackerIssue` — no tracker-specific column ever appears. A tracker that omits
+  `status`/`assignee` renders an empty cell, not a broken layout.
+- **CSS, not a table lib.** Use a CSS grid (or fl-aligned rows) with Tailwind v4
+  utilities and the existing `--color-*` tokens — no new dependency. A sticky
+  header row labels the columns (`Issue · Title · Priority · Status · Assignee`).
+  Keep the existing `divide-y divide-(--color-border-secondary)` row separators
+  and `hover:bg-(--color-bg-hover)`.
+- **Sort stays priority-first** (docs/170); columns are display-only in v1. The
+  Priority and Status **headers are not sort toggles** yet — column-sort is a
+  natural fast-follow but out of scope here (the list is already
+  priority-sorted, and adding sortable headers reopens the sort model). Listed in
+  Non-goals.
+- **Responsive degradation.** On narrow panel widths (the Issues tab can be a
+  side panel), drop the Assignee column first, then Status, collapsing back
+  toward the identifier + title + priority + action core. Title never drops.
+- **The filter bar's "N of M" count and empty-filtered state** sit above the
+  table, unchanged by the columnar layout.
+
+`IssueRow` is restructured from a stacked flexbox into a grid row;
+`IssuesViewer` gains the header row. No prop/data changes — same `TrackerIssue`
+in, table out.
+
 ## State & data flow
 
 Filter state lives in `issues-store.ts` alongside the existing list state. The
@@ -181,7 +225,10 @@ Client (all changes are client-side — this is the point):
 - `src/client/components/IssuesFilterBar.tsx` (new) — the search box + two
   multi-select popovers + count badges (presentational).
 - `src/client/components/IssuesViewer.tsx` — render the filter bar, the "N of M"
-  count, and the empty-filtered state; accept filter props/handlers.
+  count, the empty-filtered state, and the **table** (sticky column-header row +
+  grid rows); restructure `IssueRow` from a stacked card into a grid row with
+  Issue / Title / Priority / Status / Assignee / action columns; accept filter
+  props/handlers.
 - `src/client/components/IssuesPanel.tsx` — select filter state, compute the
   memoized filtered list + distinct statuses (stable refs!), wire handlers.
 
@@ -211,6 +258,9 @@ Tests:
   fast-follow since `assignee.name` is already on the type.
 - **No saved filters / shareable filter URLs.** Filter state is ephemeral
   session UI state, not persisted.
+- **No sortable column headers.** The table is display-only; the list stays
+  priority-sorted (docs/170). Click-to-sort columns are a natural fast-follow but
+  reopen the sort model, so they're deferred.
 - **No status-category (`status.type`) grouping.** Kept as a future enhancement
   (cluster derived status chips by category); v1 uses flat name-level chips.
 - **No raising the `first: 100` fetch cap.** Orthogonal; revisit only if a team
