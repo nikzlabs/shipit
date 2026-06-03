@@ -5,9 +5,7 @@ ShipIt lets you cut a versioned release of the current repo **from chat**. You
 ShipIt renders the result as an inline **release lifecycle card** and tracks the
 gate/CI status and the published GitHub Release without anyone leaving ShipIt.
 
-This is the Phase 1 (MVP) flow: a Node repo with a `package.json` version and a
-tag-triggered release workflow. The release is **tag-triggered** — you push an
-annotated tag and the repo's own CI publishes the GitHub Release.
+The release is **tag-triggered** — you push an annotated tag and the repo's own CI publishes the GitHub Release.
 
 ## The flow
 
@@ -15,8 +13,16 @@ annotated tag and the repo's own CI publishes the GitHub Release.
 
 When the user asks to cut/tag/publish a release:
 
-1. Read the version source. For a Node repo that's the `version` field in
-   `package.json`.
+1. Read the version source. ShipIt auto-detects the ecosystem in this priority order:
+   - `package.json` (Node) — the `version` field
+   - `Cargo.toml` (Rust) — `[package].version`
+   - `pyproject.toml` (Python) — `[project].version` or `[tool.poetry].version`
+   - `VERSION` (any) — plain semver string, first line
+   - Tag-only — no version file; next version inferred from the latest `v*` git tag
+
+   If `shipit.yaml` has a `release.version-source` key, use that instead of auto-detecting.
+   If **multiple** version sources are found (monorepo), ask the user which one to release
+   before proposing. Offer to persist the answer in `shipit.yaml` so future releases remember the choice.
 2. Compute the next [semver](https://semver.org) for the requested bump:
    - `patch` → `0.3.0` → `0.3.1`
    - `minor` → `0.3.1` → `0.4.0`
@@ -106,13 +112,37 @@ in the rendered chat — they exist only to drive the card.
 | `{"action":"already-released","tag":…}` | Tag already exists | Card → "already released" |
 | `{"action":"cancelled"}` | User cancelled | Card dismissed |
 
-## Out of scope (Phase 1)
+## Per-repo configuration (shipit.yaml)
 
-- Non-Node version sources (`Cargo.toml`, `pyproject.toml`, `VERSION`, tag-only),
-  the `release:` block in `shipit.yaml`, and monorepo disambiguation.
-- Scaffolding a release workflow for a repo that has none.
-- Orchestrator-brokered Release creation (ShipIt calling the GitHub Releases API).
-- Channel promotion (stable/edge).
+For repos where auto-detection doesn't produce the right result — monorepos,
+non-standard version file locations, custom tag patterns — add a `release:` block
+to `shipit.yaml`:
 
-These are later phases — for now, the repo needs an existing tag-triggered release
-workflow for the GitHub Release to appear.
+```yaml
+release:
+  version-source: package.json   # package.json | Cargo.toml | pyproject.toml | VERSION | tag
+  tag-pattern: "v{version}"      # must contain {version}; default: "v{version}"
+  prerelease-pattern: "v{version}-rc.{n}"  # {n} auto-increments; default shown
+  notes: github-generated        # github-generated | commits | changelog:CHANGELOG.md
+  gate: "npm test"               # optional: local command the agent runs before tagging
+  mechanism: tag-triggered       # tag-triggered (default) | brokered (Phase 4)
+  workflow: .github/workflows/release.yml  # path used for existence checks / scaffolding
+```
+
+All fields are optional — provide only what you need to override auto-detection.
+
+## Monorepo disambiguation
+
+When multiple version files are detected, do **not** guess. Surface the ambiguity:
+
+> "I see `packages/app/package.json` (1.2.3) and `packages/lib/package.json` (0.9.0)
+>  — which one are we releasing, or is this a coordinated bump?"
+
+On resolution, offer to write the `release:` block in `shipit.yaml` so the next
+release skips the question.
+
+## Still unsupported (future phases)
+
+- Scaffolding a release workflow for repos that have none (Phase 3).
+- Orchestrator-brokered Release creation via the GitHub Releases API (Phase 4).
+- Channel promotion (stable/edge) for arbitrary repos (Phase 5).
