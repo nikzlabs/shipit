@@ -48,6 +48,7 @@ interface UpdateStatusResult {
   latestVersion: string;
   isDowngrade: boolean;
   releaseUrl?: string;
+  updateMode?: "managed" | "manual";
 }
 
 const providerNames: Record<AgentId, string> = {
@@ -1310,6 +1311,8 @@ export function Settings({
   const [restarting, setRestarting] = useState(false);
   const [channelSwitching, setChannelSwitching] = useState(false);
   const version = useUiStore((s) => s.version);
+  const updateMode = useUiStore((s) => s.updateMode);
+  const effectiveUpdateMode = updateStatus?.updateMode ?? updateMode;
   // Optimistic channel: the persisted preference reflected by either the
   // ambient version (running instance) or the latest check/switch result.
   const selectedChannel = updateStatus?.channel ?? version?.channel ?? "edge";
@@ -1675,7 +1678,9 @@ export function Settings({
               <div className="space-y-3">
                 <h3 className="text-sm font-medium text-(--color-text-primary)">Software Updates</h3>
                 <p className="text-sm text-(--color-text-secondary)">
-                  Check for new versions and update ShipIt in place.
+                  {effectiveUpdateMode === "managed"
+                    ? "Check for new versions and update ShipIt in place."
+                    : "Check for new versions and choose the release channel. Re-run the local production script to apply updates."}
                 </p>
 
                 {/* Current version — channel-aware label, e.g. "Stable · v1.4.0" */}
@@ -1774,7 +1779,7 @@ export function Settings({
                   >
                     {updateChecking ? "Checking..." : "Check for Updates"}
                   </Button>
-                  {updateStatus?.available && !updateApplying && (
+                  {effectiveUpdateMode === "managed" && updateStatus?.available && !updateApplying && (
                     <Button
                       variant="primary"
                       size="md"
@@ -1798,30 +1803,38 @@ export function Settings({
                       Update Now
                     </Button>
                   )}
-                  <Button
-                    variant="secondary"
-                    size="md"
-                    disabled={restarting || updateApplying}
-                    onClick={async () => {
-                      setRestarting(true);
-                      setUpdateError(null);
-                      try {
-                        const res = await fetch("/api/updates/restart", { method: "POST" });
-                        if (!res.ok) {
-                          const body = await res.json().catch(() => ({})) as { error?: string };
-                          throw new Error(body.error ?? `HTTP ${res.status}`);
+                  {effectiveUpdateMode === "managed" && (
+                    <Button
+                      variant="secondary"
+                      size="md"
+                      disabled={restarting || updateApplying}
+                      onClick={async () => {
+                        setRestarting(true);
+                        setUpdateError(null);
+                        try {
+                          const res = await fetch("/api/updates/restart", { method: "POST" });
+                          if (!res.ok) {
+                            const body = await res.json().catch(() => ({})) as { error?: string };
+                            throw new Error(body.error ?? `HTTP ${res.status}`);
+                          }
+                        } catch (err) {
+                          setRestarting(false);
+                          setUpdateError((err as Error).message);
                         }
-                      } catch (err) {
-                        setRestarting(false);
-                        setUpdateError((err as Error).message);
-                      }
-                    }}
-                    className="rounded-md"
-                    data-testid="settings-restart"
-                  >
-                    {restarting ? "Restarting..." : "Just Restart"}
-                  </Button>
+                      }}
+                      className="rounded-md"
+                      data-testid="settings-restart"
+                    >
+                      {restarting ? "Restarting..." : "Just Restart"}
+                    </Button>
+                  )}
                 </div>
+                {effectiveUpdateMode === "manual" && (
+                  <p className="text-sm text-(--color-text-secondary)" data-testid="settings-manual-update-note">
+                    To apply updates or restart local production, stop ShipIt and re-run{" "}
+                    <span className="font-mono text-(--color-text-primary)">docker/local/prod.sh</span>.
+                  </p>
+                )}
                 {updateApplying && (
                   <p className="text-sm text-(--color-text-secondary)">
                     Updating... ShipIt will restart momentarily. Refresh the page in a few seconds.

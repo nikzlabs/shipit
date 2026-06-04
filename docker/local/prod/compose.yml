@@ -12,6 +12,7 @@ services:
       - workspace:/workspace
       - credentials:/credentials
       - /var/run/docker.sock:/var/run/docker.sock
+      - ../../..:/opt/shipit
     environment:
       - NODE_ENV=production
       - PORT=4123

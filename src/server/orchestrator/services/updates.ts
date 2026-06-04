@@ -32,6 +32,18 @@ const TRIGGER_FILE = `${HOST_REPO_DIR}/.update-requested`;
 /** Trigger file for restart-only (no git pull). */
 const RESTART_TRIGGER_FILE = `${HOST_REPO_DIR}/.restart-requested`;
 
+export type UpdateMode = "managed" | "manual";
+
+export function getUpdateMode(env: NodeJS.ProcessEnv = process.env): UpdateMode {
+  return env.SHIPIT_MANAGED_UPDATES === "true" ? "managed" : "manual";
+}
+
+function requireManagedUpdates(): void {
+  if (getUpdateMode() !== "managed") {
+    throw new ServiceError(503, "Updates are applied manually for this install. Re-run docker/local/prod.sh to update or restart ShipIt.");
+  }
+}
+
 export interface UpdateStatus {
   available: boolean;
   currentCommit: string;
@@ -58,6 +70,8 @@ export interface UpdateStatus {
    * origin isn't a GitHub remote.
    */
   releaseUrl?: string;
+  /** Whether Update Now / Just Restart can be handled by a host-side watcher. */
+  updateMode: UpdateMode;
 }
 
 /**
@@ -161,6 +175,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
         latestVersion,
         isDowngrade: false,
         releaseUrl,
+        updateMode: getUpdateMode(),
       };
     }
 
@@ -194,6 +209,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
       latestVersion,
       isDowngrade,
       releaseUrl,
+      updateMode: getUpdateMode(),
     };
   } catch (err) {
     if (err instanceof ServiceError) throw err;
@@ -234,6 +250,7 @@ export async function getVersion() {
  * The update happens asynchronously — the container will be restarted.
  */
 export async function requestUpdate(): Promise<void> {
+  requireManagedUpdates();
   try {
     await writeFile(TRIGGER_FILE, new Date().toISOString(), "utf-8");
   } catch (err) {
@@ -246,6 +263,7 @@ export async function requestUpdate(): Promise<void> {
  * this file and restarts ShipIt without pulling code updates.
  */
 export async function requestRestart(): Promise<void> {
+  requireManagedUpdates();
   try {
     await writeFile(RESTART_TRIGGER_FILE, new Date().toISOString(), "utf-8");
   } catch (err) {
