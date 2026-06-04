@@ -222,6 +222,10 @@ describe("Python templates (docs/168)", () => {
     const compose = getTemplate("streamlit")!.files["docker-compose.yml"];
     expect(compose).toContain("--server.headless true");
     expect(compose).toContain("8501:8501");
+    // Both flags are required for the WebSocket to survive the preview proxy's
+    // cross-origin host — XSRF protection silently re-enables CORS otherwise.
+    expect(compose).toContain("--server.enableCORS false");
+    expect(compose).toContain("--server.enableXsrfProtection false");
   });
 });
 

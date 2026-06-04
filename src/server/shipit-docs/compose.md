@@ -267,7 +267,7 @@ services:
   web:
     image: python:3.12
     working_dir: /app
-    command: sh -c "test -d .venv || python -m venv .venv; .venv/bin/pip install -q -r requirements.txt && exec .venv/bin/streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true"
+    command: sh -c "test -d .venv || python -m venv .venv; .venv/bin/pip install -q -r requirements.txt && exec .venv/bin/streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false"
     ports: ["8501:8501"]
     volumes: [".:/app"]
     x-shipit-preview: auto
@@ -288,6 +288,13 @@ Notes:
   `app.run(host="0.0.0.0")`.
 - **Streamlit needs `--server.headless true`** so it doesn't try to open a
   browser or prompt for an email on first run.
+- **Streamlit needs `--server.enableCORS false --server.enableXsrfProtection
+  false`** to run behind the preview proxy. Streamlit's WebSocket handler
+  rejects any origin that isn't its own host, and through the proxy the
+  browser's origin is `<sessionId>--8501.localhost` — so without these flags it
+  logs `Rejecting WebSocket connection from disallowed origin` and the app never
+  connects. Both flags are required: with XSRF protection left on, Streamlit
+  silently overrides `enableCORS` back to `true`.
 - `test -d .venv || python -m venv .venv` keeps the venv across restarts; the
   `pip install` line re-runs each boot but is a fast no-op once satisfied.
 - **`exec`** hands the server the service's main PID so signals and shutdown
