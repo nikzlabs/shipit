@@ -558,7 +558,6 @@ export default function App() {
   const createPrInFlight = useRef(false);
   const composeErrorInFlight = useRef(false);
   const composeHintInFlight = useRef(false);
-  const serviceLogsInFlight = useRef(false);
 
   const handleSendErrors = useCallback(
     (errors: PreviewError[]) => {
@@ -621,7 +620,6 @@ export default function App() {
   }, [requestPermission, apiPost]);
 
   const handleSendServiceLogsToAgent = useCallback((serviceName: string, status: string, logs: string) => {
-    if (serviceLogsInFlight.current) return;
     const sid = useSessionStore.getState().sessionId;
     if (!sid) return;
     const lines = [`The Docker Compose service "${serviceName}" is in state "${status}". Recent logs:`, ""];
@@ -629,13 +627,12 @@ export default function App() {
       lines.push("```", logs, "```", "");
     }
     lines.push("Please investigate and fix the issue.");
-    const text = lines.join("\n");
-    requestPermission();
-    serviceLogsInFlight.current = true;
-    void dispatchAgentMessage({ sessionId: sid, text, activity: "Investigating service…", apiPost })
-      .catch(() => { /* helper surfaces toast */ })
-      .finally(() => { serviceLogsInFlight.current = false; });
-  }, [requestPermission, apiPost]);
+    // Prefill the composer instead of dispatching directly: service logs are
+    // noisy and the user usually wants to trim them or add context before
+    // sending (same edit-then-send pattern as "Start Session from doc").
+    useSessionStore.getState().setPrefillText(lines.join("\n"));
+    useUiStore.getState().setMobilePanel("chat");
+  }, []);
 
   const handleAnswerQuestion = useCallback(
     (toolUseId: string, answers: Record<string, string>, text: string) => {

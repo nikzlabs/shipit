@@ -145,11 +145,13 @@ interface SessionState {
    * sending (docs/150).
    *
    * Use ONLY for affordances where the prefilled prompt is a starting point
-   * the user will refine — currently just "Start Session from doc". For
-   * send-direct affordances ("Send to agent", "Create PR", "Auto-fix
-   * errors"), POST to `/api/sessions/:id/agent/dispatch` via the
-   * `dispatchAgentMessage` helper instead. Prefill there forces the user
-   * into a two-click dance for what should be a one-click action.
+   * the user will refine — "Start Session from doc", "Start session from
+   * issue", and the services panel's "Send to Agent" (service logs are noisy,
+   * so the user trims/annotates them before sending). For send-direct
+   * affordances ("Create PR", "Auto-fix errors"), POST to
+   * `/api/sessions/:id/agent/dispatch` via the `dispatchAgentMessage` helper
+   * instead. Prefill there forces the user into a two-click dance for what
+   * should be a one-click action.
    */
   setPrefillText: (text: string | undefined) => void;
   /** SHI-10 — set the blockquote to append into the composer (see `quoteReplyText`). */
