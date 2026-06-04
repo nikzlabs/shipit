@@ -572,53 +572,53 @@ export class CodexAdapter
       `args = ${tomlArray([...PLAYWRIGHT_MCP_ARGS])}`,
     );
 
+    // docs/125 — internal review tool bridge.
     if (ctx.reviewBridge) {
       lines.push(
         "",
-        "# docs/125 — internal review tool bridge.",
         "[mcp_servers.shipit-review]",
         `command = ${tomlString(ctx.reviewBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.reviewBridge.bridgePath])}`,
       );
     }
 
+    // docs/093 — internal present tool bridge.
     if (ctx.presentBridge) {
       lines.push(
         "",
-        "# docs/093 — internal present tool bridge.",
         "[mcp_servers.shipit-present]",
         `command = ${tomlString(ctx.presentBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.presentBridge.bridgePath])}`,
       );
     }
 
+    // docs/163 — built-in voice_note tool bridge.
     if (ctx.voiceBridge) {
       lines.push(
         "",
-        "# docs/163 — built-in voice_note tool bridge.",
         "[mcp_servers.shipit-voice]",
         `command = ${tomlString(ctx.voiceBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.voiceBridge.bridgePath])}`,
       );
     }
 
+    // docs/147 — structured AskUserQuestion tool bridge. Codex lacks a
+    // Default-mode native question tool, so this exposes one whose output the
+    // adapter normalizes into an AskUserQuestion tool_use (handleItem), reusing
+    // ShipIt's existing question/interrupt/resume flow.
     if (ctx.askBridge) {
       lines.push(
         "",
-        "# docs/147 — structured AskUserQuestion tool bridge. Codex lacks a",
-        "# Default-mode native question tool, so this exposes one whose output",
-        "# the adapter normalizes into an AskUserQuestion tool_use (handleItem),",
-        "# reusing ShipIt's existing question/interrupt/resume flow.",
         "[mcp_servers.shipit-ask]",
         `command = ${tomlString(ctx.askBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.askBridge.bridgePath])}`,
       );
     }
 
+    // docs/164 — report_shipit_bug tool bridge.
     if (ctx.bugBridge) {
       lines.push(
         "",
-        "# docs/164 — report_shipit_bug tool bridge.",
         "[mcp_servers.shipit-bug]",
         `command = ${tomlString(ctx.bugBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.bugBridge.bridgePath])}`,
