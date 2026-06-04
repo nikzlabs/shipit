@@ -30,6 +30,10 @@ import type {
 } from "../agent-process.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { getErrorMessage } from "../../../shared/utils.js";
+import {
+  PLAYWRIGHT_MCP_ARGS,
+  PLAYWRIGHT_MCP_COMMAND,
+} from "../playwright-mcp.js";
 
 // ---- Codex JSON-RPC protocol types ----
 
@@ -556,53 +560,65 @@ export class CodexAdapter
       "# ShipIt-managed MCP servers. This block is regenerated before each Codex turn.",
     ];
 
+    // docs/079 — built-in Playwright (browser) server, mirroring the Claude
+    // adapter. Codex runs with approvalPolicy:"never", so these tools
+    // auto-approve like every other tool; no allowlist plumbing is needed.
+    // See playwright-mcp.ts for the `sh -c` launch / `--browser chromium`
+    // rationale.
+    lines.push(
+      "",
+      "[mcp_servers.playwright]",
+      `command = ${tomlString(PLAYWRIGHT_MCP_COMMAND)}`,
+      `args = ${tomlArray([...PLAYWRIGHT_MCP_ARGS])}`,
+    );
+
+    // docs/125 — internal review tool bridge.
     if (ctx.reviewBridge) {
       lines.push(
         "",
-        "# docs/125 — internal review tool bridge.",
         "[mcp_servers.shipit-review]",
         `command = ${tomlString(ctx.reviewBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.reviewBridge.bridgePath])}`,
       );
     }
 
+    // docs/093 — internal present tool bridge.
     if (ctx.presentBridge) {
       lines.push(
         "",
-        "# docs/093 — internal present tool bridge.",
         "[mcp_servers.shipit-present]",
         `command = ${tomlString(ctx.presentBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.presentBridge.bridgePath])}`,
       );
     }
 
+    // docs/163 — built-in voice_note tool bridge.
     if (ctx.voiceBridge) {
       lines.push(
         "",
-        "# docs/163 — built-in voice_note tool bridge.",
         "[mcp_servers.shipit-voice]",
         `command = ${tomlString(ctx.voiceBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.voiceBridge.bridgePath])}`,
       );
     }
 
+    // docs/147 — structured AskUserQuestion tool bridge. Codex lacks a
+    // Default-mode native question tool, so this exposes one whose output the
+    // adapter normalizes into an AskUserQuestion tool_use (handleItem), reusing
+    // ShipIt's existing question/interrupt/resume flow.
     if (ctx.askBridge) {
       lines.push(
         "",
-        "# docs/147 — structured AskUserQuestion tool bridge. Codex lacks a",
-        "# Default-mode native question tool, so this exposes one whose output",
-        "# the adapter normalizes into an AskUserQuestion tool_use (handleItem),",
-        "# reusing ShipIt's existing question/interrupt/resume flow.",
         "[mcp_servers.shipit-ask]",
         `command = ${tomlString(ctx.askBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.askBridge.bridgePath])}`,
       );
     }
 
+    // docs/164 — report_shipit_bug tool bridge.
     if (ctx.bugBridge) {
       lines.push(
         "",
-        "# docs/164 — report_shipit_bug tool bridge.",
         "[mcp_servers.shipit-bug]",
         `command = ${tomlString(ctx.bugBridge.tsxBin)}`,
         `args = ${tomlArray([ctx.bugBridge.bridgePath])}`,
