@@ -1,6 +1,7 @@
 import {
   ArrowClockwiseIcon,
   ArrowSquareOutIcon,
+  CheckCircleIcon,
   PlugIcon,
   RocketLaunchIcon,
   UserIcon,
@@ -35,8 +36,11 @@ export interface IssuesViewerProps {
   error: string | null;
   /** Whether a repo is available to start a session on. */
   canStart: boolean;
+  /** Whether the loaded list includes done/completed issues (fetch-scope). */
+  includeDone: boolean;
   onSelectTracker: (id: TrackerId) => void;
   onRefresh: () => void;
+  onToggleIncludeDone: () => void;
   onStartSession: (issue: TrackerIssue) => void;
   /** Open Settings → Trackers so the user can connect/bind Linear. */
   onConnect: () => void;
@@ -202,8 +206,10 @@ export function IssuesViewer({
   loading,
   error,
   canStart,
+  includeDone,
   onSelectTracker,
   onRefresh,
+  onToggleIncludeDone,
   onStartSession,
   onConnect,
   onSetQuery,
@@ -260,6 +266,26 @@ export function IssuesViewer({
               `${issues.length} issue${issues.length !== 1 ? "s" : ""}`
             )}
           </span>
+          {configured && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onToggleIncludeDone}
+              disabled={loading}
+              aria-pressed={includeDone}
+              title={includeDone ? "Hide done issues" : "Show done issues"}
+              className={`inline-flex items-center gap-1.5 ${
+                includeDone ? "text-(--color-text-primary)" : ""
+              }`}
+            >
+              <CheckCircleIcon
+                size={ICON_SIZE.SM}
+                weight={includeDone ? "fill" : "regular"}
+                className={includeDone ? "text-(--color-accent)" : ""}
+              />
+              <span className="hidden sm:inline">Show done</span>
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -313,7 +339,7 @@ export function IssuesViewer({
           </div>
         ) : issues.length === 0 && !loading ? (
           <div className="flex items-center justify-center h-full text-(--color-text-tertiary) text-sm">
-            No open issues in {activeInfo?.binding?.name ?? "this team"}.
+            No {includeDone ? "" : "open "}issues in {activeInfo?.binding?.name ?? "this team"}.
           </div>
         ) : filteredIssues.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">

@@ -51,6 +51,37 @@ issue without leaving the app.
 - **Mutating issue status from ShipIt** (e.g. moving an issue to "In Progress"
   when a session starts). Out of scope; overlaps `docs/156`.
 
+## "Show done" — opting into completed issues
+
+By default the list is the **open working set**: the Linear adapter fetches with
+`state.type nin ["completed", "canceled"]`, so finished and abandoned issues
+don't crowd the queue. Users sometimes need to see *done* work too — to revisit a
+shipped issue, re-read its context, or start a follow-up session from it. A
+**"Show done" toggle** in the Issues top bar (next to Refresh) covers that:
+
+- **Fetch-scope, not a client facet.** Unlike the docs/173 filter facets (which
+  narrow the already-loaded list in the browser), this re-fetches with
+  `GET /api/issues?...&includeDone=true`. It widens the *working set the server
+  returns* — the same lever as the existing `nin` exclusion, just made
+  user-controllable. It is therefore **not** the "per-tracker query UI" the
+  Non-goals reject: it's a single binary "what counts as the list" switch, not a
+  query builder.
+- **"Done" ≠ canceled.** `includeDone` drops only `completed` from the exclusion;
+  `canceled` stays excluded. Abandoned issues are noise, and the user asked for
+  *done*, not *cancelled*.
+- **Tracker-agnostic plumbing.** `Tracker.listIssues(options?: { includeDone })`
+  is on the interface; each adapter maps it to its own native state model. Once
+  done issues load, the docs/173 status facet surfaces "Done" (and any other
+  completed-type status names) as chips automatically — no extra UI.
+- **`first: 100` caveat unchanged.** The fetch is still capped at 100 and now
+  ordered by `updatedAt` (descending) so the window favors recently-touched
+  issues — including recently-completed ones — rather than letting stale history
+  fill the list. Raising/paginating the cap stays the orthogonal follow-up
+  docs/173 already notes.
+- **Persisted.** The toggle is workspace-scoped reference state, saved to
+  `localStorage` (`shipit-issue-include-done`) and rehydrated on reload, mirroring
+  how docs/173 persists the filter bar.
+
 ## Reconciling with docs/156's rejected "Issue picker"
 
 **This must be called out, because `docs/156` explicitly rejects exactly this

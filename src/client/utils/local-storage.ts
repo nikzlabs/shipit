@@ -395,4 +395,25 @@ export function saveIssueFilters(filters: IssueFilters): void {
   }
 }
 
-export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY };
+// "Show done" toggle for the Issues tab. Persisted separately from the filter
+// facets because it's a fetch-scope control (re-fetches with a wider state set),
+// not a client-side facet over the already-loaded list.
+const ISSUE_INCLUDE_DONE_KEY = "shipit-issue-include-done";
+
+export function getSavedIncludeDone(): boolean {
+  try {
+    return localStorage.getItem(ISSUE_INCLUDE_DONE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveIncludeDone(includeDone: boolean): void {
+  try {
+    localStorage.setItem(ISSUE_INCLUDE_DONE_KEY, includeDone ? "true" : "false");
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY, ISSUE_INCLUDE_DONE_KEY };

@@ -12,7 +12,12 @@ import {
   distinctStatuses,
   type IssueFilters,
 } from "../components/issues-filter.js";
-import { getSavedIssueFilters, saveIssueFilters } from "../utils/local-storage.js";
+import {
+  getSavedIncludeDone,
+  getSavedIssueFilters,
+  saveIncludeDone,
+  saveIssueFilters,
+} from "../utils/local-storage.js";
 
 /**
  * Issues-tab store (docs/170). Per-tracker issue lists, fetched on tab open and
@@ -38,6 +43,14 @@ interface IssuesState {
    */
   filters: IssueFilters;
 
+  /**
+   * Whether the fetched list includes "done"/completed issues. Unlike the
+   * `filters` facets (which narrow the already-loaded list client-side), this is
+   * a fetch-scope control: toggling it re-fetches with `&includeDone` so the
+   * server widens the state set it returns. Persisted across reloads.
+   */
+  includeDone: boolean;
+
   setActiveTracker: (id: TrackerId) => void;
   fetchTrackers: () => Promise<void>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
@@ -45,6 +58,7 @@ interface IssuesState {
   togglePriority: (level: IssuePriorityLevel) => void;
   toggleStatus: (name: string) => void;
   toggleAssignee: (value: string) => void;
+  toggleIncludeDone: () => void;
   clearFilters: () => void;
   reset: () => void;
 }
@@ -89,6 +103,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   // status/assignee values are pruned to the loaded list by the first
   // fetchIssues, so restoring before any fetch is safe.
   filters: getSavedIssueFilters(),
+  includeDone: getSavedIncludeDone(),
 
   setActiveTracker: (id) =>
     set((state) => ({
@@ -122,7 +137,8 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     const id = trackerId ?? get().activeTracker;
     set({ loading: true, error: null });
     try {
-      const res = await fetch(`/api/issues?tracker=${encodeURIComponent(id)}`, {
+      const includeDone = get().includeDone ? "&includeDone=true" : "";
+      const res = await fetch(`/api/issues?tracker=${encodeURIComponent(id)}${includeDone}`, {
         headers: { Accept: "application/json" },
       });
       const body = (await res.json().catch(() => ({}))) as Partial<ListIssuesResult> & { error?: string };
@@ -167,6 +183,14 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     set((state) => ({
       filters: { ...state.filters, assignees: toggleInSet(state.filters.assignees, value) },
     })),
+
+  toggleIncludeDone: () => {
+    const next = !get().includeDone;
+    saveIncludeDone(next);
+    set({ includeDone: next });
+    // Re-fetch the active tracker so the widened/narrowed state set lands.
+    void get().fetchIssues();
+  },
 
   clearFilters: () => set({ filters: emptyFilters() }),
 

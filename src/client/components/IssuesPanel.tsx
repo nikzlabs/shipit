@@ -55,6 +55,7 @@ export function IssuesPanel({
   const loading = useIssuesStore((s) => s.loading);
   const error = useIssuesStore((s) => s.error);
   const filters = useIssuesStore((s) => s.filters);
+  const includeDone = useIssuesStore((s) => s.includeDone);
 
   // Derived, memoized so references stay stable across renders (React #185).
   const filteredIssues = useMemo(() => {
@@ -113,8 +114,10 @@ export function IssuesPanel({
       loading={loading}
       error={error}
       canStart={Boolean(effectiveRepoUrl)}
+      includeDone={includeDone}
       onSelectTracker={handleSelectTracker}
       onRefresh={() => void useIssuesStore.getState().fetchIssues()}
+      onToggleIncludeDone={() => useIssuesStore.getState().toggleIncludeDone()}
       onStartSession={handleStartSession}
       onConnect={onConnect}
       onSetQuery={(q) => useIssuesStore.getState().setQuery(q)}
