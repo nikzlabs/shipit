@@ -210,9 +210,11 @@ describe("SessionSidebar", () => {
     expect(screen.queryByText("Remove Repository")).toBeNull();
   });
 
-  it("shows 'No sessions' when a repo group has no sessions", () => {
+  it("shows no placeholder text when a repo group has no sessions (the 'New session' button is always present)", () => {
     render(<SessionSidebar {...defaultProps} sessions={[]} />);
-    expect(screen.getByText("No sessions")).toBeTruthy();
+    expect(screen.queryByText("No sessions")).toBeNull();
+    // The "New session" button is the always-available affordance.
+    expect(screen.getByText("New session")).toBeTruthy();
   });
 
   it("shows Repository switcher in the top bar", () => {
@@ -735,10 +737,10 @@ describe("SessionSidebar", () => {
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
       const opsRow = screen.getByText("Ops host");
       const opsGroupHeader = screen.getByText("Host / Ops");
-      // Ops row should appear after the Host/Ops header (same group), and the repo
-      // group should report no sessions.
+      // Ops row should appear after the Host/Ops header (same group). The repo
+      // group has no session rows — only its always-present "New session" button.
       expect(opsGroupHeader.compareDocumentPosition(opsRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(screen.getByText("No sessions")).toBeTruthy();
+      expect(screen.queryByText("No sessions")).toBeNull();
     });
   });
 

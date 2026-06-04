@@ -728,9 +728,7 @@ function RepoGroup({
             </span>
             <span className="truncate leading-snug">New session</span>
           </button>
-          {sessions.length === 0 ? (
-            <p className="text-[10px] text-(--color-text-tertiary) px-3 py-1 text-center">No sessions</p>
-          ) : (
+          {sessions.length === 0 ? null : (
             // docs/117 Phase 2 — render agent-spawned children indented under
             // their parent. We bucket children by `parentSessionId`, iterate
             // top-level sessions in the existing stable order, then immediately
