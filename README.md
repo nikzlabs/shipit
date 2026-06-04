@@ -199,7 +199,8 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 ## Known limitations
 
 - ShipIt is designed as a self-hosted, single-tenant tool today. If you expose it on the internet,
-  put it behind Cloudflare Zero Trust, Tailscale, or another access layer you control.
+  put it behind Cloudflare Zero Trust, Tailscale, or another access layer you control; the VPS
+  install script can help configure Cloudflare Tunnel/Zero Trust and Tailscale during setup.
 - The VPS installer targets Ubuntu. Other Linux distributions may work, but the one-command setup
   script is tuned for Ubuntu hosts.
 - The full review-and-ship loop depends on GitHub. You can work locally without it, but PRs, CI,
