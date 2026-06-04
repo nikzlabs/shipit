@@ -13,14 +13,10 @@ development that still ships the way real software does: branches, reviews, CI, 
 </p>
 -->
 
-ShipIt is a browser-based AI dev environment — describe what you want in chat, the agent writes the
-code, and you see results live. It has the chat-driven ease of the prompt-to-app builders, but the
-work runs through a real engineering loop — branches, pull requests, CI, deploys — on _your_ repo,
-_your_ terminal, _your_ infrastructure. Where most AI coding tools stop at writing code, ShipIt is
-built so you can just **ship**: it runs the isolated environments and live previews, drives the Git
-and pull-request plumbing, and pulls CI and deploy results back into the chat — so you describe
-products into existence instead of wiring up the infrastructure to support them. A few choices make
-that possible:
+ShipIt is a browser-based AI dev environment: describe what you want in chat, the agent writes the
+code, and you see results live. It has the ease of prompt-to-app builders, but the work runs through
+a real engineering loop — branches, pull requests, CI, and deploys — on _your_ repo, _your_ Git, and
+_your_ infrastructure. A few choices make that possible:
 
 - **Container-isolated sessions** — each session gets its own Docker container, branch, chat
   history, and workspace, so concurrent agents can't step on each other's files, processes, or
@@ -31,20 +27,18 @@ that possible:
   app services in `docker-compose.yml`; ShipIt manages them and surfaces automatic or manual
   previews inside the app.
 - **Tight GitHub integration** — branches, auto-commits, pushes, PR creation, CI checks, deploy
-  status, review comments, and merge state are rendered inline instead of punting you to GitHub.
+  status, review comments, and merge state are surfaced inline instead of punting you to GitHub.
 - **Mobile-first, with first-class voice** — ShipIt is genuinely good from a phone, not a desktop
   tool that merely survives a small screen: a focused tab-based view on mobile and resizable split
   panels on desktop. Voice runs both ways — dictate prompts hands-free and hear spoken summaries
   when the agent finishes a turn or needs you, so you can kick off, review, and ship on the go.
 - **One surface — you never leave it** — chat, file tree, terminal, live preview, diffs, CI logs,
-  deploy status, session history, and the full PR lifecycle all render inline. Reviewing, shipping,
+  deploy status, session history, and the PR lifecycle all render inline. Reviewing, shipping,
   and debugging happen here, not in a GitHub tab, a CI dashboard, or a local terminal.
 
-That adds up to one promise: **everything you need to ship lives inside ShipIt.** You stay in the
-conversation — describing intent, watching the result render live in the preview, and refining it
-with the agent turn by turn — while it runs the commands, edits the files, reads the logs, opens
-PRs, watches checks, and fixes failures. The build, review, ship, and debug loop never leaves the
-chat.
+That adds up to one promise: **the build, review, ship, and debug loop stays in the conversation.**
+You describe intent, watch the preview update, and refine with the agent turn by turn while ShipIt
+runs commands, edits files, opens PRs, watches checks, and brings the results back into chat.
 
 ## Agents
 
@@ -84,8 +78,8 @@ If you want to hack on ShipIt itself instead of just running it, see
 
 ### Try it locally
 
-Use the local Docker path when you want to evaluate ShipIt on your machine before putting it on a
-server.
+Use local Docker when you want to run ShipIt on your own machine. Use the VPS path for the
+always-on setup.
 
 ```bash
 git clone https://github.com/nicolasalt/shipit.git
@@ -201,6 +195,8 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 - ShipIt is designed as a self-hosted, single-tenant tool today. If you expose it on the internet,
   put it behind Cloudflare Zero Trust, Tailscale, or another access layer you control; the VPS
   install script can help configure Cloudflare Tunnel/Zero Trust and Tailscale during setup.
+- Expect meaningful Docker resource use: the first run builds ShipIt images, and each active
+  session runs an agent container plus any Compose services your project declares.
 - The VPS installer targets Ubuntu. Other Linux distributions may work, but the one-command setup
   script is tuned for Ubuntu hosts.
 - The full review-and-ship loop depends on GitHub. You can work locally without it, but PRs, CI,
@@ -215,9 +211,9 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 You probably already have Claude Code or Codex. ShipIt runs them as its backend — and wraps them in
 everything the bare CLIs and their desktop/web apps leave out:
 
-- **Many agents, fully isolated.** The CLIs run a single agent in your working tree. ShipIt gives
-  every session its own container, branch, and chat history, so you fan work out in parallel without
-  agents stepping on each other's files, processes, or installed dependencies.
+- **Parallel agent sessions, fully isolated.** The CLIs run one agent in your working tree. ShipIt
+  gives every session its own container, branch, and chat history, so you can fan work out without
+  sessions stepping on each other's files, processes, or installed dependencies.
 - **It's not your laptop's problem.** The desktop and web apps tie the work to the machine in front
   of you. ShipIt is self-hosted on a VPS — start a change, close the lid, and previews, CI, and
   follow-up work keep running.
