@@ -58,10 +58,11 @@ harness:
 
 ## Status
 
-ShipIt is in an early public release state. The best-supported path is a self-hosted Docker install
-on an Ubuntu VPS; local Docker is useful for evaluation and development. The core loop is live:
-create isolated sessions, work against real repositories, run Compose-backed previews, open PRs,
-track CI and deploy status from GitHub, and continue from desktop or mobile.
+ShipIt is in an early public release state. The supported install paths are local Docker and a
+self-hosted Docker install on an Ubuntu VPS; the VPS path is the intended always-on setup when you
+want agents and previews to keep running after you close your laptop. The core loop is live: create
+isolated sessions, work against real repositories, run Compose-backed previews, open PRs, track CI
+and deploy status from GitHub, and continue from desktop or mobile.
 
 The project is public source, but not yet open to outside pull requests. Bug reports, feature
 requests, and design discussion are welcome as GitHub issues.
