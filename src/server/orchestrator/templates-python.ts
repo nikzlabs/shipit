@@ -177,18 +177,31 @@ uvicorn[standard]
     files: {
       "app.py": `import gradio as gr
 
+# A soft theme plus a little custom CSS. Edit either to restyle the demo.
+theme = gr.themes.Soft(
+    primary_hue="indigo",
+    neutral_hue="slate",
+    radius_size=gr.themes.sizes.radius_lg,
+)
+
+css = """
+.gradio-container { max-width: 640px !important; margin: 0 auto; }
+#title { text-align: center; }
+#greet-btn { font-weight: 600; }
+"""
+
 
 def greet(name):
     return f"Hello, {name}!"
 
 
-demo = gr.Interface(
-    fn=greet,
-    inputs=gr.Textbox(label="Your name", value="World"),
-    outputs=gr.Textbox(label="Greeting"),
-    title="Gradio App",
-    description="Edit app.py to build your demo.",
-)
+with gr.Blocks(theme=theme, css=css, title="Gradio App") as demo:
+    gr.Markdown("# Gradio App\\nEdit app.py to build your demo.", elem_id="title")
+    name = gr.Textbox(label="Your name", value="World")
+    out = gr.Textbox(label="Greeting")
+    gr.Button("Greet", variant="primary", elem_id="greet-btn").click(
+        greet, inputs=name, outputs=out
+    )
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860)
