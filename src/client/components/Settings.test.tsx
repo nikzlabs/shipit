@@ -10,6 +10,7 @@ afterEach(() => {
   cleanup();
   useUiStore.getState().setSettingsTab(undefined);
   useUiStore.getState().setVersion(null);
+  useUiStore.getState().setUpdateMode("manual");
   usePreviewStore.getState().setSecrets({
     declared: [],
     missingByService: {},
@@ -622,6 +623,45 @@ describe("Settings - Advanced tab", () => {
         expect(screen.getByText(/2 commits behind/)).toBeInTheDocument();
       });
       expect(screen.queryByTestId("settings-release-link")).not.toBeInTheDocument();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("shows manual local update instructions instead of update/restart buttons", async () => {
+    useUiStore.getState().setUpdateMode("manual");
+    await renderOnAdvancedTab();
+    expect(screen.getByTestId("settings-manual-update-note")).toHaveTextContent("docker/local/prod.sh");
+    expect(screen.queryByTestId("settings-apply-update")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-restart")).not.toBeInTheDocument();
+  });
+
+  it("shows managed update and restart buttons when an update is available", async () => {
+    useUiStore.getState().setUpdateMode("managed");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          available: true,
+          behindBy: 1,
+          commitMessages: ["fix: update"],
+          currentCommit: "abc1234",
+          channel: "stable",
+          currentVersion: "v1.3.0",
+          latestVersion: "v1.4.0",
+          isDowngrade: false,
+          updateMode: "managed",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    try {
+      await renderOnAdvancedTab();
+      await userEvent.click(screen.getByTestId("settings-check-updates"));
+      await waitFor(() => {
+        expect(screen.getByTestId("settings-apply-update")).toBeInTheDocument();
+      });
+      expect(screen.getByTestId("settings-restart")).toBeInTheDocument();
+      expect(screen.queryByTestId("settings-manual-update-note")).not.toBeInTheDocument();
     } finally {
       fetchSpy.mockRestore();
     }

@@ -60,6 +60,7 @@ services:
       # visibility / easy per-host override.
       - DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=30
       - DISK_JANITOR_CACHE_DAYS=30
+      - SHIPIT_MANAGED_UPDATES=true
     networks:
       - shipit
     logging:

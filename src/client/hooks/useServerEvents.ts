@@ -319,6 +319,7 @@ export function useServerEvents(): void {
       }
       useUiStore.getState().setProcessStartedAt(data.processStartedAt);
       if (data.version) useUiStore.getState().setVersion(data.version);
+      useUiStore.getState().setUpdateMode(data.updateMode ?? "manual");
     });
 
     /**

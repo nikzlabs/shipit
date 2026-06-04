@@ -695,6 +695,12 @@ export interface SystemInfo {
    * or "Edge · main @ abc1234" instead of a bare SHA.
    */
   version?: VersionInfo;
+  /**
+   * Whether the host has an out-of-process updater/restarter watching the
+   * trigger files. VPS installs set this to "managed"; local Docker prod is
+   * "manual" and applies updates by re-running docker/local/prod.sh.
+   */
+  updateMode?: "managed" | "manual";
 }
 
 // ---- Chat history message (shared data type) ----
