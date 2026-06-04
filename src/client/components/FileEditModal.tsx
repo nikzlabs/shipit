@@ -51,6 +51,15 @@ function EditableCodeEditor({
 
   onChangeRef.current = onChange;
 
+  // `content` seeds the editor's initial value but must NOT be an effect
+  // dependency. It changes on every keystroke (onChange → store → re-render),
+  // and re-running the effect would dispose and recreate the Monaco instance on
+  // each character — the editor visibly blinked and dropped focus/caret. The
+  // editor owns its own buffer after mount, so we only (re)create it when the
+  // file itself changes, reading the latest loaded content from a ref.
+  const initialContentRef = useRef(content);
+  initialContentRef.current = content;
+
   // eslint-disable-next-line no-restricted-syntax -- Monaco is loaded lazily for editor-only surface.
   useEffect(() => {
     if (!editorRef.current) return;
@@ -60,7 +69,7 @@ function EditableCodeEditor({
     void import("monaco-editor").then((monaco) => {
       if (disposed || !editorRef.current) return;
       const editor = monaco.editor.create(editorRef.current, {
-        value: content,
+        value: initialContentRef.current,
         language: getLanguageFromPath(filePath),
         theme: "vs-dark",
         readOnly: false,
@@ -84,7 +93,7 @@ function EditableCodeEditor({
       editorInstanceRef.current?.dispose();
       editorInstanceRef.current = null;
     };
-  }, [filePath, content]);
+  }, [filePath]);
 
   return <div ref={editorRef} className="h-full w-full" data-testid="file-edit-monaco" />;
 }

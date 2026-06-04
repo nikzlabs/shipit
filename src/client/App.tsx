@@ -157,6 +157,13 @@ export default function App() {
   const editSaving = useFileStore((s) => s.editSaving);
   const editError = useFileStore((s) => s.editError);
 
+  // Direct file editing is only offered once a session has graduated (left the
+  // warm pool). The graduated-sessions list excludes warm sessions, so a
+  // current session present in it has taken its first turn; a brand-new,
+  // not-yet-started session is absent and edits stay disabled. The server
+  // enforces this authoritatively too (PUT /files rejects warm sessions).
+  const sessionGraduated = useSessionStore((s) => s.sessions.some((x) => x.id === s.sessionId));
+
   const previewStatus = usePreviewStore((s) => s.status);
   const selectedPort = usePreviewStore((s) => s.selectedPort);
   const composeServices = usePreviewStore((s) => s.services);
@@ -881,8 +888,11 @@ export default function App() {
 
   const handleOpenFilePreview = useCallback(
     (filePath: string) => {
-      const sid = useSessionStore.getState().sessionId;
+      const { sessionId: sid, sessions } = useSessionStore.getState();
       if (sid) {
+        // Mirror the FileTree gate: only a graduated session (present in the
+        // warm-excluding list) may edit; the server rejects warm-session writes.
+        const graduated = sessions.some((s) => s.id === sid);
         const downloadAction = {
           label: "Download",
           onClick: () => {
@@ -894,7 +904,7 @@ export default function App() {
             a.remove();
           },
         };
-        const actions = isEditableFilePath(filePath)
+        const actions = isEditableFilePath(filePath) && graduated
           ? [
               {
                 label: "Edit",
@@ -1146,7 +1156,7 @@ export default function App() {
         ) : rightTab === "pr" && hasPr && wsSessionId ? (
           <PrDetailPanel sessionId={wsSessionId} />
         ) : rightTab === "files" ? (
-          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onEdit={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) void useFileStore.getState().openEditor(sid, f); }} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
+          <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onEdit={sessionGraduated ? (f) => { const sid = useSessionStore.getState().sessionId; if (sid) void useFileStore.getState().openEditor(sid, f); } : undefined} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
         ) : rightTab === "present" ? (
           <PresentPane isActiveTab={rightTab === "present"} />
         ) : rightTab === "host" ? (

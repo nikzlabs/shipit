@@ -34,6 +34,49 @@ import {
 } from "./services/index.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
 import { getErrorMessage } from "./validation.js";
+import { pushToOrigin } from "./git-utils.js";
+
+/**
+ * Commit a manual file edit so it lands as its own commit instead of being
+ * silently folded into the next agent turn (or lost on a rewind, which resets
+ * to a commit-linked chat message). Best-effort: a failed commit must not fail
+ * the save — the file is already written and the post-turn auto-commit will
+ * sweep it up as a fallback.
+ *
+ * Skipped while an agent turn is running: `autoCommit` does `git add -A`, so
+ * committing mid-turn would capture the agent's in-progress changes under a
+ * misleading "Edit <file>" message and confuse the post-turn commit. The edit
+ * is still written to disk and committed by the normal post-turn flow.
+ *
+ * Shares the per-workspace mutex with the post-turn commit / plugin install so
+ * the `git add -A` here can't race those on the same workspace.
+ */
+async function commitManualEdit(
+  deps: ApiDeps,
+  sessionId: string,
+  dir: string,
+  filePath: string,
+): Promise<void> {
+  const runner = deps.runnerRegistry.get(sessionId) as { running?: boolean } | undefined;
+  if (runner?.running) return;
+  try {
+    const git = deps.createGitManager(dir);
+    const { commitHash } = await withWorkspaceLock(dir, () =>
+      git.autoCommit(`Edit ${path.basename(filePath)}`),
+    );
+    // Push so the change reaches the PR without waiting for the next turn,
+    // matching ShipIt's inline-PR model. Fire-and-forget: push latency must
+    // not block the save response, and auth failures surface on the next
+    // post-turn auto-push rather than here.
+    if (commitHash && deps.githubAuthManager.authenticated) {
+      void pushToOrigin(git).catch((err: unknown) => {
+        console.warn("[files] manual-edit auto-push failed:", getErrorMessage(err));
+      });
+    }
+  } catch (err) {
+    console.warn("[files] manual-edit auto-commit failed:", getErrorMessage(err));
+  }
+}
 
 export async function registerFileRoutes(
   app: FastifyInstance,
@@ -115,6 +158,16 @@ export async function registerFileRoutes(
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
+      // Direct editing is disabled until the session graduates from the warm
+      // pool (takes its first turn). A warm session has no committed history of
+      // its own yet, so a manual edit there has nothing meaningful to attach to.
+      const session = sessionManager.get(request.params.id);
+      if (session?.warm) {
+        reply.code(409).send({
+          error: "Editing isn't available until the session starts — send a message first.",
+        });
+        return;
+      }
       const filePath = request.params["*"];
       if (!filePath) {
         reply.code(400).send({ error: "File path is required" });
@@ -125,7 +178,9 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        return await writeFileContent(dir, filePath, request.body.content);
+        const result = await writeFileContent(dir, filePath, request.body.content);
+        await commitManualEdit(deps, request.params.id, dir, filePath);
+        return result;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

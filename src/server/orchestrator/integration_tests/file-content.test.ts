@@ -24,6 +24,7 @@ describe("Integration: File content viewer", () => {
   let sessionId: string;
   let sessionDir: string;
   let dbManager: DatabaseManager;
+  let sessionManager: SessionManager;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -33,7 +34,7 @@ describe("Integration: File content viewer", () => {
     sessionDir = path.join(tmpDir, "sessions", sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
 
-    const sessionManager = new SessionManager(dbManager);
+    sessionManager = new SessionManager(dbManager);
     sessionManager.track(sessionId, "Test session", sessionDir);
 
     const credentialStore = createTestCredentialStore(tmpDir);
@@ -223,5 +224,34 @@ describe("Integration: File content viewer", () => {
       payload: { content: "x".repeat(1_048_577) },
     });
     expect(res.statusCode).toBe(413);
+  });
+
+  it("commits a saved edit as its own commit", async () => {
+    fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 1;\n");
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/sessions/${sessionId}/files/hello.ts`,
+      payload: { content: "const x = 2;\n" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const log = await new GitManager(sessionDir).log();
+    expect(log[0]?.message).toBe("Edit hello.ts");
+  });
+
+  it("rejects edits on a warm (not-yet-graduated) session", async () => {
+    fs.writeFileSync(path.join(sessionDir, "hello.ts"), "old");
+    sessionManager.setWarm(sessionId, true);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: `/api/sessions/${sessionId}/files/hello.ts`,
+      payload: { content: "new" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    // The write must not have happened.
+    expect(fs.readFileSync(path.join(sessionDir, "hello.ts"), "utf8")).toBe("old");
   });
 });
