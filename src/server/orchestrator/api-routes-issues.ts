@@ -1,10 +1,13 @@
 /**
- * Issue tracker routes (docs/170 — inline tracker Issues tab).
+ * Issue tracker routes (docs/170 — inline tracker Issues tab; SHI-80).
  *
- * Repo/workspace-scoped (NOT session-scoped): a Linear workspace is
- * deployment-wide, so these are global `/api/...` routes, not
- * `/api/sessions/:id/...`. v1 is read-only + connect/bind for Linear; the
- * GitHub adapter and any write-back are deferred (SHI-67 scope).
+ * These are global `/api/...` routes, not `/api/sessions/:id/...`, because
+ * Linear is deployment-wide. GitHub Issues, however, are **per-repo**, so the
+ * read routes accept an optional `?sessionId` and resolve that session's GitHub
+ * remote + token into a `GitHubTrackerContext` for the registry. Linear ignores
+ * the session entirely (its binding is the workspace team). Read-only +
+ * connect/bind for Linear; write-back and the GitHub `/shipit` push trigger
+ * remain out of scope (SHI-43 / docs/156).
  */
 
 import type { FastifyInstance } from "fastify";
@@ -18,35 +21,58 @@ import {
   disconnectLinear,
   ServiceError,
 } from "./services/index.js";
+import type { GitHubTrackerContext } from "./trackers/index.js";
+import { parseGitHubRemote } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerIssueRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
 ): Promise<void> {
-  const { credentialStore, trackerFetchImpl } = deps;
+  const { credentialStore, trackerFetchImpl, sessionManager, githubAuthManager } = deps;
+
+  /**
+   * Resolve the GitHub tracker context for a request: ShipIt's existing GitHub
+   * token plus the repo derived from the active session's remote. Either piece
+   * may be null (GitHub not connected, no active session, or a non-GitHub
+   * remote) — the adapter then reports unconfigured.
+   */
+  function resolveGitHubContext(sessionId?: string): GitHubTrackerContext {
+    const token = githubAuthManager.getToken();
+    const remoteUrl = sessionId ? sessionManager.get(sessionId)?.remoteUrl : undefined;
+    const parsed = remoteUrl ? parseGitHubRemote(remoteUrl) : null;
+    return { token, repo: parsed ? { owner: parsed.owner, repo: parsed.repo } : null };
+  }
 
   // GET /api/trackers — configured-tracker metadata (drives the sub-tabs).
-  app.get("/api/trackers", async () => {
-    return { trackers: listTrackers(credentialStore, trackerFetchImpl) };
+  app.get<{ Querystring: { sessionId?: string } }>("/api/trackers", async (request) => {
+    const github = resolveGitHubContext(request.query.sessionId);
+    return { trackers: listTrackers(credentialStore, trackerFetchImpl, github) };
   });
 
-  // GET /api/issues?tracker=linear[&includeDone=true] — priority-sorted issue
-  // list for one tracker. `includeDone` widens the default open working set to
-  // also include completed/"done" issues (canceled stays excluded).
-  app.get<{ Querystring: { tracker?: string; includeDone?: string } }>("/api/issues", async (request, reply) => {
-    const trackerId = request.query.tracker ?? "linear";
-    const includeDone = request.query.includeDone === "true";
-    try {
-      return await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, { includeDone });
-    } catch (err) {
-      if (err instanceof ServiceError) {
-        reply.code(err.statusCode).send({ error: err.message });
-        return;
+  // GET /api/issues?tracker=linear[&includeDone=true][&sessionId=...] —
+  // priority-sorted issue list for one tracker. `includeDone` widens the default
+  // open working set to also include completed/"done" issues (canceled stays
+  // excluded). `sessionId` scopes the GitHub tracker to that session's repo.
+  app.get<{ Querystring: { tracker?: string; includeDone?: string; sessionId?: string } }>(
+    "/api/issues",
+    async (request, reply) => {
+      const trackerId = request.query.tracker ?? "linear";
+      const includeDone = request.query.includeDone === "true";
+      const github = resolveGitHubContext(request.query.sessionId);
+      try {
+        return await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, github, {
+          includeDone,
+        });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list issues: ${getErrorMessage(err)}` });
       }
-      reply.code(500).send({ error: `Failed to list issues: ${getErrorMessage(err)}` });
-    }
-  });
+    },
+  );
 
   // ---- Linear connect / binding (settings) ----
 

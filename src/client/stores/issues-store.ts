@@ -18,6 +18,18 @@ import {
   saveIncludeDone,
   saveIssueFilters,
 } from "../utils/local-storage.js";
+import { useSessionStore } from "./session-store.js";
+
+/**
+ * The GitHub tracker is per-repo, so its issues are scoped to the active
+ * session's remote (docs/170, SHI-80). We pass the current session id on the
+ * tracker/issue fetches; the server resolves it to a `{owner, repo}` binding.
+ * Linear ignores it. Returns a `sessionId=…` pair, or "" when no session.
+ */
+function sessionIdParam(): string {
+  const id = useSessionStore.getState().sessionId;
+  return id ? `sessionId=${encodeURIComponent(id)}` : "";
+}
 
 /**
  * Issues-tab store (docs/170). Per-tracker issue lists, fetched on tab open and
@@ -115,7 +127,10 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
 
   fetchTrackers: async () => {
     try {
-      const res = await fetch("/api/trackers", { headers: { Accept: "application/json" } });
+      const params = sessionIdParam();
+      const res = await fetch(`/api/trackers${params ? `?${params}` : ""}`, {
+        headers: { Accept: "application/json" },
+      });
       if (!res.ok) return;
       const data = (await res.json()) as { trackers?: TrackerInfo[] };
       const trackers = data.trackers ?? [];
@@ -138,9 +153,13 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const includeDone = get().includeDone ? "&includeDone=true" : "";
-      const res = await fetch(`/api/issues?tracker=${encodeURIComponent(id)}${includeDone}`, {
-        headers: { Accept: "application/json" },
-      });
+      const params = sessionIdParam();
+      const res = await fetch(
+        `/api/issues?tracker=${encodeURIComponent(id)}${includeDone}${params ? `&${params}` : ""}`,
+        {
+          headers: { Accept: "application/json" },
+        },
+      );
       const body = (await res.json().catch(() => ({}))) as Partial<ListIssuesResult> & { error?: string };
       if (!res.ok) {
         set({ loading: false, error: body.error ?? `Failed to load issues (${res.status})` });

@@ -252,25 +252,46 @@ Client:
 3. **Linear `issue:` pointer format** — *always a full Linear URL*; bare IDs are
    not accepted, so the pointer stays unambiguous across workspaces.
 
-## Implementation status (v1 — Linear only, SHI-67)
+## Implementation status (Linear: SHI-67; GitHub: SHI-80)
 
-Shipped the **Linear** path; the **GitHub** sub-tab/adapter is deliberately
-deferred (the user tracks everything in Linear) — now tracked on its own as
-**SHI-80** (so SHI-28's "both trackers simultaneously" mandate isn't lost when
-SHI-28 closed under its migration framing). The tracker abstraction is built so a
-GitHub adapter slots in by registering one more `Tracker`.
+Both trackers now ship. The **Linear** path landed first (SHI-67); the **GitHub**
+sub-tab/adapter — originally deferred and tracked as **SHI-80** — landed by
+registering one more `Tracker`, validating the abstraction.
+
+### GitHub tracker (SHI-80)
+
+GitHub issues are **per-repo**, which makes "enabled" mean something different
+than it does for Linear:
+
+- **No connect step.** The adapter reuses the GitHub token ShipIt already holds
+  (`GitHubAuthManager.getToken()`) — there is no separate "connect GitHub for
+  issues" credential, unlike Linear's API-token + team binding.
+- **Binding is derived, not picked.** The repo comes from the **active session's
+  git remote** (`parseGitHubRemote`), resolved in `api-routes-issues.ts` into a
+  `GitHubTrackerContext { token, repo }` passed to `buildTrackerRegistry`. The
+  client sends the active `sessionId` on `/api/trackers` and `/api/issues`.
+- **So `isConfigured()` = token present AND a GitHub repo resolved.** The GitHub
+  sub-tab auto-configures whenever you're authed and the active session is on a
+  `github.com` remote; otherwise it shows a "No GitHub repo in context" empty
+  state (not a connect form). It is *not* literally always-on.
+- **Priority is label-derived** (`priority:high`, `P1`, `critical`, …) with a
+  "No priority" fallback (GitHub has no priority field); PRs returned by the
+  issues endpoint are dropped. Read-only — the `/shipit` push trigger is SHI-43.
 
 - **Auth (v1):** simplest read-only path — a Linear **API token** stored in
   `CredentialStore` (mirrors the GitHub-token pattern), plus a workspace/team
   binding, configured in **Settings → Trackers**. The full per-deployment
   Linear OAuth app registration / webhook machinery from `docs/156` is *not*
   built here — that's for the push trigger, not this read surface.
-- **Empty state:** when no token/team is bound the Issues tab renders a
-  "Connect Linear" empty state (no error) that deep-links to settings.
+- **Empty state:** when no Linear token/team is bound the Issues tab renders a
+  "Connect Linear" empty state (no error) that deep-links to settings. The
+  GitHub sub-tab instead renders a "No GitHub repo in context" empty state
+  (there's nothing to connect — it just needs an active GitHub session).
 
 Actual key files (server):
 - `src/server/orchestrator/trackers/{tracker.ts,registry.ts,index.ts}` +
-  `trackers/linear/adapter.ts` (GraphQL list, priority mapping/sort).
+  `trackers/linear/adapter.ts` (GraphQL list, priority mapping/sort) +
+  `trackers/github/adapter.ts` (REST list, label-derived priority, PR filtering).
 - `src/server/orchestrator/services/issues.ts` — list trackers/issues + Linear
   connect/team/disconnect.
 - `src/server/orchestrator/api-routes-issues.ts` — `GET /api/trackers`,
