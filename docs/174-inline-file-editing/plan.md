@@ -180,12 +180,30 @@ not add a chat card by default and should not send an automatic message to the
 agent. The user can ask the agent to review or test the change after saving.
 
 Because file writes happen in the session workspace, the existing file watcher
-should refresh the file tree/diff state. The normal post-turn auto-commit path
-does not run immediately because no agent turn ended; the implementation should
-verify whether user-driven file writes need an explicit commit trigger or can be
-covered by the existing ShipIt auto-commit/PR lifecycle after the next agent
-turn. If immediate PR updates are desired, add that as a follow-up design rather
-than hiding it inside the editor.
+should refresh the file tree/diff state.
+
+Resolved behavior (after the initial version):
+
+- **Each manual save produces its own commit.** `PUT /files` calls
+  `commitManualEdit` after the write: `git.autoCommit("Edit <file>")` under the
+  shared per-workspace lock, then a best-effort `pushToOrigin` (fire-and-forget,
+  gated on GitHub auth) so the change reaches the PR without waiting for the next
+  turn. Git's own diffing makes this naturally "meaningful": an identical write
+  produces no commit. The commit is **skipped while an agent turn is running**
+  (`runner.running`) — `git add -A` mid-turn would capture the agent's
+  in-progress work under a misleading message, so in that case the edit is just
+  written and swept up by the normal post-turn auto-commit. A failed commit never
+  fails the save (the file is already written).
+- **Editing is disabled on warm (not-yet-graduated) sessions.** A warm session
+  has no committed history of its own to attach an edit to. The server is
+  authoritative — `PUT /files` returns `409` when `session.warm` — and the client
+  hides the affordance: both the Files-tab Edit icon and the preview-dialog Edit
+  action are gated on the current session appearing in the warm-excluding
+  sessions list (`sessionGraduated`).
+- **The editor no longer recreates Monaco on every keystroke.** `EditableCodeEditor`'s
+  setup effect depends on `filePath` only (initial content is read from a ref),
+  so typing no longer disposed/recreated the instance — which had made the editor
+  blink and drop focus.
 
 ## Key files
 
