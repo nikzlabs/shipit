@@ -56,6 +56,16 @@ harness:
 - [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
 - More to come — the backend is agent-agnostic by design, so new runtimes can slot in
 
+## Status
+
+ShipIt is in an early public release state. The best-supported path is a self-hosted Docker install
+on an Ubuntu VPS; local Docker is useful for evaluation and development. The core loop is live:
+create isolated sessions, work against real repositories, run Compose-backed previews, open PRs,
+track CI and deploy status from GitHub, and continue from desktop or mobile.
+
+The project is public source, but not yet open to outside pull requests. Bug reports, feature
+requests, and design discussion are welcome as GitHub issues.
+
 ## Quickstart
 
 If you want to hack on ShipIt itself instead of just running it, see
@@ -155,13 +165,14 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 - **GitHub without leaving ShipIt** — create PRs, follow CI, read review threads, track deploys, and
   merge from the browser IDE
 - **AI PR descriptions** — generated from the actual diff when you open a PR
-- **Cross-agent review** — have a second agent review the first agent's changes before merging
+- **Chat-native AI review** — ask the session agent to review files or diffs and surface findings
+  inline in the same conversation
 - **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
 - **Auto-deploy on push** — deploy status surfaces inline on the PR card via the GitHub Deployments
   API
 - **PR comment sync** — review threads from GitHub appear inline in the conversation
-- **Auto-fix failure loop** — preview crashes and CI failures are surfaced to the agent so it can
-  inspect logs and fix them on the next turn
+- **CI failure loop** — failed GitHub checks and logs are surfaced to the agent so it can inspect
+  the failure and, when enabled, attempt a fix on the next turn
 
 ### Iterate safely
 
@@ -183,6 +194,19 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
   spoken summaries when the agent finishes a turn or needs your input, so you can work hands-free
 - **Background notifications** — tab title change and browser notification when the agent finishes
 - **Self-update from UI** — pull the latest code, rebuild, and restart from Settings → Advanced
+
+## Known limitations
+
+- ShipIt is designed as a self-hosted, single-tenant tool today. If you expose it on the internet,
+  put it behind Cloudflare Zero Trust, Tailscale, or another access layer you control.
+- The VPS installer targets Ubuntu. Other Linux distributions may work, but the one-command setup
+  script is tuned for Ubuntu hosts.
+- The full review-and-ship loop depends on GitHub. You can work locally without it, but PRs, CI,
+  review threads, merge controls, and deploy status require GitHub auth and a GitHub remote.
+- Deploy status is read from the GitHub Deployments API. It appears when your hosting provider
+  creates GitHub deployments for pushed commits.
+- Voice input and spoken summaries require configuring a supported voice provider or an agent
+  subscription path that can provide the needed speech/cleanup services.
 
 ## Why not just use the Claude or Codex app?
 
