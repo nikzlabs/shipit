@@ -122,8 +122,15 @@ numpy
       "shipit.yaml": SHIPIT_YAML,
       "docker-compose.yml": pythonCompose({
         port: 8501,
+        // --server.enableCORS false AND --server.enableXsrfProtection false are
+        // both required to run behind ShipIt's preview proxy. Streamlit's
+        // WebSocket handler rejects any origin that isn't its own host, and
+        // through the proxy the browser's origin is `<sessionId>--8501.localhost`
+        // ("Rejecting WebSocket connection from disallowed origin"). Disabling
+        // only CORS is not enough: with XSRF protection still on, Streamlit
+        // silently overrides enableCORS back to true, so both must be off.
         runCommand:
-          ".venv/bin/streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true",
+          ".venv/bin/streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false",
       }),
     },
   },
