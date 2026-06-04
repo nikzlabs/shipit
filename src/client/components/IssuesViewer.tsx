@@ -322,21 +322,37 @@ export function IssuesViewer({
         )}
 
         {!configured ? (
-          <div className="flex items-center justify-center h-full text-center px-6">
-            <div className="space-y-3 max-w-xs">
-              <PlugIcon size={ICON_SIZE.XL} className="mx-auto text-(--color-text-tertiary)" />
-              <p className="text-lg font-medium text-(--color-text-secondary)">
-                Connect {activeInfo?.label ?? "Linear"}
-              </p>
-              <p className="text-xs text-(--color-text-tertiary)">
-                Add a {activeInfo?.label ?? "Linear"} API token and pick a team to see your
-                prioritized issues here and start a session from any of them.
-              </p>
-              <Button variant="primary" size="sm" onClick={onConnect}>
-                Connect {activeInfo?.label ?? "Linear"}
-              </Button>
+          activeTracker === "github" ? (
+            // GitHub needs no connect step — it reuses ShipIt's GitHub auth and
+            // scopes to the active session's repo. So "not configured" means
+            // there's no GitHub repo in context, not a missing credential.
+            <div className="flex items-center justify-center h-full text-center px-6">
+              <div className="space-y-3 max-w-xs">
+                <PlugIcon size={ICON_SIZE.XL} className="mx-auto text-(--color-text-tertiary)" />
+                <p className="text-lg font-medium text-(--color-text-secondary)">No GitHub repo in context</p>
+                <p className="text-xs text-(--color-text-tertiary)">
+                  GitHub issues come from the active session's repository. Open a session on a
+                  GitHub-hosted repo (and connect GitHub if you haven't) to see its issues here.
+                </p>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="flex items-center justify-center h-full text-center px-6">
+              <div className="space-y-3 max-w-xs">
+                <PlugIcon size={ICON_SIZE.XL} className="mx-auto text-(--color-text-tertiary)" />
+                <p className="text-lg font-medium text-(--color-text-secondary)">
+                  Connect {activeInfo?.label ?? "Linear"}
+                </p>
+                <p className="text-xs text-(--color-text-tertiary)">
+                  Add a {activeInfo?.label ?? "Linear"} API token and pick a team to see your
+                  prioritized issues here and start a session from any of them.
+                </p>
+                <Button variant="primary" size="sm" onClick={onConnect}>
+                  Connect {activeInfo?.label ?? "Linear"}
+                </Button>
+              </div>
+            </div>
+          )
         ) : issues.length === 0 && !loading ? (
           <div className="flex items-center justify-center h-full text-(--color-text-tertiary) text-sm">
             No {includeDone ? "" : "open "}issues in {activeInfo?.binding?.name ?? "this team"}.

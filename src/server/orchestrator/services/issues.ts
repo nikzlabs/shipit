@@ -14,15 +14,21 @@ import type {
   TrackerId,
   TrackerInfo,
 } from "../../shared/types.js";
-import { buildTrackerRegistry, listLinearTeams, type FetchImpl } from "../trackers/index.js";
+import {
+  buildTrackerRegistry,
+  listLinearTeams,
+  type FetchImpl,
+  type GitHubTrackerContext,
+} from "../trackers/index.js";
 import { ServiceError } from "./types.js";
 
 /** All known trackers + their configured state — drives the sub-tab switcher. */
 export function listTrackers(
   credentialStore: CredentialStore,
   fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
 ): TrackerInfo[] {
-  return buildTrackerRegistry(credentialStore, fetchImpl).list();
+  return buildTrackerRegistry(credentialStore, fetchImpl, github).list();
 }
 
 /**
@@ -35,9 +41,10 @@ export async function listIssuesForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
   fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
   options?: { includeDone?: boolean },
 ): Promise<ListIssuesResult> {
-  const registry = buildTrackerRegistry(credentialStore, fetchImpl);
+  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
   const tracker = registry.get(trackerId as TrackerId);
   if (!tracker) {
     throw new ServiceError(404, `Unknown tracker: ${trackerId}`);

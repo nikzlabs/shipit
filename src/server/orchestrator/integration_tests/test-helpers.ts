@@ -247,8 +247,12 @@ export class StubAuthManager extends EventEmitter {
 export class StubGitHubAuthManager extends EventEmitter {
   private _authenticated = false;
   private _username: string | null = null;
+  private _token: string | null = null;
   checkCredentials() { return this._authenticated; }
   get authenticated() { return this._authenticated; }
+  /** Mirrors `GitHubAuthManager.getToken()` — used by the Issues route to build
+   *  the GitHub tracker context. Null until a token is set. */
+  getToken(): string | null { return this._token; }
   getStatus() {
     return {
       authenticated: this._authenticated,
@@ -264,12 +268,14 @@ export class StubGitHubAuthManager extends EventEmitter {
     // Accept any non-empty token in tests
     this._authenticated = true;
     this._username = "test-user";
+    this._token = token;
     this.emit("auth_complete");
     return true;
   }
   clearCredentials() {
     this._authenticated = false;
     this._username = null;
+    this._token = null;
   }
   /**
    * Mirrors `GitHubAuthManager.markTokenInvalid` — called by the
