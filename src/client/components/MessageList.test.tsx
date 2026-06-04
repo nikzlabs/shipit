@@ -3,6 +3,8 @@ import { render, screen, cleanup, fireEvent, act } from "@testing-library/react"
 import { MessageList, parseMessageSegments, type ChatMessage, type ChatMessageImage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
 import { usePresentStore } from "../stores/present-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+import type { SessionInfo } from "../../server/shared/types.js";
 
 // jsdom doesn't implement scrollIntoView
 beforeAll(() => {
@@ -1656,6 +1658,59 @@ describe("MessageList", () => {
       expect(redisBtn).toBeDisabled();
       fireEvent.click(redisBtn);
       expect(onAnswerQuestion).not.toHaveBeenCalled();
+    });
+  });
+
+  // SHI-78 — the spawned-session card's "Open" button must route through the
+  // router-aware onResumeSession handler (which resets per-session stores and
+  // navigates), not the bare setSessionId fallback. The bare fallback left a
+  // stale URL and stale messages, which on mobile surfaced as a truncated
+  // dialogue behind an unchanged session.
+  describe("spawned-session card open wiring", () => {
+    function seedChild(id: string): void {
+      useSessionStore.setState({
+        sessions: [
+          {
+            id,
+            title: "Child",
+            createdAt: "2026-01-01T00:00:00Z",
+            lastUsedAt: "2026-01-01T00:00:00Z",
+          } as SessionInfo,
+        ],
+        activeRunnerSessions: new Set<string>(),
+      });
+    }
+
+    afterEach(() => {
+      useSessionStore.setState({ sessions: [], activeRunnerSessions: new Set<string>() });
+    });
+
+    it("routes the spawnedSession card's Open click through onResumeSession", () => {
+      seedChild("child-9");
+      const onResumeSession = vi.fn();
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "", spawnedSession: { childSessionId: "child-9", title: "Child", spawnedAt: "2026-01-01T00:00:00Z" } },
+      ];
+      render(
+        <MessageList messages={messages} isLoading={false} onResumeSession={onResumeSession} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /open/i }));
+      expect(onResumeSession).toHaveBeenCalledWith("child-9");
+      // The bare fallback (which only mutates the store) must NOT have run.
+      expect(useSessionStore.getState().sessionId).not.toBe("child-9");
+    });
+
+    it("routes the forkChild card's Open click through onResumeSession", () => {
+      seedChild("fork-3");
+      const onResumeSession = vi.fn();
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "", forkChild: { childSessionId: "fork-3", title: "Fork", branch: "fork-branch" } },
+      ];
+      render(
+        <MessageList messages={messages} isLoading={false} onResumeSession={onResumeSession} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /open/i }));
+      expect(onResumeSession).toHaveBeenCalledWith("fork-3");
     });
   });
 });

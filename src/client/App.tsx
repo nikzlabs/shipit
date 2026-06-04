@@ -1213,6 +1213,7 @@ export default function App() {
             onSubmitBugReport={(cardId, title, body) =>
               send({ type: "submit_bug_report", cardId, title, body })
             }
+            onResumeSession={(sid) => handleSessionResume(sid, navigate)}
           />
           {/*
             Bottom stack: thinking indicator, rebase banner, queue indicator.
