@@ -19,7 +19,7 @@ import type {
   IssuePriority,
   IssuePriorityLevel,
 } from "../../../shared/types.js";
-import type { Tracker } from "../tracker.js";
+import type { ListIssuesOptions, Tracker } from "../tracker.js";
 
 export const LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql";
 
@@ -166,20 +166,30 @@ export class LinearTracker implements Tracker {
     };
   }
 
-  async listIssues(): Promise<TrackerIssue[]> {
+  async listIssues(options?: ListIssuesOptions): Promise<TrackerIssue[]> {
     if (!this.token || !this.team) {
       throw new Error("Linear is not configured (missing token or team binding)");
     }
+    // Open working set by default (drop completed + canceled). When the caller
+    // opts into done issues we keep only "canceled" excluded — "done" means
+    // finished, not abandoned. Ordered by `updatedAt` so the `first: 100` window
+    // favors recently-touched issues (incl. recently-completed ones) rather than
+    // letting stale history crowd the list.
+    const excludedTypes = options?.includeDone ? ["canceled"] : ["completed", "canceled"];
     const data = await linearGraphql<{ team: { issues: { nodes: LinearIssueNode[] } } | null }>(
       this.token,
-      `query TeamIssues($teamId: String!) {
+      `query TeamIssues($teamId: String!, $excludedTypes: [String!]!) {
         team(id: $teamId) {
-          issues(first: 100, filter: { state: { type: { nin: ["completed", "canceled"] } } }) {
+          issues(
+            first: 100
+            orderBy: updatedAt
+            filter: { state: { type: { nin: $excludedTypes } } }
+          ) {
             nodes { ${ISSUE_FIELDS} }
           }
         }
       }`,
-      { teamId: this.team.id },
+      { teamId: this.team.id, excludedTypes },
       this.fetchImpl,
     );
     const nodes = data.team?.issues.nodes ?? [];
