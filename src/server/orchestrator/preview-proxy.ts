@@ -74,6 +74,55 @@ const HMR_WS_PATCH = `<script>(function(){` +
   `})()</script>`;
 
 // ---------------------------------------------------------------------------
+// Forwarded headers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the request headers for an upstream proxy hop.
+ *
+ * Two things happen here, and they pull in opposite directions:
+ *
+ *  1. We rewrite `Host` to `localhost:<targetPort>`. Some dev servers do
+ *     DNS-rebinding host checks (Vite's `allowedHosts`, etc.) and only trust
+ *     their own loopback host, so the upstream must see a loopback Host.
+ *
+ *  2. But frameworks that compute a *public* root URL for their frontend —
+ *     Gradio is the canonical case — derive it from `X-Forwarded-Host` /
+ *     `X-Forwarded-Proto`, falling back to `Host`. Without the forwarded
+ *     headers, Gradio reflects the rewritten `localhost:<port>` Host and its
+ *     frontend ends up calling `localhost:<port>/gradio_api/...`. In a
+ *     browser-hosted ShipIt session `localhost` is the *user's* machine, not
+ *     the container, so every API call fails with ERR_CONNECTION_REFUSED.
+ *
+ * So we preserve the browser-facing host/proto in the forwarded headers while
+ * still handing the upstream a loopback Host. Existing forwarded headers (set
+ * by an upstream ShipIt ingress that may also terminate TLS) win — we only
+ * fill in what's missing, so a real `https` origin isn't downgraded to `http`.
+ *
+ * Exported for unit testing.
+ */
+export function buildUpstreamHeaders(
+  headers: http.IncomingHttpHeaders,
+  targetPort: number,
+): http.IncomingHttpHeaders {
+  // The browser-facing host: an upstream-provided X-Forwarded-Host wins,
+  // otherwise the inbound Host (which, for our subdomain/path routing, is the
+  // origin the browser actually used). Capture it before we overwrite Host.
+  const browserHost = headers["x-forwarded-host"] ?? headers.host;
+  const proto = headers["x-forwarded-proto"] ?? "http";
+
+  const out: http.IncomingHttpHeaders = {
+    ...headers,
+    host: `localhost:${targetPort}`,
+    "x-forwarded-proto": proto,
+  };
+  if (browserHost !== undefined) {
+    out["x-forwarded-host"] = browserHost;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Shared proxy helpers
 // ---------------------------------------------------------------------------
 
@@ -104,7 +153,7 @@ function proxyHttp(
 ): void {
   // Strip accept-encoding so the upstream sends uncompressed content — allows
   // us to inject the HMR WebSocket patch into HTML responses.
-  const fwdHeaders = { ...headers, host: `localhost:${targetPort}` };
+  const fwdHeaders = buildUpstreamHeaders(headers, targetPort);
   delete fwdHeaders["accept-encoding"];
 
   const proxyReq = http.request(
@@ -173,10 +222,7 @@ function proxyWebSocket(
     port: targetPort,
     path: targetPath,
     method: "GET",
-    headers: {
-      ...headers,
-      host: `localhost:${targetPort}`,
-    },
+    headers: buildUpstreamHeaders(headers, targetPort),
   });
 
   proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
