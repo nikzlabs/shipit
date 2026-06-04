@@ -43,6 +43,8 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   let tmpDir: string;
   let credentialStore: CredentialStore;
   let dbManager: DatabaseManager;
+  let sessionManager: SessionManager;
+  let githubAuthManager: StubGitHubAuthManager;
   /** Routes each GraphQL operation to a canned response by query content. */
   let trackerFetch: ReturnType<typeof vi.fn>;
 
@@ -75,11 +77,13 @@ describe("Integration: Issues tab routes (docs/170)", () => {
       return jsonResponse({ data: {} });
     });
 
+    sessionManager = new SessionManager(dbManager);
+    githubAuthManager = new StubGitHubAuthManager();
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(dbManager),
+      sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
       agentFactory: () => new FakeClaudeProcess() as never,
       credentialStore,
       workspaceDir: tmpDir,
@@ -99,11 +103,63 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     }
   });
 
-  it("GET /api/trackers reports Linear as not configured initially", async () => {
+  it("GET /api/trackers reports Linear and GitHub as not configured initially", async () => {
     const res = await app.inject({ method: "GET", url: "/api/trackers" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { trackers: TrackerInfo[] };
-    expect(body.trackers).toEqual([{ id: "linear", label: "Linear", configured: false }]);
+    // GitHub is registered alongside Linear (SHI-80); both unconfigured with no
+    // token and no active-session repo binding.
+    expect(body.trackers).toEqual([
+      { id: "linear", label: "Linear", configured: false },
+      { id: "github", label: "GitHub", configured: false },
+    ]);
+  });
+
+  it("GitHub tracker auto-configures from the active session's GitHub remote", async () => {
+    // Authenticate GitHub (mirrors the user's existing GitHub connection) and
+    // track a session whose remote is a github.com repo.
+    await githubAuthManager.setToken("ghp_test_token");
+    sessionManager.track("gh-sess", "GH session");
+    sessionManager.setRemoteUrl("gh-sess", "https://github.com/octocat/hello-world.git");
+
+    // Stub the GitHub REST issues endpoint on the shared tracker fetch.
+    trackerFetch.mockImplementationOnce(async () =>
+      jsonResponse([
+        {
+          id: 1,
+          number: 42,
+          title: "An open issue",
+          html_url: "https://github.com/octocat/hello-world/issues/42",
+          state: "open",
+          labels: ["P1"],
+          assignee: null,
+        },
+      ]),
+    );
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/issues?tracker=github&sessionId=gh-sess",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { tracker: TrackerInfo; issues: TrackerIssue[] };
+    expect(body.tracker.configured).toBe(true);
+    expect(body.tracker.binding).toEqual({
+      key: "octocat/hello-world",
+      name: "octocat/hello-world",
+    });
+    expect(body.issues.map((i) => i.identifier)).toEqual(["octocat/hello-world#42"]);
+    expect(body.issues[0].priority.level).toBe("high");
+  });
+
+  it("GitHub tracker stays unconfigured without an active GitHub session", async () => {
+    await githubAuthManager.setToken("ghp_test_token");
+    // No sessionId → no repo binding → unconfigured, empty list, no fetch.
+    const res = await app.inject({ method: "GET", url: "/api/issues?tracker=github" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { tracker: TrackerInfo; issues: TrackerIssue[] };
+    expect(body.tracker.configured).toBe(false);
+    expect(body.issues).toEqual([]);
   });
 
   it("GET /api/issues returns an empty list with tracker info when unconfigured", async () => {
