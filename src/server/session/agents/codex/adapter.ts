@@ -30,6 +30,10 @@ import type {
 } from "../agent-process.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { getErrorMessage } from "../../../shared/utils.js";
+import {
+  PLAYWRIGHT_MCP_ARGS,
+  PLAYWRIGHT_MCP_COMMAND,
+} from "../playwright-mcp.js";
 
 // ---- Codex JSON-RPC protocol types ----
 
@@ -555,6 +559,19 @@ export class CodexAdapter
       CODEX_MCP_BEGIN,
       "# ShipIt-managed MCP servers. This block is regenerated before each Codex turn.",
     ];
+
+    // docs/079 — built-in Playwright (browser) server, mirroring the Claude
+    // adapter. Codex runs with approvalPolicy:"never", so these tools
+    // auto-approve like every other tool; no allowlist plumbing is needed.
+    // See playwright-mcp.ts for the `sh -c` launch / `--browser chromium`
+    // rationale.
+    lines.push(
+      "",
+      "# docs/079 — built-in Playwright browser server.",
+      "[mcp_servers.playwright]",
+      `command = ${tomlString(PLAYWRIGHT_MCP_COMMAND)}`,
+      `args = ${tomlArray([...PLAYWRIGHT_MCP_ARGS])}`,
+    );
 
     if (ctx.reviewBridge) {
       lines.push(

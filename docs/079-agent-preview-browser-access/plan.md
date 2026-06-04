@@ -285,7 +285,23 @@ The MCP server is a child process of the CLI, running inside the PTY. If it writ
 
 ### Codex agent
 
-This design only covers the Claude CLI. The Codex agent uses JSON-RPC and does not support MCP servers. Browser tools will not be available when using Codex. This is a known limitation — Codex is a secondary agent with limited tool support already.
+**Update:** Codex now also gets browser access. The original claim here — "Codex
+uses JSON-RPC and does not support MCP servers" — became obsolete once the Codex
+adapter learned to register MCP servers via a `[mcp_servers.*]` block in
+`~/.codex/config.toml` (docs/125, docs/155). For a while Codex registered the
+ShipIt bridges (review, present, voice, ask, bug) and user servers but *not*
+Playwright, so the shared system prompt advertised a browser the agent didn't
+actually have.
+
+The Playwright server definition now lives in
+`src/server/session/agents/playwright-mcp.ts` and is consumed by both adapters:
+
+- **Claude** writes it into the per-turn `--mcp-config` JSON.
+- **Codex** writes a `[mcp_servers.playwright]` block into `config.toml`.
+
+Codex runs with `approvalPolicy: "never"`, so the browser tools auto-approve
+exactly like every other tool — no Claude-style `--allowedTools` allowlisting is
+required on the Codex side.
 
 ### Alternatives considered
 
