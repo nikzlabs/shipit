@@ -273,6 +273,19 @@ issuesByTracker[tracker]  (normalized TrackerIssue[], priority-sorted)
   avoids a chip that matches nothing.
 - A single top-level **Clear filters** resets all four facets + search.
 
+**Persistence across reloads.** The whole `filters` object is workspace-scoped
+reference state (it is *not* cleared on a session switch — `issues-store.reset()`
+isn't part of `session-actions.ts`), so it persists to `localStorage` under
+`shipit-issue-filters` and rehydrates on the next page load. The three facets are
+`Set`s, so they serialize to arrays and back (`getSavedIssueFilters` /
+`saveIssueFilters` in `utils/local-storage.ts`); priorities are validated against
+the fixed enum on read, and stale freeform status/assignee values are pruned to
+the loaded list by the first `fetchIssues` after rehydration — so restoring a
+saved value before any fetch is safe. A single `useIssuesStore.subscribe` at the
+bottom of the store persists on every `filters` change, covering both the direct
+edits (`setQuery`/`toggle*`/`clearFilters`) and the prune that runs inside
+`setActiveTracker`/`fetchIssues`, so no individual action has to remember to save.
+
 The derived status/assignee options and the filtered list are computed with
 **stable memoized selectors** — note the docs/170 gotcha (`IssuesPanel.test.tsx`):
 Zustand selectors here must return stable references or they loop into React
@@ -335,8 +348,11 @@ Tests:
   today; adding label filtering means extending the normalized type *and* every
   adapter. Deferred. (Assignee filtering **is** in scope here — `assignee.name`
   is already on the normalized type, so it needs no adapter change.)
-- **No saved filters / shareable filter URLs.** Filter state is ephemeral
-  session UI state, not persisted.
+- **No saved filters / shareable filter URLs.** No named filter presets and no
+  filter state encoded in the URL for sharing. Filters *do* persist across page
+  reloads via `localStorage` (workspace-scoped, see **Persistence across
+  reloads** above) — what's out of scope is multiple named views and
+  shareable/linkable filter state.
 - **No sortable column headers.** The table is display-only; the list stays
   priority-sorted (docs/170). Click-to-sort columns are a natural fast-follow but
   reopen the sort model, so they're deferred.

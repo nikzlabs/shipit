@@ -12,6 +12,7 @@ import {
   distinctStatuses,
   type IssueFilters,
 } from "../components/issues-filter.js";
+import { getSavedIssueFilters, saveIssueFilters } from "../utils/local-storage.js";
 
 /**
  * Issues-tab store (docs/170). Per-tracker issue lists, fetched on tab open and
@@ -84,7 +85,10 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   infoByTracker: {},
   loading: false,
   error: null,
-  filters: emptyFilters(),
+  // Rehydrate the filter bar from the last reload (docs/173). Freeform
+  // status/assignee values are pruned to the loaded list by the first
+  // fetchIssues, so restoring before any fetch is safe.
+  filters: getSavedIssueFilters(),
 
   setActiveTracker: (id) =>
     set((state) => ({
@@ -174,3 +178,11 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       filters: emptyFilters(),
     }),
 }));
+
+// Persist the filter bar across reloads (docs/173). A single subscription
+// covers every mutation point — direct edits (setQuery/toggle*/clearFilters)
+// and the prune that runs inside setActiveTracker/fetchIssues — so no action
+// has to remember to save.
+useIssuesStore.subscribe((state, prev) => {
+  if (state.filters !== prev.filters) saveIssueFilters(state.filters);
+});

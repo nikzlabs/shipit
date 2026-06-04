@@ -1,4 +1,5 @@
-import type { AgentId } from "../../server/shared/types.js";
+import type { AgentId, IssuePriorityLevel } from "../../server/shared/types.js";
+import type { IssueFilters } from "../components/issues-filter.js";
 
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
 const RIGHT_TAB_KEY = "shipit-right-tab";
@@ -329,4 +330,69 @@ export function saveDraftMessage(sessionKey: string, text: string): void {
   }
 }
 
-export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY };
+// ---- Issues-tab filters (docs/173) ----
+//
+// The Issues filter bar (search + priority/status/assignee facets) is
+// workspace-scoped reference state, not per-session, so it persists in
+// localStorage and survives a page reload. The three facets are `Set`s, so we
+// serialize them to arrays and rehydrate. Priorities are validated against the
+// fixed enum on read; freeform status/assignee values are pruned to the loaded
+// list by the store after each fetch, so a stale value here is harmless.
+
+const ISSUE_FILTERS_KEY = "shipit-issue-filters";
+
+const VALID_PRIORITY_LEVELS: readonly IssuePriorityLevel[] = [
+  "urgent",
+  "high",
+  "medium",
+  "low",
+  "none",
+];
+
+interface SerializedIssueFilters {
+  query?: string;
+  priorities?: string[];
+  statuses?: string[];
+  assignees?: string[];
+}
+
+export function getSavedIssueFilters(): IssueFilters {
+  const empty: IssueFilters = {
+    query: "",
+    priorities: new Set(),
+    statuses: new Set(),
+    assignees: new Set(),
+  };
+  try {
+    const raw = localStorage.getItem(ISSUE_FILTERS_KEY);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) as SerializedIssueFilters;
+    const validPriorities = new Set<string>(VALID_PRIORITY_LEVELS);
+    return {
+      query: typeof parsed.query === "string" ? parsed.query : "",
+      priorities: new Set(
+        (parsed.priorities ?? []).filter((p): p is IssuePriorityLevel => validPriorities.has(p)),
+      ),
+      statuses: new Set((parsed.statuses ?? []).filter((s) => typeof s === "string")),
+      assignees: new Set((parsed.assignees ?? []).filter((a) => typeof a === "string")),
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export function saveIssueFilters(filters: IssueFilters): void {
+  try {
+    const payload: SerializedIssueFilters = {
+      query: filters.query,
+      priorities: [...filters.priorities],
+      statuses: [...filters.statuses],
+      assignees: [...filters.assignees],
+    };
+    localStorage.setItem(ISSUE_FILTERS_KEY, JSON.stringify(payload));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY };

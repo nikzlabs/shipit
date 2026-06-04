@@ -4,6 +4,11 @@ import { MemoryRouter } from "react-router-dom";
 import { IssuesPanel } from "./IssuesPanel.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import { UNASSIGNED } from "./issues-filter.js";
+import {
+  getSavedIssueFilters,
+  saveIssueFilters,
+  ISSUE_FILTERS_KEY,
+} from "../utils/local-storage.js";
 import type { TrackerIssue } from "../../server/shared/types.js";
 
 function makeIssue(over: Partial<TrackerIssue> & { id: string }): TrackerIssue {
@@ -107,5 +112,56 @@ describe("issues-store filter pruning", () => {
     expect([...filters.statuses]).toEqual([]); // "In Review" not in github list — pruned
     expect(filters.assignees.has("Ana")).toBe(false); // pruned
     expect(filters.assignees.has(UNASSIGNED)).toBe(true); // synthetic — survives
+  });
+});
+
+describe("issues filter persistence (docs/173)", () => {
+  afterEach(() => {
+    localStorage.removeItem(ISSUE_FILTERS_KEY);
+    useIssuesStore.getState().reset();
+    useIssuesStore.setState({ trackers: [], activeTracker: "linear", infoByTracker: {} });
+  });
+
+  it("round-trips filters through localStorage, restoring Sets", () => {
+    saveIssueFilters({
+      query: "auth",
+      priorities: new Set(["high", "urgent"]),
+      statuses: new Set(["In Review"]),
+      assignees: new Set(["Ana", UNASSIGNED]),
+    });
+    const restored = getSavedIssueFilters();
+    expect(restored.query).toBe("auth");
+    expect([...restored.priorities].sort()).toEqual(["high", "urgent"]);
+    expect([...restored.statuses]).toEqual(["In Review"]);
+    expect(restored.assignees.has("Ana")).toBe(true);
+    expect(restored.assignees.has(UNASSIGNED)).toBe(true);
+  });
+
+  it("drops invalid priority levels on read", () => {
+    localStorage.setItem(
+      ISSUE_FILTERS_KEY,
+      JSON.stringify({ query: "", priorities: ["high", "bogus"], statuses: [], assignees: [] }),
+    );
+    expect([...getSavedIssueFilters().priorities]).toEqual(["high"]);
+  });
+
+  it("returns empty filters when nothing is stored or the payload is corrupt", () => {
+    localStorage.removeItem(ISSUE_FILTERS_KEY);
+    const empty = getSavedIssueFilters();
+    expect(empty.query).toBe("");
+    expect(empty.priorities.size).toBe(0);
+
+    localStorage.setItem(ISSUE_FILTERS_KEY, "not json");
+    const fallback = getSavedIssueFilters();
+    expect(fallback.statuses.size).toBe(0);
+    expect(fallback.assignees.size).toBe(0);
+  });
+
+  it("persists store filter changes to localStorage automatically", () => {
+    useIssuesStore.getState().setQuery("bug");
+    useIssuesStore.getState().togglePriority("urgent");
+    const saved = getSavedIssueFilters();
+    expect(saved.query).toBe("bug");
+    expect([...saved.priorities]).toEqual(["urgent"]);
   });
 });
