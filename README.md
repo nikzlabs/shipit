@@ -56,12 +56,12 @@ harness:
 - [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
 - More to come — the backend is agent-agnostic by design, so new runtimes can slot in
 
-## Installation
+## Quickstart
 
 If you want to hack on ShipIt itself instead of just running it, see
 [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture, dev loop, and module layout.
 
-### Prerequisites
+### What you need
 
 - [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`).
   Docker Desktop bundles it; on Linux install `docker-compose-plugin` alongside `docker-ce`. ShipIt
@@ -71,7 +71,10 @@ If you want to hack on ShipIt itself instead of just running it, see
     [Anthropic API key](https://console.anthropic.com/settings/keys)
   - Codex: a ChatGPT subscription or an [OpenAI API key](https://platform.openai.com/api-keys)
 
-### Local (Docker)
+### Try it locally
+
+Use the local Docker path when you want to evaluate ShipIt on your machine before putting it on a
+server.
 
 ```bash
 git clone https://github.com/nicolasalt/shipit.git
@@ -79,12 +82,16 @@ cd shipit
 docker/local/prod.sh
 ```
 
-This builds the orchestrator + session-worker images and starts ShipIt with Docker Compose at
-[http://localhost:4123](http://localhost:4123). On first run, ShipIt prompts you to authenticate
-with the agent provider you've chosen via an OAuth flow in the browser. Credentials are stored in a
-persistent Docker volume so you only need to do this once per provider.
+This builds the orchestrator and session-worker images, then starts ShipIt at
+[http://localhost:4123](http://localhost:4123). The first run can take a few minutes because Docker
+builds both images from scratch. After the app opens, sign in to Claude Code or Codex from the
+in-app provider flow; credentials are stored in a persistent Docker volume so you only need to do
+this once per provider.
 
-### VPS
+### Run it on a VPS
+
+Use the VPS path for the intended always-on setup: agents, previews, and CI follow-up work keep
+running even when your laptop is closed.
 
 ShipIt ships with a one-command provisioning script for Ubuntu VPS hosts. It installs Docker, raises
 the inotify limits session containers need, and optionally puts ShipIt behind a
@@ -112,6 +119,14 @@ or via `bash /opt/shipit/deployment/vps/deploy.sh` on the host.
 
 See [`deployment/README.md`](deployment/README.md) for the full guide: sizing recommendations,
 Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and troubleshooting.
+
+### After first boot
+
+1. Pick Claude Code or Codex as the agent backend.
+2. Connect GitHub so ShipIt can clone repos, push branches, open PRs, and read CI status.
+3. Start a session from an existing repository or a project template.
+4. Describe the change you want; ShipIt creates an isolated container, branch, chat history, and
+   workspace for that session.
 
 ## Features
 
