@@ -567,7 +567,6 @@ export class CodexAdapter
     // rationale.
     lines.push(
       "",
-      "# docs/079 — built-in Playwright browser server.",
       "[mcp_servers.playwright]",
       `command = ${tomlString(PLAYWRIGHT_MCP_COMMAND)}`,
       `args = ${tomlArray([...PLAYWRIGHT_MCP_ARGS])}`,
