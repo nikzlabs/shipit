@@ -207,8 +207,8 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
   review threads, merge controls, and deploy status require GitHub auth and a GitHub remote.
 - Deploy status is read from the GitHub Deployments API. It appears when your hosting provider
   creates GitHub deployments for pushed commits.
-- Voice input and spoken summaries require configuring a supported voice provider or an agent
-  subscription path that can provide the needed speech/cleanup services.
+- Voice input and spoken summaries require configuring a supported voice provider for speech
+  services.
 
 ## Why not just use the Claude or Codex app?
 
