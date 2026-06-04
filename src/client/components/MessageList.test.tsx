@@ -13,6 +13,8 @@ afterEach(() => {
   cleanup();
   usePresentStore.getState().reset();
   useUiStore.getState().setRightTab("preview");
+  useUiStore.getState().setMobilePanel("chat");
+  useUiStore.getState().setMobileSidebarOpen(false);
 });
 
 function msg(role: "user" | "assistant", text: string, opts?: { toolUse?: ToolUseBlock[]; streaming?: boolean }): ChatMessage {
@@ -938,6 +940,7 @@ describe("MessageList", () => {
       fireEvent.click(screen.getByLabelText("View presentation"));
       expect(usePresentStore.getState().activePresentIndex).toBe(0);
       expect(useUiStore.getState().rightTab).toBe("present");
+      expect(useUiStore.getState().mobilePanel).toBe("preview");
       expect(screen.queryByLabelText("Show output")).toBeNull();
     });
 
