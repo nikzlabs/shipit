@@ -57,6 +57,15 @@
       stable-ref regression
 - [x] `npm run lint:dev` + `npm run typecheck` clean
 
+## Persistence across reloads (follow-up)
+
+- [x] `getSavedIssueFilters` / `saveIssueFilters` in `utils/local-storage.ts`
+      (Set ↔ array serialization, priority-enum validation on read)
+- [x] Initialize store `filters` from `localStorage`; single `subscribe` persists
+      on every `filters` change (direct edits + prune)
+- [x] Tests: localStorage round-trip (Sets restored), invalid-priority drop,
+      corrupt/empty fallback, store-change auto-persist
+
 ## Docs
 
 - [x] Update `docs/170` plan if the filter bar changes its described layout
