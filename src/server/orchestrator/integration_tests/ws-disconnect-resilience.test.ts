@@ -522,6 +522,72 @@ describe("Integration: WebSocket disconnect resilience", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Invariant: a turn ended by an ABNORMAL process exit (e.g. SIGTERM /
+  // "exited with code 143" from an idle-kill, container restart, or crash) —
+  // NOT a user interrupt — must finalize its streamed partial into history.
+  // Otherwise the assistant rows stay `in_progress=1`, and the NEXT user
+  // message's turn calls replaceInProgress(), deleting them — erasing the
+  // previous turn from the UI on reload (the reported bug).
+  // -------------------------------------------------------------------------
+
+  it("an abnormal exit (code 143) preserves the prior turn when the next message is sent", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const sessionId = client.sessionId;
+
+    // Turn 1: stream some assistant content, then the process dies with 143
+    // WITHOUT a `result` event and WITHOUT a user interrupt.
+    client.send({ type: "send_message", text: "first" });
+    const turn1 = await waitForClaude(() => lastClaude);
+    turn1.emit("event", { type: "system", subtype: "init", session_id: "abnormal-1" });
+    await drainUntil(client, (m) => m.type === "session_started");
+    turn1.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "EXIT143_CANARY answer" }] },
+    });
+    // A tool-result boundary is what writes the streamed groups to the DB as
+    // in_progress=1 (the rows the next turn would otherwise wipe).
+    turn1.emit("event", {
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "tu1", content: "ok" }] },
+    });
+    await drainUntil(client, (m) => m.type === "agent_event" && m.event?.type === "agent_tool_result");
+
+    // Process exits with 143 — bare `done`, no `result`, no interrupt.
+    turn1.emit("done", 143);
+    await settle(150);
+
+    // Turn 2: a new message drives a fresh turn (this is the replaceInProgress
+    // call that used to delete the unfinalized turn-1 rows).
+    client.send({ type: "send_message", text: "second" });
+    const turn2 = await waitForClaude(() => lastClaude, turn1);
+    turn2.emit("event", { type: "system", subtype: "init", session_id: "abnormal-2" });
+    turn2.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "SECOND_TURN reply" }] },
+    });
+    turn2.finish("abnormal-2");
+    await settle(200);
+
+    // History must still contain turn 1's assistant content alongside turn 2's,
+    // and nothing should be left in-progress.
+    const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    expect(historyRes.statusCode).toBe(200);
+    const history = historyRes.json();
+    const allText = history.messages
+      .filter((m: AnyMsg) => m.role === "assistant")
+      .map((m: AnyMsg) => m.text)
+      .join("");
+    expect(allText).toContain("EXIT143_CANARY answer");
+    expect(allText).toContain("SECOND_TURN reply");
+    for (const m of history.messages) {
+      expect(m.inProgress).toBeFalsy();
+    }
+
+    client.close();
+  });
+
+  // -------------------------------------------------------------------------
   // Invariant: a WS reconnect AFTER the runner was disposed (idle cleanup
   // window expired) must spawn a fresh runner. Pins the registry-recreation
   // path that fires when getOrCreate() finds the session ID gone.

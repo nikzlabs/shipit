@@ -377,9 +377,19 @@ export async function executeAgentTurn(
         message: code !== 0 ? `Agent process exited with code ${code}` : "Agent process ended without a response",
       });
     }
-    // Preserve the partial turn when an interrupt ended the agent without an
-    // `agent_result` (the "first turn erased from history" bug, docs/156).
-    if (!receivedResult && (runner?.wasInterrupted ?? false)) {
+    // Preserve the partial turn whenever the process ended without an
+    // `agent_result` — whether the user interrupted (the "first turn erased
+    // from history" bug, docs/156) OR the process exited abnormally, e.g.
+    // SIGTERM / "exited with code 143" from an idle-kill, container restart, or
+    // crash. The streamed assistant rows were written as `in_progress=1` at each
+    // tool-result boundary; without finalizing them here they stay in-progress,
+    // and the NEXT user message's turn calls `replaceInProgress()`, which
+    // deletes every `in_progress=1` row — erasing the previous turn from the UI
+    // on reload. `onInterruptedTurn` flips those rows to finalized (and clears
+    // the replay buffer). Skipped on the auth-required path, where the listener
+    // already owns the visible row. WS-only: dispatch leaves `onInterruptedTurn`
+    // unset and surfaces no-result exits via `onNoResultExit` instead.
+    if (!receivedResult && !sawAuthRequired) {
       input.onInterruptedTurn?.();
     }
 
