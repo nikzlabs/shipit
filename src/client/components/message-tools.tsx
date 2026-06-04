@@ -345,6 +345,8 @@ function PresentToolChip({
   const focus = () => {
     usePresentStore.getState().focusById(presentId);
     useUiStore.getState().setRightTab("present");
+    useUiStore.getState().setMobilePanel("preview");
+    useUiStore.getState().setMobileSidebarOpen(false);
   };
 
   return (
