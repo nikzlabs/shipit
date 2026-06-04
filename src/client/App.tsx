@@ -447,6 +447,11 @@ export default function App() {
           reviewStore.getDraft(sid, targetFile),
           reviewStore.getHistory(sid, targetFile),
         );
+        // On /{slug}/new route — graduate: transition URL to /session/{id}, so
+        // a /review sent from a fresh session doesn't leave the URL on .../new.
+        if (isNewSessionRoute) {
+          void navigate(`/session/${sid}`, { replace: true });
+        }
         useFileStore.getState().closePreview();
         sendUserMessage({
           bubble: { role: "user", text: prompt },
@@ -987,6 +992,12 @@ export default function App() {
   const handleAskAgentReview = useCallback(
     (prompt: string, reviewFilePath: string) => {
       const sid = useSessionStore.getState().sessionId;
+      // On /{slug}/new route — graduate: transition URL to /session/{id}, same
+      // as handleSend. Without this the session becomes real but the URL stays
+      // stuck on .../new.
+      if (sid && isNewSessionRoute) {
+        void navigate(`/session/${sid}`, { replace: true });
+      }
       useFileStore.getState().closePreview();
       useUiStore.getState().setMobilePanel("chat");
       sendUserMessage({
@@ -995,7 +1006,7 @@ export default function App() {
         dispatch: () => send({ type: "send_review_message", text: prompt, sessionId: sid, reviewFilePath }),
       });
     },
-    [send],
+    [send, navigate, isNewSessionRoute],
   );
 
   const handleSwitchSibling = useCallback(
