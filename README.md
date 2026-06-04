@@ -88,10 +88,11 @@ docker/local/prod.sh
 ```
 
 This builds the orchestrator and session-worker images, then starts ShipIt at
-[http://localhost:4123](http://localhost:4123). The first run can take a few minutes because Docker
-builds both images from scratch. After the app opens, sign in to Claude Code or Codex from the
-in-app provider flow; credentials are stored in a persistent Docker volume so you only need to do
-this once per provider.
+[http://localhost:4123](http://localhost:4123). The script follows the selected release channel
+(`stable` by default, or `edge` if you switch channels in Settings), updates the checkout to that
+channel, and rebuilds the Docker images. It refuses to overwrite uncommitted local changes. After
+the app opens, sign in to Claude Code or Codex from the in-app provider flow; credentials are stored
+in a persistent Docker volume so you only need to do this once per provider.
 
 ### Run it on a VPS
 
@@ -188,15 +189,16 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 - **Voice in and out** — dictate prompts with a mobile-friendly voice-recording overlay, and get
   spoken summaries when the agent finishes a turn or needs your input, so you can work hands-free
 - **Background notifications** — tab title change and browser notification when the agent finishes
-- **Self-update from UI** — pull the latest code, rebuild, and restart from Settings → Advanced
+- **Software updates** — VPS installs can update and restart from Settings → Advanced; local Docker
+  installs choose the channel there, then apply updates by re-running `docker/local/prod.sh`
 
 ## Known limitations
 
 - ShipIt is designed as a self-hosted, single-tenant tool today. If you expose it on the internet,
   put it behind Cloudflare Zero Trust, Tailscale, or another access layer you control; the VPS
   install script can help configure Cloudflare Tunnel/Zero Trust and Tailscale during setup.
-- Expect meaningful Docker resource use: the first run builds ShipIt images, and each active
-  session runs an agent container plus any Compose services your project declares.
+- Expect meaningful Docker resource use: local production startup rebuilds ShipIt images, and each
+  active session runs an agent container plus any Compose services your project declares.
 - The VPS installer targets Ubuntu. Other Linux distributions may work, but the one-command setup
   script is tuned for Ubuntu hosts.
 - The full review-and-ship loop depends on GitHub. You can work locally without it, but PRs, CI,
