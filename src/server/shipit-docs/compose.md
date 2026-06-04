@@ -65,6 +65,28 @@ volumes:
   - ./packages/frontend:/app
 ```
 
+## Hot reload (HMR) needs polling
+
+Dev servers in a preview service run in their **own container**, watching the
+workspace through the shared named volume. The agent edits files from a
+**different** container (`/workspace`). inotify events do not cross the
+mount-namespace boundary between the two containers, so a native file watcher
+never hears the agent's edits and hot reload silently no-ops.
+
+The fix is **polling-based watching**, which is namespace-independent. Enable it
+in the dev server's config, not the compose file:
+
+- **Vite** — `server.watch: { usePolling: true, interval: 200 }`
+- **Astro** (Vite under the hood) — `vite.server.watch: { usePolling: true, interval: 200 }`
+- **Next.js / webpack** — set `WATCHPACK_POLLING=true` in the service's
+  `environment:`, or `config.watchOptions = { poll: 800, aggregateTimeout: 300 }`.
+
+Do **not** pin `hmr.clientPort` — ShipIt's preview proxy rewrites the HMR
+WebSocket URL to the page origin, and a hardcoded port fights that rewrite.
+
+ShipIt's built-in project templates already include the polling config. Add it
+yourself only when scaffolding a dev server by hand.
+
 ## `x-shipit-preview`
 
 Controls how ShipIt treats each service:

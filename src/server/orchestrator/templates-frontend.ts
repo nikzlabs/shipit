@@ -60,7 +60,16 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  server: { host: "0.0.0.0", port: 5173 },
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    // ShipIt runs this dev server in its own container, watching the workspace
+    // through a shared named volume. The agent edits files from a *different*
+    // container, so inotify events don't cross the mount-namespace boundary to
+    // Vite's watcher and HMR silently no-ops. Polling is namespace-independent,
+    // so it's the reliable fix for hot reload in this setup.
+    watch: { usePolling: true, interval: 200 },
+  },
 });
 `,
       "index.html": `<!DOCTYPE html>
@@ -172,7 +181,16 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  server: { host: "0.0.0.0", port: 5173 },
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    // ShipIt runs this dev server in its own container, watching the workspace
+    // through a shared named volume. The agent edits files from a *different*
+    // container, so inotify events don't cross the mount-namespace boundary to
+    // Vite's watcher and HMR silently no-ops. Polling is namespace-independent,
+    // so it's the reliable fix for hot reload in this setup.
+    watch: { usePolling: true, interval: 200 },
+  },
 });
 `,
       "index.html": `<!DOCTYPE html>
@@ -285,7 +303,16 @@ import vue from "@vitejs/plugin-vue";
 
 export default defineConfig({
   plugins: [vue()],
-  server: { host: "0.0.0.0", port: 5173 },
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    // ShipIt runs this dev server in its own container, watching the workspace
+    // through a shared named volume. The agent edits files from a *different*
+    // container, so inotify events don't cross the mount-namespace boundary to
+    // Vite's watcher and HMR silently no-ops. Polling is namespace-independent,
+    // so it's the reliable fix for hot reload in this setup.
+    watch: { usePolling: true, interval: 200 },
+  },
 });
 `,
       "index.html": `<!DOCTYPE html>
@@ -395,7 +422,16 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 export default defineConfig({
   plugins: [svelte()],
-  server: { host: "0.0.0.0", port: 5173 },
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    // ShipIt runs this dev server in its own container, watching the workspace
+    // through a shared named volume. The agent edits files from a *different*
+    // container, so inotify events don't cross the mount-namespace boundary to
+    // Vite's watcher and HMR silently no-ops. Polling is namespace-independent,
+    // so it's the reliable fix for hot reload in this setup.
+    watch: { usePolling: true, interval: 200 },
+  },
 });
 `,
       "svelte.config.js": `import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
@@ -479,7 +515,16 @@ compose: docker-compose.yml
       "vite.config.ts": `import { defineConfig } from "vite";
 
 export default defineConfig({
-  server: { host: "0.0.0.0", port: 5173 },
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    // ShipIt runs this dev server in its own container, watching the workspace
+    // through a shared named volume. The agent edits files from a *different*
+    // container, so inotify events don't cross the mount-namespace boundary to
+    // Vite's watcher and HMR silently no-ops. Polling is namespace-independent,
+    // so it's the reliable fix for hot reload in this setup.
+    watch: { usePolling: true, interval: 200 },
+  },
 });
 `,
       "index.html": `<!DOCTYPE html>
