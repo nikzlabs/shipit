@@ -128,3 +128,22 @@ Additional key files:
   worker events before the first SSE connect for a fresh start.
 - `src/server/orchestrator/integration_tests/container-agent-wiring.test.ts` —
   regression test for idle-worker stale replay after orchestrator restart.
+
+## Follow-up: abnormal exit (code 143) erased the prior turn
+
+The interrupt path (`onInterruptedTurn`) finalizes a partial turn into history,
+but in `turn-executor.ts`'s `done` handler it was gated on
+`runner.wasInterrupted`. A process that exits **without** an `agent_result` and
+**without** a user interrupt — a SIGTERM / "exited with code 143" from an
+idle-kill, container restart, or crash — skipped that finalize. The streamed
+assistant rows were written to chat history as `in_progress=1` at each
+tool-result boundary but never flipped to finalized. The **next** user message's
+turn calls `ChatHistoryManager.replaceInProgress()`, which deletes every
+`in_progress=1` row — so the prior turn vanished from the UI on reload.
+
+Fix: the `done` handler now finalizes the partial whenever the turn ended
+without a result and is not waiting on auth (`!receivedResult && !sawAuthRequired`),
+covering both the user-interrupt and abnormal-exit cases. `onInterruptedTurn` is
+WS-only (dispatch leaves it unset and uses `onNoResultExit`), so dispatched turns
+are unaffected. Regression test: "an abnormal exit (code 143) preserves the prior
+turn when the next message is sent" in `ws-disconnect-resilience.test.ts`.
