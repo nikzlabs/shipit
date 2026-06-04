@@ -295,6 +295,12 @@ Notes:
   logs `Rejecting WebSocket connection from disallowed origin` and the app never
   connects. Both flags are required: with XSRF protection left on, Streamlit
   silently overrides `enableCORS` back to `true`.
+- **Gradio works behind the proxy with no extra flags** — just
+  `launch(server_name="0.0.0.0", server_port=7860)`. The preview proxy forwards
+  `X-Forwarded-Host`/`X-Forwarded-Proto`, which Gradio uses to compute its
+  public root URL, so its frontend's `/gradio_api/...` calls target the
+  browser-facing host instead of `localhost:7860` (which would resolve to the
+  user's machine, not the container).
 - `test -d .venv || python -m venv .venv` keeps the venv across restarts; the
   `pip install` line re-runs each boot but is a fast no-op once satisfied.
 - **`exec`** hands the server the service's main PID so signals and shutdown
