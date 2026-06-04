@@ -63,8 +63,10 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     loading: false,
     error: null,
     canStart: true,
+    includeDone: false,
     onSelectTracker: vi.fn(),
     onRefresh: vi.fn(),
+    onToggleIncludeDone: vi.fn(),
     onStartSession: vi.fn(),
     onConnect: vi.fn(),
     onSetQuery: vi.fn(),
@@ -136,6 +138,22 @@ describe("IssuesViewer", () => {
     const props = defaultProps({ error: "Linear is down" });
     render(<IssuesViewer {...props} />);
     expect(screen.getByText("Linear is down")).toBeInTheDocument();
+  });
+
+  it("toggles the Show done control and reflects includeDone state", () => {
+    const props = defaultProps({ issues: [makeIssue()] });
+    render(<IssuesViewer {...props} />);
+    const toggle = screen.getByRole("button", { name: /Show done/i });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+    expect(props.onToggleIncludeDone).toHaveBeenCalledOnce();
+  });
+
+  it("drops 'open' from the empty-state copy when includeDone is on", () => {
+    const props = defaultProps({ issues: [], includeDone: true });
+    render(<IssuesViewer {...props} />);
+    expect(screen.getByText(/No issues in/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No open issues/i)).not.toBeInTheDocument();
   });
 
   // ---- docs/173: filters & search ----

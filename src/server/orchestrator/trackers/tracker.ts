@@ -17,6 +17,16 @@ import type {
   TrackerIssue,
 } from "../../shared/types.js";
 
+/** Options narrowing what {@link Tracker.listIssues} returns. */
+export interface ListIssuesOptions {
+  /**
+   * Include "done"/completed issues in the result. By default the list is the
+   * open-issues working set (completed + canceled excluded). Canceled issues
+   * stay excluded even when this is set — "done" means finished, not abandoned.
+   */
+  includeDone?: boolean;
+}
+
 export interface Tracker {
   /** Stable id, e.g. "linear". Drives the `?tracker=` query and the sub-tab. */
   readonly id: TrackerId;
@@ -36,9 +46,10 @@ export interface Tracker {
   /**
    * List issues for the bound scope, sorted by priority (urgent first). Throws
    * if the tracker isn't configured — callers should check `isConfigured()`
-   * first and surface the empty state.
+   * first and surface the empty state. By default returns only the open working
+   * set; pass `{ includeDone: true }` to also include completed issues.
    */
-  listIssues(): Promise<TrackerIssue[]>;
+  listIssues(options?: ListIssuesOptions): Promise<TrackerIssue[]>;
 
   /** Fetch a single issue by tracker-internal id, or null if not found. */
   getIssue(id: string): Promise<TrackerIssue | null>;

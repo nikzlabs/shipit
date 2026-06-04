@@ -97,6 +97,21 @@ describe("LinearTracker", () => {
   it("throws when listing without configuration", async () => {
     await expect(new LinearTracker({ token: null, team: null }).listIssues()).rejects.toThrow(/not configured/);
   });
+
+  it("excludes completed + canceled by default, only canceled when includeDone", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ data: { team: { issues: { nodes: [] } } } }),
+    );
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+
+    await tracker.listIssues();
+    const defaultVars = JSON.parse((fetchImpl.mock.calls[0][1]?.body as string)).variables;
+    expect(defaultVars.excludedTypes).toEqual(["completed", "canceled"]);
+
+    await tracker.listIssues({ includeDone: true });
+    const doneVars = JSON.parse((fetchImpl.mock.calls[1][1]?.body as string)).variables;
+    expect(doneVars.excludedTypes).toEqual(["canceled"]);
+  });
 });
 
 describe("listLinearTeams", () => {

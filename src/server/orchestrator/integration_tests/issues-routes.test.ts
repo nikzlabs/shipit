@@ -151,6 +151,26 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(body.issues[0].status).toEqual({ name: "In Progress" });
   });
 
+  it("passes includeDone through to the tracker's excluded-state filter", async () => {
+    await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
+    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+
+    const variablesFor = (callIndex: number) => {
+      const init = trackerFetch.mock.calls[callIndex][1] as RequestInit;
+      return (JSON.parse(init.body as string) as { variables: { excludedTypes?: string[] } }).variables;
+    };
+
+    // Default: open working set — completed + canceled excluded.
+    await app.inject({ method: "GET", url: "/api/issues?tracker=linear" });
+    const defaultCall = trackerFetch.mock.calls.length - 1;
+    expect(variablesFor(defaultCall).excludedTypes).toEqual(["completed", "canceled"]);
+
+    // includeDone=true: only canceled stays excluded.
+    await app.inject({ method: "GET", url: "/api/issues?tracker=linear&includeDone=true" });
+    const doneCall = trackerFetch.mock.calls.length - 1;
+    expect(variablesFor(doneCall).excludedTypes).toEqual(["canceled"]);
+  });
+
   it("rejects an unknown tracker with 404", async () => {
     const res = await app.inject({ method: "GET", url: "/api/issues?tracker=jira" });
     expect(res.statusCode).toBe(404);

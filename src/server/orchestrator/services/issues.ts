@@ -35,6 +35,7 @@ export async function listIssuesForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
   fetchImpl?: FetchImpl,
+  options?: { includeDone?: boolean },
 ): Promise<ListIssuesResult> {
   const registry = buildTrackerRegistry(credentialStore, fetchImpl);
   const tracker = registry.get(trackerId as TrackerId);
@@ -45,7 +46,7 @@ export async function listIssuesForTracker(
     return { tracker: tracker.info(), issues: [] };
   }
   try {
-    const issues = await tracker.listIssues();
+    const issues = await tracker.listIssues(options);
     return { tracker: tracker.info(), issues };
   } catch (err) {
     throw new ServiceError(502, err instanceof Error ? err.message : String(err));

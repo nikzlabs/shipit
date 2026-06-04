@@ -31,11 +31,14 @@ export async function registerIssueRoutes(
     return { trackers: listTrackers(credentialStore, trackerFetchImpl) };
   });
 
-  // GET /api/issues?tracker=linear — priority-sorted issue list for one tracker.
-  app.get<{ Querystring: { tracker?: string } }>("/api/issues", async (request, reply) => {
+  // GET /api/issues?tracker=linear[&includeDone=true] — priority-sorted issue
+  // list for one tracker. `includeDone` widens the default open working set to
+  // also include completed/"done" issues (canceled stays excluded).
+  app.get<{ Querystring: { tracker?: string; includeDone?: string } }>("/api/issues", async (request, reply) => {
     const trackerId = request.query.tracker ?? "linear";
+    const includeDone = request.query.includeDone === "true";
     try {
-      return await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl);
+      return await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, { includeDone });
     } catch (err) {
       if (err instanceof ServiceError) {
         reply.code(err.statusCode).send({ error: err.message });
