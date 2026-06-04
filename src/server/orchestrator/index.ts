@@ -68,6 +68,7 @@ import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import { resolveBuildId, resolveVersion } from "./build-id.js";
+import { getUpdateMode } from "./services/updates.js";
 import { readChannel } from "./release-channel.js";
 import { MarketplaceStore } from "./marketplace-store.js";
 import { ensureCatalogCloned, getCatalogCacheRoot } from "./services/marketplace.js";
@@ -132,6 +133,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // channel is selected for the *next* update. A channel switch + Update Now
   // restarts the orchestrator, which recomputes this.
   const version = resolveVersion(await readChannel());
+  const updateMode = getUpdateMode();
   const clientDir = path.resolve(process.cwd(), "dist/client");
   // ---- DI: instantiate all managers ----
   const mgrs = await initializeManagers(deps);
@@ -718,7 +720,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // live-ticking uptime badge next to the Docker memory badge so the
     // user can confirm that a restart actually happened. Sent once per
     // connect since the value is static for the process lifetime.
-    client.write(`event: system_info\ndata: ${JSON.stringify({ processStartedAt, buildId, version })}\n\n`);
+    client.write(`event: system_info\ndata: ${JSON.stringify({ processStartedAt, buildId, version, updateMode })}\n\n`);
 
     // Send current Docker memory stats on connect
     if (dockerForStats) {

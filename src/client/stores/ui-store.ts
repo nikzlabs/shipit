@@ -114,6 +114,7 @@ interface UiState {
    * "Stable · v1.4.0" / "Edge · main @ abc1234". `null` until SSE connects.
    */
   version: VersionInfo | null;
+  updateMode: "managed" | "manual";
   /**
    * Account-wide subscription rate-limit snapshots, keyed by agent id.
    * Driven by the `subscription_limits` SSE broadcast; the server
@@ -165,6 +166,7 @@ interface UiState {
   setDockerMemory: (stats: DockerMemoryStats | null) => void;
   setProcessStartedAt: (epochMs: number | null) => void;
   setVersion: (version: VersionInfo | null) => void;
+  setUpdateMode: (updateMode: "managed" | "manual") => void;
   setSubscriptionLimits: (limits: SubscriptionLimitsMap) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
   setRuntimeMode: (mode: RuntimeMode) => void;
@@ -202,6 +204,7 @@ const initialState = {
   dockerMemory: null as DockerMemoryStats | null,
   processStartedAt: null as number | null,
   version: null as VersionInfo | null,
+  updateMode: "manual" as "managed" | "manual",
   subscriptionLimits: {} as SubscriptionLimitsMap,
   runtimeMode: "containerized" as RuntimeMode,
   previewSubdomains: "auto" as "auto" | "always",
@@ -270,6 +273,7 @@ export const useUiStore = create<UiState>((set) => ({
 
   setProcessStartedAt: (processStartedAt) => set({ processStartedAt }),
   setVersion: (version) => set({ version }),
+  setUpdateMode: (updateMode) => set({ updateMode }),
 
   setSubscriptionLimits: (subscriptionLimits) => set({ subscriptionLimits }),
 
