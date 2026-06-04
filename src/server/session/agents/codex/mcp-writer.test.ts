@@ -58,6 +58,15 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
 
   const configText = (): string => fs.readFileSync(path.join(codexHome, "config.toml"), "utf-8");
 
+  it("always emits the built-in playwright browser server (docs/079)", () => {
+    // Codex previously shipped without Playwright even though the shared system
+    // prompt advertises a browser; this guards against that regression.
+    write([], null);
+    const cfg = configText();
+    expect(cfg).toContain("[mcp_servers.playwright]");
+    expect(cfg).toContain("--browser chromium");
+  });
+
   it("appends a managed [mcp_servers.shipit-review] block pointing at the bridge", () => {
     write();
     const cfg = configText();

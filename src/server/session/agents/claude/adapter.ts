@@ -26,6 +26,10 @@ import type {
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
 import type { SubscriptionLimitsWindow } from "../../../shared/types/usage-limits-types.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
+import {
+  PLAYWRIGHT_MCP_ARGS,
+  PLAYWRIGHT_MCP_COMMAND,
+} from "../playwright-mcp.js";
 
 export class ClaudeAdapter
   extends EventEmitter<AgentProcessEvents>
@@ -348,19 +352,12 @@ export class ClaudeAdapter
    */
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {
     const configPath = `/tmp/mcp-config-${Date.now()}.json`;
-    const outputDir = "/tmp/.playwright-mcp";
-    // `--browser chromium` is required: our Dockerfiles install Chromium
-    // (Chrome doesn't ship for Linux ARM64). Without this flag,
-    // @playwright/mcp defaults to `chrome` and fails on the first browser
-    // tool call with "Chromium distribution 'chrome' is not found at
-    // /opt/google/chrome/chrome".
+    // Built-in Playwright (browser) server — see playwright-mcp.ts for the
+    // rationale behind the `sh -c` launch and the `--browser chromium` flag.
     const mcpServers: Record<string, unknown> = {
       playwright: {
-        command: "sh",
-        args: [
-          "-c",
-          `mkdir -p ${outputDir} && cd ${outputDir} && exec playwright-mcp --browser chromium --headless --no-sandbox --output-dir ${outputDir}`,
-        ],
+        command: PLAYWRIGHT_MCP_COMMAND,
+        args: [...PLAYWRIGHT_MCP_ARGS],
       },
     };
 
