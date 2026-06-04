@@ -88,12 +88,18 @@ function AssigneeLabel({ assignee }: { assignee: NonNullable<TrackerIssue["assig
  *   - lg+: full table with the Assignee column.
  * Title never drops; the action is always present.
  */
+// The action track is a FIXED width (not `auto`) so the header grid and each
+// row grid — which are independent grid containers — resolve to identical
+// column tracks. With `auto`, the header sized that column to the "Action"
+// label while rows sized it to the wider "Start session" button; the `1fr`
+// title column absorbed the difference, shifting every trailing column out of
+// alignment between header and rows.
 const ROW_GRID =
   "grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 " +
   "[grid-template-areas:'id_pri'_'title_title'_'meta_meta'_'action_action'] " +
-  "md:grid-cols-[64px_minmax(0,1fr)_88px_104px_auto] md:gap-x-3 md:items-start " +
+  "md:grid-cols-[64px_minmax(0,1fr)_88px_104px_136px] md:gap-x-3 md:items-start " +
   "md:[grid-template-areas:'id_title_pri_status_action'] " +
-  "lg:grid-cols-[64px_minmax(0,1fr)_88px_104px_96px_auto] " +
+  "lg:grid-cols-[64px_minmax(0,1fr)_88px_104px_96px_136px] " +
   "lg:[grid-template-areas:'id_title_pri_status_assignee_action']";
 
 function IssueRow({
