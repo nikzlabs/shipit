@@ -322,6 +322,7 @@ export function MessageList({
   onRequestRewindPreview,
   onRewindAtGap,
   onSubmitBugReport,
+  onResumeSession,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
@@ -334,6 +335,15 @@ export function MessageList({
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
   onRewindAtGap?: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
+  /**
+   * Opens a spawned/fork child session. Wraps the router-aware
+   * `handleSessionResume`, so the active session switches via the same code
+   * path as the sidebar — resetting per-session stores and updating the URL.
+   * Without it the SpawnedSessionCard falls back to a bare `setSessionId`,
+   * which leaves stale messages and a stale URL (the mobile open-card bug,
+   * SHI-78).
+   */
+  onResumeSession?: (sessionId: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
@@ -646,6 +656,7 @@ export function MessageList({
                   title={msg.forkChild.title}
                   branch={msg.forkChild.branch}
                   spawnedAt={new Date().toISOString()}
+                  {...(onResumeSession ? { onOpen: onResumeSession } : {})}
                 />
               </div>
             </div>
@@ -665,6 +676,7 @@ export function MessageList({
                   {...(msg.spawnedSession.branch ? { branch: msg.spawnedSession.branch } : {})}
                   spawnedAt={msg.spawnedSession.spawnedAt}
                   {...(msg.spawnedSession.shipitFix ? { shipitFix: msg.spawnedSession.shipitFix } : {})}
+                  {...(onResumeSession ? { onOpen: onResumeSession } : {})}
                 />
               </div>
             </div>
