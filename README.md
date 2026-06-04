@@ -46,27 +46,6 @@ with the agent turn by turn — while it runs the commands, edits the files, rea
 PRs, watches checks, and fixes failures. The build, review, ship, and debug loop never leaves the
 chat.
 
-## Why not just use the Claude or Codex app?
-
-You probably already have Claude Code or Codex. ShipIt runs them as its backend — and wraps them in
-everything the bare CLIs and their desktop/web apps leave out:
-
-- **Many agents, fully isolated.** The CLIs run a single agent in your working tree. ShipIt gives
-  every session its own container, branch, and chat history, so you fan work out in parallel without
-  agents stepping on each other's files, processes, or installed dependencies.
-- **It's not your laptop's problem.** The desktop and web apps tie the work to the machine in front
-  of you. ShipIt is self-hosted on a VPS — start a change, close the lid, and previews, CI, and
-  follow-up work keep running.
-- **Real previews, not a throwaway sandbox.** ShipIt boots your actual Compose stack — dev server,
-  database, queues — and renders the live app inline with HMR, instead of an environment you can't
-  shape.
-- **GitHub comes to you.** PRs, CI checks, review threads, diffs, and deploy status all render in
-  the chat. The web apps send you off to a GitHub tab; ShipIt keeps the whole loop in one place.
-- **Built for the phone.** Dictate a prompt, hear a spoken summary when the turn lands, review and
-  merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile.
-- **Your tools stay familiar.** Git, a real terminal, file browsing, inline diffs — exposed, not
-  hidden. You keep the control an engineer expects while the boring orchestration is automated away.
-
 ## Agents
 
 Use the AI subscription you already pay for, or bring an API key. ShipIt has a pluggable agent
@@ -190,6 +169,27 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 - **Background notifications** — tab title change and browser notification when the agent finishes
 - **Self-update from UI** — pull the latest code, rebuild, and restart from Settings → Advanced
 
+## Why not just use the Claude or Codex app?
+
+You probably already have Claude Code or Codex. ShipIt runs them as its backend — and wraps them in
+everything the bare CLIs and their desktop/web apps leave out:
+
+- **Many agents, fully isolated.** The CLIs run a single agent in your working tree. ShipIt gives
+  every session its own container, branch, and chat history, so you fan work out in parallel without
+  agents stepping on each other's files, processes, or installed dependencies.
+- **It's not your laptop's problem.** The desktop and web apps tie the work to the machine in front
+  of you. ShipIt is self-hosted on a VPS — start a change, close the lid, and previews, CI, and
+  follow-up work keep running.
+- **Real previews, not a throwaway sandbox.** ShipIt boots your actual Compose stack — dev server,
+  database, queues — and renders the live app inline with HMR, instead of an environment you can't
+  shape.
+- **GitHub comes to you.** PRs, CI checks, review threads, diffs, and deploy status all render in
+  the chat. The web apps send you off to a GitHub tab; ShipIt keeps the whole loop in one place.
+- **Built for the phone.** Dictate a prompt, hear a spoken summary when the turn lands, review and
+  merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile.
+- **Your tools stay familiar.** Git, a real terminal, file browsing, inline diffs — exposed, not
+  hidden. You keep the control an engineer expects while the boring orchestration is automated away.
+
 ## Contributing
 
 ShipIt isn't accepting pull requests right now — if you have a bug report, idea, or feature request,
@@ -200,6 +200,6 @@ Found a security vulnerability? Don't open a public issue — follow [SECURITY.m
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE) for details. ShipIt is open-core: contributions are accepted
-under a [Contributor License Agreement](CLA.md) so they can also ship in the proprietary enterprise
-edition.
+Apache 2.0 — see [LICENSE](LICENSE) for details. ShipIt is open-core; when the project opens to
+outside pull requests, contributions will require a [Contributor License Agreement](CLA.md) so they
+can also ship in the proprietary enterprise edition.
