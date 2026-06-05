@@ -27,7 +27,8 @@ Settled: gating = do-then-surface + undo card; v1 scope = comment + edit + statu
 
 ## Do-then-surface card
 - [ ] Provenance card via `emitChatCard` + `PersistedMessage` field; idempotent-by-id
-- [ ] Capture undo data (comment id; prior title/body/status/assignee snapshot)
+- [ ] Capture undo data (comment id; prior title/body/status snapshot; prior assignee **internal id** from raw API response, not the display name)
+- [ ] Card attribution: do not claim per-user authorship for Linear writes (deployment-wide PAT) — attribute to agent / workspace PAT
 - [ ] Undo = reverse brokered write; rehydrate card + undo state on reload
 - [ ] History round-trip + no-duplicate-on-replay tests
 

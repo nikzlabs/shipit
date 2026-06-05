@@ -155,8 +155,12 @@ self-correcting.
 Assignee needs **identity resolution** — the agent has a handle/name/email, the
 tracker wants an internal id:
 
-- `setAssignee(id, "me")` → the identity behind ShipIt's stored token (GitHub: the
-  app/user; Linear: `viewer`). The common "assign it to me."
+- `setAssignee(id, "me")` → the identity behind ShipIt's stored token. **Note the
+  asymmetry:** the GitHub token is the *acting user's* own token, so `me` is that
+  user. The Linear token is a **single deployment-wide personal API key**
+  (`CredentialStore`, per `linear/adapter.ts`), so Linear `viewer`/`me` resolves
+  to whoever issued that PAT — the same identity for *every* ShipIt user, not the
+  acting user. See *Identity & attribution* below.
 - `setAssignee(id, "<login|email|display name>")`:
   - GitHub: treat as a login; `PATCH issues/:n { assignees: [login] }` (must be a
     collaborator — surface GitHub's error if not).
@@ -177,7 +181,12 @@ the result. ShipIt then **emits and persists a provenance card** in the transcri
   what it needs to revert: `addComment` returns the new comment id (undo =
   delete it); `updateIssue`/`setStatus`/`setAssignee` snapshot the **prior value**
   (the service reads the issue immediately before mutating) so undo restores it.
-  The card carries that snapshot.
+  The card carries that snapshot. **The assignee snapshot must capture the prior
+  assignee's tracker-internal id** (GitHub login / Linear `assigneeId`) read from
+  the raw API response — *not* `TrackerIssue.assignee` (which carries only
+  `{ name, avatarUrl }`, no id). Undoing from the display name would re-run the
+  same name→id resolution that `setAssignee` itself flags as ambiguous, so undo
+  could mis-resolve or fail; replaying an exact id avoids that.
 - **No pre-confirmation modal.** The card is the review surface, consistent with
   how ShipIt treats commits and PR creation (agent acts, card surfaces inline),
   not a per-action gate — which would be shell-shaped friction (§5).
@@ -185,6 +194,18 @@ the result. ShipIt then **emits and persists a provenance card** in the transcri
   it follows the `emitChatCard` + `PersistedMessage`-field pattern (CLAUDE.md
   "Chat transcript content MUST be persisted") and is idempotent-by-id so
   reconnect/reload never double-render or clobber an undone state.
+
+**Identity & attribution.** Token isolation holds for both trackers (the token
+stays orchestrator-side; only the result returns to the container). But
+*attribution* differs and the card wording must not overstate it: a GitHub write
+is made with the acting user's own token, so it is genuinely "the user's" action.
+A **Linear** write is made with the deployment-wide PAT, so on Linear it is
+attributed to the PAT owner — the same identity for all ShipIt users on the
+deployment, not the acting user. The provenance card (and any audit text) should
+therefore not claim per-user authorship for Linear writes; it should attribute
+them to the ShipIt agent / workspace PAT. Closing this gap (true per-user Linear
+attribution) would require per-user Linear auth, which is out of scope here and
+noted as a limitation rather than solved.
 
 This is the outward-action backstop in place of a pre-gate: every write is
 visible, attributable, and reversible. It composes with docs/176 (so a write the
