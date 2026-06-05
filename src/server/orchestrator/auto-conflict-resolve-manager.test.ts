@@ -4,6 +4,7 @@ import {
   AutoConflictResolveManager,
   AUTO_RESOLVE_COOLDOWN_MS,
   AUTO_RESOLVE_DEFERRED_COOLDOWN_MS,
+  AUTO_RESOLVE_SETTLE_MS,
   MAX_AUTO_RESOLVE_ATTEMPTS,
   type AutoResolveResult,
   type RebaseAndResolveCb,
@@ -391,6 +392,85 @@ describe("AutoConflictResolveManager", () => {
     await tick();
     const emits = fx.runner!.emitted.filter((m: unknown) => (m as { type?: string }).type === "auto_resolve_result");
     expect(emits.length).toBe(1);
+  });
+
+  // ---- Settle window (docs/146 — stale-verdict re-trigger fix) ------------
+
+  it("settle: a successful force-push opens a settle window (settleUntil + cooldown set)", async () => {
+    // Default cb = success forcePushed=true.
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    const s = fx.manager.get("s1")!;
+    expect(s.attemptCount).toBe(1);
+    expect(s.status).toBe("idle");
+    expect(s.settleUntil).toBeDefined();
+    // Cooldown gate is pinned to the settle instant so step 10 holds the re-fire.
+    expect(s.nextEligibleAt).toBe(s.settleUntil);
+  });
+
+  it("settle: stale `conflicting` on the freshly-pushed SHA does NOT re-fire within the window (budget preserved)", async () => {
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    expect(fx.cb.count).toBe(1);
+    // Our push landed sha2; GitHub still serves the stale pre-recompute verdict.
+    fx.advance(AUTO_RESOLVE_SETTLE_MS - 1);
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2");
+    await tick();
+    // Held — no second attempt, and the SHA change did NOT zero the budget.
+    expect(fx.cb.count).toBe(1);
+    expect(fx.manager.get("s1")?.attemptCount).toBe(1);
+    expect(fx.manager.get("s1")?.lastHeadSha).toBe("sha2");
+  });
+
+  it("settle: verdict that recomputes to mergeable within the window drops state (no spin)", async () => {
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    fx.advance(1000);
+    // GitHub finished recomputing: the pushed head is actually mergeable.
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "mergeable" }), "main", "sha2");
+    expect(fx.manager.get("s1")).toBeUndefined();
+    expect(fx.cb.count).toBe(1);
+  });
+
+  it("settle: a head still genuinely conflicting after the window fires the next attempt", async () => {
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    expect(fx.cb.count).toBe(1);
+    // Within the window the verdict is held.
+    fx.advance(AUTO_RESOLVE_SETTLE_MS - 1);
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2");
+    await tick();
+    expect(fx.cb.count).toBe(1);
+    // Window elapses and the pushed head is genuinely still conflicting → fire.
+    fx.advance(2);
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2");
+    await tick();
+    expect(fx.cb.count).toBe(2);
+  });
+
+  it("settle: a genuinely-new external head outside the window still resets the budget", async () => {
+    // An *errored* attempt does NOT open a settle window, so an external push
+    // (new head) resets the per-head budget as before — the settle gate is
+    // scoped to our own force-push, not to every SHA change.
+    fx = makeFixture({ cb: recordingCb(() => ({ outcome: "error", lastError: "boom", didWork: true })) });
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    expect(fx.manager.get("s1")?.attemptCount).toBe(1);
+    expect(fx.manager.get("s1")?.settleUntil).toBeUndefined();
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2");
+    await tick();
+    expect(fx.manager.get("s1")?.attemptCount).toBe(1); // reset then re-fired
+    expect(fx.manager.get("s1")?.lastHeadSha).toBe("sha2");
+  });
+
+  it("settle: resetForUserActivity clears the settle window", async () => {
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    expect(fx.manager.get("s1")?.settleUntil).toBeDefined();
+    fx.manager.resetForUserActivity("s1");
+    expect(fx.manager.get("s1")?.settleUntil).toBeUndefined();
+    expect(fx.manager.get("s1")?.nextEligibleAt).toBeUndefined();
+    expect(fx.manager.get("s1")?.attemptCount).toBe(0);
   });
 
   it("pendingReset: writeBack landing after a reset gives the user a fresh budget", async () => {
