@@ -12,7 +12,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import type { DocEntry } from "../../server/shared/types.js";
 import { compareDocsByRecency } from "../../server/shared/doc-sort.js";
 import { hasTrackedPlanSibling, hasTrackedSibling, isTracked } from "../utils/doc-paths.js";
-import { parseIssueRef } from "../utils/issue-ref.js";
+import { parseIssueRef } from "../../server/shared/issue-ref.js";
 
 export interface DocsViewerProps {
   files: DocEntry[];

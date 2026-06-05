@@ -111,8 +111,12 @@ or because the corresponding action belongs to the user, not the agent:
 - `gh workflow …`, `gh run …` — CI manipulation is out of scope.
 - `gh auth …` — auth is owned by the ShipIt UI.
 - `gh secret …`, `gh variable …` — use `shipit.yaml` and the secrets surface.
-- `gh ssh-key …`, `gh gpg-key …`, `gh codespace …`, `gh extension …`,
-  `gh issue …` — out of scope for v1.
+- `gh ssh-key …`, `gh gpg-key …`, `gh codespace …`, `gh extension …` — out of
+  scope for v1.
+- `gh issue …` — **not** the issue surface. To *read* issues, use the
+  tracker-neutral `shipit issue view`/`list` (see [issues.md](issues.md)), which
+  works for both GitHub and Linear. `gh issue` stays blocked so there is one
+  consistent issue contract regardless of tracker.
 
 If you try one, the shim exits non-zero with an error pointing back to this
 file.

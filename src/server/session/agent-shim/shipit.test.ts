@@ -1041,3 +1041,168 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     expect(out.exitCode).not.toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// shipit issue (docs/175) — read-only, tracker-neutral
+// ---------------------------------------------------------------------------
+
+describe("shipit issue view (docs/175)", () => {
+  it("infers the GitHub tracker + bare number from owner/repo#N", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "octocat/hello-world#42"], {
+      "GET /agent-ops/issue/view": {
+        status: 200,
+        body: {
+          tracker: { id: "github", label: "GitHub", configured: true },
+          issue: {
+            identifier: "octocat/hello-world#42",
+            title: "An open issue",
+            status: { name: "Open" },
+            priority: { label: "High", level: "high" },
+            assignee: { name: "octocat" },
+            url: "https://github.com/octocat/hello-world/issues/42",
+            description: "Body text",
+          },
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    // Tracker + native id resolved from the pointer shape, no --tracker needed.
+    expect(out.calls[0].path).toBe("/agent-ops/issue/view?tracker=github&id=42");
+    expect(out.stdout).toContain("octocat/hello-world#42");
+    expect(out.stdout).toContain("priority:  High");
+    expect(out.stdout).toContain("assignee:  octocat");
+    expect(out.stdout).toContain("Body text");
+  });
+
+  it("infers the Linear tracker + key from a bare SHI-28", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "shi-28"], {
+      "GET /agent-ops/issue/view": {
+        status: 200,
+        body: { tracker: { id: "linear" }, issue: { identifier: "SHI-28", title: "X", priority: { label: "Urgent" } } },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/issue/view?tracker=linear&id=SHI-28");
+  });
+
+  it("resolves a bare number under an explicit --tracker github", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "42", "--tracker", "github"], {
+      "GET /agent-ops/issue/view": {
+        status: 200,
+        body: { tracker: { id: "github" }, issue: { identifier: "octocat/hello-world#42", title: "X", priority: { label: "No priority" } } },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/issue/view?tracker=github&id=42");
+  });
+
+  it("emits the TrackerIssue object with --json", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "SHI-1", "--json"], {
+      "GET /agent-ops/issue/view": {
+        status: 200,
+        body: { tracker: { id: "linear" }, issue: { identifier: "SHI-1", title: "X", priority: { label: "Low", level: "low" } } },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    const issue = JSON.parse(out.stdout) as { identifier: string };
+    expect(issue.identifier).toBe("SHI-1");
+  });
+
+  it("requires a pointer", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("an issue pointer is required");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("fails when the tracker cannot be inferred and no --tracker is given", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "not-an-issue"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("could not infer the tracker");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("surfaces a 404 as exit 1", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "octocat/hello-world#999"], {
+      "GET /agent-ops/issue/view": { status: 404, body: { error: "Issue not found: octocat/hello-world#999" } },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("not found");
+  });
+});
+
+describe("shipit issue list (docs/175)", () => {
+  it("lists issues for the default (github) tracker as a tab table", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list"], {
+      "GET /agent-ops/issue/list": {
+        status: 200,
+        body: {
+          tracker: { id: "github", configured: true },
+          issues: [
+            { identifier: "octocat/hello-world#1", title: "First", priority: { label: "Urgent" } },
+            { identifier: "octocat/hello-world#2", title: "Second", priority: { label: "Low" } },
+          ],
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/issue/list?tracker=github");
+    expect(out.stdout).toContain("octocat/hello-world#1\tUrgent\tFirst");
+    expect(out.stdout).toContain("octocat/hello-world#2\tLow\tSecond");
+  });
+
+  it("passes --tracker and --state through to the broker", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--tracker", "linear", "--state", "all", "--json"], {
+      "GET /agent-ops/issue/list": { status: 200, body: { tracker: { id: "linear" }, issues: [] } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/issue/list?tracker=linear&state=all");
+    expect(out.stdout.trim()).toBe("[]");
+  });
+
+  it("reports the unconfigured empty state", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--tracker", "github"], {
+      "GET /agent-ops/issue/list": { status: 200, body: { tracker: { id: "github", configured: false }, issues: [] } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("not configured");
+  });
+
+  it("rejects an invalid --state", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--state", "bogus"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--state must be");
+    expect(out.calls).toHaveLength(0);
+  });
+});
+
+describe("shipit issue — read-only enforcement (docs/175)", () => {
+  for (const verb of ["create", "comment", "edit", "status", "assign", "close"]) {
+    it(`rejects \`shipit issue ${verb}\` with a docs pointer`, async () => {
+      const { run } = makeRunner();
+      const out = await run(["issue", verb, "SHI-1"]);
+      expect(out.exitCode).not.toBe(0);
+      expect(out.stderr).toContain("read-only");
+      expect(out.stderr).toContain("/shipit-docs/issues.md");
+      expect(out.calls).toHaveLength(0);
+    });
+  }
+
+  it("rejects an unknown issue subcommand", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "frobnicate"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Unsupported shipit issue subcommand");
+  });
+});

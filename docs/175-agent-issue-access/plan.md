@@ -96,7 +96,7 @@ shipit issue list [--tracker github|linear] [--state open|closed|all] [--json]
 `parseIssueRef()` infers tracker-from-shape today, but only partially, and it
 lives client-side (`src/client/utils/issue-ref.ts`) for the jump-to-issue chip.
 Making "pass the pointer verbatim" hold end to end requires **moving it to
-`src/shared/issue-ref.ts`** (one source of truth for the chip, the shim, and the
+`src/server/shared/issue-ref.ts`** (one source of truth for the chip, the shim, and the
 server route) **and extending it on two points the current implementation gets
 wrong for this use case**:
 
@@ -160,7 +160,7 @@ model in `github.md`.
 
 | Layer | File | Change |
 |---|---|---|
-| Shared | `src/shared/issue-ref.ts` (moved from `client/utils/`) | `parseIssueRef()` becomes the one pointer→tracker resolver for client + server. Client import updated. |
+| Shared | `src/server/shared/issue-ref.ts` (moved from `client/utils/`) | `parseIssueRef()` becomes the one pointer→tracker resolver for client + server. Client import updated. |
 | Shim | `src/server/session/agent-shim/shipit.ts` | Add `issue` as a top-level subcommand with `view`/`list` handlers (mirroring `session`/`source`); a `REJECTED_ISSUE_SUBCOMMANDS` set keeps it read-only. |
 | Worker relay | `src/server/session/agent-ops-routes.ts` | Add allowlisted `GET /agent-ops/issue/view` and `/issue/list`, relaying to the session-scoped orchestrator routes. |
 | Orchestrator | `src/server/orchestrator/api-routes-issues.ts` | Add session-scoped `GET /api/sessions/:id/issue/view` and `/issue/list`; reuse `resolveGitHubContext`. |
@@ -233,7 +233,7 @@ Two things this doc *does* guarantee, which that doc builds on:
 - `src/server/orchestrator/api-routes-issues.ts` — issue routes + `resolveGitHubContext`.
 - `src/server/orchestrator/services/issues.ts` — `listIssuesForTracker`, new `getIssueForTracker`.
 - `src/server/orchestrator/trackers/` — `Tracker` interface, registry, GitHub + Linear adapters (**reused unchanged**).
-- `src/shared/issue-ref.ts` — shared pointer→tracker parser (moved from `client/utils/`).
+- `src/server/shared/issue-ref.ts` — shared pointer→tracker parser (moved from `client/utils/`).
 
 ## Related docs
 

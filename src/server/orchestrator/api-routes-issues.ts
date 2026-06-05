@@ -15,6 +15,7 @@ import type { ApiDeps } from "./api-routes.js";
 import {
   listTrackers,
   listIssuesForTracker,
+  getIssueForTracker,
   connectLinear,
   getLinearTeams,
   setLinearTeam,
@@ -60,6 +61,72 @@ export async function registerIssueRoutes(
       const trackerId = request.query.tracker ?? "linear";
       const includeDone = request.query.includeDone === "true";
       const github = resolveGitHubContext(request.query.sessionId);
+      try {
+        return await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, github, {
+          includeDone,
+        });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list issues: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Session-scoped agent read path (docs/175 — `shipit issue view/list`).
+  //
+  // These back the `shipit issue` shim subcommands. The worker injects the
+  // trusted SESSION_ID; for GitHub the repo binding is re-derived from that
+  // session's remote (never a `--repo`), exactly like the Issues tab. Linear
+  // ignores the session (its binding is the workspace team). Read-only — there
+  // is no write route here. Tracker tokens stay in the orchestrator's
+  // CredentialStore and never enter the container.
+  // ---------------------------------------------------------------------------
+
+  // GET /api/sessions/:id/issue/view?tracker=&id= — fetch a single issue.
+  app.get<{ Params: { id: string }; Querystring: { tracker?: string; id?: string } }>(
+    "/api/sessions/:id/issue/view",
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const trackerId = request.query.tracker ?? "github";
+      const github = resolveGitHubContext(request.params.id);
+      try {
+        return await getIssueForTracker(
+          credentialStore,
+          trackerId,
+          request.query.id ?? "",
+          trackerFetchImpl,
+          github,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to read issue: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/issue/list?tracker=&state= — list issues for one
+  // tracker. `state` of `all`/`closed` widens the default open working set to
+  // include completed issues (mapped to the tracker's `includeDone`).
+  app.get<{ Params: { id: string }; Querystring: { tracker?: string; state?: string } }>(
+    "/api/sessions/:id/issue/list",
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const trackerId = request.query.tracker ?? "github";
+      const includeDone = request.query.state === "all" || request.query.state === "closed";
+      const github = resolveGitHubContext(request.params.id);
       try {
         return await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, github, {
           includeDone,
