@@ -212,7 +212,7 @@ repo-controlled config parsing/execution until after an explicit trust acceptanc
 `agent.install` and compose `command:`/`build:` until the user accepts (one click, like
 git's `safe.directory` / VS Code workspace trust). Cache the decision per remote so it's
 a one-time prompt, not approval fatigue. Repos created *by* ShipIt from templates are
-trusted by construction.
+trusted by construction. **Full design: `docs/178-repo-trust-gate`.**
 
 ### Gap 4 — Local/agent-influenced inputs are trusted
 
