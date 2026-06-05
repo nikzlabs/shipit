@@ -902,6 +902,41 @@ export async function waitForClaude(
 }
 
 /**
+ * Deterministically let `buildApp()`'s one-shot startup sweep run to completion.
+ *
+ * WHY THIS EXISTS — `buildApp()` schedules a `setTimeout(0)` startup sweep via
+ * `scheduleStartupTasks()` (`startup-tasks.ts:147-174`). That sweep DELETES any
+ * session that is `warm: true` (or carries the default "Warm session" title and
+ * isn't archived) AND is not registered in the warm pool
+ * (`repoStore.warmSessionId`). Its production intent is correct: clean up zombie
+ * ungraduated warm sessions left over after a crash.
+ *
+ * The trap for tests: a test that creates a session, marks it `warm: true` via
+ * `sessionManager.setWarm(id, true)`, then makes an HTTP request expecting the
+ * session to still exist will RACE that sweep. When the `setTimeout(0)` fires at
+ * or before the request, the session is deleted out from under it and the route
+ * returns 404/409-on-missing instead of the expected status — a ~2-3/5 flake.
+ *
+ * Call this AFTER `buildApp()` and BEFORE marking any fixture session warm. Two
+ * properties make it deterministic:
+ *  - The sweep timer is registered DURING `buildApp()`, i.e. strictly before the
+ *    timer this helper schedules. Node's timer phase runs due timers in
+ *    insertion order, so awaiting a single macrotask tick guarantees the sweep
+ *    has already fired by the time we resume.
+ *  - The sweep is ONE-SHOT. Running it here — while the fixture session is still
+ *    non-warm, so the sweep ignores it — consumes the timer for good, so it
+ *    cannot fire again later to race the request under test.
+ *
+ * We await two ticks rather than one purely as a margin of safety (a second
+ * macrotask boundary costs effectively nothing and absorbs any future change
+ * that defers a step of the sweep onto a follow-up microtask/timer).
+ */
+export async function flushStartupTasks(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
  * Create a CredentialStore for tests and configure global git identity.
  * Sets GIT_CONFIG_GLOBAL to a temp-dir-scoped file so tests don't
  * interfere with each other or with real config.
