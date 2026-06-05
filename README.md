@@ -52,37 +52,6 @@ That adds up to one promise: **the build, review, ship, and debug loop stays in 
 You describe intent, watch the preview update, and refine with the agent turn by turn while ShipIt
 runs commands, edits files, opens PRs, watches checks, and brings the results back into chat.
 
-## Why not just use the Claude or Codex app?
-
-You probably already have Claude Code or Codex. ShipIt runs them as its backend — and wraps them in
-everything the bare CLIs and their desktop/web apps leave out:
-
-- **Parallel agent sessions, fully isolated.** The CLIs run one agent in your working tree. ShipIt
-  gives every session its own container, branch, and chat history, so you can fan work out without
-  sessions stepping on each other's files, processes, or installed dependencies.
-- **It's not your laptop's problem.** The desktop and web apps tie the work to the machine in front
-  of you. ShipIt is self-hosted on a VPS — start a change, close the lid, and previews, CI, and
-  follow-up work keep running.
-- **Real previews, not a throwaway sandbox.** ShipIt boots your actual Compose stack — dev server,
-  database, queues — and renders the live app inline with HMR, instead of an environment you can't
-  shape.
-- **GitHub comes to you.** PRs, CI checks, review threads, diffs, and deploy status all render in
-  the chat. The web apps send you off to a GitHub tab; ShipIt keeps the whole loop in one place.
-- **Built for the phone.** Dictate a prompt, hear a spoken summary when the turn lands, review and
-  merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile.
-- **Your tools stay familiar.** Git, a real terminal, file browsing, inline diffs — exposed, not
-  hidden. You keep the control an engineer expects while the boring orchestration is automated away.
-
-## Agents
-
-Use the AI subscription you already pay for, or bring an API key. ShipIt has a pluggable agent
-harness:
-
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or
-  an Anthropic API key
-- [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
-- More to come — the backend is agent-agnostic by design, so new runtimes can slot in
-
 ## Status
 
 ShipIt is in an early public release state. The supported install paths are local Docker and a
@@ -166,6 +135,37 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 3. Start a session from an existing repository or a project template.
 4. Describe the change you want; ShipIt creates an isolated container, branch, chat history, and
    workspace for that session.
+
+## Why not just use the Claude or Codex app?
+
+You probably already have Claude Code or Codex. ShipIt runs them as its backend — and wraps them in
+everything the bare CLIs and their desktop/web apps leave out:
+
+- **Parallel agent sessions, fully isolated.** The CLIs run one agent in your working tree. ShipIt
+  gives every session its own container, branch, and chat history, so you can fan work out without
+  sessions stepping on each other's files, processes, or installed dependencies.
+- **It's not your laptop's problem.** The desktop and web apps tie the work to the machine in front
+  of you. ShipIt is self-hosted on a VPS — start a change, close the lid, and previews, CI, and
+  follow-up work keep running.
+- **Real previews, not a throwaway sandbox.** ShipIt boots your actual Compose stack — dev server,
+  database, queues — and renders the live app inline with HMR, instead of an environment you can't
+  shape.
+- **GitHub comes to you.** PRs, CI checks, review threads, diffs, and deploy status all render in
+  the chat. The web apps send you off to a GitHub tab; ShipIt keeps the whole loop in one place.
+- **Built for the phone.** Dictate a prompt, hear a spoken summary when the turn lands, review and
+  merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile.
+- **Your tools stay familiar.** Git, a real terminal, file browsing, inline diffs — exposed, not
+  hidden. You keep the control an engineer expects while the boring orchestration is automated away.
+
+## Agents
+
+Use the AI subscription you already pay for, or bring an API key. ShipIt has a pluggable agent
+harness:
+
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or
+  an Anthropic API key
+- [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
+- More to come — the backend is agent-agnostic by design, so new runtimes can slot in
 
 ## Features
 
