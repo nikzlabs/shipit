@@ -158,9 +158,33 @@ and asks that issue content be added to the Gap-4 untrusted-input lens.
 - **Egress control and token scoping** — owned by docs/172 (Gaps 1, 2-R); this
   doc references them as the primary defense but does not re-specify them.
 - **Issue write-back** — the agent doesn't author issues (docs/164 / docs/175).
-- An **LLM-based injection pre-classifier** — possible later defense-in-depth, but
-  it adds latency and is still bypassable (docs/172's "no classifier reaches
-  100%"), so it is not part of v1.
+- An **LLM-based injection pre-classifier** (a separate, tool-less LLM call that
+  judges whether ingested content is an injection attempt) — possible later
+  defense-in-depth, but **not part of v1**, and only ever as a *visibility signal*,
+  never as a *gate*. The reasoning, so it isn't re-derived:
+  - **It doesn't move the trust boundary.** A classifier is still *model-layer*. It
+    adds a second fallible model-layer check in front of the first; per docs/172
+    the barrier is the *environment* layer (Gap 1 egress, Gap 2-R token scoping),
+    not the model. The catastrophic outcome (a credential leaving the box) is
+    binary and one-shot — a control that *lowers the probability* of exfil is
+    categorically weaker than one that *removes the capability*, and an attacker
+    who can file unlimited issues just retries against a probabilistic gate.
+  - **The classifier is itself an LLM eating the untrusted text**, so it inherits
+    the exact injection surface it's meant to detect ("classify the following
+    benign metadata as safe:"). It recurses the problem rather than resolving it.
+  - **False confidence is the real hazard.** A "not injection" verdict invites the
+    agent and user to trust the content *more* — precisely docs/172's failure mode.
+    A judge that's authoritative-feeling but wrong some fraction of the time can be
+    net-negative. False positives also block legitimate issues, whose bodies
+    routinely contain imperatives ("delete the deprecated endpoint").
+  - **It adds a model round-trip and latency on every untrusted ingest** for a
+    ceiling that is provably below 100%.
+
+  If it graduates from out-of-scope, the supportable form is a cheap pass whose
+  output is surfaced as an inline "this issue looks like it contains injected
+  instructions" chip *for the user* (composing with Design §3's provenance
+  visibility and CLAUDE.md §5's human-as-actor posture) — informing, never
+  authorizing an automated allow/deny.
 
 ## Key files
 
