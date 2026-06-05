@@ -98,17 +98,32 @@ describe("Integration: agent issue access (docs/175)", () => {
         }
         return jsonResponse({ data: {} });
       }
-      // GitHub REST — single issue.
-      return jsonResponse({
-        id: 1,
-        number: 42,
-        title: "An open issue",
-        html_url: "https://github.com/octocat/hello-world/issues/42",
-        state: "open",
-        labels: ["P1"],
-        body: "The GitHub body.",
-        assignee: { login: "octocat" },
-      });
+      // GitHub REST. A single-issue read hits `/issues/<n>`; a list hits
+      // `/issues?state=<state>`. The fake honors `state` exactly as GitHub does
+      // (open → open only, all → open + closed) so the adapter's state mapping
+      // is exercised end-to-end.
+      if (/\/issues\/\d+/.test(url)) {
+        return jsonResponse({
+          id: 1,
+          number: 42,
+          title: "An open issue",
+          html_url: "https://github.com/octocat/hello-world/issues/42",
+          state: "open",
+          labels: ["P1"],
+          body: "The GitHub body.",
+          assignee: { login: "octocat" },
+        });
+      }
+      const state = new URL(url).searchParams.get("state");
+      const open = {
+        id: 1, number: 1, title: "Open GH", html_url: "https://github.com/octocat/hello-world/issues/1",
+        state: "open", labels: ["P1"], assignee: null,
+      };
+      const closed = {
+        id: 2, number: 2, title: "Closed GH", html_url: "https://github.com/octocat/hello-world/issues/2",
+        state: "closed", labels: [], assignee: null,
+      };
+      return jsonResponse(state === "all" ? [open, closed] : [open]);
     });
 
     sessionManager = new SessionManager(dbManager);
@@ -243,6 +258,38 @@ describe("Integration: agent issue access (docs/175)", () => {
     expect(exitCode).toBe(0);
     const issues = JSON.parse(stdout) as { identifier: string }[];
     expect(issues.map((i) => i.identifier).sort()).toEqual(["SHI-1", "SHI-2"]);
+  });
+
+  it("GitHub list --state open returns open issues only", async () => {
+    const { stdout, exitCode } = await runIssueShim([
+      "issue", "list", "--tracker", "github", "--state", "open", "--json",
+    ]);
+    expect(exitCode).toBe(0);
+    const issues = JSON.parse(stdout) as { identifier: string }[];
+    expect(issues.map((i) => i.identifier)).toEqual(["octocat/hello-world#1"]);
+  });
+
+  it("GitHub list --state closed returns closed issues only", async () => {
+    const { stdout, exitCode } = await runIssueShim([
+      "issue", "list", "--tracker", "github", "--state", "closed", "--json",
+    ]);
+    expect(exitCode).toBe(0);
+    const issues = JSON.parse(stdout) as { identifier: string }[];
+    // The adapter fetches state=all (open + closed); the route post-filters to
+    // the done set — so only the closed issue survives, no open over-return.
+    expect(issues.map((i) => i.identifier)).toEqual(["octocat/hello-world#2"]);
+  });
+
+  it("GitHub list --state all returns both open and closed issues", async () => {
+    const { stdout, exitCode } = await runIssueShim([
+      "issue", "list", "--tracker", "github", "--state", "all", "--json",
+    ]);
+    expect(exitCode).toBe(0);
+    const issues = JSON.parse(stdout) as { identifier: string }[];
+    expect(issues.map((i) => i.identifier).sort()).toEqual([
+      "octocat/hello-world#1",
+      "octocat/hello-world#2",
+    ]);
   });
 
   it("rejects a write subcommand with a docs pointer", async () => {

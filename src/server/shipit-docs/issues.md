@@ -55,16 +55,11 @@ shipit issue list [--tracker github|linear] [--state open|closed|all] [--json]
 
 - `--tracker` defaults to `github` (the session's repo). Pass `--tracker linear`
   for the connected Linear team.
-- `--state` selects the working set:
+- `--state` selects the working set (identical across GitHub and Linear):
   - `open` (default) — open issues only.
   - `closed` — finished issues only (completed/closed).
   - `all` — open **plus** finished.
 - `--json` emits the array of issue objects.
-
-> Note: the GitHub tracker currently lists **open** issues only, so for GitHub
-> `--state closed` returns nothing and `--state all` is equivalent to `open`.
-> `--state closed`/`all` are meaningful for Linear today. (Listing closed GitHub
-> issues is a deferred enrichment.)
 
 If a tracker isn't configured in ShipIt (e.g. Linear was never connected, or the
 session repo isn't on GitHub), the command reports that plainly instead of
