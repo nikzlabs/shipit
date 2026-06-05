@@ -107,11 +107,38 @@ be second-guessing stated intent.
 
 So the toggle is **always present**, on every repo. The honesty obligation is met
 by **transparency, not a block**: when auto-merge is armed on a repo with no
-required checks, the session/PR card states plainly what will happen — e.g.
-*"Will merge as soon as the PR is open and mergeable — this repo has no CI
-gate."* The user is informed; the user is never blocked. (This warning copy is
-the only PR-card change this feature needs, and only if the existing card doesn't
-already make the no-CI case obvious post-#1054.)
+required checks, the UI states plainly what will happen — e.g. *"Will merge as
+soon as the PR is open and mergeable — this repo has no CI gate."* The user is
+informed; the user is never blocked.
+
+This line must appear in **both** surfaces, not just one:
+
+- **The quick-capture overlay**, inline next to the checkbox, *at arm time*. This
+  is the load-bearing one for this feature: a quick session is fire-and-forget —
+  the user may **never open the session and never see the PR card**. If the only
+  warning lived on the card, the user who most needs it (armed-and-walked-away)
+  would never see it. So the overlay must show the no-CI consequence at the moment
+  the box is checked.
+- **The PR lifecycle card**, as the durable reminder once the PR exists, for the
+  user who *does* come back to the session.
+
+**Implementation implication:** showing the line in the overlay means we must know
+whether the *selected* repo has required checks **at overlay time** — before the
+session or PR exists — and re-evaluate it when the repo dropdown changes. The card
+half is cheap (CI state is already in hand once the PR exists); the overlay half
+needs a lightweight "does this repo gate on checks?" lookup keyed by repo. Treat
+that lookup as part of this feature, not an afterthought — without it the overlay
+line can't render. Cache per repo within the overlay session to avoid refetching
+on every keystroke.
+
+**Mobile is a first-class target, not an afterthought.** Quick-capture is heavily
+a mobile / on-the-go surface (it's the "I just thought of something" path), so the
+checkbox + no-CI line must look deliberate on a narrow viewport, not a desktop
+control crammed into a phone. Both the overlay control and the PR-card line must
+be verified on mobile breakpoints — the card especially, since #1054 is itself
+reworking the card's responsive layout (the inline toggle was previously
+`md:hidden`). Lay the overlay control out so the label, checkbox, and warning line
+wrap cleanly and stay tappable at mobile width.
 
 ## Data flow
 
@@ -133,12 +160,13 @@ design (decision #1).
 
 | File | Change |
 |------|--------|
-| `src/client/components/QuickCaptureOverlay.tsx` | New auto-merge checkbox in the overlay form; default off; **not** wired to `localStorage`. Always present (no CI-presence gating, per decision #2). |
+| `src/client/components/QuickCaptureOverlay.tsx` | New auto-merge checkbox in the overlay form; default off; **not** wired to `localStorage`. Always present (no CI-presence gating, per decision #2). Renders the inline "no CI gate" line when the selected repo has no required checks; must look deliberate on mobile breakpoints. |
+| Repo required-checks lookup (overlay-time) | A lightweight "does this repo gate on required checks?" query, keyed by repo, so the overlay can render the no-CI line before any session/PR exists. Likely a small server route + client hook; cache per repo within the overlay. |
 | `src/client/stores/actions/session-actions.ts` | `createHeadlessSession()` carries an optional `armAutoMerge` flag into the request. |
 | `src/server/orchestrator/api-routes-session.ts` | `POST /api/sessions/headless` accepts the optional flag (validate as boolean). |
 | `src/server/orchestrator/services/headless-sessions.ts` | `CreateHeadlessSessionOptions` gains the flag; after the session is claimed/graduated, seed the per-session armed auto-merge state. |
 | `src/server/orchestrator/services/github.ts` / `auto-merge-manager.ts` / `pr-status-poller.ts` | **Reused as-is** — the seed calls the existing toggle/arm path; no new merge logic. |
-| `src/client/components/PrLifecycleCard.tsx` | **Touched only if** the "no CI gate on this repo" transparency line (decision #2) isn't already obvious from the card post-#1054. Coordinate with PR #1054's placement. |
+| `src/client/components/PrLifecycleCard.tsx` | Durable "no CI gate on this repo" transparency line on the card when armed without required checks (decision #2). Coordinate with PR #1054's inline-toggle placement and verify on mobile breakpoints (#1054 reworks the card's responsive layout). |
 
 ## Relationship to other docs
 

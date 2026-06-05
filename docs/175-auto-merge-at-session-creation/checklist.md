@@ -6,7 +6,11 @@
 ## Decisions (locked)
 - [x] Toggle is **always present**, no CI-presence gating (decision #2). The
       per-session explicit opt-in is the gate; experimental/no-CI repos are a
-      first-class use case. Inform via a card line, never block.
+      first-class use case. Inform, never block.
+- [x] The "no CI gate" transparency line shows in **both** the overlay (at arm
+      time) and the PR card (durable reminder) — not card-only, because a quick
+      session may never be opened.
+- [x] Mobile is a first-class target for both surfaces, verified explicitly.
 
 ## Server
 - [ ] Add optional `armAutoMerge` (boolean) to `CreateHeadlessSessionOptions`
@@ -24,9 +28,20 @@
       code comment citing this doc so nobody "fixes" it later.
 - [ ] Thread `armAutoMerge` through `createHeadlessSession()`
       (`session-actions.ts`).
-- [ ] When armed on a repo with no required checks, surface the "will merge as
-      soon as the PR is open and mergeable — no CI gate" transparency line on the
-      session/PR card (decision #2). Inform, don't block.
+- [ ] Overlay-time required-checks lookup: query whether the selected repo gates
+      on required checks (server route + client hook, cached per repo);
+      re-evaluate when the repo dropdown changes.
+- [ ] Render the "no CI gate" transparency line inline in the overlay when the
+      selected repo has no required checks (decision #2). Inform, don't block.
+- [ ] Render the durable "no CI gate" line on the PR card when armed without
+      required checks; coordinate with #1054's inline-toggle placement.
+
+## Mobile / responsive
+- [ ] Overlay checkbox + no-CI line look deliberate at mobile width — label,
+      checkbox, and warning wrap cleanly and stay tappable.
+- [ ] PR-card no-CI line verified on mobile breakpoints (#1054 reworks the card's
+      responsive layout; the inline toggle was previously `md:hidden`).
+- [ ] Screenshot both surfaces on a narrow viewport during implementation.
 
 ## Tests
 - [ ] Server: creating a headless session with `armAutoMerge: true` arms the
