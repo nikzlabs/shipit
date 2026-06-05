@@ -539,6 +539,38 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Auto-merge")).toBeNull();
   });
 
+  it("shows the no-CI-checks warning line only when auto-merge is armed AND checks.state is none (docs/175)", () => {
+    // Armed + zero checks on the head commit → the durable, conditional
+    // transparency line: this PR will merge as soon as it's mergeable.
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+      autoMerge: { enabled: true, mergeMethod: "squash" },
+    });
+    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+    expect(screen.getByText(/no CI checks/i)).toBeInTheDocument();
+  });
+
+  it("does not show the no-CI-checks line when auto-merge is armed but CI checks exist (docs/175)", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "success", total: 2, passed: 2, failed: 0, pending: 0 },
+      autoMerge: { enabled: true, mergeMethod: "squash" },
+    });
+    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+    expect(screen.queryByText(/no CI checks/i)).toBeNull();
+  });
+
+  it("does not show the no-CI-checks line when checks are none but auto-merge is off (docs/175)", () => {
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+      autoMerge: { enabled: false, mergeMethod: "squash" },
+    });
+    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+    expect(screen.queryByText(/no CI checks/i)).toBeNull();
+  });
+
   it("renders the Auto-merge toggle in the top-bar overflow when the session has a remote (regardless of PR/CI state)", async () => {
     // docs/156/169 — the Auto-merge toggle lives in the top-bar overflow, gated
     // only on `canAutoMerge` (i.e. the session has a GitHub remote). No PR card

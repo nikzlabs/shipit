@@ -275,6 +275,73 @@ describe("QuickCaptureOverlay", () => {
     expect(await screen.findByText("Couldn't start a session — try again")).toBeInTheDocument();
   });
 
+  it("auto-merge checkbox defaults off and is not sent when unchecked (docs/175)", async () => {
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    createHeadlessSessionMock.mockResolvedValue(session("quick", "https://github.com/acme/app.git"));
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    const checkbox = screen.getByRole("checkbox", { name: /auto-merge/i });
+    expect(checkbox).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+    await waitFor(() => expect(createHeadlessSessionMock).toHaveBeenCalledTimes(1));
+    const callArgs = createHeadlessSessionMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArgs).not.toHaveProperty("armAutoMerge");
+  });
+
+  it("sends armAutoMerge:true only when the checkbox is checked, without persisting to localStorage (docs/175 decision #1)", async () => {
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    createHeadlessSessionMock.mockResolvedValue(session("quick", "https://github.com/acme/app.git"));
+    openOverlay();
+
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    const getItemSpy = vi.spyOn(Storage.prototype, "getItem");
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    const checkbox = screen.getByRole("checkbox", { name: /auto-merge/i });
+    fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+    await waitFor(() => expect(createHeadlessSessionMock).toHaveBeenCalledTimes(1));
+    const callArgs = createHeadlessSessionMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArgs.armAutoMerge).toBe(true);
+
+    // Decision #1: the toggle must never be persisted/remembered. Toggling and
+    // submitting it must not read or write any auto-merge localStorage key.
+    const touchedKeys = [
+      ...setItemSpy.mock.calls.map((c) => c[0]),
+      ...getItemSpy.mock.calls.map((c) => c[0]),
+    ];
+    expect(touchedKeys.some((k) => /auto.?merge/i.test(k))).toBe(false);
+  });
+
+  it("resets the auto-merge checkbox to off each time the overlay reopens (docs/175 decision #1)", () => {
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    openOverlay();
+
+    const { rerender } = render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: /auto-merge/i }));
+    expect(screen.getByRole("checkbox", { name: /auto-merge/i })).toBeChecked();
+
+    useUiStore.setState({ quickCaptureOpen: false });
+    rerender(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    openOverlay();
+    rerender(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+
+    expect(screen.getByRole("checkbox", { name: /auto-merge/i })).not.toBeChecked();
+  });
+
   it("restores focus and selection to the chat textarea when dismissed", async () => {
     const textarea = document.createElement("textarea");
     textarea.value = "hello world";
