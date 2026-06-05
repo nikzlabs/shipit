@@ -6,11 +6,11 @@ agent reads before writing) and docs/172 (token isolation).
 Settled: gating = do-then-surface + undo card; v1 scope = comment + edit + status
 + assignee; external MCP unchanged/unprescribed.
 
-> **Implementation note (this PR).** docs/175's read path had not actually
-> landed in code (only its design doc was committed), so this PR built that
-> read foundation — shared `parseIssueRef`, `shipit issue view/list`, the
-> `/agent-ops/issue/*` relay, the session-scoped read routes, and
-> `getIssueForTracker` — and layered the writes on top.
+> **Implementation note (this PR).** docs/175's read path landed independently
+> on `main` (shared `parseIssueRef`, `shipit issue view/list`, the
+> `/agent-ops/issue/{view,list}` relay, the session-scoped read routes, and
+> `getIssueForTracker`). This PR was rebased onto it and adds only the writes —
+> reusing `getIssue` (undo snapshots) and `parseIssueRef` (pointer resolution).
 
 ## Interface + adapters
 - [x] Add `addComment` / `deleteComment` / `updateIssue` / `setStatus` / `setAssignee` to `Tracker` (`trackers/tracker.ts`); `TrackerComment` type; optional `availableStatuses` + `assigneeId` on read types
