@@ -252,7 +252,7 @@ Found a security vulnerability? Don't open a public issue — follow [SECURITY.m
 ## Author
 
 Built and maintained by Nik Zherebtsov —
-[LinkedIn](https://www.linkedin.com/in/REPLACE_ME) ·
+[LinkedIn](https://www.linkedin.com/in/nikolayz/) ·
 [GitHub](https://github.com/nicolasalt)
 
 ## License
