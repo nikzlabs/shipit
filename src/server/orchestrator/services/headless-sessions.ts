@@ -5,6 +5,9 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo, AgentId, UploadRef, IssueRef } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
+import type { PrStatusPoller } from "../pr-status-poller.js";
+import type { GitHubAuthManager } from "../github-auth.js";
+import { toggleAutoMerge } from "./github.js";
 import { agentIdForModel } from "../../shared/agent-registry.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
@@ -101,6 +104,15 @@ export interface CreateHeadlessSessionOptions {
    * and the first turn sees the attachments. See docs/145.
    */
   uploads?: HeadlessUploadInput[];
+  /**
+   * docs/175 — arm auto-merge for the new session at creation time, before any
+   * PR exists. Seeds the SAME per-session armed state the pre-PR overflow
+   * toggle sets (`toggleAutoMerge` with no PR present); when the first turn
+   * opens a PR, `activatePendingAutoMergeForPr` / `PrStatusPoller` pick it up
+   * and merge on green. Per decision #1 it is transient — never persisted to
+   * the session row or DB.
+   */
+  armAutoMerge?: boolean;
 }
 
 export interface CreateHeadlessSessionResult {
@@ -120,6 +132,10 @@ export async function createHeadlessSession(
   credentialStore: CredentialStore | undefined,
   providerAccountManager: ProviderAccountManager | undefined,
   graduationDeps: GraduateSessionDeps,
+  autoMergeDeps?: {
+    githubAuthManager: GitHubAuthManager;
+    prStatusPoller: PrStatusPoller | undefined;
+  },
 ): Promise<CreateHeadlessSessionResult> {
   const repoUrl = opts.repoUrl?.trim();
   if (!repoUrl) throw new ServiceError(400, "Add a repo first.");
@@ -241,6 +257,25 @@ export async function createHeadlessSession(
     ...(explicitBranch ? { explicitBranch } : {}),
     ...(opts.model ? { model: opts.model } : {}),
   });
+
+  // docs/175 — arm auto-merge for the new session via the SAME pre-PR arm path
+  // the overflow toggle uses. With no PR yet, `toggleAutoMerge` falls through to
+  // `prStatusPoller.setAutoMergeEnabled`, seeding the in-memory armed state;
+  // `activatePendingAutoMergeForPr` applies it once the first turn opens a PR.
+  // No new merge logic, no persistence (decision #1). Best-effort: a failure to
+  // arm (e.g. GitHub not authenticated) must not abort session creation.
+  if (opts.armAutoMerge && autoMergeDeps?.prStatusPoller) {
+    try {
+      await toggleAutoMerge(
+        autoMergeDeps.githubAuthManager,
+        autoMergeDeps.prStatusPoller,
+        newSessionId,
+        true,
+      );
+    } catch (err) {
+      console.warn(`[headless-session] Failed to arm auto-merge for ${newSessionId}:`, err);
+    }
+  }
 
   const session = sessionManager.get(newSessionId);
   if (!session) throw new ServiceError(500, "Failed to read back headless session");

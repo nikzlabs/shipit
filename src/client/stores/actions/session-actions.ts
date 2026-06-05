@@ -90,6 +90,12 @@ export async function createHeadlessSession(opts: {
   agent?: AgentId;
   model?: string;
   /**
+   * docs/175 — arm auto-merge for the new session at creation time. Per-session
+   * and never persisted (decision #1): the overlay does NOT remember it in
+   * localStorage, unlike the model/agent pickers.
+   */
+  armAutoMerge?: boolean;
+  /**
    * Raw files to attach to the new session. When present we POST as
    * multipart/form-data so the orchestrator can save them into the new
    * session's uploads dir before dispatching the prompt; otherwise we keep
@@ -106,7 +112,9 @@ export async function createHeadlessSession(opts: {
     // itself, so we just pass values through without coercion.
     for (const [k, v] of Object.entries(jsonBody)) {
       if (v === undefined) continue;
-      form.append(k, v);
+      // Booleans (armAutoMerge) and any non-string field are stringified; the
+      // multipart route reads each part's value as a string and parses it.
+      form.append(k, typeof v === "string" ? v : String(v));
     }
     for (const f of files) {
       form.append("file", f, f.name);

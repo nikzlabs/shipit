@@ -387,6 +387,12 @@ export async function registerSessionRoutes(
        * Issues tab's "Start session" row action. JSON path only.
        */
       issueRef?: IssueRef;
+      /**
+       * docs/175 — arm auto-merge for the new session at creation time
+       * (per-session, never persisted). Multipart sends it as the string
+       * "true"/"false".
+       */
+      armAutoMerge?: boolean;
     };
   }>(
     "/api/sessions/headless",
@@ -397,6 +403,7 @@ export async function registerSessionRoutes(
       let agent: AgentId | undefined;
       let model: string | undefined;
       let issueRef: IssueRef | undefined;
+      let armAutoMerge = false;
       const uploadInputs: { filename: string; data: Buffer }[] = [];
 
       if (request.isMultipart()) {
@@ -424,6 +431,9 @@ export async function registerSessionRoutes(
               case "model":
                 model = value;
                 break;
+              case "armAutoMerge":
+                armAutoMerge = value === "true";
+                break;
               default:
                 break;
             }
@@ -440,6 +450,11 @@ export async function registerSessionRoutes(
         agent = body.agent;
         model = body.model;
         issueRef = body.issueRef;
+        if (body.armAutoMerge !== undefined && typeof body.armAutoMerge !== "boolean") {
+          reply.code(400).send({ error: "armAutoMerge must be a boolean" });
+          return;
+        }
+        armAutoMerge = body.armAutoMerge === true;
       }
 
       try {
@@ -455,12 +470,17 @@ export async function registerSessionRoutes(
             ...(agent !== undefined ? { agent } : {}),
             ...(model !== undefined ? { model } : {}),
             ...(uploadInputs.length > 0 ? { uploads: uploadInputs } : {}),
+            armAutoMerge,
           },
           deps.defaultAgentId,
           deps.credentialsDir,
           deps.credentialStore,
           deps.providerAccountManager,
           graduationDeps,
+          {
+            githubAuthManager: deps.githubAuthManager,
+            prStatusPoller: deps.prStatusPoller,
+          },
         );
         // session_list SSE broadcast is owned by graduateSession (docs/156).
         return {

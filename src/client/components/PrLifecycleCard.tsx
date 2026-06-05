@@ -539,6 +539,17 @@ function OpenPhase({
             )}
           </span>
         </div>
+        {/* docs/175 decision #2 — durable, conditional transparency line. Shown
+            ONLY once we know the head commit has zero CI checks (`isCiNone`)
+            AND auto-merge is armed: that combination means the PR will merge as
+            soon as it's mergeable, with no CI gate and no review. `wrap-break-word`
+            + `items-start` keep it readable when it wraps on a narrow viewport. */}
+        {autoMerge?.enabled && isCiNone && (
+          <div className="mt-1 text-xs text-(--color-warning) flex items-start gap-1 wrap-break-word">
+            <WarningIcon size={12} className="mt-0.5 shrink-0" />
+            <span>This PR has no CI checks — it will merge as soon as it&rsquo;s mergeable.</span>
+          </div>
+        )}
         {autoMerge?.error && autoMerge.managed && (
           <div className="mt-1 text-xs text-(--color-warning) flex items-center gap-1">
             <WarningIcon size={12} /> {autoMerge.error.message}

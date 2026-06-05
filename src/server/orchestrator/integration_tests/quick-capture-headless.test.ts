@@ -47,6 +47,7 @@ describe("Integration: quick-capture headless sessions", () => {
   let sessionManager: SessionManager;
   let repoStore: RepoStore;
   let createdAgents: FakeClaudeProcess[];
+  let githubAuth: StubGitHubAuthManager;
   let origGitTerminalPrompt: string | undefined;
 
   beforeEach(async () => {
@@ -70,13 +71,14 @@ describe("Integration: quick-capture headless sessions", () => {
     repoStore.add(REPO_URL);
     repoStore.setReady(REPO_URL);
 
+    githubAuth = new StubGitHubAuthManager();
     app = await buildApp({
       credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       repoStore,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      githubAuthManager: githubAuth as unknown as GitHubAuthManager,
       agentFactory: () => {
         const agent = new FakeClaudeProcess();
         createdAgents.push(agent);
@@ -179,6 +181,72 @@ describe("Integration: quick-capture headless sessions", () => {
       agentId: "claude",
       agentPinned: true,
     });
+  });
+
+  it("arms auto-merge at creation when armAutoMerge is true (docs/175)", { timeout: 15_000 }, async () => {
+    // The pre-PR arm path requires GitHub auth (`toggleAutoMerge` throws 401
+    // otherwise). Authenticate the stub, then create an armed quick session and
+    // assert the poller seeded the per-session armed state — the same state the
+    // overflow toggle would have set, which `activatePendingAutoMergeForPr`
+    // applies once the first turn opens a PR.
+    await githubAuth.setToken("test-token");
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: {
+        repoUrl: REPO_URL,
+        initialPrompt: "Bump the dep and merge it",
+        branch: "quick/arm-merge",
+        agent: "claude",
+        armAutoMerge: true,
+      },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as { sessionId: string };
+
+    const state = app.prStatusPoller?.getAutoMergeState(body.sessionId);
+    expect(state?.enabled).toBe(true);
+
+    // Decision #1 — the flag is transient: nothing about auto-merge is persisted
+    // onto the session row / DB.
+    expect(JSON.stringify(sessionManager.get(body.sessionId))).not.toContain("autoMerge");
+  });
+
+  it("does not arm auto-merge when the flag is omitted (docs/175)", { timeout: 15_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: {
+        repoUrl: REPO_URL,
+        initialPrompt: "Just a normal session",
+        branch: "quick/no-arm",
+        agent: "claude",
+      },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as { sessionId: string };
+    expect(app.prStatusPoller?.getAutoMergeState(body.sessionId)).toBeUndefined();
+  });
+
+  it("rejects a non-boolean armAutoMerge (docs/175)", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: {
+        repoUrl: REPO_URL,
+        initialPrompt: "bad flag",
+        armAutoMerge: "yes" as unknown as boolean,
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "armAutoMerge must be a boolean" });
   });
 
   it("maps validation errors through the HTTP route", async () => {

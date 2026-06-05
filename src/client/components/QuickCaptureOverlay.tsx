@@ -27,6 +27,12 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
   const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | undefined>(undefined);
   const [pendingFiles, setPendingFiles] = useState<FileContextRef[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | undefined>(getSavedModelId());
+  // docs/175-auto-merge-at-session-creation/plan.md decision #1: this toggle is
+  // per-session and must NEVER be persisted. Do NOT wire it to localStorage the
+  // way the model/agent pickers are — a sticky auto-merge is an invisible,
+  // irreversible footgun that would silently ship a review-intended PR. It
+  // defaults off and the user must opt in every single time.
+  const [armAutoMerge, setArmAutoMerge] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const restoreFocusRef = useRef<{ element: HTMLTextAreaElement; start: number | null; end: number | null } | null>(null);
@@ -69,6 +75,9 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
     }
     wasOpenRef.current = true;
     setSelectedModel(getSavedModelId());
+    // docs/175 decision #1 — auto-merge never persists across openings either.
+    // Reset to off on every open so a prior session's opt-in can't carry over.
+    setArmAutoMerge(false);
   }, [defaultRepoUrl, open]);
 
   const close = () => {
@@ -114,6 +123,7 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
         initialPrompt: payload.text,
         agent: selectedAgentId,
         ...(selectedModel ? { model: selectedModel } : {}),
+        ...(armAutoMerge ? { armAutoMerge: true } : {}),
         ...(payload.deferredFiles.length > 0 ? { files: payload.deferredFiles } : {}),
       });
       setPendingFiles([]);
@@ -221,7 +231,30 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
                 hasActiveSession={false}
               />
             </div>
-            <div className="flex items-center justify-between border-t border-(--color-border-primary) px-4 py-3 text-xs text-(--color-text-tertiary)">
+            <div className="flex flex-col gap-3 border-t border-(--color-border-primary) px-4 py-3 text-xs text-(--color-text-tertiary)">
+              {/* docs/175 — auto-merge opt-in. Always present (no CI-presence
+                  gating, decision #2). The note is unconditional and honest:
+                  the per-PR `checks.state === "none"` signal isn't knowable
+                  before the PR exists, so we describe what arming does rather
+                  than claiming a per-repo "no CI gate" verdict. Laid out as a
+                  column so the label, checkbox, and note wrap cleanly and stay
+                  tappable on a narrow (mobile) viewport. */}
+              <label className="flex items-start gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={armAutoMerge}
+                  onChange={(e) => setArmAutoMerge(e.target.checked)}
+                  disabled={disabled}
+                  className="mt-0.5 size-4 shrink-0 cursor-pointer accent-(--color-accent)"
+                />
+                <span className="min-w-0">
+                  <span className="text-(--color-text-secondary)">Auto-merge when ready</span>
+                  <span className="mt-0.5 block text-(--color-text-tertiary)">
+                    Merges automatically once the PR is mergeable. If it has no CI
+                    checks, it merges immediately — without review.
+                  </span>
+                </span>
+              </label>
               <span>Enter to send · Shift+Enter for newline · Esc to dismiss</span>
             </div>
           </>
