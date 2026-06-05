@@ -84,26 +84,34 @@ This also means the feature stays consistent with auto-merge's existing nature:
 consumed once at creation and then lives only as the normal ephemeral armed
 state.
 
-### 2. Green CI is the only safety net — be honest about it
+### 2. Always show the toggle — inform, never block
 
 Arming at creation is sharper than arming mid-session: today the user toggles
 auto-merge *after* seeing the agent's work; here they're trusting code they
 haven't read at all. The only thing between a bad turn and `main` is the CI gate
-in `AutoMergeManager` (`checks.state === "success"` + mergeable + approvals).
+in `AutoMergeManager` (`checks.state === "success"` + mergeable + approvals), and
+on a repo with **no required checks** that gate is effectively empty
+(`checks.state === "none"` counts as passing, including the managed-merge
+fallback in docs/077).
 
-That's an acceptable bet for trivial tasks **only when CI is real**. The danger
-case is the managed-merge fallback (docs/077) on a repo with **no required
-checks**: `checks.state` can be `"none"`, which counts as passing, so a managed
-merge could land with effectively zero gating.
+We considered gating the creation-time toggle on the repo having required checks.
+**Rejected.** Experimental / throwaway projects legitimately have no CI and may
+never want any — for those, "merge as soon as the PR is open and mergeable" is
+exactly the intended behavior, not an accident. Hiding the toggle to protect the
+user from a choice they deliberately made is the paternalism failure: it blocks a
+real use case to guard against a mistake that **decision #1 already prevents.**
+The explicit, per-session, default-off, type-it-every-time opt-in *is* the gate;
+a second CI-presence gate on top of it would only frustrate the no-CI user
+without making the deliberate user any safer. It would also cut against §5 — we'd
+be second-guessing stated intent.
 
-**Open question (resolve during implementation):** should the creation-time
-toggle be *disabled / hidden* unless the repo has required checks, while the
-mid-session PR-card toggle keeps its current behavior? Leaning yes — the
-asymmetry is justified because at creation the user hasn't seen anything, so the
-"no gate at all" case is strictly worse than mid-session. Needs a cheap way to
-know whether the repo has required checks at overlay time (we may not have it
-without an API round-trip; if so, fall back to arming + a clear "no CI gate on
-this repo" warning on the session/PR card rather than blocking).
+So the toggle is **always present**, on every repo. The honesty obligation is met
+by **transparency, not a block**: when auto-merge is armed on a repo with no
+required checks, the session/PR card states plainly what will happen — e.g.
+*"Will merge as soon as the PR is open and mergeable — this repo has no CI
+gate."* The user is informed; the user is never blocked. (This warning copy is
+the only PR-card change this feature needs, and only if the existing card doesn't
+already make the no-CI case obvious post-#1054.)
 
 ## Data flow
 
@@ -125,12 +133,12 @@ design (decision #1).
 
 | File | Change |
 |------|--------|
-| `src/client/components/QuickCaptureOverlay.tsx` | New auto-merge checkbox in the overlay form; default off; **not** wired to `localStorage`. Gating per the §"open question". |
+| `src/client/components/QuickCaptureOverlay.tsx` | New auto-merge checkbox in the overlay form; default off; **not** wired to `localStorage`. Always present (no CI-presence gating, per decision #2). |
 | `src/client/stores/actions/session-actions.ts` | `createHeadlessSession()` carries an optional `armAutoMerge` flag into the request. |
 | `src/server/orchestrator/api-routes-session.ts` | `POST /api/sessions/headless` accepts the optional flag (validate as boolean). |
 | `src/server/orchestrator/services/headless-sessions.ts` | `CreateHeadlessSessionOptions` gains the flag; after the session is claimed/graduated, seed the per-session armed auto-merge state. |
 | `src/server/orchestrator/services/github.ts` / `auto-merge-manager.ts` / `pr-status-poller.ts` | **Reused as-is** — the seed calls the existing toggle/arm path; no new merge logic. |
-| `src/client/components/PrLifecycleCard.tsx` | **Touched only if** the §"open question" warning ("no CI gate on this repo") needs surfacing. Coordinate with PR #1054's placement. |
+| `src/client/components/PrLifecycleCard.tsx` | **Touched only if** the "no CI gate on this repo" transparency line (decision #2) isn't already obvious from the card post-#1054. Coordinate with PR #1054's placement. |
 
 ## Relationship to other docs
 
