@@ -1,6 +1,6 @@
 ---
 title: Agent issue writes — through the unified tracker interface, not MCP
-description: Let the agent comment on and edit issues across all trackers via one ShipIt-brokered `Tracker` write interface, rather than per-tracker MCPs/CLIs — for consistency, containment, visibility, and tracker coverage ShipIt controls.
+description: Let the agent comment on, edit, re-status, and re-assign issues across all trackers via one ShipIt-brokered Tracker write interface, with a do-then-surface provenance card. Includes the cross-tracker status/assignee mapping.
 ---
 
 # Agent issue writes
@@ -8,24 +8,31 @@ description: Let the agent comment on and edit issues across all trackers via on
 ## What this decides
 
 docs/175 gives the agent **read** access to issues through ShipIt's tracker
-registry. This doc extends that to **writes** — adding a comment, editing an
-issue's title/description, and (near-term) setting status/assignee — and makes
-the load-bearing architectural decision behind it:
+registry. This doc extends that to **writes** — commenting, editing title/
+description, setting status, and setting assignee — and makes the load-bearing
+architectural decision behind it:
 
 > Issue writes go through **one ShipIt-brokered tracker interface**
-> (`shipit issue comment`/`edit`), implemented per-tracker as an in-house
-> `Tracker` adapter method. They do **not** go through an external per-tracker
-> MCP (the Linear MCP) or a tracker-specific CLI (`gh issue`).
+> (`shipit issue comment`/`edit`/`status`/`assign`), implemented per-tracker as an
+> in-house `Tracker` adapter method. They do **not** go through an external
+> per-tracker MCP or a tracker-specific CLI (`gh issue`).
 
-External MCPs remain available as an **optional, user-opt-in power tool** for
-tracker-specific richness beyond issue CRUD — but they are not the sanctioned
-path for the core write operations.
+**Settled decisions** (confirmed with the user):
+
+- **Gating: do-then-surface.** The agent writes immediately; an inline, persisted
+  provenance card records the write with an undo affordance. No per-action modal.
+- **v1 scope: comment + edit + status + assignee** — the full common-denominator
+  write surface, including the cross-tracker status/assignee mapping designed
+  below. (Issue *creation* stays out — see Out of scope.)
+- **External MCPs: unchanged.** This design neither relies on nor prescribes the
+  role of user-connected MCPs; ShipIt's existing MCP support stands as-is and
+  this doc takes no position on it.
 
 ## Why not "MCP for Linear + `gh` for GitHub"
 
-The tempting alternative is to use each tracker's "native" tooling: the Linear
-MCP for Linear, `gh issue` for GitHub. We reject it. The reasons, in order of
-weight:
+The tempting alternative is each tracker's "native" tooling: the Linear MCP for
+Linear, `gh issue` for GitHub. We reject it for the unified interface. The
+reasons, in order of weight:
 
 ### 1. Tracker coverage must not depend on a third-party MCP
 
@@ -40,148 +47,180 @@ in-house adapter** — the same adapter that already does reads — that ShipIt 
 tests, and gives uniform behavior: identical `TrackerIssue` shape, identical error
 handling, the same untrusted-content provenance envelope (docs/176), the same
 confirmation/visibility flow. **Coverage becomes a ShipIt decision, not an
-ecosystem bet.** The MCP path makes every new tracker a question of "does a good
-MCP exist?"; the interface path makes it "write ~40 lines against their API."
+ecosystem bet.**
 
 ### 2. Containment — the token must stay out of the container (docs/172)
 
-ShipIt deliberately keeps the Linear token **orchestrator-side, never in the
-container** (the same posture as the GitHub token, which the `gh` shim brokers).
-An in-container MCP that writes to Linear needs that token *inside* the container,
-regressing exactly the credential-isolation property docs/172 Gap 2-R protects.
-It also talks straight to the tracker's API from the container — outside ShipIt's
-planned egress allowlist (Gap 1) and invisible to ShipIt. A brokered write keeps
-the token in the orchestrator **and** routes the mutation through ShipIt, where it
-is observable and gateable. For a **mutating, identity-attributed** action,
+ShipIt keeps the Linear token **orchestrator-side, never in the container** (the
+same posture as the GitHub token, brokered by the `gh` shim). An in-container MCP
+that writes needs that token *inside* the container, regressing exactly the
+credential-isolation property docs/172 Gap 2-R protects, and talks straight to the
+tracker API outside ShipIt's planned egress allowlist (Gap 1). A brokered write
+keeps the token in the orchestrator **and** routes the mutation through ShipIt,
+where it is observable and gateable. For a mutating, identity-attributed action,
 brokered beats MCP decisively.
 
 ### 3. Consistency — one contract, not three inconsistencies
 
-docs/175 already routes **reads** through the unified interface. The MCP+`gh` path
-would produce: read-Linear-via-ShipIt but write-Linear-via-MCP (inconsistent
-*within* a tracker), and Linear-via-MCP but GitHub-via-`gh` (inconsistent *across*
-trackers). Three axes of inconsistency. The unified write interface collapses all
-of them — same surface, same behavior, regardless of backing tracker.
+docs/175 already routes **reads** through the unified interface. MCP+`gh` would
+make reads and writes use different mechanisms even for the *same* tracker, and
+different trackers use different mechanisms. The unified write interface collapses
+all of it — same surface, same behavior, regardless of backing tracker.
 
 ### 4. Visibility — ShipIt is the surface (§1/§2)
 
-A comment made via MCP is invisible to ShipIt: it can't render it in the Issues
-tab, can't show a provenance card, can't persist it to chat history. The action
-happens in a system ShipIt doesn't observe — link-out-shaped by nature. A brokered
-`shipit issue comment` lets ShipIt render "agent commented on SHI-28" inline and
-persist it.
+A write made via MCP is invisible to ShipIt: it can't render it in the Issues tab,
+show a provenance card, or persist it to chat history. A brokered
+`shipit issue comment` lets ShipIt render and persist "agent commented on SHI-28"
+inline.
 
-### 5. It isn't even symmetric today
+### Scope of the interface (and what stays outside it)
 
-The Linear MCP is **not** a ShipIt-provisioned capability — ShipIt wires only
-Playwright + internal bridges; the `mcp__linear__*` tools only exist when a user
-manually connects them, and they're **absent in headless/cron runs**. GitHub has
-**no** write path at all (`gh issue` blocked, no GitHub-issues MCP). So "writes
-already work via MCP" holds only for interactive Linear in a hand-configured
-session — you cannot build "the agent updates the issue when it ships the PR" on a
-channel that disappears headless, and the GitHub half must be built regardless.
-
-### Where MCP genuinely wins (the honest concession)
-
-The Linear MCP is far richer than issue CRUD: projects, cycles, milestones,
-documents, sub-issues, labels, attachments. The unified `Tracker` interface should
-cover the **common denominator the coding agent needs** — read, comment, edit
-title/body, set status/assignee — which maps cleanly across GitHub, Linear, and a
-future Jira. For deep tracker-specific project management beyond that, an external
-MCP stays available as a **user-opt-in escape hatch**. It is simply not the path
-for routine "comment on the issue I'm working on."
+The unified interface covers the **common denominator the coding agent needs** —
+read, comment, edit title/body, status, assignee — which maps across GitHub,
+Linear, and a future Jira. Tracker-specific richness (Linear projects, cycles,
+documents, sub-issues) is **out of scope for the interface**; this design does not
+route it through ShipIt and takes no position on whether a user connects an
+external MCP for it. That is deliberately left unchanged.
 
 ## Design
 
-Extend the read-only `Tracker` interface (`trackers/tracker.ts`) with write
-methods, implement them in each adapter, and expose them through the same
-`shipit issue` shim surface docs/175 introduces — read-only verbs gain mutating
-siblings:
+Extend the read-only `Tracker` interface with write methods, implement them per
+adapter, and expose them through the `shipit issue` shim docs/175 introduces:
 
 ```
-shipit issue comment <pointer> -b <body>          # add a comment
-shipit issue edit <pointer> [--title T] [--body B] # edit title/description
-shipit issue status <pointer> <state>              # (near-term) set status
+shipit issue comment <pointer> -b <body>            # add a comment
+shipit issue edit    <pointer> [--title T] [--body B]   # edit title/description
+shipit issue status  <pointer> <state>              # set status (see mapping)
+shipit issue assign  <pointer> <user|me|--none>     # set/clear assignee
 ```
 
-### Interface + adapters
+### Interface additions
 
 ```ts
 interface Tracker {
-  // …existing read methods…
+  // …existing read methods (listIssues, getIssue, info, isConfigured)…
   addComment(id: string, body: string): Promise<TrackerComment>;
   updateIssue(id: string, patch: { title?: string; description?: string }): Promise<TrackerIssue>;
-  // near-term: setStatus(id, state), setAssignee(id, assignee)
+  setStatus(id: string, status: string): Promise<TrackerIssue>;       // normalized type OR native name
+  setAssignee(id: string, assignee: string | null): Promise<TrackerIssue>; // login/email/name/"me"/null
 }
 ```
 
-The plumbing already exists in both adapters — only mutations are new:
+The transport already exists in both adapters — only the mutations are new:
 
-- **Linear** (`trackers/linear/adapter.ts`): reuse `linearGraphql()` (auth headers,
-  POST, error handling already there) with the `commentCreate` / `issueUpdate`
-  mutations. ~2 mutations, no new transport.
+- **Linear** (`trackers/linear/adapter.ts`): reuse `linearGraphql()` with
+  `commentCreate`, `issueUpdate` (title/description/`stateId`/`assigneeId`).
 - **GitHub** (`github-auth-issues.ts` already does `createIssue` via `fetchGitHub`):
-  add `addComment` → `POST /repos/{o}/{r}/issues/{n}/comments`, `updateIssue` →
-  `PATCH /repos/{o}/{r}/issues/{n}`. Same `fetchGitHub` pattern.
-- **A future tracker**: implement the same two methods against its API. Done.
+  `POST issues/:n/comments`, `PATCH issues/:n` (title/body/state/assignees).
 
-### Brokering path (same as docs/175 reads)
+### Status mapping across trackers
+
+Status is the genuinely hard part, because trackers model it differently:
+
+| Tracker | Status model |
+|---|---|
+| GitHub | Binary `open`/`closed` (+ `state_reason`: completed / not_planned). No workflow states. |
+| Linear | Team-defined workflow states, each carrying a normalized **type**: `triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`. State *names* are team-specific ("In Progress", "In Review", "Done"). |
+| Jira (future) | Project workflow; you cannot set a status directly — you apply a valid **transition** from the current state. |
+
+`TrackerIssue.status` already exposes `{ name, type }` (the read adapters normalize
+into the six types). `setStatus(id, status)` accepts **either** a normalized type
+**or** a native state name, and the adapter resolves it:
+
+- **Normalized type** (portable, the common denominator): the agent passes e.g.
+  `started` / `completed` / `canceled`. Each adapter maps it:
+  - GitHub: `completed` → close (state_reason completed); `canceled` → close
+    (not_planned); `started`/`unstarted`/`backlog`/`triage` → open. Lossy but
+    deterministic.
+  - Linear: pick the team's state whose `type` matches; if several share a type
+    (e.g. two `started` states), choose the team's default for that type, and
+    surface the alternatives (see error contract).
+  - Jira: find a transition whose target status category matches the type and
+    apply it.
+- **Native name** (precise override): the agent passes the literal state, e.g.
+  `"In Review"`. The adapter matches it against the tracker's available states /
+  transitions.
+
+**Discovery + error contract (makes this usable):** the read path
+(`getIssue`) gains an optional `availableStatuses: { name, type }[]` so the agent
+can pick a valid target up front; and a `setStatus` that fails on an unknown/
+ambiguous value returns a structured error **listing the valid options** rather
+than a bare 4xx, so the agent retries with a concrete name. This keeps the
+common case one-shot (`status completed`) while making the precise case
+self-correcting.
+
+### Assignee mapping across trackers
+
+Assignee needs **identity resolution** — the agent has a handle/name/email, the
+tracker wants an internal id:
+
+- `setAssignee(id, "me")` → the identity behind ShipIt's stored token (GitHub: the
+  app/user; Linear: `viewer`). The common "assign it to me."
+- `setAssignee(id, "<login|email|display name>")`:
+  - GitHub: treat as a login; `PATCH issues/:n { assignees: [login] }` (must be a
+    collaborator — surface GitHub's error if not).
+  - Linear: resolve the string against workspace users (by displayName/email) to an
+    `assigneeId`; on no/ambiguous match, return candidates (same error contract as
+    status).
+  - Jira (future): resolve to accountId.
+- `setAssignee(id, null)` (`--none`) → unassign.
+
+### Do-then-surface: the write provenance card
+
+The agent calls the verb; the broker performs the write synchronously and returns
+the result. ShipIt then **emits and persists a provenance card** in the transcript
+— "Agent commented on github:owner/repo#1047", "set SHI-28 → In Review",
+"assigned #42 to @alice" — with an **undo** affordance:
+
+- **Undo is a reverse brokered write.** To make it possible, each write captures
+  what it needs to revert: `addComment` returns the new comment id (undo =
+  delete it); `updateIssue`/`setStatus`/`setAssignee` snapshot the **prior value**
+  (the service reads the issue immediately before mutating) so undo restores it.
+  The card carries that snapshot.
+- **No pre-confirmation modal.** The card is the review surface, consistent with
+  how ShipIt treats commits and PR creation (agent acts, card surfaces inline),
+  not a per-action gate — which would be shell-shaped friction (§5).
+- **Persisted, not emit-only.** "Agent commented on …" is transcript content, so
+  it follows the `emitChatCard` + `PersistedMessage`-field pattern (CLAUDE.md
+  "Chat transcript content MUST be persisted") and is idempotent-by-id so
+  reconnect/reload never double-render or clobber an undone state.
+
+This is the outward-action backstop in place of a pre-gate: every write is
+visible, attributable, and reversible. It composes with docs/176 (so a write the
+agent was *steered* into by malicious issue content is still surfaced and
+undoable) and docs/172 (egress/token isolation).
+
+### Brokering path (same shape as docs/175 reads)
 
 `shipit issue comment` → worker `/agent-ops/issue/comment` (allowlisted, injects
 trusted `SESSION_ID`) → orchestrator `POST /api/sessions/:id/issue/comment` →
 `commentOnIssueForTracker()` service → `TrackerRegistry.get(tracker).addComment()`.
-Token stays in the orchestrator's `CredentialStore`; only the *result* returns to
-the container.
-
-### Writes are outward-facing — confirmation, attribution, persistence
-
-Unlike reads, a write mutates the user's tracker **under the user's identity**, so
-it needs the outward-action treatment:
-
-- **Creation stays human-gated.** Filing a *new* issue remains a deliberate human
-  act via the bug-filing review card (docs/164). This doc is about *updating*
-  issues the work already concerns — comment, edit, status — not creating them.
-- **Do-then-surface for updates, with an inline provenance card.** Consistent with
-  how ShipIt treats commits and PR creation (agent acts, card surfaces inline for
-  review) rather than a per-comment modal, which would be shell-shaped friction
-  (§5). *Open decision:* whether the first write per session also takes a
-  lightweight confirm, or a setting gates auto-writes. Lean: do-then-surface +
-  undo affordance; revisit if it feels too loose.
-- **Persist the card (chat-transcript rule).** "Agent commented on SHI-28" is
-  transcript content, so it follows the `emitChatCard` + `PersistedMessage`-field
-  pattern (CLAUDE.md "Chat transcript content MUST be persisted"), not emit-only —
-  and idempotent-by-id so reconnect/reload don't double-render.
-
-## Scope
-
-**v1:** `comment` and `edit` (title/description) for GitHub + Linear.
-**Near-term:** `status` and `assignee` — deferred only because state/assignee
-models differ most across trackers (GitHub open/closed vs Linear workflow states
-vs Jira transitions) and want a small mapping design of their own.
+Token stays in `CredentialStore`; only the result (and the undo snapshot) returns
+to the container.
 
 ## Out of scope
 
-- **Creating issues** — stays human-gated (docs/164).
-- **Tracker-specific richness** (projects, cycles, documents, sub-issues) — the
-  optional MCP escape hatch, not the `Tracker` interface.
-- **Injection hardening of content the agent *reads* before writing** — docs/176.
-  (Note the loop: an agent told by a malicious issue to post a comment is covered
-  by docs/176's framing + docs/172's egress; a write confirmation card is an extra
-  backstop.)
+- **Creating issues** — stays human-gated via the bug-filing review card
+  (docs/164). This doc updates issues the work already concerns; it does not file
+  new ones.
+- **Tracker-specific richness** (projects, cycles, documents, sub-issues) — not
+  routed through the interface; external MCP support is unchanged and unprescribed.
+- **Injection hardening of content the agent reads before writing** — docs/176.
 
 ## Key files
 
-- `src/server/orchestrator/trackers/tracker.ts` — add write methods to the interface.
-- `src/server/orchestrator/trackers/linear/adapter.ts` — `commentCreate`/`issueUpdate` via existing `linearGraphql()`.
-- `src/server/orchestrator/trackers/github/adapter.ts` + `github-auth-issues.ts` — `addComment`/`updateIssue` via existing `fetchGitHub()`.
-- `src/server/orchestrator/services/issues.ts` — `commentOnIssueForTracker` / `updateIssueForTracker`.
+- `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types.
+- `src/server/orchestrator/trackers/linear/adapter.ts` — `commentCreate`/`issueUpdate` + state/user resolution via `linearGraphql()`.
+- `src/server/orchestrator/trackers/github/adapter.ts` + `github-auth-issues.ts` — `addComment`/`updateIssue`/state/assignees via `fetchGitHub()`.
+- `src/server/orchestrator/services/issues.ts` — `commentOnIssueForTracker` / `updateIssueForTracker` / `setIssueStatusForTracker` / `setIssueAssigneeForTracker`, each snapshotting prior state for undo.
 - `src/server/orchestrator/api-routes-issues.ts` — session-scoped write routes.
-- `src/server/session/agent-shim/shipit.ts` — `shipit issue comment`/`edit` (drop these from `REJECTED_ISSUE_SUBCOMMANDS`).
-- `chat-card-persistence.ts`, `chat-history.ts` — persist the write provenance card.
+- `src/server/session/agent-shim/shipit.ts` — `shipit issue comment`/`edit`/`status`/`assign`.
+- `chat-card-persistence.ts`, `chat-history.ts`, `session-data.ts` — persist + rehydrate the write provenance card; wire undo.
 
 ## Related docs
 
-- `docs/175-agent-issue-access/` — the read interface this extends (its "writes out of scope" note now points here).
+- `docs/175-agent-issue-access/` — the read interface this extends.
 - `docs/176-issue-content-injection-hardening/` — safe consumption of issue content the agent reads before acting.
 - `docs/172-agent-containment/` — why the token stays out of the container (Gaps 1, 2-R).
 - `docs/164-*` (bug-filing) — issue *creation* as a human-gated act.
