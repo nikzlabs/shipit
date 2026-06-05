@@ -91,6 +91,13 @@ if [ -z "$TS_IP" ]; then
   exit 1
 fi
 
+# Drop any Tailscale Serve config from a previous version of this script. Serve
+# binds only the node's own MagicDNS name and cannot carry preview subdomains,
+# so an upgraded box would otherwise keep serving the app at https://<node>
+# (443) with broken previews and no signal as to why. The forwarder below is
+# the supported preview path; Serve is intentionally not used.
+tailscale serve reset 2>/dev/null || true
+
 # --- Install socat (TCP forwarder, Host-preserving) -------------------------
 if ! command -v socat &>/dev/null; then
   echo "==> Installing socat (tailnet forwarder)..."

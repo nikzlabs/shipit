@@ -43,9 +43,23 @@ describe("buildSubdomainUrl", () => {
     expect(buildSubdomainUrl("session-a", 3000, "192.168.1.5:3000")).toBeNull();
   });
 
+  it("returns null for non-loopback IPv6 literal hosts (bracketed form)", () => {
+    // window.location.host gives IPv6 bracketed: "[2001:db8::1]:8080".
+    // Must be null (not a mangled "[2001:db8…" hostname) so the empty-state fires.
+    expect(buildSubdomainUrl("session-a", 3000, "[2001:db8::1]:8080")).toBeNull();
+    expect(buildSubdomainUrl("session-a", 3000, "[fe80::1]")).toBeNull();
+  });
+
   it("normalizes loopback IPs to localhost rather than rejecting them", () => {
     expect(buildSubdomainUrl("session-a", 3000, "127.0.0.1:3001")).toBe(
       "http://session-a--3000.localhost:3001/",
+    );
+    // IPv6 loopback, the bracketed form the browser actually reports.
+    expect(buildSubdomainUrl("session-a", 3000, "[::1]:3000")).toBe(
+      "http://session-a--3000.localhost:3000/",
+    );
+    expect(buildSubdomainUrl("session-a", 3000, "[::1]")).toBe(
+      "http://session-a--3000.localhost/",
     );
   });
 });
@@ -62,6 +76,7 @@ describe("computePreviewUrl", () => {
     // null = "no working preview URL for this host" → PreviewFrame shows the
     // empty-state instead of rendering a broken iframe.
     expect(computePreviewUrl("session-a", 3000, preview, "192.168.1.5:4123")).toBeNull();
+    expect(computePreviewUrl("session-a", 3000, preview, "[2001:db8::1]:8080")).toBeNull();
   });
 
   it("uses http://localhost:<port> for a non-container (in-process) preview", () => {

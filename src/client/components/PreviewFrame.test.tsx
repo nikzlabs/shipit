@@ -22,6 +22,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   cleanup();
 });
 
@@ -464,6 +465,31 @@ describe("PreviewFrame", () => {
     // The legacy wording must NOT appear in this state — it's reserved for
     // the path-1 spinner (no preview, no startup steps).
     expect(screen.queryByText("Starting dev server...")).not.toBeInTheDocument();
+  });
+
+  it("shows the empty-state (not an infinite spinner) when the host can't carry a wildcard subdomain", () => {
+    // docs/175: a raw-IP access host can't build {session}--{port}.<host>, so the
+    // poller creates no iframe slot. Instead of stranding the user on the
+    // "Connecting to dev server…" spinner forever, PreviewFrame must explain why.
+    vi.stubEnv("VITE_API_HOST", "192.168.1.5:4123");
+    const runningPreview: PreviewStatus = {
+      running: true,
+      port: 3000,
+      url: "/preview/abc/3000/",
+      source: "detected",
+      detectedPorts: [3000],
+    };
+    render(
+      <PreviewFrame
+        preview={runningPreview}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    expect(screen.getByText("Preview not available over this host")).toBeInTheDocument();
+    expect(screen.getByText("192.168.1.5:4123")).toBeInTheDocument();
+    expect(screen.queryByText("Connecting to dev server...")).not.toBeInTheDocument();
   });
 
   it("passes an AbortSignal to preview-health fetch so a hung response can't strand the poll", async () => {

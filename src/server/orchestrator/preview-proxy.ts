@@ -107,7 +107,7 @@ export function buildUpstreamHeaders(
   targetPort: number,
 ): http.IncomingHttpHeaders {
   // The browser-facing host: an upstream-provided X-Forwarded-Host wins,
-  // otherwise the inbound Host (which, for our subdomain/path routing, is the
+  // otherwise the inbound Host (which, for our subdomain routing, is the
   // origin the browser actually used). Capture it before we overwrite Host.
   const browserHost = headers["x-forwarded-host"] ?? headers.host;
   const proto = headers["x-forwarded-proto"] ?? "http";

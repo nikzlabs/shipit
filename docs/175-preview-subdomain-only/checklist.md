@@ -47,6 +47,18 @@
       `http://shipit.tailnet.ts.net:4123`, confirm a preview subdomain resolves
       and renders. (Cannot be done from this container.)
 
+## Review pass (4 parallel reviewers)
+- [x] Fixed: `buildSubdomainUrl` mangled bracketed IPv6 hosts (`[::1]:3000` →
+      `http://…--3000.[/`) because `split(":")` ran before the `:`-guard — it
+      emitted a garbage non-null URL so the empty-state never fired. Now handles
+      bracketed IPv6 first (`::1` → localhost, others → null). + unit tests.
+- [x] Fixed: `tailscale.sh` now runs `tailscale serve reset` so an upgraded box
+      doesn't leave a stale (preview-less) Serve URL at `https://<node>`.
+- [x] Fixed: stale "subdomain/path routing" comment in `buildUpstreamHeaders`.
+- [x] Reviewers confirmed clean: the `previewSubdomains` removal (no orphans /
+      contract drift) and the path-based proxy deletion (helpers still used, WS
+      flow intact, no test/route depends on it).
+
 ## Tests
 - [x] Rewrote `usePreviewHealthPoller` tests for the removed `mode` param
       (dotless/`.ts.net` now build subdomains; raw-IP → null).

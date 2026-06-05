@@ -19,6 +19,20 @@ function buildSubdomainUrl(
   port: number,
   apiHost: string,
 ): string | null {
+  // IPv6 literal hosts arrive bracketed from `window.location.host`
+  // ("[::1]:3000", "[2001:db8::1]:8080"). Handle them before the ":"-split
+  // below, which would otherwise shred the literal into a garbage hostname
+  // (e.g. "[") and emit a non-null but unresolvable subdomain URL — defeating
+  // the empty-state. Loopback (`::1`) normalizes to `localhost` like 127.x;
+  // any other IPv6 literal can't carry a wildcard subdomain, so return null.
+  const v6 = /^\[([0-9a-fA-F:]+)\](?::(\d+))?$/.exec(apiHost);
+  if (v6) {
+    if (v6[1] === "::1") {
+      const portSuffix = v6[2] ? `:${v6[2]}` : "";
+      return `${window.location.protocol}//${sessionId}--${port}.localhost${portSuffix}/`;
+    }
+    return null;
+  }
   const [rawHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") as [string, string] : [apiHost, ""];
   const apiHostname = /^(127\.\d+\.\d+\.\d+|::1)$/.test(rawHostname) ? "localhost" : rawHostname;
   if (/^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) || apiHostname.includes(":")) return null;
