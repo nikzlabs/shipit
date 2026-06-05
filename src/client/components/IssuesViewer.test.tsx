@@ -105,6 +105,20 @@ describe("IssuesViewer", () => {
     expect(screen.getByText("Urgent")).toBeInTheDocument();
   });
 
+  it("strips the repo path from GitHub identifiers in the ID column", () => {
+    const props = defaultProps({
+      issues: [makeIssue({ identifier: "nicolasalt/shipit#1047", title: "Self-updater" })],
+    });
+    render(<IssuesViewer {...props} />);
+    // The narrow ID column shows the bare issue number, not the full repo path.
+    expect(screen.getByText("1047")).toBeInTheDocument();
+    expect(screen.queryByText("nicolasalt/shipit#1047")).not.toBeInTheDocument();
+    // The full identifier survives in the tracker-link tooltip.
+    expect(
+      screen.getByTitle("Open nicolasalt/shipit#1047 in the tracker"),
+    ).toBeInTheDocument();
+  });
+
   it("fires onStartSession for the clicked issue", () => {
     const issue = makeIssue();
     const props = defaultProps({ issues: [issue] });

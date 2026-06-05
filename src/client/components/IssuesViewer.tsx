@@ -60,6 +60,18 @@ const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warnin
   none: "default",
 };
 
+/**
+ * Compact identifier for the narrow ID column. GitHub identifiers are
+ * `owner/repo#123`, which overflow the 64px track and collide with the title
+ * (the full form survives in the link tooltip). Strip the repo path and the `#`
+ * so only the bare `123` shows; Linear identifiers (`SHI-1`, no `#`) pass
+ * through unchanged.
+ */
+function shortIdentifier(identifier: string): string {
+  const hash = identifier.indexOf("#");
+  return hash === -1 ? identifier : identifier.slice(hash + 1);
+}
+
 function PriorityBadge({ priority }: { priority: TrackerIssue["priority"] }) {
   if (priority.level === "none") return null;
   return (
@@ -124,10 +136,10 @@ function IssueRow({
         rel="noopener noreferrer"
         onClick={(e) => e.stopPropagation()}
         title={`Open ${issue.identifier} in the tracker`}
-        className="[grid-area:id] inline-flex items-center gap-1 text-[11px] font-mono text-(--color-text-tertiary) hover:text-(--color-text-secondary) self-start"
+        className="[grid-area:id] inline-flex items-center gap-1 text-[11px] font-mono text-(--color-text-tertiary) hover:text-(--color-text-secondary) self-start min-w-0"
       >
-        {issue.identifier}
-        <ArrowSquareOutIcon size={ICON_SIZE.XS} />
+        <span className="truncate">{shortIdentifier(issue.identifier)}</span>
+        <ArrowSquareOutIcon size={ICON_SIZE.XS} className="shrink-0" />
       </a>
 
       {/* Title (+ optional description preview), wraps to two lines. */}
