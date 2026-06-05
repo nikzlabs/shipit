@@ -192,8 +192,9 @@ Two things this doc *does* guarantee, which that doc builds on:
 
 ## Out of scope (deferred)
 
-- **Writing to issues** (create/edit/comment/close) — preserves the human-act
-  gate.
+- **Writing to issues** — comment/edit/status are designed in **docs/177**
+  (through this same unified `Tracker` interface, not MCP). Issue *creation*
+  stays human-gated (docs/164).
 - **Injection hardening** — designed separately in docs/176.
 - **Cross-repo GitHub reads** (`--repo`) — kept rejected for parity with the PR
   shim.
@@ -215,5 +216,6 @@ Two things this doc *does* guarantee, which that doc builds on:
 - `docs/170-inline-tracker-issues/` — SHI-80 inline Issues tab; the tracker registry + adapters this reuses.
 - `docs/168-tracker-backed-priorities/` — `issue:` pointer shape inference.
 - `docs/176-issue-content-injection-hardening/` — safe consumption of untrusted issue content (companion to this doc).
+- `docs/177-agent-issue-writes/` — extends this read interface to comment/edit through the same unified `Tracker` surface.
 - `docs/164-*` (bug-filing) — issue *creation* as a human-gated act; why agent issue writes stay out.
 - `docs/172-agent-containment/` — the containment model docs/176 extends.
