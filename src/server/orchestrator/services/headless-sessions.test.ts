@@ -15,7 +15,8 @@ import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
-import type { AgentId } from "../../shared/types.js";
+import type { GitHubAuthManager } from "../github-auth.js";
+import type { AgentId, AutoMergeState } from "../../shared/types.js";
 
 interface FakeRunner {
   running: boolean;
@@ -80,6 +81,31 @@ describe("createHeadlessSession", () => {
     dbManager.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  // Minimal stand-ins for the auto-merge arm path (docs/175). `toggleAutoMerge`
+  // with no PR present (getStatus → undefined) falls through to
+  // `setAutoMergeEnabled`, so we only need those two methods plus an in-memory
+  // state map to observe the seeded armed state.
+  function fakeAutoMergePoller(): {
+    poller: PrStatusPoller;
+    states: Map<string, AutoMergeState>;
+    setEnabled: ReturnType<typeof vi.fn>;
+  } {
+    const states = new Map<string, AutoMergeState>();
+    const setEnabled = vi.fn((sessionId: string, enabled: boolean): AutoMergeState => {
+      const state: AutoMergeState = { enabled, mergeMethod: "squash" };
+      states.set(sessionId, state);
+      return state;
+    });
+    const poller = {
+      getStatus: vi.fn(() => undefined),
+      getAutoMergeState: vi.fn((sessionId: string) => states.get(sessionId)),
+      setAutoMergeEnabled: setEnabled,
+    } as unknown as PrStatusPoller;
+    return { poller, states, setEnabled };
+  }
+
+  const authedGitHub = { authenticated: true } as unknown as GitHubAuthManager;
 
   function claimService(opts: { reusedRunner?: FakeRunner; fail?: Error } = {}): ClaimSessionService {
     return {
@@ -407,5 +433,52 @@ describe("createHeadlessSession", () => {
       { path: "/uploads/note.txt", type: "upload" },
       { path: "/uploads/data.csv", type: "upload" },
     ]);
+  });
+
+  it("arms auto-merge via the pre-PR toggle path when armAutoMerge is true (docs/175)", async () => {
+    const { poller, states, setEnabled } = fakeAutoMergePoller();
+
+    const result = await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      { repoUrl: "https://github.com/acme/app.git", prompt: "ship it", armAutoMerge: true },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+      { githubAuthManager: authedGitHub, prStatusPoller: poller },
+    );
+
+    // The same arm path the overflow toggle uses: no PR → setAutoMergeEnabled.
+    expect(setEnabled).toHaveBeenCalledWith(result.sessionId, true);
+    expect(states.get(result.sessionId)).toEqual({ enabled: true, mergeMethod: "squash" });
+
+    // Decision #1 — never persisted to the session row / DB.
+    const persisted = sessionManager.get(result.sessionId);
+    expect(persisted).not.toHaveProperty("armAutoMerge");
+    expect(persisted).not.toHaveProperty("autoMerge");
+    expect(JSON.stringify(persisted)).not.toContain("autoMerge");
+  });
+
+  it("leaves auto-merge off when armAutoMerge is omitted", async () => {
+    const { poller, states, setEnabled } = fakeAutoMergePoller();
+
+    const result = await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      { repoUrl: "https://github.com/acme/app.git", prompt: "no merge please" },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+      { githubAuthManager: authedGitHub, prStatusPoller: poller },
+    );
+
+    expect(setEnabled).not.toHaveBeenCalled();
+    expect(states.get(result.sessionId)).toBeUndefined();
   });
 });
