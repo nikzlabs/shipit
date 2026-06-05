@@ -52,11 +52,22 @@ of competing for a tab.
   PreviewFrame stays always-mounted (iframe-state preservation) and simply
   shrinks when the drawer expands.
 - The standalone **Services tab button and its render branch were removed**.
-- `rightTab` coercion (the IIFE at the top of `App`) maps any persisted
-  `"services"` selection to `"preview"` (or `"files"` in local mode, which has
-  no preview) so a returning user never lands on a now-nonexistent tab.
+- `"services"` was **deleted from the `RightTab` union** (`ui-store`) and from
+  `VALID_RIGHT_TABS` (`local-storage`). A legacy persisted `"services"` value
+  now fails the membership check in `getSavedRightTab()` and falls back to
+  `"preview"` — so the coercion happens at the storage boundary, and no runtime
+  `=== "services"` branch is needed in `App`.
 - `previewVisible` is computed once and used both to toggle the container's
   visibility and to gate the drawer's xterm mount.
+
+### PreviewFrame empty state
+
+When the compose stack is up but nothing is running, `PreviewFrame` used to
+render an **inline `ServiceList`** in its overlay (with Start/Stop) for the
+manual-only dogfooding case. That duplicated the drawer, so it was removed: the
+overlay is now just a "No preview running" nudge with a **Show services** button
+that expands the drawer (`setServicesDrawerExpanded(true)`). `PreviewFrame` no
+longer imports `ServiceList` or takes `onStartService`/`onStopService` props.
 
 ## Key files
 
@@ -64,14 +75,17 @@ of competing for a tab.
 - `src/client/components/ServiceLogViewer.tsx` — extracted xterm log viewer (new)
 - `src/client/components/ServiceList.tsx` — reused list rows (unchanged)
 - `src/client/App.tsx` — flex-column layout, tab removal, `rightTab` coercion
-- `src/client/stores/ui-store.ts` — `RightTab` still includes `"services"` for
-  back-compat with persisted localStorage values; it's coerced, never rendered.
+- `src/client/stores/ui-store.ts` — `RightTab` (no longer includes `"services"`)
+- `src/client/utils/local-storage.ts` — `VALID_RIGHT_TABS` (drops `"services"`;
+  the sanitization point for legacy persisted values)
+- `src/client/stores/preview-store.ts` — `servicesDrawerExpanded` flag + setter
 
 ## Notes / trade-offs
 
-- `RightTab` deliberately keeps `"services"` in the union: dropping it would make
-  a persisted localStorage value an invalid cast. Coercion in `App` is the
-  cheaper, safer path.
+- `"services"` is gone from both the `RightTab` union and `VALID_RIGHT_TABS`.
+  Sanitizing a legacy persisted value in `getSavedRightTab()` (it already
+  validates membership and falls back to `"preview"`) is cleaner than carrying a
+  dead enum member plus a runtime coercion branch.
 - The drawer lives inside the always-mounted (but CSS-hidden when inactive)
   preview container. Drawer state therefore persists across tab switches; the
   `active` gate prevents the log viewer from running while hidden.

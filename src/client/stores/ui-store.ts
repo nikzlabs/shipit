@@ -23,7 +23,6 @@ type RightTab =
   | "files"
   | "terminal"
   | "history"
-  | "services"
   | "pr"
   | "host"
   | "present";

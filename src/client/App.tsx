@@ -230,10 +230,6 @@ export default function App() {
     if (isOpsSession && (rightTabRaw === "preview" || rightTabRaw === "pr")) return "host";
     if (!isOpsSession && rightTabRaw === "host") return "files";
     if (isLocalMode && (rightTabRaw === "preview" || rightTabRaw === "terminal")) return "files";
-    // docs/175 — Services is no longer a standalone tab; it lives inside the
-    // Preview tab as a drawer. Coerce any persisted "services" selection so a
-    // returning user doesn't land on a now-nonexistent tab (blank panel).
-    if (rightTabRaw === "services") return isLocalMode ? "files" : "preview";
     return rightTabRaw;
   })();
   const mobilePanel = useUiStore((s) => s.mobilePanel);
@@ -789,7 +785,7 @@ export default function App() {
   });
 
   const handleTabChange = useCallback(
-    (tab: "preview" | "docs" | "issues" | "files" | "terminal" | "history" | "services" | "pr" | "host" | "present") => {
+    (tab: "preview" | "docs" | "issues" | "files" | "terminal" | "history" | "pr" | "host" | "present") => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
@@ -1143,7 +1139,7 @@ export default function App() {
             The Services drawer (docs/175) docks below it in the same flex column so a log tail can sit under the live render. */}
         <div className={`absolute inset-0 flex flex-col ${previewVisible ? "" : "invisible pointer-events-none"}`}>
           <div className="flex-1 min-h-0">
-            <PreviewFrame preview={effectivePreviewStatus} sessionId={sessionId} mergedSessionIds={mergedPreviewSessionIds} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} onStartService={(name) => send({ type: "start_service", name })} onStopService={(name) => send({ type: "stop_service", name })} />
+            <PreviewFrame preview={effectivePreviewStatus} sessionId={sessionId} mergedSessionIds={mergedPreviewSessionIds} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} />
           </div>
           <PreviewServicesDrawer services={composeServices} active={previewVisible} lastMessage={lastMessage} drainMessages={drainMessages} send={send} onSendToAgent={handleSendServiceLogsToAgent} onSelectPreviewPort={(port) => usePreviewStore.getState().setSelectedPort(port)} />
         </div>
