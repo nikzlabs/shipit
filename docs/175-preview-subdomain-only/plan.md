@@ -87,7 +87,13 @@ So `mode` becomes vestigial and we remove it.
     Tailscale options below), not a raw IP.
 - `src/client/stores/ui-store.ts` — remove `previewSubdomains` field, default,
   and `setPreviewSubdomains`.
-- `src/client/App.tsx` — remove the `previewSubdomains` bootstrap wiring.
+- `src/client/utils/session-data.ts` — the **primary** bootstrap consumer:
+  remove the `HistoryResponse.previewSubdomains` field and the
+  `setPreviewSubdomains(data.previewSubdomains ?? "auto")` call in
+  `loadSessionHistory` (runs on mount). Must be removed together with the
+  `ui-store.ts` setter, or the build breaks on an undefined reference.
+- `src/client/App.tsx` — remove the `previewSubdomains` bootstrap wiring (the
+  settings-dialog re-fetch).
 
 ### Server
 
@@ -288,7 +294,8 @@ can move the tailnet URL to HTTPS.
 | `src/client/hooks/usePreviewHealthPoller.ts` | `buildSubdomainUrl` / `computePreviewUrl` — the fallback + mode removal |
 | `src/client/components/PreviewFrame.tsx` | iframe slot rendering + new empty-state |
 | `src/client/stores/ui-store.ts` | `previewSubdomains` field removal |
-| `src/client/App.tsx` | bootstrap wiring removal |
+| `src/client/utils/session-data.ts` | primary bootstrap consumer (`setPreviewSubdomains` on mount) — must remove with the store setter |
+| `src/client/App.tsx` | bootstrap wiring removal (settings re-fetch) |
 | `src/server/orchestrator/services/misc.ts` / `types.ts` | bootstrap field + `resolvePreviewSubdomainsMode` removal |
 | `src/server/orchestrator/preview-proxy.ts` | optional `/preview/:id/:port/*` route + WS branch removal |
 | `deployment/vps/docker-compose.yml`, `deployment/README.md` | env var removal + Tailscale guidance |
