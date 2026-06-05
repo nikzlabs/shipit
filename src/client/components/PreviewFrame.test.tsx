@@ -22,6 +22,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   cleanup();
 });
 
@@ -344,53 +345,37 @@ describe("PreviewFrame", () => {
     expect(usePreviewStore.getState().composeNotConfigured).toBe(false);
   });
 
-  // ---- Manual-only inline service list (dogfooding case) ----
+  // ---- "No preview running" empty state (services live in the drawer, docs/175) ----
 
-  it("renders inline ServiceList with Start button when every service is manual", () => {
+  it("shows the manual-only empty state with a Show services button when every service is manual", () => {
     usePreviewStore.getState().setServices([
       { name: "dev", status: "stopped", port: 3000, preview: "manual" },
     ]);
-    const onStartService = vi.fn();
     // A non-null preview with running:false is what the orchestrator emits
     // once the compose stack is up but no service is running — same shape
     // as the "No preview running" empty state the user sees in production.
     const stoppedPreview: PreviewStatus = { running: false, port: 0, url: "" };
-    render(
-      <PreviewFrame
-        preview={stoppedPreview}
-        sessionId="abc"
-        {...defaultProps}
-        onStartService={onStartService}
-        onStopService={vi.fn()}
-      />,
-    );
-    // Inline list is shown instead of the "View service logs" empty state
-    expect(screen.getByText("dev")).toBeInTheDocument();
-    expect(screen.queryByText("View service logs")).not.toBeInTheDocument();
-    // Clicking the Start affordance dispatches start_service
-    fireEvent.click(screen.getByTitle("Start dev"));
-    expect(onStartService).toHaveBeenCalledWith("dev");
+    render(<PreviewFrame preview={stoppedPreview} sessionId="abc" {...defaultProps} />);
+    // Manual-only copy nudges the user to start a service...
+    expect(screen.getByText("No preview running. Start a service to launch it.")).toBeInTheDocument();
+    // ...but the list itself now lives in the drawer, not inline here.
+    expect(screen.queryByTitle("Start dev")).not.toBeInTheDocument();
+    // The button expands the Services drawer rather than switching tabs.
+    fireEvent.click(screen.getByText("Show services"));
+    expect(usePreviewStore.getState().servicesDrawerExpanded).toBe(true);
   });
 
-  it("falls back to the View-service-logs overlay when at least one service is auto", () => {
+  it("shows the generic empty state when at least one service is auto", () => {
     usePreviewStore.getState().setServices([
       { name: "web", status: "stopped", port: 5173, preview: "auto" },
       { name: "dev", status: "stopped", port: 3000, preview: "manual" },
     ]);
     const stoppedPreview: PreviewStatus = { running: false, port: 0, url: "" };
-    render(
-      <PreviewFrame
-        preview={stoppedPreview}
-        sessionId="abc"
-        {...defaultProps}
-        onStartService={vi.fn()}
-        onStopService={vi.fn()}
-      />,
-    );
-    // Mixed stack: keep the existing empty state — auto preview is expected
-    // to come up on its own and the inline list would be noise.
-    expect(screen.getByText("View service logs")).toBeInTheDocument();
-    // The auto service name shouldn't appear as a list row
+    render(<PreviewFrame preview={stoppedPreview} sessionId="abc" {...defaultProps} />);
+    // Mixed stack: generic copy (auto preview is expected to come up on its own).
+    expect(screen.getByText("No preview running")).toBeInTheDocument();
+    expect(screen.getByText("Show services")).toBeInTheDocument();
+    // No inline list rows — that lives in the drawer now.
     expect(screen.queryByTitle("Start web")).not.toBeInTheDocument();
   });
 
@@ -422,8 +407,6 @@ describe("PreviewFrame", () => {
         sessionId="abc"
         {...defaultProps}
         detectedPorts={[3000]}
-        onStartService={vi.fn()}
-        onStopService={vi.fn()}
       />,
     );
     // The manual-only overlay must not show — the iframe takes its place.
@@ -464,6 +447,31 @@ describe("PreviewFrame", () => {
     // The legacy wording must NOT appear in this state — it's reserved for
     // the path-1 spinner (no preview, no startup steps).
     expect(screen.queryByText("Starting dev server...")).not.toBeInTheDocument();
+  });
+
+  it("shows the empty-state (not an infinite spinner) when the host can't carry a wildcard subdomain", () => {
+    // docs/175: a raw-IP access host can't build {session}--{port}.<host>, so the
+    // poller creates no iframe slot. Instead of stranding the user on the
+    // "Connecting to dev server…" spinner forever, PreviewFrame must explain why.
+    vi.stubEnv("VITE_API_HOST", "192.168.1.5:4123");
+    const runningPreview: PreviewStatus = {
+      running: true,
+      port: 3000,
+      url: "/preview/abc/3000/",
+      source: "detected",
+      detectedPorts: [3000],
+    };
+    render(
+      <PreviewFrame
+        preview={runningPreview}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    expect(screen.getByText("Preview not available over this host")).toBeInTheDocument();
+    expect(screen.getByText("192.168.1.5:4123")).toBeInTheDocument();
+    expect(screen.queryByText("Connecting to dev server...")).not.toBeInTheDocument();
   });
 
   it("passes an AbortSignal to preview-health fetch so a hung response can't strand the poll", async () => {

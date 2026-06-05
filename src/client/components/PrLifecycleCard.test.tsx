@@ -656,7 +656,7 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Rebase and merge")).toBeInTheDocument();
   });
 
-  it("renders auto-merge toggle in the top-bar overflow when the session has a remote", async () => {
+  it("renders the auto-merge toggle exactly once (inline) for an open PR, not duplicated in the overflow", async () => {
     const user = userEvent.setup();
     setCard("s1", {
       ...openPrCard,
@@ -665,11 +665,14 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
+    // Inline copy is present before the overflow is even opened.
+    expect(screen.getAllByText("Auto-merge")).toHaveLength(1);
+    // Opening the overflow does NOT add a second copy in the open phase.
     await user.click(screen.getByLabelText("Session actions"));
-    expect(await screen.findAllByText("Auto-merge")).toHaveLength(2);
+    expect(await screen.findAllByText("Auto-merge")).toHaveLength(1);
   });
 
-  it("renders a mobile-only auto-merge toggle beside the CI indicator", async () => {
+  it("renders the inline auto-merge toggle beside the CI indicator on all breakpoints", async () => {
     const user = userEvent.setup();
     const toggleAutoMerge = vi.fn();
     usePrStore.setState({ toggleAutoMerge });
@@ -682,28 +685,27 @@ describe("PrLifecycleCard", () => {
     const { container } = render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
     const inlineToggle = screen.getByRole("button", { name: /Auto-merge/ });
-    const mobileOnlyWrapper = inlineToggle.closest(".md\\:hidden");
-    expect(mobileOnlyWrapper).toBeInTheDocument();
-    expect(mobileOnlyWrapper?.previousElementSibling).toHaveTextContent("CI 1/3");
+    // The toggle's wrapper is no longer gated to mobile — it must not be inside
+    // an `md:hidden` container.
+    expect(inlineToggle.closest(".md\\:hidden")).toBeNull();
+    expect(container.querySelector(".md\\:hidden")).toBeNull();
+    // Still sits next to the CI indicator in the badge row.
+    const wrapper = inlineToggle.closest("span.shrink-0");
+    expect(wrapper?.previousElementSibling).toHaveTextContent("CI 1/3");
     expect(inlineToggle).toHaveTextContent("Auto-merge");
 
     await user.click(inlineToggle);
     expect(toggleAutoMerge).toHaveBeenCalledWith("s1", true);
-
-    expect(container.querySelector(".md\\:hidden")).toBe(mobileOnlyWrapper);
   });
 
   it("uses the shared neutral auto-merge icon color in the top-bar overflow", async () => {
     const user = userEvent.setup();
-    setCard("s1", {
-      ...openPrCard,
-      checks: { state: "success", total: 3, passed: 3, failed: 0, pending: 0 },
-    });
-
-    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
+    // No card → the toggle lives in the overflow (pre-PR arming), which is the
+    // surface this test covers.
+    render(<PrLifecycleCard sessionId="no-card" canAutoMerge />);
 
     await user.click(screen.getByLabelText("Session actions"));
-    const label = (await screen.findAllByText("Auto-merge"))[1];
+    const label = await screen.findByText("Auto-merge");
     const icon = label.closest("span")?.querySelector("svg");
     expect(icon).toHaveClass(AUTO_MERGE_ICON_CLASS);
   });
@@ -756,16 +758,18 @@ describe("PrLifecycleCard", () => {
     expect(screen.queryByText("Squash and merge")).toBeNull();
   });
 
-  it("shows 'Will merge when CI passes' when auto-merge enabled and CI pending", () => {
+  it("does not render a redundant 'Will merge when CI passes' line (the inline toggle conveys the state)", () => {
     setCard("s1", {
       ...openPrCard,
       checks: { state: "pending", total: 3, passed: 1, failed: 0, pending: 2 },
       autoMerge: { enabled: true, mergeMethod: "squash" },
     });
 
-    render(<PrLifecycleCard sessionId="s1" />);
+    render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
-    expect(screen.getByText("Will merge when CI passes")).toBeInTheDocument();
+    expect(screen.queryByText("Will merge when CI passes")).toBeNull();
+    // The enabled Auto-merge toggle is the state indicator now.
+    expect(screen.getByRole("button", { name: /Auto-merge/ })).toBeInTheDocument();
   });
 
   it("renders auto-merge error with settings link", () => {
@@ -1144,9 +1148,9 @@ describe("PrLifecycleCard — open PR details", () => {
     await user.click(screen.getByLabelText("Session actions"));
     expect(onOpenDetails).not.toHaveBeenCalled();
 
-    // docs/169 — the auto-fix toggle moved to global settings; the auto-merge
-    // toggle remains inside the menu. Clicking it (a button) must not switch tab.
-    // fireEvent bypasses the pointer-events guard radix puts on the menu items.
+    // The auto-merge toggle now sits inline in the open-phase card row (a
+    // button). Clicking it must not switch tab. fireEvent bypasses the
+    // pointer-events guard radix puts on the menu items.
     const mergeButtons = await screen.findAllByTitle("Enable auto-merge");
     fireEvent.click(mergeButtons[mergeButtons.length - 1]);
     expect(onOpenDetails).not.toHaveBeenCalled();

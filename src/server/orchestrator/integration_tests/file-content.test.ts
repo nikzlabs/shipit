@@ -242,6 +242,14 @@ describe("Integration: File content viewer", () => {
 
   it("rejects edits on a warm (not-yet-graduated) session", async () => {
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "old");
+    // `buildApp` schedules a one-shot `setTimeout(0)` startup sweep
+    // (`scheduleStartupTasks`) that deletes any `warm` session not registered
+    // in the warm pool — exactly the fixture we're about to create. Flush that
+    // macrotask FIRST (while the session is still non-warm and thus ignored),
+    // then mark it warm. The sweep is one-shot, so it can't fire again and race
+    // the request below. Without this the test flakes between 409 and a 404
+    // (session deleted mid-request). See startup-tasks.ts:147-174.
+    await new Promise((r) => setTimeout(r, 0));
     sessionManager.setWarm(sessionId, true);
 
     const res = await app.inject({
