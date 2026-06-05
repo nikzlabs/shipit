@@ -29,7 +29,7 @@ import type {
   IssuePriorityLevel,
 } from "../../../shared/types.js";
 import { githubHeaders } from "../../github-api.js";
-import type { Tracker } from "../tracker.js";
+import type { ListIssuesOptions, Tracker } from "../tracker.js";
 
 export type FetchImpl = typeof fetch;
 
@@ -159,12 +159,17 @@ export class GitHubTracker implements Tracker {
     };
   }
 
-  async listIssues(): Promise<TrackerIssue[]> {
+  async listIssues(options?: ListIssuesOptions): Promise<TrackerIssue[]> {
     if (!this.token || !this.repo) {
       throw new Error("GitHub is not configured (missing token or repo binding)");
     }
     const ref = this.repo;
-    const url = `https://api.github.com/repos/${ref.owner}/${ref.repo}/issues?state=open&per_page=100&sort=created&direction=desc`;
+    // Default to the open working set so the inline Issues tab — which calls
+    // `listIssues()` with no options — is byte-for-byte unchanged. Only widen to
+    // GitHub's `state=all` when the caller opts in via `includeDone`; the route's
+    // `--state closed` then post-filters that combined set down to the done ones.
+    const state = options?.includeDone ? "all" : "open";
+    const url = `https://api.github.com/repos/${ref.owner}/${ref.repo}/issues?state=${state}&per_page=100&sort=created&direction=desc`;
     const nodes = await this.fetchIssues(url);
     return nodes
       .filter((n) => !n.pull_request) // the issues endpoint also returns PRs — drop them

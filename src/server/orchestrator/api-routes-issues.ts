@@ -15,6 +15,7 @@ import type { ApiDeps } from "./api-routes.js";
 import {
   listTrackers,
   listIssuesForTracker,
+  getIssueForTracker,
   connectLinear,
   getLinearTeams,
   setLinearTeam,
@@ -24,6 +25,15 @@ import {
 import type { GitHubTrackerContext } from "./trackers/index.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
+
+/**
+ * Whether a `TrackerIssue.status.type` represents a finished issue. Both GitHub
+ * (closed → "completed") and Linear ("completed"/"canceled") normalize onto the
+ * same vocabulary, so a `--state closed` filter is tracker-neutral.
+ */
+function isDoneStatus(type?: string): boolean {
+  return type === "completed" || type === "canceled";
+}
 
 export async function registerIssueRoutes(
   app: FastifyInstance,
@@ -64,6 +74,81 @@ export async function registerIssueRoutes(
         return await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, github, {
           includeDone,
         });
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list issues: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Session-scoped agent read path (docs/175 — `shipit issue view/list`).
+  //
+  // These back the `shipit issue` shim subcommands. The worker injects the
+  // trusted SESSION_ID; for GitHub the repo binding is re-derived from that
+  // session's remote (never a `--repo`), exactly like the Issues tab. Linear
+  // ignores the session (its binding is the workspace team). Read-only — there
+  // is no write route here. Tracker tokens stay in the orchestrator's
+  // CredentialStore and never enter the container.
+  // ---------------------------------------------------------------------------
+
+  // GET /api/sessions/:id/issue/view?tracker=&id= — fetch a single issue.
+  app.get<{ Params: { id: string }; Querystring: { tracker?: string; id?: string } }>(
+    "/api/sessions/:id/issue/view",
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const trackerId = request.query.tracker ?? "github";
+      const github = resolveGitHubContext(request.params.id);
+      try {
+        return await getIssueForTracker(
+          credentialStore,
+          trackerId,
+          request.query.id ?? "",
+          trackerFetchImpl,
+          github,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to read issue: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/issue/list?tracker=&state= — list issues for one
+  // tracker. `state` selects the working set:
+  //   - `open` (default): open issues only.
+  //   - `all`: open + completed (the tracker's `includeDone`).
+  //   - `closed`: completed issues only — we fetch `includeDone` (open + done)
+  //     then post-filter to the done set, because `includeDone` alone means
+  //     "open PLUS done" and would over-return open issues for a `closed` query.
+  app.get<{ Params: { id: string }; Querystring: { tracker?: string; state?: string } }>(
+    "/api/sessions/:id/issue/list",
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const trackerId = request.query.tracker ?? "github";
+      const state = request.query.state;
+      const includeDone = state === "all" || state === "closed";
+      const github = resolveGitHubContext(request.params.id);
+      try {
+        const result = await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, github, {
+          includeDone,
+        });
+        if (state === "closed") {
+          result.issues = result.issues.filter((i) => isDoneStatus(i.status?.type));
+        }
+        return result;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

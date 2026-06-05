@@ -381,6 +381,33 @@ describe("agent-ops routes", () => {
     await errApp.close();
   });
 
+  // ---- docs/175 read-only issue surface ----
+
+  it("GET /agent-ops/issue/view forwards tracker and id", async () => {
+    client.setResponse("GET", "/issue/view", {
+      ok: true, status: 200, body: { tracker: { id: "github" }, issue: { identifier: "x/y#1" } },
+    });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/issue/view?tracker=github&id=42" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/issue/view?tracker=github&id=42");
+  });
+
+  it("GET /agent-ops/issue/list forwards tracker and state", async () => {
+    client.setResponse("GET", "/issue/list", { ok: true, status: 200, body: { tracker: { id: "linear" }, issues: [] } });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/issue/list?tracker=linear&state=all" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/issue/list?tracker=linear&state=all");
+  });
+
+  it("GET /agent-ops/issue/view surfaces a 404 verbatim", async () => {
+    client.setResponse("GET", "/issue/view", {
+      ok: false, status: 404, body: { error: "Issue not found: SHI-99" },
+    });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/issue/view?tracker=linear&id=SHI-99" });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe("Issue not found: SHI-99");
+  });
+
   // ---- docs/162 read-only source surface ----
 
   it("GET /agent-ops/source/status forwards to /source/status", async () => {

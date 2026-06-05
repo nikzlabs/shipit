@@ -180,6 +180,39 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
+  // Read-only issue tracker surface (docs/175)
+  //
+  // These back the `shipit issue view|list` shim subcommands. The worker
+  // injects the trusted SESSION_ID; the orchestrator resolves the GitHub repo
+  // binding from that session's remote (Linear ignores it). Read-only — there
+  // are no issue write routes here. Tracker tokens never enter the container.
+  // ---------------------------------------------------------------------------
+
+  // GET /agent-ops/issue/view?tracker=&id= — fetch a single issue
+  app.get<{ Querystring: { tracker?: string; id?: string } }>(
+    "/agent-ops/issue/view",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      if (request.query.tracker) params.set("tracker", request.query.tracker);
+      if (request.query.id) params.set("id", request.query.id);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/issue/view${qs}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/issue/list?tracker=&state= — list issues for one tracker
+  app.get<{ Querystring: { tracker?: string; state?: string } }>(
+    "/agent-ops/issue/list",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      if (request.query.tracker) params.set("tracker", request.query.tracker);
+      if (request.query.state) params.set("state", request.query.state);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/issue/list${qs}`, undefined, reply);
+    },
+  );
+
+  // ---------------------------------------------------------------------------
   // Read-only ShipIt source surface (docs/162)
   //
   // These back the `shipit source status|tree|search|cat` shim subcommands.

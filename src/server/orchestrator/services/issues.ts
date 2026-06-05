@@ -13,6 +13,7 @@ import type {
   ListIssuesResult,
   TrackerId,
   TrackerInfo,
+  TrackerIssue,
 } from "../../shared/types.js";
 import {
   buildTrackerRegistry,
@@ -58,6 +59,47 @@ export async function listIssuesForTracker(
   } catch (err) {
     throw new ServiceError(502, err instanceof Error ? err.message : String(err));
   }
+}
+
+/**
+ * Fetch a single issue from one tracker by its tracker-native id (docs/175 —
+ * the agent's `shipit issue view` path). The same registry that backs the
+ * Issues tab, reused for a single-issue read: GitHub wants the bare number,
+ * Linear the key (the caller resolves this via `parseIssueRef`).
+ *
+ * Unlike `listIssuesForTracker`, an unconfigured tracker is an error here, not
+ * an empty result: a `view` has no useful "empty state" — if the tracker can't
+ * be reached the agent needs to know why. A missing issue (or a GitHub PR
+ * number, which `getIssue` returns null for) is a 404.
+ */
+export async function getIssueForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  id: string,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<{ tracker: TrackerInfo; issue: TrackerIssue }> {
+  if (!id.trim()) {
+    throw new ServiceError(400, "An issue id is required");
+  }
+  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
+  const tracker = registry.get(trackerId as TrackerId);
+  if (!tracker) {
+    throw new ServiceError(404, `Unknown tracker: ${trackerId}`);
+  }
+  if (!tracker.isConfigured()) {
+    throw new ServiceError(400, `${tracker.label} is not configured`);
+  }
+  let issue: TrackerIssue | null;
+  try {
+    issue = await tracker.getIssue(id);
+  } catch (err) {
+    throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+  }
+  if (!issue) {
+    throw new ServiceError(404, `Issue not found: ${id}`);
+  }
+  return { tracker: tracker.info(), issue };
 }
 
 // ---- Linear connect / binding (settings) ----

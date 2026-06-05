@@ -10,7 +10,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { Badge } from "./ui/badge.js";
 import { parseFrontmatter, type ParsedFrontmatter } from "../utils/markdown-frontmatter.js";
-import { parseIssueRef } from "../utils/issue-ref.js";
+import { parseIssueRef } from "../../server/shared/issue-ref.js";
 import { markdownComponents } from "./message-markdown.js";
 
 const CONTEXT_CHARS = 50;
