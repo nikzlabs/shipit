@@ -25,7 +25,11 @@ automatically as you edit files.
 3. Services defined in docker-compose.yml start as Docker Compose containers.
    Services marked as `auto` (or with `ports`) start automatically.
 4. ShipIt detects when ports are ready and routes browser traffic through a
-   reverse proxy.
+   reverse proxy. Each preview is served on its **own subdomain origin**
+   (`{sessionId}--{port}.<host>`), so your app is reached at the root of that
+   origin — absolute asset/API paths like `/assets/app.js` or `/gradio_api/...`
+   resolve naturally, with no path prefix to account for. (Bind the server to
+   `0.0.0.0`, not `127.0.0.1`, or the proxy can't reach it.)
 
 ## Where to put `npm install`
 
