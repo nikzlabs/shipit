@@ -257,6 +257,87 @@ export interface TrackerIssue {
   /** Workflow state, e.g. { name: "In Progress", type: "started" }. */
   status?: { name: string; type?: string };
   assignee?: { name: string; avatarUrl?: string };
+  /**
+   * Tracker-internal id of the current assignee (GitHub login, Linear
+   * `assigneeId`), read straight from the raw API node — distinct from the
+   * display-only `assignee` ({ name, avatarUrl }). Used to snapshot the prior
+   * assignee for an undoable write so undo replays an exact id rather than
+   * re-running the ambiguous name→id resolution (docs/177). Absent when
+   * unassigned.
+   */
+  assigneeId?: string;
+  /**
+   * The states a `setStatus` may target on this tracker, surfaced on the read
+   * path so the agent can pick a valid native name up front (docs/177). For
+   * GitHub this is the fixed Open/Closed pair; for Linear it's the team's
+   * workflow states. Absent on `listIssues` (only populated by `getIssue`).
+   */
+  availableStatuses?: { name: string; type?: string }[];
+}
+
+/** A comment created on an issue (docs/177 — agent issue writes). */
+export interface TrackerComment {
+  /** Tracker-internal comment id. Used to undo (delete) the comment. */
+  id: string;
+  /** Deep link to the comment, when the tracker returns one. */
+  url?: string;
+  /** The comment body that was posted. */
+  body: string;
+}
+
+/** Which kind of issue write a provenance card records (docs/177). */
+export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee";
+
+/**
+ * The minimal snapshot a do-then-surface write captures so it can be undone as
+ * a reverse brokered write (docs/177). Captured BEFORE mutating. The assignee
+ * variant stores the prior **tracker-internal id** (GitHub login / Linear
+ * `assigneeId`) so undo replays an exact id — never re-running the name→id
+ * resolution that could be ambiguous.
+ */
+export type IssueWriteUndo =
+  | { kind: "comment"; commentId: string }
+  | { kind: "edit"; previousTitle?: string; previousDescription?: string }
+  | { kind: "status"; previousStatus: string }
+  | { kind: "assignee"; previousAssigneeId: string | null };
+
+/** Undo lifecycle of a write provenance card. */
+export type IssueWriteUndoState = "available" | "undoing" | "undone" | "failed";
+
+/**
+ * A do-then-surface provenance card recording an agent issue write (docs/177).
+ * Shared verbatim by the live WS payload, the persisted chat-history row, and
+ * the client card so the three can't drift (same pattern as the bug-report
+ * card). The write has already happened by the time this exists; the card
+ * surfaces it inline and offers Undo.
+ */
+export interface IssueWriteCard {
+  /** Stable id — used to patch the card in place across its undo lifecycle. */
+  cardId: string;
+  tracker: TrackerId;
+  /** Tracker-native id the undo reverse-write targets (number / key). */
+  issueId: string;
+  /** Display identifier, e.g. "SHI-28" or "owner/repo#42". */
+  identifier: string;
+  /** Issue title at write time, for the card line. */
+  title: string;
+  /** Deep link to the issue (escape hatch). */
+  url?: string;
+  verb: IssueWriteVerb;
+  /** Human one-liner, e.g. "commented on SHI-28", "set #42 → Closed". */
+  summary: string;
+  /**
+   * Whose identity the write is attributed to. GitHub writes use the acting
+   * user's own token (`"user"`); Linear writes use the deployment-wide PAT, so
+   * they are attributed to the workspace PAT owner (`"workspace"`), NOT the
+   * acting user — the card must not claim per-user authorship for Linear.
+   */
+  attribution: "user" | "workspace";
+  undo: IssueWriteUndo;
+  undoState: IssueWriteUndoState;
+  createdAt: string;
+  /** Set when an undo attempt failed — shown on the card. */
+  errorMessage?: string;
 }
 
 /**

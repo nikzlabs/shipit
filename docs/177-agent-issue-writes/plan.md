@@ -230,11 +230,35 @@ to the container.
   routed through the interface; external MCP support is unchanged and unprescribed.
 - **Injection hardening of content the agent reads before writing** — docs/176.
 
+## Implementation notes
+
+- **Builds on the docs/175 read path (landed separately on `main`).** docs/175's
+  read slice — `src/server/shared/issue-ref.ts` (`parseIssueRef`), `shipit issue
+  view/list`, the `/agent-ops/issue/{view,list}` relay, the session-scoped read
+  routes, and `getIssueForTracker` — landed independently on `main`; this PR was
+  rebased onto it and adds **only the writes** on top of that foundation (the
+  write methods on the `Tracker` interface + adapters, the write services +
+  `undoIssueWrite`, the `/issue/{comment,edit,status,assign}` routes + relay, the
+  write shim verbs, and the provenance card). Writes reuse the read path's
+  `getIssue` to snapshot prior state for undo and `parseIssueRef` for pointer
+  resolution.
+- **GitHub write calls live in `trackers/github/adapter.ts`, not
+  `github-auth-issues.ts`.** The adapter already injects `fetchImpl` (so reads
+  and writes are testable against a fake) using the same headers as
+  `fetchGitHub`; `github-auth-issues.ts` uses the un-injectable global `fetch`
+  and stays as-is for the bug-filing `createIssue`.
+- **Undo transport:** the card's Undo button sends a `undo_issue_write` WS
+  message → `ws-handlers/issue-write-handlers.ts`, which reads the persisted
+  card (`findIssueWriteCard`), runs `undoIssueWrite`, and patches the card via
+  `updateIssueWriteCard`. The prior assignee's internal id is surfaced on the
+  read type as `TrackerIssue.assigneeId` (populated from the raw API node), so
+  the snapshot captures an exact id rather than the display name.
+
 ## Key files
 
 - `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types.
 - `src/server/orchestrator/trackers/linear/adapter.ts` — `commentCreate`/`issueUpdate` + state/user resolution via `linearGraphql()`.
-- `src/server/orchestrator/trackers/github/adapter.ts` + `github-auth-issues.ts` — `addComment`/`updateIssue`/state/assignees via `fetchGitHub()`.
+- `src/server/orchestrator/trackers/github/adapter.ts` — `addComment`/`deleteComment`/`updateIssue`/state/assignees via the adapter's injectable `fetchImpl` + `githubHeaders` (the `fetchGitHub` header pattern; testable against a fake). `github-auth-issues.ts` is unchanged — it keeps the global-`fetch` `createIssue` for bug-filing only.
 - `src/server/orchestrator/services/issues.ts` — `commentOnIssueForTracker` / `updateIssueForTracker` / `setIssueStatusForTracker` / `setIssueAssigneeForTracker`, each snapshotting prior state for undo.
 - `src/server/orchestrator/api-routes-issues.ts` — session-scoped write routes.
 - `src/server/session/agent-shim/shipit.ts` — `shipit issue comment`/`edit`/`status`/`assign`.

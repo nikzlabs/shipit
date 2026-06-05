@@ -16,10 +16,26 @@
 import type {
   TrackerInfo,
   TrackerIssue,
+  TrackerComment,
   IssuePriority,
   IssuePriorityLevel,
 } from "../../../shared/types.js";
-import type { ListIssuesOptions, Tracker } from "../tracker.js";
+import {
+  TrackerResolutionError,
+  type ListIssuesOptions,
+  type SetAssigneeOptions,
+  type Tracker,
+} from "../tracker.js";
+
+/** The six normalized Linear workflow-state types. */
+const LINEAR_STATE_TYPES = new Set([
+  "triage",
+  "backlog",
+  "unstarted",
+  "started",
+  "completed",
+  "canceled",
+]);
 
 export const LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql";
 
@@ -45,6 +61,13 @@ function mapLinearPriority(priority: number, label?: string): IssuePriority {
   return { ...mapped, label: label?.trim() || mapped.label };
 }
 
+interface LinearStateNode {
+  id: string;
+  name: string;
+  type?: string | null;
+  position?: number | null;
+}
+
 interface LinearIssueNode {
   id: string;
   identifier: string;
@@ -54,11 +77,17 @@ interface LinearIssueNode {
   priority: number;
   priorityLabel?: string | null;
   state?: { name: string; type?: string } | null;
-  assignee?: { name?: string | null; displayName?: string | null; avatarUrl?: string | null } | null;
+  assignee?: { id?: string | null; name?: string | null; displayName?: string | null; avatarUrl?: string | null } | null;
+  /** Only fetched by `getIssue` (the team's workflow states) — drives `availableStatuses`. */
+  team?: { states?: { nodes: LinearStateNode[] } | null } | null;
 }
 
 function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
   const assigneeName = node.assignee?.displayName ?? node.assignee?.name ?? undefined;
+  const states = node.team?.states?.nodes
+    ?.slice()
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+    .map((s) => ({ name: s.name, ...(s.type ? { type: s.type } : {}) }));
   return {
     id: node.id,
     identifier: node.identifier,
@@ -70,6 +99,8 @@ function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
     ...(assigneeName
       ? { assignee: { name: assigneeName, ...(node.assignee?.avatarUrl ? { avatarUrl: node.assignee.avatarUrl } : {}) } }
       : {}),
+    ...(node.assignee?.id ? { assigneeId: node.assignee.id } : {}),
+    ...(states && states.length > 0 ? { availableStatuses: states } : {}),
   };
 }
 
@@ -82,7 +113,13 @@ const ISSUE_FIELDS = `
   priority
   priorityLabel
   state { name type }
-  assignee { name displayName avatarUrl }
+  assignee { id name displayName avatarUrl }
+`;
+
+/** `getIssue` additionally pulls the team's workflow states for `availableStatuses`. */
+const ISSUE_FIELDS_WITH_STATES = `
+  ${ISSUE_FIELDS}
+  team { states(first: 100) { nodes { id name type position } } }
 `;
 
 /** Run a GraphQL query against Linear and return the typed `data` payload. */
@@ -204,10 +241,165 @@ export class LinearTracker implements Tracker {
     }
     const data = await linearGraphql<{ issue: LinearIssueNode | null }>(
       this.token,
-      `query Issue($id: String!) { issue(id: $id) { ${ISSUE_FIELDS} } }`,
+      `query Issue($id: String!) { issue(id: $id) { ${ISSUE_FIELDS_WITH_STATES} } }`,
       { id },
       this.fetchImpl,
     );
     return data.issue ? toTrackerIssue(data.issue) : null;
   }
+
+  // ---- Writes (docs/177) ----------------------------------------------------
+
+  /** Resolve a key (`SHI-28`) or UUID to the issue's UUID — mutations want it. */
+  private async resolveUuid(id: string): Promise<string> {
+    const data = await this.gql<{ issue: { id: string } | null }>(
+      `query IssueId($id: String!) { issue(id: $id) { id } }`,
+      { id },
+    );
+    if (!data.issue) throw new Error(`Linear issue not found: ${id}`);
+    return data.issue.id;
+  }
+
+  async addComment(id: string, body: string): Promise<TrackerComment> {
+    const issueId = await this.resolveUuid(id);
+    const data = await this.gql<{
+      commentCreate: { success: boolean; comment: { id: string; url?: string | null; body: string } | null };
+    }>(
+      `mutation AddComment($issueId: String!, $body: String!) {
+        commentCreate(input: { issueId: $issueId, body: $body }) {
+          success
+          comment { id url body }
+        }
+      }`,
+      { issueId, body },
+    );
+    const comment = data.commentCreate.comment;
+    if (!data.commentCreate.success || !comment) {
+      throw new Error("Linear rejected the comment");
+    }
+    return { id: comment.id, body: comment.body, ...(comment.url ? { url: comment.url } : {}) };
+  }
+
+  async deleteComment(commentId: string): Promise<void> {
+    const data = await this.gql<{ commentDelete: { success: boolean } }>(
+      `mutation DeleteComment($id: String!) { commentDelete(id: $id) { success } }`,
+      { id: commentId },
+    );
+    if (!data.commentDelete.success) throw new Error("Linear rejected the comment delete");
+  }
+
+  async updateIssue(id: string, patch: { title?: string; description?: string }): Promise<TrackerIssue> {
+    const issueId = await this.resolveUuid(id);
+    const input: Record<string, unknown> = {};
+    if (patch.title !== undefined) input.title = patch.title;
+    if (patch.description !== undefined) input.description = patch.description;
+    return this.runIssueUpdate(issueId, input);
+  }
+
+  async setStatus(id: string, status: string): Promise<TrackerIssue> {
+    const issue = await this.gql<{ issue: (LinearIssueNode & { team?: { states?: { nodes: LinearStateNode[] } | null } | null }) | null }>(
+      `query IssueStates($id: String!) {
+        issue(id: $id) { id team { states(first: 100) { nodes { id name type position } } } }
+      }`,
+      { id },
+    );
+    if (!issue.issue) throw new Error(`Linear issue not found: ${id}`);
+    const states = (issue.issue.team?.states?.nodes ?? [])
+      .slice()
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    const stateId = resolveLinearStateId(status, states);
+    return this.runIssueUpdate(issue.issue.id, { stateId });
+  }
+
+  async setAssignee(id: string, assignee: string | null, opts?: SetAssigneeOptions): Promise<TrackerIssue> {
+    const issueId = await this.resolveUuid(id);
+    let assigneeId: string | null;
+    if (assignee === null) {
+      assigneeId = null;
+    } else if (opts?.raw) {
+      assigneeId = assignee;
+    } else {
+      assigneeId = await this.resolveAssigneeId(assignee);
+    }
+    return this.runIssueUpdate(issueId, { assigneeId });
+  }
+
+  /** Run an `issueUpdate` and return the refreshed issue. */
+  private async runIssueUpdate(issueId: string, input: Record<string, unknown>): Promise<TrackerIssue> {
+    const data = await this.gql<{ issueUpdate: { success: boolean; issue: LinearIssueNode | null } }>(
+      `mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
+        issueUpdate(id: $id, input: $input) {
+          success
+          issue { ${ISSUE_FIELDS_WITH_STATES} }
+        }
+      }`,
+      { id: issueId, input },
+    );
+    if (!data.issueUpdate.success || !data.issueUpdate.issue) {
+      throw new Error("Linear rejected the issue update");
+    }
+    return toTrackerIssue(data.issueUpdate.issue);
+  }
+
+  /** Resolve `"me"` / displayName / email / name → an `assigneeId`. */
+  private async resolveAssigneeId(assignee: string): Promise<string> {
+    const handle = assignee.trim();
+    if (handle.toLowerCase() === "me") {
+      const data = await this.gql<{ viewer: { id: string } }>(`query Viewer { viewer { id } }`, {});
+      return data.viewer.id;
+    }
+    const data = await this.gql<{ users: { nodes: { id: string; name: string; displayName: string; email?: string | null }[] } }>(
+      `query Users { users(first: 250) { nodes { id name displayName email } } }`,
+      {},
+    );
+    const needle = handle.toLowerCase();
+    const matches = data.users.nodes.filter(
+      (u) =>
+        u.displayName?.toLowerCase() === needle ||
+        u.name?.toLowerCase() === needle ||
+        u.email?.toLowerCase() === needle,
+    );
+    if (matches.length === 1) return matches[0].id;
+    if (matches.length === 0) {
+      throw new TrackerResolutionError(
+        `No Linear user matches "${assignee}".`,
+        "assignee",
+        data.users.nodes.map((u) => u.displayName || u.name).slice(0, 25),
+      );
+    }
+    throw new TrackerResolutionError(
+      `"${assignee}" is ambiguous — it matches multiple Linear users.`,
+      "assignee",
+      matches.map((u) => `${u.displayName} <${u.email ?? u.name}>`),
+    );
+  }
+
+  /** Thin wrapper binding the token + fetchImpl for the write helpers above. */
+  private gql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    if (!this.token) throw new Error("Linear is not configured (missing token)");
+    return linearGraphql<T>(this.token, query, variables, this.fetchImpl);
+  }
+}
+
+/**
+ * Resolve a `setStatus` argument to a concrete Linear `stateId`. Accepts a
+ * native state name (case-insensitive exact match) or a normalized type
+ * (`started`, `completed`, …). When several states share the requested type
+ * the earliest by board position wins (the team's first state of that type);
+ * the agent can override with a precise native name. An unmatched value throws
+ * {@link TrackerResolutionError} listing the team's state names.
+ */
+export function resolveLinearStateId(status: string, states: LinearStateNode[]): string {
+  const wanted = status.trim().toLowerCase();
+  const byName = states.find((s) => s.name.toLowerCase() === wanted);
+  if (byName) return byName.id;
+  if (LINEAR_STATE_TYPES.has(wanted)) {
+    const byType = states.find((s) => (s.type ?? "").toLowerCase() === wanted);
+    if (byType) return byType.id;
+  }
+  throw new TrackerResolutionError(
+    `Unknown status "${status}" for this Linear team.`,
+    "status",
+    states.map((s) => s.name),
+  );
 }

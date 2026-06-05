@@ -13,6 +13,8 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useBugReportStore, type BugReportCardState } from "../stores/bug-report-store.js";
+import { useIssueWriteStore } from "../stores/issue-write-store.js";
+import type { IssueWriteCard } from "../../server/shared/types.js";
 
 interface PreviewStatusResponse {
   known: boolean;
@@ -106,6 +108,17 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     .filter((b): b is BugReportCardState => !!b && typeof b.cardId === "string" && !!b.phase);
   if (persistedCards.length > 0) {
     useBugReportStore.getState().seedCards(persistedCards);
+  }
+
+  // docs/177 — rehydrate the issue-write store from persisted provenance cards
+  // so each `IssueWriteCard` renders with its correct undo state (an undone
+  // card comes back "undone", not re-offering Undo). Authoritative seed wins
+  // over a buffer replay.
+  const persistedWrites = data.messages
+    .map((m) => (m as { issueWrite?: IssueWriteCard }).issueWrite)
+    .filter((w): w is IssueWriteCard => !!w && typeof w.cardId === "string" && !!w.undoState);
+  if (persistedWrites.length > 0) {
+    useIssueWriteStore.getState().seedCards(persistedWrites);
   }
   if (data.agentRunning) {
     session.setIsLoading(true);

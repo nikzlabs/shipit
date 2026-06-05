@@ -120,6 +120,14 @@ export interface AppCtx {
   agentRegistry: AgentRegistry;
   credentialStore: CredentialStore;
   providerAccountManager: ProviderAccountManager;
+  /**
+   * docs/170/177 — override for the `fetch` used to reach issue trackers
+   * (Linear GraphQL / GitHub REST). Integration tests inject a stub; production
+   * leaves it undefined and the adapters use the global `fetch`. Used by the
+   * issue-write undo handler so the reverse write hits the same stub the routes
+   * do.
+   */
+  trackerFetchImpl?: typeof fetch;
 
   // Repo management
   repoStore: RepoStore;

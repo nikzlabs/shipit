@@ -27,6 +27,8 @@ import { PlayTurnButton } from "./PlayTurnButton.js";
 import { ChatQuoteReply } from "./ChatQuoteReply.js";
 import { VoiceNoteCard } from "./VoiceNoteCard.js";
 import { BugReportCard } from "./BugReportCard.js";
+import { IssueWriteCard } from "./IssueWriteCard.js";
+import type { IssueWriteCard as IssueWriteCardData } from "../../server/shared/types.js";
 import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
@@ -243,6 +245,17 @@ export interface ChatMessage {
     errorMessage?: string;
     scopeError?: boolean;
   };
+  /**
+   * docs/177 — when set, this message renders an `IssueWriteCard` inline. The
+   * live `issue_write_card` WS handler appends a `{ cardId }`-only marker; a
+   * message rehydrated from persisted history additionally carries the full
+   * `IssueWriteCard` so `loadSessionHistory` can seed the issue-write store
+   * (the card's payload + undo lifecycle live there). `IssueWriteCard` reads
+   * only `cardId` and pulls the rest from the store.
+   */
+  issueWrite?: {
+    cardId: string;
+  } & Partial<IssueWriteCardData>;
 }
 
 export interface TextSegment {
@@ -322,6 +335,7 @@ export function MessageList({
   onRequestRewindPreview,
   onRewindAtGap,
   onSubmitBugReport,
+  onUndoIssueWrite,
   onResumeSession,
 }: {
   messages: ChatMessage[];
@@ -335,6 +349,8 @@ export function MessageList({
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
   onRewindAtGap?: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
+  /** docs/177 — undo a recorded issue write (fires a reverse brokered write). */
+  onUndoIssueWrite?: (cardId: string) => void;
   /**
    * Opens a spawned/fork child session. Wraps the router-aware
    * `handleSessionResume`, so the active session switches via the same code
@@ -734,6 +750,19 @@ export function MessageList({
             <div key={i} className="flex justify-start">
               <div className="max-w-2xl w-full">
                 <BugReportCard cardId={msg.bugReport.cardId} onSubmit={onSubmitBugReport} />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/177 — issue-write provenance card. Carries no chat text of its
+        // own; render the inline `IssueWriteCard` (which reads its payload +
+        // undo lifecycle from the issue-write store) and skip the bubble path.
+        if (msg.issueWrite) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <IssueWriteCard cardId={msg.issueWrite.cardId} onUndo={onUndoIssueWrite} />
               </div>
             </div>
           );
