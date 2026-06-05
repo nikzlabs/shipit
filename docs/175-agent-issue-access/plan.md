@@ -1,20 +1,20 @@
 ---
-description: Give the agent a read-only path to GitHub issues via `gh issue view`/`gh issue list`, brokered through the orchestrator so the token never enters the container.
+description: Give the agent a tracker-neutral, read-only path to issues (GitHub and Linear alike) via `shipit issue view`/`list`, brokered through the existing tracker registry so tokens never enter the container.
 ---
 
 # Agent issue access
 
 ## Problem
 
-The agent has no sanctioned way to read a GitHub issue. When a user says "work on
+The agent has no sanctioned way to read an issue. When a user says "work on
 issue #1047" or a feature doc carries an `issue:` pointer, the agent's only
 options today are dead ends:
 
 - `WebFetch` on the issue URL → `404` for any **private** repo (GitHub returns
   404, not 403, to unauthenticated requests). The common case fails.
-- `gh issue …` → **rejected** by the shim (`REJECTED_SUBCOMMANDS`, "out of scope
-  for v1" — `src/server/shipit-docs/github.md:114`).
+- `gh issue …` → **rejected** by the shim ("out of scope for v1").
 - `gh api …` → **blocked** (arbitrary GitHub API access is out of scope).
+- Linear issues → no path at all.
 
 So the agent must ask the user to copy-paste the issue body into chat. That is a
 link-out in disguise: the data lives upstream, ShipIt already holds it for the
@@ -23,161 +23,197 @@ inline Issues tab, but the *actor* (the agent) can't reach it. This violates
 to do its job should be reachable **inside** ShipIt, not fetched by the human and
 re-typed.
 
-The asymmetry is the tell: the user can already see GitHub issues inline (SHI-80,
-docs/170), but the agent — who does the work the issue describes — can't.
+The asymmetry is the tell: the user can already see GitHub **and** Linear issues
+inline (SHI-80, docs/170), but the agent — who does the work the issue describes —
+can't.
+
+## The interface must be tracker-neutral
+
+An earlier draft of this design added `gh issue view`/`gh issue list` to the `gh`
+shim. That was rejected. The reasoning is the heart of this doc:
+
+ShipIt treats trackers as a **first-class, tracker-neutral concept**. The Issues
+tab renders GitHub and Linear behind one `Tracker` interface; a doc's `issue:`
+pointer can be a GitHub `owner/repo#N` *or* a Linear URL, and the tracker is
+inferred from the pointer's shape (docs/168). A `gh issue`-only path would give
+the agent full access when the work is GitHub-tracked and **zero** access when
+the same work is tracked in Linear — the access surface would depend on which
+tracker a repo happens to use. That is precisely the inconsistency the tracker
+abstraction exists to remove.
+
+`gh issue` is *convenient* (it matches muscle memory and sits beside `gh pr`), but
+convenience for one tracker is not worth a contract that silently differs per
+tracker. The agent should have **one** issue interface whose behavior and output
+shape are identical regardless of the backing tracker — the same guarantee the
+user already gets in the Issues tab.
+
+So: the surface is a tracker-neutral `shipit issue` command, and `gh issue`
+stays unimplemented.
 
 ## What already exists (and what's missing)
 
-The read plumbing is **done**. `GitHubTracker` (`trackers/github/adapter.ts`) is
-already a read-only adapter with `listIssues()` and `getIssue(number)`, both
-authenticated with ShipIt's existing GitHub token and bound to the session's repo
-(derived from the git remote). It powers the inline Issues tab via
-`GET /api/issues?tracker=github&sessionId=…`.
+The read plumbing is **done and already tracker-neutral**:
 
-The **only** missing piece is a path from the agent's container to those two
-methods. We are not building GitHub API plumbing; we are exposing a read path
-through the layers the `gh pr` shim already uses.
+- `Tracker` interface (`trackers/tracker.ts`) with `listIssues()` / `getIssue(id)`,
+  implemented by **both** `GitHubTracker` and `LinearTracker`. Both return the
+  same `TrackerIssue` shape (`id`, `identifier`, `title`, `url`, `description`,
+  `status`, `priority`, `assignee`).
+- `TrackerRegistry` (`trackers/registry.ts`) resolves a tracker by id and injects
+  each tracker's auth automatically: the GitHub token + session-derived repo for
+  GitHub, the deployment-wide Linear token + team binding for Linear. Tokens live
+  in the orchestrator's `CredentialStore`, never the container.
+- The inline tab already drives this via `GET /api/issues?tracker=…` and
+  `listIssuesForTracker()` (`services/issues.ts`).
+
+The **only** missing pieces are: (a) a single-issue `getIssueForTracker()`
+service, (b) routes the agent's broker can call, and (c) the agent surface
+itself. We are not building issue plumbing — we are exposing the tracker-neutral
+plumbing that already backs the UI.
 
 ## Design
 
-Add **`gh issue view`** and **`gh issue list`** to the existing `gh` shim. They
-mirror `gh pr view` / `gh pr list` exactly — same shim, same brokering, same
-token-isolation guarantees — and are **read-only**. No `create`, `edit`,
-`comment`, `close`, or `reopen` for issues (see *Decisions*).
+Add a **`shipit issue`** subcommand to the existing `shipit` CLI shim
+(`agent-shim/shipit.ts`, which already hosts `shipit session` and `shipit
+source`). It is **read-only**:
 
 ```
-gh issue view <number> [--json title,body,state,labels,assignee,url]
-gh issue list [--state open|closed|all] [--json …]
+shipit issue view <pointer> [--json]
+shipit issue list [--tracker github|linear] [--state open|closed|all] [--json]
 ```
 
-Default output is human-readable (title, state, labels, body) so the agent can
-read it directly; `--json` returns a structured subset for when the agent wants
-to parse fields, matching `gh pr view --json`.
+- **`<pointer>`** is whatever the user or a doc's `issue:` field says —
+  `owner/repo#123`, a GitHub issue URL, `SHI-28`, or a Linear issue URL. The
+  tracker is **inferred from the pointer's shape**, so the agent can pass the
+  pointer verbatim. `--tracker` is an explicit override for ambiguous input.
+- Output is human-readable by default (identifier, title, status, priority,
+  assignee, body) so the agent reads it directly; `--json` emits the
+  `TrackerIssue` object for parsing. **The output shape is identical across
+  trackers** — that is the whole point.
+
+### Shared pointer parsing
+
+`parseIssueRef()` already infers tracker-from-shape, but it lives client-side
+(`src/client/utils/issue-ref.ts`) for the jump-to-issue chip. Move it to
+**`src/shared/issue-ref.ts`** so the client chip, the shim, and the server route
+resolve pointers through one source of truth — no second regex to drift. This is
+the single change that makes "pass the pointer verbatim" work end to end.
 
 ### Data flow
 
-This is a thin vertical slice reusing every layer the PR shim already traverses:
+A thin vertical slice over the registry that already backs the Issues tab:
 
 ```
-Agent (Bash):  gh issue view 1047
+Agent (Bash):  shipit issue view SHI-28
   │
-  ▼  src/server/session/agent-shim/gh.ts
-     parse → POST localhost:9100 /agent-ops/issue/view?number=1047
+  ▼  src/server/session/agent-shim/shipit.ts
+     parseIssueRef → tracker=linear, id=SHI-28
+     GET localhost:9100 /agent-ops/issue/view?tracker=linear&id=SHI-28
   │
   ▼  src/server/session/agent-ops-routes.ts
      allowlisted relay, injects trusted SESSION_ID
-     → GET /api/sessions/:id/issue/view?number=1047
+     → GET /api/sessions/:id/issue/view?tracker=linear&id=SHI-28
   │
-  ▼  src/server/orchestrator/api-routes-github.ts (new route)
-     resolve session repo + token (as api-routes-issues.ts already does)
-     → GitHubTracker.getIssue("1047")          ← REUSED, unchanged
+  ▼  src/server/orchestrator/api-routes-issues.ts (new route)
+     resolve GitHub context from session remote (Linear ignores it)
+     → getIssueForTracker(credentialStore, "linear", "SHI-28", …)   ← new service
   │
-  ▼  GitHub REST  GET /repos/{owner}/{repo}/issues/1047
-     (token held by orchestrator; never in the container)
+  ▼  TrackerRegistry.get("linear").getIssue("SHI-28")               ← REUSED
+     LinearTracker (token from CredentialStore)  /  GitHubTracker (token + repo)
   │
-  ▼  { issue: TrackerIssue } back down the same path → stdout
+  ▼  tracker API (token held by orchestrator; never in the container)
+  │
+  ▼  { tracker, issue: TrackerIssue } back down the same path → stdout
 ```
 
-The token never leaves the orchestrator — identical to the credential model
-documented in `github.md` ("Security model: why the token isn't reachable"). The
-container sees issue *content*, never the secret.
+For **GitHub**, the broker already injects the trusted `SESSION_ID`, so the route
+resolves `{owner, repo}` from the session's remote exactly as
+`resolveGitHubContext()` does for the Issues tab — no `--repo`, no cross-repo
+reach. For **Linear**, the binding is the deployment-wide team, so the session is
+irrelevant. Both tokens stay in the orchestrator's `CredentialStore`; the
+container sees issue *content*, never a secret — identical to the credential
+model in `github.md`.
 
 ### Where each change lands
 
 | Layer | File | Change |
 |---|---|---|
-| Shim | `src/server/session/agent-shim/gh.ts` | Drop `"issue"` from `REJECTED_SUBCOMMANDS`; add `handleIssueView` / `handleIssueList` + dispatch, mirroring the `pr` handlers; extend help text. |
-| Worker relay | `src/server/session/agent-ops-routes.ts` | Add `GET /agent-ops/issue/view` and `/agent-ops/issue/list`, allowlisted, relaying to the session-scoped orchestrator routes. |
-| Orchestrator | `src/server/orchestrator/api-routes-github.ts` | Add `GET /api/sessions/:id/issue/view` and `/issue/list`. Resolve `{token, repo}` from the session remote (the same logic as `resolveGitHubContext` in `api-routes-issues.ts`) and call a service wrapper. |
-| Service | `src/server/orchestrator/services/github.ts` (or `issues.ts`) | `viewGitHubIssue(...)` / `listGitHubIssues(...)` thin wrappers constructing a `GitHubTracker` and calling `getIssue` / `listIssues`. |
-| Agent docs | `src/server/shipit-docs/github.md` | Add `gh issue view`/`gh issue list` to the supported table; remove `gh issue …` from the blocked list and replace with "issue **read** only; create/edit out of scope". Add an "issue content is untrusted input" note (see Security). |
+| Shared | `src/shared/issue-ref.ts` (moved from `client/utils/`) | `parseIssueRef()` becomes the one pointer→tracker resolver for client + server. Client import updated. |
+| Shim | `src/server/session/agent-shim/shipit.ts` | Add `issue` as a top-level subcommand with `view`/`list` handlers (mirroring `session`/`source`); a `REJECTED_ISSUE_SUBCOMMANDS` set keeps it read-only. |
+| Worker relay | `src/server/session/agent-ops-routes.ts` | Add allowlisted `GET /agent-ops/issue/view` and `/issue/list`, relaying to the session-scoped orchestrator routes. |
+| Orchestrator | `src/server/orchestrator/api-routes-issues.ts` | Add session-scoped `GET /api/sessions/:id/issue/view` and `/issue/list`; reuse `resolveGitHubContext`. |
+| Service | `src/server/orchestrator/services/issues.ts` | Add `getIssueForTracker(...)` (registry → `getIssue`); `list` reuses `listIssuesForTracker`. |
+| Agent docs | `src/server/shipit-docs/` | Document `shipit issue view/list` (tracker-neutral, read-only) and remove the "ask the user to paste the issue" guidance. Point at the hardening doc for untrusted-content handling. |
 
-No new GitHub API code, no new auth, no new token handling. The orchestrator
-already resolves repo-from-remote and holds the token.
+No new tracker code, no new auth, no new token handling. The registry and both
+adapters are reused unchanged.
 
 ## Decisions
 
+**Tracker-neutral `shipit issue`, not `gh issue`.** One interface, identical
+behavior and output across GitHub and Linear — see *The interface must be
+tracker-neutral*. `gh` stays PR-focused; `gh api`/`gh issue` stay blocked.
+
 **Read-only — `view` + `list` only.** The agent reads issues to do work; it does
 not triage or author them. Issue **creation** is already a deliberate human act
-routed through the bug-filing review card (docs/164) — keeping the agent out of
-issue authoring preserves that gate and matches `GitHubTracker` being read-only
-by design (SHI-43 / docs/156 explicitly defer write-back). Rejected: a full
-`gh issue` surface — it widens the attack surface for no demonstrated need.
+routed through the bug-filing review card (docs/164); `GitHubTracker` and
+`LinearTracker` are read-only by design (write-back deferred — SHI-43 /
+docs/156). A `REJECTED_ISSUE_SUBCOMMANDS` set enforces this at the shim, matching
+how `shipit session` rejects `delete`/`adopt`.
 
-**Reuse the `gh` shim rather than a new tool or MCP server.** `gh issue view` is
-the muscle-memory command and sits beside `gh pr view` with identical brokering.
-A bespoke tool or a "fetch issue" MCP would be a second surface for the same job.
-The shim already owns the token-isolation contract; we inherit it for free.
+**Pointer shape-inference, with `--tracker` override.** The agent passes the
+doc's `issue:` value verbatim; the shared `parseIssueRef` resolves the tracker.
+This is strictly better than forcing `shipit issue view github owner/repo#N`,
+because the pointer the agent already has *is* the input. `--tracker` covers the
+rare ambiguous/unknown shape.
 
-**Session repo only — `--repo` stays rejected.** Like the PR shim, issue reads
-target the session's own repo (resolved from the remote). An `issue:` pointer in
-a feature doc names that repo's issue in the overwhelming common case.
-Cross-repo issue reads are a deferred follow-up, not v1.
-
-**`--json` mirrors `gh pr view --json`.** Same flag, same shape of structured
-output, so the agent's existing mental model transfers. Default stays
-human-readable prose.
-
-**`gh api` stays blocked.** This design adds two narrow, read-only verbs — it
-does **not** reopen arbitrary API access. The allowlist philosophy is unchanged.
+**Session repo only for GitHub.** Like the PR shim, GitHub issue reads target the
+session's own repo (resolved from the remote). Cross-repo reads are a deferred
+follow-up.
 
 ## Security
 
-Two properties, both load-bearing:
+This design pulls **attacker-controllable content** (issue titles, bodies,
+labels, comments — anyone who can file an issue can plant text) into the agent's
+context, which is a prompt-injection vector. **That concern is real but
+orthogonal to the access mechanism** — it applies equally to `shipit issue`, to
+the old `gh issue` idea, and to a user pasting an issue by hand. It therefore
+gets its **own** design, **docs/176-issue-content-injection-hardening**, rather
+than being bolted onto this doc.
 
-1. **Token isolation is preserved.** The new path traverses the same broker as
-   `gh pr`; the orchestrator authenticates the GitHub call and the container
-   never holds the token. Adding read verbs does not change what is reachable
-   *from inside the sandbox* — there is still no secret there to exfiltrate.
+Two things this doc *does* guarantee, which that doc builds on:
 
-2. **Issue content is untrusted input.** This is the new consideration. An issue
-   body (and its title, labels, comments) is attacker-controllable: anyone who
-   can open an issue on the repo can plant text in it. Once `gh issue view` pulls
-   that text into the agent's context, it is a prompt-injection vector. The agent
-   must treat fetched issue content as **data describing a task**, never as
-   instructions to obey. The `github.md` update will state this explicitly, in
-   the same spirit as the existing containment guidance (docs/172). This risk is
-   inherent to *any* mechanism that brings issue text in — including the user
-   pasting it — so it is not a reason to withhold the capability, but it must be
-   documented where the agent reads about the command.
+1. **Token isolation is preserved.** The new path reuses the registry's
+   orchestrator-side auth; no tracker token ever enters the container. Reading a
+   malicious issue cannot exfiltrate a secret that isn't there.
+2. **A single ingestion point.** Because every issue read flows through one
+   broker → one service, there is exactly one place for docs/176 to attach the
+   untrusted-content envelope/provenance framing — it can't be bypassed by a
+   second code path.
 
 ## Out of scope (deferred)
 
 - **Writing to issues** (create/edit/comment/close) — preserves the human-act
-  gate; revisit only with an explicit product decision.
-- **Linear issues via `gh`.** The `issue:` pointer in a doc can be a Linear URL,
-  and the tracker abstraction already has a `LinearTracker`. But `gh` is a
-  GitHub-shaped command; brokering Linear reads belongs behind a tracker-neutral
-  surface (e.g. extending the agent's access to `listIssuesForTracker`), not
-  inside `gh issue`. Tracked as a follow-up — see *Extension*.
-- **Cross-repo issue reads** (`--repo`) — kept rejected for parity with the PR
+  gate.
+- **Injection hardening** — designed separately in docs/176.
+- **Cross-repo GitHub reads** (`--repo`) — kept rejected for parity with the PR
   shim.
 - **Issue comments / timeline** — `view` returns the issue body; threaded
-  comments are a later enrichment if the agent needs them.
-
-## Extension: tracker-neutral issue reads
-
-The cleaner long-term shape is a tracker-neutral brokered read that resolves a
-pointer (`owner/repo#123` **or** a Linear URL) through the existing
-`TrackerRegistry`, so the agent reads *whatever tracker a doc points at*. `gh
-issue view` is the GitHub-shaped entry point and the right v1 (it matches `gh pr`
-and the most common case); the tracker-neutral surface is the generalization once
-there's demand for Linear reads from the agent. The registry and both adapters
-(`GitHubTracker`, `LinearTracker`) already exist, so the generalization is
-additive.
+  comments are a later enrichment (and interact with docs/176, since comments are
+  the lowest-trust content).
 
 ## Key files
 
-- `src/server/session/agent-shim/gh.ts` — the `gh` shim; allowlist + handlers.
+- `src/server/session/agent-shim/shipit.ts` — the `shipit` shim; add `issue`.
 - `src/server/session/agent-ops-routes.ts` — worker relay (`/agent-ops/*`).
-- `src/server/orchestrator/api-routes-github.ts` — session-scoped orchestrator routes.
-- `src/server/orchestrator/api-routes-issues.ts` — existing repo-from-remote context resolution to mirror (`resolveGitHubContext`).
-- `src/server/orchestrator/trackers/github/adapter.ts` — `GitHubTracker.getIssue()` / `listIssues()`, **reused unchanged**.
-- `src/server/orchestrator/services/github.ts` — service wrappers.
-- `src/server/shipit-docs/github.md` — agent-facing docs (the support doc this design answers).
+- `src/server/orchestrator/api-routes-issues.ts` — issue routes + `resolveGitHubContext`.
+- `src/server/orchestrator/services/issues.ts` — `listIssuesForTracker`, new `getIssueForTracker`.
+- `src/server/orchestrator/trackers/` — `Tracker` interface, registry, GitHub + Linear adapters (**reused unchanged**).
+- `src/shared/issue-ref.ts` — shared pointer→tracker parser (moved from `client/utils/`).
 
 ## Related docs
 
-- `docs/170-inline-tracker-issues/` — SHI-80 inline Issues tab; the read adapters this reuses.
+- `docs/170-inline-tracker-issues/` — SHI-80 inline Issues tab; the tracker registry + adapters this reuses.
+- `docs/168-tracker-backed-priorities/` — `issue:` pointer shape inference.
+- `docs/176-issue-content-injection-hardening/` — safe consumption of untrusted issue content (companion to this doc).
 - `docs/164-*` (bug-filing) — issue *creation* as a human-gated act; why agent issue writes stay out.
-- `docs/172-agent-containment/` — untrusted-input handling; the prompt-injection note extends it.
+- `docs/172-agent-containment/` — the containment model docs/176 extends.
