@@ -19,11 +19,22 @@ Cloning a fresh repo today runs attacker-controlled shell **before the user has 
 anything** — no prompt, no consent. There are two automatic execution paths, and this is
 the part worth getting right:
 
-1. **`agent.install`** — `readAgentConfig()` at session creation
+1. **`agent.install` on activation** — `readAgentConfig()` at session creation
    (`session-container.ts`, per 172's audit) → `runInstall()` fired immediately
    (`service-manager-setup.ts`) → executed in-container via `POST /install`
    (`session-worker.ts`). This runs arbitrary shell from the cloned `shipit.yaml`.
-2. **Compose services** — `x-shipit-preview: auto` services start automatically; their
+2. **`agent.install` via the warm pool — *before the user ever opens the session*.**
+   This is the path the "previews + on-activation install" framing misses, and it is the
+   worst of the set because it fires with **zero** user interaction. When a repo is added
+   (`POST /api/repos` → `warmSessionForRepo`, `api-routes-session.ts`) and again for every
+   stored repo on orchestrator startup, the warm pool boots a standby container and calls
+   `runPreInstall()` (`warm-pool-manager.ts`), which runs
+   `resolveShipitConfig(workspaceDir).agent.install` on that standby. So a freshly *added*
+   (not even opened) untrusted repo executes its install shell. Note this path only fires
+   in container/VPS mode — local mode passes `containerManager: null`, skipping standby
+   pre-install — which is exactly the deployment 172's threat model targets. A gate that
+   only covers paths 1 and 3 leaves this wide open.
+3. **Compose services** — `x-shipit-preview: auto` services start automatically; their
    `command:` / `build:` are attacker-controlled shell too (`compose-generator.ts`,
    `service-manager.ts`).
 
@@ -53,11 +64,22 @@ A repo is in one of two states:
 
 Key properties:
 
-- **Trust is per remote, cached, one-time.** Keyed by the normalized remote URL
-  (`parseGitHubRemote()` / the same normalization `RepoStore` uses). Accepting once trusts
-  that remote for all future sessions cloned from it — no approval fatigue. This is the
-  TOFU model: the *first* clone of a given remote prompts; subsequent ones inherit the
-  decision.
+- **Trust is per remote, cached, one-time.** Accepting once trusts that remote for all
+  future sessions cloned from it — no approval fatigue. This is the TOFU model: the *first*
+  add/clone of a given remote prompts; subsequent ones inherit the decision.
+  - **Trust key — reuse `canonicalRepoKey()`; do not key off the raw URL or
+    `parseGitHubRemote()`.** `RepoStore` keys its rows by the **raw** `url` string verbatim
+    (`WHERE url = ?` throughout `repo-store.ts`), so inheriting its keying would make
+    `…/o/r` vs `…/o/r.git` vs SSH vs HTTPS forms distinct keys and re-prompt for the same
+    repo. The correct primitive already exists: `canonicalRepoKey(url)` (`git-utils.ts:58`)
+    strips credentials, lowercases scheme/host, and drops a trailing slash and `.git`,
+    collapsing all those forms to one key — and it is already the repo-identity key in
+    `services/shipit-source.ts`. Key trust off `canonicalRepoKey(remoteUrl)`. Do **not**
+    use `parseGitHubRemote()` for the key: it returns `null` for any non-GitHub remote
+    (GitLab, Bitbucket, self-hosted, scp-style SSH), so every non-GitHub repo would share
+    one empty key — trusting one would silently trust all of them, defeating the per-remote
+    boundary. `canonicalRepoKey()` is well-defined for every remote (it degrades to a
+    lowercased/trimmed best-effort string for non-URL inputs rather than null).
 - **ShipIt-created repos are trusted by construction.** A repo scaffolded from a ShipIt
   template (`templates*.ts`) has no attacker-authored config, so it is marked trusted at
   creation and never prompts.
@@ -65,9 +87,14 @@ Key properties:
   history is browsable. Nothing that *executes repo-authored commands* runs. This mirrors
   VS Code Restricted Mode: you can read everything; you just can't run the project's code
   until you trust it.
-- **Deferred, not dropped.** On acceptance, the previously-skipped `agent.install` runs and
-  auto-preview services start — the normal session-startup path, just unblocked. The user
-  gets the full experience the instant they consent.
+- **Deferred, not dropped — at *every* trigger point.** Three places must consult trust,
+  not one: (1) warm pre-install (`runPreInstall`/`warmSessionForRepo`) must skip for
+  untrusted remotes, so adding a repo no longer pre-runs its install; (2) on-activation
+  `runInstall()`; (3) compose auto-preview startup. On acceptance, all three are unblocked:
+  the repo is warmed/pre-installed, install runs, and auto-preview services start — the
+  normal startup path, just gated. Because the warm path fires at *add* time (before any
+  session is opened), the trust decision must be capturable at add time too — i.e. the
+  consent surface appears when the repo is added, and warming is what waits on it.
 
 ### UI (inline, per `CLAUDE.md` §1–§2)
 
@@ -119,13 +146,17 @@ foreign code once. The decision persists, so it does not recur per session.
 
 ## Key files (touchpoints, per 172's audit — verify line numbers before editing)
 
+- `src/server/orchestrator/warm-pool-manager.ts` — `runPreInstall()` / `warmSessionForRepo`:
+  the pre-open `agent.install` path. **Gate here too** — skip pre-install for untrusted
+  remotes; warm + pre-install on acceptance. Fired from `POST /api/repos`
+  (`api-routes-session.ts`) and on orchestrator startup.
 - `src/server/orchestrator/session-container.ts` — `readAgentConfig()` at session creation.
 - `src/server/orchestrator/service-manager-setup.ts` — `runInstall()` trigger (gate here).
 - `src/server/session/session-worker.ts` — `POST /install` in-container execution.
 - `src/server/orchestrator/compose-generator.ts`, `service-manager.ts` — compose
   `command:`/`build:` startup (gate auto-preview here).
 - `src/server/orchestrator/repo-store.ts` — likely home for the trusted-remotes set.
-- `src/server/orchestrator/git-utils.ts` — `parseGitHubRemote()` for the trust key.
+- `src/server/orchestrator/git-utils.ts` — `canonicalRepoKey()` for the trust key (well-defined for every remote, not just GitHub).
 - `src/server/orchestrator/templates*.ts` — mark template-created repos trusted by construction.
 - Client: an inline trust card in the session/preview view + a WS/HTTP accept action.
 
