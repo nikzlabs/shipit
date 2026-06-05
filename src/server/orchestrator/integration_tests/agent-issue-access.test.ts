@@ -63,6 +63,22 @@ describe("Integration: agent issue access (docs/175)", () => {
       // Linear GraphQL — routed by query content.
       if (url.includes("linear.app")) {
         const query = (JSON.parse((init?.body as string) ?? "{}") as { query?: string }).query ?? "";
+        if (query.includes("TeamIssues")) {
+          // A mixed working set: one open, one completed. With includeDone the
+          // tracker returns both; the route post-filters for `--state closed`.
+          return jsonResponse({
+            data: {
+              team: {
+                issues: {
+                  nodes: [
+                    { id: "o", identifier: "SHI-1", title: "Open one", url: "u1", priority: 1, priorityLabel: "Urgent", state: { name: "In Progress", type: "started" }, assignee: null },
+                    { id: "d", identifier: "SHI-2", title: "Done one", url: "u2", priority: 3, priorityLabel: "Medium", state: { name: "Done", type: "completed" }, assignee: null },
+                  ],
+                },
+              },
+            },
+          });
+        }
         if (query.includes("Issue")) {
           return jsonResponse({
             data: {
@@ -203,6 +219,30 @@ describe("Integration: agent issue access (docs/175)", () => {
     trackerFetch.mockImplementationOnce(async () => jsonResponse({ message: "Not Found" }, 404));
     const { exitCode } = await runIssueShim(["issue", "view", "octocat/hello-world#999"]);
     expect(exitCode).toBe(1);
+  });
+
+  it("list --state closed returns only finished issues (no open over-return)", async () => {
+    credentialStore.setLinearToken("lin_api_x");
+    credentialStore.setLinearTeam(TEAM);
+    const { stdout, exitCode } = await runIssueShim([
+      "issue", "list", "--tracker", "linear", "--state", "closed", "--json",
+    ]);
+    expect(exitCode).toBe(0);
+    const issues = JSON.parse(stdout) as { identifier: string }[];
+    // The fake returns SHI-1 (open) + SHI-2 (completed); `closed` keeps only the
+    // done one. `includeDone` alone would have over-returned the open issue.
+    expect(issues.map((i) => i.identifier)).toEqual(["SHI-2"]);
+  });
+
+  it("list --state all keeps both open and finished issues", async () => {
+    credentialStore.setLinearToken("lin_api_x");
+    credentialStore.setLinearTeam(TEAM);
+    const { stdout, exitCode } = await runIssueShim([
+      "issue", "list", "--tracker", "linear", "--state", "all", "--json",
+    ]);
+    expect(exitCode).toBe(0);
+    const issues = JSON.parse(stdout) as { identifier: string }[];
+    expect(issues.map((i) => i.identifier).sort()).toEqual(["SHI-1", "SHI-2"]);
   });
 
   it("rejects a write subcommand with a docs pointer", async () => {

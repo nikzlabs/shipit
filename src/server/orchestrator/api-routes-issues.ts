@@ -26,6 +26,15 @@ import type { GitHubTrackerContext } from "./trackers/index.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 
+/**
+ * Whether a `TrackerIssue.status.type` represents a finished issue. Both GitHub
+ * (closed → "completed") and Linear ("completed"/"canceled") normalize onto the
+ * same vocabulary, so a `--state closed` filter is tracker-neutral.
+ */
+function isDoneStatus(type?: string): boolean {
+  return type === "completed" || type === "canceled";
+}
+
 export async function registerIssueRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
@@ -115,8 +124,12 @@ export async function registerIssueRoutes(
   );
 
   // GET /api/sessions/:id/issue/list?tracker=&state= — list issues for one
-  // tracker. `state` of `all`/`closed` widens the default open working set to
-  // include completed issues (mapped to the tracker's `includeDone`).
+  // tracker. `state` selects the working set:
+  //   - `open` (default): open issues only.
+  //   - `all`: open + completed (the tracker's `includeDone`).
+  //   - `closed`: completed issues only — we fetch `includeDone` (open + done)
+  //     then post-filter to the done set, because `includeDone` alone means
+  //     "open PLUS done" and would over-return open issues for a `closed` query.
   app.get<{ Params: { id: string }; Querystring: { tracker?: string; state?: string } }>(
     "/api/sessions/:id/issue/list",
     async (request, reply) => {
@@ -125,12 +138,17 @@ export async function registerIssueRoutes(
         return;
       }
       const trackerId = request.query.tracker ?? "github";
-      const includeDone = request.query.state === "all" || request.query.state === "closed";
+      const state = request.query.state;
+      const includeDone = state === "all" || state === "closed";
       const github = resolveGitHubContext(request.params.id);
       try {
-        return await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, github, {
+        const result = await listIssuesForTracker(credentialStore, trackerId, trackerFetchImpl, github, {
           includeDone,
         });
+        if (state === "closed") {
+          result.issues = result.issues.filter((i) => isDoneStatus(i.status?.type));
+        }
+        return result;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
