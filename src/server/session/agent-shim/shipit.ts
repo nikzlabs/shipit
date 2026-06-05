@@ -1000,27 +1000,7 @@ async function readIssueBody(
   return undefined;
 }
 
-/** Render a single issue (the `{ tracker, issue }` payload) as plain text. */
-function formatIssue(issue: Record<string, unknown>): string {
-  const lines = [
-    `${asString(issue.identifier)}  ${asString(issue.title)}`,
-  ];
-  const status = issue.status as { name?: string; type?: string } | undefined;
-  if (status?.name) lines.push(`status:     ${status.name}${status.type ? ` (${status.type})` : ""}`);
-  const priority = issue.priority as { label?: string } | undefined;
-  if (priority?.label) lines.push(`priority:   ${priority.label}`);
-  const assignee = issue.assignee as { name?: string } | undefined;
-  if (assignee?.name) lines.push(`assignee:   ${assignee.name}`);
-  if (issue.url) lines.push(`url:        ${asString(issue.url)}`);
-  const available = issue.availableStatuses as { name?: string }[] | undefined;
-  if (available && available.length > 0) {
-    lines.push(`statuses:   ${available.map((s) => s.name).filter(Boolean).join(", ")}`);
-  }
-  if (issue.description) {
-    lines.push("", asString(issue.description));
-  }
-  return lines.join("\n");
-}
+const VALID_TRACKERS = new Set(["github", "linear"]);
 
 async function handleIssueView(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
@@ -1030,23 +1010,62 @@ async function handleIssueView(args: string[], deps: RunDeps): Promise<void> {
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
-  const qs = `?tracker=${encodeURIComponent(tracker)}&id=${encodeURIComponent(id)}`;
+  const pointer = parsed.positional[0];
+  if (!pointer) {
+    fail(
+      deps.io,
+      'shipit issue view: an issue pointer is required, e.g. shipit issue view SHI-28 or shipit issue view owner/repo#42.',
+    );
+  }
+
+  const override = parsed.values.tracker?.toLowerCase();
+  if (override && !VALID_TRACKERS.has(override)) {
+    fail(deps.io, `shipit issue view: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
+  }
+
+  const ref = parseIssueRef(pointer);
+  const tracker = override ?? (ref.tracker === "unknown" ? undefined : ref.tracker);
+  if (!tracker) {
+    fail(
+      deps.io,
+      `shipit issue view: could not infer the tracker from "${pointer}". Pass --tracker github|linear.`,
+    );
+  }
+
+  // Resolve the tracker-native id. `parseIssueRef` supplies it for recognized
+  // shapes; with an explicit --tracker the agent may pass a bare number (GitHub)
+  // or key (Linear) that the parser leaves as "unknown".
+  let issueId = ref.issueId;
+  if (!issueId) {
+    if (/^\d+$/.test(pointer)) issueId = pointer;
+    else if (/^[A-Za-z]+-\d+$/.test(pointer)) issueId = pointer.toUpperCase();
+  }
+  if (!issueId) {
+    fail(
+      deps.io,
+      `shipit issue view: could not determine the issue id from "${pointer}".`,
+    );
+  }
+
+  const qs = `?tracker=${encodeURIComponent(tracker)}&id=${encodeURIComponent(issueId)}`;
   const res = await deps.call("GET", `/agent-ops/issue/view${qs}`, undefined, deps.env);
+  if (res.status === 404) {
+    fail(deps.io, formatError(res, `Issue not found: ${ref.identifier}`), 1);
+  }
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to read issue"), 1);
   }
+
+  const issue = res.body.issue as Record<string, unknown> | undefined;
+  if (!issue) {
+    fail(deps.io, `Issue not found: ${ref.identifier}`, 1);
+  }
   if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.stdout(`${JSON.stringify(issue)}\n`);
     deps.io.exit(0);
     return;
   }
-  const issue = res.body.issue as Record<string, unknown> | undefined;
-  if (!issue) {
-    fail(deps.io, "Issue not found.", 1);
-    return;
-  }
-  success(deps.io, formatIssue(issue));
+  success(deps.io, renderIssue(issue));
 }
 
 async function handleIssueList(args: string[], deps: RunDeps): Promise<void> {
@@ -1057,34 +1076,67 @@ async function handleIssueList(args: string[], deps: RunDeps): Promise<void> {
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const params = new URLSearchParams();
-  if (parsed.values.tracker) params.set("tracker", parsed.values.tracker);
-  if (parsed.values.state) params.set("state", parsed.values.state);
-  const qs = params.toString() ? `?${params.toString()}` : "";
-  const res = await deps.call("GET", `/agent-ops/issue/list${qs}`, undefined, deps.env);
+  const tracker = (parsed.values.tracker ?? "github").toLowerCase();
+  if (!VALID_TRACKERS.has(tracker)) {
+    fail(deps.io, `shipit issue list: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
+  }
+  const state = parsed.values.state?.toLowerCase();
+  if (state && !["open", "closed", "all"].includes(state)) {
+    fail(deps.io, `shipit issue list: --state must be 'open', 'closed', or 'all' (got '${parsed.values.state}').`);
+  }
+
+  const params = new URLSearchParams({ tracker });
+  if (state) params.set("state", state);
+  const res = await deps.call("GET", `/agent-ops/issue/list?${params.toString()}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to list issues"), 1);
   }
+
+  const issues = (res.body.issues as Record<string, unknown>[] | undefined) ?? [];
   if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.stdout(`${JSON.stringify(issues)}\n`);
     deps.io.exit(0);
     return;
   }
-  const issues = (res.body.issues as Record<string, unknown>[] | undefined) ?? [];
   if (issues.length === 0) {
-    success(deps.io, "No issues.");
+    const info = res.body.tracker as Record<string, unknown> | undefined;
+    if (info?.configured === false) {
+      success(deps.io, `${tracker} is not configured in ShipIt — no issues to list.`);
+      return;
+    }
+    success(deps.io, `No issues for ${tracker}.`);
     return;
   }
-  const lines = issues.map((i) => {
-    const status = i.status as { name?: string } | undefined;
-    return [
-      asString(i.identifier),
-      (i.priority as { label?: string } | undefined)?.label ?? "",
-      status?.name ?? "",
-      asString(i.title),
-    ].join("\t");
-  });
+  const lines = issues.map((i) =>
+    [asString(i.identifier), priorityLabel(i), asString(i.title)].join("\t"),
+  );
   success(deps.io, lines.join("\n"));
+}
+
+/** Render a single `TrackerIssue` as a stable human-readable block. */
+function renderIssue(issue: Record<string, unknown>): string {
+  const status = issue.status as Record<string, unknown> | undefined;
+  const assignee = issue.assignee as Record<string, unknown> | undefined;
+  const lines = [
+    `${asString(issue.identifier)}  ${asString(issue.title)}`,
+    `status:    ${status ? asString(status.name) : "(unknown)"}`,
+    `priority:  ${priorityLabel(issue)}`,
+  ];
+  if (assignee && asString(assignee.name)) lines.push(`assignee:  ${asString(assignee.name)}`);
+  if (issue.url) lines.push(`url:       ${asString(issue.url)}`);
+  const available = issue.availableStatuses as { name?: string }[] | undefined;
+  if (available && available.length > 0) {
+    lines.push(`statuses:  ${available.map((s) => s.name).filter(Boolean).join(", ")}`);
+  }
+  const description = asString(issue.description);
+  if (description.trim()) lines.push("", description);
+  return lines.join("\n");
+}
+
+/** Pull the display label off an issue's priority object, defaulting gracefully. */
+function priorityLabel(issue: Record<string, unknown>): string {
+  const priority = issue.priority as Record<string, unknown> | undefined;
+  return priority ? asString(priority.label) || "No priority" : "No priority";
 }
 
 /** Print the write provenance result (a do-then-surface confirmation). */
