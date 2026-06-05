@@ -6,45 +6,46 @@ import type { IframeSlot } from "./useIframePool.js";
 /**
  * Build a subdomain URL for container-mode previews.
  * Pattern: {sessionId}--{port}.{apiHostname}:{apiPort}
+ *
+ * Returns `null` when the host ShipIt is reached on cannot carry a wildcard
+ * subdomain — a raw IPv4/IPv6 literal (you can't make `{id}--{port}.1.2.3.4`
+ * resolve). The caller treats `null` as "no working preview URL for this host"
+ * and surfaces an empty-state rather than a broken iframe. Every other host
+ * (localhost, a dotted domain, a Tailscale name) gets a subdomain URL; whether
+ * it actually resolves is the deployment's wildcard-DNS responsibility.
  */
-type PreviewSubdomainMode = "auto" | "always";
-
 function buildSubdomainUrl(
   sessionId: string,
   port: number,
   apiHost: string,
-  mode: PreviewSubdomainMode = "auto",
 ): string | null {
   const [rawHostname, apiPort] = apiHost.includes(":") ? apiHost.split(":") as [string, string] : [apiHost, ""];
   const apiHostname = /^(127\.\d+\.\d+\.\d+|::1)$/.test(rawHostname) ? "localhost" : rawHostname;
   if (/^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) || apiHostname.includes(":")) return null;
-  if (mode !== "always") {
-    if (
-      (apiHostname !== "localhost" && !apiHostname.includes(".")) ||
-      apiHostname.endsWith(".ts.net") ||
-      apiHostname.endsWith(".beta.tailscale.net")
-    ) return null;
-  }
   const portSuffix = apiPort ? `:${apiPort}` : "";
   return `${window.location.protocol}//${sessionId}--${port}.${apiHostname}${portSuffix}/`;
 }
 
 /**
  * Compute the preview URL for a given session/port/preview status.
+ *
+ * For container previews this is always the subdomain URL — there is no
+ * path-based fallback (it can't render real apps: absolute asset paths 404
+ * without the `/preview/{id}/{port}` prefix). When no subdomain can be built
+ * (raw-IP host), returns `null` so PreviewFrame shows the empty-state.
  */
 function computePreviewUrl(
   sessionId: string,
   port: number,
   preview: PreviewStatus,
   apiHost: string,
-  mode: PreviewSubdomainMode = "auto",
 ): { url: string; containerMode: boolean } | null {
   if (!preview.running || !port) return null;
   const isContainer = preview.url?.startsWith("/preview/") ?? false;
   if (isContainer) {
-    const subdomain = buildSubdomainUrl(sessionId, port, apiHost, mode);
-    const url = subdomain ?? preview.url;
-    return { url, containerMode: true };
+    const subdomain = buildSubdomainUrl(sessionId, port, apiHost);
+    if (!subdomain) return null;
+    return { url: subdomain, containerMode: true };
   }
   return { url: `http://localhost:${port}`, containerMode: false };
 }
@@ -57,7 +58,6 @@ export interface UsePreviewHealthPollerParams {
   pollUrl: string | null;
   isContainerMode: boolean;
   apiHost: string;
-  previewSubdomainMode: PreviewSubdomainMode;
   /** Shared with `useIframePool` — tracks slots that have already been created. */
   createdSlotsRef: React.RefObject<Set<string>>;
   /** Shared with `useIframePool` — tracks slots currently being polled. */
@@ -95,7 +95,6 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
     pollUrl,
     isContainerMode,
     apiHost,
-    previewSubdomainMode,
     createdSlotsRef,
     pollingRef,
     promoteSlot,
@@ -159,7 +158,7 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       pollingRef.current.delete(key);
 
       // Compute the URL and add the slot
-      const result = computePreviewUrl(sessionId ?? "_", activePort, preview, apiHost, previewSubdomainMode);
+      const result = computePreviewUrl(sessionId ?? "_", activePort, preview, apiHost);
       if (result) {
         createdSlotsRef.current.add(key);
         setSlot(key, { url: result.url, containerMode: result.containerMode });
@@ -171,9 +170,9 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       state.cancelled = true;
       pollingRef.current.delete(key);
     };
-  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, previewSubdomainMode, promoteSlot, setSlot, preview, createdSlotsRef, pollingRef]);
+  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, promoteSlot, setSlot, preview, createdSlotsRef, pollingRef]);
 }
 
 // Re-export internal helpers for the consuming component, which also needs
 // `buildSubdomainUrl` for the auth-blocked detection logic.
-export { buildSubdomainUrl, computePreviewUrl, type PreviewSubdomainMode };
+export { buildSubdomainUrl, computePreviewUrl };

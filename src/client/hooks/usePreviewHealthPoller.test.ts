@@ -22,35 +22,57 @@ describe("buildSubdomainUrl", () => {
     );
   });
 
-  it("falls back for raw IP, MagicDNS, and Tailscale HTTPS names", () => {
-    expect(buildSubdomainUrl("session-a", 3000, "100.64.1.2:4123")).toBeNull();
-    expect(buildSubdomainUrl("session-a", 3000, "shipit:4123")).toBeNull();
-    expect(buildSubdomainUrl("session-a", 3000, "shipit.tailnet.ts.net")).toBeNull();
-    expect(buildSubdomainUrl("session-a", 3000, "shipit.tailnet.beta.tailscale.net")).toBeNull();
-  });
-
-  it("forces preview subdomains for MagicDNS and Tailscale HTTPS names when configured", () => {
-    expect(buildSubdomainUrl("session-a", 3000, "shipit:4123", "always")).toBe(
+  it("builds subdomains for dotless and Tailscale hosts (no auto/always mode anymore)", () => {
+    // The `auto`/`always` mode was removed (docs/175): subdomain routing is the
+    // only container-preview path, so these hosts always get a subdomain URL.
+    // Whether it resolves is the deployment's wildcard-DNS responsibility — e.g.
+    // Tailscale's `dns-subdomain-resolve` MagicDNS capability.
+    expect(buildSubdomainUrl("session-a", 3000, "shipit:4123")).toBe(
       "http://session-a--3000.shipit:4123/",
     );
-    expect(buildSubdomainUrl("session-a", 3000, "shipit.tailnet.ts.net", "always")).toBe(
+    expect(buildSubdomainUrl("session-a", 3000, "shipit.tailnet.ts.net")).toBe(
       "http://session-a--3000.shipit.tailnet.ts.net/",
+    );
+    expect(buildSubdomainUrl("session-a", 3000, "shipit.tailnet.beta.tailscale.net")).toBe(
+      "http://session-a--3000.shipit.tailnet.beta.tailscale.net/",
+    );
+  });
+
+  it("returns null for raw IPv4 hosts that cannot carry a wildcard subdomain", () => {
+    expect(buildSubdomainUrl("session-a", 3000, "100.64.1.2:4123")).toBeNull();
+    expect(buildSubdomainUrl("session-a", 3000, "192.168.1.5:3000")).toBeNull();
+  });
+
+  it("normalizes loopback IPs to localhost rather than rejecting them", () => {
+    expect(buildSubdomainUrl("session-a", 3000, "127.0.0.1:3001")).toBe(
+      "http://session-a--3000.localhost:3001/",
     );
   });
 });
 
 describe("computePreviewUrl", () => {
-  it("uses the path proxy when preview subdomains are not resolvable", () => {
+  it("returns the subdomain URL for a container preview on a resolvable host", () => {
     expect(computePreviewUrl("session-a", 3000, preview, "shipit:4123")).toEqual({
-      url: "/preview/session-a/3000/",
+      url: "http://session-a--3000.shipit:4123/",
       containerMode: true,
     });
   });
 
-  it("uses forced preview subdomains when configured", () => {
-    expect(computePreviewUrl("session-a", 3000, preview, "shipit:4123", "always")).toEqual({
-      url: "http://session-a--3000.shipit:4123/",
-      containerMode: true,
+  it("returns null for a container preview when no subdomain can be built (raw-IP host)", () => {
+    // null = "no working preview URL for this host" → PreviewFrame shows the
+    // empty-state instead of rendering a broken iframe.
+    expect(computePreviewUrl("session-a", 3000, preview, "192.168.1.5:4123")).toBeNull();
+  });
+
+  it("uses http://localhost:<port> for a non-container (in-process) preview", () => {
+    const local: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    expect(computePreviewUrl("session-a", 5173, local, "localhost:3001")).toEqual({
+      url: "http://localhost:5173",
+      containerMode: false,
     });
+  });
+
+  it("returns null when the preview is not running", () => {
+    expect(computePreviewUrl("session-a", 3000, { ...preview, running: false }, "localhost:3001")).toBeNull();
   });
 });

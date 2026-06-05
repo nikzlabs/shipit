@@ -10,25 +10,28 @@
       no sslip.io / owned-domain automation. HTTP over the tailnet. — approved
 
 ## Client
-- [ ] `usePreviewHealthPoller.ts`: drop `?? preview.url`; return `null` when
+- [x] `usePreviewHealthPoller.ts`: drop `?? preview.url`; return `null` when
       `subdomain` is null in container mode.
-- [ ] `usePreviewHealthPoller.ts`: remove `mode` param + `mode !== "always"`
+- [x] `usePreviewHealthPoller.ts`: remove `mode` param + `mode !== "always"`
       block from `buildSubdomainUrl`; keep the raw-IP/IPv6 guard; remove
       `PreviewSubdomainMode`.
-- [ ] `PreviewFrame.tsx`: remove `previewSubdomainMode` wiring; add the
+- [x] `PreviewFrame.tsx`: remove `previewSubdomainMode` wiring; add the
       "host can't carry wildcard subdomain previews" empty-state.
-- [ ] `ui-store.ts`: remove `previewSubdomains` field/default/setter.
-- [ ] `App.tsx`: remove `previewSubdomains` bootstrap wiring.
+- [x] `ui-store.ts`: remove `previewSubdomains` field/default/setter.
+- [x] `App.tsx`: remove `previewSubdomains` bootstrap wiring.
+- [x] `session-data.ts`: remove `HistoryResponse.previewSubdomains` + the
+      `setPreviewSubdomains` call (primary bootstrap consumer).
 
 ## Server
-- [ ] `services/misc.ts`: remove `resolvePreviewSubdomainsMode` + bootstrap field.
-- [ ] `services/types.ts`: remove bootstrap field.
-- [ ] `preview-proxy.ts`: (optional) remove path-based route + WS branch.
+- [x] `services/misc.ts`: remove `resolvePreviewSubdomainsMode` + bootstrap field.
+- [x] `services/types.ts`: remove bootstrap field.
+- [x] `preview-proxy.ts`: remove path-based route + WS branch; update header doc.
 
 ## Deployment & docs
-- [ ] `deployment/vps/docker-compose.yml`: remove `SHIPIT_PREVIEW_SUBDOMAINS=always`.
-- [ ] `deployment/README.md`: rewrite Tailscale note; link the Tailscale options.
-- [ ] `shipit-docs/preview.md` / `compose.md`: note subdomain-only requirement.
+- [x] `deployment/vps/docker-compose.yml`: remove `SHIPIT_PREVIEW_SUBDOMAINS=always`
+      (now that the client mode-removal landed, the env var is a no-op).
+- [x] `deployment/README.md`: rewrite Tailscale note (Option A).
+- [x] `shipit-docs/preview.md`: note subdomain-routing (served at origin root).
 
 ## Tailscale previews (setup script) — Option A only
 - [x] `deployment/vps/tailscale.sh`: Host-preserving `socat` forwarder (systemd
@@ -43,12 +46,14 @@
 - [ ] Manual verification on a real tailnet: add the grant, open
       `http://shipit.tailnet.ts.net:4123`, confirm a preview subdomain resolves
       and renders. (Cannot be done from this container.)
-- [ ] Decide whether to drop `SHIPIT_PREVIEW_SUBDOMAINS=always` only *after* the
-      client mode-removal lands (Option A needs `.ts.net` subdomains built; today
-      that requires `always`).
 
 ## Tests
-- [ ] Update/trim `usePreviewHealthPoller` tests for the removed `mode` param.
-- [ ] Add a test: container mode + raw-IP `apiHost` → `computePreviewUrl` returns
+- [x] Rewrote `usePreviewHealthPoller` tests for the removed `mode` param
+      (dotless/`.ts.net` now build subdomains; raw-IP → null).
+- [x] Added test: container mode + raw-IP `apiHost` → `computePreviewUrl` returns
       null (drives empty-state).
-- [ ] Grep for orphaned `previewSubdomains` references after removal.
+- [x] Grepped for orphaned `previewSubdomains` references — none remain in
+      source/deployment.
+- [ ] Manual: open ShipIt over a raw-IP host with a running container preview,
+      confirm the empty-state renders (not an infinite "Connecting…" spinner).
+      (Cannot be done from this container.)

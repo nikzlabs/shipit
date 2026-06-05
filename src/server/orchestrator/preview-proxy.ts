@@ -1,15 +1,16 @@
 /**
  * Preview Proxy — session-ID-based reverse proxy for preview traffic.
  *
- * Primary: Subdomain routing — {sessionId}--{port}.localhost routes ALL
- * requests to the container's bridge IP. Absolute paths (/src/main.tsx,
- * /@vite/client) resolve naturally against the subdomain origin without
- * any HTML rewriting — works with any dev server, not just Vite.
+ * Subdomain routing — {sessionId}--{port}.localhost routes ALL requests to
+ * the container's bridge IP. Absolute paths (/src/main.tsx, /@vite/client)
+ * resolve naturally against the subdomain origin without any HTML rewriting —
+ * works with any dev server, not just Vite. This is the ONLY container-preview
+ * routing mode: a path-based (/preview/:sessionId/:port/*) variant existed but
+ * was removed (docs/175) — it couldn't render real apps because absolute asset
+ * paths 404 without the prefix, and no HTML rewriting was done. Container
+ * reachability is probed separately via /api/preview-health/:sessionId/:port.
  *
- * Fallback: Path-based routing — /preview/:sessionId/:port/* strips the
- * prefix and proxies to the container. Used for polling and diagnostics.
- *
- * Supports WebSocket upgrades for HMR in both modes.
+ * Supports WebSocket upgrades for HMR.
  *
  * Registered when a SessionContainerManager is available (production mode).
  */
@@ -432,50 +433,7 @@ export function registerPreviewProxy(
     },
   );
 
-  // --- Path-based HTTP proxy (fallback) -----------------------------------
-
-  app.all("/preview/:sessionId/:port/*", async (request, reply) => {
-    const params = request.params as {
-      sessionId: string;
-      port: string;
-      "*": string;
-    };
-    const { sessionId } = params;
-    const targetPort = Number(params.port);
-
-    if (
-      !Number.isInteger(targetPort) ||
-      targetPort < 1 ||
-      targetPort > 65535
-    ) {
-      return reply.code(400).send({ error: "Invalid port" });
-    }
-
-    const containerIp = resolveContainerIp(sessionId, targetPort);
-    if (!containerIp) {
-      return reply.code(404).send({ error: "Session container not found" });
-    }
-
-    const wildcard = params["*"] || "";
-    const queryString = request.url.includes("?")
-      ? `?${  request.url.split("?").slice(1).join("?")}`
-      : "";
-    const targetPath = `/${wildcard}${queryString}`;
-
-    reply.hijack();
-    proxyHttp(
-      containerIp,
-      targetPort,
-      targetPath,
-      request.method,
-      request.headers,
-      request.raw,
-      reply.raw,
-      (msg) => reportError(sessionId, targetPort, msg, false),
-    );
-  });
-
-  // --- WebSocket upgrade proxy (subdomain + path-based) -------------------
+  // --- WebSocket upgrade proxy (subdomain) -------------------------------
   //
   // @fastify/websocket registers its own `upgrade` listener (for /ws).
   // Both listeners fire for every upgrade request. For preview WebSockets,
@@ -509,28 +467,6 @@ export function registerPreviewProxy(
           containerIp,
           targetPort,
           req.url || "/",
-          req.headers,
-          socket,
-          (msg) => reportError(sessionId, targetPort, msg, true),
-        );
-        return;
-      }
-
-      // Try path-based
-      const match = req.url?.match(/^\/preview\/([^/]+)\/(\d+)\/(.*)/);
-      if (match) {
-        const [, sessionId, portStr, restPath] = match;
-        const targetPort = Number(portStr);
-        const containerIp = sessionId ? resolveContainerIp(sessionId, targetPort) : null;
-        if (!containerIp) {
-          if (sessionId) reportError(sessionId, targetPort, "Container not found for HMR upgrade", true);
-          socket.destroy();
-          return;
-        }
-        proxyWebSocket(
-          containerIp,
-          targetPort,
-          `/${restPath}`,
           req.headers,
           socket,
           (msg) => reportError(sessionId, targetPort, msg, true),

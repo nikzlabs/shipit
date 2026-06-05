@@ -27,10 +27,6 @@ import { sessionCredentialsRoot } from "../session-credentials.js";
 
 // ---- Read operations ----
 
-function resolvePreviewSubdomainsMode(): "auto" | "always" {
-  return process.env.SHIPIT_PREVIEW_SUBDOMAINS === "always" ? "always" : "auto";
-}
-
 /** Get usage stats. */
 export function getUsageStats(usageManager: UsageManager) {
   return usageManager.getStats();
@@ -89,7 +85,6 @@ export async function getBootstrapData(deps: {
     githubStatus: getGitHubStatus(deps.githubAuthManager),
     settings,
     runtimeMode: deps.runtimeMode ?? "containerized",
-    previewSubdomains: resolvePreviewSubdomainsMode(),
   };
 }
 
