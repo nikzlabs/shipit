@@ -127,8 +127,17 @@ interface PreviewState {
   /** Saved preview state per session, keyed by sessionId. */
   sessionSnapshots: Record<string, SessionPreviewSnapshot>;
 
+  /**
+   * Whether the Services drawer at the bottom of the Preview tab is expanded
+   * (docs/175). A global UI preference (not per-session), persisted to
+   * localStorage. Lifted into the store so the PreviewFrame's "View logs"
+   * overlay button can open the drawer that's rendered as its sibling.
+   */
+  servicesDrawerExpanded: boolean;
+
   setStatus: (status: PreviewStatus | null) => void;
   setSelectedPort: (port: number | null) => void;
+  setServicesDrawerExpanded: (expanded: boolean) => void;
   addError: (error: PreviewError) => void;
   clearErrors: () => void;
   setAutoFixEnabled: (enabled: boolean) => void;
@@ -223,9 +232,16 @@ const initialSessionState: SessionPreviewSnapshot = {
   customSize: null,
 };
 
+const SERVICES_DRAWER_EXPANDED_KEY = "shipit:preview-services:expanded";
+
+function loadServicesDrawerExpanded(): boolean {
+  try { return localStorage.getItem(SERVICES_DRAWER_EXPANDED_KEY) === "1"; } catch { return false; }
+}
+
 const initialState = {
   ...initialSessionState,
   autoFixEnabled: false,
+  servicesDrawerExpanded: loadServicesDrawerExpanded(),
   sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
   // Ephemeral state — never persisted into a session snapshot.
   previewProxyError: null as PreviewState["previewProxyError"],
@@ -237,6 +253,11 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   setStatus: (status) => set({ status }),
 
   setSelectedPort: (port) => set({ selectedPort: port }),
+
+  setServicesDrawerExpanded: (servicesDrawerExpanded) => {
+    try { localStorage.setItem(SERVICES_DRAWER_EXPANDED_KEY, servicesDrawerExpanded ? "1" : "0"); } catch { /* ignore */ }
+    set({ servicesDrawerExpanded });
+  },
 
   addError: (error) =>
     set((state) => {

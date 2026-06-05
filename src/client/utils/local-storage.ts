@@ -26,7 +26,10 @@ export function saveSidebarCollapsed(collapsed: boolean): void {
   }
 }
 
-const VALID_RIGHT_TABS = ["preview", "docs", "issues", "files", "terminal", "history", "services", "pr", "host", "present"] as const;
+// NOTE: "services" was removed (docs/175 — Services is now a drawer inside the
+// Preview tab, not a standalone tab). A legacy persisted "services" value fails
+// the membership check in getSavedRightTab() and falls back to "preview".
+const VALID_RIGHT_TABS = ["preview", "docs", "issues", "files", "terminal", "history", "pr", "host", "present"] as const;
 export type SavedRightTab = typeof VALID_RIGHT_TABS[number];
 
 export function getSavedRightTab(): SavedRightTab {
