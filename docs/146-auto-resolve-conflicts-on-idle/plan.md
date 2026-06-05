@@ -441,6 +441,28 @@ The retry button invokes `resetForUserActivity` via the HTTP route (see Implemen
 
   "Viewing the failure banner" does not reset the counter — the explicit retry button on the banner is the only other reset path. This is intentional: a passive page load shouldn't quietly re-arm a loop that just exhausted itself.
 
+### Settle window after a successful force-push (stale-verdict re-trigger fix)
+
+**Symptom:** "Sometimes, when merge conflicts are automatically resolved, the agent gets the same conflicts again and again." The agent does correct work and force-pushes the resolution, yet the next poll re-dispatches it on the exact same conflicts — in a loop the 3-attempt cap never stops.
+
+**Root cause — the cap is defeated by our own push.** A successful resolution force-pushes the rebased branch, which *rewrites history and changes the head SHA*. On the next poll two guards that are supposed to bound the loop both release:
+
+1. **Budget reset (step 6).** `headSha !== lastHeadSha` ⇒ `clearBudget()` ⇒ `attemptCount` back to 0. The head-SHA-change reset cannot tell "fresh external code" from "our own resolution push landing."
+2. **Arbiter await-fresh-signal.** `actedHeadSha` is the *old* head; the new head differs, so `shouldSuppress` lifts. The arbiter's guard exists to make the *other* automation wait, not to bound our own re-resolves.
+
+The trigger that makes the new head still read `conflicting` is **GitHub mergeability recompute lag**: right after a push, the GraphQL `mergeable` field briefly serves the stale pre-push `conflicting` verdict attached to the *new* head SHA before it flips to `unknown` (which the poller ignores) and then to the recomputed verdict. So the orchestrator re-fires on a verdict that is about to become `mergeable` on its own. The `MAX_AUTO_RESOLVE_ATTEMPTS` cap only ever bounded *consecutive failures on a single head SHA* — never the success → still-conflicting → success cycle, because each force-push minted a new SHA that reset the budget.
+
+**Fix — a per-session settle window armed on a successful force-push.** `writeBack`'s `success + forcePushed` branch sets `state.settleUntil = now + AUTO_RESOLVE_SETTLE_MS` (60s) and pins `nextEligibleAt` to the same instant. Two things then hold the line:
+
+- **Step 6 respects the window.** A head-SHA change *inside* an open settle window is treated as our own push landing, so the budget is **not** reset (the `clearBudget` + `status = "idle"` is skipped). `attemptCount` is preserved across the SHA change, so the cap stays meaningful.
+- **Step 10 holds the re-fire.** Because `nextEligibleAt` is pinned to `settleUntil`, the cooldown gate suppresses any attempt until the window elapses — long enough for GitHub to recompute and the verdict to settle to `mergeable` (→ classify `resolved` → state dropped, no spin) or to a *genuine* `conflicting` (→ the next attempt fires normally and the cap holds).
+
+The window is **scoped to our own force-push**, not to every SHA change. An *errored* or *deferred* attempt does not push, so it does not arm `settleUntil`, and a genuinely new external head (someone else pushed) still resets the budget as before — that is real new work, not a spin. `clearBudget` and `resetForUserActivity` both clear `settleUntil`, so the explicit Retry button / a user chat message bypass the window.
+
+**Where it lives.** The mechanism (the `settleUntil` field, the step-6 guard, clearing it in `clearBudget`) is in the shared `AutoRemediationManager` base, so it is inert for any automation that never sets it (auto-fix-CI does not). The conflict manager opts in by setting `settleUntil` in `writeBack`. Constant: `AUTO_RESOLVE_SETTLE_MS` in `auto-conflict-resolve-manager.ts`. Unit coverage: the `settle:` tests in `auto-conflict-resolve-manager.test.ts`.
+
+> Alternative considered: gate on actually observing GitHub recompute (a `mergeable: "unknown"` transition for the new head) rather than a fixed timer. Rejected as the primary mechanism — the poll can miss the brief `unknown` window entirely, so it is not a reliable edge to wait for, whereas a short time-based window degrades gracefully (worst case: a genuine post-resolve conflict is delayed by ≤60s).
+
 ### WS messages
 
 Two new server → client message types:
@@ -596,6 +618,7 @@ Tests inject a fake clock (`now()`), a fake `isGlobalEnabled()`, a fake `getRunn
 16. `lastKnownMergeable` is cached while disabled: with `isGlobalEnabled() = false`, call `handleTransition` with `mergeable=CONFLICTING` → state is otherwise untouched but `lastKnownMergeable.get(sessionId) === "conflicting"`. Enable the setting; next `handleTransition` with `mergeable=CONFLICTING` → callback fires (no edge filtering anymore; cap+cooldown gates are what protect, both clean here). This is the first-enable correctness test — confirms the cache is populated while disabled so the post-enable poll sees accurate state, and that no spurious retry happens because of stale state.
 17. Toggle off then back on while `nextEligibleAt` is set → state preserved across the toggle; transitions within the cooldown still short-circuit.
 18. Cache snapshot ordering: with `prevKnown === "mergeable"` and an incoming `mergeable=CONFLICTING` poll, step 2 reads `prevKnown` into a local before step 3 writes the cache — confirms the cache write doesn't clobber the snapshot used by later logic. (Mostly a regression test against the algorithm bug an earlier draft had.)
+19. Settle window (the `settle:` tests): a successful force-push sets `settleUntil` and pins `nextEligibleAt` to it; a stale `conflicting` verdict on the freshly-pushed SHA *within* the window does NOT re-fire and does NOT zero the budget; a verdict that recomputes to `mergeable` within the window drops state (no spin); a head still genuinely conflicting *after* the window fires the next attempt; an errored attempt does not arm the window, so a genuinely-new external head still resets the budget; `resetForUserActivity` clears the window.
 
 ### Integration tests (`auto-resolve-conflicts.test.ts`)
 

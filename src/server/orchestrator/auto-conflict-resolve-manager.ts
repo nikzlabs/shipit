@@ -36,6 +36,21 @@ export const AUTO_RESOLVE_COOLDOWN_MS = 5 * 60 * 1000;
  * + wrapper construction + pre-flight checks.
  */
 export const AUTO_RESOLVE_DEFERRED_COOLDOWN_MS = 60 * 1000;
+/**
+ * Settle window opened after a successful force-push. The push rewrites history,
+ * so the head SHA changes; GitHub then returns `mergeable: "unknown"` while it
+ * recomputes the test-merge, and there is a brief window where the GraphQL API
+ * still serves the STALE pre-push `conflicting` verdict attached to the new
+ * head. Without a gate, that stale verdict re-triggers the agent on the exact
+ * conflicts it just resolved — and because the head SHA changed, the per-head
+ * attempt budget resets too, so the 3-attempt cap never bites and the loop is
+ * unbounded. The settle window (a) keeps the budget across our own push's SHA
+ * change and (b) holds the re-fire via `nextEligibleAt` until the upstream has
+ * had time to recompute. If the PR is still genuinely `conflicting` after the
+ * window (base moved again), the next attempt fires normally and the cap holds.
+ * Spans several poll intervals so a slow recompute still settles in-window.
+ */
+export const AUTO_RESOLVE_SETTLE_MS = 60 * 1000;
 
 /**
  * Outcome shape returned by `runAutoResolveAttempt` to the manager.
@@ -249,7 +264,13 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       if (result.forcePushed) {
         state.status = "idle";
         delete state.lastError;
-        delete state.nextEligibleAt;
+        // Open the settle window: our force-push changes the head SHA, and the
+        // upstream verdict for the new head is briefly the stale pre-push value.
+        // Hold any re-fire (and preserve the budget across the SHA change in
+        // step 6) until GitHub has had time to recompute — otherwise the same
+        // conflicts re-trigger immediately and the per-head cap never bites.
+        state.settleUntil = this.now() + AUTO_RESOLVE_SETTLE_MS;
+        state.nextEligibleAt = state.settleUntil;
         emitForcePushed = true;
         pushed = true;
       } else {
