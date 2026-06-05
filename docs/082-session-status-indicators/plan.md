@@ -39,13 +39,24 @@ A session is in the "needs attention" state when **any** of the following are tr
 
 | # | Condition | Why it needs attention |
 |---|-----------|----------------------|
-| 1 | **CI failed** and agent is idle and auto-fix is not running | CI broke; no automated recovery in progress — user must investigate or enable auto-fix |
+| 1 | **CI failed** and agent is idle and **no auto-fix is in flight or queued** | CI broke; no automated recovery owns the next move — user must investigate |
 | 2 | **Auto-fix exhausted** (3 attempts, still failing) | Automated recovery gave up — user must intervene manually |
-| 3 | **PR has merge conflicts** (`mergeable === false`, PR still open) | PR can't merge until conflicts are resolved |
-| 4 | **Auto-merge error** (missing branch protection / repo config) | Merge automation is stuck on a config issue only the user can fix |
-| 5 | **Agent finished turn** and session is not the active one | Work completed in background — user should review the results |
+| 3 | **PR has merge conflicts** (`mergeable === "conflicting"`, PR still open) and **no auto-resolve is in flight or queued** | PR can't merge and no automation owns the resolution — user must resolve |
+| 4 | **Auto-resolve exhausted** (3 attempts, still conflicting) | Automated conflict resolution gave up — user must resolve manually |
+| 5 | **Auto-merge error** (missing branch protection / repo config) | Merge automation is stuck on a config issue only the user can fix |
+| 6 | **Agent finished turn** and session is not the active one, **and auto-merge does not own the merge** | Work completed in background — user should review the results |
 
 Conditions are evaluated in priority order, but the visual treatment is the same for all — a single amber border. The *reason* is communicated via tooltip on hover (see below).
+
+#### Auto-behaviors move the ball out of the user's court
+
+The governing rule for attention (and therefore for notifications — they share `computeAttentionReason`): **notify only when the user must act.** When an auto-behavior is enabled and still has a path forward, *it* owns the next move, so the session is not in an attention state:
+
+- **Auto-fix on, CI failed** — while the loop is `idle`/`deferred`/`running` (enabled with retry budget left) we stay silent. Only `exhausted` (row 2) surfaces. Enablement comes from the global `autoFixCi` setting (`settings-store`); the in-flight status comes from `card.autoFix`.
+- **Auto-resolve on, conflict detected** — same shape via the global `autoResolveConflicts` setting and `card.autoResolve`. Silent until `exhausted` (row 4).
+- **Auto-merge on, idle clean PR** — the user delegated the merge, so the default "Waiting for your input" is suppressed (`card.autoMerge.enabled`). The session re-enters attention only if auto-merge hits a config blocker (row 5) or, independently, a conflict/CI failure that *its* automation doesn't cover. Successful auto-merge ends in `merged` (silent).
+
+Caveat — **timing window**: the client derives attention the instant the agent stops, but the PR poller can lag ~15s before `autoFix`/`autoResolve`/conflict state materializes. The `null → reason` transition guard in `useAttentionNotifications` absorbs most of this (a CI failure first appears as `pending` → `null`). A short post-transition debounce could close the residual stale-success window if it proves noticeable.
 
 **Conditions that do NOT trigger attention:**
 
@@ -60,9 +71,10 @@ When hovering over a session that has the attention border, a tooltip explains w
 
 | Condition | Tooltip text |
 |-----------|-------------|
-| CI failed (no auto-fix) | "CI checks failed" |
+| CI failed (no auto-fix in flight) | "CI checks failed" |
 | Auto-fix exhausted | "CI fix failed after 3 attempts" |
-| Merge conflicts | "PR has merge conflicts" |
+| Merge conflicts (no auto-resolve in flight) | "PR has merge conflicts" |
+| Auto-resolve exhausted | "Conflict resolution failed after 3 attempts" |
 | Auto-merge error | "Auto-merge needs repo configuration" |
 | Agent finished (background) | "Agent finished — review results" |
 

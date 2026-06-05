@@ -2,6 +2,7 @@
 import { useEffect, useRef } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { computeAttentionReason } from "./useAttentionInfo.js";
 import type { NotifyContext } from "./useNotification.js";
@@ -27,6 +28,8 @@ export function useAttentionNotifications(
   const activeRunnerSessions = useSessionStore((s) => s.activeRunnerSessions);
   const cardBySession = usePrStore((s) => s.cardBySession);
   const statusBySession = usePrStore((s) => s.statusBySession);
+  const autoFixEnabled = useSettingsStore((s) => s.autoFixCi);
+  const autoResolveEnabled = useSettingsStore((s) => s.autoResolveConflicts);
 
   const prevReasonsRef = useRef<Map<string, string | null>>(new Map());
 
@@ -39,6 +42,8 @@ export function useAttentionNotifications(
         card: cardBySession[session.id],
         status: statusBySession[session.id],
         isAgentRunning: activeRunnerSessions.has(session.id),
+        autoFixEnabled,
+        autoResolveEnabled,
       });
       next.set(session.id, reason);
 
@@ -54,5 +59,5 @@ export function useAttentionNotifications(
       }
     }
     prevReasonsRef.current = next;
-  }, [sessions, activeRunnerSessions, cardBySession, statusBySession, notify]);
+  }, [sessions, activeRunnerSessions, cardBySession, statusBySession, autoFixEnabled, autoResolveEnabled, notify]);
 }
