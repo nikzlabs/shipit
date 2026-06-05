@@ -94,13 +94,15 @@ So `mode` becomes vestigial and we remove it.
 - `src/server/orchestrator/services/misc.ts` — remove
   `resolvePreviewSubdomainsMode()` and the `previewSubdomains` bootstrap field.
 - `src/server/orchestrator/services/types.ts` — remove the bootstrap field.
-- `src/server/orchestrator/preview-proxy.ts` — **judgment call:** the
-  `/preview/:sessionId/:port/*` HTTP route and its WS-upgrade branch are now
-  unused by the iframe (the health poll uses the separate
-  `/api/preview-health/...`). Options: (a) delete them for cleanliness, or
-  (b) keep them as a cheap diagnostic escape hatch. Leaning **delete**, since a
-  route nothing renders through is a maintenance liability and a source of the
-  "but it half-works" confusion this doc is resolving.
+- `src/server/orchestrator/preview-proxy.ts` — **remove** the
+  `/preview/:sessionId/:port/*` HTTP route and its WS-upgrade branch. They are
+  now unused by the iframe, and the "keep for diagnostics" idea doesn't hold up:
+  container **reachability** is already diagnosed by the purpose-built
+  `/api/preview-health/:sessionId/:port` HEAD probe, and the path-based route
+  only ever returns **broken-asset HTML**, so it's a *misleading* diagnostic
+  (you can't tell from it whether the app works). A route nothing renders
+  through, that lies about app health, is pure maintenance liability — delete it.
+  Keep `/api/preview-health/...` and the subdomain HMR WS branch.
 
 ### Deployment & docs
 
@@ -184,16 +186,58 @@ DNS names are restricted to `device.tailnet.ts.net` — **no per-service
 subdomains**. You'd have to route by sub-path, which is exactly the broken
 path-based model we're removing. Not viable for `{id}--{port}` previews.
 
+### Why Tailscale previews are broken today (and what to change)
+
+The shipped `deployment/vps/tailscale.sh` exposes ShipIt with **Tailscale
+Serve** (`tailscale serve --bg http://127.0.0.1:4123`). Serve binds **only** the
+node's MagicDNS name (`shipit.tailnet.ts.net`) and **cannot** serve
+`{id}--{port}.shipit.tailnet.ts.net` — so previews over the Serve URL are
+structurally impossible. This is *the* reason "previews on Tailscale didn't
+work," independent of the path-based bug. (Option D above is exactly this dead
+end.)
+
+To make previews work, the request must reach ShipIt's subdomain proxy carrying
+a `{id}--{port}.<host>` Host header, where `<host>` resolves to the node over the
+tailnet. That means **binding ShipIt's listener to the node's Tailscale
+interface IP** (not just `127.0.0.1`, and *specifically* the `100.x` IP, not
+`0.0.0.0`, so it isn't exposed on a public interface) and using a
+wildcard-resolvable host. Two recipes `tailscale.sh` should support:
+
+1. **sslip.io — no domain, HTTP, fully scriptable (default).** The script reads
+   `tailscale ip -4` → `100.x.y.z`, and prints:
+   `Open ShipIt over Tailscale at: http://100-x-y-z.sslip.io:<port>`. Previews
+   resolve at `{id}--{port}.100-x-y-z.sslip.io` → same `100.x` IP → subdomain
+   proxy, with **no proxy changes** (the regex already matches
+   `{uuid}--{port}.anything`). HTTP is fine — the tailnet is WireGuard-encrypted.
+   Optional hardening: self-host the (open-source) sslip.io resolver on the node
+   for a fully air-gapped tailnet.
+2. **Owned wildcard domain — HTTPS.** Prompt for a domain, print the records to
+   add (`*.shipit-tail.example.com` → the node's `100.x` IP), open ShipIt
+   through that hostname. Real wildcard TLS via DNS-01.
+
+In both, the documented "open ShipIt at …" URL becomes the wildcard-resolvable
+one. Tailscale Serve can stay for the bare-app convenience URL, but previews use
+the direct tailnet listener.
+
 ### Recommendation
 
-- **Today / any version:** Option B (`sslip.io`) for an individual, Option C
-  (owned wildcard domain) for a team/prod that wants HTTPS.
+- **Default for `tailscale.sh`:** recipe 1 (sslip.io) — zero domain ownership,
+  the script derives the exact URL, works on any Tailscale version today.
+- **Opt-in:** recipe 2 (owned wildcard domain) for HTTPS.
 - **Going forward:** Option A (native MagicDNS wildcard) once a Tailscale release
-  carrying it is widely deployed — then bare MagicDNS "just works" and we can
-  simplify the docs.
+  carrying it is widely deployed — then `{id}--{port}.shipit.tailnet.ts.net`
+  resolves natively, no sslip.io / owned domain needed, just the direct tailnet
+  bind.
 
 The empty-state copy should link to these so a Tailscale user who hits it has a
 concrete next step rather than a dead end.
+
+### Open decision for the setup script
+
+HTTP-over-tailnet (sslip.io) vs HTTPS (owned domain) — and whether to **replace**
+the Serve path or **offer both**. Default proposal: make sslip.io the primary
+Tailscale URL, keep the owned-domain path as an opt-in, and stop pointing users
+at the Serve URL for previews. Needs sign-off (see `checklist.md`).
 
 ## Rejected alternatives
 
