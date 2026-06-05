@@ -63,12 +63,13 @@ const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warnin
 /**
  * Compact identifier for the narrow ID column. GitHub identifiers are
  * `owner/repo#123`, which overflow the 64px track and collide with the title
- * (the full form survives in the link tooltip). Strip the repo path so only the
- * `#123` shows; Linear identifiers (`SHI-1`, no `#`) pass through unchanged.
+ * (the full form survives in the link tooltip). Strip the repo path and the `#`
+ * so only the bare `123` shows; Linear identifiers (`SHI-1`, no `#`) pass
+ * through unchanged.
  */
 function shortIdentifier(identifier: string): string {
   const hash = identifier.indexOf("#");
-  return hash === -1 ? identifier : identifier.slice(hash);
+  return hash === -1 ? identifier : identifier.slice(hash + 1);
 }
 
 function PriorityBadge({ priority }: { priority: TrackerIssue["priority"] }) {

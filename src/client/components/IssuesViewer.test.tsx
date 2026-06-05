@@ -110,8 +110,8 @@ describe("IssuesViewer", () => {
       issues: [makeIssue({ identifier: "nicolasalt/shipit#1047", title: "Self-updater" })],
     });
     render(<IssuesViewer {...props} />);
-    // The narrow ID column shows the compact `#1047`, not the full repo path.
-    expect(screen.getByText("#1047")).toBeInTheDocument();
+    // The narrow ID column shows the bare issue number, not the full repo path.
+    expect(screen.getByText("1047")).toBeInTheDocument();
     expect(screen.queryByText("nicolasalt/shipit#1047")).not.toBeInTheDocument();
     // The full identifier survives in the tracker-link tooltip.
     expect(
