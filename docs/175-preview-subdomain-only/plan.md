@@ -219,25 +219,57 @@ In both, the documented "open ShipIt at …" URL becomes the wildcard-resolvable
 one. Tailscale Serve can stay for the bare-app convenience URL, but previews use
 the direct tailnet listener.
 
-### Recommendation
+### Decision: Option A is the only supported Tailscale recipe
 
-- **Default for `tailscale.sh`:** recipe 1 (sslip.io) — zero domain ownership,
-  the script derives the exact URL, works on any Tailscale version today.
-- **Opt-in:** recipe 2 (owned wildcard domain) for HTTPS.
-- **Going forward:** Option A (native MagicDNS wildcard) once a Tailscale release
-  carrying it is widely deployed — then `{id}--{port}.shipit.tailnet.ts.net`
-  resolves natively, no sslip.io / owned domain needed, just the direct tailnet
-  bind.
+Native MagicDNS wildcard **is available now** — Tailscale stable is **v1.98.5**
+(2026-06-01), issue #1196 is closed (PR #18356). It's an **opt-in ACL grant**
+(undocumented in the changelog/MagicDNS docs, but live): add a `nodeAttrs` entry
+granting `dns-subdomain-resolve` to the node, and `*.shipit.tailnet.ts.net`
+resolves to the node's tailnet IP. HTTP only (no wildcard cert,
+[tailscale#7081](https://github.com/tailscale/tailscale/issues/7081)) — fine over
+the WireGuard-encrypted tailnet.
 
-The empty-state copy should link to these so a Tailscale user who hits it has a
-concrete next step rather than a dead end.
+We support **only Option A** for `tailscale.sh`. It needs no third-party DNS
+(unlike B/sslip.io) and no owned domain (unlike C), at the cost of one ACL paste
+and HTTP-only. B and C remain valid manual setups a user can do themselves, but
+the script targets A.
 
-### Open decision for the setup script
+### How `tailscale.sh` wires Option A
 
-HTTP-over-tailnet (sslip.io) vs HTTPS (owned domain) — and whether to **replace**
-the Serve path or **offer both**. Default proposal: make sslip.io the primary
-Tailscale URL, keep the owned-domain path as an opt-in, and stop pointing users
-at the Serve URL for previews. Needs sign-off (see `checklist.md`).
+1. **Install / auth Tailscale, set hostname** (existing behavior, kept).
+2. **Host-preserving forwarder on the tailnet IP.** The orchestrator listens on
+   `127.0.0.1:4123` and Tailscale **Serve cannot carry wildcard subdomains**
+   (Serve binds only the node's own name; Option D). So we run a small
+   `socat` TCP forwarder (a systemd unit) bound to the node's tailnet IP
+   (`tailscale ip -4`, **not** `0.0.0.0`) → `127.0.0.1:4123`. TCP-level
+   forwarding preserves the `Host` header, so the orchestrator's subdomain proxy
+   sees `{id}--{port}.shipit.tailnet.ts.net` and routes to the container. A tiny
+   wrapper re-reads the tailnet IP at unit start so a re-auth that changes the
+   IP self-heals. **Serve is dropped from the preview path** — the single
+   supported URL becomes `http://shipit.tailnet.ts.net:4123`, which serves both
+   the app and (as subdomains) previews from one origin.
+3. **ACL grant (operator action).** A `nodeAttrs` change is a *tailnet policy*
+   edit, which can't be made safely from the node's shell (auto-editing HuJSON
+   risks clobbering the user's policy). The script **prints** a ready-to-paste
+   block targeting this node's tailnet IP plus the admin-console link:
+   ```json
+   { "nodeAttrs": [{ "target": ["<node-100.x-ip>"], "attr": ["dns-subdomain-resolve"] }] }
+   ```
+4. **Print the access URL** and note previews resolve at
+   `{id}--{port}.shipit.tailnet.ts.net:4123` once the grant is added.
+
+**Client dependency:** the client only builds a `.ts.net` subdomain URL when
+`previewSubdomains` is `always` (the `auto` heuristic rejects `.ts.net`). Prod
+already sets `SHIPIT_PREVIEW_SUBDOMAINS=always`, and the mode-removal in this doc
+makes subdomain-building unconditional — either way Option A's client side is
+covered. (Raw-IP access still can't be subdomained; that's the empty-state.)
+
+### Future simplification
+
+Once a Tailscale release with `dns-subdomain-resolve` is old enough to assume,
+the only remaining step is the forwarder + the grant; if Tailscale ever ships
+wildcard certs ([#7081](https://github.com/tailscale/tailscale/issues/7081)) we
+can move the tailnet URL to HTTPS.
 
 ## Rejected alternatives
 
