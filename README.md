@@ -6,12 +6,24 @@
 **Describe products into existence — on your own Git, containers, and server.** Chat-driven
 development that still ships the way real software does: branches, reviews, CI, and deploys.
 
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0">
+  <img src="https://img.shields.io/badge/status-early%20public%20release-orange" alt="Status: early public release">
+  <img src="https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white" alt="Self-hosted via Docker">
+</p>
+
 <!-- TODO: hero screenshot or GIF — one frame showing chat + live preview + the inline PR card.
      Drop it at docs/assets/hero.png (or .gif for the describe → preview → PR loop) and uncomment:
 <p align="center">
   <img src="docs/assets/hero.png" alt="ShipIt: chat, live preview, and the inline PR card in one screen" width="900">
 </p>
 -->
+
+<!-- TODO: 60-second demo video / live demo link. For a self-hosted app there's no `npm install`
+     quick-win, so a video lets people evaluate without cloning + building Docker images. Host it
+     (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
+     or a clickable thumbnail right under the hero image. -->
+
 
 ShipIt is a browser-based AI dev environment: describe what you want in chat, the agent writes the
 code, and you see results live. It has the ease of prompt-to-app builders, but the work runs through
@@ -39,6 +51,27 @@ _your_ infrastructure. A few choices make that possible:
 That adds up to one promise: **the build, review, ship, and debug loop stays in the conversation.**
 You describe intent, watch the preview update, and refine with the agent turn by turn while ShipIt
 runs commands, edits files, opens PRs, watches checks, and brings the results back into chat.
+
+## Why not just use the Claude or Codex app?
+
+You probably already have Claude Code or Codex. ShipIt runs them as its backend — and wraps them in
+everything the bare CLIs and their desktop/web apps leave out:
+
+- **Parallel agent sessions, fully isolated.** The CLIs run one agent in your working tree. ShipIt
+  gives every session its own container, branch, and chat history, so you can fan work out without
+  sessions stepping on each other's files, processes, or installed dependencies.
+- **It's not your laptop's problem.** The desktop and web apps tie the work to the machine in front
+  of you. ShipIt is self-hosted on a VPS — start a change, close the lid, and previews, CI, and
+  follow-up work keep running.
+- **Real previews, not a throwaway sandbox.** ShipIt boots your actual Compose stack — dev server,
+  database, queues — and renders the live app inline with HMR, instead of an environment you can't
+  shape.
+- **GitHub comes to you.** PRs, CI checks, review threads, diffs, and deploy status all render in
+  the chat. The web apps send you off to a GitHub tab; ShipIt keeps the whole loop in one place.
+- **Built for the phone.** Dictate a prompt, hear a spoken summary when the turn lands, review and
+  merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile.
+- **Your tools stay familiar.** Git, a real terminal, file browsing, inline diffs — exposed, not
+  hidden. You keep the control an engineer expects while the boring orchestration is automated away.
 
 ## Agents
 
@@ -208,27 +241,6 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 - Voice input and spoken summaries require configuring a supported voice provider for speech
   services.
 
-## Why not just use the Claude or Codex app?
-
-You probably already have Claude Code or Codex. ShipIt runs them as its backend — and wraps them in
-everything the bare CLIs and their desktop/web apps leave out:
-
-- **Parallel agent sessions, fully isolated.** The CLIs run one agent in your working tree. ShipIt
-  gives every session its own container, branch, and chat history, so you can fan work out without
-  sessions stepping on each other's files, processes, or installed dependencies.
-- **It's not your laptop's problem.** The desktop and web apps tie the work to the machine in front
-  of you. ShipIt is self-hosted on a VPS — start a change, close the lid, and previews, CI, and
-  follow-up work keep running.
-- **Real previews, not a throwaway sandbox.** ShipIt boots your actual Compose stack — dev server,
-  database, queues — and renders the live app inline with HMR, instead of an environment you can't
-  shape.
-- **GitHub comes to you.** PRs, CI checks, review threads, diffs, and deploy status all render in
-  the chat. The web apps send you off to a GitHub tab; ShipIt keeps the whole loop in one place.
-- **Built for the phone.** Dictate a prompt, hear a spoken summary when the turn lands, review and
-  merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile.
-- **Your tools stay familiar.** Git, a real terminal, file browsing, inline diffs — exposed, not
-  hidden. You keep the control an engineer expects while the boring orchestration is automated away.
-
 ## Contributing
 
 ShipIt isn't accepting pull requests right now — if you have a bug report, idea, or feature request,
@@ -236,6 +248,12 @@ please [open an issue](https://github.com/nicolasalt/shipit/issues). For the arc
 and module layout, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Found a security vulnerability? Don't open a public issue — follow [SECURITY.md](SECURITY.md).
+
+## Author
+
+Built and maintained by Nik Zherebtsov —
+[LinkedIn](https://www.linkedin.com/in/REPLACE_ME) ·
+[GitHub](https://github.com/nicolasalt)
 
 ## License
 
