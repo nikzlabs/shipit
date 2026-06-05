@@ -15,7 +15,6 @@ import { usePreviewStore } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { StartupSteps } from "./StartupSteps.js";
-import { ServiceList } from "./ServiceList.js";
 import { DeviceSelector } from "./DeviceSelector.js";
 import { useIframePool } from "../hooks/useIframePool.js";
 import { usePreviewHealthPoller, buildSubdomainUrl } from "../hooks/usePreviewHealthPoller.js";
@@ -73,14 +72,6 @@ interface PreviewFrameProps {
   onSendCrashToAgent?: () => void;
   /** Called when user clicks "Send to agent" to ask the agent to add compose config. */
   onSendComposeHintToAgent?: () => void;
-  /**
-   * Called when the user clicks Start on a manual service in the inline
-   * service list. Wired to the WS `start_service` message in `App.tsx`.
-   * Optional so existing render sites don't have to know about it.
-   */
-  onStartService?: (name: string) => void;
-  /** Called when the user clicks Stop on a service in the inline list. */
-  onStopService?: (name: string) => void;
 }
 
 function formatErrorForMessage(errors: PreviewError[]): string {
@@ -116,8 +107,6 @@ export function PreviewFrame({
   onClearErrors,
   onSendCrashToAgent,
   onSendComposeHintToAgent,
-  onStartService,
-  onStopService,
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const autoFixRetries = usePreviewStore((s) => s.autoFixRetries);
@@ -512,44 +501,23 @@ export function PreviewFrame({
       </div>
     );
   } else if (showServices) {
-    // When the entire compose stack is manual (no auto services declared),
-    // surface the service list inline with Start/Stop buttons so the user
-    // doesn't have to bounce to the Services tab to launch a preview. This
-    // is the dogfooding case (a single `dev` service marked manual) and any
-    // future "infra-only" projects. When auto services exist, we keep the
-    // simpler "View service logs" overlay because the preview is expected
-    // to come up on its own and the inline list would just be noise.
+    // No preview is running but compose services exist. The Services drawer
+    // (docs/175) docked below already lists every service with Start/Stop and
+    // logs, so this overlay only nudges the user toward it instead of
+    // duplicating the list. `manualOnly` just tunes the copy (the dogfooding
+    // case is a single manual `dev` service the user must start by hand).
     const manualOnly = services.length > 0 && services.every(s => s.preview === "manual");
-    if (manualOnly && onStartService && onStopService) {
-      overlayContent = (
-        <div className="space-y-3 px-6 max-w-md w-full">
-          <p className="text-sm text-(--color-text-secondary) text-center">
-            No preview running. Start a service to launch it.
-          </p>
-          <ServiceList
-            services={services}
-            onStart={onStartService}
-            onStop={onStopService}
-            onSelectPreview={() => { /* preview auto-pivots when the service comes up */ }}
-          />
-          <div className="text-center">
-            <Button variant="ghost" size="sm" onClick={() => useUiStore.getState().setRightTab("services")}>
-              View logs
-            </Button>
-          </div>
-        </div>
-      );
-    } else {
-      overlayContent = (
-        <div className="text-center space-y-3">
-          <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
-          <p className="text-sm text-(--color-text-secondary)">No preview running</p>
-          <Button variant="secondary" size="sm" onClick={() => useUiStore.getState().setRightTab("services")}>
-            View service logs
-          </Button>
-        </div>
-      );
-    }
+    overlayContent = (
+      <div className="text-center space-y-3 max-w-sm px-4">
+        <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
+        <p className="text-sm text-(--color-text-secondary)">
+          {manualOnly ? "No preview running. Start a service to launch it." : "No preview running"}
+        </p>
+        <Button variant="secondary" size="sm" onClick={() => usePreviewStore.getState().setServicesDrawerExpanded(true)}>
+          Show services
+        </Button>
+      </div>
+    );
   }
 
   return (
