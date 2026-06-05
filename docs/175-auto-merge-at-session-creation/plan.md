@@ -89,12 +89,32 @@ state.
 Arming at creation is sharper than arming mid-session: today the user toggles
 auto-merge *after* seeing the agent's work; here they're trusting code they
 haven't read at all. The only thing between a bad turn and `main` is the CI gate
-in `AutoMergeManager` (`checks.state === "success"` + mergeable + approvals), and
-on a repo with **no required checks** that gate is effectively empty
-(`checks.state === "none"` counts as passing, including the managed-merge
-fallback in docs/077).
+in `AutoMergeManager` (`checks.state === "success"` + mergeable + approvals).
 
-We considered gating the creation-time toggle on the repo having required checks.
+**What "no CI gate" actually means — get the signal right.** The empty-gate case
+is **not** "the repo has no branch-protection required checks." It is
+`checks.state === "none"`, which `pr-status-parser.ts` computes as `total === 0`
+— the PR's **head commit has zero check runs / status contexts** — and
+`AutoMergeManager.handleManaged` merges on `"success"` **or** `"none"`
+(`auto-merge-manager.ts`, the `isCiPassed || isCiNone` rule from docs/113). These
+are different signals and they diverge both ways:
+
+- A repo with **no required checks** can still run CI on PRs (a plain
+  `on: pull_request` GitHub Actions workflow). That produces
+  `success`/`pending`/`failure`, **not** `none` — so auto-merge *does* wait for
+  CI. A "does this repo have required checks?" lookup would wrongly warn "no CI
+  gate" here.
+- A repo *with* required checks can still produce a PR whose head commit runs no
+  matching checks → `none` → immediate merge. A required-checks lookup would
+  wrongly stay silent.
+
+So any warning must key off the actual **`checks.state === "none"`** condition,
+not branch-protection config. And that condition is a property of a **specific
+PR's head commit**, which does not exist at overlay time — it is therefore **not
+reliably knowable before the PR exists.** This directly shapes what each surface
+can honestly say (below).
+
+We considered gating the creation-time toggle on CI presence at all.
 **Rejected.** Experimental / throwaway projects legitimately have no CI and may
 never want any — for those, "merge as soon as the PR is open and mergeable" is
 exactly the intended behavior, not an accident. Hiding the toggle to protect the
@@ -106,30 +126,29 @@ without making the deliberate user any safer. It would also cut against §5 — 
 be second-guessing stated intent.
 
 So the toggle is **always present**, on every repo. The honesty obligation is met
-by **transparency, not a block**: when auto-merge is armed on a repo with no
-required checks, the UI states plainly what will happen — e.g. *"Will merge as
-soon as the PR is open and mergeable — this repo has no CI gate."* The user is
-informed; the user is never blocked.
+by **transparency, not a block** — but the two surfaces can say different things,
+because they know different things:
 
-This line must appear in **both** surfaces, not just one:
+- **The PR lifecycle card** (durable reminder, after the PR exists). By this point
+  `checks.state` is in hand, so the card can show the **precise** line *only when
+  it actually applies*: when armed and `checks.state === "none"`, render *"Will
+  merge as soon as the PR is mergeable — this PR has no CI checks."* This is the
+  accurate, conditional warning.
+- **The quick-capture overlay** (at arm time, before any PR/head commit exists).
+  Here we **cannot** know whether the eventual PR will have checks, so the overlay
+  must **not** claim a per-repo "no CI gate" verdict it can't compute. Instead it
+  shows an **unconditional, honest description of what arming does**, e.g. *"This
+  PR will merge automatically once it's open and mergeable. If it has no CI
+  checks, it merges immediately — without review."* This informs the
+  fire-and-forget user (the load-bearing case: a quick session may **never** be
+  opened, so the card alone would never reach them) without depending on a signal
+  that doesn't exist yet.
 
-- **The quick-capture overlay**, inline next to the checkbox, *at arm time*. This
-  is the load-bearing one for this feature: a quick session is fire-and-forget —
-  the user may **never open the session and never see the PR card**. If the only
-  warning lived on the card, the user who most needs it (armed-and-walked-away)
-  would never see it. So the overlay must show the no-CI consequence at the moment
-  the box is checked.
-- **The PR lifecycle card**, as the durable reminder once the PR exists, for the
-  user who *does* come back to the session.
-
-**Implementation implication:** showing the line in the overlay means we must know
-whether the *selected* repo has required checks **at overlay time** — before the
-session or PR exists — and re-evaluate it when the repo dropdown changes. The card
-half is cheap (CI state is already in hand once the PR exists); the overlay half
-needs a lightweight "does this repo gate on checks?" lookup keyed by repo. Treat
-that lookup as part of this feature, not an afterthought — without it the overlay
-line can't render. Cache per repo within the overlay session to avoid refetching
-on every keystroke.
+This still satisfies the user's "both surfaces" requirement: the overlay always
+informs at arm time; the card adds the precise per-PR verdict once it's knowable.
+What it explicitly drops is the earlier (wrong) plan to drive the overlay line
+from a repo-level "required checks" lookup — that signal is both incorrect (see
+the divergences above) and unavailable pre-PR.
 
 **Mobile is a first-class target, not an afterthought.** Quick-capture is heavily
 a mobile / on-the-go surface (it's the "I just thought of something" path), so the
@@ -160,13 +179,12 @@ design (decision #1).
 
 | File | Change |
 |------|--------|
-| `src/client/components/QuickCaptureOverlay.tsx` | New auto-merge checkbox in the overlay form; default off; **not** wired to `localStorage`. Always present (no CI-presence gating, per decision #2). Renders the inline "no CI gate" line when the selected repo has no required checks; must look deliberate on mobile breakpoints. |
-| Repo required-checks lookup (overlay-time) | A lightweight "does this repo gate on required checks?" query, keyed by repo, so the overlay can render the no-CI line before any session/PR exists. Likely a small server route + client hook; cache per repo within the overlay. |
+| `src/client/components/QuickCaptureOverlay.tsx` | New auto-merge checkbox in the overlay form; default off; **not** wired to `localStorage`. Always present (no CI-presence gating, per decision #2). Renders the **unconditional** arm-time note ("merges automatically once mergeable; if no CI checks, merges immediately") — **no repo lookup**, since the per-PR `checks.state === "none"` signal isn't knowable pre-PR (decision #2). Must look deliberate on mobile breakpoints. |
 | `src/client/stores/actions/session-actions.ts` | `createHeadlessSession()` carries an optional `armAutoMerge` flag into the request. |
 | `src/server/orchestrator/api-routes-session.ts` | `POST /api/sessions/headless` accepts the optional flag (validate as boolean). |
 | `src/server/orchestrator/services/headless-sessions.ts` | `CreateHeadlessSessionOptions` gains the flag; after the session is claimed/graduated, seed the per-session armed auto-merge state. |
 | `src/server/orchestrator/services/github.ts` / `auto-merge-manager.ts` / `pr-status-poller.ts` | **Reused as-is** — the seed calls the existing toggle/arm path; no new merge logic. |
-| `src/client/components/PrLifecycleCard.tsx` | Durable "no CI gate on this repo" transparency line on the card when armed without required checks (decision #2). Coordinate with PR #1054's inline-toggle placement and verify on mobile breakpoints (#1054 reworks the card's responsive layout). |
+| `src/client/components/PrLifecycleCard.tsx` | Durable transparency line on the card, shown **only when armed and `checks.state === "none"`** ("this PR has no CI checks", decision #2). Coordinate with PR #1054's inline-toggle placement and verify on mobile breakpoints (#1054 reworks the card's responsive layout). |
 
 ## Relationship to other docs
 

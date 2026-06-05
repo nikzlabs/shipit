@@ -7,9 +7,12 @@
 - [x] Toggle is **always present**, no CI-presence gating (decision #2). The
       per-session explicit opt-in is the gate; experimental/no-CI repos are a
       first-class use case. Inform, never block.
-- [x] The "no CI gate" transparency line shows in **both** the overlay (at arm
-      time) and the PR card (durable reminder) — not card-only, because a quick
-      session may never be opened.
+- [x] Transparency shows in **both** surfaces, but they say different things
+      (decision #2): the overlay shows an **unconditional** arm-time note (the
+      per-PR `checks.state === "none"` signal isn't knowable pre-PR, so no repo
+      lookup); the card shows a **conditional** line only when armed and
+      `checks.state === "none"`. Both-surfaces because a quick session may never
+      be opened.
 - [x] Mobile is a first-class target for both surfaces, verified explicitly.
 
 ## Server
@@ -28,19 +31,18 @@
       code comment citing this doc so nobody "fixes" it later.
 - [ ] Thread `armAutoMerge` through `createHeadlessSession()`
       (`session-actions.ts`).
-- [ ] Overlay-time required-checks lookup: query whether the selected repo gates
-      on required checks (server route + client hook, cached per repo);
-      re-evaluate when the repo dropdown changes.
-- [ ] Render the "no CI gate" transparency line inline in the overlay when the
-      selected repo has no required checks (decision #2). Inform, don't block.
-- [ ] Render the durable "no CI gate" line on the PR card when armed without
-      required checks; coordinate with #1054's inline-toggle placement.
+- [ ] Render the **unconditional** arm-time note inline in the overlay
+      ("merges automatically once mergeable; if no CI checks, merges
+      immediately"). No repo lookup — see decision #2. Inform, don't block.
+- [ ] Render the **conditional** durable line on the PR card, shown only when
+      armed and `checks.state === "none"`; coordinate with #1054's inline-toggle
+      placement.
 
 ## Mobile / responsive
-- [ ] Overlay checkbox + no-CI line look deliberate at mobile width — label,
-      checkbox, and warning wrap cleanly and stay tappable.
-- [ ] PR-card no-CI line verified on mobile breakpoints (#1054 reworks the card's
-      responsive layout; the inline toggle was previously `md:hidden`).
+- [ ] Overlay checkbox + arm-time note look deliberate at mobile width — label,
+      checkbox, and note wrap cleanly and stay tappable.
+- [ ] PR-card no-checks line verified on mobile breakpoints (#1054 reworks the
+      card's responsive layout; the inline toggle was previously `md:hidden`).
 - [ ] Screenshot both surfaces on a narrow viewport during implementation.
 
 ## Tests
