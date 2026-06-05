@@ -6,6 +6,8 @@ docs/176.
 
 ## Shared
 - [ ] Move `parseIssueRef` from `src/client/utils/issue-ref.ts` to `src/shared/issue-ref.ts`; update client import
+- [ ] Extend `parseIssueRef`: recognize bare Linear key `[A-Za-z]+-\d+` (not just the full URL)
+- [ ] Extend `parseIssueRef`: surface tracker-native `issueId` (GitHub bare number, Linear key) for `getIssue`
 
 ## Shim
 - [ ] Add `issue` top-level subcommand to `agent-shim/shipit.ts` with `view`/`list` handlers

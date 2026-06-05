@@ -90,13 +90,34 @@ shipit issue list [--tracker github|linear] [--state open|closed|all] [--json]
   `TrackerIssue` object for parsing. **The output shape is identical across
   trackers** — that is the whole point.
 
-### Shared pointer parsing
+### Shared pointer parsing — move **and extend**
 
-`parseIssueRef()` already infers tracker-from-shape, but it lives client-side
-(`src/client/utils/issue-ref.ts`) for the jump-to-issue chip. Move it to
-**`src/shared/issue-ref.ts`** so the client chip, the shim, and the server route
-resolve pointers through one source of truth — no second regex to drift. This is
-the single change that makes "pass the pointer verbatim" work end to end.
+`parseIssueRef()` infers tracker-from-shape today, but only partially, and it
+lives client-side (`src/client/utils/issue-ref.ts`) for the jump-to-issue chip.
+Making "pass the pointer verbatim" hold end to end requires **moving it to
+`src/shared/issue-ref.ts`** (one source of truth for the chip, the shim, and the
+server route) **and extending it on two points the current implementation gets
+wrong for this use case**:
+
+1. **It does not recognize a bare Linear key.** The Linear branch matches only a
+   full `https://linear.app/.../issue/SHI-28` URL (`LINEAR_URL_RE`). A bare
+   `SHI-28` — the form the agent most often holds, e.g. from a doc's `issue:`
+   pointer or the user saying "work on SHI-28" — falls through to
+   `{ tracker: "unknown" }`. Add a `[A-Za-z]+-\d+` key pattern so `SHI-28`
+   resolves to `tracker: "linear"`.
+2. **It exposes only a combined display `identifier`, not the id `getIssue`
+   needs.** `getIssue(id)` wants the **tracker-native** id: `GitHubTracker`
+   builds `/repos/{owner}/{repo}/issues/${id}` and needs the **bare number**
+   (`42`), while `parseIssueRef` returns `identifier: "owner/repo#42"`; passing
+   that yields `/issues/owner%2Frepo%2342` → 404. `LinearTracker.getIssue` takes
+   the **key** (`SHI-28`). So `parseIssueRef` must additionally surface a
+   tracker-native `issueId` field — the bare number for GitHub, the key for
+   Linear — which the shim/route forwards to `getIssue`. (For GitHub the owner/
+   repo are re-derived server-side from the session remote via
+   `resolveGitHubContext`, so only the number needs to flow through.)
+
+Without both extensions the two cases this design centers on — `view SHI-28` and
+`view owner/repo#42` — do not work.
 
 ### Data flow
 
@@ -106,7 +127,8 @@ A thin vertical slice over the registry that already backs the Issues tab:
 Agent (Bash):  shipit issue view SHI-28
   │
   ▼  src/server/session/agent-shim/shipit.ts
-     parseIssueRef → tracker=linear, id=SHI-28
+     parseIssueRef (extended) → { tracker: "linear", issueId: "SHI-28" }
+       (a GitHub `owner/repo#42` → { tracker: "github", issueId: "42" })
      GET localhost:9100 /agent-ops/issue/view?tracker=linear&id=SHI-28
   │
   ▼  src/server/session/agent-ops-routes.ts
@@ -161,10 +183,11 @@ docs/156). A `REJECTED_ISSUE_SUBCOMMANDS` set enforces this at the shim, matchin
 how `shipit session` rejects `delete`/`adopt`.
 
 **Pointer shape-inference, with `--tracker` override.** The agent passes the
-doc's `issue:` value verbatim; the shared `parseIssueRef` resolves the tracker.
-This is strictly better than forcing `shipit issue view github owner/repo#N`,
-because the pointer the agent already has *is* the input. `--tracker` covers the
-rare ambiguous/unknown shape.
+doc's `issue:` value verbatim; the shared (and extended — see *Shared pointer
+parsing*) `parseIssueRef` resolves both the tracker and the tracker-native
+`issueId`. This is strictly better than forcing `shipit issue view github
+owner/repo#N`, because the pointer the agent already has *is* the input.
+`--tracker` covers the rare ambiguous/unknown shape.
 
 **Session repo only for GitHub.** Like the PR shim, GitHub issue reads target the
 session's own repo (resolved from the remote). Cross-repo reads are a deferred
