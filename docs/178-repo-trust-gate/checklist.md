@@ -1,37 +1,34 @@
 # Repo trust gate — checklist
 
-Design only so far. No implementation yet.
-
-## Decisions to lock before building
+## Decisions locked
 - [x] Agent-while-untrusted: **option (a)** — allow chat, gate only auto-exec (install + compose)
-- [ ] Trust key: reuse `canonicalRepoKey()` (git-utils.ts); do NOT use raw URL or `parseGitHubRemote()` (null for non-GitHub remotes → shared key)
-- [ ] Persistence home: `RepoStore` trusted-remotes set vs dedicated store
-- [ ] No-remote local sessions: trusted by construction?
-- [ ] Re-prompt policy on remote change / `shipit.yaml` rewrite (likely: don't, document limitation)
+- [x] Trust key: reuse `canonicalRepoKey()` (git-utils.ts); do NOT use raw URL or `parseGitHubRemote()` (null for non-GitHub remotes → shared key)
+- [x] Persistence home: `RepoStore` `trusted` column (no dedicated store)
+- [x] No-remote local sessions: **trusted by construction** (locally authored)
+- [x] Re-prompt policy on remote change / `shipit.yaml` rewrite: **don't** — TOFU trusts the remote identity; documented as a known limitation
 
 ## Server
-- [ ] Trusted-remotes persistence (read/write/list) keyed by `canonicalRepoKey(url)`
-- [ ] Verify non-GitHub remotes (GitLab/Bitbucket/self-hosted/SSH) each get a distinct trust key
-- [ ] Mark ShipIt template-created repos trusted at creation
-- [ ] Gate warm pre-install (`runPreInstall`/`warmSessionForRepo`) behind trust — the pre-open path
-- [ ] Gate `runInstall()` (on-activation) behind trust; defer until acceptance
-- [ ] Gate auto-preview compose `command:`/`build:` startup behind trust
-- [ ] Accept-trust action (HTTP route or WS message) that unblocks + runs deferred startup
-- [ ] On acceptance: warm/pre-install, re-run deferred `agent.install`, start auto-preview services
+- [x] Trusted-remotes persistence (`isTrusted`/`setTrusted`, `trusted` column) keyed by `canonicalRepoKey(url)`
+- [x] Non-GitHub remotes get a distinct trust key (`canonicalRepoKey` is defined for every remote, unlike `parseGitHubRemote`) — covered by the per-remote isolation unit test
+- [x] Mark ShipIt template-created repos trusted at creation
+- [x] Gate warm pre-install (`runPreInstall`) behind trust — the pre-open path
+- [x] Gate `runInstall()` (on-activation, via `setupServiceManager`) behind trust; defer until acceptance
+- [x] Gate auto-preview compose `command:`/`build:` startup behind trust (same `setupServiceManager` early-return)
+- [x] Accept-trust action: `POST /api/repos/trust` that unblocks + runs deferred startup
+- [x] On acceptance: warm/pre-install (`warmSessionForRepo`), re-run deferred setup for open sessions (`runner.rerunServiceSetup`), broadcast updated repo list
 
 ## Client
-- [ ] Inline trust consent card/banner for untrusted remotes (no link-out, no modal escape)
-- [ ] Wire accept action; reflect trusted state; persist so it doesn't recur per session
+- [x] Inline trust consent banner (`RepoTrustBanner`) for untrusted remotes (no link-out, no modal escape) — rendered above the preview panel
+- [x] Wire accept action (`trustRepo` store action); reflect trusted state from the repo's `trusted` flag; persists in RepoStore so it doesn't recur per session
 
 ## Tests
-- [ ] Untrusted repo *added* (warm pool) does NOT pre-run `agent.install` (the pre-open RCE path)
-- [ ] Untrusted clone does NOT run `agent.install` on activation (regression for the RCE-on-open path)
-- [ ] Untrusted clone does NOT start auto-preview services
-- [ ] Acceptance runs deferred install + previews
-- [ ] Trust cached per remote — second session from same remote does not re-prompt
-- [ ] Template-created repos trusted by construction (never prompt)
+- [x] Untrusted clone does NOT run `agent.install` / start compose on activation (`setupServiceManager` gate unit test)
+- [x] Acceptance lets setup proceed (trusted control case in the same test)
+- [x] Trust cached per remote — `RepoStore` unit tests (canonical identity, per-remote isolation, persistence across instances)
+- [x] Repo added by URL is untrusted by default; `POST /api/repos/trust` trusts it (repos integration test)
+- [x] Client banner shows for untrusted / hides for trusted / accept clears it
+- [ ] End-to-end "untrusted *added* repo skips warm pre-install" assertion — covered structurally by the `runPreInstall` guard + warm tests staying green; a dedicated worker-install-call assertion is deferred (would need the full standby+worker harness)
 
 ## Docs
 - [ ] Add a tracker `issue:` pointer to frontmatter once filed
-- [ ] Cross-link from `docs/172` Gap 3 to this doc
-- [ ] Update `src/server/shipit-docs/` if trust changes agent-visible startup behavior
+- [x] Note the trust gate in `src/server/shipit-docs/preview.md` (agent-visible startup behavior)

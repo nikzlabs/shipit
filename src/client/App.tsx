@@ -25,6 +25,7 @@ import { MessageList } from "./components/MessageList.js";
 import type { RewindGapAction } from "./components/RewindPoint.js";
 import { RocketLaunch } from "./components/RocketLaunch.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
+import { RepoTrustBanner } from "./components/RepoTrustBanner.js";
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
 import { GitHistory } from "./components/GitHistory.js";
 import { AuthOverlayContainer } from "./AuthOverlay.js";
@@ -1117,6 +1118,7 @@ export default function App() {
   const previewVisible = !isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr));
   const rightPanel = (
     <>
+      <RepoTrustBanner key={currentRepoUrl} repoUrl={currentRepoUrl} />
       <div className="flex h-10.25 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
         {!isLocalMode && !isOpsSession && (
           <button onClick={() => handleTabChange("preview")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "preview" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Preview</button>

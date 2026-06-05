@@ -43,6 +43,13 @@ interface RepoState {
    * update was correct.
    */
   reorderRepos: (urls: string[]) => Promise<boolean>;
+  /**
+   * docs/178 — grant trust to a remote (trust-on-first-use). Flips the repo's
+   * `trusted` flag optimistically so the trust banner clears instantly, then
+   * POSTs. The server broadcasts `repo_list`, which re-sets the authoritative
+   * list (a no-op when the optimistic update was correct). Reverts on failure.
+   */
+  trustRepo: (url: string) => Promise<boolean>;
   claimSession: (url: string, signal?: AbortSignal) => Promise<{ sessionId: string; sessionDir: string } | null>;
 }
 
@@ -220,6 +227,29 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       return true;
     } catch (err) {
       console.error("[repo-store] removeRepo failed:", err);
+      return false;
+    }
+  },
+
+  trustRepo: async (url) => {
+    const setTrusted = (trusted: boolean) =>
+      set((state) => ({ repos: state.repos.map((r) => (r.url === url ? { ...r, trusted } : r)) }));
+    // Optimistic — clear the banner immediately.
+    setTrusted(true);
+    try {
+      const res = await fetch("/api/repos/trust", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      if (!res.ok) {
+        setTrusted(false);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error("[repo-store] trustRepo failed:", err);
+      setTrusted(false);
       return false;
     }
   },

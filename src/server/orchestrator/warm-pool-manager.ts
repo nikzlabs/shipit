@@ -213,15 +213,28 @@ export function createWarmPool(
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
             containerManager.createStandby(config).then(async (sc) => {
               console.log(`[warm] Standby container ready for ${appSessionId} at ${sc.workerUrl}`);
-              // Pre-run agent.install so the user doesn't wait for it on activation.
-              // The standby's workspace is bind-mounted from `workspaceDir`, so the
-              // success marker (`.shipit/.install-done`) persists for the future
-              // runner: on activation, `runner.runInstall()` hits the worker, sees
-              // the marker, and short-circuits with `{ skipped: true }`. If the
-              // user activates *during* pre-install, the worker's /install endpoint
-              // joins the in-flight run (no longer 409s) and the orchestrator-side
-              // SSE listener resolves on the same `install_done`/`install_error`.
-              await runPreInstall(workspaceDir, sc.workerUrl, appSessionId);
+              // docs/178 — trust gate. Pre-running `agent.install` here is the
+              // worst pre-trust-execution path: it fires the repo's setup shell
+              // on the standby *before the user ever opens the session*, with
+              // zero interaction. Skip it for an untrusted remote. The standby
+              // container itself runs no repo code (it idles until activation),
+              // so booting it is safe; only the install execution is deferred.
+              // Once trusted, the on-activation `runner.runInstall()` runs it
+              // (the success marker is simply absent), and the trust endpoint's
+              // `rerunServiceSetup` covers an already-open session.
+              if (!repoStore.isTrusted(repoUrl)) {
+                console.log(`[warm:install:${appSessionId}] Skipping pre-install for untrusted remote ${repoUrl} — awaiting first-clone trust`);
+              } else {
+                // Pre-run agent.install so the user doesn't wait for it on activation.
+                // The standby's workspace is bind-mounted from `workspaceDir`, so the
+                // success marker (`.shipit/.install-done`) persists for the future
+                // runner: on activation, `runner.runInstall()` hits the worker, sees
+                // the marker, and short-circuits with `{ skipped: true }`. If the
+                // user activates *during* pre-install, the worker's /install endpoint
+                // joins the in-flight run (no longer 409s) and the orchestrator-side
+                // SSE listener resolves on the same `install_done`/`install_error`.
+                await runPreInstall(workspaceDir, sc.workerUrl, appSessionId);
+              }
               // Preview endpoints live on the preview container, not the session container.
               // Warm container ready — compose stack startup handled by ServiceManager
             }).catch((err: unknown) => {
