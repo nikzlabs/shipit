@@ -41,10 +41,11 @@ is deferred and `auto` preview services do not start. This is a security boundar
 before they've vetted it.
 
 If install or the preview "isn't running" on a brand-new repo, the user simply
-hasn't trusted it yet — they accept via the inline trust banner above the preview
-pane, which unblocks install + previews for that remote (now and for every future
-session cloned from it). Repos scaffolded from a ShipIt template are trusted
-automatically. This is per-remote and one-time; it does not recur per session.
+hasn't trusted it yet — the Preview tab shows a restricted state with a **Trust
+this repository** button. Accepting unblocks install + previews for that remote
+(now and for every future session cloned from it). Repos scaffolded from a ShipIt
+template are trusted automatically. This is per-remote and one-time; it does not
+recur per session.
 
 ## Where to put `npm install`
 

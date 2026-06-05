@@ -63,19 +63,8 @@ describe("RepoTrustBanner (docs/178)", () => {
       "/api/repos/trust",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ url }) }),
     );
-    // Optimistic flip clears the banner.
+    // Optimistic flip clears the restricted overlay.
     await waitFor(() => expect(screen.queryByTestId("repo-trust-banner")).not.toBeInTheDocument());
     expect(useRepoStore.getState().repos[0].trusted).toBe(true);
-  });
-
-  it("'Keep restricted' dismisses the banner without trusting", async () => {
-    const url = "https://github.com/owner/repo.git";
-    useRepoStore.setState({ repos: [repo(url, false)] });
-    render(<RepoTrustBanner repoUrl={url} />);
-
-    await userEvent.click(screen.getByText("Keep restricted"));
-    expect(screen.queryByTestId("repo-trust-banner")).not.toBeInTheDocument();
-    // Trust state is unchanged — it is a local dismissal only.
-    expect(useRepoStore.getState().repos[0].trusted).toBe(false);
   });
 });

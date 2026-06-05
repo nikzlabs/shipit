@@ -1118,7 +1118,6 @@ export default function App() {
   const previewVisible = !isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr));
   const rightPanel = (
     <>
-      <RepoTrustBanner key={currentRepoUrl} repoUrl={currentRepoUrl} />
       <div className="flex h-10.25 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
         {!isLocalMode && !isOpsSession && (
           <button onClick={() => handleTabChange("preview")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "preview" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Preview</button>
@@ -1149,8 +1148,12 @@ export default function App() {
         {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active.
             The Services drawer (docs/175) docks below it in the same flex column so a log tail can sit under the live render. */}
         <div className={`absolute inset-0 flex flex-col ${previewVisible ? "" : "invisible pointer-events-none"}`}>
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-h-0 relative">
             <PreviewFrame preview={effectivePreviewStatus} sessionId={sessionId} mergedSessionIds={mergedPreviewSessionIds} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} />
+            {/* docs/178 — restricted empty state overlaying the (empty) preview
+                frame when the repo is untrusted. Inside the preview wrapper, so
+                it only shows on the Preview tab. */}
+            <RepoTrustBanner key={currentRepoUrl} repoUrl={currentRepoUrl} />
           </div>
           <PreviewServicesDrawer services={composeServices} active={previewVisible} lastMessage={lastMessage} drainMessages={drainMessages} send={send} onSendToAgent={handleSendServiceLogsToAgent} onSelectPreviewPort={(port) => usePreviewStore.getState().setSelectedPort(port)} />
         </div>

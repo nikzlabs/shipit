@@ -18,7 +18,7 @@
 - [x] On acceptance: warm/pre-install (`warmSessionForRepo`), re-run deferred setup for open sessions (`runner.rerunServiceSetup`), broadcast updated repo list
 
 ## Client
-- [x] Inline trust consent banner (`RepoTrustBanner`) for untrusted remotes (no link-out, no modal escape) — rendered above the preview panel
+- [x] Inline trust consent (`RepoTrustBanner`) for untrusted remotes (no link-out, no modal escape) — rendered as the Preview tab's restricted empty state: a centered card overlaying the (empty) preview frame, visible only on the Preview tab
 - [x] Wire accept action (`trustRepo` store action); reflect trusted state from the repo's `trusted` flag; persists in RepoStore so it doesn't recur per session
 
 ## Tests
