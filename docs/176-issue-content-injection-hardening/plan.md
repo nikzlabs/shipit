@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-85/issue-content-injection-hardening-untrusted-issue-text
 title: Hardening agent consumption of untrusted issue content
 description: Treat fetched issue titles/bodies/comments as a distinct, low-bar prompt-injection vector — provenance framing at a single ingestion point, plus enrolling issues into the existing containment model rather than inventing a parallel one.
 ---
