@@ -791,17 +791,27 @@ export default function App() {
       if (tab === "docs" && useFileStore.getState().docFiles.length === 0 && sid) useFileStore.getState().fetchDocs(sid).catch(() => {});
       if (tab === "files" && sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); }
       if (tab === "history" && sid) useGitStore.getState().fetchLog(sid).catch(() => {});
-      if (tab === "issues") {
-        // Fetch-on-open (docs/170) — trackers (for sub-tabs) then the active list.
-        void (async () => {
-          await useIssuesStore.getState().fetchTrackers();
-          await useIssuesStore.getState().fetchIssues();
-        })();
-      }
       if (tab === "present") usePresentStore.getState().markSeen();
     },
     [],
   );
+
+  // Fetch-on-open for the Issues tab (docs/170): trackers (for the sub-tabs)
+  // then the active list. This lives in an effect rather than handleTabChange
+  // because a page reload restores rightTab from localStorage WITHOUT going
+  // through handleTabChange — so a reload directly onto the Issues tab would
+  // otherwise never fetch and render an empty "Not connected" panel until the
+  // user bounced to another tab and back. Keyed on rightTab so it also covers
+  // the click-to-open path; the prior inline fetch in handleTabChange was
+  // removed to avoid a double fetch.
+  // eslint-disable-next-line no-restricted-syntax -- external system sync: fetch issues when the tab becomes active (incl. reload-restored tab)
+  useEffect(() => {
+    if (rightTab !== "issues") return;
+    void (async () => {
+      await useIssuesStore.getState().fetchTrackers();
+      await useIssuesStore.getState().fetchIssues();
+    })();
+  }, [rightTab]);
 
   // docs/133 Phase 4: tell the server whether the PR tab is the active
   // right-panel tab for this session, so the poller fetches the heavier
