@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { GitHubTracker, mapGitHubPriority } from "./adapter.js";
+import { GitHubTracker, mapGitHubPriority, resolveGitHubState } from "./adapter.js";
+import { TrackerResolutionError } from "../tracker.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -102,7 +103,7 @@ describe("GitHubTracker", () => {
   });
 
   it("throws a helpful error on 401", async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse({}, 401));
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => jsonResponse({}, 401));
     const tracker = new GitHubTracker({ token: "bad", repo: REPO, fetchImpl });
     await expect(tracker.listIssues()).rejects.toThrow(/rejected the token/);
   });
@@ -117,14 +118,14 @@ describe("GitHubTracker", () => {
     const notFound = new GitHubTracker({
       token: "t",
       repo: REPO,
-      fetchImpl: vi.fn(async () => jsonResponse({ message: "Not Found" }, 404)),
+      fetchImpl: vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ message: "Not Found" }, 404)),
     });
     expect(await notFound.getIssue("999")).toBeNull();
 
     const prNumber = new GitHubTracker({
       token: "t",
       repo: REPO,
-      fetchImpl: vi.fn(async () =>
+      fetchImpl: vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
         jsonResponse({
           id: 1,
           number: 11,
@@ -136,5 +137,129 @@ describe("GitHubTracker", () => {
       ),
     });
     expect(await prNumber.getIssue("11")).toBeNull();
+  });
+
+  it("getIssue surfaces the fixed Open/Closed availableStatuses + login as assigneeId", async () => {
+    const tracker = new GitHubTracker({
+      token: "t",
+      repo: REPO,
+      fetchImpl: vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse({
+          id: 1,
+          number: 42,
+          title: "Bug",
+          html_url: "https://github.com/octocat/hello-world/issues/42",
+          state: "open",
+          assignee: { login: "nik" },
+        }),
+      ),
+    });
+    const issue = await tracker.getIssue("42");
+    expect(issue?.assigneeId).toBe("nik");
+    expect(issue?.availableStatuses).toEqual([
+      { name: "Open", type: "started" },
+      { name: "Closed", type: "completed" },
+    ]);
+  });
+});
+
+describe("resolveGitHubState (docs/177 status mapping)", () => {
+  it("maps native names", () => {
+    expect(resolveGitHubState("open")).toEqual({ state: "open" });
+    expect(resolveGitHubState("closed")).toEqual({ state: "closed", state_reason: "completed" });
+  });
+
+  it("maps normalized types (completed → done, canceled → not_planned)", () => {
+    expect(resolveGitHubState("completed")).toEqual({ state: "closed", state_reason: "completed" });
+    expect(resolveGitHubState("canceled")).toEqual({ state: "closed", state_reason: "not_planned" });
+    expect(resolveGitHubState("started")).toEqual({ state: "open" });
+  });
+
+  it("throws with valid options on an unknown status", () => {
+    try {
+      resolveGitHubState("in review");
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TrackerResolutionError);
+      expect((err as TrackerResolutionError).options).toEqual(["open", "closed", "completed", "canceled"]);
+    }
+  });
+});
+
+describe("GitHubTracker writes (docs/177)", () => {
+  const issueResponse = (over: Record<string, unknown> = {}) =>
+    jsonResponse({
+      id: 1,
+      number: 42,
+      title: "Bug",
+      html_url: "https://github.com/octocat/hello-world/issues/42",
+      state: "open",
+      ...over,
+    });
+
+  it("adds a comment and returns its id for undo", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ id: 555, html_url: "https://github.com/octocat/hello-world/issues/42#c", body: "hi" }),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    const comment = await tracker.addComment("42", "hi");
+    expect(comment).toEqual({ id: "555", url: "https://github.com/octocat/hello-world/issues/42#c", body: "hi" });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toContain("/repos/octocat/hello-world/issues/42/comments");
+    expect(init?.method).toBe("POST");
+  });
+
+  it("deletes a comment (DELETE issues/comments/:id, 204)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }));
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await expect(tracker.deleteComment("555")).resolves.toBeUndefined();
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toContain("/repos/octocat/hello-world/issues/comments/555");
+    expect(init?.method).toBe("DELETE");
+  });
+
+  it("edits title/body via PATCH", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => issueResponse({ title: "New" }));
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    const issue = await tracker.updateIssue("42", { title: "New", description: "body" });
+    expect(issue.title).toBe("New");
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(init?.body as string)).toEqual({ title: "New", body: "body" });
+  });
+
+  it("sets status by closing with a state_reason", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => issueResponse({ state: "closed" }));
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await tracker.setStatus("42", "completed");
+    expect(JSON.parse(fetchImpl.mock.calls[0][1]?.body as string)).toEqual({
+      state: "closed",
+      state_reason: "completed",
+    });
+  });
+
+  it("resolves assignee `me` via GET /user then PATCHes the login", async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) =>
+      (url as string).endsWith("/user") ? jsonResponse({ login: "octo" }) : issueResponse(),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await tracker.setAssignee("42", "me");
+    const patchCall = fetchImpl.mock.calls.find((c) => c[1]?.method === "PATCH")!;
+    expect(JSON.parse(patchCall[1]?.body as string)).toEqual({ assignees: ["octo"] });
+  });
+
+  it("assigns a login directly and unassigns with null", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => issueResponse());
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await tracker.setAssignee("42", "nik");
+    expect(JSON.parse(fetchImpl.mock.calls[0][1]?.body as string)).toEqual({ assignees: ["nik"] });
+    await tracker.setAssignee("42", null);
+    expect(JSON.parse(fetchImpl.mock.calls[1][1]?.body as string)).toEqual({ assignees: [] });
+  });
+
+  it("surfaces GitHub's error message on a failed write", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ message: "Validation Failed: not a collaborator" }, 422));
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await expect(tracker.setAssignee("42", "stranger")).rejects.toThrow(/not a collaborator/);
   });
 });

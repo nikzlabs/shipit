@@ -156,9 +156,21 @@ export interface WsSubmitBugReport {
   body: string;
 }
 
+/**
+ * Client → Server: undo a previously-recorded issue write (docs/177). Sent
+ * when the user clicks "Undo" on the provenance card. The server recovers the
+ * tracker + undo snapshot from the persisted card (keyed by `cardId`) and
+ * performs the reverse brokered write — the client only names the card.
+ */
+export interface WsUndoIssueWrite {
+  type: "undo_issue_write";
+  cardId: string;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsSubmitBugReport
+  | WsUndoIssueWrite
   | WsSendReviewMessage
   | WsClearLogs
   | WsAnswerQuestion

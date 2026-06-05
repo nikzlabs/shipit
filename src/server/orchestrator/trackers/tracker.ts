@@ -15,6 +15,7 @@ import type {
   TrackerId,
   TrackerInfo,
   TrackerIssue,
+  TrackerComment,
 } from "../../shared/types.js";
 
 /** Options narrowing what {@link Tracker.listIssues} returns. */
@@ -25,6 +26,37 @@ export interface ListIssuesOptions {
    * stay excluded even when this is set — "done" means finished, not abandoned.
    */
   includeDone?: boolean;
+}
+
+/** Options for {@link Tracker.setAssignee}. */
+export interface SetAssigneeOptions {
+  /**
+   * Treat `assignee` as an already-resolved tracker-internal id (GitHub login,
+   * Linear `assigneeId`) and assign it verbatim, skipping name→id resolution.
+   * Used by the undo path, which replays the snapshotted prior id so it can't
+   * be mis-resolved by the same ambiguity that flagged the forward write
+   * (docs/177).
+   */
+  raw?: boolean;
+}
+
+/**
+ * A status target that couldn't be resolved to a concrete state — thrown by
+ * {@link Tracker.setStatus} / {@link Tracker.setAssignee} so the caller can
+ * surface the valid options instead of a bare failure (docs/177). The agent
+ * retries with one of `options`.
+ */
+export class TrackerResolutionError extends Error {
+  constructor(
+    message: string,
+    /** Which write tripped: a status target or an assignee handle. */
+    readonly kind: "status" | "assignee",
+    /** Concrete, valid choices the agent can retry with. */
+    readonly options: string[],
+  ) {
+    super(message);
+    this.name = "TrackerResolutionError";
+  }
 }
 
 export interface Tracker {
@@ -53,4 +85,34 @@ export interface Tracker {
 
   /** Fetch a single issue by tracker-internal id, or null if not found. */
   getIssue(id: string): Promise<TrackerIssue | null>;
+
+  // ---- Writes (docs/177) ----------------------------------------------------
+  // Mutations go through the same adapter that does reads. Tokens stay
+  // orchestrator-side; only the result returns to the caller. Each method
+  // throws on an unconfigured tracker (callers check `isConfigured()` first).
+
+  /** Add a comment to an issue. Returns the created comment (id used for undo). */
+  addComment(id: string, body: string): Promise<TrackerComment>;
+
+  /** Delete a comment by its tracker-internal id (reverses {@link addComment}). */
+  deleteComment(commentId: string): Promise<void>;
+
+  /** Edit an issue's title and/or description. Returns the updated issue. */
+  updateIssue(id: string, patch: { title?: string; description?: string }): Promise<TrackerIssue>;
+
+  /**
+   * Set an issue's status from EITHER a normalized type (`started`,
+   * `completed`, `canceled`, …) OR a native state name (`"In Review"`). The
+   * adapter resolves it per its model; on an unknown/ambiguous value it throws
+   * {@link TrackerResolutionError} listing the valid states.
+   */
+  setStatus(id: string, status: string): Promise<TrackerIssue>;
+
+  /**
+   * Set (or, with `null`, clear) an issue's assignee. `assignee` is a login,
+   * email, display name, or `"me"`; the adapter resolves it to an internal id,
+   * throwing {@link TrackerResolutionError} with candidates on no/ambiguous
+   * match. Pass `{ raw: true }` to assign an already-resolved internal id.
+   */
+  setAssignee(id: string, assignee: string | null, opts?: SetAssigneeOptions): Promise<TrackerIssue>;
 }

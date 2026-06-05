@@ -180,15 +180,15 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
-  // Read-only issue tracker surface (docs/175)
+  // Tracker-neutral issue access (docs/175 read + docs/177 write)
   //
-  // These back the `shipit issue view|list` shim subcommands. The worker
-  // injects the trusted SESSION_ID; the orchestrator resolves the GitHub repo
-  // binding from that session's remote (Linear ignores it). Read-only — there
-  // are no issue write routes here. Tracker tokens never enter the container.
+  // These back the `shipit issue view|list|comment|edit|status|assign` shim
+  // subcommands. The worker injects the trusted SESSION_ID; the orchestrator
+  // resolves GitHub to the session's own repo (Linear is workspace-wide). Issue
+  // CREATION stays out (human-gated, docs/164) — there is no create route here.
   // ---------------------------------------------------------------------------
 
-  // GET /agent-ops/issue/view?tracker=&id= — fetch a single issue
+  // GET /agent-ops/issue/view?tracker=&id= — single issue (read)
   app.get<{ Querystring: { tracker?: string; id?: string } }>(
     "/agent-ops/issue/view",
     async (request, reply) => {
@@ -200,7 +200,7 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/list?tracker=&state= — list issues for one tracker
+  // GET /agent-ops/issue/list?tracker=&state= — issue list (read)
   app.get<{ Querystring: { tracker?: string; state?: string } }>(
     "/agent-ops/issue/list",
     async (request, reply) => {
@@ -210,6 +210,30 @@ export function registerAgentOpsRoutes(
       const qs = params.toString() ? `?${params.toString()}` : "";
       return relay("GET", `/issue/list${qs}`, undefined, reply);
     },
+  );
+
+  // POST /agent-ops/issue/comment { tracker, id, body }
+  app.post<{ Body: { tracker?: string; id?: string; body?: string } }>(
+    "/agent-ops/issue/comment",
+    async (request, reply) => relay("POST", "/issue/comment", request.body ?? {}, reply),
+  );
+
+  // POST /agent-ops/issue/edit { tracker, id, title?, body? }
+  app.post<{ Body: { tracker?: string; id?: string; title?: string; body?: string } }>(
+    "/agent-ops/issue/edit",
+    async (request, reply) => relay("POST", "/issue/edit", request.body ?? {}, reply),
+  );
+
+  // POST /agent-ops/issue/status { tracker, id, status }
+  app.post<{ Body: { tracker?: string; id?: string; status?: string } }>(
+    "/agent-ops/issue/status",
+    async (request, reply) => relay("POST", "/issue/status", request.body ?? {}, reply),
+  );
+
+  // POST /agent-ops/issue/assign { tracker, id, assignee | null }
+  app.post<{ Body: { tracker?: string; id?: string; assignee?: string | null } }>(
+    "/agent-ops/issue/assign",
+    async (request, reply) => relay("POST", "/issue/assign", request.body ?? {}, reply),
   );
 
   // ---------------------------------------------------------------------------

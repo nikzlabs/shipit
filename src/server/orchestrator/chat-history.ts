@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent } from "./session-runner.js";
+import type { IssueWriteCard } from "../shared/types.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -122,6 +123,16 @@ export interface PersistedMessage {
    */
   bugReport?: PersistedBugReport;
   /**
+   * docs/177 — when set, this message renders an inline issue-write provenance
+   * card ("agent commented on …", "set SHI-28 → In Review") with an Undo
+   * affordance. Like the bug-report card it arrives off the agent-event stream
+   * (the `shipit issue` write relay) so it's recorded in-band with the
+   * proposing turn and persisted here; the undo transition patches this record
+   * in place via `updateIssueWriteCard` so an undone card stays undone on
+   * reload.
+   */
+  issueWrite?: IssueWriteCard;
+  /**
    * Events emitted by subagents (Claude's Task tool) whose parent Task tool is
    * in this message's `toolUse`. Stored as a flat ordered list keyed by
    * `parentToolUseId` so the client can render the subagent's prompt, work,
@@ -151,6 +162,7 @@ interface MessageRow {
   code_rollback_hash: string | null;
   voice_note: string | null;
   bug_report: string | null;
+  issue_write: string | null;
   /**
    * Legacy column — older rows may carry a serialized per-turn usage record
    * here. The canonical per-turn series is now owned by `UsageManager`
@@ -164,8 +176,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, issue_write)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @issue_write)
 `;
 
 const UPDATE_SQL = `
@@ -174,7 +186,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report
+    voice_note=@voice_note, bug_report=@bug_report, issue_write=@issue_write
   WHERE id = @id
 `;
 
@@ -233,6 +245,7 @@ export class ChatHistoryManager {
       code_rollback_hash: msg.codeRollbackHash ?? null,
       voice_note: msg.voiceNote ? JSON.stringify(msg.voiceNote) : null,
       bug_report: msg.bugReport ? JSON.stringify(msg.bugReport) : null,
+      issue_write: msg.issueWrite ? JSON.stringify(msg.issueWrite) : null,
     };
   }
 
@@ -259,6 +272,7 @@ export class ChatHistoryManager {
     if (row.code_rollback_hash) msg.codeRollbackHash = row.code_rollback_hash;
     if (row.voice_note) msg.voiceNote = JSON.parse(row.voice_note) as PersistedMessage["voiceNote"];
     if (row.bug_report) msg.bugReport = JSON.parse(row.bug_report) as PersistedBugReport;
+    if (row.issue_write) msg.issueWrite = JSON.parse(row.issue_write) as IssueWriteCard;
     return msg;
   }
 
@@ -329,6 +343,48 @@ export class ChatHistoryManager {
         const merged: PersistedBugReport = { ...card, ...patch };
         const msg = this.fromRow(row);
         msg.bugReport = merged;
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
+    })();
+  }
+
+  /**
+   * docs/177 — find a persisted issue-write provenance card by `cardId`. The
+   * undo WS handler reads it to recover the tracker + undo snapshot (the card
+   * is the source of truth, not client-supplied state). Returns null if absent.
+   */
+  findIssueWriteCard(sessionId: string, cardId: string): IssueWriteCard | null {
+    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+    for (const row of rows) {
+      if (!row.issue_write) continue;
+      const card = JSON.parse(row.issue_write) as IssueWriteCard;
+      if (card.cardId === cardId) return card;
+    }
+    return null;
+  }
+
+  /**
+   * docs/177 — patch a persisted issue-write card's undo lifecycle in place,
+   * keyed by `cardId` (mirrors `updateBugReportCard`). The proposing-turn row
+   * is finalized by the time the user clicks Undo, so a direct update is safe.
+   * Returns true if a matching card was found.
+   */
+  updateIssueWriteCard(
+    sessionId: string,
+    cardId: string,
+    patch: Partial<IssueWriteCard>,
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        if (!row.issue_write) continue;
+        const card = JSON.parse(row.issue_write) as IssueWriteCard;
+        if (card.cardId !== cardId) continue;
+        const merged: IssueWriteCard = { ...card, ...patch };
+        const msg = this.fromRow(row);
+        msg.issueWrite = merged;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
         return true;
       }

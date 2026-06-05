@@ -292,10 +292,10 @@ describe("Integration: agent issue access (docs/175)", () => {
     ]);
   });
 
-  it("rejects a write subcommand with a docs pointer", async () => {
-    const { stderr, exitCode } = await runIssueShim(["issue", "comment", "SHI-28"]);
+  it("rejects issue creation with a docs pointer (writes land via docs/177, but create stays human-gated)", async () => {
+    const { stderr, exitCode } = await runIssueShim(["issue", "create", "--title", "x"]);
     expect(exitCode).not.toBe(0);
-    expect(stderr).toContain("read-only");
+    expect(stderr).toContain("does not support `shipit issue create`");
     expect(stderr).toContain("/shipit-docs/issues.md");
   });
 });

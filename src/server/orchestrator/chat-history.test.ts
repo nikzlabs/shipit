@@ -186,11 +186,80 @@ describe("ChatHistoryManager", () => {
       codeRollbackHash: "c0ffee",
       voiceNote: { id: "v1", headline: "h", needsAttention: true, kind: "authored", createdAt: "t" },
       bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
+      issueWrite: {
+        cardId: "iw1",
+        tracker: "linear",
+        issueId: "SHI-28",
+        identifier: "SHI-28",
+        title: "Some issue",
+        url: "https://linear.app/x/issue/SHI-28",
+        verb: "status",
+        summary: "set SHI-28 → In Review",
+        attribution: "workspace",
+        undo: { kind: "status", previousStatus: "Todo" },
+        undoState: "available",
+        createdAt: "2026-06-05T00:00:00.000Z",
+      },
       subagentEvents: [],
     };
 
     mgr.append("sess-1", msg);
     expect(mgr.load("sess-1")[0]).toEqual(msg);
+  });
+
+  describe("issue-write card persistence (docs/177)", () => {
+    const writeCard = (cardId: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      issueWrite: {
+        cardId,
+        tracker: "github",
+        issueId: "42",
+        identifier: "octocat/hello#42",
+        title: "Bug",
+        url: "https://github.com/octocat/hello/issues/42",
+        verb: "comment",
+        summary: "commented on octocat/hello#42",
+        attribution: "user",
+        undo: { kind: "comment", commentId: "c-99" },
+        undoState: "available",
+        createdAt: "2026-06-05T00:00:00.000Z",
+      },
+    });
+
+    it("persists a write card so it replays on session attach", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const msg = writeCard("iw-1");
+      mgr.append("sess-1", msg);
+      const loaded = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(loaded[0].issueWrite).toEqual(msg.issueWrite);
+    });
+
+    it("findIssueWriteCard recovers the tracker + undo snapshot by id", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "comment please" });
+      mgr.append("sess-1", writeCard("iw-1"));
+      const card = mgr.findIssueWriteCard("sess-1", "iw-1");
+      expect(card?.tracker).toBe("github");
+      expect(card?.undo).toEqual({ kind: "comment", commentId: "c-99" });
+      expect(mgr.findIssueWriteCard("sess-1", "missing")).toBeNull();
+    });
+
+    it("updateIssueWriteCard flips a card to undone in place", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", writeCard("iw-1"));
+      expect(mgr.updateIssueWriteCard("sess-1", "iw-1", { undoState: "undone" })).toBe(true);
+      const card = mgr.load("sess-1")[0].issueWrite;
+      expect(card?.undoState).toBe("undone");
+      // Original fields survive the merge.
+      expect(card?.summary).toBe("commented on octocat/hello#42");
+    });
+
+    it("returns false when no write card matches the given id", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", writeCard("iw-1"));
+      expect(mgr.updateIssueWriteCard("sess-1", "missing", { undoState: "undone" })).toBe(false);
+    });
   });
 
   it("persists error messages with isError flag", () => {

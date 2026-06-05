@@ -1,28 +1,48 @@
 /**
- * Unit tests for the issue tracker service layer (docs/175).
+ * Unit tests for the issue tracker service layer (docs/175 read + docs/177 write).
  *
- * `getIssueForTracker` is the single-issue read that backs `shipit issue view`.
- * It dispatches to the same tracker registry that powers the Issues tab, so the
- * test stubs the GitHub REST + Linear GraphQL HTTP and asserts the
- * tracker-neutral behavior: dispatch to both trackers, the unconfigured-tracker
- * error, and the 404s (missing issue and a GitHub PR number).
+ * `getIssueForTracker` is the single-issue read that backs `shipit issue view`;
+ * `commentOnIssueForTracker` / `updateIssueForTracker` / `setIssueStatusForTracker`
+ * / `setIssueAssigneeForTracker` are the do-then-surface writes, each snapshotting
+ * prior state for undo, and `undoIssueWrite` replays that snapshot. The tests stub
+ * the GitHub REST + Linear GraphQL HTTP and assert tracker-neutral behavior.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CredentialStore } from "../credential-store.js";
-import { getIssueForTracker, ServiceError } from "./index.js";
+import {
+  getIssueForTracker,
+  commentOnIssueForTracker,
+  updateIssueForTracker,
+  setIssueStatusForTracker,
+  setIssueAssigneeForTracker,
+  undoIssueWrite,
+} from "./issues.js";
+import { ServiceError } from "./types.js";
+import type { GitHubTrackerContext } from "../trackers/index.js";
 
 const TEAM = { id: "team-1", key: "SHI", name: "ShipIt" };
-const GH = { token: "ghp_test", repo: { owner: "octocat", repo: "hello-world" } };
+const GH: GitHubTrackerContext = { token: "ghp_test", repo: { owner: "octocat", repo: "hello-world" } };
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function ghResponse(body: unknown, status = 200): Response {
+  return new Response(status === 204 ? null : JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function tmpStore(): CredentialStore {
+  return new CredentialStore(fs.mkdtempSync(path.join(os.tmpdir(), "iss-")));
 }
 
 describe("getIssueForTracker (docs/175)", () => {
@@ -153,9 +173,106 @@ describe("getIssueForTracker (docs/175)", () => {
     const fetchImpl = (async () => jsonResponse({ message: "boom" }, 500)) as unknown as typeof fetch;
     await expect(
       getIssueForTracker(credentialStore, "github", "1", fetchImpl, GH),
-    ).rejects.toBeInstanceOf(ServiceError);
-    await expect(
-      getIssueForTracker(credentialStore, "github", "1", fetchImpl, GH),
     ).rejects.toMatchObject({ statusCode: 502 });
+  });
+});
+
+/** A GitHub REST stub routing on method + path tail. */
+function ghFetch(over: Partial<{ issue: Record<string, unknown> }> = {}) {
+  const issue = {
+    id: 1,
+    number: 42,
+    title: "Original title",
+    html_url: "https://github.com/octocat/hello-world/issues/42",
+    body: "original body",
+    state: "open",
+    assignee: { login: "alice" },
+    ...over.issue,
+  };
+  return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = url as string;
+    const method = init?.method ?? "GET";
+    if (method === "GET" && u.endsWith("/issues/42")) return ghResponse(issue);
+    if (method === "POST" && u.endsWith("/issues/42/comments")) {
+      return ghResponse({ id: 9001, html_url: `${issue.html_url}#c`, body: "noted" });
+    }
+    if (method === "DELETE" && u.endsWith("/issues/comments/9001")) return ghResponse(null, 204);
+    if (method === "PATCH" && u.endsWith("/issues/42")) {
+      return ghResponse({ ...issue, ...JSON.parse(init?.body as string) });
+    }
+    throw new Error(`unexpected ${method} ${u}`);
+  });
+}
+
+describe("issue write services (docs/177)", () => {
+  let store: CredentialStore;
+  beforeEach(() => {
+    store = tmpStore();
+  });
+
+  it("comment: writes and returns a delete-comment undo snapshot", async () => {
+    const fetchImpl = ghFetch();
+    const out = await commentOnIssueForTracker(store, "github", "42", "noted", fetchImpl, GH);
+    expect(out.verb).toBe("comment");
+    expect(out.summary).toContain("octocat/hello-world#42");
+    expect(out.undo).toEqual({ kind: "comment", commentId: "9001" });
+  });
+
+  it("edit: snapshots the prior title for undo", async () => {
+    const out = await updateIssueForTracker(store, "github", "42", { title: "New title" }, ghFetch(), GH);
+    expect(out.verb).toBe("edit");
+    expect(out.undo).toEqual({ kind: "edit", previousTitle: "Original title" });
+  });
+
+  it("status: snapshots the prior native status name for undo", async () => {
+    // Prior state is open → native name "Open".
+    const out = await setIssueStatusForTracker(store, "github", "42", "completed", ghFetch(), GH);
+    expect(out.undo).toEqual({ kind: "status", previousStatus: "Open" });
+  });
+
+  it("assignee: snapshots the prior internal id (login), not the display name", async () => {
+    const out = await setIssueAssigneeForTracker(store, "github", "42", "bob", ghFetch(), GH);
+    expect(out.undo).toEqual({ kind: "assignee", previousAssigneeId: "alice" });
+  });
+
+  it("assignee: prior id is null when the issue was unassigned", async () => {
+    const fetchImpl = ghFetch({ issue: { assignee: null } });
+    const out = await setIssueAssigneeForTracker(store, "github", "42", "bob", fetchImpl, GH);
+    expect(out.undo).toEqual({ kind: "assignee", previousAssigneeId: null });
+  });
+
+  it("maps an ambiguous status to a 422 ServiceError listing options", async () => {
+    await expect(
+      setIssueStatusForTracker(store, "github", "42", "in review", ghFetch(), GH),
+    ).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it("rejects an unconfigured tracker with a ServiceError", async () => {
+    await expect(
+      getIssueForTracker(store, "linear", "SHI-1"),
+    ).rejects.toBeInstanceOf(ServiceError);
+  });
+
+  it("undo: comment → deletes the comment by id", async () => {
+    const fetchImpl = ghFetch();
+    await undoIssueWrite(
+      store,
+      { tracker: "github", issueId: "42", undo: { kind: "comment", commentId: "9001" } },
+      fetchImpl,
+      GH,
+    );
+    expect(fetchImpl.mock.calls.some(([u, i]) => i?.method === "DELETE" && (u as string).includes("/issues/comments/9001"))).toBe(true);
+  });
+
+  it("undo: assignee → replays the prior internal id verbatim (raw)", async () => {
+    const fetchImpl = ghFetch();
+    await undoIssueWrite(
+      store,
+      { tracker: "github", issueId: "42", undo: { kind: "assignee", previousAssigneeId: "alice" } },
+      fetchImpl,
+      GH,
+    );
+    const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
+    expect(JSON.parse(patch[1]?.body as string)).toEqual({ assignees: ["alice"] });
   });
 });
