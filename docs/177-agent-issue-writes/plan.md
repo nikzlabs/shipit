@@ -230,6 +230,27 @@ to the container.
   routed through the interface; external MCP support is unchanged and unprescribed.
 - **Injection hardening of content the agent reads before writing** — docs/176.
 
+## Implementation notes
+
+- **docs/175 read path landed here too.** When this was built, docs/175's read
+  slice had not actually been implemented in code (only its design doc was
+  committed). Since writes depend on it (undo snapshots via `getIssue`; the shim
+  needs the `issue` command; pointer parsing), the read foundation —
+  `src/server/shared/issue-ref.ts`, `shipit issue view/list`, the
+  `/agent-ops/issue/*` relay, the session-scoped read routes, and
+  `getIssueForTracker` — was built in the same PR.
+- **GitHub write calls live in `trackers/github/adapter.ts`, not
+  `github-auth-issues.ts`.** The adapter already injects `fetchImpl` (so reads
+  and writes are testable against a fake) using the same headers as
+  `fetchGitHub`; `github-auth-issues.ts` uses the un-injectable global `fetch`
+  and stays as-is for the bug-filing `createIssue`.
+- **Undo transport:** the card's Undo button sends a `undo_issue_write` WS
+  message → `ws-handlers/issue-write-handlers.ts`, which reads the persisted
+  card (`findIssueWriteCard`), runs `undoIssueWrite`, and patches the card via
+  `updateIssueWriteCard`. The prior assignee's internal id is surfaced on the
+  read type as `TrackerIssue.assigneeId` (populated from the raw API node), so
+  the snapshot captures an exact id rather than the display name.
+
 ## Key files
 
 - `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types.

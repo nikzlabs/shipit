@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { PermissionMode } from "./attachment-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -1154,12 +1154,41 @@ export interface WsBugReportFailed {
   scopeError?: boolean;
 }
 
+/**
+ * docs/177 — the do-then-surface provenance card for an agent issue write,
+ * emitted via `runner.emitMessage` (so it buffers into the turn-event log and
+ * survives reconnects) right after a brokered write completes. Carries the full
+ * `IssueWriteCard` (display fields + the undo snapshot). Persisted in-band via
+ * `emitChatCard` so it survives a switch/reload; the undo transition patches it.
+ */
+export interface WsIssueWriteCard {
+  type: "issue_write_card";
+  sessionId: string;
+  card: IssueWriteCard;
+}
+
+/**
+ * docs/177 — an issue-write card's undo lifecycle transition (undoing →
+ * undone | failed). Patched into the persisted card in place so the terminal
+ * state survives a reload; idempotent on the client (keyed by `cardId`).
+ */
+export interface WsIssueWriteUpdate {
+  type: "issue_write_update";
+  sessionId: string;
+  cardId: string;
+  undoState: IssueWriteUndoState;
+  /** Set when `undoState === "failed"`. */
+  errorMessage?: string;
+}
+
 export type WsServerMessage =
   | WsAgentEvent
   | WsVoiceNote
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed
+  | WsIssueWriteCard
+  | WsIssueWriteUpdate
   | WsError
   | WsPreviewStatus
   | WsGitLog

@@ -43,9 +43,18 @@ Supported subcommands:
   shipit session archive <id> [--json]
   shipit session help
 
-Read-only issue access (tracker-neutral, docs/175):
+Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177):
   shipit issue view      <pointer> [--tracker github|linear] [--json]
   shipit issue list      [--tracker github|linear] [--state open|closed|all] [--json]
+  shipit issue comment   <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
+  shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--tracker T] [--json]
+  shipit issue status    <pointer> <state> [--tracker T] [--json]
+  shipit issue assign    <pointer> <user|me | --none> [--tracker T] [--json]
+
+  A <pointer> is whatever the user/doc gave you — SHI-28, owner/repo#42, or an
+  issue URL; the tracker is inferred from its shape. Writes are do-then-surface:
+  the change is made immediately and an inline provenance card with an Undo
+  button is posted in the chat. Creating issues is NOT supported (human-gated).
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
@@ -916,169 +925,6 @@ async function handleSourceShow(args: string[], deps: RunDeps): Promise<void> {
   deps.io.exit(0);
 }
 
-// ---------------------------------------------------------------------------
-// Read-only issue access (docs/175) — tracker-neutral `shipit issue`.
-//
-// The agent reads issues to do work; it does not triage or author them. The
-// surface is deliberately tracker-neutral: the same `view`/`list` verbs and
-// output shape regardless of whether the backing tracker is GitHub or Linear.
-// Writes (comment/edit/status/assign) and issue creation are out of scope —
-// rejected here so the agent gets a pointer to the docs, not a generic error.
-// ---------------------------------------------------------------------------
-
-/**
- * Issue verbs the agent might reach for that the shim refuses to expose. Issue
- * access is read-only in v1 — writes land in docs/177, and issue *creation* is
- * a human-gated act (the bug-filing review card, docs/164).
- */
-const REJECTED_ISSUE_SUBCOMMANDS = new Set([
-  "create",
-  "comment",
-  "edit",
-  "update",
-  "status",
-  "assign",
-  "close",
-  "reopen",
-  "delete",
-  "label",
-]);
-
-const VALID_TRACKERS = new Set(["github", "linear"]);
-
-async function handleIssueView(args: string[], deps: RunDeps): Promise<void> {
-  const parsed = parseFlags(args, {
-    values: { "--tracker": "tracker" },
-    booleans: { "--json": "json" },
-  });
-  if (parsed.unsupported.length > 0) {
-    fail(deps.io, `Unsupported flag for shipit issue view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
-  }
-  const pointer = parsed.positional[0];
-  if (!pointer) {
-    fail(
-      deps.io,
-      'shipit issue view: an issue pointer is required, e.g. shipit issue view SHI-28 or shipit issue view owner/repo#42.',
-    );
-  }
-
-  const override = parsed.values.tracker?.toLowerCase();
-  if (override && !VALID_TRACKERS.has(override)) {
-    fail(deps.io, `shipit issue view: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
-  }
-
-  const ref = parseIssueRef(pointer);
-  const tracker = override ?? (ref.tracker === "unknown" ? undefined : ref.tracker);
-  if (!tracker) {
-    fail(
-      deps.io,
-      `shipit issue view: could not infer the tracker from "${pointer}". Pass --tracker github|linear.`,
-    );
-  }
-
-  // Resolve the tracker-native id. `parseIssueRef` supplies it for recognized
-  // shapes; with an explicit --tracker the agent may pass a bare number (GitHub)
-  // or key (Linear) that the parser leaves as "unknown".
-  let issueId = ref.issueId;
-  if (!issueId) {
-    if (/^\d+$/.test(pointer)) issueId = pointer;
-    else if (/^[A-Za-z]+-\d+$/.test(pointer)) issueId = pointer.toUpperCase();
-  }
-  if (!issueId) {
-    fail(
-      deps.io,
-      `shipit issue view: could not determine the issue id from "${pointer}".`,
-    );
-  }
-
-  const qs = `?tracker=${encodeURIComponent(tracker)}&id=${encodeURIComponent(issueId)}`;
-  const res = await deps.call("GET", `/agent-ops/issue/view${qs}`, undefined, deps.env);
-  if (res.status === 404) {
-    fail(deps.io, formatError(res, `Issue not found: ${ref.identifier}`), 1);
-  }
-  if (res.status < 200 || res.status >= 300) {
-    fail(deps.io, formatError(res, "Failed to read issue"), 1);
-  }
-
-  const issue = res.body.issue as Record<string, unknown> | undefined;
-  if (!issue) {
-    fail(deps.io, `Issue not found: ${ref.identifier}`, 1);
-  }
-  if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(issue)}\n`);
-    deps.io.exit(0);
-    return;
-  }
-  success(deps.io, renderIssue(issue));
-}
-
-async function handleIssueList(args: string[], deps: RunDeps): Promise<void> {
-  const parsed = parseFlags(args, {
-    values: { "--tracker": "tracker", "--state": "state" },
-    booleans: { "--json": "json" },
-  });
-  if (parsed.unsupported.length > 0) {
-    fail(deps.io, `Unsupported flag for shipit issue list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
-  }
-  const tracker = (parsed.values.tracker ?? "github").toLowerCase();
-  if (!VALID_TRACKERS.has(tracker)) {
-    fail(deps.io, `shipit issue list: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
-  }
-  const state = parsed.values.state?.toLowerCase();
-  if (state && !["open", "closed", "all"].includes(state)) {
-    fail(deps.io, `shipit issue list: --state must be 'open', 'closed', or 'all' (got '${parsed.values.state}').`);
-  }
-
-  const params = new URLSearchParams({ tracker });
-  if (state) params.set("state", state);
-  const res = await deps.call("GET", `/agent-ops/issue/list?${params.toString()}`, undefined, deps.env);
-  if (res.status < 200 || res.status >= 300) {
-    fail(deps.io, formatError(res, "Failed to list issues"), 1);
-  }
-
-  const issues = (res.body.issues as Record<string, unknown>[] | undefined) ?? [];
-  if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(issues)}\n`);
-    deps.io.exit(0);
-    return;
-  }
-  if (issues.length === 0) {
-    const info = res.body.tracker as Record<string, unknown> | undefined;
-    if (info?.configured === false) {
-      success(deps.io, `${tracker} is not configured in ShipIt — no issues to list.`);
-      return;
-    }
-    success(deps.io, `No issues for ${tracker}.`);
-    return;
-  }
-  const lines = issues.map((i) =>
-    [asString(i.identifier), priorityLabel(i), asString(i.title)].join("\t"),
-  );
-  success(deps.io, lines.join("\n"));
-}
-
-/** Render a single `TrackerIssue` as a stable human-readable block. */
-function renderIssue(issue: Record<string, unknown>): string {
-  const status = issue.status as Record<string, unknown> | undefined;
-  const assignee = issue.assignee as Record<string, unknown> | undefined;
-  const lines = [
-    `${asString(issue.identifier)}  ${asString(issue.title)}`,
-    `status:    ${status ? asString(status.name) : "(unknown)"}`,
-    `priority:  ${priorityLabel(issue)}`,
-  ];
-  if (assignee && asString(assignee.name)) lines.push(`assignee:  ${asString(assignee.name)}`);
-  if (issue.url) lines.push(`url:       ${asString(issue.url)}`);
-  const description = asString(issue.description);
-  if (description.trim()) lines.push("", description);
-  return lines.join("\n");
-}
-
-/** Pull the display label off an issue's priority object, defaulting gracefully. */
-function priorityLabel(issue: Record<string, unknown>): string {
-  const priority = issue.priority as Record<string, unknown> | undefined;
-  return priority ? asString(priority.label) || "No priority" : "No priority";
-}
-
 /** Format a broker/orchestrator error response as a single-line message. */
 function formatError(
   res: { status: number; body: Record<string, unknown> },
@@ -1096,6 +942,264 @@ function formatError(
 }
 
 // ---------------------------------------------------------------------------
+// Tracker-neutral issue access (docs/175 read + docs/177 write)
+//
+// `shipit issue` is the ONE issue interface, identical across GitHub and Linear
+// (the tracker is inferred from the pointer shape via the shared parseIssueRef).
+// Read = view/list; write = comment/edit/status/assign. Issue CREATION stays
+// human-gated (docs/164) and is rejected here, like `shipit session delete`.
+// ---------------------------------------------------------------------------
+
+const REJECTED_ISSUE_SUBCOMMANDS = new Set([
+  "create", // human-gated via the bug-filing review card (docs/164); never agent-driven.
+  "new",    // alias the agent might reach for — same gate.
+  "delete", // destructive; not part of the agent's surface.
+  "close",  // use `shipit issue status <pointer> closed` instead.
+]);
+
+/**
+ * Resolve a pointer (`SHI-28`, `owner/repo#42`, a URL, …) to a tracker id and a
+ * tracker-native issue id via the shared `parseIssueRef`. `--tracker` overrides
+ * an ambiguous/unknown shape; when overriding, the raw pointer (minus a leading
+ * `#`) is used as the id.
+ */
+function resolveIssuePointer(
+  io: ShimIO,
+  pointer: string | undefined,
+  override: string | undefined,
+): { tracker: string; id: string } {
+  if (!pointer) {
+    fail(io, "shipit issue: a pointer is required (e.g. SHI-28, owner/repo#42, or an issue URL).");
+  }
+  const parsed = parseIssueRef(pointer);
+  const tracker = override || (parsed.tracker !== "unknown" ? parsed.tracker : "");
+  if (!tracker) {
+    fail(
+      io,
+      `shipit issue: could not infer the tracker from "${pointer}". Pass --tracker github|linear.`,
+    );
+  }
+  const raw = pointer.replace(/^#/, "").trim();
+  const id = override && override !== parsed.tracker ? raw : (parsed.issueId ?? raw);
+  return { tracker, id };
+}
+
+/** Read a write body from `--body` (inline) or `--body-file` (file / `-` stdin). */
+async function readIssueBody(
+  values: Record<string, string>,
+  deps: RunDeps,
+): Promise<string | undefined> {
+  if (values.body !== undefined) return values.body;
+  if (values.bodyFile !== undefined) {
+    try {
+      return values.bodyFile === "-" ? await readStdin() : await fsp.readFile(values.bodyFile, "utf8");
+    } catch (err) {
+      fail(deps.io, `shipit issue: could not read body file ${values.bodyFile}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return undefined;
+}
+
+/** Render a single issue (the `{ tracker, issue }` payload) as plain text. */
+function formatIssue(issue: Record<string, unknown>): string {
+  const lines = [
+    `${asString(issue.identifier)}  ${asString(issue.title)}`,
+  ];
+  const status = issue.status as { name?: string; type?: string } | undefined;
+  if (status?.name) lines.push(`status:     ${status.name}${status.type ? ` (${status.type})` : ""}`);
+  const priority = issue.priority as { label?: string } | undefined;
+  if (priority?.label) lines.push(`priority:   ${priority.label}`);
+  const assignee = issue.assignee as { name?: string } | undefined;
+  if (assignee?.name) lines.push(`assignee:   ${assignee.name}`);
+  if (issue.url) lines.push(`url:        ${asString(issue.url)}`);
+  const available = issue.availableStatuses as { name?: string }[] | undefined;
+  if (available && available.length > 0) {
+    lines.push(`statuses:   ${available.map((s) => s.name).filter(Boolean).join(", ")}`);
+  }
+  if (issue.description) {
+    lines.push("", asString(issue.description));
+  }
+  return lines.join("\n");
+}
+
+async function handleIssueView(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--tracker": "tracker" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
+  const qs = `?tracker=${encodeURIComponent(tracker)}&id=${encodeURIComponent(id)}`;
+  const res = await deps.call("GET", `/agent-ops/issue/view${qs}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to read issue"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const issue = res.body.issue as Record<string, unknown> | undefined;
+  if (!issue) {
+    fail(deps.io, "Issue not found.", 1);
+    return;
+  }
+  success(deps.io, formatIssue(issue));
+}
+
+async function handleIssueList(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--tracker": "tracker", "--state": "state" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const params = new URLSearchParams();
+  if (parsed.values.tracker) params.set("tracker", parsed.values.tracker);
+  if (parsed.values.state) params.set("state", parsed.values.state);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  const res = await deps.call("GET", `/agent-ops/issue/list${qs}`, undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to list issues"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const issues = (res.body.issues as Record<string, unknown>[] | undefined) ?? [];
+  if (issues.length === 0) {
+    success(deps.io, "No issues.");
+    return;
+  }
+  const lines = issues.map((i) => {
+    const status = i.status as { name?: string } | undefined;
+    return [
+      asString(i.identifier),
+      (i.priority as { label?: string } | undefined)?.label ?? "",
+      status?.name ?? "",
+      asString(i.title),
+    ].join("\t");
+  });
+  success(deps.io, lines.join("\n"));
+}
+
+/** Print the write provenance result (a do-then-surface confirmation). */
+function reportWrite(res: { status: number; body: Record<string, unknown> }, deps: RunDeps, json: boolean): void {
+  if (json) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const lines = [
+    `done:       ${asString(res.body.summary) || "ok"}`,
+    "A provenance card with an Undo button has been posted in the chat.",
+  ];
+  if (res.body.url) lines.push(`url:        ${asString(res.body.url)}`);
+  success(deps.io, lines.join("\n"));
+}
+
+async function handleIssueComment(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "-b": "body", "--body": "body", "-F": "bodyFile", "--body-file": "bodyFile", "--tracker": "tracker" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue comment: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
+  const body = await readIssueBody(parsed.values, deps);
+  if (!body?.trim()) {
+    fail(deps.io, "shipit issue comment: -b/--body (or --body-file -) is required.");
+  }
+  const res = await deps.call("POST", "/agent-ops/issue/comment", { tracker, id, body }, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to comment on issue"), 1);
+  }
+  reportWrite(res, deps, parsed.booleans.has("json"));
+}
+
+async function handleIssueEdit(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--title": "title", "-b": "body", "--body": "body", "--body-file": "bodyFile", "--tracker": "tracker" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue edit: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
+  const body = await readIssueBody(parsed.values, deps);
+  const title = parsed.values.title;
+  if (title === undefined && body === undefined) {
+    fail(deps.io, "shipit issue edit: at least one of --title or --body/--body-file is required.");
+  }
+  const payload: Record<string, unknown> = { tracker, id };
+  if (title !== undefined) payload.title = title;
+  if (body !== undefined) payload.body = body;
+  const res = await deps.call("POST", "/agent-ops/issue/edit", payload, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to edit issue"), 1);
+  }
+  reportWrite(res, deps, parsed.booleans.has("json"));
+}
+
+async function handleIssueStatus(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--tracker": "tracker" },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue status: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
+  const status = parsed.positional[1];
+  if (!status) {
+    fail(deps.io, "shipit issue status: a target status is required (a normalized type like `completed`, or a native state name).");
+  }
+  const res = await deps.call("POST", "/agent-ops/issue/status", { tracker, id, status }, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to set status"), 1);
+  }
+  reportWrite(res, deps, parsed.booleans.has("json"));
+}
+
+async function handleIssueAssign(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: { "--tracker": "tracker" },
+    booleans: { "--json": "json", "--none": "none" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue assign: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
+  const none = parsed.booleans.has("none");
+  const assignee = none ? null : parsed.positional[1];
+  if (!none && !assignee) {
+    fail(deps.io, "shipit issue assign: an assignee is required (a login/email/display name, `me`, or --none to unassign).");
+  }
+  const res = await deps.call("POST", "/agent-ops/issue/assign", { tracker, id, assignee }, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to set assignee"), 1);
+  }
+  reportWrite(res, deps, parsed.booleans.has("json"));
+}
+
+const ISSUE_HANDLERS: Record<
+  string,
+  (args: string[], deps: RunDeps) => Promise<void>
+> = {
+  view: handleIssueView,
+  list: handleIssueList,
+  comment: handleIssueComment,
+  edit: handleIssueEdit,
+  status: handleIssueStatus,
+  assign: handleIssueAssign,
+};
+
+// ---------------------------------------------------------------------------
 // Top-level dispatch
 // ---------------------------------------------------------------------------
 
@@ -1109,14 +1213,6 @@ const SESSION_HANDLERS: Record<
   message: handleSessionMessage,
   wait: handleSessionWait,
   archive: handleSessionArchive,
-};
-
-const ISSUE_HANDLERS: Record<
-  string,
-  (args: string[], deps: RunDeps) => Promise<void>
-> = {
-  view: handleIssueView,
-  list: handleIssueList,
 };
 
 const SOURCE_HANDLERS: Record<
@@ -1219,10 +1315,9 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
 }
 
 /**
- * Dispatch a `shipit issue <sub>` invocation (docs/175). Read-only by
- * construction: `view`/`list` only. Write/triage verbs are rejected with a
- * pointer to the docs, mirroring how `shipit session`/`shipit source` reject
- * their out-of-scope subcommands.
+ * Dispatch a `shipit issue <sub>` invocation (docs/175 read + docs/177 write).
+ * Issue creation is rejected with a pointer to the human-gated bug-filing flow;
+ * everything else maps to a read (view/list) or a do-then-surface write.
  */
 async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
@@ -1233,8 +1328,9 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
   if (REJECTED_ISSUE_SUBCOMMANDS.has(sub)) {
     fail(
       io,
-      `${SHIM_NAME} does not support \`shipit issue ${sub}\` — issue access is read-only (view/list).\n` +
-        "Writing to issues (comment/edit/status) is out of scope; issue creation is a human-gated act.\n" +
+      `${SHIM_NAME} does not support \`shipit issue ${sub}\`. ` +
+        "Creating/closing/deleting issues is not an agent action — filing a new issue is human-gated " +
+        "via the bug-report review card. Use `shipit issue status <pointer> completed` to mark work done.\n" +
         "See /shipit-docs/issues.md.",
     );
   }

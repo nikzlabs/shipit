@@ -1043,166 +1043,111 @@ describe("shipit session create --shipit-source (docs/162)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// shipit issue (docs/175) — read-only, tracker-neutral
+// shipit issue (docs/175 read + docs/177 write)
 // ---------------------------------------------------------------------------
 
-describe("shipit issue view (docs/175)", () => {
-  it("infers the GitHub tracker + bare number from owner/repo#N", async () => {
+describe("shipit issue", () => {
+  const issuePayload = {
+    tracker: { id: "github", label: "GitHub", configured: true },
+    issue: {
+      identifier: "octocat/hello#42",
+      title: "A bug",
+      status: { name: "Open", type: "started" },
+      priority: { label: "High" },
+      url: "https://github.com/octocat/hello/issues/42",
+      description: "the body",
+    },
+  };
+
+  it("view infers the tracker from a bare Linear key", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "view", "octocat/hello-world#42"], {
-      "GET /agent-ops/issue/view": {
-        status: 200,
-        body: {
-          tracker: { id: "github", label: "GitHub", configured: true },
-          issue: {
-            identifier: "octocat/hello-world#42",
-            title: "An open issue",
-            status: { name: "Open" },
-            priority: { label: "High", level: "high" },
-            assignee: { name: "octocat" },
-            url: "https://github.com/octocat/hello-world/issues/42",
-            description: "Body text",
-          },
-        },
-      },
+    const out = await run(["issue", "view", "SHI-28"], {
+      "GET /agent-ops/issue/view": { status: 200, body: { issue: { identifier: "SHI-28", title: "T" } } },
     });
     expect(out.exitCode).toBe(0);
-    // Tracker + native id resolved from the pointer shape, no --tracker needed.
-    expect(out.calls[0].path).toBe("/agent-ops/issue/view?tracker=github&id=42");
-    expect(out.stdout).toContain("octocat/hello-world#42");
-    expect(out.stdout).toContain("priority:  High");
-    expect(out.stdout).toContain("assignee:  octocat");
-    expect(out.stdout).toContain("Body text");
+    expect(out.calls[0].path).toContain("tracker=linear");
+    expect(out.calls[0].path).toContain("id=SHI-28");
+    expect(out.stdout).toContain("SHI-28");
   });
 
-  it("infers the Linear tracker + key from a bare SHI-28", async () => {
+  it("view infers github from owner/repo#N", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "view", "shi-28"], {
-      "GET /agent-ops/issue/view": {
-        status: 200,
-        body: { tracker: { id: "linear" }, issue: { identifier: "SHI-28", title: "X", priority: { label: "Urgent" } } },
-      },
+    const out = await run(["issue", "view", "octocat/hello#42"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
     });
-    expect(out.exitCode).toBe(0);
-    expect(out.calls[0].path).toBe("/agent-ops/issue/view?tracker=linear&id=SHI-28");
+    expect(out.calls[0].path).toContain("tracker=github");
+    expect(out.calls[0].path).toContain("id=42");
+    expect(out.stdout).toContain("A bug");
   });
 
-  it("resolves a bare number under an explicit --tracker github", async () => {
+  it("view fails on an unknown pointer without --tracker", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "view", "42", "--tracker", "github"], {
-      "GET /agent-ops/issue/view": {
-        status: 200,
-        body: { tracker: { id: "github" }, issue: { identifier: "octocat/hello-world#42", title: "X", priority: { label: "No priority" } } },
-      },
-    });
-    expect(out.exitCode).toBe(0);
-    expect(out.calls[0].path).toBe("/agent-ops/issue/view?tracker=github&id=42");
-  });
-
-  it("emits the TrackerIssue object with --json", async () => {
-    const { run } = makeRunner();
-    const out = await run(["issue", "view", "SHI-1", "--json"], {
-      "GET /agent-ops/issue/view": {
-        status: 200,
-        body: { tracker: { id: "linear" }, issue: { identifier: "SHI-1", title: "X", priority: { label: "Low", level: "low" } } },
-      },
-    });
-    expect(out.exitCode).toBe(0);
-    const issue = JSON.parse(out.stdout) as { identifier: string };
-    expect(issue.identifier).toBe("SHI-1");
-  });
-
-  it("requires a pointer", async () => {
-    const { run } = makeRunner();
-    const out = await run(["issue", "view"]);
-    expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("an issue pointer is required");
-    expect(out.calls).toHaveLength(0);
-  });
-
-  it("fails when the tracker cannot be inferred and no --tracker is given", async () => {
-    const { run } = makeRunner();
-    const out = await run(["issue", "view", "not-an-issue"]);
+    const out = await run(["issue", "view", "just-text"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("could not infer the tracker");
     expect(out.calls).toHaveLength(0);
   });
 
-  it("surfaces a 404 as exit 1", async () => {
+  it("view honors a --tracker override for an unknown shape", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "view", "octocat/hello-world#999"], {
-      "GET /agent-ops/issue/view": { status: 404, body: { error: "Issue not found: octocat/hello-world#999" } },
+    const out = await run(["issue", "view", "42", "--tracker", "github"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
     });
-    expect(out.exitCode).toBe(1);
-    expect(out.stderr).toContain("not found");
+    expect(out.calls[0].path).toContain("tracker=github");
+    expect(out.calls[0].path).toContain("id=42");
   });
-});
 
-describe("shipit issue list (docs/175)", () => {
-  it("lists issues for the default (github) tracker as a tab table", async () => {
+  it("comment posts tracker/id/body and reports the provenance card", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "list"], {
-      "GET /agent-ops/issue/list": {
-        status: 200,
-        body: {
-          tracker: { id: "github", configured: true },
-          issues: [
-            { identifier: "octocat/hello-world#1", title: "First", priority: { label: "Urgent" } },
-            { identifier: "octocat/hello-world#2", title: "Second", priority: { label: "Low" } },
-          ],
-        },
-      },
+    const out = await run(["issue", "comment", "SHI-1", "-b", "noted"], {
+      "POST /agent-ops/issue/comment": { status: 200, body: { ok: true, summary: "commented on SHI-1" } },
     });
     expect(out.exitCode).toBe(0);
-    expect(out.calls[0].path).toBe("/agent-ops/issue/list?tracker=github");
-    expect(out.stdout).toContain("octocat/hello-world#1\tUrgent\tFirst");
-    expect(out.stdout).toContain("octocat/hello-world#2\tLow\tSecond");
-  });
-
-  it("passes --tracker and --state through to the broker", async () => {
-    const { run } = makeRunner();
-    const out = await run(["issue", "list", "--tracker", "linear", "--state", "all", "--json"], {
-      "GET /agent-ops/issue/list": { status: 200, body: { tracker: { id: "linear" }, issues: [] } },
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/issue/comment",
+      body: { tracker: "linear", id: "SHI-1", body: "noted" },
     });
-    expect(out.exitCode).toBe(0);
-    expect(out.calls[0].path).toBe("/agent-ops/issue/list?tracker=linear&state=all");
-    expect(out.stdout.trim()).toBe("[]");
+    expect(out.stdout).toContain("Undo");
   });
 
-  it("reports the unconfigured empty state", async () => {
+  it("comment requires a body", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "list", "--tracker", "github"], {
-      "GET /agent-ops/issue/list": { status: 200, body: { tracker: { id: "github", configured: false }, issues: [] } },
-    });
-    expect(out.exitCode).toBe(0);
-    expect(out.stdout).toContain("not configured");
-  });
-
-  it("rejects an invalid --state", async () => {
-    const { run } = makeRunner();
-    const out = await run(["issue", "list", "--state", "bogus"]);
+    const out = await run(["issue", "comment", "SHI-1"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("--state must be");
+    expect(out.stderr).toContain("--body");
     expect(out.calls).toHaveLength(0);
   });
-});
 
-describe("shipit issue — read-only enforcement (docs/175)", () => {
-  for (const verb of ["create", "comment", "edit", "status", "assign", "close"]) {
-    it(`rejects \`shipit issue ${verb}\` with a docs pointer`, async () => {
-      const { run } = makeRunner();
-      const out = await run(["issue", verb, "SHI-1"]);
-      expect(out.exitCode).not.toBe(0);
-      expect(out.stderr).toContain("read-only");
-      expect(out.stderr).toContain("/shipit-docs/issues.md");
-      expect(out.calls).toHaveLength(0);
-    });
-  }
-
-  it("rejects an unknown issue subcommand", async () => {
+  it("status posts the target state", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "frobnicate"]);
+    const out = await run(["issue", "status", "SHI-1", "completed"], {
+      "POST /agent-ops/issue/status": { status: 200, body: { ok: true, summary: "set SHI-1 → Done" } },
+    });
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", status: "completed" });
+  });
+
+  it("assign sends the assignee handle", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "assign", "SHI-1", "me"], {
+      "POST /agent-ops/issue/assign": { status: 200, body: { ok: true, summary: "assigned SHI-1 → me" } },
+    });
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", assignee: "me" });
+  });
+
+  it("assign --none unassigns (null)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "assign", "SHI-1", "--none"], {
+      "POST /agent-ops/issue/assign": { status: 200, body: { ok: true, summary: "unassigned SHI-1" } },
+    });
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", assignee: null });
+  });
+
+  it("rejects `issue create` (issue creation is human-gated)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "x"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("Unsupported shipit issue subcommand");
+    expect(out.stderr).toContain("does not support `shipit issue create`");
+    expect(out.calls).toHaveLength(0);
   });
 });

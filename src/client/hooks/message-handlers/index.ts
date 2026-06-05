@@ -25,6 +25,8 @@ import { handleGitLog } from "./git-log.js";
 import { handleGitPushRejected } from "./git-push-rejected.js";
 import { handleGlobalSettings } from "./global-settings.js";
 import { handleInstallLog } from "./install-log.js";
+import { handleIssueWriteCard } from "./issue-write-card.js";
+import { handleIssueWriteUpdate } from "./issue-write-update.js";
 import { handleInstallStatus } from "./install-status.js";
 import { handleLogEntry } from "./log-entry.js";
 import { handleMcpServerStatus } from "./mcp-server-status.js";
@@ -120,6 +122,8 @@ export const messageHandlers: MessageHandlerMap = {
   global_settings: handleGlobalSettings,
   install_log: handleInstallLog,
   install_status: handleInstallStatus,
+  issue_write_card: handleIssueWriteCard,
+  issue_write_update: handleIssueWriteUpdate,
   log_entry: handleLogEntry,
   mcp_server_status: handleMcpServerStatus,
   message_queued: handleMessageQueued,

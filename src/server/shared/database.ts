@@ -419,6 +419,13 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN bug_report TEXT");
   },
+  // docs/177 — persist agent issue-write provenance cards (and their undo
+  // lifecycle) so the card survives a session switch / full reload. Without
+  // this the inline card renders live but vanishes on the next
+  // loadSessionHistory, which rebuilds the transcript from the DB.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN issue_write TEXT");
+  },
 ];
 
 export class DatabaseManager {
