@@ -53,6 +53,17 @@ export interface RemediationState {
   pendingReset?: boolean;
   /** Dedup tracker for back-to-back deferred WS emits (conflict manager). */
   lastEmittedDeferred?: string;
+  /**
+   * Epoch ms; a "settle window" opened after an attempt PUSHED (head SHA will
+   * change). While set and in the future, a head-SHA change is treated as OUR
+   * own push landing rather than fresh external code, so step 6 does NOT reset
+   * the attempt budget — the upstream verdict for the just-pushed head is
+   * likely the stale pre-recompute value and must not re-trigger an attempt.
+   * Paired with `nextEligibleAt` (set to the same instant) so the cooldown gate
+   * holds the re-fire until the window elapses. Inert unless a subclass sets it
+   * (the conflict manager arms it on a successful force-push). See docs/146.
+   */
+  settleUntil?: number;
 }
 
 /** Trigger classification of a poll signal. */
@@ -174,6 +185,7 @@ export abstract class AutoRemediationManager<TSignal> {
     delete state.nextEligibleAt;
     delete state.lastError;
     delete state.lastEmittedDeferred;
+    delete state.settleUntil;
   }
 
   /**
@@ -231,10 +243,21 @@ export abstract class AutoRemediationManager<TSignal> {
     if (state.status === "running") return;
     if (state.status === "exhausted") return;
 
-    // 6.
+    // 6 — head-SHA-change budget reset. A new head normally means fresh
+    // external code, so reset the per-head attempt budget. BUT a head change
+    // inside an open settle window is almost certainly OUR own force-push
+    // landing: the upstream verdict for the new head hasn't been recomputed yet
+    // and is likely the stale pre-recompute value. Resetting here would zero the
+    // budget AND wipe the settle cooldown, letting that stale verdict re-trigger
+    // a full attempt — the success→still-conflicting→success spin (docs/146).
+    // While settling, preserve the budget + cooldown so step 10 holds the
+    // re-fire until the upstream recomputes.
     if (state.lastHeadSha && headSha && headSha !== state.lastHeadSha) {
-      this.clearBudget(state);
-      state.status = "idle";
+      const settling = state.settleUntil !== undefined && this.now() < state.settleUntil;
+      if (!settling) {
+        this.clearBudget(state);
+        state.status = "idle";
+      }
     }
     state.lastHeadSha = headSha;
 
