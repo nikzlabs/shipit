@@ -3,6 +3,8 @@ import { renderHook, cleanup, act } from "@testing-library/react";
 import { useAttentionNotifications } from "./useAttentionNotifications.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
+import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
 afterEach(() => {
@@ -12,6 +14,7 @@ afterEach(() => {
     activeRunnerSessions: new Set<string>(),
   });
   usePrStore.setState({ cardBySession: {}, statusBySession: {} });
+  useSettingsStore.setState({ autoFixCi: false, autoResolveConflicts: false });
 });
 
 function session(id: string, overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -37,6 +40,12 @@ function setAgentRunning(id: string, running: boolean) {
 function setCard(id: string, card: PrCardState) {
   usePrStore.setState((state) => ({
     cardBySession: { ...state.cardBySession, [id]: card },
+  }));
+}
+
+function setStatus(id: string, status: PrStatusSummary) {
+  usePrStore.setState((state) => ({
+    statusBySession: { ...state.statusBySession, [id]: status },
   }));
 }
 
@@ -106,6 +115,83 @@ describe("useAttentionNotifications", () => {
 
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify).toHaveBeenCalledWith("CI checks failed", expect.any(Object));
+  });
+
+  it("stays silent when CI fails but auto-fix is enabled (a fix is coming)", () => {
+    useSettingsStore.setState({ autoFixCi: true });
+    useSessionStore.setState({ sessions: [session("s1")] });
+    setAgentRunning("s1", true);
+
+    const notify = vi.fn();
+    renderHook(() => useAttentionNotifications(notify));
+
+    act(() => {
+      setAgentRunning("s1", false);
+      setCard("s1", {
+        cardId: "c1",
+        phase: "open",
+        checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+      });
+    });
+
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("fires when the auto-fix loop exhausts its attempts", () => {
+    useSettingsStore.setState({ autoFixCi: true });
+    useSessionStore.setState({ sessions: [session("s1")] });
+    setAgentRunning("s1", true);
+
+    const notify = vi.fn();
+    renderHook(() => useAttentionNotifications(notify));
+
+    act(() => {
+      setAgentRunning("s1", false);
+      setCard("s1", {
+        cardId: "c1",
+        phase: "open",
+        checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+        autoFix: { status: "exhausted", attemptCount: 3, maxAttempts: 3 },
+      });
+    });
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("CI fix failed after 3 attempts", expect.any(Object));
+  });
+
+  it("stays silent on a merge conflict when auto-resolve is enabled", () => {
+    useSettingsStore.setState({ autoResolveConflicts: true });
+    useSessionStore.setState({ sessions: [session("s1")] });
+    setAgentRunning("s1", true);
+
+    const notify = vi.fn();
+    renderHook(() => useAttentionNotifications(notify));
+
+    act(() => {
+      setAgentRunning("s1", false);
+      setStatus("s1", { prState: "open", mergeable: "conflicting" } as PrStatusSummary);
+    });
+
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("stays silent on an idle clean PR when auto-merge owns the merge", () => {
+    useSessionStore.setState({ sessions: [session("s1")] });
+    setAgentRunning("s1", true);
+
+    const notify = vi.fn();
+    renderHook(() => useAttentionNotifications(notify));
+
+    act(() => {
+      setAgentRunning("s1", false);
+      setCard("s1", {
+        cardId: "c1",
+        phase: "open",
+        autoMerge: { enabled: true, mergeMethod: "squash" },
+      });
+    });
+
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("does not fire again when reason changes from one non-null value to another", () => {
