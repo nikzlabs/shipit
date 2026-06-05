@@ -93,13 +93,6 @@ export interface BootstrapData {
    * to `"containerized"` for every production deploy.
    */
   runtimeMode: RuntimeMode;
-  /**
-   * Controls whether the client should force container preview subdomains even
-   * for hostnames that normally fall back to path previews, such as single-label
-   * MagicDNS names or `*.ts.net` Tailscale names. Use `"always"` only when DNS
-   * resolves `{sessionId}--{port}.<shipit-host>` to the ShipIt orchestrator.
-   */
-  previewSubdomains: "auto" | "always";
 }
 
 // ---- Error type for service-level errors with HTTP status codes ----

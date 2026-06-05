@@ -259,7 +259,9 @@ echo "  Next steps:"
 if [ -n "${DOMAIN:-}" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
   echo "    1. Open https://$DOMAIN in your browser"
 elif [ "$INSTALL_TAILSCALE" = "true" ]; then
-  echo "    1. Open your Tailscale Serve URL in your browser"
+  echo "    1. Open the Tailscale URL printed above by tailscale.sh"
+  echo "       (http://<your-shipit-host>:4123), and add the one-time ACL"
+  echo "       grant it prints so subdomain previews resolve."
 else
   echo "    1. Run cloudflare.sh or tailscale.sh when you're ready to expose ShipIt"
 fi

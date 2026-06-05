@@ -131,7 +131,6 @@ export function PreviewFrame({
   const [refreshKey, setRefreshKey] = useState(0);
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
-  const previewSubdomainMode = useUiStore((s) => s.previewSubdomains);
 
   // ---- Device frame measurement ----
   // When a preset is active, we resize the iframe to the preset width/height
@@ -173,7 +172,6 @@ export function PreviewFrame({
     pollUrl,
     isContainerMode,
     apiHost,
-    previewSubdomainMode,
     createdSlotsRef,
     pollingRef,
     promoteSlot,
@@ -261,7 +259,7 @@ export function PreviewFrame({
   }, [iframeRefs]);
 
   const isLocalPreview = /^(localhost|127\.\d+\.\d+\.\d+|::1)(:|$)/i.test(apiHost);
-  const previewSubdomainUrl = isContainerMode && sessionId ? buildSubdomainUrl(sessionId, activePort, apiHost, previewSubdomainMode) : null;
+  const previewSubdomainUrl = isContainerMode && sessionId ? buildSubdomainUrl(sessionId, activePort, apiHost) : null;
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -416,6 +414,13 @@ export function PreviewFrame({
   const showStarting = !showStartupSteps && !showComposeError && !showComposeHint && !preview && !!sessionId;
   const showServices = services.length > 0 && !isRunning && !showComposeError && !showStartupSteps && !showComposeHint;
 
+  // Container preview is running, but the host ShipIt is reached on can't carry a
+  // wildcard subdomain (a raw IP / IPv6 literal). No subdomain URL can be built,
+  // so the poller created no iframe slot — surface *why* instead of a blank pane.
+  // Subdomain routing is the only supported container-preview path (the old
+  // path-based fallback is gone — it 404'd every absolute asset URL).
+  const cannotSubdomainPreview = isContainerMode && isRunning && !!activePort && !!sessionId && previewSubdomainUrl === null;
+
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)
   const hideIframe = !isRunning && !showStarting;
 
@@ -454,6 +459,23 @@ export function PreviewFrame({
       <div className="text-center space-y-3">
         <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
         <p>Starting dev server...</p>
+      </div>
+    );
+  } else if (cannotSubdomainPreview) {
+    overlayContent = (
+      <div className="text-center space-y-3 max-w-md px-4">
+        <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-warning)" />
+        <p className="font-medium">Preview not available over this host</p>
+        <p className="text-xs text-(--color-text-secondary)">
+          You&apos;re reaching ShipIt at{" "}
+          <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">{apiHost}</code>,
+          which can&apos;t host preview subdomains. Previews are served at{" "}
+          <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">{`{session}--${activePort}.<host>`}</code>,
+          so they need a hostname with wildcard DNS. Open ShipIt via{" "}
+          <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">localhost</code>,
+          a domain with a <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">*</code> DNS record,
+          or Tailscale with MagicDNS wildcard resolution.
+        </p>
       </div>
     );
   } else if (authBlocked && activeSlotUrl) {
