@@ -523,7 +523,7 @@ function OpenPhase({
             <CiIndicator checks={card.checks} />
             <ReviewIndicator reviewDecision={reviewDecision} />
             {canAutoMerge && (
-              <span className="md:hidden shrink-0">
+              <span className="shrink-0">
                 <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
               </span>
             )}
@@ -539,11 +539,6 @@ function OpenPhase({
             )}
           </span>
         </div>
-        {autoMerge?.enabled && !isCiPassed && !isCiNone && (
-          <div className="mt-1 text-xs text-(--color-text-secondary)">
-            Will merge when CI passes
-          </div>
-        )}
         {autoMerge?.error && autoMerge.managed && (
           <div className="mt-1 text-xs text-(--color-warning) flex items-center gap-1">
             <WarningIcon size={12} /> {autoMerge.error.message}
@@ -852,10 +847,14 @@ export function PrLifecycleCard({
           </button>
         )}
         <OverflowMenu label="Session actions" triggerClassName="h-auto w-auto p-1">
-          {canAutoMerge && (
+          {/* The Auto-merge toggle now lives inline in the open-phase card row
+              (always visible, desktop + mobile). The overflow keeps a copy only
+              for the phases that have no inline row — pre-PR (ready/creating/no
+              card), merged, closed — so auto-merge can still be armed before a
+              PR exists. Gating on `phase !== "open"` keeps it rendered exactly
+              once. */}
+          {canAutoMerge && card?.phase !== "open" && (
             <>
-              {/* docs/169 — auto-fix CI moved to a global setting (Settings → PR
-                  automations); the per-card toggle was removed. */}
               <div className="px-2 py-1">
                 <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
               </div>
