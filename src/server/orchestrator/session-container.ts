@@ -17,6 +17,7 @@
 
 import Docker from "dockerode";
 import { EventEmitter } from "node:events";
+import os from "node:os";
 import {
   createContainer,
   destroyContainer,
@@ -347,24 +348,24 @@ export function applyEnvCaps(cfg: ShipitConfig): {
   const caps = getResourceCaps();
   const warnings: string[] = [];
 
-  const memory = Math.min(cfg.agent.memory, caps.memoryMb);
-  if (cfg.agent.memory > caps.memoryMb) {
+  const memory = Math.min(cfg.agent.memory, caps.memoryMb.value);
+  if (cfg.agent.memory > caps.memoryMb.value) {
     warnings.push(
-      `agent.memory ${cfg.agent.memory} MiB clamped to ${caps.memoryMb} MiB by MAX_SESSION_MEMORY_MB`,
+      `agent.memory ${cfg.agent.memory} MiB clamped to ${caps.memoryMb.value} MiB by ${caps.memoryMb.source}`,
     );
   }
 
-  const cpu = Math.min(cfg.agent.cpu, caps.cpu);
-  if (cfg.agent.cpu > caps.cpu) {
+  const cpu = Math.min(cfg.agent.cpu, caps.cpu.value);
+  if (cfg.agent.cpu > caps.cpu.value) {
     warnings.push(
-      `agent.cpu ${cfg.agent.cpu} clamped to ${caps.cpu} by MAX_SESSION_CPU`,
+      `agent.cpu ${cfg.agent.cpu} clamped to ${caps.cpu.value} by ${caps.cpu.source}`,
     );
   }
 
-  const pids = Math.min(cfg.agent.pids, caps.pids);
-  if (cfg.agent.pids > caps.pids) {
+  const pids = Math.min(cfg.agent.pids, caps.pids.value);
+  if (cfg.agent.pids > caps.pids.value) {
     warnings.push(
-      `agent.pids ${cfg.agent.pids} clamped to ${caps.pids} by MAX_SESSION_PIDS`,
+      `agent.pids ${cfg.agent.pids} clamped to ${caps.pids.value} by ${caps.pids.source}`,
     );
   }
 
@@ -379,33 +380,89 @@ export function applyEnvCaps(cfg: ShipitConfig): {
   };
 }
 
-interface AgentResourceCaps {
-  memoryMb: number;
-  cpu: number;
-  pids: number;
+/** Fraction of total host RAM a single session may claim by default. */
+const HOST_MEMORY_FRACTION = 0.75;
+/** Default per-session process ceiling (fork-bomb guard) when unset. */
+const DEFAULT_MAX_PIDS = 8192;
+
+/** A resolved ceiling plus a human label naming what produced it. */
+interface ResourceCap {
+  value: number;
+  /** Names the cause in clamp warnings, e.g. "MAX_SESSION_MEMORY_MB" or "available host memory". */
+  source: string;
 }
 
-/** Deployment-level ceiling on per-session resources, read from env vars at call time. */
+interface AgentResourceCaps {
+  memoryMb: ResourceCap;
+  cpu: ResourceCap;
+  pids: ResourceCap;
+}
+
+/**
+ * Deployment-level ceiling on per-session resources, resolved at call time.
+ *
+ * Each ceiling is an explicit operator override (the matching `MAX_SESSION_*`
+ * env var) when set, otherwise a default derived from the host. The defaults
+ * are deliberately generous: ShipIt is single-tenant today (local, or a VPS
+ * the user controls), so the goal is to honor whatever a repo declares up to
+ * what the host can actually back — not to impose an arbitrary flat ceiling
+ * (a fixed 4096 MiB used to silently clamp a legitimate 6144 declaration).
+ *
+ * The defaults are NOT "unlimited", though: they stay tied to host capacity so
+ * one runaway session can't OOM or fork-bomb the box and take down the
+ * orchestrator and its sibling sessions — a blast-radius guard that matters
+ * even when you own every session on the host. Multi-tenant fair-sharing,
+ * if/when it ships, layers stricter values on top via the env vars.
+ */
 function getResourceCaps(): AgentResourceCaps {
+  const memEnv = readEnvPositiveInt("MAX_SESSION_MEMORY_MB");
+  const cpuEnv = readEnvPositiveFloat("MAX_SESSION_CPU");
+  const pidEnv = readEnvPositiveInt("MAX_SESSION_PIDS");
+
   return {
-    memoryMb: parseEnvInt("MAX_SESSION_MEMORY_MB", 4096),
-    cpu: parseEnvFloat("MAX_SESSION_CPU", 4),
-    pids: parseEnvInt("MAX_SESSION_PIDS", 4096),
+    memoryMb:
+      memEnv !== undefined
+        ? { value: memEnv, source: "MAX_SESSION_MEMORY_MB" }
+        : { value: hostMemoryCapMb(), source: "available host memory" },
+    cpu:
+      cpuEnv !== undefined
+        ? { value: cpuEnv, source: "MAX_SESSION_CPU" }
+        : { value: hostCpuCap(), source: "host CPU count" },
+    pids:
+      pidEnv !== undefined
+        ? { value: pidEnv, source: "MAX_SESSION_PIDS" }
+        : { value: DEFAULT_MAX_PIDS, source: "the default per-session PID ceiling" },
   };
 }
 
-function parseEnvInt(key: string, fallback: number): number {
-  const val = process.env[key];
-  if (val === undefined) return fallback;
-  const n = parseInt(val, 10);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+/**
+ * Default memory ceiling: a fraction of total host RAM, never below the library
+ * default so even a tiny host still honors a default-sized session.
+ */
+function hostMemoryCapMb(): number {
+  const totalMib = Math.floor(os.totalmem() / (1024 * 1024));
+  return Math.max(AGENT_DEFAULTS.memory, Math.floor(totalMib * HOST_MEMORY_FRACTION));
 }
 
-function parseEnvFloat(key: string, fallback: number): number {
+/** Default CPU ceiling: the host core count (at least 1). */
+function hostCpuCap(): number {
+  return Math.max(1, os.cpus().length);
+}
+
+/** Read a positive integer env var, or `undefined` when unset or invalid. */
+function readEnvPositiveInt(key: string): number | undefined {
   const val = process.env[key];
-  if (val === undefined) return fallback;
+  if (val === undefined) return undefined;
+  const n = parseInt(val, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** Read a positive float env var, or `undefined` when unset or invalid. */
+function readEnvPositiveFloat(key: string): number | undefined {
+  const val = process.env[key];
+  if (val === undefined) return undefined;
   const n = parseFloat(val);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 // ---------------------------------------------------------------------------

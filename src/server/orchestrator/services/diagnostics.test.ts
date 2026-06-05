@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -7,6 +7,17 @@ import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-r
 import type { ServiceManager, ManagedService } from "../service-manager.js";
 import type { WsLogEntry, WsServerMessage } from "../../shared/types.js";
 import { getSessionDiagnostics } from "./diagnostics.js";
+
+// Pin host detection to a large host so the host-relative default resource
+// ceilings (used when no MAX_SESSION_* env var is set) don't clamp the
+// declared values these tests assert are mirrored through to effectiveAgent.
+beforeEach(() => {
+  vi.spyOn(os, "totalmem").mockReturnValue(64 * 1024 * 1024 * 1024);
+  vi.spyOn(os, "cpus").mockReturnValue(
+    new Array(16).fill({}) as ReturnType<typeof os.cpus>,
+  );
+});
+afterEach(() => vi.restoreAllMocks());
 
 // ---- Test doubles ----
 

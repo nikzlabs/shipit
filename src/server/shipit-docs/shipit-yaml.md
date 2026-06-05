@@ -40,9 +40,9 @@ Configures the agent container (runs the AI coding agent — Claude Code or Code
 
 ```yaml
 agent:
-  memory: 2048        # Memory in MB (default: 1536, max: 4096)
-  cpu: 1.0            # CPU cores as float (default: 0.5, max: 4)
-  pids: 4096          # Max processes (default: 4096, max: 4096)
+  memory: 2048        # Memory in MB (default if omitted: 1536)
+  cpu: 1.0            # CPU cores as float (default if omitted: 0.5)
+  pids: 4096          # Max processes (default if omitted: 4096)
   install:            # Install commands, run sequentially
     - npm install
     - npx prisma generate
@@ -55,7 +55,15 @@ agent:
 | `pids` | integer | 4096 | Max processes |
 | `install` | string or string[] | none | Install commands, run sequentially |
 
-Resource values are capped at deployment-level maximums. Invalid or negative
+A declared resource value is honored up to a deployment-level ceiling. By
+default that ceiling tracks the host: memory is capped at ~75% of total host
+RAM (never below the 1536 MB library default), CPU at the host core count, and
+processes at a generous fork-bomb guard — so a session gets what it declares as
+long as the host can back it, while one runaway session still can't exhaust the
+box. An operator can override any ceiling with the `MAX_SESSION_MEMORY_MB`,
+`MAX_SESSION_CPU`, and `MAX_SESSION_PIDS` env vars (e.g. to enforce stricter
+per-session limits). When a declaration exceeds the active ceiling it is clamped
+and the reason is surfaced in the session diagnostics panel. Invalid or negative
 values fall back to defaults.
 
 #### Install behavior
