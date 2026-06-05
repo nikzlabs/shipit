@@ -81,16 +81,17 @@ foreign code once. The decision persists, so it does not recur per session.
 
 ## Open questions / decisions to make
 
-1. **Does the agent process itself run while untrusted?** Auto-execution (install/compose)
-   is unambiguously gated. The agent is murkier: it only runs commands when the *user*
-   prompts it, so it isn't "auto" execution — but a poisoned `CLAUDE.md`/README could
-   prompt-inject it on the very first message (that's Gap 1/2, hardened separately in
-   `docs/176`). Two options:
-   - **(a) Recommended P1:** allow agent chat while untrusted; gate only install + compose.
-     Simpler, lets the user ask "what does this repo do?" before trusting. Leans on the
-     injection-hardening + egress work for the residual risk.
-   - **(b) Stronger tier:** run the agent in a restricted mode (or not at all) until trust.
-     Higher friction; defer unless the threat model demands it.
+1. **Does the agent process itself run while untrusted?** **Decided: yes (option a).**
+   The agent chats normally while a repo is untrusted; only auto-execution
+   (`agent.install` + compose) is gated. Rationale: cloning a repo is already an intent
+   signal — the user looked at it and wants to edit/ship it, so a "you must trust before
+   you can even chat" gate adds friction without matching the user's mental model. What
+   *does* exceed expectation is the box silently running the repo's setup scripts, so that
+   is the line the gate draws. The residual risk (a poisoned `CLAUDE.md`/README
+   prompt-injecting the agent on the first message — Gap 1/2) is owned by the
+   injection-hardening + egress work in `docs/176` and 172, not by this gate; the two
+   compose rather than substitute. The rejected stronger tier (run the agent restricted,
+   or not at all, until trust) is recorded under Rejected alternatives.
 2. **Sessions with no remote** (purely local, no `remoteUrl`). No remote to key trust on.
    Likely trusted by construction (the user authored it locally) — confirm against the
    `disk-janitor` "skip sessions without a remoteUrl" precedent.
@@ -136,5 +137,10 @@ foreign code once. The decision persists, so it does not recur per session.
   re-opens the hole for every future clone. Per-remote TOFU is the standard for a reason.
 - **Per-session prompt (not per-remote).** Re-prompts every session for a repo you already
   trust — approval fatigue, which trains users to click through. Cache per remote.
+- **Lock the agent down until trust (option b above).** Blocking chat on an untrusted repo
+  fights the user's intent: they already chose to clone it to work on it, so "you can't
+  even talk to the agent yet" is friction without a matching expectation. The thing that
+  genuinely surprises a user is foreign *setup code* running on their box — that's what the
+  gate stops. Rejected in favor of option (a).
 - **Content hashing of `shipit.yaml` to auto-revoke on change.** More than v1 needs; TOFU
   trusts the remote identity. Note as a future hardening, not a blocker.

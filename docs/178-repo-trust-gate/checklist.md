@@ -3,7 +3,7 @@
 Design only so far. No implementation yet.
 
 ## Decisions to lock before building
-- [ ] Agent-while-untrusted: option (a) allow chat / gate only auto-exec, vs (b) restricted agent
+- [x] Agent-while-untrusted: **option (a)** — allow chat, gate only auto-exec (install + compose)
 - [ ] Trust key: confirm remote-URL normalization (reuse `parseGitHubRemote()`)
 - [ ] Persistence home: `RepoStore` trusted-remotes set vs dedicated store
 - [ ] No-remote local sessions: trusted by construction?
