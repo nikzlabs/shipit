@@ -511,7 +511,7 @@ export function PreviewFrame({
             onSelectPreview={() => { /* preview auto-pivots when the service comes up */ }}
           />
           <div className="text-center">
-            <Button variant="ghost" size="sm" onClick={() => useUiStore.getState().setRightTab("services")}>
+            <Button variant="ghost" size="sm" onClick={() => usePreviewStore.getState().setServicesDrawerExpanded(true)}>
               View logs
             </Button>
           </div>
@@ -522,7 +522,7 @@ export function PreviewFrame({
         <div className="text-center space-y-3">
           <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
           <p className="text-sm text-(--color-text-secondary)">No preview running</p>
-          <Button variant="secondary" size="sm" onClick={() => useUiStore.getState().setRightTab("services")}>
+          <Button variant="secondary" size="sm" onClick={() => usePreviewStore.getState().setServicesDrawerExpanded(true)}>
             View service logs
           </Button>
         </div>

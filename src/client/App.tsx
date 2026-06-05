@@ -39,7 +39,7 @@ import { FilePreviewModal } from "./components/FilePreviewModal.js";
 import { FileEditModal } from "./components/FileEditModal.js";
 import { TerminalPanel } from "./components/TerminalPanel.js";
 import { InteractiveTerminal, type InteractiveTerminalHandle } from "./components/InteractiveTerminal.js";
-import { ServicesPanel } from "./components/ServicesPanel.js";
+import { PreviewServicesDrawer } from "./components/PreviewServicesDrawer.js";
 import { SearchBar } from "./components/SearchBar.js";
 import { ConnectionBanner } from "./components/ConnectionBanner.js";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay.js";
@@ -230,6 +230,10 @@ export default function App() {
     if (isOpsSession && (rightTabRaw === "preview" || rightTabRaw === "pr")) return "host";
     if (!isOpsSession && rightTabRaw === "host") return "files";
     if (isLocalMode && (rightTabRaw === "preview" || rightTabRaw === "terminal")) return "files";
+    // docs/175 — Services is no longer a standalone tab; it lives inside the
+    // Preview tab as a drawer. Coerce any persisted "services" selection so a
+    // returning user doesn't land on a now-nonexistent tab (blank panel).
+    if (rightTabRaw === "services") return isLocalMode ? "files" : "preview";
     return rightTabRaw;
   })();
   const mobilePanel = useUiStore((s) => s.mobilePanel);
@@ -1103,6 +1107,9 @@ export default function App() {
   const messageInputFocusKey = showNewSessionView ? "new" : wsSessionId;
 
   // ── Right panel ──
+  // Whether the always-mounted PreviewFrame (+ Services drawer) is the visible
+  // tab. The `pr && !hasPr` case keeps the preview up while a PR is pending.
+  const previewVisible = !isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr));
   const rightPanel = (
     <>
       <div className="flex h-10.25 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
@@ -1111,9 +1118,6 @@ export default function App() {
         )}
         {isOpsSession && (
           <button onClick={() => handleTabChange("host")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "host" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Host</button>
-        )}
-        {composeServices.length > 0 && (
-          <button onClick={() => handleTabChange("services")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "services" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Services</button>
         )}
         <button onClick={() => handleTabChange("docs")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "docs" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Docs</button>
         <button onClick={() => handleTabChange("issues")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "issues" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Issues</button>
@@ -1135,9 +1139,13 @@ export default function App() {
         )}
       </div>
       <div className="flex-1 min-h-0 relative">
-        {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active */}
-        <div className={`absolute inset-0 ${(!isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr))) ? "" : "invisible pointer-events-none"}`}>
-          <PreviewFrame preview={effectivePreviewStatus} sessionId={sessionId} mergedSessionIds={mergedPreviewSessionIds} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} onStartService={(name) => send({ type: "start_service", name })} onStopService={(name) => send({ type: "stop_service", name })} />
+        {/* PreviewFrame is always rendered to preserve iframe state; hidden via CSS when another tab is active.
+            The Services drawer (docs/175) docks below it in the same flex column so a log tail can sit under the live render. */}
+        <div className={`absolute inset-0 flex flex-col ${previewVisible ? "" : "invisible pointer-events-none"}`}>
+          <div className="flex-1 min-h-0">
+            <PreviewFrame preview={effectivePreviewStatus} sessionId={sessionId} mergedSessionIds={mergedPreviewSessionIds} detectedPorts={detectedPorts} selectedPort={selectedPort} onSelectPort={(p) => usePreviewStore.getState().setSelectedPort(p)} errors={previewErrors} onSendErrors={handleSendErrors} onClearErrors={clearPreviewErrors} onSendCrashToAgent={handleSendComposeErrorToAgent} onSendComposeHintToAgent={handleSendComposeHintToAgent} onStartService={(name) => send({ type: "start_service", name })} onStopService={(name) => send({ type: "stop_service", name })} />
+          </div>
+          <PreviewServicesDrawer services={composeServices} active={previewVisible} lastMessage={lastMessage} drainMessages={drainMessages} send={send} onSendToAgent={handleSendServiceLogsToAgent} onSelectPreviewPort={(port) => usePreviewStore.getState().setSelectedPort(port)} />
         </div>
         {rightTab === "docs" ? (
           <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
@@ -1151,8 +1159,6 @@ export default function App() {
           } />
         ) : rightTab === "history" ? (
           <GitHistory commits={gitCommits} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useGitStore.getState().fetchLog(sid).catch(() => {}); }} onViewDiff={handleViewDiff} />
-        ) : rightTab === "services" ? (
-          <ServicesPanel lastMessage={lastMessage} drainMessages={drainMessages} send={send} onSendToAgent={handleSendServiceLogsToAgent} />
         ) : rightTab === "pr" && hasPr && wsSessionId ? (
           <PrDetailPanel sessionId={wsSessionId} />
         ) : rightTab === "files" ? (
