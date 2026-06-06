@@ -105,6 +105,87 @@ describe("wireAgentListeners", () => {
     runner.dispose({ force: true });
   });
 
+  describe("auth_required auto-recovery (docs/179)", () => {
+    const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+    function wireAuth(extra: {
+      willRecoverAuth?: () => boolean;
+      recoverAuth?: () => Promise<boolean>;
+    }) {
+      const agent = new FakeAgent();
+      const killSpy = vi.spyOn(agent, "kill");
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      runner.running = true;
+      const emitted: { type?: string }[] = [];
+      runner.on("message", (msg) => emitted.push(msg as { type?: string }));
+      const d = deps();
+      d.sessionManager.get = vi.fn(() => ({ agentId: "codex" })) as never;
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        ...extra,
+      });
+      return { agent, killSpy, runner, emitted, d };
+    }
+
+    it("stays quiet (no card, no OAuth) when recovery heals the token", async () => {
+      const recoverAuth = vi.fn().mockResolvedValue(true);
+      const { agent, killSpy, runner, emitted, d } = wireAuth({
+        willRecoverAuth: () => true,
+        recoverAuth,
+      });
+
+      agent.emit("auth_required");
+      await tick();
+
+      expect(killSpy).toHaveBeenCalled();
+      expect(recoverAuth).toHaveBeenCalledTimes(1);
+      // No sign-in card, no OAuth flow — the recovery re-dispatches silently.
+      expect(emitted.find((m) => m.type === "auth_required")).toBeUndefined();
+      expect(d.authManager.startOAuthFlow).not.toHaveBeenCalled();
+      // running is left set on the quiet path so the client doesn't flicker.
+      expect(runner.running).toBe(true);
+      runner.dispose({ force: true });
+    });
+
+    it("falls back to the visible re-auth flow when the heal fails", async () => {
+      const recoverAuth = vi.fn().mockResolvedValue(false);
+      const { agent, killSpy, emitted, d } = wireAuth({
+        willRecoverAuth: () => true,
+        recoverAuth,
+      });
+
+      agent.emit("auth_required");
+      await tick();
+
+      expect(killSpy).toHaveBeenCalled();
+      expect(recoverAuth).toHaveBeenCalledTimes(1);
+      // Heal failed → surface the sign-in card + start OAuth.
+      expect(emitted.find((m) => m.type === "auth_required")).toBeDefined();
+      expect(d.authManager.startOAuthFlow).toHaveBeenCalled();
+      // restore mocked timers/spies via dispose handled by GC; runner local.
+    });
+
+    it("uses the legacy visible flow when no recovery hooks are wired", async () => {
+      const { agent, killSpy, runner, emitted, d } = wireAuth({});
+
+      agent.emit("auth_required");
+      await tick();
+
+      expect(killSpy).toHaveBeenCalled();
+      expect(emitted.find((m) => m.type === "auth_required")).toBeDefined();
+      expect(d.authManager.startOAuthFlow).toHaveBeenCalled();
+      // No recovery → running cleared as before.
+      expect(runner.running).toBe(false);
+      runner.dispose({ force: true });
+    });
+  });
+
   describe("voice-note source observation (docs/163)", () => {
     function wire(extra: Partial<AgentListenerDeps>) {
       const agent = new FakeAgent();

@@ -182,6 +182,14 @@ export interface AppCtx {
    * if the agent has no registered hook.
    */
   onAgentAuthRequired?: (agentId: AgentId) => void;
+  /**
+   * docs/179 — proactively heal an agent's OAuth source token before it's read
+   * (pre-spawn env-prep, the runtime-401 auto-retry). A no-op for a healthy
+   * token; an awaited single-flight refresh when it's within the safety margin.
+   * Optional — not wired in test / local-runtime contexts. Resolves `true` when
+   * the token is usable after the call.
+   */
+  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
 
   // Config
   workspaceDir: string;

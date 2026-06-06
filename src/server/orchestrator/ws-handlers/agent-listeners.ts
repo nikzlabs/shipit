@@ -397,6 +397,23 @@ export interface WireListenersOpts {
    */
   onError?: () => Promise<void>;
   /**
+   * docs/179 — synchronous gate the `auth_required` handler calls BEFORE it
+   * kills the agent: returns true when the turn executor will auto-recover this
+   * auth failure (a first attempt with a token healer wired). When true, the
+   * handler SUPPRESSES the visible re-auth flow (no sign-in card, no OAuth
+   * start) and defers to {@link recoverAuth}; calling it also flips the
+   * executor's stand-down flag so the `done` teardown lets the recovery own all
+   * terminal work. Absent → the handler always surfaces re-auth (legacy flow).
+   */
+  willRecoverAuth?: () => boolean;
+  /**
+   * docs/179 — async recovery the handler kicks off after teardown when
+   * {@link willRecoverAuth} returned true: heal the OAuth token and re-dispatch
+   * the turn once. Resolves true when recovery is handled (re-dispatched), false
+   * when the heal failed — in which case the handler surfaces the sign-in card.
+   */
+  recoverAuth?: () => Promise<boolean>;
+  /**
    * True when this turn is being run on a persistent streaming agent
    * (live steering active, docs/140). In streaming mode the CLI can
    * genuinely block on `AskUserQuestion` (the user's answer flows back via
@@ -1189,41 +1206,63 @@ export function wireAgentListeners(
   });
 
   agent.on("auth_required", () => {
-    console.log("[server] Agent CLI requires authentication, starting OAuth flow");
-    emitToViewers({ type: "auth_required" });
-    // docs/155 Phase 2c — look up the auth manager for the failing turn's
-    // backend and start ITS flow. Without the dispatch this branch always
-    // started Claude OAuth, which is wrong on a Codex turn (and would be
-    // wrong on any future backend). The fallback to `authManager` keeps
-    // legacy test contexts (which don't construct `authManagers`) working.
     const turnSession = opts.capturedSessionId
       ? deps.sessionManager.get(opts.capturedSessionId)
       : null;
     const failingAgentId = turnSession?.agentId;
-    const mgr = failingAgentId ? deps.authManagers?.get(failingAgentId) : undefined;
-    if (mgr) {
-      mgr.start();
-    } else {
-      deps.authManager.startOAuthFlow();
-    }
-    // docs/153, docs/155 — let the per-agent module decide what to do on auth
-    // failure. Claude registers a refresher nudge (so a token rotated while
-    // this session sat idle gets propagated without a sign-in roundtrip);
-    // other backends register their own hook or none at all. The listener
-    // doesn't know the agent — that's the whole point of the table.
-    if (failingAgentId) {
-      deps.onAgentAuthRequired?.(failingAgentId);
-    }
+    const turnSessionId = opts.capturedSessionId;
 
-    // Tear the failed turn down. An auth failure ends the turn, but a
+    // docs/179 — decide SYNCHRONOUSLY (before the teardown below kills the agent
+    // and triggers the executor's `done` handler) whether this auth failure
+    // will be auto-recovered. `willRecoverAuth` returns true only for a first-
+    // attempt turn with a token healer wired, and flips the executor's stand-
+    // down flag so the `done` teardown defers to the recovery. When true we
+    // stay quiet — no sign-in card, no OAuth flow — and let `recoverAuth` heal
+    // the token and re-dispatch the turn. A transient stale-token 401 thus
+    // recovers without the user seeing anything or re-sending.
+    const willRecover = opts.willRecoverAuth?.() ?? false;
+
+    // The visible re-auth flow: flip the sign-in card, start the failing
+    // backend's OAuth flow, nudge the per-agent hook, and mark the turn ended.
+    const surfaceReauth = (): void => {
+      console.log("[server] Agent CLI requires authentication, starting OAuth flow");
+      emitToViewers({ type: "auth_required" });
+      // docs/155 Phase 2c — start the auth manager for the failing turn's
+      // backend (not always Claude OAuth). Fallback to `authManager` keeps
+      // legacy test contexts (which don't construct `authManagers`) working.
+      const mgr = failingAgentId ? deps.authManagers?.get(failingAgentId) : undefined;
+      if (mgr) {
+        mgr.start();
+      } else {
+        deps.authManager.startOAuthFlow();
+      }
+      // docs/153, docs/155 — let the per-agent module decide its side effect on
+      // auth failure (Claude nudges the OAuth refresher; others register their
+      // own hook or none). The listener doesn't know the agent — that's the
+      // point of the table.
+      if (failingAgentId) {
+        deps.onAgentAuthRequired?.(failingAgentId);
+      }
+      if (runner && turnSessionId) {
+        emitToViewers({
+          type: "session_status",
+          sessionId: turnSessionId,
+          running: false,
+          queueLength: runner.queueLength,
+        });
+      }
+      if (turnSessionId) {
+        deps.sseBroadcast("session_agent_finished", { sessionId: turnSessionId });
+      }
+    };
+
+    // Tear the failed turn's agent down. An auth failure ends the turn, but a
     // persistent streaming agent (live steering) does NOT exit on a failed
     // result, so the worker never clears `this.agent` and the runner is left
     // with `running=true` — the next turn then 409s with "Agent already
-    // running". Killing the worker agent + resetting runner state here makes
-    // the failure recoverable without waiting for the defensive kill+restart
-    // path. See docs/142 (Problem B1). Kill is fire-and-forget; the proxy
-    // surfaces any failure via the Logs panel, not the chat.
-    const turnSessionId = opts.capturedSessionId;
+    // running". Killing the worker agent + clearing the runner's ref makes the
+    // failure recoverable. See docs/142 (Problem B1). Kill is fire-and-forget;
+    // the proxy surfaces any failure via the Logs panel, not the chat.
     agent.kill();
     if (runner) {
       // Identity-guard: a concurrent turn may have replaced the runner's
@@ -1233,19 +1272,33 @@ export function wireAgentListeners(
         // docs/140 — streaming process is gone; reset the gate.
         runner.isStreamingActive = false;
       }
-      runner.running = false;
-      if (turnSessionId) {
-        emitToViewers({
-          type: "session_status",
-          sessionId: turnSessionId,
-          running: false,
-          queueLength: runner.queueLength,
-        });
-      }
+      // docs/179 — on the recovery path leave `running` set: the turn is about
+      // to be re-dispatched, so flipping it (and emitting running=false) would
+      // make the client flicker out of its loading state. The re-dispatch
+      // resets turn state. On the surface path, the teardown below clears it.
+      if (!willRecover) runner.running = false;
     }
-    if (turnSessionId) {
-      deps.sseBroadcast("session_agent_finished", { sessionId: turnSessionId });
+
+    if (willRecover && opts.recoverAuth) {
+      // docs/179 — quiet path: heal + re-dispatch. If the heal genuinely fails
+      // (token revoked / rate-limited), fall back to the visible re-auth flow.
+      // Fire-and-forget: `auth_required` is a sync event handler.
+      // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in a sync event handler
+      void opts.recoverAuth().then(
+        (handled) => {
+          if (!handled) surfaceReauth();
+        },
+        (err: unknown) => {
+          // recoverAuth owns its own errors and resolves false on a failed heal;
+          // a rejection here is unexpected. Fail open — surface the sign-in card
+          // rather than leaving the turn wedged behind an unhandled rejection.
+          console.error("[server] docs/179 auth recovery rejected unexpectedly:", err);
+          surfaceReauth();
+        },
+      );
+      return;
     }
+    surfaceReauth();
   });
 
   agent.on("error", async (err: Error) => {

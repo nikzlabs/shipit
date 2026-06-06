@@ -36,7 +36,7 @@ import type { RepoStore } from "../repo-store.js";
 import type { GitManager } from "../../shared/git.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AgentId } from "../../shared/types.js";
-import { generateSessionName } from "../session-namer.js";
+import { generateSessionName, type SessionName } from "../session-namer.js";
 import { getErrorMessage } from "../validation.js";
 
 export interface GraduateSessionDeps {
@@ -51,6 +51,14 @@ export interface GraduateSessionDeps {
    */
   prStatusPoller?: PrStatusPoller;
   sseBroadcast: (event: string, data: unknown) => void;
+  /**
+   * docs/179 — heal the agent's OAuth source token before the AI-naming CLI
+   * runs. `generateSessionName` shells out to `claude -p` against the source
+   * credentials; without this, naming silently 401s (and returns null →
+   * placeholder title sticks) in the same stale-token window that breaks the
+   * first turn. A no-op for a healthy token. Optional — tests / local omit it.
+   */
+  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
 }
 
 export interface GraduateSessionOpts {
@@ -108,7 +116,7 @@ export interface GraduateSessionOpts {
  *     intends `explicitBranch` semantics.
  */
 export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSessionOpts): void {
-  const { sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast } = deps;
+  const { sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast, ensureAgentTokenFresh } = deps;
   const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, parentSessionId, spawnedByTurn } = opts;
 
   // 1. Activation — flip warm to false (no-op when already active, e.g. fork).
@@ -133,7 +141,7 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
   const shouldAutoName = !explicitTitle && !explicitBranch && session?.workspaceDir;
   if (shouldAutoName) {
     scheduleSessionNaming(
-      { sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast },
+      { sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast, ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}) },
       { sessionId, userText, agentId, skipBranchRename: skipBranchRename ?? false },
     );
   } else {
@@ -162,6 +170,7 @@ interface ScheduleSessionNamingDeps {
   createGitManager: (dir: string) => GitManager;
   prStatusPoller?: PrStatusPoller;
   sseBroadcast: (event: string, data: unknown) => void;
+  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
 }
 
 interface ScheduleSessionNamingOpts {
@@ -178,7 +187,7 @@ interface ScheduleSessionNamingOpts {
 }
 
 function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSessionNamingOpts): void {
-  const { sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast } = deps;
+  const { sessionManager, runnerRegistry, createGitManager, prStatusPoller, sseBroadcast, ensureAgentTokenFresh } = deps;
   const { sessionId, userText, agentId, skipBranchRename } = opts;
 
   const finalizeBranchRenamed = async (): Promise<void> => {
@@ -210,8 +219,23 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
     }
   };
 
+  // docs/179 — heal the OAuth source token before the naming CLI reads it, so
+  // AI naming doesn't silently 401 in the stale-token window. A no-op for a
+  // healthy token; best-effort (a failed heal just falls through to the CLI,
+  // which returns null → placeholder title sticks, exactly as before).
+  const nameAfterHeal = async (): Promise<SessionName | null> => {
+    if (ensureAgentTokenFresh) {
+      try {
+        await ensureAgentTokenFresh(agentId);
+      } catch {
+        // Best-effort — never block naming on a heal failure.
+      }
+    }
+    return generateSessionName(userText, agentId);
+  };
+
   // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget session naming
-  generateSessionName(userText, agentId).then(async (nameResult) => {
+  nameAfterHeal().then(async (nameResult) => {
     if (!nameResult) {
       await finalizeBranchRenamed();
       return;

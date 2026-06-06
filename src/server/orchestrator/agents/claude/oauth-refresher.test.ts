@@ -534,4 +534,97 @@ describe("ClaudeOAuthRefresher", () => {
     expect(rig.spawnHandle.invocations.length).toBe(0);
     expect(rig.repushCalls.length).toBe(0);
   });
+
+  // ---- ensureFresh (docs/179) — proactive pre-read heal ----
+
+  describe("ensureFresh", () => {
+    it("is a no-op (no CLI spawn) and returns true when the token is healthy", async () => {
+      const now = 1_700_000_000_000;
+      const future = now + 8 * 60 * 60 * 1000; // 8h out, well beyond the margin
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialExpiries: { "claude-default": future },
+        initialNow: now,
+      });
+      rigs.push(rig);
+
+      const ok = await rig.refresher.ensureFresh("claude-default");
+      expect(ok).toBe(true);
+      expect(rig.spawnHandle.invocations.length).toBe(0); // never touched the CLI
+    });
+
+    it("heals a within-margin token via a single-flight refresh and returns true", async () => {
+      const now = 1_700_000_000_000;
+      const nearExpiry = now + 10 * 60 * 1000; // 10m out, inside the 45m margin
+      const rotatedTo = now + 8 * 60 * 60 * 1000;
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialExpiries: { "claude-default": nearExpiry },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [{ rotateTo: rotatedTo }]; // tier1 rotates
+
+      const ok = await rig.refresher.ensureFresh("claude-default");
+      expect(ok).toBe(true);
+      expect(rig.spawnHandle.invocations.length).toBe(1);
+      expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "claude-default" }]);
+    });
+
+    it("returns false when an expired token can't be refreshed (revoked)", async () => {
+      const now = 1_700_000_000_000;
+      const expired = now - 60 * 1000; // already expired
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialExpiries: { "claude-default": expired },
+        initialNow: now,
+      });
+      rigs.push(rig);
+      rig.spawnHandle.effects = [
+        { stderr: "invalid_grant" }, // tier1
+        { stderr: "invalid_grant" }, // tier2
+      ];
+
+      const ok = await rig.refresher.ensureFresh("claude-default");
+      expect(ok).toBe(false); // token still expired after a failed heal
+    });
+
+    it("returns false when there is no source token", async () => {
+      const now = 1_700_000_000_000;
+      const rig = buildRig({
+        accounts: [makeAccount("claude-default")],
+        initialNow: now,
+        // no initialExpiries → no file
+      });
+      rigs.push(rig);
+
+      const ok = await rig.refresher.ensureFresh("claude-default");
+      expect(ok).toBe(false);
+      expect(rig.spawnHandle.invocations.length).toBe(0);
+    });
+
+    it("is a no-op returning true in local runtime mode", async () => {
+      const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-ensure-local-"));
+      const accounts = [makeAccount("claude-default")];
+      const pam = makeProviderAccountManager({ rootDir, accounts });
+      const accountRoot = pam.resolveCredentialRoot("claude", "claude-default");
+      fs.mkdirSync(accountRoot, { recursive: true });
+      // Even with an EXPIRED token, local mode must not spawn the CLI.
+      writeCredentials(accountRoot, { expiresAt: 1 });
+      const spawnHandle = makeFakeSpawn((env) => env.HOME ?? "");
+      const refresher = new ClaudeOAuthRefresher({
+        credentialsDir: rootDir,
+        providerAccountManager: pam,
+        repushAccountToken: () => {},
+        sseBroadcast: () => {},
+        runtimeMode: "local",
+        spawn: spawnHandle.spawn as unknown as ClaudeOAuthRefresherDeps["spawn"],
+      });
+
+      const ok = await refresher.ensureFresh("claude-default");
+      expect(ok).toBe(true);
+      expect(spawnHandle.invocations.length).toBe(0);
+      fs.rmSync(rootDir, { recursive: true, force: true });
+    });
+  });
 });
