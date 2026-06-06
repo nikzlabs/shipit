@@ -49,6 +49,14 @@ interface UpdateStatusResult {
   isDowngrade: boolean;
   releaseUrl?: string;
   updateMode?: "managed" | "manual";
+  /** Present when the previous in-place update failed and hasn't been retried. */
+  lastUpdateError?: {
+    failedAt?: string;
+    runningSha?: string;
+    attemptedRef?: string;
+    attemptedSha?: string;
+    exitCode?: number;
+  };
 }
 
 const providerNames: Record<AgentId, string> = {
@@ -1683,13 +1691,22 @@ export function Settings({
                     : "Check for new versions and choose the release channel. Re-run the local production script to apply updates."}
                 </p>
 
-                {/* Current version — channel-aware label, e.g. "Stable · v1.4.0" */}
+                {/* Current version — channel-aware label, e.g. "Stable · v1.4.0".
+                    Anchored on the running image's baked build id, so it stays
+                    honest even if a failed update left the checkout ahead. */}
                 {version && (
                   <p className="text-sm text-(--color-text-secondary)" data-testid="settings-version">
                     Current version:{" "}
                     <span className="font-medium text-(--color-text-primary)">
                       {version.channel === "stable" ? "Stable" : "Edge"} · {version.version}
                     </span>
+                  </p>
+                )}
+                {/* Checkout is ahead of the running image — an update didn't finish. */}
+                {version?.mismatch && (
+                  <p className="text-sm text-(--color-warning)" data-testid="settings-version-mismatch">
+                    ⚠ A previous update may not have finished — this is still running the
+                    last successfully-built version. Try Update Now again.
                   </p>
                 )}
 
@@ -1847,6 +1864,26 @@ export function Settings({
                 )}
                 {updateError && (
                   <p className="text-sm text-(--color-error)">{updateError}</p>
+                )}
+                {/* The previous in-place update failed (build errored, checkout
+                    rolled back). Surfaced explicitly so it isn't mistaken for a
+                    UI glitch — see issue #1047. */}
+                {updateStatus?.lastUpdateError && !updateApplying && (
+                  <div
+                    className="rounded-md border border-(--color-error) bg-(--color-error-subtle) px-3 py-2 text-sm text-(--color-error)"
+                    data-testid="settings-update-failed"
+                  >
+                    <p className="font-medium">Last update failed</p>
+                    <p className="mt-0.5 text-(--color-text-secondary)">
+                      The rebuild didn&apos;t complete, so ShipIt is still running the previous
+                      version
+                      {updateStatus.lastUpdateError.runningSha
+                        ? ` (${updateStatus.lastUpdateError.runningSha.slice(0, 7)})`
+                        : ""}
+                      . The checkout was rolled back automatically. Free up disk space if needed,
+                      then try Update Now again.
+                    </p>
+                  </div>
                 )}
                 {updateStatus && !updateApplying && (
                   <div className="text-sm text-(--color-text-secondary)">
