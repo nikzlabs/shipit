@@ -236,3 +236,24 @@ work is plumbing: a normalized trigger and normalized events.
 - **Auto-compaction during a live turn**: both CLIs may compact mid-turn on
   their own. The rendering work (step 1) must tolerate the events arriving
   unsolicited, not just in response to a user trigger.
+
+## Implementation status (2026-06-06)
+
+All three build-order steps are **implemented**; see `checklist.md` for the
+item-level breakdown and the remaining live-CLI verification items (the doc's
+"Caveats / open verification"). The implementation follows this spec, with two
+notes worth recording:
+
+- **Codex token figures.** The card's `postTokens` is taken from the adjacent
+  `thread/tokenUsage/updated` snapshot's `last.totalTokens` (real context-window
+  occupancy of the final call) captured at `item/completed`, and `preTokens`
+  from the snapshot present at `item/started` — so the card shows the
+  before→after delta even though the `contextCompaction` item carries no counts
+  itself. All fields stay optional, so a missing snapshot degrades to a bare
+  "Context compacted" row.
+- **Codex `/compact` between turns.** Because Codex tears its app-server down on
+  turn completion, the between-turns trigger goes through the spawn path
+  (`run({ compact: true })`): a fresh app-server resumes the thread and issues
+  `thread/compact/start` instead of `turn/start`, and the `contextCompaction`
+  completion synthesizes the `agent_result` that ends the run. The live
+  `agent.compact()` method covers the in-flight-turn case.

@@ -244,6 +244,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    * cleared when the turn ends.
    */
   reviewFilePath?: string;
+  /**
+   * docs/178 — this turn is a context-compaction request (`/compact`). The
+   * prompt is `/compact`; for Claude the CLI honors it as a slash command, and
+   * the flag is forwarded to Codex so it issues `thread/compact/start` instead
+   * of a normal turn. Set by the `/compact` interception in send-message.ts.
+   */
+  compact?: boolean;
 }): Promise<void> {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths } = opts;
 
@@ -380,6 +387,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionDir: activeDir,
         ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
         ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
+        ...(opts.compact ? { compact: true } : {}),
       });
     },
     prepareAgentEnv: async (sessionId, id) => {

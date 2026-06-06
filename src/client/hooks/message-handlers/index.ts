@@ -10,6 +10,8 @@ import { handleBugReportFailed } from "./bug-report-failed.js";
 import { handleBugReportFiled } from "./bug-report-filed.js";
 import { handleClearLogs } from "./clear-logs.js";
 import { handleCommitLinked } from "./commit-linked.js";
+import { handleCompactionCard } from "./compaction-card.js";
+import { handleCompactionStatus } from "./compaction-status.js";
 import { handleComposeError } from "./compose-error.js";
 import { handleComposeNotConfigured } from "./compose-not-configured.js";
 import { handleContainerRestarting } from "./container-restarting.js";
@@ -106,6 +108,8 @@ export const messageHandlers: MessageHandlerMap = {
   bug_report_filed: handleBugReportFiled,
   clear_logs: handleClearLogs,
   commit_linked: handleCommitLinked,
+  compaction_card: handleCompactionCard,
+  compaction_status: handleCompactionStatus,
   compose_error: handleComposeError,
   compose_not_configured: handleComposeNotConfigured,
   container_restarting: handleContainerRestarting,

@@ -289,6 +289,9 @@ export class CodexAdapter
     // is available to the parent and any subagent it spawns.
     supportsReview: true,
     supportsSteering: true,
+    // docs/178 — the app-server exposes `thread/compact/start` and emits
+    // `contextCompaction` items we map to normalized compaction signals.
+    supportsCompaction: true,
     skillsDirName: ".codex",
     skillInvocationPrefix: "$",
   };
@@ -320,6 +323,30 @@ export class CodexAdapter
 
   /** Latest token usage from `thread/tokenUsage/updated`, surfaced at turn end. */
   private lastTokenUsage: CodexTokenUsage | null = null;
+
+  /**
+   * docs/178 — true once ShipIt has asked this app-server to compact (via
+   * `compact()` or a `compact`-flagged run). Codex emits no manual/auto field on
+   * its `contextCompaction` items, so the adapter labels the normalized event by
+   * correlation: `"manual"` when we requested it, `"auto"` otherwise (the CLI
+   * compacted on its own). Reset is unnecessary — the adapter instance is
+   * one-shot-per-turn (killed on turn completion).
+   */
+  private compactionRequested = false;
+
+  /**
+   * docs/178 — true when this run was spawned purely to compact
+   * (`run({ compact: true })`): we issue `thread/compact/start` instead of a
+   * `turn/start`, so there is no normal turn lifecycle to end the run. The
+   * `contextCompaction` `item/completed` becomes the turn terminus — we emit a
+   * synthetic `agent_result` and tear down. `compactionTerminated` guards
+   * against a double `agent_result` if the app-server ALSO sends `turn/completed`.
+   */
+  private compactSpawnMode = false;
+  private compactionTerminated = false;
+
+  /** Context occupancy captured when compaction started, used as `preTokens`. */
+  private compactionPreTokens: number | undefined;
 
   /** Latest subscription rate-limit snapshot pushed by the app-server. */
   private lastRateLimits: {
@@ -488,6 +515,33 @@ export class CodexAdapter
   sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
     // Codex steers via turn/steer (writeStdin already does this)
     this.writeStdin(text);
+  }
+
+  /**
+   * docs/178 — trigger a context compaction on the live app-server via the
+   * `thread/compact/start` RPC. Only works when a process + thread are resident
+   * (i.e. a turn is in flight); Codex tears its app-server down on turn
+   * completion, so between turns there's nothing to talk to and the orchestrator
+   * routes through `run({ compact: true })` (which spawns a fresh app-server,
+   * resumes the thread, and issues the same RPC) instead. We mark
+   * `compactionRequested` so the resulting `contextCompaction` items are labeled
+   * `"manual"` rather than `"auto"`.
+   */
+  compact(_instructions?: string): void {
+    // docs/178 §4 — Codex's `thread/compact/start` RPC takes only a threadId;
+    // it has no slot for custom-compaction instructions, so any `/compact <args>`
+    // text is intentionally dropped (Claude-only feature).
+    if (this.proc && this.threadId) {
+      this.compactionRequested = true;
+      this.sendRequest("thread/compact/start", { threadId: this.threadId }).catch((err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.emit("log", "codex", `thread/compact/start rejected: ${reason}`);
+      });
+      return;
+    }
+    console.warn(
+      "[codex-adapter] compact() called with no live thread — the orchestrator should have spawned a compaction run instead",
+    );
   }
 
   interrupt(): void {
@@ -959,6 +1013,40 @@ export class CodexAdapter
         return;
       }
 
+      case "contextCompaction": {
+        // docs/178 — the app-server compacted the thread's context (manually via
+        // our `thread/compact/start`, or on its own when the window filled). Map
+        // it to the normalized compaction signals. Codex carries no manual/auto
+        // field, so label by correlation (`compactionRequested`); token figures
+        // come from the adjacent `thread/tokenUsage/updated` snapshot (`last`
+        // = real context occupancy).
+        const trigger: "manual" | "auto" = this.compactionRequested ? "manual" : "auto";
+        if (phase === "started") {
+          this.compactionPreTokens = this.lastTokenUsage?.last?.totalTokens;
+          this.emit("event", { type: "agent_compaction_started", trigger } as AgentEvent);
+        } else {
+          const post = this.lastTokenUsage?.last?.totalTokens;
+          const event: AgentEvent = { type: "agent_compacted", trigger };
+          if (typeof this.compactionPreTokens === "number") event.preTokens = this.compactionPreTokens;
+          if (typeof post === "number") event.postTokens = post;
+          this.emit("event", event);
+          // In compact-spawn mode there is no `turn/start`, so nothing else will
+          // end the run. Close it here: emit a synthetic success result and tear
+          // down. Guard so a stray `turn/completed` can't double-emit.
+          if (this.compactSpawnMode && !this.compactionTerminated) {
+            this.compactionTerminated = true;
+            this.emit("event", {
+              type: "agent_result",
+              status: "success",
+              sessionId: this.threadId ?? "unknown",
+              durationMs: Date.now() - this.turnStartTime,
+            } as AgentEvent);
+            this.kill();
+          }
+        }
+        return;
+      }
+
       case "commandExecution": {
         if (phase === "started") {
           this.emitAssistant([
@@ -1123,6 +1211,11 @@ export class CodexAdapter
 
   /** Handle turn completion — emit agent_result. */
   private handleTurnCompleted(params: Record<string, unknown>): void {
+    // docs/178 — a compact-spawn run already ended the turn from the
+    // `contextCompaction` `item/completed` (there was no `turn/start`, so this
+    // would be a spurious/duplicate completion). Skip to avoid a double
+    // `agent_result`.
+    if (this.compactionTerminated) return;
     // v2 nests status under `turn`; older shape had a top-level `status`.
     const turn = params.turn as { status?: string } | undefined;
     const status = turn?.status ?? (params.status as string) ?? "completed";
@@ -1281,6 +1374,23 @@ export class CodexAdapter
       model: params.model ?? "gpt-5.5",
       tools: this.capabilities.toolNames,
     } as AgentEvent);
+
+    // docs/178 — compact-spawn run: the orchestrator intercepted `/compact`
+    // with no live app-server to call `compact()` on, so we spawned this
+    // process purely to compact. Issue `thread/compact/start` on the resumed
+    // thread instead of a normal `turn/start`; the `contextCompaction` items
+    // drive the normalized signals, and the `item/completed` ends the run (see
+    // handleItem). No `turn/start` means no `turn/completed`, which is why the
+    // compaction-completed path synthesizes the `agent_result`.
+    if (params.compact) {
+      this.compactionRequested = true;
+      this.compactSpawnMode = true;
+      // The app-server replies with `contextCompaction` `item/started` /
+      // `item/completed`, which handleItem maps to the normalized signals — so
+      // we don't emit the started event here (that would double it).
+      await this.sendRequest("thread/compact/start", { threadId: this.threadId });
+      return;
+    }
 
     // Step 3: Build turn input.
     //

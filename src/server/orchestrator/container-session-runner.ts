@@ -857,6 +857,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await workerPost(this.workerUrl, "/agent/permission-mode", { mode: mode ?? null });
   }
 
+  /**
+   * docs/178 — ask the resident agent on the worker to compact its context
+   * (`/compact`). The worker calls `agent.compact()` on the in-container adapter
+   * (streaming Claude → inject `/compact`; live Codex → `thread/compact/start`).
+   */
+  async compactAgentOnWorker(instructions?: string): Promise<void> {
+    await workerPost(this.workerUrl, "/agent/compact", instructions ? { instructions } : undefined);
+  }
+
   // --- Worker communication: terminal ---
 
   /** Start a terminal PTY inside the container. */

@@ -56,6 +56,7 @@ class FakeCodexProcess extends EventEmitter<AgentProcessEvents> implements Agent
     models: ["codex-mini-latest", "o4-mini"],
     supportsReview: false,
     supportsSteering: false,
+    supportsCompaction: false,
     skillsDirName: ".codex",
     skillInvocationPrefix: "$",
   };

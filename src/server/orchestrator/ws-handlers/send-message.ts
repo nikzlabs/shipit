@@ -20,6 +20,22 @@ type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
 type WsSendReviewMessage = Extract<WsClientMessage, { type: "send_review_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 
+/**
+ * docs/178 §4 — recognize the `/compact` composer command, with optional
+ * custom-compaction args (`/compact <instructions>`, which Claude's CLI
+ * honors). Matches a leading `/compact` token only (so `/compactfoo` is not a
+ * match). Returns the trimmed instructions when present. Recognizing the arg
+ * form matters for correctness, not just Claude parity: without it a
+ * `/compact <args>` on Codex would fall through and be sent as a literal
+ * `turn/start` prompt — a no-op — instead of routing to its compaction RPC.
+ */
+function parseCompactCommand(text: string): { match: boolean; instructions?: string } {
+  const m = /^\/compact(?:\s+([\s\S]+))?$/.exec(text.trim());
+  if (!m) return { match: false };
+  const instructions = m[1]?.trim();
+  return instructions ? { match: true, instructions } : { match: true };
+}
+
 function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
   const activeAgentId = ctx.getActiveAgentId();
 
@@ -87,6 +103,18 @@ export async function handleSendMessage(
   // Check auth before spawning — some CLIs hang if not authenticated.
   if (!ensureActiveAgentAuthenticated(ctx)) return;
 
+  // docs/178 — `/compact` interception. When the active agent supports
+  // compaction, route the command to the agent's compaction trigger instead of
+  // sending the literal text to the model: a fresh spawn runs `run({ compact:
+  // true })` (Claude → `claude -p "/compact"`; Codex → `thread/compact/start`),
+  // and a live in-flight turn injects via `agent.compact()`. Gated on the
+  // capability so an unsupported backend just sends the text (and the `/`
+  // autocomplete never offered it anyway).
+  const compactCapable =
+    ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsCompaction ?? false;
+  const compactParsed = parseCompactCommand(msg.text);
+  const isCompactRequest = compactParsed.match && compactCapable;
+
   // Validate images if provided (do this before queue check so we reject bad images immediately)
   const images: ImageAttachment[] | undefined = msg.images && msg.images.length > 0 ? msg.images : undefined;
   if (images) {
@@ -108,6 +136,29 @@ export async function handleSendMessage(
     // and the user sees: "agent starts briefly, nothing happens".
     const actuallyRunning = await runnerForQueue.verifyRunningState();
     if (actuallyRunning) {
+      // docs/178 — `/compact` while a turn is in flight: trigger compaction on
+      // the resident live process (streaming Claude injects `/compact`; live
+      // Codex sends `thread/compact/start`) rather than queuing the literal text.
+      // The compaction events (started → card) flow through the active turn's
+      // listeners. If there's no resident agent, fall through to the normal
+      // queue path. compact() is a best-effort no-op when the resident process
+      // can't compact (e.g. a one-shot PTY mid-turn).
+      if (isCompactRequest) {
+        const compactAgent = runnerForQueue.getAgent();
+        if (compactAgent?.compact) {
+          compactAgent.compact(compactParsed.instructions);
+          const compactSessionId = ctx.getActiveAppSessionId();
+          if (compactSessionId) {
+            runnerForQueue.emitMessage({
+              type: "compaction_status",
+              sessionId: compactSessionId,
+              active: true,
+              trigger: "manual",
+            });
+          }
+        }
+        return;
+      }
       // Live steering: inject the message mid-turn if capability + setting active.
       // Review messages (reviewFilePath set) are never steered — a review needs
       // its own turn so the per-turn review-tool allow-list is established
@@ -442,6 +493,7 @@ export async function handleSendMessage(
     isNewSession: !msg.sessionId,
     uploadPaths,
     reviewFilePath,
+    compact: isCompactRequest,
   });
 }
 
