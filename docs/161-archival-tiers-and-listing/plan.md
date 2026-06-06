@@ -299,7 +299,7 @@ pass), and the **effect**.
 |---|---|---|---|---|
 | **container running → stopped** *(within `hot`)* | idle-container enforcer (`docs/063`, event-driven) | idle-container cap exceeded | not running; `viewerCount === 0` | dispose runner / stop container; **disk untouched**, deps preserved, instant restart |
 | **`hot` → `light`** | disk-janitor pass (startup safety-net + **async after each session start**) | idle ≥ `IDLE_LIGHT` (~24h), **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0` | `ServiceManager.stop({ removeVolumes: true })` — drop `node_modules`/build volumes; keep checkout, branch, uncommitted edits; `diskTier = light` |
-| **`light` → `evicted`** | disk-janitor pass (startup + async after session start) | idle ≥ `IDLE_EVICT` (~14–30d), **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0`; **clean tree** (else auto-commit + push first) | `fs.rm` workspace; destroy container; `diskTier = evicted` |
+| **`light` → `evicted`** | disk-janitor pass (startup + async after session start) | idle ≥ eviction threshold — **merge-aware**: `IDLE_EVICT_MERGED` (~2d) if the PR is merged, else `IDLE_EVICT` (~14d) — **or** disk-pressure pass selects it (LRU) | not running; `viewerCount === 0`; **clean tree** (else auto-commit + push first) | `fs.rm` workspace; destroy container; `diskTier = evicted` |
 | **any tier → `evicted` + `userArchived`** | explicit user "Archive" action | user clicked archive | not running (else confirm/decline); dirty tree → auto-commit + push first | `userArchived = true`; run the `evicted` cleanup; cascade to children (existing) |
 | **`light` → `hot`** | user selects / messages the session | — | — | reinstall deps (`agent.install` / dep-cache); start container; `diskTier = hot`. Branch + checkout + uncommitted work intact |
 | **`evicted` → `hot`** | user selects / messages the session (incl. unarchive) | — | — | force-fresh fetch + clone-from-cache, new branch off current `origin/main` (Part 3); `diskTier = hot` |
@@ -310,6 +310,36 @@ timer), it escalates the **least-recently-used** eligible sessions (`hot → lig
 then `light → evicted`) until free space crosses a high-water mark — regardless of
 whether they've hit `IDLE_LIGHT` / `IDLE_EVICT`. Keeps the time thresholds
 generous while still reclaiming under pressure. Guards still apply.
+
+**Portable (fraction-of-disk) watermarks.** The low/high marks are configured as
+**fractions of the host's total disk size** (`DISK_FREE_LOW_PCT` /
+`DISK_FREE_HIGH_PCT`, values in `0..1` — e.g. `0.10` / `0.20`), resolved at
+startup against `total = f_blocks × f_frsize` from the same `statfs` probe that
+backs the free-bytes check (`statfsTotalBytes`). Absolute
+`DISK_FREE_LOW_BYTES` / `DISK_FREE_HIGH_BYTES` still work and **take precedence**
+when set (resolved per-watermark by `resolveDiskWatermarks`), but they assume a
+fixed disk size and are wrong for self-hosters — so the fraction vars are the
+portable default. The override still no-ops unless **both** marks resolve.
+
+**Merge-aware eviction.** The `light → evicted` clock is split by the strongest
+available "done" signal: a session whose PR is **merged** (`mergedAt` set — the
+same signal docs/161's recently-merged sidebar grouping already uses) is
+reclaimed `IDLE_EVICT_MERGED_MS` (~2d) after last touch, while **unmerged WIP
+stays on the gentle `IDLE_EVICT_MS` (~14d) clock**. Idle age remains
+`max(lastUsedAt, lastViewedAt)`, so a merged session you reopened to look at
+isn't yanked mid-view. This is reclaim-only with no data loss: the destructive
+rung's auto-commit + push-before-wipe remediation is unchanged, and a merged
+session re-fetches fresh from `origin` on reopen. Rationale: on the box that hit
+100% disk, **148 of 160 on-disk sessions (~94 GB of ~96.5 GB reclaimable) were
+merged-PR work nobody returned to** — keying eviction off "merged" rather than
+idle age alone targets exactly that tail while leaving in-progress work alone.
+
+**Wired into the prod deploy.** Both mechanisms above existed in code but were
+never configured in production (the override no-ops unless its watermark env vars
+are set). `deployment/vps/docker-compose.yml` now sets `DISK_FREE_LOW_PCT=0.10`,
+`DISK_FREE_HIGH_PCT=0.20`, and `DISK_IDLE_EVICT_MERGED_MS=172800000` (2d) on the
+orchestrator service; `DISK_IDLE_EVICT_MS` is left at its 14d default so unmerged
+WIP stays on the gentle clock. This is what actually turns the pressure valve on.
 
 ### Guards (the gate every automatic descent passes)
 
@@ -350,8 +380,10 @@ confirm) "running", but still auto-commits dirty work rather than losing it.
 |---|---|---|
 | `maxIdleContainers` | container-stop cap (exists, `docs/063`) | 5 |
 | `IDLE_LIGHT` | idle before `hot → light` (janitor) | 24 h |
-| `IDLE_EVICT` | idle before `light → evicted` (janitor) | 14 d |
-| `DISK_FREE_LOW` / `DISK_FREE_HIGH` | disk-pressure water marks (checked on-demand, no timer) | host-tuned |
+| `IDLE_EVICT` (`IDLE_EVICT_MS`) | idle before `light → evicted`, **unmerged** (janitor) | 14 d |
+| `IDLE_EVICT_MERGED_MS` | idle before `light → evicted`, **merged PR** (janitor) | 2 d (`172800000`) |
+| `DISK_FREE_LOW_PCT` / `DISK_FREE_HIGH_PCT` | disk-pressure watermarks as **fractions of total disk** (portable) | `0.10` / `0.20` (prod) |
+| `DISK_FREE_LOW_BYTES` / `DISK_FREE_HIGH_BYTES` | absolute-byte watermarks; **take precedence** over the `_PCT` pair when set | unset |
 | `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` | janitor backstop for `evicted` (exists) | 30 d (prod) |
 
 Container stop is governed by the existing `maxIdleContainers` cap, not a time
