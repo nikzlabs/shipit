@@ -27,8 +27,9 @@ import { PlayTurnButton } from "./PlayTurnButton.js";
 import { ChatQuoteReply } from "./ChatQuoteReply.js";
 import { VoiceNoteCard } from "./VoiceNoteCard.js";
 import { BugReportCard } from "./BugReportCard.js";
+import { CompactionCard } from "./CompactionCard.js";
 import { IssueWriteCard } from "./IssueWriteCard.js";
-import type { IssueWriteCard as IssueWriteCardData } from "../../server/shared/types.js";
+import type { IssueWriteCard as IssueWriteCardData, CompactionCard as CompactionCardData } from "../../server/shared/types.js";
 import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
@@ -256,6 +257,14 @@ export interface ChatMessage {
   issueWrite?: {
     cardId: string;
   } & Partial<IssueWriteCardData>;
+  /**
+   * docs/179 — when set, this message renders a `CompactionCard` inline ("Context
+   * compacted"). Populated from `compaction_card` WS events and rehydrated from
+   * persisted history (the card lives on the message itself, like `voiceNote`,
+   * so no separate store seeding is needed). All detail fields are optional —
+   * Codex supplies none, so the card degrades to a bare summary row.
+   */
+  compaction?: CompactionCardData;
 }
 
 export interface TextSegment {
@@ -370,6 +379,8 @@ export function MessageList({
   const messages = messagesProp;
 
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
+  // docs/179 — transient "Compacting…" indicator (emit-only; not persisted).
+  const compacting = useSessionStore((s) => s.compacting);
 
   // Per-completed-turn Play button (docs/144). A "turn" is the run of
   // assistant messages between one user message and the next. We mark the
@@ -742,6 +753,18 @@ export function MessageList({
           );
         }
 
+        // docs/179 — "Context compacted" card. Carries no chat text of its own;
+        // render the inline `CompactionCard` and skip the bubble path.
+        if (msg.compaction) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <CompactionCard card={msg.compaction} />
+              </div>
+            </div>
+          );
+        }
+
         // docs/164 — bug-report consent card. Carries no chat text of its own;
         // render the inline `BugReportCard` (which reads its live payload +
         // lifecycle from the bug-report store) and skip the bubble path.
@@ -959,6 +982,15 @@ export function MessageList({
           </Fragment>
         );
       })}
+
+      {compacting && (
+        <div className="flex justify-start" data-testid="compacting-indicator">
+          <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
+            <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
+            Compacting context…
+          </div>
+        </div>
+      )}
 
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
     </div>

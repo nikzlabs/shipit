@@ -605,6 +605,7 @@ export class FakeClaudeProcess extends EventEmitter {
     models: ["claude-sonnet-4-20250514"],
     supportsReview: true,
     supportsSteering: false,
+    supportsCompaction: false,
     skillsDirName: ".claude",
     skillInvocationPrefix: "/",
   };
@@ -631,6 +632,9 @@ export class FakeClaudeProcess extends EventEmitter {
   public killed = false;
   public interrupted = false;
   public stdinData: string[] = [];
+  /** docs/179 — captures the `compact` run-param + any `compact()` call. */
+  public lastCompact: boolean | undefined;
+  public compactCalled = false;
   public readonly isStreaming = false;
   /**
    * docs/140 Phase 6.7 — model the STREAMING interrupt when set true: a
@@ -677,8 +681,10 @@ export class FakeClaudeProcess extends EventEmitter {
     model?: string;
     mcpServers?: unknown[];
     autoCreatePr?: boolean;
+    compact?: boolean;
   }) {
     this.runCalled = true;
+    this.lastCompact = params.compact;
     this.lastPrompt = params.prompt;
     this.lastSessionId = params.sessionId;
     this.lastSystemPrompt = params.systemPrompt;
@@ -712,6 +718,11 @@ export class FakeClaudeProcess extends EventEmitter {
 
   sendUserMessage(text: string) {
     this.writeStdin(text);
+  }
+
+  /** docs/179 — record a compaction trigger on the resident process. */
+  compact() {
+    this.compactCalled = true;
   }
 
   setPermissionMode(mode: string | undefined) {

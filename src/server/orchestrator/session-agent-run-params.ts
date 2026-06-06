@@ -57,6 +57,13 @@ export interface BuildAgentRunParamsArgs {
   /** Container path the agent runs in (workspace dir). */
   sessionDir: string;
   permissionMode?: PermissionMode;
+  /**
+   * docs/179 — this spawn is a context-compaction request (`/compact` with no
+   * resident live process to call `compact()` on). Forwarded to the adapter so
+   * Codex issues `thread/compact/start` instead of a normal turn; Claude's
+   * `/compact` rides the prompt so it ignores the flag.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -76,6 +83,7 @@ export async function buildAgentRunParams(
     prompt,
     sessionDir,
     permissionMode,
+    compact,
   } = args;
   let agentSessionId = args.agentSessionId;
 
@@ -128,6 +136,7 @@ export async function buildAgentRunParams(
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(selectedModel !== undefined ? { model: selectedModel } : {}),
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
+    ...(compact ? { compact: true } : {}),
   };
   const prepare = getPrepareRunParams(deps.runParamsPreps, agentId);
   return prepare(baseParams, { autoCreatePrActive: autoCreatePr });

@@ -133,6 +133,107 @@ describe("ClaudeAdapter", () => {
     expect((events[0] as any).permissionDenials).toBeUndefined();
   });
 
+  // docs/179 — native compaction signals. Before this, the `case "system"`
+  // mapped EVERY system subtype to a bogus agent_init; now it discriminates.
+  describe("compaction (docs/179)", () => {
+    it("maps system/status status:'compacting' to agent_compaction_started", () => {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const events: any[] = [];
+      adapter.on("event", (e) => events.push(e));
+
+      inner.emit("event", {
+        type: "system",
+        subtype: "status",
+        status: "compacting",
+      } as ClaudeEvent);
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ type: "agent_compaction_started", trigger: "auto" });
+    });
+
+    it("ignores non-compacting system/status events (e.g. the docs/138 'default' noise)", () => {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const events: any[] = [];
+      adapter.on("event", (e) => events.push(e));
+
+      inner.emit("event", {
+        type: "system",
+        subtype: "status",
+        status: "default",
+      } as ClaudeEvent);
+
+      expect(events).toHaveLength(0);
+    });
+
+    it("maps system/compact_boundary to agent_compacted with metadata", () => {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const events: any[] = [];
+      adapter.on("event", (e) => events.push(e));
+
+      inner.emit("event", {
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: {
+          trigger: "manual",
+          pre_tokens: 180_000,
+          post_tokens: 42_000,
+          duration_ms: 3200,
+        },
+      } as ClaudeEvent);
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({
+        type: "agent_compacted",
+        trigger: "manual",
+        preTokens: 180_000,
+        postTokens: 42_000,
+        durationMs: 3200,
+      });
+    });
+
+    it("maps a compact_boundary with no metadata to a bare agent_compacted", () => {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const events: any[] = [];
+      adapter.on("event", (e) => events.push(e));
+
+      inner.emit("event", { type: "system", subtype: "compact_boundary" } as ClaudeEvent);
+
+      expect(events).toEqual([{ type: "agent_compacted" }]);
+    });
+
+    it("compact() injects /compact on the streaming inner", async () => {
+      const { StreamingClaudeProcess } = await import("./process.js");
+      const sent: string[] = [];
+      class FakeStreaming extends StreamingClaudeProcess {
+        override sendUserMessage(text: string): void {
+          sent.push(text);
+        }
+      }
+      const inner = new FakeStreaming();
+      const adapter = new ClaudeAdapter(inner as never);
+
+      adapter.compact();
+      expect(sent).toEqual(["/compact"]);
+    });
+
+    it("compact() is a no-op on a non-streaming inner (orchestrator spawns a turn instead)", () => {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      adapter.compact();
+      expect(inner.stdinData).toEqual([]);
+    });
+
+    it("advertises supportsCompaction", () => {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      expect(adapter.capabilities.supportsCompaction).toBe(true);
+    });
+  });
+
   it("maps assistant event to agent_assistant", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);

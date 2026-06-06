@@ -30,6 +30,7 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
     models: a.capabilities.models,
     supportsReview: a.capabilities.supportsReview,
     supportsSteering: a.capabilities.supportsSteering,
+    supportsCompaction: a.capabilities.supportsCompaction,
     supportedPermissionModes: a.capabilities.supportedPermissionModes,
     skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
   }));

@@ -27,12 +27,13 @@ function formatCost(usd: number): string {
 }
 
 /**
- * Detect a `/compact` event by checking for a sharp drop in context size
- * between the previous turn and the most recent turn — Claude Code's
- * `/compact` slash command replaces in-context history with a summary,
- * which surfaces as a step-change reduction in the next turn's context
- * occupancy. Threshold (40%) is conservative so normal turn-to-turn
- * variance doesn't trigger a false positive.
+ * docs/179 — heuristic FALLBACK for detecting compaction: a sharp drop in
+ * context size between the previous and most recent turn. The authoritative
+ * signal is now the backend's own `agent_compacted` event (surfaced as a
+ * persisted `CompactionCard` and passed in via `authoritativeCompacted`); this
+ * heuristic only backstops cases that signal didn't reach (e.g. an older turn
+ * series loaded with no card, or a backend that under-reports). Threshold (40%)
+ * is conservative so normal turn-to-turn variance doesn't trip a false positive.
  *
  * Uses `turnContextTokens()` (input + cache reads + cache writes) rather than
  * raw `inputTokens` — with prompt caching active, `inputTokens` is tiny and
@@ -85,6 +86,13 @@ export function ContextDial({
    * to be.
    */
   onOpenUsageDetails,
+  /**
+   * docs/179 — authoritative "a compaction just happened" signal, derived from
+   * the backend's own `agent_compacted` event (a `CompactionCard` present after
+   * the last user message). When true it forces the compacted pill on; the
+   * `wasCompacted` heuristic remains as a fallback when it's false.
+   */
+  authoritativeCompacted,
 }: {
   modelInfo: ModelInfo | null;
   turnUsage: TurnUsage[];
@@ -93,6 +101,7 @@ export function ContextDial({
   cumulativeInputTokens?: number;
   cumulativeOutputTokens?: number;
   onOpenUsageDetails?: () => void;
+  authoritativeCompacted?: boolean;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -101,7 +110,8 @@ export function ContextDial({
   // `lastTurn.inputTokens` alone here was the bug behind "Context: 4 / 200K" —
   // with prompt caching, virtually the entire window shows up as cache tokens.
   const contextTokens = contextTokensOverride ?? (lastTurn ? turnContextTokens(lastTurn) : 0);
-  const compacted = wasCompacted(turnUsage);
+  // Authoritative event wins; fall back to the heuristic when it's absent.
+  const compacted = authoritativeCompacted || wasCompacted(turnUsage);
 
   // Cumulative cache totals are still derived from the per-turn series — the
   // server doesn't currently surface session-level cache totals, and they're

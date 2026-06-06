@@ -13,7 +13,7 @@ export interface ClaudeMcpServerInit {
   status: string;
 }
 
-export interface ClaudeSystemEvent {
+export interface ClaudeSystemInitEvent {
   type: "system";
   subtype: "init";
   session_id: string;
@@ -36,6 +36,57 @@ export interface ClaudeSystemEvent {
    */
   mcp_servers?: ClaudeMcpServerInit[];
 }
+
+/**
+ * docs/179 — the CLI's `system`/`subtype:"status"` event. It reports transient
+ * process status; we only act on `status:"compacting"`, which signals an
+ * in-flight context compaction (the adapter maps it to
+ * `agent_compaction_started`). All other statuses are ignored. NOTE: this is the
+ * same event family the docs/138 init comment warns about ("an earlier
+ * `subtype:"status"` event that reports `default`") — discriminating on
+ * `subtype` keeps it out of the init path.
+ */
+export interface ClaudeSystemStatusEvent {
+  type: "system";
+  subtype: "status";
+  session_id?: string;
+  /** e.g. `"compacting"` while the CLI summarizes context. */
+  status?: string;
+}
+
+/**
+ * docs/179 — the CLI's `system`/`subtype:"compact_boundary"` event, emitted when
+ * a context compaction completes (the conversation prefix was replaced by a
+ * summary). The adapter maps it to the persisted `agent_compacted` card.
+ */
+export interface ClaudeCompactBoundaryEvent {
+  type: "system";
+  subtype: "compact_boundary";
+  session_id?: string;
+  /** Compaction metadata reported by the CLI. All fields best-effort. */
+  compact_metadata?: {
+    /** `"manual"` for `/compact`, `"auto"` when the CLI compacted on its own. */
+    trigger?: "manual" | "auto";
+    /** Context tokens before the compaction. */
+    pre_tokens?: number;
+    /** Context tokens after the compaction. */
+    post_tokens?: number;
+    /** Wall-clock duration of the compaction in ms. */
+    duration_ms?: number;
+  };
+}
+
+/**
+ * The CLI's `system` events, discriminated by `subtype`. `init` is the
+ * once-per-session handshake; `status` / `compact_boundary` carry the docs/179
+ * compaction signals. A mid-stream second `init` (the CLI re-inits after a
+ * compaction) is the same shape as the first — the orchestrator, not the type,
+ * is responsible for not resetting session/permission state on it.
+ */
+export type ClaudeSystemEvent =
+  | ClaudeSystemInitEvent
+  | ClaudeSystemStatusEvent
+  | ClaudeCompactBoundaryEvent;
 
 export interface ClaudeContentBlockText {
   type: "text";

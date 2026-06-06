@@ -25,6 +25,11 @@ export interface AgentInfo {
    */
   supportsSteering: boolean;
   /**
+   * Whether this agent supports context compaction (docs/179). The client uses
+   * this to gate the `/compact` entry in the composer's `/` command menu.
+   */
+  supportsCompaction: boolean;
+  /**
    * Permission modes this agent supports (docs/138). The client uses this to
    * gate its agent-aware mode selector (e.g. only offer `guarded` when present).
    */

@@ -49,6 +49,15 @@ export interface AgentCapabilities {
    */
   supportsSteering: boolean;
   /**
+   * Whether the agent backend can compact its own context — both summarizing on
+   * demand (the `/compact` composer command) and emitting native compaction
+   * signals ShipIt renders inline (docs/179). Claude Code: true (the CLI's
+   * `/compact` + `system/compact_boundary` stream events). Codex: true (the
+   * app-server's `thread/compact/start` RPC + `contextCompaction` items). Gates
+   * both the `/` autocomplete entry and the `agent.compact()` trigger path.
+   */
+  supportsCompaction: boolean;
+  /**
    * Per-CLI dotfolder for project skills, e.g. `.claude` or `.codex`. Project
    * skills live at `<workspace>/<skillsDirName>/skills/<name>/SKILL.md` and the
    * marketplace installer writes here. Single source of truth so adding a new
@@ -215,13 +224,64 @@ export interface AgentSteerRejectedEvent {
   text: string;
 }
 
+/**
+ * docs/179 — a context compaction has *started*. Transient progress only: the
+ * orchestrator forwards it as an emit-only "Compacting…" indicator and never
+ * persists it (it has no place in the scrollback once the matching
+ * {@link AgentCompactedEvent} card lands). Both CLIs may compact unsolicited
+ * mid-turn, so this can arrive without ShipIt having triggered it.
+ *
+ * - **Claude**: mapped from the CLI's `system`/`subtype:"status"` event with
+ *   `status:"compacting"`.
+ * - **Codex**: mapped from an `item/started` notification whose item
+ *   `type:"contextCompaction"`.
+ */
+export interface AgentCompactionStartedEvent {
+  type: "agent_compaction_started";
+  /**
+   * `"manual"` when ShipIt asked for the compaction (`/compact`), `"auto"` when
+   * the CLI compacted on its own. Optional: Codex emits no manual/auto field, so
+   * the adapter labels it by correlation (whether ShipIt sent the trigger) and
+   * leaves it undefined when it can't tell.
+   */
+  trigger?: "manual" | "auto";
+}
+
+/**
+ * docs/179 — a context compaction *finished*. This is transcript content (the
+ * conversation history was replaced by a summary), so the orchestrator persists
+ * it as an inline card via `emitChatCard`, not emit-only. Every detail field is
+ * optional because Codex supplies none of them natively — the card degrades to a
+ * bare "Context compacted" row when they're absent.
+ *
+ * - **Claude**: mapped from the CLI's `system`/`subtype:"compact_boundary"`
+ *   event, whose `compact_metadata` carries `{trigger, pre_tokens, post_tokens,
+ *   duration_ms}`.
+ * - **Codex**: mapped from an `item/completed` notification whose item
+ *   `type:"contextCompaction"`, with token figures pulled from the adjacent
+ *   `thread/tokenUsage/updated` snapshot.
+ */
+export interface AgentCompactedEvent {
+  type: "agent_compacted";
+  /** See {@link AgentCompactionStartedEvent.trigger}. */
+  trigger?: "manual" | "auto";
+  /** Context-window occupancy (tokens) before compaction. */
+  preTokens?: number;
+  /** Context-window occupancy (tokens) after compaction. */
+  postTokens?: number;
+  /** How long the compaction took, in ms, when the backend reports it. */
+  durationMs?: number;
+}
+
 export type AgentEvent =
   | AgentInitEvent
   | AgentAssistantEvent
   | AgentToolResultEvent
   | AgentResultEvent
   | AgentRateLimitsEvent
-  | AgentSteerRejectedEvent;
+  | AgentSteerRejectedEvent
+  | AgentCompactionStartedEvent
+  | AgentCompactedEvent;
 
 /** Unified content blocks (text or tool use). */
 export type AgentContentBlock =
@@ -266,6 +326,16 @@ export interface AgentRunParams {
    * for live steering. Ignored by non-streaming adapters. (docs/140)
    */
   useStreaming?: boolean;
+  /**
+   * docs/179 — this run is a context-compaction request, not a normal prompt.
+   * The orchestrator sets this when intercepting `/compact` and no resident
+   * live process exists to call `compact()` on. Adapters honor it at spawn:
+   * Claude treats the `/compact` prompt as the CLI slash command (no special
+   * branch needed); Codex resumes the thread and issues `thread/compact/start`
+   * instead of a normal `turn/start`. Ignored by adapters whose `/compact` rides
+   * the normal prompt path.
+   */
+  compact?: boolean;
 }
 
 // ---- Per-agent MCP config writer (docs/155 hair 10) ----
@@ -461,6 +531,17 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    * the requested mode; adapters without a control channel may omit it.
    */
   setPermissionMode?(mode: PermissionMode | undefined): void;
+  /**
+   * docs/179 — trigger a context compaction on the *resident* process. Optional,
+   * gated by `capabilities.supportsCompaction`. Used by the `/compact`
+   * interception when a live turn is in flight (a streaming Claude process or a
+   * live Codex app-server with a thread): Claude injects the `/compact` slash
+   * command via `sendUserMessage`; Codex sends the `thread/compact/start` RPC.
+   * When no live process is resident the orchestrator spawns a fresh compaction
+   * turn via `run({ compact: true })` instead, so adapters may treat this as a
+   * best-effort no-op when there's nothing to talk to.
+   */
+  compact?(): void;
   /**
    * Write whatever MCP configuration this CLI expects before the worker
    * calls `run()`. Each backend owns its own wire format (Claude:

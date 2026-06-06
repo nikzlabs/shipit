@@ -13,6 +13,11 @@ export const handleSessionStatus: Handler<WsSessionStatus> = (_ctx, data) => {
     session.setIsLoading(data.running);
     if (!data.running) {
       session.setActivity(undefined);
+      // docs/179 — a turn that compacted and then ended without an
+      // `agent_compacted` (e.g. it errored mid-compaction) would otherwise leave
+      // the transient "Compacting…" indicator stuck on. Clearing it at every
+      // turn end is a cheap backstop.
+      session.setCompacting(false);
     }
     if (data.lastInterruptError) {
       session.setInterruptError(data.lastInterruptError);

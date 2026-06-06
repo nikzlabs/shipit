@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent } from "./session-runner.js";
-import type { IssueWriteCard } from "../shared/types.js";
+import type { IssueWriteCard, CompactionCard } from "../shared/types.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -133,6 +133,15 @@ export interface PersistedMessage {
    */
   issueWrite?: IssueWriteCard;
   /**
+   * docs/179 — when set, this message renders an inline "Context compacted" card.
+   * Compaction signals arrive off the agent-event stream
+   * (`system/compact_boundary`, Codex `contextCompaction` items), so
+   * `buildTurnMessages` doesn't capture them on its own; the card is recorded
+   * in-band with the turn (via `emitChatCard`) and persisted here so it survives
+   * a history reload like any other transcript content.
+   */
+  compaction?: CompactionCard;
+  /**
    * Events emitted by subagents (Claude's Task tool) whose parent Task tool is
    * in this message's `toolUse`. Stored as a flat ordered list keyed by
    * `parentToolUseId` so the client can render the subagent's prompt, work,
@@ -163,6 +172,7 @@ interface MessageRow {
   voice_note: string | null;
   bug_report: string | null;
   issue_write: string | null;
+  compaction: string | null;
   /**
    * Legacy column — older rows may carry a serialized per-turn usage record
    * here. The canonical per-turn series is now owned by `UsageManager`
@@ -176,8 +186,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, issue_write)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @issue_write)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, issue_write, compaction)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @issue_write, @compaction)
 `;
 
 const UPDATE_SQL = `
@@ -186,7 +196,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, issue_write=@issue_write
+    voice_note=@voice_note, bug_report=@bug_report, issue_write=@issue_write, compaction=@compaction
   WHERE id = @id
 `;
 
@@ -246,6 +256,7 @@ export class ChatHistoryManager {
       voice_note: msg.voiceNote ? JSON.stringify(msg.voiceNote) : null,
       bug_report: msg.bugReport ? JSON.stringify(msg.bugReport) : null,
       issue_write: msg.issueWrite ? JSON.stringify(msg.issueWrite) : null,
+      compaction: msg.compaction ? JSON.stringify(msg.compaction) : null,
     };
   }
 
@@ -273,6 +284,7 @@ export class ChatHistoryManager {
     if (row.voice_note) msg.voiceNote = JSON.parse(row.voice_note) as PersistedMessage["voiceNote"];
     if (row.bug_report) msg.bugReport = JSON.parse(row.bug_report) as PersistedBugReport;
     if (row.issue_write) msg.issueWrite = JSON.parse(row.issue_write) as IssueWriteCard;
+    if (row.compaction) msg.compaction = JSON.parse(row.compaction) as CompactionCard;
     return msg;
   }
 

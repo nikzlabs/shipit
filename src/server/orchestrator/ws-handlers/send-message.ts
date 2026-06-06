@@ -20,6 +20,16 @@ type WsSendMessage = Extract<WsClientMessage, { type: "send_message" }>;
 type WsSendReviewMessage = Extract<WsClientMessage, { type: "send_review_message" }>;
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 
+/**
+ * docs/179 — recognize the `/compact` composer command. Exact match only (a
+ * trailing argument like `/compact foo` is not a recognized command and falls
+ * through as a normal message). The `/` autocomplete only offers this when the
+ * active agent advertises `supportsCompaction`.
+ */
+function isCompactCommand(text: string): boolean {
+  return text.trim() === "/compact";
+}
+
 function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
   const activeAgentId = ctx.getActiveAgentId();
 
@@ -87,6 +97,17 @@ export async function handleSendMessage(
   // Check auth before spawning — some CLIs hang if not authenticated.
   if (!ensureActiveAgentAuthenticated(ctx)) return;
 
+  // docs/179 — `/compact` interception. When the active agent supports
+  // compaction, route the command to the agent's compaction trigger instead of
+  // sending the literal text to the model: a fresh spawn runs `run({ compact:
+  // true })` (Claude → `claude -p "/compact"`; Codex → `thread/compact/start`),
+  // and a live in-flight turn injects via `agent.compact()`. Gated on the
+  // capability so an unsupported backend just sends the text (and the `/`
+  // autocomplete never offered it anyway).
+  const compactCapable =
+    ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsCompaction ?? false;
+  const isCompactRequest = isCompactCommand(msg.text) && compactCapable;
+
   // Validate images if provided (do this before queue check so we reject bad images immediately)
   const images: ImageAttachment[] | undefined = msg.images && msg.images.length > 0 ? msg.images : undefined;
   if (images) {
@@ -108,6 +129,29 @@ export async function handleSendMessage(
     // and the user sees: "agent starts briefly, nothing happens".
     const actuallyRunning = await runnerForQueue.verifyRunningState();
     if (actuallyRunning) {
+      // docs/179 — `/compact` while a turn is in flight: trigger compaction on
+      // the resident live process (streaming Claude injects `/compact`; live
+      // Codex sends `thread/compact/start`) rather than queuing the literal text.
+      // The compaction events (started → card) flow through the active turn's
+      // listeners. If there's no resident agent, fall through to the normal
+      // queue path. compact() is a best-effort no-op when the resident process
+      // can't compact (e.g. a one-shot PTY mid-turn).
+      if (isCompactRequest) {
+        const compactAgent = runnerForQueue.getAgent();
+        if (compactAgent?.compact) {
+          compactAgent.compact();
+          const compactSessionId = ctx.getActiveAppSessionId();
+          if (compactSessionId) {
+            runnerForQueue.emitMessage({
+              type: "compaction_status",
+              sessionId: compactSessionId,
+              active: true,
+              trigger: "manual",
+            });
+          }
+        }
+        return;
+      }
       // Live steering: inject the message mid-turn if capability + setting active.
       // Review messages (reviewFilePath set) are never steered — a review needs
       // its own turn so the per-turn review-tool allow-list is established
@@ -442,6 +486,7 @@ export async function handleSendMessage(
     isNewSession: !msg.sessionId,
     uploadPaths,
     reviewFilePath,
+    compact: isCompactRequest,
   });
 }
 

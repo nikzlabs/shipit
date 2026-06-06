@@ -39,6 +39,12 @@ interface SessionState {
   messages: ChatMessage[];
   isLoading: boolean;
   activity: StreamingActivity | undefined;
+  /**
+   * docs/179 — transient "Compacting…" indicator. Set true on a
+   * `compaction_status` with `active:true`, cleared on `active:false` (or when
+   * the matching card lands). Never persisted — purely a live progress signal.
+   */
+  compacting: boolean;
   selectedRepoUrl: string | null;
   creatingRepo: boolean;
   sessions: SessionInfo[];
@@ -114,6 +120,7 @@ interface SessionState {
   updateLastMessage: (updater: (msg: ChatMessage) => ChatMessage) => void;
   setIsLoading: (loading: boolean) => void;
   setActivity: (activity: StreamingActivity | undefined) => void;
+  setCompacting: (compacting: boolean) => void;
   setHistoryLoaded: (loaded: boolean) => void;
   setRescueState: (state: RescueState | null) => void;
   setRecoveryActionError: (error: string | null) => void;
@@ -201,6 +208,7 @@ const initialResettableState = {
   messages: [] as ChatMessage[],
   isLoading: false,
   activity: undefined as StreamingActivity | undefined,
+  compacting: false,
   selectedRepoUrl: null as string | null,
   creatingRepo: false,
   queuedMessages: [] as { text: string; position: number }[],
@@ -251,6 +259,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setIsLoading: (isLoading) => set({ isLoading }),
 
   setActivity: (activity) => set({ activity }),
+
+  setCompacting: (compacting) => set({ compacting }),
 
   setHistoryLoaded: (historyLoaded) => set({ historyLoaded }),
 

@@ -44,6 +44,7 @@ export interface ProxyAgentRunner {
   interruptAgentOnWorker(): Promise<void>;
   killAgentOnWorker(): Promise<void>;
   setAgentPermissionModeOnWorker(mode: PermissionMode | undefined): Promise<void>;
+  compactAgentOnWorker(): Promise<void>;
 }
 
 /**
@@ -91,6 +92,7 @@ export class ProxyAgentProcess extends EventEmitter<{
     // which is what the client uses to gate the AI review affordance.
     supportsReview: false,
     supportsSteering: false,
+    supportsCompaction: false,
     skillsDirName: ".claude",
     skillInvocationPrefix: "/",
   };
@@ -160,6 +162,19 @@ export class ProxyAgentProcess extends EventEmitter<{
     this.runner.setAgentPermissionModeOnWorker(mode).catch((err: unknown) => {
       const msgText = err instanceof Error ? err.message : String(err);
       this.emit("log", "server", `Failed to change permission mode on worker: ${msgText}`);
+    });
+  }
+
+  /**
+   * docs/179 — fire-and-forget POST to worker /agent/compact. Failures land on
+   * the Logs panel rather than `error`: a failed compaction shouldn't tear down
+   * the turn (the context is simply not summarized), and the next user message
+   * still goes through.
+   */
+  compact(): void {
+    this.runner.compactAgentOnWorker().catch((err: unknown) => {
+      const msgText = err instanceof Error ? err.message : String(err);
+      this.emit("log", "server", `Failed to compact agent on worker: ${msgText}`);
     });
   }
 

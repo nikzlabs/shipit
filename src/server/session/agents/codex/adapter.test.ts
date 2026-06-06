@@ -1233,6 +1233,81 @@ describe("CodexAdapter", () => {
     expect((turnStart!.params as any).approvalPolicy).toBe("never");
     expect((turnStart!.params as any).sandboxPolicy).toEqual({ type: "dangerFullAccess" });
   });
+
+  // docs/179 — native compaction signals + trigger.
+  describe("compaction (docs/179)", () => {
+    it("advertises supportsCompaction", () => {
+      adapter = new CodexAdapter();
+      expect(adapter.capabilities.supportsCompaction).toBe(true);
+    });
+
+    it("maps contextCompaction items to compaction events (auto), with postTokens from tokenUsage", async () => {
+      await createAndInit("Hello");
+
+      fakeProc.sendNotification("thread/tokenUsage/updated", {
+        tokenUsage: { last: { totalTokens: 50_000 } },
+      });
+      fakeProc.sendNotification("item/started", { item: { type: "contextCompaction", id: "c1" } });
+      fakeProc.sendNotification("item/completed", { item: { type: "contextCompaction", id: "c1" } });
+
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "agent_compacted")).toBe(true);
+      });
+
+      const started = events.find((e) => e.type === "agent_compaction_started");
+      // Not ShipIt-requested → labeled auto by correlation.
+      expect(started).toEqual({ type: "agent_compaction_started", trigger: "auto" });
+      const done = events.find((e) => e.type === "agent_compacted") as any;
+      expect(done.trigger).toBe("auto");
+      expect(done.postTokens).toBe(50_000);
+    });
+
+    it("compact() sends thread/compact/start and the result is labeled manual", async () => {
+      await createAndInit("Hello");
+
+      adapter.compact();
+
+      await vi.waitFor(() => {
+        expect(fakeProc.getRequests().some((r) => r.method === "thread/compact/start")).toBe(true);
+      });
+      const req = fakeProc.getRequests().find((r) => r.method === "thread/compact/start");
+      expect((req!.params as any).threadId).toBe("thread-abc-123");
+
+      fakeProc.sendNotification("item/started", { item: { type: "contextCompaction", id: "c2" } });
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "agent_compaction_started")).toBe(true);
+      });
+      expect(
+        (events.find((e) => e.type === "agent_compaction_started") as any).trigger,
+      ).toBe("manual");
+    });
+
+    it("run({compact:true}) issues thread/compact/start instead of turn/start and ends on completion", async () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.on("event", (e) => events.push(e));
+      adapter.run({ prompt: "/compact", cwd: "/workspace", sessionId: "thread-xyz", compact: true });
+
+      await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+      fakeProc.sendResponse(1, { serverInfo: {} }); // initialize
+      await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
+      fakeProc.sendResponse(2, { threadId: "thread-xyz" }); // thread/resume
+
+      await vi.waitFor(() => {
+        expect(fakeProc.getRequests().some((r) => r.method === "thread/compact/start")).toBe(true);
+      });
+      // The compaction spawn must NOT also start a normal turn.
+      expect(fakeProc.getRequests().some((r) => r.method === "turn/start")).toBe(false);
+
+      // The contextCompaction completion is the turn terminus: it emits the
+      // card, a synthetic success result, and tears the process down.
+      fakeProc.sendNotification("item/completed", { item: { type: "contextCompaction", id: "c3" } });
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "agent_result")).toBe(true);
+      });
+      expect((events.find((e) => e.type === "agent_compacted") as any).trigger).toBe("manual");
+      expect(fakeProc.killed).toBe(true);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

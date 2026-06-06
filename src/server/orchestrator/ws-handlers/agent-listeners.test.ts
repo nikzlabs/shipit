@@ -17,6 +17,7 @@ const capabilities: AgentCapabilities = {
   models: ["gpt-test"],
   supportsReview: false,
   supportsSteering: true,
+  supportsCompaction: true,
   skillsDirName: ".codex",
   skillInvocationPrefix: "$",
 };
@@ -184,6 +185,54 @@ describe("wireAgentListeners", () => {
       expect(runner.running).toBe(false);
       runner.dispose({ force: true });
     });
+  });
+
+  it("emits a transient indicator on compaction start and persists a card on completion (docs/179)", () => {
+    const agent = new FakeAgent();
+    const runner = new SessionRunner({
+      sessionId: "session-1",
+      sessionDir: "/tmp/session-1",
+      defaultAgentId: "codex",
+    });
+    const emitted: any[] = [];
+    runner.on("message", (m) => emitted.push(m));
+
+    wireAgentListeners(agent as unknown as AgentProcess, runner, deps(), {
+      capturedSessionId: "session-1",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+
+    // Start → emit-only transient indicator, NOT recorded for persistence.
+    agent.emit("event", { type: "agent_compaction_started", trigger: "manual" } satisfies AgentEvent);
+    expect(emitted).toEqual([
+      { type: "compaction_status", sessionId: "session-1", active: true, trigger: "manual" },
+    ]);
+    expect(runner.recordedCards).toHaveLength(0);
+
+    // Completion → clear the indicator AND persist a transcript card.
+    agent.emit("event", {
+      type: "agent_compacted",
+      trigger: "manual",
+      preTokens: 100,
+      postTokens: 20,
+    } satisfies AgentEvent);
+
+    expect(emitted.some((m) => m.type === "compaction_status" && m.active === false)).toBe(true);
+    const cardMsg = emitted.find((m) => m.type === "compaction_card");
+    expect(cardMsg).toBeDefined();
+    expect(cardMsg.card).toMatchObject({ trigger: "manual", preTokens: 100, postTokens: 20 });
+    expect(typeof cardMsg.card.id).toBe("string");
+
+    // Recorded in-band so buildTurnMessages folds it into the persisted turn.
+    expect(runner.recordedCards).toHaveLength(1);
+    expect(runner.recordedCards[0].message.compaction).toMatchObject({
+      trigger: "manual",
+      preTokens: 100,
+      postTokens: 20,
+    });
+
+    runner.dispose({ force: true });
   });
 
   describe("voice-note source observation (docs/163)", () => {

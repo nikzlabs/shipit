@@ -30,6 +30,12 @@ export interface AgentOption {
    */
   supportsSteering?: boolean;
   /**
+   * Whether the agent supports context compaction (docs/179). Gates the
+   * `/compact` entry in the composer's `/` command menu. Optional for
+   * backward-compat with older wire payloads / test fixtures.
+   */
+  supportsCompaction?: boolean;
+  /**
    * Character the user types in chat to invoke a skill (e.g. `/` for Claude,
    * `$` for Codex). Read by the composer's skill picker so the inserted token
    * matches the active backend. Optional for backward-compat with older
