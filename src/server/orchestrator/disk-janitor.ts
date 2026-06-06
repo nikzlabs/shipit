@@ -97,7 +97,7 @@ import type { SessionInfo } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { GitManager } from "../shared/git.js";
-import { IDLE_LIGHT_MS, IDLE_EVICT_MS } from "./sessions.js";
+import { IDLE_LIGHT_MS, IDLE_EVICT_MS, IDLE_EVICT_MERGED_MS } from "./sessions.js";
 import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
 import { sessionCredentialsRoot } from "./session-credentials.js";
 
@@ -1001,8 +1001,15 @@ export interface TierEscalationDeps {
   createGitManager?: (dir: string) => GitManager;
   /** Idle age (ms) before `hot → light`. Defaults to `IDLE_LIGHT_MS`. */
   idleLightMs?: number;
-  /** Idle age (ms) before `light → evicted`. Defaults to `IDLE_EVICT_MS`. */
+  /** Idle age (ms) before `light → evicted` for UNMERGED sessions. Defaults to `IDLE_EVICT_MS`. */
   idleEvictMs?: number;
+  /**
+   * docs/161 — idle age (ms) before `light → evicted` for sessions whose PR is
+   * MERGED (`mergedAt` set). A merge is a far stronger "done" signal than idle
+   * age, and merged checkouts re-fetch fresh on reopen, so they're reclaimed on
+   * a much shorter clock than unmerged WIP. Defaults to `IDLE_EVICT_MERGED_MS`.
+   */
+  idleEvictMergedMs?: number;
   /**
    * Disk-pressure water marks (bytes free). When `getFreeDiskBytes` reports
    * below `diskFreeLow`, the pass escalates LRU-eligible sessions — ignoring the
@@ -1171,7 +1178,10 @@ async function reclaimToEvicted(
  * docs/161 Part 2 — the disk-tier escalation pass. Walks idle sessions and
  * descends the ladder (`hot → light → evicted`) when idle age crosses the
  * thresholds, or — under disk pressure — escalates least-recently-used eligible
- * sessions regardless of age until free space recovers. Every descent passes
+ * sessions regardless of age until free space recovers. The `light → evicted`
+ * threshold is merge-aware: a session whose PR is merged (`mergedAt` set) is
+ * reclaimed on the short `idleEvictMergedMs` clock, while unmerged WIP stays on
+ * the gentle `idleEvictMs` clock. Every descent passes
  * `canAutoDescend` (not running, no attached viewer); the destructive `evicted`
  * rung additionally remediates dirty checkouts.
  *
@@ -1192,6 +1202,7 @@ export async function escalateDiskTiers(
   const now = (deps.now ?? Date.now)();
   const idleLight = deps.idleLightMs ?? IDLE_LIGHT_MS;
   const idleEvict = deps.idleEvictMs ?? IDLE_EVICT_MS;
+  const idleEvictMerged = deps.idleEvictMergedMs ?? IDLE_EVICT_MERGED_MS;
 
   // Candidate set: non-warm sessions still holding disk, minus the one we just
   // started. (`listAll` already excludes warm.)
@@ -1204,8 +1215,13 @@ export async function escalateDiskTiers(
     if (!canAutoDescend(s, deps.runnerRegistry)) continue;
     const age = diskIdleAgeMs(s, now);
     const tier = s.diskTier ?? "hot";
+    // Merge-aware threshold: a merged PR ("done") evicts far sooner than
+    // unmerged WIP, which stays on the gentle `idleEvict` clock. Idle age is
+    // still max(lastUsedAt, lastViewedAt), so a merged session you reopened to
+    // look at isn't yanked mid-view.
+    const evictThreshold = s.mergedAt ? idleEvictMerged : idleEvict;
     try {
-      if (tier === "light" && age >= idleEvict) {
+      if (tier === "light" && age >= evictThreshold) {
         const outcome = await reclaimToEvicted(s, deps);
         if (outcome === "evicted") result.toEvicted += 1;
         else if (outcome === "blocked-by-push") result.evictBlockedByPush += 1;
@@ -1302,6 +1318,48 @@ export async function statfsFreeBytes(dir: string): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * docs/161 — total size (bytes) of the filesystem holding `dir`, or null if
+ * `statfs` is unavailable / errors. Backs the fraction-of-disk pressure
+ * watermarks (`DISK_FREE_LOW_PCT` / `DISK_FREE_HIGH_PCT`), which are portable
+ * across host disk sizes in a way the absolute `*_BYTES` vars are not.
+ */
+export async function statfsTotalBytes(dir: string): Promise<number | null> {
+  try {
+    const st = await fs.statfs(dir);
+    return st.blocks * st.bsize;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * docs/161 — resolve the effective disk-pressure byte watermarks from the
+ * configured inputs. Each watermark is resolved independently:
+ *   - an explicit `*Bytes` value always wins (backward compat), otherwise
+ *   - a `*Pct` fraction (0..1) is multiplied by the host's total disk size.
+ * A watermark stays `undefined` when neither is set (or a `*Pct` is given but
+ * `totalBytes` is unknown), which leaves the pressure override disabled — its
+ * gate already no-ops unless BOTH watermarks resolve.
+ */
+export function resolveDiskWatermarks(inputs: {
+  lowBytes?: number;
+  highBytes?: number;
+  lowPct?: number;
+  highPct?: number;
+  totalBytes: number | null;
+}): { diskFreeLow?: number; diskFreeHigh?: number } {
+  const resolve = (bytes: number | undefined, pct: number | undefined): number | undefined => {
+    if (bytes !== undefined) return bytes;
+    if (pct !== undefined && inputs.totalBytes !== null) return pct * inputs.totalBytes;
+    return undefined;
+  };
+  return {
+    diskFreeLow: resolve(inputs.lowBytes, inputs.lowPct),
+    diskFreeHigh: resolve(inputs.highBytes, inputs.highPct),
+  };
 }
 
 function getMessage(err: unknown): string {

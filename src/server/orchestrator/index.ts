@@ -64,7 +64,7 @@ import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
-import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes } from "./disk-janitor.js";
+import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks } from "./disk-janitor.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
@@ -911,8 +911,20 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // `escalateDiskTiers` swallows its own errors.
   const idleLightMs = parseFloat(process.env.DISK_IDLE_LIGHT_MS ?? "") || undefined;
   const idleEvictMs = parseFloat(process.env.DISK_IDLE_EVICT_MS ?? "") || undefined;
-  const diskFreeLow = parseFloat(process.env.DISK_FREE_LOW_BYTES ?? "") || undefined;
-  const diskFreeHigh = parseFloat(process.env.DISK_FREE_HIGH_BYTES ?? "") || undefined;
+  const idleEvictMergedMs = parseFloat(process.env.DISK_IDLE_EVICT_MERGED_MS ?? "") || undefined;
+  // Disk-pressure watermarks: explicit *_BYTES win (backward compat); otherwise
+  // derive fraction-of-disk *_PCT × total host disk size (portable across host
+  // disk sizes — self-hosters can't be expected to know the right byte count).
+  // Total is a fixed property of the host filesystem, so probe it once here
+  // rather than on every escalation pass.
+  const diskTotalBytes = isTestMode ? null : await statfsTotalBytes(stateDir);
+  const { diskFreeLow, diskFreeHigh } = resolveDiskWatermarks({
+    lowBytes: parseFloat(process.env.DISK_FREE_LOW_BYTES ?? "") || undefined,
+    highBytes: parseFloat(process.env.DISK_FREE_HIGH_BYTES ?? "") || undefined,
+    lowPct: parseFloat(process.env.DISK_FREE_LOW_PCT ?? "") || undefined,
+    highPct: parseFloat(process.env.DISK_FREE_HIGH_PCT ?? "") || undefined,
+    totalBytes: diskTotalBytes,
+  });
   const kickDiskEscalation = (excludeSessionId?: string): void => {
     if (isTestMode || !containerManager) return;
     void escalateDiskTiers(
@@ -925,6 +937,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         createGitManager,
         idleLightMs,
         idleEvictMs,
+        idleEvictMergedMs,
         diskFreeLow,
         diskFreeHigh,
         getFreeDiskBytes: () => statfsFreeBytes(stateDir),

@@ -27,6 +27,13 @@
 - [x] Parent/child breadcrumbs preserved — the `evicted` rung keeps the session row + `parent_session_id`/metadata and restores via clone, so demotion never orphans a child (no destructive cascade like the old auto-archive)
 - [x] User-archive action: `userArchived = true` + `evicted` cleanup, cascade to children — `archiveSession` + `SessionManager.archive` (unchanged, already correct)
 
+## Part 2.1 — Turn on the pressure valve + merge-aware eviction (prod hit 100% disk)
+- [x] Portable watermarks: `DISK_FREE_LOW_PCT` / `DISK_FREE_HIGH_PCT` (fractions of total disk) resolved at startup via `statfsTotalBytes` (`total = blocks × bsize`); `resolveDiskWatermarks` resolves each mark independently with `*_BYTES` taking precedence — backward compat preserved, override still no-ops unless both marks resolve
+- [x] Merge-aware `light → evicted`: branch on `mergedAt` — merged → `IDLE_EVICT_MERGED_MS` (2d default), unmerged → `IDLE_EVICT_MS` (14d, unchanged); idle age stays `max(lastUsedAt, lastViewedAt)`; all guards + auto-commit/push-before-wipe unchanged (reclaim-only)
+- [x] `DISK_IDLE_EVICT_MERGED_MS` wired through `index.ts` (`parseFloat || undefined`) and defaulted in `sessions.ts` (`IDLE_EVICT_MERGED_MS`)
+- [x] Wired into prod: `deployment/vps/docker-compose.yml` sets `DISK_FREE_LOW_PCT=0.10`, `DISK_FREE_HIGH_PCT=0.20`, `DISK_IDLE_EVICT_MERGED_MS=172800000`; `DISK_IDLE_EVICT_MS` left at 14d default
+- [x] Unit: `resolveDiskWatermarks` (`*_BYTES` precedence, `*_PCT × total` derivation, neither set → disabled, pct + unknown total → disabled); merge-aware eviction (merged past threshold evicts, unmerged same age does not, merged + recent view protected, merged + dirty committed+pushed before wipe) — `disk-tier-escalation.test.ts`
+
 ## Part 3 — Restore freshness
 - [x] `evicted` restore forces a fresh fetch (`fetchCache(ttlMs = 0)`); contract is "fetch ran + didn't error", NOT "HEAD advanced" (unchanged HEAD is normal)
 - [x] Separate fetch from clone in the retry loop: failed fetch → fall through to clone-from-cache + staleness warning (don't abort restore); clone errors keep their 3× retry
