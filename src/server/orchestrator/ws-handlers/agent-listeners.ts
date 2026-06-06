@@ -1284,9 +1284,18 @@ export function wireAgentListeners(
       // (token revoked / rate-limited), fall back to the visible re-auth flow.
       // Fire-and-forget: `auth_required` is a sync event handler.
       // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in a sync event handler
-      void opts.recoverAuth().then((handled) => {
-        if (!handled) surfaceReauth();
-      });
+      void opts.recoverAuth().then(
+        (handled) => {
+          if (!handled) surfaceReauth();
+        },
+        (err: unknown) => {
+          // recoverAuth owns its own errors and resolves false on a failed heal;
+          // a rejection here is unexpected. Fail open — surface the sign-in card
+          // rather than leaving the turn wedged behind an unhandled rejection.
+          console.error("[server] docs/179 auth recovery rejected unexpectedly:", err);
+          surfaceReauth();
+        },
+      );
       return;
     }
     surfaceReauth();
