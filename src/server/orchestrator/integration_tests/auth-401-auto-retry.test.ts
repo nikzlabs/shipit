@@ -143,7 +143,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     // The retried turn completes normally and finalizes the turn.
     agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     agents[1]!.emit("done", 0);
-    await waitFor(() => runner.running === false, "turn finished");
+    await waitFor(() => !runner.running, "turn finished");
     // Bounded: exactly two agents (original + one retry).
     expect(agents).toHaveLength(2);
 
