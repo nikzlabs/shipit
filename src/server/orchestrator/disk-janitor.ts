@@ -59,8 +59,13 @@
  * the one disk task that DOES accumulate steadily (idle node_modules piling up).
  * That ladder therefore does NOT live in `runDiskJanitor`: it's
  * `escalateDiskTiers`, invoked async after each session start (the primary
- * steady-state reclaim) — see Part 2 below. The startup janitor remains the
- * post-(unclean-)restart safety net for the recovery items.
+ * steady-state reclaim), at orchestrator boot, AND on a low-frequency periodic
+ * timer (issue #1049 — `DISK_ESCALATION_INTERVAL_MS`, hourly default, wired in
+ * `index.ts`). The timer exists specifically because escalation accumulates
+ * steadily: session-start kicks alone create a self-heal feedback trap (a full
+ * disk fails new starts → the kick never fires → nothing reclaims). The
+ * failure-recovery sweeps above deliberately get NO such timer. The startup
+ * janitor remains the post-(unclean-)restart safety net for the recovery items.
  *
  * Scope split — what this DOESN'T do:
  *   - **BuildKit cache + dangling images** are pruned by `deploy.sh`
@@ -1187,9 +1192,12 @@ async function reclaimToEvicted(
  *
  * Invoked async after each session start (the primary steady-state reclaim,
  * since prod deploys manually so the startup janitor runs rarely) and never on
- * the start critical path; also fired once at orchestrator startup as a
- * safety net for the long-idle tail. Always resolves — never rejects — so
- * callers can fire-and-forget.
+ * the start critical path; fired once at orchestrator startup as a safety net
+ * for the long-idle tail; and re-fired on a low-frequency periodic timer
+ * (issue #1049) so reclaim + the disk-pressure check still run when the
+ * instance is quiet or wedged (a full disk fails new session starts, which
+ * would otherwise stop the only steady-state trigger). Always resolves — never
+ * rejects — so callers can fire-and-forget.
  *
  * Excludes the just-started `excludeSessionId` defensively even though its
  * viewer/running guards would already protect it.
